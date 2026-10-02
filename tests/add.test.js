@@ -589,3 +589,17 @@ test('CLI (stasis): the deep bundle command no longer accepts --shallow', withTm
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Unknown option|Error/)
 }))
+
+test('addCommand records .jsx/.tsx as source with no loader format, as the runtime and `stasis bundle` do', withTmp(async (t, tmp) => {
+  seed(tmp)
+  writeFileSync(join(tmp, 'src', 'App.jsx'), 'export const App = () => <div />\n')
+  writeFileSync(join(tmp, 'src', 'Comp.tsx'), 'export const Comp = (): null => null\n')
+  addCommand({ cwd: tmp, entries: ['src/App.jsx', 'src/Comp.tsx'] })
+  const code = decode(join(tmp, 'dist/code.br'))
+  t.assert.deepEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/App.jsx', 'src/Comp.tsx'])
+  t.assert.equal(code.modules.get('.').files['src/App.jsx'], 'export const App = () => <div />\n')
+  // A JS-family file whose loader format nothing here decides: attested without one, never as a resource.
+  t.assert.equal(code.formats.has('src/App.jsx'), false)
+  t.assert.equal(code.formats.has('src/Comp.tsx'), false)
+  t.assert.equal(existsSync(join(tmp, 'dist/res.br')), false)
+}))

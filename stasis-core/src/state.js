@@ -11,7 +11,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, sortPaths, splitNodeModulesPath } from './util.js'
+import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath } from './util.js'
 import { detectRepo, packageJSONStat, packageJSONText, readModuleManifest } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -600,7 +600,7 @@ export class State {
     const canonical = canonicalizePath(value, this.#host)
     for (const other of liveStates()) {
       const owner = other.claimedWritePathLabel(canonical)
-      assert.ok(owner === undefined, `${label} '${value}' is already claimed by ${owner} of another live State`)
+      assert.ok(owner === undefined, `${label} is already claimed by ${owner} of another live State`)
     }
     this.#claims.set(canonical, label)
   }
@@ -641,7 +641,7 @@ export class State {
   relative(absolute) {
     assert.ok(absolute)
     const file = relative(this.root, absolute)
-    assert.ok(!file.startsWith('..'))
+    assert.ok(!relativeEscapes(file))
     // The project root is keyed '.', never '' -- mixing the two desyncs write from read.
     return file === '' ? '.' : file
   }
@@ -660,7 +660,7 @@ export class State {
   #canonicalUncached(url) {
     const absolute = this.absolute(url)
     const file = relative(this.root, absolute)
-    if (file.startsWith('..') || !splitNodeModulesPath(file)) return { url, absolute }
+    if (relativeEscapes(file) || !splitNodeModulesPath(file)) return { url, absolute }
     let real
     try {
       real = this.#host.realpath(absolute)
@@ -669,7 +669,7 @@ export class State {
     }
     if (real === absolute) return { url, absolute }
     const realFile = relative(this.root, real)
-    if (realFile.startsWith('..') || splitNodeModulesPath(realFile)) return { url, absolute }
+    if (relativeEscapes(realFile) || splitNodeModulesPath(realFile)) return { url, absolute }
     return { url: pathToFileURL(real).toString(), absolute: real }
   }
 
@@ -744,7 +744,7 @@ export class State {
       while (json.name === undefined) {
         assert.ok(Object.keys(json).every((k) => k === 'type'))
         const dir = dirname(pkgAbsolute)
-        assert.ok(dir !== this.root && !relative(this.root, dir).startsWith('..'), `No package.json with a name found for ${file}`)
+        assert.ok(dir !== this.root && isPathWithin(this.root, dir), `No package.json with a name found for ${file}`)
         pkgAbsolute = this.#nearestPackageJsonFor(dirname(dir))
         json = readPackageJSON(this.#host, pkgAbsolute)
       }
@@ -861,7 +861,7 @@ export class State {
       }
     }
     const rel = relative(dir, file)
-    assert.ok(!rel.startsWith('..'))
+    assert.ok(!relativeEscapes(rel))
 
     const inAttestedZone = hasNodeModulesSegment(dir) || this.config.full
     if (this.config.frozen && inAttestedZone) {
@@ -960,7 +960,7 @@ export class State {
     if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it; skip when the channel is off
     if (this.config.bundle) this.#recordReason('run', file)
     const rel = relative(dir, file)
-    assert.ok(!rel.startsWith('..'))
+    assert.ok(!relativeEscapes(rel))
 
     const inAttestedZone = hasNodeModulesSegment(dir) || this.config.full
     if (this.config.frozen && inAttestedZone) {
@@ -1141,7 +1141,7 @@ export class State {
     const path = specifier.startsWith('file:') ? fileURLToPath(specifier) : specifier
     if (!isAbsolute(path)) return specifier
     const fromRoot = relative(this.root, path)
-    if (fromRoot === '' || fromRoot.startsWith('..')) return specifier // outside the project root
+    if (fromRoot === '' || relativeEscapes(fromRoot)) return specifier // outside the project root
     const rel = relative(dirname(fileURLToPath(parentURL)), path)
     return rel.startsWith('.') ? rel : `./${rel}`
   }
@@ -1703,7 +1703,7 @@ export class State {
     if (stasisCoreMissing.length === 0) return
 
     const preloadRel = this.#preloadRoot ? relative(this.root, this.#preloadRoot) : null
-    assert.ok(preloadRel !== null && !preloadRel.startsWith('..'),
+    assert.ok(preloadRel !== null && !relativeEscapes(preloadRel),
       `state.write() has imports referencing un-captured stasis-core files but no usable preloadRoot ` +
       `(preloadRoot=${this.#preloadRoot ?? 'unset'}). The live load hook missed an in-scope target -- ` +
       `investigate rather than silently patch: ${stasisCoreMissing.slice(0, 3).join(', ')}`)

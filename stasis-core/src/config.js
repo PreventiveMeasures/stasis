@@ -88,8 +88,12 @@ export class Config {
 
   // Env and options must agree when both are set; #explicit is kept so a later loadConfig can't override them.
   constructor(options = {}) {
-    const { env = process.env, host = diskHost, ...explicit } = options
-    assertKnownKeys(Object.keys(explicit), OPTION_KEYS, 'Config')
+    const { env = process.env, host = diskHost, ...rest } = options
+    assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')
+    // An empty-string path/mode option is unset, as its resolution below treats it; #explicit must
+    // agree, or loadConfig would refuse a stasis.config.json for not matching a phantom override.
+    const explicit = Object.fromEntries(Object.entries(rest).map(([key, value]) =>
+      [key, value === '' && (OPTIONS[key].valid || OPTIONS[key].type === 'string') ? undefined : value]))
     this.#host = host
     this.#explicit = explicit
     // An env var set to '' counts as unset.

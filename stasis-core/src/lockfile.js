@@ -1,4 +1,4 @@
-import { assert, duplicateKeyError, serializeExecutable, fileMapToObject, fileSetToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseExecutable, parseFormats, parseImports, posixPathEscapes } from './artifact-util.js'
+import { assert, duplicateKeyError, serializeExecutable, fileMapToObject, fileSetToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, posixPathEscapes } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -48,10 +48,11 @@ export class Lockfile {
 
     let entries = new Set()
     if (full) {
-      assert(Array.isArray(json.entries))
-      entries = new Set(json.entries)
+      entries = parseEntries(json.entries, 'lockfile')
       for (const [dir, info] of Object.entries(json.sources)) {
         assert(!hasNodeModulesSegment(dir))
+        // A workspace bucket may omit version (a private/unpublished package.json can lack one).
+        assert(info?.name && info.files)
         modules.set(dir, normalizeModule(info))
       }
     }
