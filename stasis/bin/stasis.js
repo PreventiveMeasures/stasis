@@ -62,25 +62,27 @@ function usage(prefix = '') {
    not with --metro-resolver;
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
- stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|soldeer)] [--package-manager-version=version] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
+ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
  (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
   either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
   GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory
   from the lockfile alone, as "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 9, 10, 11 or
-  12), "yarn install --frozen-lockfile --ignore-scripts" (yarn 1.22) or "soldeer install" (0.12,
-  for .sol entries) would: nothing is installed, no package script runs, and every tarball and zip
-  is held to the lockfile, all cached where "stasis audit" caches. Without --package-manager, the
-  one whose lockfile installs --directory (or the repo's root), if only one's does; at
+  12), "yarn install --frozen-lockfile --ignore-scripts" (yarn 1.22), "npm ci --ignore-scripts"
+  (npm 10.9.3 to 10.9.9, or 11.11.1 to 11.21.0) or "soldeer install" (0.12, for .sol entries)
+  would: nothing is installed, no package script runs, and every tarball and zip is held to the
+  lockfile, all cached where "stasis audit" caches. Without --package-manager, the one whose
+  lockfile installs --directory (or the repo's root), if only one's does; at
   --package-manager-version, else at the root package.json's packageManager pin, else pnpm
-  10.33.4, yarn 1.22.22 or Soldeer 0.12.0. The entries are paths in --directory, or in the repo;
-  without them, the JS files its package.json names as main, exports and bin, resolved as the
-  build resolves them (--conditions, --mainFields, --metro --platforms, --typescript), or for
-  Soldeer its .sol files directly in it, under contracts/, and under its source directory
-  (foundry.toml's src, else src/), but tests, scripts, mocks and dependency or build directories;
-  not with --metro-resolver, --cargo* or --add; writes to owner-name.<commit's first 7>.stasis.code.br
-  by default, owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with
-  --directory, each character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in
-  255 characters cut, with a hash of it; --output=- streams to stdout)
+  10.33.4, yarn 1.22.22, npm 11.21.0 (which no packageManager pins) or Soldeer 0.12.0. The entries
+  are paths in --directory, or in the repo; without them, the JS files its package.json names as
+  main, exports and bin, resolved as the build resolves them (--conditions, --mainFields, --metro
+  --platforms, --typescript), or for Soldeer its .sol files directly in it, under contracts/, and
+  under its source directory (foundry.toml's src, else src/), but tests, scripts, mocks and
+  dependency or build directories; not with --metro-resolver, --cargo* or --add; writes to
+  owner-name.<commit's first 7>.stasis.code.br by default,
+  owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with --directory, each
+  character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in 255 characters cut,
+  with a hash of it; --output=- streams to stdout)
  stasis add path/to/(file|dir) ...
  (adds the listed files to the project's bundle(s) with no dependency resolution;
   a directory expands to its files. Requires a stasis.config.json (all fields optional).)

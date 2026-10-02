@@ -43,10 +43,13 @@ jobs:
       # install as a local-dev fallback when node_modules is missing.
       - run: pnpm -C tests/fixtures/popular-npm-modules i --frozen-lockfile
       - run: pnpm -C tests/fixtures/cli-run-import-tsx i --frozen-lockfile
-      # pnpm-bundle and yarn1-bundle are one package set under pnpm's default isolated layout and
-      # yarn 1's hoisted one: the @exodus/stasis/vfs-bundle tests compare the lockfile-built virtual
-      # trees against them.
+      # pnpm-bundle, yarn1-bundle and npm-bundle are one package set under pnpm's default isolated
+      # layout and yarn 1's and npm's hoisted ones: the @exodus/stasis/vfs-bundle tests compare the
+      # lockfile-built virtual trees against them. npm is pinned, as the tests reproduce it: Node 24's
+      # own npm is older than any npm 11 they do.
       - run: pnpm -C tests/fixtures/pnpm-bundle i --frozen-lockfile
       - run: npx --yes yarn@1.22.22 install --frozen-lockfile --ignore-scripts --non-interactive
         working-directory: tests/fixtures/yarn1-bundle
+      - run: npx --yes npm@11.21.0 ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/fixtures/npm-bundle
       - run: node --run test
