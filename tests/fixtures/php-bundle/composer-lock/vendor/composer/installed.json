@@ -1,0 +1,122 @@
+{
+    "packages": [
+        {
+            "name": "acme/laravel-ext",
+            "version": "v2.0.1",
+            "version_normalized": "2.0.1.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/laravel-ext",
+                "reference": "1664b3c10841f4728a46e8ae27e4d7c03fbbd534"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Acme\\LaravelExt\\ExtServiceProvider"
+                    ]
+                }
+            },
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\LaravelExt\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/laravel-ext"
+        },
+        {
+            "name": "acme/legacy",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "target-dir": "Acme/Legacy",
+            "dist": {
+                "type": "path",
+                "url": "packages/legacy",
+                "reference": "2d07d70b3d2b7587668e0578be4ce87dd55754d3"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-0": {
+                    "Acme_Legacy_": ""
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/legacy/Acme/Legacy"
+        },
+        {
+            "name": "acme/lib",
+            "version": "1.4.2",
+            "version_normalized": "1.4.2.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/lib",
+                "reference": "24e4e9c8f583f6e287e584d1bc780ab57b9e9d2f"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Lib\\": "src/"
+                }
+            },
+            "description": "A library",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/lib"
+        },
+        {
+            "name": "acme/meta",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/meta",
+                "reference": "bcf583d820b1242f60873c779ed38c871e4a3c10"
+            },
+            "require": {
+                "acme/legacy": "^1.0"
+            },
+            "type": "metapackage",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": null
+        },
+        {
+            "name": "acme/testkit",
+            "version": "0.3.0",
+            "version_normalized": "0.3.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/testkit",
+                "reference": "56d17b339fb96bb1621517ec3ce446385fc1557c"
+            },
+            "require": {
+                "acme/lib": "^1.0"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/testkit"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": [
+        "acme/testkit"
+    ]
+}

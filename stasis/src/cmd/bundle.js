@@ -32,6 +32,7 @@ import {
   buildPhpTree,
   collectPhpFilesFromDisk,
   loadComposerAutoload,
+  loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
 import { DEFAULT_BUNDLE_FILE, bundledSummary, packagesLabel, writeBundle, writeFile } from './output.js'
@@ -549,10 +550,13 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   const baseDir = resolve(cwd)
   const normalized = normalizeEntries(entries, cwd)
   const autoload = loadComposerAutoload(baseDir)
+  // The Composer packages, of composer.lock (vendor/composer/installed.json held identical to it
+  // where both are), or of installed.json alone: read once, before anything is scanned.
+  const packages = loadComposerPackages(baseDir)
 
   // Laravel auto-discovers service providers rather than referencing them statically; seed
   // them as extra roots so their config/route/view files get bundled.
-  const providerRoots = loadLaravelProviderFiles(baseDir, autoload)
+  const providerRoots = loadLaravelProviderFiles(baseDir, autoload, packages)
 
   const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload })
   const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
@@ -564,7 +568,7 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
     entries: normalized,
     sources,
     // Group per Composer package (vendor/<pkg>), not the node_modules bucketizer.
-    modules: bucketizePhpSources(baseDir, sources, PHP_WORKSPACE_NAME, PHP_WORKSPACE_VERSION),
+    modules: bucketizePhpSources(baseDir, sources, PHP_WORKSPACE_NAME, PHP_WORKSPACE_VERSION, packages),
     resolutions,
     format: PHP_FORMAT,
     // PHP includes don't vary by Node condition; key edges under "php", not the JS wildcard "*".

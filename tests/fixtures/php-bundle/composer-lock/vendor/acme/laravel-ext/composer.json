@@ -1,0 +1,16 @@
+{
+    "name": "acme/laravel-ext",
+    "version": "v2.0.1",
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Acme\\LaravelExt\\ExtServiceProvider"
+            ]
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Acme\\LaravelExt\\": "src/"
+        }
+    }
+}

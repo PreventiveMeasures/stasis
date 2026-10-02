@@ -1,0 +1,10 @@
+{
+    "name": "acme/legacy",
+    "version": "1.0.0",
+    "target-dir": "Acme/Legacy",
+    "autoload": {
+        "psr-0": {
+            "Acme_Legacy_": ""
+        }
+    }
+}

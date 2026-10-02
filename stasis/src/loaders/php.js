@@ -7,10 +7,14 @@ import { isUtf8 } from 'node:buffer'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
-import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 import { applyToDir } from './paths.js'
+import { readUtf8OrNull } from './solidity-ownership.js'
+import { nameErrors } from './toml.js'
 
 // Cap concurrent reads per wave to avoid EMFILE on large directory globs.
 const READ_CONCURRENCY = 64
@@ -454,6 +458,107 @@ function readInstalledPackages(baseDir, vendorDir) {
   return Array.isArray(json) ? json : (json?.packages ?? [])
 }
 
+// JSON `text` with each integer as PHP holds it: one past ±(2^53 − 1) a BigInt, as
+// @preventive/lockfile reads one, so two values compare equal only where PHP's do.
+const parseJsonExact = (text) => JSON.parse(text, (key, value, { source }) =>
+  (typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/u.test(source) ? BigInt(source) : value))
+
+// Where installed.json says Composer installed package `p`, baseDir-relative: its install-path,
+// from vendor/composer (null for none, as of a metapackage), or <vendor-dir>/<name> where it gives
+// none (Composer 1's); null outside baseDir.
+function installedDir(baseDir, vendorDir, p) {
+  const path = p['install-path']
+  if (path === undefined) return projectRel(baseDir, resolve(baseDir, vendorDir, p.name))
+  return typeof path === 'string' ? projectRel(baseDir, resolve(baseDir, vendorDir, 'composer', path)) : null
+}
+
+// Where Composer's library installer puts a package of the lockfile, baseDir-relative
+// (LibraryInstaller::getInstallPath): <vendor-dir>/<name>, under its target-dir where it has one; a
+// metapackage nowhere (null). One of a type an installer plugin takes (composer/installers') goes
+// elsewhere, where its own composer.json's name finds it.
+function lockedDir(baseDir, vendorDir, p) {
+  return p.type === 'metapackage' ? null : projectRel(baseDir, resolve(baseDir, vendorDir, p.name, p.targetDir ?? ''))
+}
+
+// What Composer adds to a package of the lockfile as it installs it, in installed.json.
+const INSTALL_FIELDS = new Set(['version_normalized', 'installation-source', 'install-path'])
+
+// That vendor/composer/installed.json (`installedText`, at `installedFile`) is the install of
+// composer.lock (`lockText`, read by @preventive/lockfile already): as Composer 2 writes it,
+// `{ packages, dev, dev-package-names }`; each package of the lockfile's `packages`, and of its
+// `packages-dev` where it was installed with dev, there once and exactly as locked but for
+// INSTALL_FIELDS, and nothing else; and the names of those of `packages-dev`, in lowercase and
+// sorted, as dev-package-names. Throws where not. Returns the installed.json.
+function assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir }) {
+  const differ = (detail) => new Error(`${installedFile} is not the install of composer.lock: ${detail}${vendorDir ? `; remove ${vendorDir} and run \`composer install\`` : ''}`)
+  let installed
+  try {
+    installed = parseJsonExact(installedText)
+  } catch {
+    throw new Error(`${installedFile}: not JSON`) // without the parser's message, which quotes the text
+  }
+  const shape = ['packages', 'dev', 'dev-package-names']
+  if (!isPlainObject(installed) || Object.keys(installed).length !== shape.length || !shape.every((key) => Object.hasOwn(installed, key)) ||
+    !Array.isArray(installed.packages) || typeof installed.dev !== 'boolean' || !Array.isArray(installed['dev-package-names'])) {
+    throw differ(`it is not as Composer 2 writes one, { ${shape.join(', ')} }`)
+  }
+
+  const lock = parseJsonExact(lockText)
+  const locked = new Map()
+  for (const [key, dev] of [['packages', false], ['packages-dev', true]]) {
+    for (const spec of lock[key]) locked.set(spec.name, { spec, dev })
+  }
+  const seen = new Set()
+  for (const [index, entry] of installed.packages.entries()) {
+    if (!isPlainObject(entry) || typeof entry.name !== 'string') throw differ(`packages[${index}] is not a package`)
+    const { name } = entry
+    const want = locked.get(name)
+    if (want === undefined) throw differ(`${JSON.stringify(name)} is installed, and not locked`)
+    if (seen.has(name)) throw differ(`${name} is installed twice`)
+    seen.add(name)
+    if (want.dev && !installed.dev) throw differ(`${name} is installed, and locked in packages-dev, which an install without dev leaves out`)
+    const spec = Object.fromEntries(Object.entries(entry).filter(([key]) => !INSTALL_FIELDS.has(key)))
+    const key = [...new Set([...Object.keys(spec), ...Object.keys(want.spec)])].find((k) => !isDeepStrictEqual(spec[k], want.spec[k]))
+    if (key === 'version' && typeof spec.version === 'string') throw differ(`${name} is installed at ${JSON.stringify(spec.version)}, and locked at ${want.spec.version}`)
+    // `composer install` takes a package installed at the version and reference locked as it is,
+    // whatever else of it the lockfile changes.
+    if (key !== undefined) throw differ(`${name}'s ${JSON.stringify(key)} is not as locked`)
+  }
+  for (const [name, { dev }] of locked) {
+    if (!seen.has(name) && (installed.dev || !dev)) throw differ(`${name} is locked, and not installed`)
+  }
+  const devNames = [...locked].filter(([, { dev }]) => dev && installed.dev).map(([name]) => name.toLowerCase()).toSorted()
+  if (!isDeepStrictEqual(installed['dev-package-names'], devNames)) throw differ("its dev-package-names are not the names of the lockfile's packages-dev installed")
+  return installed
+}
+
+// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra }]`, `dir` where
+// the package is installed, baseDir-relative (null for nowhere in baseDir, as a metapackage). Of
+// its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
+// `composer install` reads them -- one it refuses stops the build -- each package where Composer
+// installs it (lockedDir), so no install is needed; else of vendor/composer/installed.json, as
+// it is. Where both are, installed.json must be the lockfile's install (assertInstalledAsLocked):
+// its packages, each where installed.json says.
+export function loadComposerPackages(baseDir) {
+  const { vendorDir } = readComposerJson(baseDir)
+  const lockText = readUtf8OrNull(join(baseDir, 'composer.lock'), 'composer.lock')
+  if (lockText === null) {
+    return readInstalledPackages(baseDir, vendorDir)
+      .filter((p) => p?.name && p.version)
+      .map((p) => ({ name: p.name, version: p.version, dir: installedDir(baseDir, vendorDir, p), extra: p.extra }))
+  }
+
+  const composerJson = readUtf8OrNull(join(baseDir, 'composer.json'), 'composer.json')
+  const lock = nameErrors('composer.lock', () => parseComposerLock(lockText, composerJson === null ? {} : { composerJson }), [LockfileError])
+  const installedFile = toPosix(join(vendorDir, 'composer', 'installed.json'))
+  const installedText = readUtf8OrNull(join(baseDir, installedFile), installedFile)
+  const installed = installedText === null ? null : assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir })
+  const dirs = installed === null ? null : new Map(installed.packages.map((p) => [p.name, installedDir(baseDir, vendorDir, p)]))
+  return Object.values(lock.packages)
+    .filter((p) => dirs === null || dirs.has(p.name))
+    .map((p) => ({ name: p.name, version: p.version, dir: dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), extra: p.extra }))
+}
+
 // Build the autoload config for `baseDir`, merging the root composer.json
 // `autoload`(+dev) with the generated `vendor/composer/autoload_*` maps. All
 // paths normalised to POSIX baseDir-relative (escapers dropped). Returns
@@ -562,27 +667,21 @@ function matchingPrefixes(map, name) {
   return [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
 }
 
-// Read installed-package versions from `vendor/composer/installed.json` (the
-// authoritative source; a package's own composer.json usually omits `version`).
-function loadInstalledVersions(baseDir, vendorDir) {
+// The versions of the Composer `packages` (loadComposerPackages: the authoritative source; a
+// package's own composer.json usually omits `version`), by where each is installed and by name.
+function packageVersions(packages) {
   const byDir = new Map()
   const byName = new Map()
-  for (const p of readInstalledPackages(baseDir, vendorDir)) {
-    if (!p?.name || !p.version) continue
-    byName.set(p.name, p.version)
-    // install-path is relative to vendor/composer; default layout is vendor/<name>.
-    const abs = p['install-path']
-      ? resolve(baseDir, vendorDir, 'composer', p['install-path'])
-      : resolve(baseDir, vendorDir, p.name)
-    const rel = projectRel(baseDir, abs)
-    if (rel) byDir.set(rel, p.version)
+  for (const { name, version, dir } of packages) {
+    byName.set(name, version)
+    if (dir) byDir.set(dir, version)
   }
   return { byDir, byName }
 }
 
 // Walk up from a bundled file to the nearest named composer.json, returning
-// { pkgDir, name, version } (pkgDir "." for the root; version from installed.json
-// by dir/name, else composer.json `version`, else `fallbackVersion`). Null if none.
+// { pkgDir, name, version } (pkgDir "." for the root; version from composer.lock or
+// installed.json by dir/name, else composer.json `version`, else `fallbackVersion`). Null if none.
 function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
   let dir = dirname(fileRelPath)
   for (;;) {
@@ -601,9 +700,9 @@ function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
 // Group bundled PHP sources into per-package buckets keyed by the nearest
 // composer.json's directory (vendor deps get their own; workspace files and
 // orphans -> the root "." bucket with the placeholder identity). Returns a
-// Map<dir, { name, version, files }>.
-export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion) {
-  const installed = loadInstalledVersions(baseDir, readComposerJson(baseDir).vendorDir)
+// Map<dir, { name, version, files }>. `packages`: loadComposerPackages(baseDir).
+export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
+  const installed = packageVersions(packages)
 
   const modules = new Map()
   const ensureBucket = (dir, name, version, ecosystem) => {
@@ -631,18 +730,19 @@ export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVers
 }
 
 // Laravel auto-registers service providers nothing references statically. Returns
-// discoverable provider files (from composer.json + installed.json
+// discoverable provider files (from composer.json + the Composer `packages`'
 // `extra.laravel.providers`, autoload-resolved) plus bootstrap/providers.php as
 // extra collection roots. Best-effort: unresolvable classes skipped.
-export function loadLaravelProviderFiles(baseDir, autoload) {
+// `packages`: loadComposerPackages(baseDir).
+export function loadLaravelProviderFiles(baseDir, autoload, packages = loadComposerPackages(baseDir)) {
   const files = new Set()
   if (existsSync(join(baseDir, 'bootstrap', 'providers.php'))) files.add('bootstrap/providers.php')
   if (!autoload) return [...files]
 
-  const { composerJson, vendorDir } = readComposerJson(baseDir)
+  const { composerJson } = readComposerJson(baseDir)
   const fqcns = new Set(composerJson?.extra?.laravel?.providers ?? [])
-  for (const pkg of readInstalledPackages(baseDir, vendorDir)) {
-    for (const fqcn of pkg?.extra?.laravel?.providers ?? []) fqcns.add(fqcn)
+  for (const pkg of packages) {
+    for (const fqcn of pkg.extra?.laravel?.providers ?? []) fqcns.add(fqcn)
   }
   for (const fqcn of fqcns) {
     const file = resolveClassFile(fqcn, autoload, baseDir)

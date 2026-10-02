@@ -402,7 +402,10 @@ escapes the bundle root are refused; a source file that isn't UTF-8 text is
 refused, never carried with U+FFFD in place of its bytes) and bucketized by the
 nearest `package.json`,
 except PHP, which buckets by the nearest `composer.json`
-(`vendor/<vendor>/<pkg>`, versions from `vendor/composer/installed.json`), and
+(`vendor/<vendor>/<pkg>`, versions from `composer.lock`, read strictly with
+`composer.json` as `composer install` reads them, else from
+`vendor/composer/installed.json`; where both are, installed.json must be the
+lockfile's install exactly, or the build stops), and
 Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
 is its own bucket; `version.workspace = true` resolves through the workspace
 root). With no manifest above a file, the workspace bucket gets a placeholder

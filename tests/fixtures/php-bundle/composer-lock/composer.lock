@@ -1,0 +1,120 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "9e6744a3a6ed687fc4adb2f8188ccb97",
+    "packages": [
+        {
+            "name": "acme/laravel-ext",
+            "version": "v2.0.1",
+            "dist": {
+                "type": "path",
+                "url": "packages/laravel-ext",
+                "reference": "1664b3c10841f4728a46e8ae27e4d7c03fbbd534"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Acme\\LaravelExt\\ExtServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Acme\\LaravelExt\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/legacy",
+            "version": "1.0.0",
+            "target-dir": "Acme/Legacy",
+            "dist": {
+                "type": "path",
+                "url": "packages/legacy",
+                "reference": "2d07d70b3d2b7587668e0578be4ce87dd55754d3"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-0": {
+                    "Acme_Legacy_": ""
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/lib",
+            "version": "1.4.2",
+            "dist": {
+                "type": "path",
+                "url": "packages/lib",
+                "reference": "24e4e9c8f583f6e287e584d1bc780ab57b9e9d2f"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Lib\\": "src/"
+                }
+            },
+            "description": "A library",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/meta",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/meta",
+                "reference": "bcf583d820b1242f60873c779ed38c871e4a3c10"
+            },
+            "require": {
+                "acme/legacy": "^1.0"
+            },
+            "type": "metapackage",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "acme/testkit",
+            "version": "0.3.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/testkit",
+                "reference": "56d17b339fb96bb1621517ec3ce446385fc1557c"
+            },
+            "require": {
+                "acme/lib": "^1.0"
+            },
+            "type": "library",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}
