@@ -44,6 +44,21 @@ test("buildGitHubBundle builds the default branch's head without a commit", asyn
   t.assert.deepEqual(client.calls, [['getRepoHead', GITHUB, undefined], ['getRepoTarball', GITHUB, HEAD]])
 })
 
+// pnpm installs a file: override's directory in the modes its files have, which deptree takes only
+// as 644 or 755: a checkout's, not the 664 GitHub's tarball has.
+test('buildGitHubBundle builds the repo in the modes a checkout has', async (t) => {
+  const client = fakeClient({
+    'package.json': json({ name: 'p', version: '1.0.0', devDependencies: { q: '1.0.0' }, pnpm: { overrides: { q: 'file:q' } } }),
+    'pnpm-lock.yaml': lockfile('.').replace('importers:\n\n  .: {}\n', 'overrides:\n  q: file:q\n\nimporters:\n\n  .:\n    devDependencies:\n      q:\n        specifier: file:q\n        version: file:q\n\npackages:\n\n  q@file:q:\n    resolution: {directory: q, type: directory}\n\nsnapshots:\n\n  q@file:q: {}\n'),
+    'src/a.js': "module.exports = require('q')\n",
+    'q/package.json': json({ name: 'q', version: '1.0.0' }),
+    'q/index.js': 'module.exports = 1\n',
+    'q/LICENSE': 'MIT\n',
+  })
+  const { bundle } = await build({ client, entries: ['src/a.js'] })
+  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js', 'node_modules/.pnpm/q@file+q/node_modules/q/index.js'])
+})
+
 // A package whose package.json names entry points in every way it can, and some it can't be built from.
 const namingEntries = {
   'package.json': json({

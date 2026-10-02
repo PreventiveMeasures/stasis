@@ -21,13 +21,18 @@ const escapes = (path) => path === '..' || path.startsWith('../') || path.starts
 // Whether `target`, a path relative to the file `from`, resolves outside the tree.
 const resolvesOutside = (from, target) => target.startsWith('/') || escapes(posix.join(posix.dirname(from), target))
 
-// A GitHub tarball's entries, its one top directory dropped.
+// The mode a checkout gives an entry under the usual umask 022. Git keeps only a file's executable
+// bit (upstream verifies that much), and GitHub's tarballs are written with git archive's tar.umask
+// 0002, which makes them 664 and 775 besides.
+const checkoutMode = ({ type, mode }) => (type === 'symlink' ? mode : type === 'directory' || mode & 0o100 ? 0o755 : 0o644)
+
+// A GitHub tarball's entries, its one top directory dropped, with the modes a checkout has.
 async function treeEntries(tarball, where) {
   const entries = []
   for (const entry of unpack(await decompress(tarball, 'gzip', { limit: MAX_TAR_BYTES }))) {
     const name = entry.name.slice(entry.name.indexOf('/') + 1)
     if (!TREE_TYPES.has(entry.type)) throw new Error(`${where}: unexpected ${entry.type} ${JSON.stringify(name)} in the tarball`)
-    if (entry.name.includes('/')) entries.push({ ...entry, name })
+    if (entry.name.includes('/')) entries.push({ ...entry, name, mode: checkoutMode(entry) })
   }
   return entries
 }
