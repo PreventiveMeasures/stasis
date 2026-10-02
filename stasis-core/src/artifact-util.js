@@ -229,6 +229,13 @@ export function serializeEntries(entries, what) {
   return fileSetToObject(entries)
 }
 
+// THE rule an artifact's `formats` entry must satisfy, on read (parseFormats) and on write
+// (serializeFormats): a path an artifact may record, and a known format.
+function assertFormat(file, format) {
+  assertArtifactPath(file, 'formats')
+  assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
+}
+
 // An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
 // artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
 // is rejected at the schema boundary so a tampered artifact fails closed.
@@ -236,8 +243,7 @@ export function parseFormats(json) {
   assert(isPlainObject(json))
   const formats = new Map()
   for (const [file, format] of Object.entries(json)) {
-    assertArtifactPath(file, 'formats')
-    assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
+    assertFormat(file, format)
     const key = file === '' ? '.' : file
     assert(!formats.has(key), `duplicate format key '${key}'`)
     formats.set(key, format)
@@ -245,12 +251,18 @@ export function parseFormats(json) {
   return formats
 }
 
-// An artifact's `imports` object (conditions -> parent -> specifier -> target) as nested Maps. Paths
-// escaping the root (incl. mid-path `a/../../x`) or holding a `\` are rejected here: getImport resolves
-// against the root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
-export function parseImports(json) {
-  assert(isPlainObject(json))
-  const imports = objectToMaps(json)
+// The `formats` an artifact writes: the same rule as on read, so an in-memory construct can't serialize
+// what parse would reject; path-sorted.
+export function serializeFormats(formats) {
+  for (const [file, format] of formats) assertFormat(file, format)
+  return fileMapToObject(formats)
+}
+
+// THE rules an artifact's `imports` (conditions -> parent -> specifier -> target, as nested Maps)
+// must satisfy, on read (parseImports) and on write (serializeImports). Paths escaping the root (incl.
+// mid-path `a/../../x`) or holding a `\` are rejected: getImport resolves against the root at load. A
+// target is a file, or (--metro) a non-empty { platform: file } map.
+function assertImports(imports) {
   for (const [, byParent] of imports) {
     assert(byParent instanceof Map)
     for (const [parent, specifiers] of byParent) {
@@ -270,7 +282,20 @@ export function parseImports(json) {
       }
     }
   }
+}
+
+// An artifact's `imports` object as nested Maps (see assertImports).
+export function parseImports(json) {
+  assert(isPlainObject(json))
+  const imports = objectToMaps(json)
+  assertImports(imports)
   return imports
+}
+
+// The `imports` an artifact writes: the same rules as on read (see assertImports); path-sorted.
+export function serializeImports(imports) {
+  assertImports(imports)
+  return fileMapToObject(imports)
 }
 
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects,

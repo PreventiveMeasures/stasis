@@ -3,7 +3,6 @@ import {
   assertArtifactPath,
   canonicalFileKey,
   duplicateKeyError,
-  fileMapToObject,
   fileSetToObject,
   fromEntries,
   flatFileKeys,
@@ -22,6 +21,8 @@ import {
   parseImports,
   serializeEntries,
   serializeExecutable,
+  serializeFormats,
+  serializeImports,
   posixPathEscapes,
   splitNodeModulesPath,
 } from './artifact-util.js'
@@ -293,8 +294,8 @@ export class Bundle {
     if (this.repo !== undefined) data.repo = this.repo
     if (this.package !== undefined) data.package = this.package
     if (full) data.entries = serializeEntries(this.entries, 'bundle')
-    data.formats = fileMapToObject(this.formats)
-    data.imports = fileMapToObject(this.imports)
+    data.formats = serializeFormats(this.formats)
+    data.imports = serializeImports(this.imports)
     const executable = serializeExecutable(this.executable, {
       what: 'bundle', modules: this.modules, formats: this.formats, scope: this.config.scope,
     })

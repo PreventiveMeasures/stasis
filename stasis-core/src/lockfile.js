@@ -1,4 +1,4 @@
-import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, fileMapToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries } from './artifact-util.js'
+import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -82,8 +82,8 @@ export class Lockfile {
     const store = { version: this.version, config: this.config }
     if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules
-    if (this.imports !== null) store.imports = fileMapToObject(this.imports)
-    if (this.formats !== null) store.formats = fileMapToObject(this.formats)
+    if (this.imports !== null) store.imports = serializeImports(this.imports)
+    if (this.formats !== null) store.formats = serializeFormats(this.formats)
     const executable = serializeExecutable(this.executable, {
       what: 'lockfile',
       modules: this.modules,
