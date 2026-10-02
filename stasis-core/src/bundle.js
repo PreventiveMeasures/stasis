@@ -90,18 +90,37 @@ export const mergeRepo = (a, b) => {
   return fromEntries(kept.map((key) => [key, a[key]]))
 }
 
+// Validate a block against its `fields` (each optional: a check, or a nested block's fields); canonical, frozen, undefined if empty.
+const normalizeBlock = (block, fields, what) => {
+  if (block === undefined) return undefined
+  assert(isPlainObject(block), `bundle ${what} must be an object`)
+  for (const key of Object.keys(block)) assert(Object.hasOwn(fields, key), `unknown bundle ${what} key '${key}'`)
+  const entries = Object.entries(fields).map(([key, check]) => {
+    if (typeof check === 'object') return [key, normalizeBlock(block[key], check, `${what}.${key}`)]
+    assert(block[key] === undefined || check(block[key]), `invalid bundle ${what}.${key}: ${JSON.stringify(block[key])}`)
+    return [key, block[key]]
+  }).filter(([, value]) => value !== undefined)
+  return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
+}
+
 // Validate `repo` (all fields optional); canonical key order, undefined if empty.
 const normalizeRepo = (repo) => {
-  if (repo === undefined) return undefined
-  assert(isPlainObject(repo), 'bundle repo must be an object')
-  for (const [key, value] of Object.entries(repo)) {
-    assert(Object.hasOwn(REPO_FIELDS, key), `unknown bundle repo key '${key}'`)
-    assert(value === undefined || REPO_FIELDS[key](value), `invalid bundle repo.${key}: ${JSON.stringify(value)}`)
-  }
-  assert(repo.directory === undefined || repo.root === undefined, 'bundle repo has both directory and root')
-  const keys = Object.keys(REPO_FIELDS).filter((key) => repo[key] !== undefined)
-  return keys.length === 0 ? undefined : fromEntries(keys.map((key) => [key, repo[key]]))
+  const normalized = normalizeBlock(repo, REPO_FIELDS, 'repo')
+  assert(normalized?.directory === undefined || normalized.root === undefined, 'bundle repo has both directory and root')
+  return normalized
 }
+
+// A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
+const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
+const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
+// One block per ecosystem, named as a module's `ecosystem` is.
+const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
+
+// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none unless `name` does.
+const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => {
+  const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
+  return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
+}))
 
 // JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize always writes v1.
 export class Bundle {
@@ -117,7 +136,7 @@ export class Bundle {
   executable
   // Informational only, NOT attested -- never consulted for verification.
   reason
-  // Informational, not attested, never in a lockfile; validated on every assignment.
+  // Informational, not attested, never in a lockfile; validated on every assignment, and frozen.
   #repo
   get repo() {
     return this.#repo
@@ -125,8 +144,16 @@ export class Bundle {
   set repo(repo) {
     this.#repo = normalizeRepo(repo)
   }
+  // `{ npm | composer | cargo: { name, version } }`: the package this bundle is; as `repo`, but never set by a build.
+  #package
+  get package() {
+    return this.#package
+  }
+  set package(pkg) {
+    this.#package = normalizeBlock(pkg, PACKAGE_FIELDS, 'package')
+  }
 
-  constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, version = VERSION } = {}) {
+  constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, package: pkg, version = VERSION } = {}) {
     assert([LEGACY_VERSION, VERSION].includes(version))
     assert(['node_modules', 'full'].includes(config.scope))
     this.version = version
@@ -138,6 +165,7 @@ export class Bundle {
     this.executable = executable ?? new Set()
     this.reason = reason
     this.repo = normalizeRepo(repo)
+    this.package = pkg
   }
 
   // Flat project-relative view of the raw stored file contents (resources stay base64).
@@ -251,6 +279,7 @@ export class Bundle {
         : new Set(),
       reason: isPlainObject(json.reason) ? json.reason : undefined,
       repo: json.repo,
+      package: json.package,
     })
   }
 
@@ -261,6 +290,7 @@ export class Bundle {
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo
+    if (this.package !== undefined) data.package = this.package
     if (full) data.entries = serializeEntries(this.entries, 'bundle')
     data.formats = fileMapToObject(this.formats)
     data.imports = fileMapToObject(this.imports)
@@ -278,9 +308,9 @@ export class Bundle {
 
   // Stamp `consumer` onto every carried file in the informational `reason` map.
   withReason(consumer) {
-    const { version, config, entries, modules, formats, imports, executable, repo } = this
+    const { version, config, entries, modules, formats, imports, executable, repo, package: pkg } = this
     const reason = mergeReason(this.reason, { [consumer]: [...this.sources.keys()] })
-    return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo })
+    return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo, package: pkg })
   }
 
   // Strict union of two Bundles (returns a NEW one): any genuine conflict throws -- a bundle is an attestation.
@@ -297,6 +327,7 @@ export class Bundle {
       executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
       reason: mergeReason(this.reason, other.reason),
       repo: mergeRepo(this.repo, other.repo),
+      package: mergePackage(this.package, other.package),
     })
   }
 }
