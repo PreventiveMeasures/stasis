@@ -75,6 +75,7 @@ export function moduleFileKeys(modules, { scope = 'full' } = {}) {
 // THE rule an artifact's `executable` entry must satisfy; returns the problem, or null when legal.
 // parseExecutable (read), assertExecutable (write) and narrowExecutable share it so they cannot drift.
 function executableEntryProblem(file, { what, files, formats, scope }) {
+  if (file.includes('\\')) return "holds a '\\'"
   if (posixPathEscapes(file)) return 'escapes the root'
   if (scope !== 'full' && !hasNodeModulesSegment(file)) {
     return `is outside node_modules, which a '${scope}'-scope ${what} does not record`
@@ -195,9 +196,18 @@ export function posixPathEscapes(path) {
   return false
 }
 
+// THE rule every path an artifact records must satisfy (a file key's too, see canonicalFileKey): in
+// the root, and free of `\` -- part of a name off Windows, which stasis refuses everywhere rather than
+// take for another path, and on Windows a separator a `..\x` would climb out by.
+export const isRefusedPath = (path) => path.includes('\\') || posixPathEscapes(path)
+
+// Throws unless `path`, one of `what`'s, is a path an artifact may record (see isRefusedPath).
+export const assertArtifactPath = (path, what) =>
+  assert(!isRefusedPath(path), `${what}: path '${path}' escapes the root or holds a '\\'`)
+
 // THE rule an artifact's entry must satisfy, on read (parseEntries) and on write (serializeEntries).
 const assertEntry = (entry, what) =>
-  assert(typeof entry === 'string' && entry !== '' && !posixPathEscapes(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
+  assert(typeof entry === 'string' && entry !== '' && !isRefusedPath(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
 
 // An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
 // collapse in the Set and round-trip to different bytes).
@@ -226,7 +236,7 @@ export function parseFormats(json) {
   assert(isPlainObject(json))
   const formats = new Map()
   for (const [file, format] of Object.entries(json)) {
-    assert(!posixPathEscapes(file))
+    assertArtifactPath(file, 'formats')
     assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
     const key = file === '' ? '.' : file
     assert(!formats.has(key), `duplicate format key '${key}'`)
@@ -236,26 +246,26 @@ export function parseFormats(json) {
 }
 
 // An artifact's `imports` object (conditions -> parent -> specifier -> target) as nested Maps. Paths
-// escaping the root are rejected here (incl. mid-path `a/../../x`): getImport resolves against the
-// root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
+// escaping the root (incl. mid-path `a/../../x`) or holding a `\` are rejected here: getImport resolves
+// against the root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
 export function parseImports(json) {
   assert(isPlainObject(json))
   const imports = objectToMaps(json)
   for (const [, byParent] of imports) {
     assert(byParent instanceof Map)
     for (const [parent, specifiers] of byParent) {
-      assert(!posixPathEscapes(parent))
+      assertArtifactPath(parent, 'imports')
       assert(specifiers instanceof Map)
       for (const [, target] of specifiers) {
         if (typeof target === 'string') {
-          assert(!posixPathEscapes(target))
+          assertArtifactPath(target, 'imports')
           continue
         }
         assert(target instanceof Map && target.size > 0, 'import target must be a file or a non-empty {platform: file} map')
         for (const [platform, file] of target) {
           assert(typeof platform === 'string' && platform.length > 0 && !platform.includes('/'), `invalid platform key '${platform}'`)
           assert(typeof file === 'string')
-          assert(!posixPathEscapes(file))
+          assertArtifactPath(file, 'imports')
         }
       }
     }

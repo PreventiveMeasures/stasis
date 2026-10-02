@@ -2,7 +2,7 @@
 // resolution edges; content, listings, stat kinds and exec bits are re-derived from the root's OWN disk, so
 // a shard cannot inject content or a forged bit. `files` and `formats` are independent -- don't collapse them.
 
-import { KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, objectToMaps, posixPathEscapes } from './artifact-util.js'
+import { KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, isRefusedPath, objectToMaps } from './artifact-util.js'
 
 export const SHARD_VERSION = 1
 
@@ -47,7 +47,7 @@ export function parseShard(text) {
 }
 
 function assertKey(key, what) {
-  assert(typeof key === 'string' && key !== '' && !posixPathEscapes(key), `${what}: ${key}`)
+  assert(typeof key === 'string' && key !== '' && !isRefusedPath(key), `${what}: ${key}`)
 }
 
 // A target is a file, or (--metro) a platform -> file map; nothing deeper.

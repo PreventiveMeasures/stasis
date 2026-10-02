@@ -141,6 +141,20 @@ test('no artifact path holds a \\: refused when written, read or streamed, never
   t.assert.throws(() => Bundle.fileKeyAt(['sources', '.', 'files', 'src/a\\b.js']), refused)
   const lock = { version: 0, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'sha512-x' } } }, modules: {}, imports: {}, formats: {} }
   t.assert.throws(() => Lockfile.parse(JSON.stringify(lock)), refused)
+  // Nor does any other path an artifact records: an import's parent or target (`./dep` from main.cjs to
+  // `..\\outside.cjs` would climb out of the project on Windows), a formats key, an entry, an executable.
+  const bundleWith = (extra) => JSON.stringify({ version: 1, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'main.cjs': 'x\n' } } }, modules: {}, formats: {}, imports: {}, ...extra })
+  for (const [field, bad, extra] of [
+    ['imports', '..\\outside.cjs', { imports: { '*': { 'main.cjs': { './dep': '..\\outside.cjs' } } } }],
+    ['imports', 'a\\b.cjs', { imports: { '*': { 'main.cjs': { './dep': { ios: 'a\\b.cjs' } } } } }],
+    ['imports', 'src\\main.cjs', { imports: { '*': { 'src\\main.cjs': { './dep': 'main.cjs' } } } }],
+    ['formats', 'a\\b.cjs', { formats: { 'main.cjs': 'commonjs', 'a\\b.cjs': 'commonjs' } }],
+  ]) {
+    t.assert.throws(() => Bundle.parse(bundleWith(extra)), { message: `${field}: path '${bad}' escapes the root or holds a '\\'` }, bad)
+  }
+  t.assert.throws(() => Bundle.parse(bundleWith({ entries: ['a\\b.cjs'] })), /bundle: invalid entry/u)
+  t.assert.throws(() => Bundle.parse(bundleWith({ executable: ['a\\b.cjs'] })), /executable entry 'a\\b\.cjs' holds a '\\'/u)
+  t.assert.throws(() => Lockfile.parse(JSON.stringify({ ...lock, sources: { '.': { name: 'app', version: '1.0.0', files: { 'main.cjs': 'sha512-x' } } }, imports: { '*': { 'main.cjs': { './dep': '..\\outside.cjs' } } } })), /imports: path '\.\.\\outside\.cjs' escapes the root or holds a '\\'/u)
   // Off Windows `\\` is part of a name, so a path holding one is refused rather than re-keyed.
   t.assert.throws(() => toPosix('src/a\\b.js'), /a path holding '\\' is not supported: src\/a\\b\.js/u)
   t.assert.equal(toPosix('src/a/b.js'), 'src/a/b.js')
