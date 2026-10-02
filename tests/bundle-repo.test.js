@@ -16,10 +16,10 @@ test('Bundle omits repo when unset', (t) => {
 test('Bundle round-trips repo right after config, in canonical key order', (t) => {
   const repo = { commit: SHA1, directory: 'packages/app', github: 'ExodusOSS/stasis' }
   const json = JSON.parse(base(repo).serialize())
-  t.assert.deepEqual(Object.keys(json).slice(0, 3), ['version', 'config', 'repo'])
-  t.assert.deepEqual(Object.keys(json.repo), ['github', 'directory', 'commit'])
-  t.assert.deepEqual(Bundle.parse(JSON.stringify(json)).repo, { github: 'ExodusOSS/stasis', directory: 'packages/app', commit: SHA1 })
-  t.assert.deepEqual(Bundle.parse(withRepoJSON({ github: 'o/n', root: true, commit: SHA256 })).repo,
+  t.assert.deepStrictEqual(Object.keys(json).slice(0, 3), ['version', 'config', 'repo'])
+  t.assert.deepStrictEqual(Object.keys(json.repo), ['github', 'directory', 'commit'])
+  t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).repo }, { github: 'ExodusOSS/stasis', directory: 'packages/app', commit: SHA1 })
+  t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON({ github: 'o/n', root: true, commit: SHA256 })).repo },
     { github: 'o/n', root: true, commit: SHA256 })
 })
 
@@ -31,7 +31,7 @@ test('Bundle accepts URL-safe repo directories', (t) => {
 
 test('Bundle repo fields are each optional', (t) => {
   for (const repo of [{ github: 'o/n' }, { directory: 'a/b' }, { commit: SHA1 }, { github: 'o/n', commit: SHA1 }]) {
-    t.assert.deepEqual(Bundle.parse(withRepoJSON(repo)).repo, repo)
+    t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON(repo)).repo }, repo)
   }
 })
 
@@ -106,21 +106,21 @@ test('Bundle rejects an invalid repo block on parse and on construction', (t) =>
 test('Bundle carries repo through withReason, and merge keeps only agreeing fields', (t) => {
   const full = { github: 'o/n', directory: 'x', commit: SHA1 }
   const stamped = base(full)
-  t.assert.deepEqual({ ...stamped.withReason('bundle').repo }, full)
-  t.assert.deepEqual({ ...stamped.merge(base(full)).repo }, full, 'agreeing: kept as is')
-  t.assert.deepEqual({ ...stamped.merge(base({ ...full, commit: SHA256 })).repo }, { github: 'o/n', directory: 'x' },
+  t.assert.deepStrictEqual({ ...stamped.withReason('bundle').repo }, full)
+  t.assert.deepStrictEqual({ ...stamped.merge(base(full)).repo }, full, 'agreeing: kept as is')
+  t.assert.deepStrictEqual({ ...stamped.merge(base({ ...full, commit: SHA256 })).repo }, { github: 'o/n', directory: 'x' },
     'same repo and dir, another commit: only the commit is dropped')
-  t.assert.deepEqual({ ...stamped.merge(base({ ...full, directory: 'y' })).repo }, { github: 'o/n', commit: SHA1 },
+  t.assert.deepStrictEqual({ ...stamped.merge(base({ ...full, directory: 'y' })).repo }, { github: 'o/n', commit: SHA1 },
     'another dir: only the directory is dropped')
-  t.assert.deepEqual({ ...stamped.merge(base({ github: 'o/n' })).repo }, { github: 'o/n' }, 'a field one side lacks is dropped')
+  t.assert.deepStrictEqual({ ...stamped.merge(base({ github: 'o/n' })).repo }, { github: 'o/n' }, 'a field one side lacks is dropped')
   t.assert.equal(stamped.merge(base({ ...full, github: 'o/other' })).repo, undefined, 'another repo: reset')
   const atRoot = { github: 'o/n', root: true, commit: SHA1 }
-  t.assert.deepEqual({ ...base(atRoot).merge(base(atRoot)).repo }, atRoot, 'root agreeing: kept')
-  t.assert.deepEqual({ ...base(atRoot).merge(base(full)).repo }, { github: 'o/n', commit: SHA1 },
+  t.assert.deepStrictEqual({ ...base(atRoot).merge(base(atRoot)).repo }, atRoot, 'root agreeing: kept')
+  t.assert.deepStrictEqual({ ...base(atRoot).merge(base(full)).repo }, { github: 'o/n', commit: SHA1 },
     'root vs a directory: both dropped, like disagreeing directories')
   t.assert.equal(stamped.merge(base()).repo, undefined, 'added from an undetected place: reset')
   t.assert.equal(base().merge(stamped).repo, undefined, 'added into a bundle without repo: reset, never overwritten')
-  t.assert.deepEqual({ ...stamped.merge(base({ ...full, github: 'O/N' })).repo }, full,
+  t.assert.deepStrictEqual({ ...stamped.merge(base({ ...full, github: 'O/N' })).repo }, full,
     'GitHub names are case-insensitive: the existing spelling is kept')
   t.assert.equal(base({}).repo, undefined, 'an empty block is no block')
   t.assert.equal(JSON.parse(base({}).serialize()).repo, undefined)
@@ -137,8 +137,8 @@ test('Bundle validates a directly assigned repo', (t) => {
   t.assert.throws(() => { bundle.repo = { github: 42 } }, /invalid bundle repo\.github/u)
   t.assert.equal(bundle.repo, undefined, 'a rejected value is not stored')
   bundle.repo = { commit: SHA1, github: 'o/n', directory: 'ok' }
-  t.assert.deepEqual(Object.keys(bundle.repo), ['github', 'directory', 'commit'], 'normalized on assignment')
-  t.assert.deepEqual(JSON.parse(bundle.serialize()).repo, { github: 'o/n', directory: 'ok', commit: SHA1 })
+  t.assert.deepStrictEqual(Object.keys(bundle.repo), ['github', 'directory', 'commit'], 'normalized on assignment')
+  t.assert.deepStrictEqual(JSON.parse(bundle.serialize()).repo, { github: 'o/n', directory: 'ok', commit: SHA1 })
   bundle.repo = {}
   t.assert.equal(bundle.repo, undefined)
 })

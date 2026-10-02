@@ -95,12 +95,12 @@ after(() => Promise.all([cacheRoot, installed].map((dir) => dir && rm(dir, { rec
 test('soldeer: lays out, into a Vfs of its own, the dependencies folder a real install makes', async (t) => {
   const vfs = projectVfs()
   const tree = await loadTree({ project: vfsHost(vfs), packageManager: 'soldeer', cwd: '/src' })
-  t.assert.deepEqual([tree.root, [...tree.projects], tree.packageManagerVersion], ['/', ['.'], '0.12.0'])
-  t.assert.deepEqual(tree.stats, { dependencies: 1, files: 6, bytes: 637 })
-  t.assert.deepEqual(listVfs(tree.vfs, '/dependencies'), listDisk(join(fixture, 'dependencies')))
-  t.assert.deepEqual(tree.vfs.readdir('/'), ['dependencies'])
+  t.assert.deepStrictEqual([tree.root, [...tree.projects], tree.packageManagerVersion], ['/', ['.'], '0.12.0'])
+  t.assert.deepStrictEqual(tree.stats, { dependencies: 1, files: 6, bytes: 637 })
+  t.assert.deepStrictEqual(listVfs(tree.vfs, '/dependencies'), listDisk(join(fixture, 'dependencies')))
+  t.assert.deepStrictEqual(tree.vfs.readdir('/'), ['dependencies'])
   t.assert.equal(vfs.isDirectory('/dependencies'), false, 'the project\'s Vfs is only read')
-  t.assert.deepEqual(tree.host.readdir('/').map((d) => d.name), ['dependencies', 'foundry.toml', 'remappings.txt', 'script', 'soldeer.lock', 'src', 'test'])
+  t.assert.deepStrictEqual(tree.host.readdir('/').map((d) => d.name), ['dependencies', 'foundry.toml', 'remappings.txt', 'script', 'soldeer.lock', 'src', 'test'])
   t.assert.equal(tree.host.stat('/dependencies/stasis-sol-lib-1.0.0/script/deploy.sh').mode & 0o777, 0o755)
 })
 
@@ -108,7 +108,7 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   const built = await build()
   t.assert.equal(built.bundle.serialize(), oracles.plain)
   t.assert.equal(built.lockfile, undefined, 'a Solidity bundle has no lockfile')
-  t.assert.deepEqual(built.stats, { dependencies: 1, files: 6, bytes: 637 })
+  t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637 })
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 
@@ -124,12 +124,12 @@ test('buildVfsBundle builds with the default profile and no remappings from the 
   const toml = files['foundry.toml'].replace('[profile.default]', '[profile.ci]\nremappings = ["stasis-sol-lib/=src/"]\n\n[profile.default]')
   const built = await build({ vfs: projectVfs({ 'foundry.toml': toml }), env: { FOUNDRY_PROFILE: 'ci', FOUNDRY_REMAPPINGS: 'stasis-sol-lib/=src/', DAPP_REMAPPINGS: 'stasis-sol-lib/=src/' } })
   t.assert.equal(built.bundle.serialize(), (await build({ vfs: projectVfs({ 'foundry.toml': toml }) })).bundle.serialize())
-  t.assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => /environment/u.test(line)), [])
+  t.assert.deepStrictEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => /environment/u.test(line)), [])
 })
 
 test('suggestedEntries suggests the .sol entry points, not its tests or scripts, which build the bundle src/ does', async (t) => {
   const entries = await suggestedEntries({ vfs: projectVfs() })
-  t.assert.deepEqual(entries, ['src/Counter.sol'])
+  t.assert.deepStrictEqual(entries, ['src/Counter.sol'])
   t.assert.equal((await build({ entries })).bundle.serialize(), (await build({ entries: ['src'] })).bundle.serialize())
 })
 
@@ -209,6 +209,6 @@ test('buildVfsBundle with soldeer refuses, naming the file, what it cannot repro
 
 test('buildVfsBundle with soldeer puts `repo` on the Bundle', async (t) => {
   const repo = { github: 'ExodusOSS/stasis', directory: 'tests/fixtures/soldeer-bundle/project', commit: 'a'.repeat(40) }
-  t.assert.deepEqual((await build({ repo })).bundle.repo, repo)
+  t.assert.deepStrictEqual({ ...(await build({ repo })).bundle.repo }, repo)
   t.assert.equal((await build()).bundle.repo, undefined)
 })

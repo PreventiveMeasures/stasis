@@ -39,12 +39,12 @@ test('parseResourcesOption: empty array returns an empty Set', (t) => {
 
 test('parseResourcesOption: lowercases and strips a leading dot', (t) => {
   const out = parseResourcesOption('X', ['.PNG', 'SVG'])
-  t.assert.deepEqual([...out].toSorted(), ['png', 'svg'])
+  t.assert.deepStrictEqual([...out].toSorted(), ['png', 'svg'])
 })
 
 test('parseResourcesOption: deduplicates entries silently (Set semantics)', (t) => {
   const out = parseResourcesOption('X', ['png', 'png', '.png'])
-  t.assert.deepEqual([...out], ['png'])
+  t.assert.deepStrictEqual([...out], ['png'])
 })
 
 test('parseResourcesOption: rejects non-array', (t) => {
@@ -80,7 +80,7 @@ test('parseResourcesOption: rejects dotted / whitespace / path / empty entries',
 
 test('parseResourcesOption: accepts extensions and extensionless filenames', (t) => {
   const out = parseResourcesOption('X', ['png', '.SVG', 'LICENSE', 'Makefile', '.eslintrc', 'license-mit', 'code_of_conduct'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...out].toSorted(),
     ['code_of_conduct', 'eslintrc', 'license', 'license-mit', 'makefile', 'png', 'svg']
   )

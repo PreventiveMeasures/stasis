@@ -64,5 +64,5 @@ test('preload resources: a plugin declaring a DIFFERENT allowlist throws (no sil
 test('preload resources: a sidecar inherits the preload allowlist', (t) => {
   const r = resolvePluginState('Test', { bundle: 'add', bundleFile: join(dir, 'sidecar-res.br') }, dir)
   t.assert.notEqual(r.state, parent)
-  t.assert.deepEqual([...r.state.config.resources], ['png'])
+  t.assert.deepStrictEqual([...r.state.config.resources], ['png'])
 })

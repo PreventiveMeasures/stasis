@@ -97,25 +97,25 @@ test('parseCargoManifest reads multi-line arrays, feature tables, dependency kin
     '[patch.crates-io]', 'plain = { path = "patches/plain" }', 'dotted.path = "patches/dotted"',
     '[patch.crates-io.subbed]', 'path = "patches/subbed"',
   ].join('\n'))
-  t.assert.deepEqual(m.package, { name: 'app', version: '0.1.0', edition: '2021', build: null })
+  t.assert.deepStrictEqual(m.package, { name: 'app', version: '0.1.0', edition: '2021', build: null })
   t.assert.equal(m.resolver, 2)
   // cargo's feature map: as written, and a feature for the optional dependency no `dep:` names
-  t.assert.deepEqual([...m.features], [['default', ['std']], ['std', []], ['full', ['std', 'dep:opt', 'sub/two', 'opt?/extra']], ['pm-crate', ['dep:pm-crate']]])
+  t.assert.deepStrictEqual([...m.features], [['default', ['std']], ['std', []], ['full', ['std', 'dep:opt', 'sub/two', 'opt?/extra']], ['pm-crate', ['dep:pm-crate']]])
   const dep = (k) => Object.fromEntries([...m.deps.get(k).kinds].toSorted())
   const ask = (pkg, version, more) => ({ kind: 'normal', target: null, version, path: null, source: 'registry', origin: null, package: pkg, renamed: false, inherited: false, optional: false, defaultFeatures: true, features: [], ...more })
   // Each dependency table is its own request, for the crate it names: a dev-dependency's features
   // stay out of the normal one.
-  t.assert.deepEqual(dep('plain'), { dev: ask('plain', '1', { kind: 'dev', features: ['dev-only'] }), normal: ask('plain', '1') })
-  t.assert.deepEqual(dep('opt'), { normal: ask('opt', '1', { optional: true, defaultFeatures: false, features: ['a'] }) })
-  t.assert.deepEqual(dep('sub'), { normal: ask('sub', '2', { features: ['one', 'two'] }) })
-  t.assert.deepEqual(Object.keys(dep('cc')), ['build'])
+  t.assert.deepStrictEqual(dep('plain'), { dev: ask('plain', '1', { kind: 'dev', features: ['dev-only'] }), normal: ask('plain', '1') })
+  t.assert.deepStrictEqual(dep('opt'), { normal: ask('opt', '1', { optional: true, defaultFeatures: false, features: ['a'] }) })
+  t.assert.deepStrictEqual(dep('sub'), { normal: ask('sub', '2', { features: ['one', 'two'] }) })
+  t.assert.deepStrictEqual(Object.keys(dep('cc')), ['build'])
   // A target-specific table is a request of its own, beside the plain one.
-  t.assert.deepEqual(Object.keys(dep('nix')), ['normal@cfg(unix)'])
-  t.assert.deepEqual([dep('nix')['normal@cfg(unix)'].kind, dep('nix')['normal@cfg(unix)'].target], ['normal', 'cfg(unix)'])
+  t.assert.deepStrictEqual(Object.keys(dep('nix')), ['normal@cfg(unix)'])
+  t.assert.deepStrictEqual([dep('nix')['normal@cfg(unix)'].kind, dep('nix')['normal@cfg(unix)'].target], ['normal', 'cfg(unix)'])
   // the key is the `use` spelling, the name the manifest's (an optional dep's implicit feature name)
-  t.assert.deepEqual([m.deps.get('pm_crate').key, m.deps.get('pm_crate').name, m.deps.get('pm_crate').kinds.get('normal').optional], ['pm_crate', 'pm-crate', true])
+  t.assert.deepStrictEqual([m.deps.get('pm_crate').key, m.deps.get('pm_crate').name, m.deps.get('pm_crate').kinds.get('normal').optional], ['pm_crate', 'pm-crate', true])
   // `[patch.<source>]` entries in every spelling: inline table, dotted key, sub-table.
-  t.assert.deepEqual(Object.entries(m.cargo.patch['crates-io']).map(([name, spec]) => [name, spec.source.path]), [['plain', 'patches/plain'], ['dotted', 'patches/dotted'], ['subbed', 'patches/subbed']])
+  t.assert.deepStrictEqual(Object.entries(m.cargo.patch['crates-io']).map(([name, spec]) => [name, spec.source.path]), [['plain', 'patches/plain'], ['dotted', 'patches/dotted'], ['subbed', 'patches/subbed']])
 })
 
 test('parseCargoManifest reads a workspace-inherited edition, from its own [workspace] or the root given', (t) => {
@@ -133,11 +133,11 @@ test('parseCargoManifest splits dotted dependency keys and survives multi-line s
     '[dependencies]', 'util.workspace = true', 'util.features = ["extra"]', "serde.version = '1'", 'serde.features = [', '  "derive",', ']',
   ].join('\n'), 'crates/app/Cargo.toml', root)
   t.assert.equal(m.package.version, '0.4.0')
-  t.assert.deepEqual([...m.deps.keys()], ['util', 'serde'])
+  t.assert.deepStrictEqual([...m.deps.keys()], ['util', 'serde'])
   const util = m.deps.get('util').kinds.get('normal')
-  t.assert.deepEqual([util.inherited, util.path, util.features], [true, 'crates/util', ['extra']]) // the path is the workspace root's
+  t.assert.deepStrictEqual([util.inherited, util.path, util.features], [true, 'crates/util', ['extra']]) // the path is the workspace root's
   t.assert.equal(m.deps.get('serde').kinds.get('normal').version, '1')
-  t.assert.deepEqual(m.deps.get('serde').kinds.get('normal').features, ['derive'])
+  t.assert.deepStrictEqual(m.deps.get('serde').kinds.get('normal').features, ['derive'])
 })
 
 test('parseCargoManifest reads a pair by the table it lands in, whichever way that is spelled', (t) => {
@@ -149,7 +149,7 @@ test('parseCargoManifest reads a pair by the table it lands in, whichever way th
   ]
   for (const text of spellings) {
     const normal = parseCargoManifest(`[package]\nname = "app"\n${text}`).deps.get('foo').kinds.get('normal')
-    t.assert.deepEqual([normal.version, normal.features], ['1', ['x']], text)
+    t.assert.deepStrictEqual([normal.version, normal.features], ['1', ['x']], text)
   }
   const m = parseCargoManifest([
     '[package]', 'name = "app"', 'version = { workspace = true }',
@@ -158,9 +158,9 @@ test('parseCargoManifest reads a pair by the table it lands in, whichever way th
     '[patch.crates-io.plain]', 'path = "patches/plain"',
     '[workspace.package]', 'version = "0.9.0"', // a [workspace.*] table alone makes this a workspace root
   ].join('\n'))
-  t.assert.deepEqual(m.package, { name: 'app', version: '0.9.0', edition: '2015', build: null })
-  t.assert.deepEqual([...m.deps.get('winapi').kinds].map(([request, r]) => [request, r.version]), [['dev@cfg(windows)', '0.3']])
-  t.assert.deepEqual(Object.keys(m.cargo.patch['crates-io']), ['plain'])
+  t.assert.deepStrictEqual(m.package, { name: 'app', version: '0.9.0', edition: '2015', build: null })
+  t.assert.deepStrictEqual([...m.deps.get('winapi').kinds].map(([request, r]) => [request, r.version]), [['dev@cfg(windows)', '0.3']])
+  t.assert.deepStrictEqual(Object.keys(m.cargo.patch['crates-io']), ['plain'])
   t.assert.equal(m.isWorkspace, true)
 })
 
@@ -205,8 +205,8 @@ test('createCargoContext refuses a Cargo.lock older than version 3, or not TOML,
 })
 
 test('parseFeatureList splits cargo\'s repeatable, comma- or space-separated feature flags', (t) => {
-  t.assert.deepEqual(parseFeatureList(['a,b', ' c d ', 'a', ',']), ['a', 'b', 'c', 'd'])
-  t.assert.deepEqual(parseFeatureList([]), [])
+  t.assert.deepStrictEqual(parseFeatureList(['a,b', ' c d ', 'a', ',']), ['a', 'b', 'c', 'd'])
+  t.assert.deepStrictEqual(parseFeatureList([]), [])
 })
 
 test('findCargoLock finds the lock beside the workspace root (a member dir\'s is its workspace\'s), never one further up', (t) => {
@@ -236,7 +236,7 @@ test('findCargoLock finds the lock beside the workspace root (a member dir\'s is
 
 test('createCargoContext resolves features like `cargo build` of the entry package: defaults, implications, dep requests', (t) => {
   const cargo = createCargoContext(featuresFixture, { entries: ['src/main.rs'] })
-  t.assert.deepEqual(enabledOf(cargo), {
+  t.assert.deepStrictEqual(enabledOf(cargo), {
     '.': ['default', 'fast'],
     // `features = ["extra"]` from app + its own default; `std = ["extra-dep"]` names the optional dep's
     // implicit feature, spelled as in the manifest (hyphen), and activates the dep.
@@ -249,10 +249,10 @@ test('createCargoContext resolves features like `cargo build` of the entry packa
   })
   // An integration-test entry is `cargo test`'s build: the package's dev-dependencies join, with their features.
   const testBuild = createCargoContext(featuresFixture, { entries: ['tests/it.rs'] })
-  t.assert.deepEqual(enabledOf(testBuild)['vendor/proptest'], ['default', 'std'])
+  t.assert.deepStrictEqual(enabledOf(testBuild)['vendor/proptest'], ['default', 'std'])
   t.assert.equal(testBuild.isTestTarget('tests/it.rs'), true)
   t.assert.equal(testBuild.isTestTarget('src/main.rs'), false)
-  t.assert.deepEqual(sorted(cargo.featuresFor('crates/lib-a/src/lib.rs')), ['default', 'extra', 'extra-dep', 'std'])
+  t.assert.deepStrictEqual(sorted(cargo.featuresFor('crates/lib-a/src/lib.rs')), ['default', 'extra', 'extra-dep', 'std'])
   t.assert.equal(cargo.featuresFor('vendor/serde/src/lib.rs'), null) // not in the build: unknown, so its gated code is kept
   t.assert.equal(cargo.featuresFor('vendor/proptest/src/lib.rs'), null)
 })
@@ -293,7 +293,7 @@ test('createCargoContext applies a bare --cargo-features name to every root pack
     'b/src/lib.rs': '',
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['a/src/lib.rs', 'b/src/lib.rs'], features: ['serde'] })
-    t.assert.deepEqual(enabledOf(cargo), { a: ['serde'], b: ['serde'] })
+    t.assert.deepStrictEqual(enabledOf(cargo), { a: ['serde'], b: ['serde'] })
   })
 })
 
@@ -313,8 +313,8 @@ test('createCargoContext keeps a target-specific dependency table apart from the
     // default-less request is a second one. A target-only dependency is built only maybe (the
     // target's cfgs are unknown): its features are on only maybe, neither on nor off.
     const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
-    t.assert.deepEqual(enabledOf(cargo), { '.': [], 'vendor/dep': ['default', 'std'] })
-    t.assert.deepEqual(maybeOf(cargo), { 'vendor/win': ['api', 'default'] })
+    t.assert.deepStrictEqual(enabledOf(cargo), { '.': [], 'vendor/dep': ['default', 'std'] })
+    t.assert.deepStrictEqual(maybeOf(cargo), { 'vendor/win': ['api', 'default'] })
   })
 })
 
@@ -327,9 +327,9 @@ test('createCargoContext picks the feature resolver from a workspace-inherited e
     'vendor/devdep/src/lib.rs': '',
   })
   // edition 2021 → resolver 2: the root's dev-dependencies stay out of a normal build
-  withProject(files('2021'), (tmp) => t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [] }))
+  withProject(files('2021'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [] }))
   // edition 2018 → resolver 1: they join
-  withProject(files('2018'), (tmp) => t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/devdep': [] }))
+  withProject(files('2018'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/devdep': [] }))
 })
 
 test('createCargoContext takes the feature resolver from the build\'s workspace, never from a vendored crate an entry is in', (t) => {
@@ -340,7 +340,7 @@ test('createCargoContext takes the feature resolver from the build\'s workspace,
     'src/main.rs': '',
     'vendor/old/Cargo.toml': '[package]\nname = "old"\nversion = "1.0.0"\nedition = "2015"\n', 'vendor/old/src/lib.rs': '',
     'vendor/devdep/Cargo.toml': '[package]\nname = "devdep"\nversion = "1.0.0"\n', 'vendor/devdep/src/lib.rs': '',
-  }, (tmp) => t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['vendor/old/src/lib.rs', 'src/main.rs'] })), { '.': [], 'vendor/old': [] }))
+  }, (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['vendor/old/src/lib.rs', 'src/main.rs'] })), { '.': [], 'vendor/old': [] }))
 })
 
 test('createCargoContext applies a weak `dep?/feat` once the dependency is active, whichever table activates it', (t) => {
@@ -353,19 +353,19 @@ test('createCargoContext applies a weak `dep?/feat` once the dependency is activ
   })
   // optional and inactive: the weak feature asks nothing
   withProject(files(['[dependencies]', 'dep = { version = "1", optional = true }']), (tmp) => {
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': ['default', 'std'] })
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['with-dep'] })), { '.': ['default', 'std', 'with-dep'], 'vendor/dep': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': ['default', 'std'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['with-dep'] })), { '.': ['default', 'std', 'with-dep'], 'vendor/dep': ['std'] })
   })
   // optional in one table, required in another: active from the start
   withProject(files(['[dependencies]', 'dep = { version = "1", optional = true }', '[build-dependencies]', 'dep = { version = "1", default-features = false }']), (tmp) => {
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] }), 'host'), { 'vendor/dep': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] }), 'host'), { 'vendor/dep': ['std'] })
   })
   // optional, and required only on a target: without one, the target table makes the dependency's `std` a maybe
   withProject(files(['[dependencies]', 'dep = { version = "1", optional = true }', "[target.'cfg(unix)'.dependencies]", 'dep = { version = "1", default-features = false }']), (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
-    t.assert.deepEqual(enabledOf(cargo), { '.': ['default', 'std'] })
-    t.assert.deepEqual(maybeOf(cargo), { 'vendor/dep': ['std'] })
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX })), { '.': ['default', 'std'], 'vendor/dep': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(cargo), { '.': ['default', 'std'] })
+    t.assert.deepStrictEqual(maybeOf(cargo), { 'vendor/dep': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX })), { '.': ['default', 'std'], 'vendor/dep': ['std'] })
   })
   // `dep?/std` of a dependency no table makes optional is a manifest cargo refuses
   withProject(files(['[dependencies]', 'dep = { version = "1", default-features = false }']), (tmp) => {
@@ -383,15 +383,15 @@ test('createCargoContext applies a weak `dep?/feat` from --cargo-features once `
     'vendor/dep/src/lib.rs': '',
   }, (tmp) => {
     // `dep` is activated by `default` inside the fixed-point loop; the flag has to wait for it.
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['dep?/std'] })), { '.': ['default', 'with-dep'], 'vendor/dep': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['dep?/std'] })), { '.': ['default', 'with-dep'], 'vendor/dep': ['std'] })
     // and asks nothing while the dependency stays inactive
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['dep?/std'], noDefaultFeatures: true })), { '.': [] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'], features: ['dep?/std'], noDefaultFeatures: true })), { '.': [] })
   })
 })
 
 test('createCargoContext honours the root feature flags: --features (incl. pkg/feat), --no-default-features, --all-features', (t) => {
   const withSerde = createCargoContext(featuresFixture, { entries: ['src/main.rs'], features: ['with-serde'] })
-  t.assert.deepEqual(enabledOf(withSerde), {
+  t.assert.deepStrictEqual(enabledOf(withSerde), {
     '.': ['default', 'fast', 'with-serde'],
     'crates/lib-a': ['default', 'extra', 'extra-dep', 'serde', 'std'], // `lib-a/serde` from with-serde
     'vendor/extra-dep': [],
@@ -401,12 +401,12 @@ test('createCargoContext honours the root feature flags: --features (incl. pkg/f
     'vendor/winnowish-0.5.0': ['default', 'std'],
   })
   const scoped = createCargoContext(featuresFixture, { entries: ['src/main.rs'], features: ['app/with-serde'] })
-  t.assert.deepEqual(enabledOf(scoped)['.'], ['default', 'fast', 'with-serde'])
+  t.assert.deepStrictEqual(enabledOf(scoped)['.'], ['default', 'fast', 'with-serde'])
   // cargo's `dep/feat` form: a feature of a dependency of the root, not of a root package named `dep`
   const depFeat = createCargoContext(featuresFixture, { entries: ['src/main.rs'], features: ['lib-a/serde'] })
-  t.assert.deepEqual(enabledOf(depFeat)['crates/lib-a'], ['default', 'extra', 'extra-dep', 'serde', 'std'])
-  t.assert.deepEqual(enabledOf(depFeat)['vendor/serde'], ['default', 'std'])
-  t.assert.deepEqual(enabledOf(depFeat)['.'], ['default', 'fast'])
+  t.assert.deepStrictEqual(enabledOf(depFeat)['crates/lib-a'], ['default', 'extra', 'extra-dep', 'serde', 'std'])
+  t.assert.deepStrictEqual(enabledOf(depFeat)['vendor/serde'], ['default', 'std'])
+  t.assert.deepStrictEqual(enabledOf(depFeat)['.'], ['default', 'fast'])
   // an unknown name is reported, not silently dropped
   const original = console.warn
   const warnings = []
@@ -416,33 +416,33 @@ test('createCargoContext honours the root feature flags: --features (incl. pkg/f
   } finally {
     console.warn = original
   }
-  t.assert.deepEqual(warnings, [
+  t.assert.deepStrictEqual(warnings, [
     "[stasis] --cargo-features: 'nope/x' names no feature of the entries' packages, nor a dependency of theirs",
     "[stasis] --cargo-features: 'bogus' names no feature of the entries' packages, nor a dependency of theirs",
   ])
 
   const noDefault = createCargoContext(featuresFixture, { entries: ['src/main.rs'], noDefaultFeatures: true })
-  t.assert.deepEqual(enabledOf(noDefault)['.'], [])
-  t.assert.deepEqual(enabledOf(noDefault)['crates/lib-a'], ['default', 'extra', 'extra-dep', 'std']) // deps keep their own defaults
+  t.assert.deepStrictEqual(enabledOf(noDefault)['.'], [])
+  t.assert.deepStrictEqual(enabledOf(noDefault)['crates/lib-a'], ['default', 'extra', 'extra-dep', 'std']) // deps keep their own defaults
 
   const all = createCargoContext(featuresFixture, { entries: ['src/main.rs'], allFeatures: true })
-  t.assert.deepEqual(enabledOf(all)['.'], ['default', 'fast', 'with-serde'])
-  t.assert.deepEqual(enabledOf(all)['vendor/serde'], ['default', 'std'])
+  t.assert.deepStrictEqual(enabledOf(all)['.'], ['default', 'fast', 'with-serde'])
+  t.assert.deepStrictEqual(enabledOf(all)['vendor/serde'], ['default', 'std'])
 })
 
 test('createCargoContext unifies the root\'s dev-dependency features under resolver 1 (edition 2018) but not resolver 2, and never a dependency\'s own', (t) => {
   const v1 = createCargoContext(join(fixtures, 'features-v1'), { entries: ['src/main.rs'] })
   // devonly's own `[dev-dependencies] other = { features = ["y"] }` is nobody's build: `other` stays out.
-  t.assert.deepEqual(enabledOf(v1), { '.': [], 'vendor/devonly': ['x'] })
+  t.assert.deepStrictEqual(enabledOf(v1), { '.': [], 'vendor/devonly': ['x'] })
   // features (resolver 2): lib-a's `[dev-dependencies] winnowish = { features = ["debug"] }` doesn't reach winnowish 0.5.0
   const v2 = createCargoContext(featuresFixture, { entries: ['src/main.rs'] })
-  t.assert.deepEqual(enabledOf(v2)['vendor/winnowish-0.5.0'], ['default', 'std'])
+  t.assert.deepStrictEqual(enabledOf(v2)['vendor/winnowish-0.5.0'], ['default', 'std'])
 })
 
 test('createCargoContext leaves features unknown when no package owns the entries', (t) => {
   const cargo = createCargoContext(join(fixtures, 'basic'), { entries: ['src/main.rs'] })
   t.assert.equal(cargo.featuresFor('src/main.rs'), null)
-  t.assert.deepEqual([...cargo.resolvedFeatures()], [])
+  t.assert.deepStrictEqual([...cargo.resolvedFeatures()], [])
 })
 
 // --- cargo metadata ---
@@ -477,14 +477,14 @@ test('resolutionFromMetadata maps `cargo metadata` packages to features and depe
   const vendoredDirs = new Map([['serde 1.0.0', 'vendor/serde']])
   const locate = (name, version) => vendoredDirs.get(`${name} ${version}`) ?? null
   const { enabled, deps } = resolutionFromMetadata(metadata, base, { locate })
-  t.assert.deepEqual([...enabled].map(([d, s]) => [d, sorted(s)]), [
+  t.assert.deepStrictEqual([...enabled].map(([d, s]) => [d, sorted(s)]), [
     ['.', ['default', 'fast']],
     ['crates/lib-a', ['default', 'extra', 'std']],
     ['vendor/winnowish', ['std']],
     ['vendor/serde', ['std']],
   ])
-  t.assert.deepEqual([...deps.get('.')], [['lib_a', 'crates/lib-a'], ['winnowish', 'vendor/winnowish'], ['serde', 'vendor/serde']])
-  t.assert.deepEqual([...deps.get('vendor/serde')], []) // proc-macro2 isn't in-tree
+  t.assert.deepStrictEqual([...deps.get('.')], [['lib_a', 'crates/lib-a'], ['winnowish', 'vendor/winnowish'], ['serde', 'vendor/serde']])
+  t.assert.deepStrictEqual([...deps.get('vendor/serde')], []) // proc-macro2 isn't in-tree
   // Without a locator, a registry-cache package is simply outside the root.
   t.assert.ok(!resolutionFromMetadata(metadata, base).enabled.has('vendor/serde'))
 })
@@ -497,9 +497,9 @@ test('createCargoContext({ cargo: true }) takes the resolution from a real `carg
   try {
     cpSync(join(fixtures, 'workspace'), tmp, { recursive: true })
     const cargo = createCargoContext(tmp, { entries: ['crates/app/src/main.rs'], cargo: true })
-    t.assert.deepEqual([...cargo.featureResolution().keys()].toSorted(), ['crates/app', 'crates/tools', 'crates/util'])
+    t.assert.deepStrictEqual([...cargo.featureResolution().keys()].toSorted(), ['crates/app', 'crates/tools', 'crates/util'])
     // metadata's one feature set per package is every build's union: each feature in it on only maybe
-    t.assert.deepEqual(enabledOf(cargo), {})
+    t.assert.deepStrictEqual(enabledOf(cargo), {})
     t.assert.equal(cargo.resolveCrate('util', 'crates/app/src/main.rs'), 'crates/util/src/util_lib.rs')
     t.assert.equal(cargo.resolveCrate('tools', 'crates/app/src/main.rs'), 'crates/tools/src/lib.rs')
   } finally {
@@ -540,12 +540,12 @@ test('createCargoContext names each package\'s manifests, build script, and the 
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['crates/app/src/main.rs'] })
     const paths = (file) => cargo.buildFilesFor(file).map((f) => `${f.kind}:${f.path}`)
-    t.assert.deepEqual(paths('crates/app/src/main.rs'), ['manifest:crates/app/Cargo.toml', 'manifest:Cargo.toml', 'lock:Cargo.lock', 'config:.cargo/config.toml'])
+    t.assert.deepStrictEqual(paths('crates/app/src/main.rs'), ['manifest:crates/app/Cargo.toml', 'manifest:Cargo.toml', 'lock:Cargo.lock', 'config:.cargo/config.toml'])
     // A vendored crate: its manifest and the checksums cargo checks it against, never the lock or
     // config it was published with (the build's are the workspace's, carried with its packages).
-    t.assert.deepEqual(paths('vendor/dep/src/lib.rs'), ['manifest:vendor/dep/Cargo.toml', 'checksum:vendor/dep/.cargo-checksum.json'])
-    t.assert.deepEqual(paths('vendor/plain/src/lib.rs'), ['manifest:vendor/plain/Cargo.toml'])
-    t.assert.deepEqual(paths('loose.rs'), []) // no [package] claims it: the root manifest is a bare [workspace]
+    t.assert.deepStrictEqual(paths('vendor/dep/src/lib.rs'), ['manifest:vendor/dep/Cargo.toml', 'checksum:vendor/dep/.cargo-checksum.json'])
+    t.assert.deepStrictEqual(paths('vendor/plain/src/lib.rs'), ['manifest:vendor/plain/Cargo.toml'])
+    t.assert.deepStrictEqual(paths('loose.rs'), []) // no [package] claims it: the root manifest is a bare [workspace]
     t.assert.equal(cargo.buildScriptOf('crates/app/src/main.rs'), 'crates/app/build.rs')
     t.assert.equal(cargo.buildScriptOf('crates/nobuild/src/lib.rs'), null) // `build = false`
     t.assert.equal(cargo.buildScriptOf('vendor/dep/src/lib.rs'), 'vendor/dep/scripts/build.rs')
@@ -555,7 +555,7 @@ test('createCargoContext names each package\'s manifests, build script, and the 
     t.assert.equal(cargo.isVendored('crates/app/src/main.rs'), false)
     // A member bundled on its own: the workspace's lockfile lies above the bundle root.
     const member = createCargoContext(join(tmp, 'crates/app'), { entries: ['src/main.rs'] })
-    t.assert.deepEqual(member.buildFilesFor('src/main.rs'), [{ path: 'Cargo.toml', kind: 'manifest' }])
+    t.assert.deepStrictEqual(member.buildFilesFor('src/main.rs'), [{ path: 'Cargo.toml', kind: 'manifest' }])
   })
   // A workspace nested below the bundle root: its lockfile, and the configs of its directory and
   // of every one above it up to the bundle root, which cargo reads too.
@@ -569,7 +569,7 @@ test('createCargoContext names each package\'s manifests, build script, and the 
     'rust/app/src/main.rs': '',
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['rust/app/src/main.rs'] })
-    t.assert.deepEqual(cargo.buildFilesFor('rust/app/src/main.rs').map((f) => f.path), ['rust/app/Cargo.toml', 'rust/Cargo.toml', 'rust/Cargo.lock', 'rust/.cargo/config', '.cargo/config.toml'])
+    t.assert.deepStrictEqual(cargo.buildFilesFor('rust/app/src/main.rs').map((f) => f.path), ['rust/app/Cargo.toml', 'rust/Cargo.toml', 'rust/Cargo.lock', 'rust/.cargo/config', '.cargo/config.toml'])
   })
 })
 
@@ -613,7 +613,7 @@ test('buildRustBundle holds a vendored crate\'s includes, #[path]s and build scr
     'vendor/evil/src/fine.rs': '',
   }, async (tmp) => {
     const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: tmp, entries: ['src/main.rs'], cargoManifests: true }))
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
       'Cargo.toml', 'LICENSE', 'src/main.rs', // the project's own include may reach anywhere in the root
       'vendor/evil/Cargo.toml', 'vendor/evil/README.md', 'vendor/evil/src/fine.rs', 'vendor/evil/src/lib.rs',
     ])
@@ -650,7 +650,7 @@ test('buildRustBundle holds a vendored crate to its package through symlinks, an
     symlinkSync(join(tmp, 'outside_dir'), join(tmp, 'vendor/evil/src/linked_dir'))
     symlinkSync(join(tmp, '.env'), join(tmp, 'vendor/evil/src/env_link'))
     const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: tmp, entries: ['src/main.rs'], cargoManifests: true }))
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['Cargo.toml', 'src/main.rs', 'vendor/evil/Cargo.toml', 'vendor/evil/src/lib.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['Cargo.toml', 'src/main.rs', 'vendor/evil/Cargo.toml', 'vendor/evil/src/lib.rs'])
     for (const expected of [
       'Refusing file outside its package: vendor/evil/src/linked_file.rs (a link out of vendor/evil)',
       'Refusing file outside its package: vendor/evil/src/linked_dir/mod.rs (a link out of vendor/evil)',
@@ -676,8 +676,8 @@ test('buildRustBundle scans a file named by both `mod` and `include_str!` as Rus
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] })
     t.assert.equal(bundle.formats.get('src/shown.rs'), 'rust') // a module first, its text second
-    t.assert.deepEqual(Object.fromEntries(bundle.imports.get('rust').get('src/shown.rs')), { 'crate::util::helper': 'src/util.rs' })
-    t.assert.deepEqual(Object.fromEntries(bundle.imports.get('rust').get('src/lib.rs')), { 'include_str shown.rs': 'src/shown.rs', 'mod shown': 'src/shown.rs', 'mod util': 'src/util.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('rust').get('src/shown.rs')), { 'crate::util::helper': 'src/util.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('rust').get('src/lib.rs')), { 'include_str shown.rs': 'src/shown.rs', 'mod shown': 'src/shown.rs', 'mod util': 'src/util.rs' })
     // Named the other way round, too.
     writeFileSync(join(tmp, 'src/lib.rs'), 'mod util;\nmod shown;\nconst SRC: &str = include_str!("shown.rs");\n')
     const swapped = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] })
@@ -704,10 +704,10 @@ test('buildRustBundle --cargo-manifests compiles build scripts for the host, not
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoManifests: true, cargoTarget: LINUX })
     // The library drops its Windows module; the build script keeps its own (the host may be Windows),
     // and its Windows-only build-dependency counts.
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['Cargo.toml', 'build.rs', 'registry.rs', 'src/lib.rs', 'vendor/winbuild/Cargo.toml', 'vendor/winbuild/src/lib.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['Cargo.toml', 'build.rs', 'registry.rs', 'src/lib.rs', 'vendor/winbuild/Cargo.toml', 'vendor/winbuild/src/lib.rs'])
     const edges = bundle.imports.get('rust')
-    t.assert.deepEqual(Object.fromEntries(edges.get('build.rs')), { 'mod registry': 'registry.rs', 'use winbuild': 'vendor/winbuild/src/lib.rs' })
-    t.assert.deepEqual(Object.fromEntries(edges.get('src/lib.rs')), {})
+    t.assert.deepStrictEqual(Object.fromEntries(edges.get('build.rs')), { 'mod registry': 'registry.rs', 'use winbuild': 'vendor/winbuild/src/lib.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(edges.get('src/lib.rs')), {})
   })
 })
 
@@ -731,9 +731,9 @@ test('buildRustBundle --cargo-manifests carries manifests, the lockfile and carg
     'vendor/unused/src/lib.rs': '',
   }, async (tmp) => {
     const plain = await buildRustBundle({ cwd: tmp, entries: ['app/src/main.rs'] })
-    t.assert.deepEqual([...plain.sources.keys()].toSorted(), ['app/src/main.rs', 'vendor/dep/src/lib.rs'])
+    t.assert.deepStrictEqual([...plain.sources.keys()].toSorted(), ['app/src/main.rs', 'vendor/dep/src/lib.rs'])
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['app/src/main.rs'], cargoManifests: true })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
       '.cargo/config.toml', 'Cargo.lock', 'Cargo.toml',
       'app/Cargo.toml', 'app/build.rs', 'app/gen.rs', 'app/src/main.rs',
       'vendor/autocfg/Cargo.toml', 'vendor/autocfg/src/lib.rs', // dep's build-dependency, through dep's build script
@@ -746,18 +746,18 @@ test('buildRustBundle --cargo-manifests carries manifests, the lockfile and carg
     t.assert.equal(bundle.formats.get('app/build.rs'), 'rust')
     t.assert.equal(bundle.entries.has('app/build.rs'), false) // a crate root of the walk, not an entry of the bundle
     const edges = bundle.imports.get('rust')
-    t.assert.deepEqual(Object.fromEntries(edges.get('app/build.rs')), { 'mod gen': 'app/gen.rs', 'gen::run': 'app/gen.rs', 'use cc': 'vendor/cc/src/lib.rs' })
-    t.assert.deepEqual(Object.fromEntries(edges.get('vendor/dep/build.rs')), { 'use autocfg': 'vendor/autocfg/src/lib.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(edges.get('app/build.rs')), { 'mod gen': 'app/gen.rs', 'gen::run': 'app/gen.rs', 'use cc': 'vendor/cc/src/lib.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(edges.get('vendor/dep/build.rs')), { 'use autocfg': 'vendor/autocfg/src/lib.rs' })
     // Buckets: each manifest sits with its package; the root-level files in the workspace bucket.
-    t.assert.deepEqual(Object.keys(bundle.modules.get('vendor/dep').files).toSorted(), ['Cargo.toml', 'build.rs', 'src/lib.rs'])
+    t.assert.deepStrictEqual(Object.keys(bundle.modules.get('vendor/dep').files).toSorted(), ['Cargo.toml', 'build.rs', 'src/lib.rs'])
     t.assert.equal(bundle.modules.get('vendor/dep').ecosystem, 'cargo')
-    t.assert.deepEqual(Object.keys(bundle.modules.get('app').files).toSorted(), ['Cargo.toml', 'build.rs', 'gen.rs', 'src/main.rs'])
-    t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['.cargo/config.toml', 'Cargo.lock', 'Cargo.toml'])
+    t.assert.deepStrictEqual(Object.keys(bundle.modules.get('app').files).toSorted(), ['Cargo.toml', 'build.rs', 'gen.rs', 'src/main.rs'])
+    t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['.cargo/config.toml', 'Cargo.lock', 'Cargo.toml'])
   })
 })
 
 test('parseRustcCfg reads rustc --print cfg output as a set of leaves', (t) => {
-  t.assert.deepEqual([...parseRustcCfg('debug_assertions\npanic="unwind"\ntarget_os="linux"\n\nunix\n')], ['debug_assertions', 'panic="unwind"', 'target_os="linux"', 'unix'])
+  t.assert.deepStrictEqual([...parseRustcCfg('debug_assertions\npanic="unwind"\ntarget_os="linux"\n\nunix\n')], ['debug_assertions', 'panic="unwind"', 'target_os="linux"', 'unix'])
 })
 
 // A Linux target as rustc would describe it, for tests that must not depend on rustc.
@@ -780,14 +780,14 @@ test('createCargoContext decides target-specific dependency tables when the targ
   withProject(files, (tmp) => {
     // Without a target every table's dependency is built only maybe.
     const none = createCargoContext(tmp, { entries: ['src/main.rs'] })
-    t.assert.deepEqual(Object.keys(enabledOf(none)), ['.'])
-    t.assert.deepEqual(Object.keys(maybeOf(none)), ['vendor/gnu', 'vendor/loom', 'vendor/mac', 'vendor/nix', 'vendor/win'])
+    t.assert.deepStrictEqual(Object.keys(enabledOf(none)), ['.'])
+    t.assert.deepStrictEqual(Object.keys(maybeOf(none)), ['vendor/gnu', 'vendor/loom', 'vendor/mac', 'vendor/nix', 'vendor/win'])
     const linux = createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX })
     t.assert.equal(linux.targetTriple, 'x86_64-unknown-linux-gnu')
     t.assert.ok(linux.targetCfgs.has('unix'))
     // `cfg(loom)` is a custom cfg the loader can't decide: its dependency is built only maybe.
-    t.assert.deepEqual(Object.keys(enabledOf(linux)), ['.', 'vendor/gnu', 'vendor/nix'])
-    t.assert.deepEqual(Object.keys(maybeOf(linux)), ['vendor/loom'])
+    t.assert.deepStrictEqual(Object.keys(enabledOf(linux)), ['.', 'vendor/gnu', 'vendor/nix'])
+    t.assert.deepStrictEqual(Object.keys(maybeOf(linux)), ['vendor/loom'])
     const plain = createCargoContext(tmp, { entries: ['src/main.rs'] })
     t.assert.equal(plain.targetTriple, null)
     t.assert.equal(plain.targetCfgs, null)
@@ -818,9 +818,9 @@ test('buildRustBundle compiles proc-macro crates and what they depend on for the
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX })
     // The target's cfgs decide the target's code only; the host (a Linux target says nothing of it) keeps every platform.
-    t.assert.deepEqual(bundled(bundle, 'lib'), ['lib.rs', 'nix.rs', 'with_std.rs'])
-    t.assert.deepEqual(bundled(bundle, 'pm'), ['lib.rs', 'nix.rs', 'win.rs'])
-    t.assert.deepEqual(bundled(bundle, 'helper'), ['lib.rs', 'nix.rs', 'win.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'lib'), ['lib.rs', 'nix.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'pm'), ['lib.rs', 'nix.rs', 'win.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'helper'), ['lib.rs', 'nix.rs', 'win.rs', 'with_std.rs'])
     // `--cargo-target=host` says the host is the target: then its cfgs decide the host's code too.
     const cargo = createCargoContext(tmp, { entries: ['src/lib.rs'], target: 'host' })
     t.assert.equal(cargo.platformOf('host|host'), cargo.platformOf('target|target'))
@@ -837,17 +837,17 @@ test('buildRustBundle keeps what a crate built both for the target and for a bui
   // Resolver 2: the build script's `shared` has `std`, the target's hasn't; the host's platform is unknown.
   await withProjectAsync(files('2021'), async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX, cargoManifests: true })
-    t.assert.deepEqual(bundled(bundle, 'shared'), ['lib.rs', 'nix.rs', 'no_std.rs', 'win.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'shared'), ['lib.rs', 'nix.rs', 'no_std.rs', 'win.rs', 'with_std.rs'])
     const cargo = createCargoContext(tmp, { entries: ['src/lib.rs'] })
-    t.assert.deepEqual([enabledOf(cargo)['vendor/shared'], enabledOf(cargo, 'host')['vendor/shared']], [[], ['default', 'std']])
+    t.assert.deepStrictEqual([enabledOf(cargo)['vendor/shared'], enabledOf(cargo, 'host')['vendor/shared']], [[], ['default', 'std']])
     // Without the build script in the bundle, `shared` is the target's alone: `no_std` is what it compiles.
     const lib = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX })
-    t.assert.deepEqual(bundled(lib, 'shared'), ['lib.rs', 'nix.rs', 'no_std.rs'])
+    t.assert.deepStrictEqual(bundled(lib, 'shared'), ['lib.rs', 'nix.rs', 'no_std.rs'])
   })
   // Resolver 1 unifies the two: `std` is on for both.
   await withProjectAsync(files('2018'), async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX })
-    t.assert.deepEqual(bundled(bundle, 'shared'), ['lib.rs', 'nix.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'shared'), ['lib.rs', 'nix.rs', 'with_std.rs'])
   })
 })
 
@@ -862,7 +862,7 @@ test('buildRustBundle walks a crate root the tree asks for as what the asking co
     ...platformCrate('log'),
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX, cargoManifests: true })
-    t.assert.deepEqual(bundled(bundle, 'log'), ['lib.rs', 'nix.rs', 'win.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual(bundled(bundle, 'log'), ['lib.rs', 'nix.rs', 'win.rs', 'with_std.rs'])
   })
 })
 
@@ -882,11 +882,11 @@ test('buildRustBundle does not presume off a custom cfg the build script or the 
   // The build script may set it (literally, through a module of its own, or under a name it
   // formats), or the rustflags do: neither is presumed, and the edge is both, each under its cfg.
   const either = new Map([['fast', 'src/fast.rs'], ['not(fast)', 'src/slow.rs']])
-  t.assert.deepEqual(await target({ 'build.rs': 'fn main() { println!("cargo:rustc-cfg=fast"); }\n' }), either)
-  t.assert.deepEqual(await target({ 'build.rs': 'mod probe;\nfn main() { probe::run() }\n', 'probe.rs': 'pub fn run() { println!("cargo::rustc-cfg=fast"); }\n' }), either)
-  t.assert.deepEqual(await target({ 'build.rs': 'fn main() { let n = "fast"; println!("cargo:rustc-cfg={n}"); }\n' }), either)
-  t.assert.deepEqual(await target({ '.cargo/config.toml': '[build]\nrustflags = ["--cfg", "fast"]\n' }), either)
-  t.assert.deepEqual(await target({ '.cargo/config.toml': "[target.'cfg(unix)']\nrustflags = \"--cfg=fast\"\n" }), either)
+  t.assert.deepStrictEqual(await target({ 'build.rs': 'fn main() { println!("cargo:rustc-cfg=fast"); }\n' }), either)
+  t.assert.deepStrictEqual(await target({ 'build.rs': 'mod probe;\nfn main() { probe::run() }\n', 'probe.rs': 'pub fn run() { println!("cargo::rustc-cfg=fast"); }\n' }), either)
+  t.assert.deepStrictEqual(await target({ 'build.rs': 'fn main() { let n = "fast"; println!("cargo:rustc-cfg={n}"); }\n' }), either)
+  t.assert.deepStrictEqual(await target({ '.cargo/config.toml': '[build]\nrustflags = ["--cfg", "fast"]\n' }), either)
+  t.assert.deepStrictEqual(await target({ '.cargo/config.toml': "[target.'cfg(unix)']\nrustflags = \"--cfg=fast\"\n" }), either)
 })
 
 test('buildRustBundle resolves a macro\'s include against the outermost call, and keeps every same-named macro\'s assets', async (t) => {
@@ -928,7 +928,7 @@ test('buildRustBundle refuses a Rust source or include_str! file that isn\'t UTF
     writeFileSync(join(tmp, 'src/b.bin'), bad)
     writeFileSync(join(tmp, 'src/s.txt'), 'ok\n')
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] })
-    t.assert.deepEqual([bundle.formats.get('src/b.bin'), bundle.sources.get('src/b.bin')], ['resource:base64', bad.toString('base64')])
+    t.assert.deepStrictEqual([bundle.formats.get('src/b.bin'), bundle.sources.get('src/b.bin')], ['resource:base64', bad.toString('base64')])
     writeFileSync(join(tmp, 'src/s.txt'), bad)
     await t.assert.rejects(() => buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] }), { message: 'include_str! file is not valid UTF-8: src/s.txt' })
   })
@@ -945,7 +945,7 @@ test('buildRustTree reports a missing dependency the manifest declares, whatever
     const tree = buildRustTree(sources, { roots: entries, baseDir: tmp, cargo })
     // `tokio` is a declared dependency, so the crate (a `use` path whose lead a glob also
     // provides is ambiguous to rustc); `de` is declared nowhere: serde's glob may well bring it.
-    t.assert.deepEqual(sorted(tree.unresolvedCrates), ['serde', 'tokio'])
+    t.assert.deepStrictEqual(sorted(tree.unresolvedCrates), ['serde', 'tokio'])
   })
 })
 
@@ -959,10 +959,10 @@ test('createCargoContext counts a feature only a target-specific table enables a
   }, async (tmp) => {
     // No target: `std` may be on (a Windows build) or off -- both modules stay.
     const cargo = createCargoContext(tmp, { entries: ['src/lib.rs'] })
-    t.assert.deepEqual([enabledOf(cargo)['vendor/dep'], maybeOf(cargo)['vendor/dep']], [[], ['default', 'std']]) // that table keeps the defaults
-    t.assert.deepEqual(bundled(await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] }), 'dep'), ['lib.rs', 'nix.rs', 'no_std.rs', 'win.rs', 'with_std.rs'])
+    t.assert.deepStrictEqual([enabledOf(cargo)['vendor/dep'], maybeOf(cargo)['vendor/dep']], [[], ['default', 'std']]) // that table keeps the defaults
+    t.assert.deepStrictEqual(bundled(await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] }), 'dep'), ['lib.rs', 'nix.rs', 'no_std.rs', 'win.rs', 'with_std.rs'])
     // A Linux target: the Windows table doesn't apply, `std` is off.
-    t.assert.deepEqual(bundled(await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX }), 'dep'), ['lib.rs', 'nix.rs', 'no_std.rs'])
+    t.assert.deepStrictEqual(bundled(await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX }), 'dep'), ['lib.rs', 'nix.rs', 'no_std.rs'])
   })
 })
 
@@ -976,12 +976,12 @@ test('buildRustBundle with a target leaves out the other targets\' modules and p
     'src/other.rs': '',
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargoTarget: LINUX })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/other.rs', 'src/sys/unix.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/other.rs', 'src/sys/unix.rs'])
     const lib = bundle.imports.get('rust').get('src/lib.rs')
     t.assert.equal(lib.get('mod sys'), 'src/sys/unix.rs') // one file: no cfg-keyed map
     t.assert.equal(lib.get('mod other'), 'src/other.rs')
     const all = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] })
-    t.assert.deepEqual([...all.sources.keys()].toSorted(), ['src/lib.rs', 'src/other.rs', 'src/sys/unix.rs', 'src/sys/windows.rs', 'src/win.rs'])
+    t.assert.deepStrictEqual([...all.sources.keys()].toSorted(), ['src/lib.rs', 'src/other.rs', 'src/sys/unix.rs', 'src/sys/windows.rs', 'src/win.rs'])
   })
 })
 
@@ -1003,7 +1003,7 @@ test('rustcTargetCfgs runs $RUSTC when set: a target only another toolchain know
   try {
     const sbf = rustcTargetCfgs('sbf-solana-solana')
     t.assert.equal(sbf.triple, 'sbf-solana-solana')
-    t.assert.deepEqual([...sbf.cfgs], ['target_arch="sbf"', 'target_os="solana"', 'target_family="solana"', 'target_pointer_width="64"', 'target_endian="little"'])
+    t.assert.deepStrictEqual([...sbf.cfgs], ['target_arch="sbf"', 'target_os="solana"', 'target_family="solana"', 'target_pointer_width="64"', 'target_endian="little"'])
     t.assert.equal(rustcTargetCfgs('host').triple, 'sbf-solana-solana')
     t.assert.throws(() => rustcTargetCfgs('x86_64-unknown-linux-gnu'), /rustc --print cfg --target x86_64-unknown-linux-gnu failed \(exit 1\):\nunknown target/u)
     // `#[cfg(not(target_os = "solana"))]` is dead under it.
@@ -1011,7 +1011,7 @@ test('rustcTargetCfgs runs $RUSTC when set: a target only another toolchain know
     // rustc ran from the user's home directory (never the project being bundled, whose
     // `rust-toolchain` file could name any binary, nor a world-writable temp dir), with rustup's
     // auto-install off.
-    t.assert.deepEqual(readFileSync(join(tmp, 'ran'), 'utf8').trim().split('\n'), [homedir(), '0'])
+    t.assert.deepStrictEqual(readFileSync(join(tmp, 'ran'), 'utf8').trim().split('\n'), [homedir(), '0'])
     mkdirSync(join(tmp, 'project', 'home'), { recursive: true })
     mkdirSync(join(tmp, 'elsewhere'))
     rustcTargetCfgs('sbf-solana-solana', join(tmp, 'project'))
@@ -1059,7 +1059,7 @@ test('rustcTargetCfgs asks rustc for a target\'s cfg set, and for the host tripl
   t.assert.equal(wasm.triple, 'wasm32-unknown-unknown')
   t.assert.ok(wasm.cfgs.has('target_arch="wasm32"'))
   t.assert.ok(!wasm.cfgs.has('unix') && !wasm.cfgs.has('windows'))
-  t.assert.deepEqual(createCargoContext(featuresFixture, { entries: ['src/main.rs'], target: 'wasm32-unknown-unknown' }).targetCfgs, wasm.cfgs)
+  t.assert.deepStrictEqual(createCargoContext(featuresFixture, { entries: ['src/main.rs'], target: 'wasm32-unknown-unknown' }).targetCfgs, wasm.cfgs)
   t.assert.throws(() => rustcTargetCfgs('no-such-target'), /rustc --print cfg --target no-such-target failed/u)
 })
 
@@ -1074,7 +1074,7 @@ test('createCargoContext finds vendored crates in the directory .cargo/config.to
     const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
     t.assert.equal(cargo.vendorDir, 'third_party/crates')
     t.assert.equal(cargo.resolveCrate('dep', 'src/main.rs'), 'third_party/crates/dep/src/lib.rs')
-    t.assert.deepEqual(enabledOf(cargo), { '.': [], 'third_party/crates/dep': [] })
+    t.assert.deepStrictEqual(enabledOf(cargo), { '.': [], 'third_party/crates/dep': [] })
   })
   t.assert.equal(createCargoContext(featuresFixture, { entries: ['src/main.rs'] }).vendorDir, 'vendor')
   // Whatever the source is named and however the tables are spelled out, through a chain of
@@ -1105,7 +1105,7 @@ test('createCargoContext finds vendored crates in the directory .cargo/config.to
     } finally {
       console.warn = warn
     }
-    t.assert.deepEqual(warnings, ['[loader.cargo] .cargo/config.toml names a vendored source directory that doesn\'t exist: gone'])
+    t.assert.deepStrictEqual(warnings, ['[loader.cargo] .cargo/config.toml names a vendored source directory that doesn\'t exist: gone'])
   })
   // A cargo config, Cargo.toml or Cargo.lock that exists but isn't TOML stops the build, naming it.
   withProject({ 'Cargo.toml': manifest, '.cargo/config.toml': '[source.vendored-sources]\ndirectory = third_party\n' }, (tmp) => {
@@ -1120,15 +1120,15 @@ test('createCargoContext finds vendored crates in the directory .cargo/config.to
 
 test('buildRustBundle carries include!d source and include_str!/include_bytes! assets as resources', async (t) => {
   const bundle = await buildRustBundle({ cwd: rustFixture('includes'), entries: ['src/lib.rs'] })
-  t.assert.deepEqual(sorted(bundle.sources.keys()), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
-  t.assert.deepEqual([bundle.formats.get('src/generated/consts.rs'), bundle.formats.get('data/table.txt'), bundle.formats.get('data/blob.bin')], ['rust', 'resource', 'resource:base64'])
+  t.assert.deepStrictEqual(sorted(bundle.sources.keys()), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
+  t.assert.deepStrictEqual([bundle.formats.get('src/generated/consts.rs'), bundle.formats.get('data/table.txt'), bundle.formats.get('data/blob.bin')], ['rust', 'resource', 'resource:base64'])
   t.assert.equal(bundle.sources.get('data/blob.bin'), Buffer.from([0, 0xff, 0xfe, 1]).toString('base64'))
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
 })
 
 test('buildRustBundle leaves feature-gated code that is off out of the bundle, per crate and per version', async (t) => {
   const bundle = await buildRustBundle({ cwd: featuresFixture, entries: ['src/main.rs'] })
-  t.assert.deepEqual(sorted(bundle.sources.keys()), [
+  t.assert.deepStrictEqual(sorted(bundle.sources.keys()), [
     'crates/lib-a/src/extra.rs', 'crates/lib-a/src/lib.rs', 'crates/lib-a/src/std_impl.rs', 'crates/lib-a/src/with_extra.rs',
     'src/fast.rs', 'src/main.rs', 'src/util.rs',
     'vendor/extra-dep/src/lib.rs',
@@ -1138,7 +1138,7 @@ test('buildRustBundle leaves feature-gated code that is off out of the bundle, p
   ])
   // Out: src/ser.rs and lib-a's ser.rs (with-serde off), lib-a's no_std_impl.rs (std on), both winnowish
   // _tutorial.rs/debug.rs (features off), serde (optional dep off), proptest (dev-dependency).
-  t.assert.deepEqual([...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem]).toSorted(), [
+  t.assert.deepStrictEqual([...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem]).toSorted(), [
     ['.', 'app', '0.1.0', undefined],
     ['crates/lib-a', 'lib-a', '0.2.0', undefined],
     ['vendor/extra-dep', 'extra-dep', '1.0.0', 'cargo'],
@@ -1161,7 +1161,7 @@ test('buildRustBundle applies the cargo feature overrides to the entries\' packa
   const files = sorted(withSerde.sources.keys())
   for (const f of ['src/ser.rs', 'crates/lib-a/src/ser.rs', 'vendor/serde/src/lib.rs', 'vendor/serde/src/std_impl.rs']) t.assert.ok(files.includes(f), f)
   t.assert.equal(withSerde.imports.get('rust').get('src/ser.rs').get('use serde'), 'vendor/serde/src/lib.rs')
-  t.assert.deepEqual([...withSerde.modules.keys()].toSorted(), ['.', 'crates/lib-a', 'vendor/extra-dep', 'vendor/md-5', 'vendor/serde', 'vendor/winnowish', 'vendor/winnowish-0.5.0'])
+  t.assert.deepStrictEqual([...withSerde.modules.keys()].toSorted(), ['.', 'crates/lib-a', 'vendor/extra-dep', 'vendor/md-5', 'vendor/serde', 'vendor/winnowish', 'vendor/winnowish-0.5.0'])
 
   const noDefault = await buildRustBundle({ cwd: featuresFixture, entries: ['src/main.rs'], cargoNoDefaultFeatures: true })
   t.assert.ok(!noDefault.sources.has('src/fast.rs')) // `fast` is only a default feature
@@ -1175,7 +1175,7 @@ test('buildRustBundle applies the cargo feature overrides to the entries\' packa
 test('buildRustBundle compiles a tests/ entry with cfg(test): its #[test] fns and #[cfg(test)] modules are live, dev-deps join', async (t) => {
   const bundle = await buildRustBundle({ cwd: featuresFixture, entries: ['tests/it.rs'] })
   // `use proptest::prelude::*` is live in a test target; proptest is a dev-dependency with `std` requested.
-  t.assert.deepEqual(sorted(bundle.sources.keys()), ['tests/it.rs', 'vendor/proptest/src/lib.rs', 'vendor/proptest/src/std_impl.rs'])
+  t.assert.deepStrictEqual(sorted(bundle.sources.keys()), ['tests/it.rs', 'vendor/proptest/src/lib.rs', 'vendor/proptest/src/std_impl.rs'])
 })
 
 test('buildRustBundle treats a feature that is on as firm: a missing gated module is fatal', async (t) => {
@@ -1202,8 +1202,8 @@ test('buildRustBundle loads a crate root the tree pass asks for: a crate whose n
     'vendor/log/src/macros.rs': '',
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/main.rs', 'src/util.rs', 'vendor/log/src/lib.rs', 'vendor/log/src/macros.rs'])
-    t.assert.deepEqual(Object.fromEntries(bundle.imports.get('rust').get('src/main.rs')), { 'mod util': 'src/util.rs', 'crate::util::log': 'src/util.rs', 'use log': 'vendor/log/src/lib.rs' })
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/main.rs', 'src/util.rs', 'vendor/log/src/lib.rs', 'vendor/log/src/macros.rs'])
+    t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('rust').get('src/main.rs')), { 'mod util': 'src/util.rs', 'crate::util::log': 'src/util.rs', 'use log': 'vendor/log/src/lib.rs' })
   })
 })
 
@@ -1219,9 +1219,9 @@ test('buildRustBundle reads a package-defined quote! body as macro input while w
     'vendor/other/src/lib.rs': 'fn g() { quote! { mod nothere; } }\n', // another package: a template, skipped
   }, async (tmp) => {
     const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: tmp, entries: ['src/lib.rs', 'vendor/other/src/lib.rs'] }))
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/m.rs', 'src/m/inner.rs', 'src/user.rs', 'src/user/hidden.rs', 'vendor/other/src/lib.rs'])
-    t.assert.deepEqual(Object.fromEntries(bundle.imports.get('rust').get('src/user.rs')), { 'mod hidden': 'src/user/hidden.rs', 'quote!': 'src/m/inner.rs' })
-    t.assert.deepEqual(besidesReplay(warnings), [])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/m.rs', 'src/m/inner.rs', 'src/user.rs', 'src/user/hidden.rs', 'vendor/other/src/lib.rs'])
+    t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('rust').get('src/user.rs')), { 'mod hidden': 'src/user/hidden.rs', 'quote!': 'src/m/inner.rs' })
+    t.assert.deepStrictEqual(besidesReplay(warnings), [])
   })
 })
 
@@ -1247,7 +1247,7 @@ test('buildRustTree with a target holds every file to the target\'s cfgs: mio\'s
     // aix, solaris)` may hold on aix): the edge is both, each under its cfg. With a Linux target the
     // aix and solaris alternatives are out, the custom cfg is presumably off, and the eventfd
     // branch's `any(android, linux)` holds: that one.
-    t.assert.deepEqual(Object.fromEntries(plain.resolutions.get('src/waker.rs'))['sys::Waker::new'], new Map([
+    t.assert.deepStrictEqual(Object.fromEntries(plain.resolutions.get('src/waker.rs'))['sys::Waker::new'], new Map([
       ['all(cfg_os_poll!, unix)', 'src/sys/unix/waker/pipe.rs'],
       ['all(any(mio_unsupported_force_poll_poll, target_os = "aix", target_os = "solaris"), cfg_os_poll!, unix)', 'src/sys/unix/selector/poll.rs'],
     ]))
@@ -1278,16 +1278,16 @@ test('buildRustBundle declares a template\'s mod in each module of its package i
   }, async (tmp) => {
     const entries = ['src/lib.rs', 'vendor/other/src/lib.rs']
     const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: tmp, entries }))
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/a.rs', 'src/a/gm1.rs', 'src/b.rs', 'src/lib.rs', 'src/solo.rs', 'src/solo/deeper.rs', 'vendor/other/src/lib.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a.rs', 'src/a/gm1.rs', 'src/b.rs', 'src/lib.rs', 'src/solo.rs', 'src/solo/deeper.rs', 'vendor/other/src/lib.rs'])
     const imports = bundle.imports.get('rust')
-    t.assert.deepEqual(Object.fromEntries(imports.get('src/a.rs')), { 'decl!': 'src/lib.rs', 'mod gm1': 'src/a/gm1.rs' })
+    t.assert.deepStrictEqual(Object.fromEntries(imports.get('src/a.rs')), { 'decl!': 'src/lib.rs', 'mod gm1': 'src/a/gm1.rs' })
     t.assert.equal(imports.get('src/lib.rs').get('gm1::X'), 'src/a/gm1.rs')
     t.assert.equal(imports.get('src/lib.rs').get('mod solo'), 'src/solo.rs')
     t.assert.equal(imports.get('src/b.rs').get('app::a::gm1::X'), 'src/a/gm1.rs')
-    t.assert.deepEqual(besidesReplay(warnings), [])
+    t.assert.deepStrictEqual(besidesReplay(warnings), [])
     const cargo = createCargoContext(tmp, { entries })
     const sources = await collectRustFilesFromDisk(tmp, entries, { cargo })
-    t.assert.deepEqual(sorted(buildRustTree(sources, { roots: entries, baseDir: tmp, cargo }).unresolvedCrates), [])
+    t.assert.deepStrictEqual(sorted(buildRustTree(sources, { roots: entries, baseDir: tmp, cargo }).unresolvedCrates), [])
   })
 })
 
@@ -1301,10 +1301,10 @@ test('createCargoContext resolves each dependency table on its own: one version 
     const { result, warnings } = captureWarningsSync(() => [
       cargo.resolveCrate('rand', 'src/main.rs'), cargo.resolveCrate('rand', 'build.rs'), cargo.resolveCrate('rand', 'tests/it.rs'), cargo.resolveCrate('fake', 'tests/it.rs'),
     ])
-    t.assert.deepEqual(result, ['vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs', 'vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs'])
-    t.assert.deepEqual(warnings, [])
+    t.assert.deepStrictEqual(result, ['vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs', 'vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs'])
+    t.assert.deepStrictEqual(warnings, [])
     // both are in the build: the normal one for the target, the build-dependency for the host
-    t.assert.deepEqual([...cargo.featureResolution('target').keys(), ...cargo.featureResolution('host').keys()].toSorted(), ['.', 'vendor/rand-0.7.3', 'vendor/rand-0.8.5'])
+    t.assert.deepStrictEqual([...cargo.featureResolution('target').keys(), ...cargo.featureResolution('host').keys()].toSorted(), ['.', 'vendor/rand-0.7.3', 'vendor/rand-0.8.5'])
   })
 })
 
@@ -1318,7 +1318,7 @@ test('createCargoContext takes a Cargo.lock pin only when the requirement allows
   }, (tmp) => {
     const { result, warnings } = captureWarningsSync(() => createCargoContext(tmp, { entries: ['src/main.rs'] }).resolveCrate('rand', 'src/main.rs'))
     t.assert.equal(result, 'vendor/rand-0.8.5/src/lib.rs')
-    t.assert.deepEqual(warnings, ['[loader.cargo] Cargo.lock pins app 0.1.0 to rand 0.7.3, which 0.8 doesn\'t allow: the lock is out of date'])
+    t.assert.deepStrictEqual(warnings, ['[loader.cargo] Cargo.lock pins app 0.1.0 to rand 0.7.3, which 0.8 doesn\'t allow: the lock is out of date'])
   })
 })
 
@@ -1335,8 +1335,8 @@ test('createCargoContext applies a [patch] only where it fits, from the manifest
     const { result, warnings } = captureWarningsSync(() => ['foo', 'bar', 'baz'].map((name) => cargo.resolveCrate(name, 'src/main.rs')))
     // foo: the patch isn't used, the registry's (vendored) 1.0.0 is; bar: the config's patch; baz:
     // patched with a crate outside the bundle, which is not some vendored copy of that name
-    t.assert.deepEqual(result, ['vendor/foo-1.0.0/src/lib.rs', 'patches/bar/src/lib.rs', null])
-    t.assert.deepEqual(warnings, [
+    t.assert.deepStrictEqual(result, ['vendor/foo-1.0.0/src/lib.rs', 'patches/bar/src/lib.rs', null])
+    t.assert.deepStrictEqual(warnings, [
       '[loader.cargo] Cargo.toml\'s patch of foo (2.0.0) doesn\'t satisfy app 0.1.0\'s requirement 1: not used',
       '[loader.cargo] Cargo.toml patches baz with a path outside the bundle root',
     ])
@@ -1351,8 +1351,8 @@ test('createCargoContext says when a path dependency lies outside the bundle roo
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
     const { result, warnings } = captureWarningsSync(() => [cargo.resolveCrate('far', 'src/main.rs'), cargo.resolveCrate('empty', 'src/main.rs')])
-    t.assert.deepEqual(result, [null, null])
-    t.assert.deepEqual(warnings, [
+    t.assert.deepStrictEqual(result, [null, null])
+    t.assert.deepStrictEqual(warnings, [
       '[loader.cargo] app 0.1.0\'s dependency far is a path outside the bundle root: ../far',
       '[loader.cargo] app 0.1.0\'s dependency empty names crates/empty, which holds no Cargo.toml with a [package]',
     ])
@@ -1371,8 +1371,8 @@ test('buildRustBundle ends when a crate root it wants is refused, and reports ev
     mkdirSync(join(tmp, 'vendor', 'linked', 'src'))
     symlinkSync(join('..', '..', '..', 'secret.rs'), join(tmp, 'vendor', 'linked', 'src', 'lib.rs'))
     const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] }))
-    t.assert.deepEqual([...bundle.sources.keys()], ['src/main.rs'])
-    t.assert.deepEqual([...new Set(besidesReplay(warnings))], [
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/main.rs'])
+    t.assert.deepStrictEqual([...new Set(besidesReplay(warnings))], [
       '[loader.cargo] app 0.1.0\'s dependency far is a path outside the bundle root: ../far',
       '[loader.rust] Refusing file outside its package: vendor/linked/src/lib.rs (a link out of vendor/linked)',
       '[stasis] 3 crates referenced but not in the bundle: far, linked (vendor/linked/src/lib.rs), missing',
@@ -1427,14 +1427,14 @@ test('createCargoContext turns on the features cargo builds each package with, g
           const [key, fk] = [unit.slice(0, unit.lastIndexOf(' ')), unit.slice(unit.lastIndexOf(' ') + 1)]
           return ctx.resolvedFeatures(fk === 'normal' ? 'target' : 'host').get(dirOf.get(key))
         }
-        for (const [unit, on] of Object.entries(build.built)) t.assert.deepEqual(sorted(got(unit) ?? []), on, `${label}: ${unit}`)
+        for (const [unit, on] of Object.entries(build.built)) t.assert.deepStrictEqual(sorted(got(unit) ?? []), on, `${label}: ${unit}`)
         if (resolver === '1') continue // one set per package, both ways
         // Nothing else is built, but the proc-macro member for the target, which cargo's resolver
         // lists in case it has more targets than its library.
         for (const [context, fk] of [['target', 'normal'], ['host', 'host']]) {
           for (const dir of ctx.resolvedFeatures(context).keys()) {
             const key = [...dirOf].find(([, d]) => d === dir)[0]
-            if (!(`${key} ${fk}` in build.built)) t.assert.deepEqual([key, fk], ['macros 0.1.0', 'normal'], label)
+            if (!(`${key} ${fk}` in build.built)) t.assert.deepStrictEqual([key, fk], ['macros 0.1.0', 'normal'], label)
           }
         }
       }
@@ -1463,9 +1463,9 @@ test('createCargoContext resolves through cargo\'s graph: each table\'s source, 
     t.assert.equal(windows.resolveCrate('cfg_if', 'src/lib.rs'), 'patched/cfg-if/src/lib.rs')
     t.assert.equal(ctx.resolveCrate('macros', 'src/lib.rs'), 'crates/macros/src/lib.rs')
     // the proc-macro and what it depends on are built for the host, with the host's features
-    t.assert.deepEqual(sorted(ctx.featuresFor('crates/macros/src/lib.rs', HOST_UNIT)), [])
-    t.assert.deepEqual(sorted(ctx.featuresFor('vendor/memchr/src/lib.rs', HOST_UNIT)), ['alloc'])
-    t.assert.deepEqual(sorted(ctx.featuresFor('vendor/memchr/src/lib.rs')), ['alloc', 'std'])
+    t.assert.deepStrictEqual(sorted(ctx.featuresFor('crates/macros/src/lib.rs', HOST_UNIT)), [])
+    t.assert.deepStrictEqual(sorted(ctx.featuresFor('vendor/memchr/src/lib.rs', HOST_UNIT)), ['alloc'])
+    t.assert.deepStrictEqual(sorted(ctx.featuresFor('vendor/memchr/src/lib.rs')), ['alloc', 'std'])
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
@@ -1489,7 +1489,7 @@ test('createCargoContext stops the build where the lockfile and the vendored cop
     writeFileSync(join(tmp, 'crates', 'lib', 'Cargo.toml'), manifest)
     // a package the lockfile has and the vendor directory doesn't: the replay decides, as without a lockfile
     rmSync(join(tmp, 'vendor', 'paste'), { recursive: true })
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/lib.rs'], target }))['.'], ['default', 'fast'])
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/lib.rs'], target }))['.'], ['default', 'fast'])
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
@@ -1514,10 +1514,10 @@ test('createCargoContext resolves a host it doesn\'t know both ways: its target-
     // the target known, the host not: the build-dependency's table is about the host
     const cross = createCargoContext(tmp, { entries: ['src/lib.rs'], target: LINUX })
     t.assert.equal(cross.featuresFor('vendor/cc/src/lib.rs', HOST_UNIT).size, 0)
-    t.assert.deepEqual(sorted(cross.maybeFeaturesFor('vendor/cc/src/lib.rs', HOST_UNIT)), ['parallel'])
+    t.assert.deepStrictEqual(sorted(cross.maybeFeaturesFor('vendor/cc/src/lib.rs', HOST_UNIT)), ['parallel'])
     // the host known: decided
     const native = createCargoContext(tmp, { entries: ['src/lib.rs'], target: LINUX, host: LINUX })
-    t.assert.deepEqual(sorted(native.featuresFor('vendor/cc/src/lib.rs', HOST_UNIT)), ['parallel'])
+    t.assert.deepStrictEqual(sorted(native.featuresFor('vendor/cc/src/lib.rs', HOST_UNIT)), ['parallel'])
     t.assert.equal(native.maybeFeaturesFor('vendor/cc/src/lib.rs', HOST_UNIT), null)
   })
 })
@@ -1549,7 +1549,7 @@ test('createCargoContext turns a package\'s feature of a dependency\'s name on w
     'vendor/serde/Cargo.toml': '[package]\nname = "serde"\nversion = "1.0.0"\n[features]\nderive = []\n', 'vendor/serde/src/lib.rs': '',
     'vendor/chrono/Cargo.toml': '[package]\nname = "chrono"\nversion = "0.4.0"\n[features]\nserde = []\n', 'vendor/chrono/src/lib.rs': '',
   }, (tmp) => {
-    t.assert.deepEqual(enabledOf(createCargoContext(tmp, { entries: ['src/lib.rs'] })), { '.': ['default', 'extra', 'full', 'serde'], 'vendor/serde': ['derive'] })
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/lib.rs'] })), { '.': ['default', 'extra', 'full', 'serde'], 'vendor/serde': ['derive'] })
   })
 })
 
@@ -1560,10 +1560,10 @@ test('createCargoContext resolves a proc-macro entry for the host, where cargo b
     'vendor/quote/Cargo.toml': '[package]\nname = "quote"\nversion = "1.0.0"\n[features]\ndefault = ["std"]\nstd = []\n', 'vendor/quote/src/lib.rs': '',
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['src/lib.rs'] })
-    t.assert.deepEqual(enabledOf(cargo, 'host'), { '.': ['default', 'printing'], 'vendor/quote': ['std'] })
+    t.assert.deepStrictEqual(enabledOf(cargo, 'host'), { '.': ['default', 'printing'], 'vendor/quote': ['std'] })
     // cargo activates a proc-macro member it is asked to build in the target's context too
-    t.assert.deepEqual(enabledOf(cargo, 'target'), { '.': ['default', 'printing'], 'vendor/quote': ['std'] })
-    t.assert.deepEqual(sorted(cargo.featuresFor('src/lib.rs', HOST_UNIT)), ['default', 'printing'])
+    t.assert.deepStrictEqual(enabledOf(cargo, 'target'), { '.': ['default', 'printing'], 'vendor/quote': ['std'] })
+    t.assert.deepStrictEqual(sorted(cargo.featuresFor('src/lib.rs', HOST_UNIT)), ['default', 'printing'])
   })
 })
 
@@ -1578,8 +1578,8 @@ test('createCargoContext matches versions by the semver crate\'s rules: a requir
       const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
       return [cargo.resolveCrate('foo', 'src/main.rs'), cargo.resolveCrate('bar', 'src/main.rs')]
     })
-    t.assert.deepEqual(result, ['vendor/foo-1.0.0/src/lib.rs', 'vendor/bar-2.0.0-rc.1/src/lib.rs'])
-    t.assert.deepEqual(warnings, [])
+    t.assert.deepStrictEqual(result, ['vendor/foo-1.0.0/src/lib.rs', 'vendor/bar-2.0.0-rc.1/src/lib.rs'])
+    t.assert.deepStrictEqual(warnings, [])
   })
 })
 
@@ -1593,7 +1593,7 @@ test('createCargoContext reads the lockfile of the entries\' workspace, below th
   }, (tmp) => {
     const { result, warnings } = captureWarningsSync(() => createCargoContext(tmp, { entries: ['proj/app/src/lib.rs'] }).resolveCrate('serde', 'proj/app/src/lib.rs'))
     t.assert.equal(result, 'vendor/serde-1.0.100/src/lib.rs')
-    t.assert.deepEqual(warnings, [])
+    t.assert.deepStrictEqual(warnings, [])
   })
 })
 
@@ -1604,7 +1604,7 @@ test('buildRustBundle scans a proc-macro entry as the host build, with the featu
     'src/printing.rs': '', 'src/extra.rs': '',
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'] })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/printing.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/lib.rs', 'src/printing.rs'])
   })
 })
 
@@ -1639,23 +1639,23 @@ test('createCargoContext links only the dependency tables of the platforms the c
   await Promise.all([platformTables['Cargo.toml'], platformTables['Cargo.toml'].replace(/(\[target.'cfg\(windows\)'.dependencies\]\nfoo = "2"\n)(\[target.'cfg\(unix\)'.dependencies\]\nfoo = "1"\n)/u, '$2$1')].map((toml) =>
     withProjectAsync({ ...platformTables, 'Cargo.toml': toml, 'Cargo.lock': platformLock, ...vendored }, async (tmp) => {
       const { edges, files } = await crateEdges(tmp, ['src/main.rs'], { target: LINUX, host: LINUX })
-      t.assert.deepEqual(edges, { 'src/main.rs': { 'use foo': 'vendor/foo/src/lib.rs' }, 'build.rs': { 'use bar': 'vendor/bar/src/lib.rs' } })
-      t.assert.deepEqual(files.filter((f) => f.startsWith('vendor/')), ['vendor/bar/src/lib.rs', 'vendor/foo/src/lib.rs'])
+      t.assert.deepStrictEqual(edges, { 'src/main.rs': { 'use foo': 'vendor/foo/src/lib.rs' }, 'build.rs': { 'use bar': 'vendor/bar/src/lib.rs' } })
+      t.assert.deepStrictEqual(files.filter((f) => f.startsWith('vendor/')), ['vendor/bar/src/lib.rs', 'vendor/foo/src/lib.rs'])
     })))
   await withProjectAsync({ ...platformTables, ...vendored }, async (tmp) => {
     // the replay, the same
     const known = await crateEdges(tmp, ['src/main.rs'], { target: LINUX, host: LINUX })
-    t.assert.deepEqual(known.edges, { 'src/main.rs': { 'use foo': 'vendor/foo/src/lib.rs' }, 'build.rs': { 'use bar': 'vendor/bar/src/lib.rs' } })
+    t.assert.deepStrictEqual(known.edges, { 'src/main.rs': { 'use foo': 'vendor/foo/src/lib.rs' }, 'build.rs': { 'use bar': 'vendor/bar/src/lib.rs' } })
     // no target: either table may apply, so either version is carried, keyed by its platform
     const any = await crateEdges(tmp, ['src/main.rs'])
-    t.assert.deepEqual(any.edges, {
+    t.assert.deepStrictEqual(any.edges, {
       'src/main.rs': { 'use foo': [['windows', 'vendor/foo-2.0.0/src/lib.rs'], ['unix', 'vendor/foo/src/lib.rs']] },
       'build.rs': { 'use bar': [['windows', 'vendor/bar-2.0.0/src/lib.rs'], ['unix', 'vendor/bar/src/lib.rs']] },
     })
     // the target known, the host not: the build script's tables still both maybe
     const cross = await crateEdges(tmp, ['src/main.rs'], { target: LINUX })
-    t.assert.deepEqual(cross.edges['src/main.rs'], { 'use foo': 'vendor/foo/src/lib.rs' })
-    t.assert.deepEqual(cross.edges['build.rs'], { 'use bar': [['windows', 'vendor/bar-2.0.0/src/lib.rs'], ['unix', 'vendor/bar/src/lib.rs']] })
+    t.assert.deepStrictEqual(cross.edges['src/main.rs'], { 'use foo': 'vendor/foo/src/lib.rs' })
+    t.assert.deepStrictEqual(cross.edges['build.rs'], { 'use bar': [['windows', 'vendor/bar-2.0.0/src/lib.rs'], ['unix', 'vendor/bar/src/lib.rs']] })
   })
 })
 
@@ -1673,7 +1673,7 @@ test('createCargoContext resolves a build script\'s modules, and a file it share
     t.assert.equal(edges['probe.rs']['use foo'], 'vendor/foo-2.0.0/src/lib.rs')
     t.assert.equal(edges['src/lib.rs']['use foo'], 'vendor/foo-1.0.0/src/lib.rs')
     // compiled into both crates: both versions, the build script's keyed as its
-    t.assert.deepEqual(edges['shared.rs']['use foo'], [['*', 'vendor/foo-1.0.0/src/lib.rs'], ['build-script *', 'vendor/foo-2.0.0/src/lib.rs']])
+    t.assert.deepStrictEqual(edges['shared.rs']['use foo'], [['*', 'vendor/foo-1.0.0/src/lib.rs'], ['build-script *', 'vendor/foo-2.0.0/src/lib.rs']])
     t.assert.ok(carried.includes('vendor/foo-1.0.0/src/lib.rs') && carried.includes('vendor/foo-2.0.0/src/lib.rs'))
   })
 })
@@ -1692,7 +1692,7 @@ test('createCargoContext resolves a proc-macro entry beside another in both cont
     const { files } = await crateEdges(tmp, ['app/src/lib.rs', 'pm/src/lib.rs'])
     t.assert.ok(!files.includes('shared/src/noth.rs'))
     const cargo = createCargoContext(tmp, { entries: ['app/src/lib.rs', 'pm/src/lib.rs'] })
-    t.assert.deepEqual([sorted(cargo.featuresFor('shared/src/lib.rs')), sorted(cargo.featuresFor('shared/src/lib.rs', HOST_UNIT))], [['h'], ['h']])
+    t.assert.deepStrictEqual([sorted(cargo.featuresFor('shared/src/lib.rs')), sorted(cargo.featuresFor('shared/src/lib.rs', HOST_UNIT))], [['h'], ['h']])
   })
 })
 
@@ -1704,7 +1704,7 @@ test('buildRustTree reports a declared dependency that isn\'t in the bundle, use
       ...vendoredPackage('other', '1.0.0'),
     }, async (tmp) => {
       const { tree } = await crateEdges(tmp, ['src/main.rs'])
-      t.assert.deepEqual([...tree.unresolvedCrates], ['serde_json'], main)
+      t.assert.deepStrictEqual([...tree.unresolvedCrates], ['serde_json'], main)
     })))
 })
 
@@ -1722,7 +1722,7 @@ test('createCargoContext reads the workspace a member bundled from its own direc
     const { files } = await crateEdges(root, ['src/lib.rs'])
     // the inherited edition and the workspace's dependency read; its resolver 2 keeps the
     // dev-dependency's feature out of the build, which resolver 1 of the member's edition wouldn't
-    t.assert.deepEqual(files, ['dep/src/lib.rs', 'dep/src/plain.rs', 'src/fast.rs', 'src/lib.rs'])
+    t.assert.deepStrictEqual(files, ['dep/src/lib.rs', 'dep/src/plain.rs', 'src/fast.rs', 'src/lib.rs'])
     t.assert.equal(createCargoContext(root, { entries: ['src/lib.rs'] }).packageInfo('src/lib.rs').version, '0.3.0')
     // a [workspace] above whose `members` don't list the package is still its own (cargo refuses
     // the build: "current package believes it's in a workspace when it's not"), and what the
@@ -1744,14 +1744,14 @@ test('createCargoContext says why the features come from a replay, and a vendore
     ...vendoredPackage('junk', '0.1.0'), // no .cargo-checksum.json, and nothing locks it
   }
   withProject(files, (tmp) => {
-    t.assert.deepEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'cargo', why: null })
-    t.assert.deepEqual(createCargoContext(tmp, { entries: ['src/main.rs'] }).resolution(), { mode: 'replay', why: 'no --cargo-target' })
+    t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'cargo', why: null })
+    t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'] }).resolution(), { mode: 'replay', why: 'no --cargo-target' })
     rmSync(join(tmp, 'vendor/foo/.cargo-checksum.json'))
-    t.assert.deepEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'the vendored copy of foo 1.0.0 has no .cargo-checksum.json' })
+    t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'the vendored copy of foo 1.0.0 has no .cargo-checksum.json' })
     rmSync(join(tmp, 'vendor/foo'), { recursive: true })
-    t.assert.deepEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'foo 1.0.0 is locked but not vendored' })
+    t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'foo 1.0.0 is locked but not vendored' })
     rmSync(join(tmp, 'Cargo.lock'))
-    t.assert.deepEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'no Cargo.lock' })
+    t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'no Cargo.lock' })
   })
 })
 
@@ -1815,7 +1815,7 @@ test('createCargoContext takes a nested workspace\'s vendored crates from the di
     'vendor/foo/Cargo.toml': '[package]\nname = "foo"\nversion = "1.0.0"\n', 'vendor/foo/src/lib.rs': '', // the outer project's
   }, async (tmp) => {
     const { files } = await crateEdges(tmp, ['sub/app/src/lib.rs'])
-    t.assert.deepEqual(files, ['sub/app/src/lib.rs', 'sub/vendor/foo/src/lib.rs'])
+    t.assert.deepStrictEqual(files, ['sub/app/src/lib.rs', 'sub/vendor/foo/src/lib.rs'])
   })
 })
 
@@ -1840,7 +1840,7 @@ test('createCargoContext resolves no dependency for a name no crate has, and so 
     // a dev-dependency and another platform's are no dependencies of this build; `u8::MAX`,
     // `str::from_utf8` and `undeclared::x` name no crate
     const { warnings } = await captureWarningsAsync(() => crateEdges(tmp, ['src/lib.rs'], { target: LINUX }))
-    t.assert.deepEqual(besidesReplay(warnings), [])
+    t.assert.deepStrictEqual(besidesReplay(warnings), [])
   })
 })
 
@@ -1854,7 +1854,7 @@ test('collectRustBundle warns once of a crate root it refuses, however often the
     mkdirSync(join(tmp, 'vendor/foo/src'))
     symlinkSync('../../../secret.rs', join(tmp, 'vendor/foo/src/lib.rs'))
     const { warnings } = await captureWarningsAsync(() => crateEdges(tmp, ['src/lib.rs']))
-    t.assert.deepEqual(warnings.filter((w) => w.includes('Refusing file outside its package')), ['[loader.rust] Refusing file outside its package: vendor/foo/src/lib.rs (a link out of vendor/foo)'])
+    t.assert.deepStrictEqual(warnings.filter((w) => w.includes('Refusing file outside its package')), ['[loader.rust] Refusing file outside its package: vendor/foo/src/lib.rs (a link out of vendor/foo)'])
   })
 })
 
@@ -1877,10 +1877,10 @@ test('createCargoContext reads every cargo config setting from the configs cargo
   await withProjectAsync(files, async (tmp) => {
     const { edges, tree } = await crateEdges(tmp, ['app/src/lib.rs'])
     t.assert.equal(edges['app/src/lib.rs']['use foo'], 'fork/src/lib.rs')
-    t.assert.deepEqual([...tree.resolutions.get('app/src/user.rs').get('crate::F')], [['fast', 'app/src/fast.rs'], ['not(fast)', 'app/src/slow.rs']])
+    t.assert.deepStrictEqual([...tree.resolutions.get('app/src/user.rs').get('crate::F')], [['fast', 'app/src/fast.rs'], ['not(fast)', 'app/src/slow.rs']])
     const cargo = createCargoContext(tmp, { entries: ['app/src/lib.rs'] })
     t.assert.equal(cargo.vendorDir, 'third')
-    t.assert.deepEqual(cargo.buildFilesFor('app/src/lib.rs').map((f) => f.path), ['app/Cargo.toml', 'Cargo.toml', 'app/.cargo/config.toml'])
+    t.assert.deepStrictEqual(cargo.buildFilesFor('app/src/lib.rs').map((f) => f.path), ['app/Cargo.toml', 'Cargo.toml', 'app/.cargo/config.toml'])
   })
 })
 
@@ -1896,7 +1896,7 @@ test('createCargoContext merges the [source] tables of the cargo configs key by 
     'ws/third/foo/Cargo.toml': '[package]\nname = "foo"\nversion = "1.0.0"\n', 'ws/third/foo/src/lib.rs': '',
   }, async (tmp) => {
     t.assert.equal(createCargoContext(tmp, { entries: ['ws/src/lib.rs'] }).vendorDir, 'ws/third')
-    t.assert.deepEqual((await crateEdges(tmp, ['ws/src/lib.rs'])).files, ['ws/src/lib.rs', 'ws/third/foo/src/lib.rs'])
+    t.assert.deepStrictEqual((await crateEdges(tmp, ['ws/src/lib.rs'])).files, ['ws/src/lib.rs', 'ws/third/foo/src/lib.rs'])
   })
 })
 
@@ -1913,7 +1913,7 @@ test('createCargoContext takes the workspace above the bundle root of a member o
     'lib2/foo/src/lib.rs': '#[cfg(feature = "dev")]\nmod dev;\n#[cfg(not(feature = "dev"))]\nmod nodev;\npub fn f() {}\n',
     'lib2/foo/src/dev.rs': '', 'lib2/foo/src/nodev.rs': '',
   }, async (tmp) => {
-    t.assert.deepEqual((await crateEdges(join(tmp, 'lib2'), ['src/lib.rs'])).files, ['foo/src/dev.rs', 'foo/src/lib.rs', 'src/lib.rs'])
+    t.assert.deepStrictEqual((await crateEdges(join(tmp, 'lib2'), ['src/lib.rs'])).files, ['foo/src/dev.rs', 'foo/src/lib.rs', 'src/lib.rs'])
   })
   // The workspace root's [patch] applies when cargo builds the member from its own directory
   // (`cargo build` in app/ compiles app/fork/src/lib.rs), and its lockfile is cargo's, not one beside the member.
@@ -1929,8 +1929,8 @@ test('createCargoContext takes the workspace above the bundle root of a member o
     const root = join(tmp, 'app')
     t.assert.equal((await crateEdges(root, ['src/lib.rs'])).edges['src/lib.rs']['use foo'], 'fork/src/lib.rs')
     const cargo = createCargoContext(root, { entries: ['src/lib.rs'], target: LINUX })
-    t.assert.deepEqual(cargo.resolution(), { mode: 'replay', why: 'the workspace root lies above the bundle root' })
-    t.assert.deepEqual(cargo.buildFilesFor('src/lib.rs').map((f) => f.path), ['Cargo.toml', '.cargo/config.toml'])
+    t.assert.deepStrictEqual(cargo.resolution(), { mode: 'replay', why: 'the workspace root lies above the bundle root' })
+    t.assert.deepStrictEqual(cargo.buildFilesFor('src/lib.rs').map((f) => f.path), ['Cargo.toml', '.cargo/config.toml'])
   })
 })
 
@@ -1983,7 +1983,7 @@ test('createCargoContext({ cargo: true }) keeps what any build compiles: metadat
     'shared/src/t.rs': '', 'shared/src/h.rs': '', 'shared/src/noth.rs': '', 'shared/src/other.rs': '',
   }, async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/lib.rs'], cargo: true, cargoManifests: true })
-    t.assert.deepEqual([...bundle.sources.keys()].filter((p) => p.startsWith('shared/src/')).toSorted(), ['shared/src/h.rs', 'shared/src/lib.rs', 'shared/src/noth.rs', 'shared/src/t.rs'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].filter((p) => p.startsWith('shared/src/')).toSorted(), ['shared/src/h.rs', 'shared/src/lib.rs', 'shared/src/noth.rs', 'shared/src/t.rs'])
   })
 })
 
@@ -2002,23 +2002,23 @@ test('buildRustBundle does not presume off a cfg a build-dependency may print, o
   // a build-dependency printing nothing leaves `fast` presumed off
   t.assert.equal(await target({}), 'src/slow.rs')
   // cfg_aliases' way: the helper prints the names its macro's input gives (`cfg_aliases! { fast: … }`)
-  t.assert.deepEqual(await target({
+  t.assert.deepStrictEqual(await target({
     'helper/src/lib.rs': '#[macro_export]\nmacro_rules! alias {\n    ($name:ident) => { println!("cargo:rustc-cfg={}", stringify!($name)); };\n}\n',
     'build.rs': 'use helper::alias;\nfn main() { alias!(fast); }\n',
   }), either)
   // build-rs's way: the directive written apart from the name it is given
-  t.assert.deepEqual(await target({
+  t.assert.deepStrictEqual(await target({
     'helper/src/lib.rs': 'pub fn rustc_cfg(key: &str) { emit("rustc-cfg", key) }\nfn emit(directive: &str, value: &str) { println!("cargo::{directive}={value}") }\n',
     'build.rs': 'fn main() { helper::rustc_cfg("fast"); }\n',
   }), either)
   // a helper printing one name it writes out sets that one only
   const fixed = (name) => ({ 'helper/src/lib.rs': `pub fn go() { println!("cargo:rustc-cfg=${name}"); }\n`, 'build.rs': 'fn main() { helper::go(); }\n' })
   t.assert.equal(await target(fixed('other')), 'src/slow.rs')
-  t.assert.deepEqual(await target(fixed('fast')), either)
+  t.assert.deepStrictEqual(await target(fixed('fast')), either)
   // a build-dependency the bundle lacks may print one too
-  t.assert.deepEqual(await target({ 'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n[build-dependencies]\nhelper = "1"\n' }), either)
+  t.assert.deepStrictEqual(await target({ 'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n[build-dependencies]\nhelper = "1"\n' }), either)
   // a name the build script formats in part: `os_{}` may be `os_linux`, and so may `fast` be anything
-  t.assert.deepEqual(await target({ 'build.rs': 'fn main() { let os = "linux"; println!("cargo::rustc-cfg=os_{}", os); }\n' }), either)
+  t.assert.deepStrictEqual(await target({ 'build.rs': 'fn main() { let os = "linux"; println!("cargo::rustc-cfg=os_{}", os); }\n' }), either)
 })
 
 test('buildRustBundle keeps a module whose first variant the target rules out ahead of a glob of its name', async (t) => {

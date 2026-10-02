@@ -75,9 +75,9 @@ test('a warm rollup cache is stripped: capture still records edges (and warns)',
   await build(join(dir, 'entry.js'), [mk('b.br')], { cache: fresh.cache })
   t.assert.equal(warn.mock.calls.length, 1)
   t.assert.match(warn.mock.calls[0].arguments[0], /StasisRollup: ignoring the `cache` option/)
-  t.assert.deepEqual(decode(join(dir, 'b.br')).imports, decode(join(dir, 'a.br')).imports,
+  t.assert.deepStrictEqual(decode(join(dir, 'b.br')).imports, decode(join(dir, 'a.br')).imports,
     'warm-cache capture must record the same edges as a fresh one')
-  t.assert.deepEqual(decode(join(dir, 'b.br')).entries, ['entry.js'])
+  t.assert.deepStrictEqual(decode(join(dir, 'b.br')).entries, ['entry.js'])
 })
 
 test("a sibling's bare this.resolve() probe neither widens capture entries nor aborts load", async (t) => {
@@ -91,7 +91,7 @@ test("a sibling's bare this.resolve() probe neither widens capture entries nor a
   const bundleFile = join(dir, 's.br')
   const cap = await build(join(dir, 'entry.js'),
     [new StasisRollup(new State(dir, { lock: 'none', bundle: 'add', bundleFile })), prober])
-  t.assert.deepEqual(decode(bundleFile).entries, ['entry.js'],
+  t.assert.deepStrictEqual(decode(bundleFile).entries, ['entry.js'],
     'a probed import must not be attested as a runnable root')
   const load = await build(join(dir, 'entry.js'),
     [new StasisRollup(new State(dir, { lock: 'none', bundle: 'load', bundleFile })), prober])
@@ -137,11 +137,11 @@ test("an emitFile'd chunk (relative id + importer) round-trips capture -> load",
   const bundleFile = join(dir, 's.br')
   const cap = await build(join(dir, 'entry.js'),
     [new StasisRollup(new State(dir, { lock: 'none', bundle: 'add', bundleFile })), emitter])
-  t.assert.deepEqual(decode(bundleFile).entries.toSorted(), ['entry.js', 'worker.js'],
+  t.assert.deepStrictEqual(decode(bundleFile).entries.toSorted(), ['entry.js', 'worker.js'],
     'the emitted chunk is a genuine runnable root')
   const load = await build(join(dir, 'entry.js'),
     [new StasisRollup(new State(dir, { lock: 'none', bundle: 'load', bundleFile })), emitter])
-  t.assert.deepEqual(load.output.map((o) => o.code), cap.output.map((o) => o.code),
+  t.assert.deepStrictEqual(load.output.map((o) => o.code), cap.output.map((o) => o.code),
     'the emitted chunk resolves against its importer at load, not cwd')
 })
 

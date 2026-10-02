@@ -100,7 +100,7 @@ test('sidecar write() emits the bundle but not the lockfile', (t) => {
   const pb = JSON.parse(brotliDecompressSync(readFileSync(parentBundle)))
   t.assert.equal(pb.sources['.'].files['a.js'], 'export const a = 1\n')
   const sb = JSON.parse(brotliDecompressSync(readFileSync(sidecarBundle)))
-  t.assert.deepEqual(sb.sources, {}, 'sidecar without addFile writes an empty sources bucket')
+  t.assert.deepStrictEqual(sb.sources, {}, 'sidecar without addFile writes an empty sources bucket')
 })
 
 test('sidecar rejects same bundleFile as parent', (t) => {
@@ -400,7 +400,7 @@ test('sidecar bundle=add preserves a loaded multi-consumer `reason` on reload', 
   const gen = new State(dir, { parent, lock: 'add', bundle: 'add', bundleFile: join(dir, 'reason-rt-gen.br') })
   gen.addFile(url('r1.js'), { isEntry: true })                       // run (default)
   gen.addFile(url('r2.js'), { reason: 'metro' })               // a plugin bundles it
-  t.assert.deepEqual(JSON.parse(gen.sourceData).reason, { metro: ['r2.js'], run: ['r1.js'] })
+  t.assert.deepStrictEqual(JSON.parse(gen.sourceData).reason, { metro: ['r2.js'], run: ['r1.js'] })
   writeFileSync(loadPath, brotliCompressSync(gen.sourceData))
 
   // Reload under bundle=add through a fresh write-mode sidecar and re-observe the plugin's files
@@ -411,6 +411,6 @@ test('sidecar bundle=add preserves a loaded multi-consumer `reason` on reload', 
 
   // The loaded 'run' attribution survives even though this run never recorded 'run'; the new
   // 'metro' file is unioned onto the loaded one. Nothing is destroyed.
-  t.assert.deepEqual(JSON.parse(reload.sourceData).reason,
+  t.assert.deepStrictEqual(JSON.parse(reload.sourceData).reason,
     { metro: ['r2.js', 'r3.js'], run: ['r1.js'] })
 })

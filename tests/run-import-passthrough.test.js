@@ -140,8 +140,8 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.match(r.stderr, /import: \[ 'tsx' \]/)
 
     const lock = await readLock(tmp)
-    t.assert.deepEqual(lock.entries, ['src/entry.ts'])
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'])
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.ts'])
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'])
     // tsx's own module graph (and esbuild's) is runner infrastructure: no node_modules buckets.
     t.assert.equal(Object.keys(lock.modules ?? {}).length, 0, 'the preload graph must not be captured')
     // The attested format is the on-disk one, not the 'module' tsx serves at run time.
@@ -232,7 +232,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.match(r.stderr, /import: \[ '\.\/local-preload\/index\.mjs', 'tsx' \]/)
 
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'],
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'],
       'neither preload may enter the workspace bucket')
     t.assert.equal(Object.keys(lock.modules ?? {}).length, 0)
   }))
@@ -257,7 +257,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.equal(cap.stdout, expectedOutput)
 
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'],
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.ts', 'src/hello.ts'],
       'a require() executed through the transplanted .ts pipeline must not escape the capture')
     t.assert.equal(lock.formats['src/entry.ts'], 'commonjs-typescript')
     t.assert.equal(lock.formats['src/hello.ts'], 'commonjs-typescript')
@@ -316,7 +316,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.equal(cap.stdout, 'entry sees: CLEAN:D\n')
 
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.mjs', 'src/entry.mjs', 'src/shared.mjs'],
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.mjs', 'src/entry.mjs', 'src/shared.mjs'],
       'the shared module AND its own imports must be attested')
     t.assert.equal(flatImports(lock)['src/shared.mjs']?.['./dep.mjs'], 'src/dep.mjs', 'promoted edges replay transitively')
     // The preload itself stays out: nothing but the entry imported it.
@@ -374,8 +374,8 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.match(r.stderr, /\[helper\] loaded/, 'the deferred import must still evaluate')
 
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files), ['src/entry.mjs'])
-    t.assert.deepEqual(flatImports(lock), {}, 'no infra edges may be recorded')
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files), ['src/entry.mjs'])
+    t.assert.deepStrictEqual(flatImports(lock), {}, 'no infra edges may be recorded')
   }))
 
   test('an eval entry under the loader still fails closed in capture mode', withTmp(async (t, tmp) => {
@@ -414,7 +414,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
     t.assert.equal(cap.stdout, 'entry sees: CLEAN\n')
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.js', 'src/entry.js'])
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.js', 'src/entry.js'])
 
     await writeFile(join(tmp, 'src', 'dep.js'), "module.exports = { v: 'TAMPERED' }\n")
     const rejected = await run(['run', '--lock=frozen', '--bundle=frozen', '--import', './transplant.mjs', 'src/entry.js'], { cwd: tmp })
@@ -443,8 +443,8 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     const r = await run(['run', '--lock=add', '--import', './wrapper.mjs', 'src/entry.mjs'], { cwd: tmp })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = await readLock(tmp)
-    t.assert.deepEqual(lock.entries, ['src/entry.mjs'], 'the promoted module is attested as the ENTRY, not misfiled')
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.mjs', 'src/entry.mjs'])
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.mjs'], 'the promoted module is attested as the ENTRY, not misfiled')
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/dep.mjs', 'src/entry.mjs'])
     t.assert.equal(flatImports(lock)['src/entry.mjs']?.['./dep.mjs'], 'src/dep.mjs')
   }))
 
@@ -459,7 +459,7 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.match(r.stderr, /--import preloads run under --mock's side-effect denials/)
     t.assert.match(r.stderr, /\[pre\] loaded/)
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files), ['src/entry.mjs'])
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files), ['src/entry.mjs'])
   }))
 
   test("'.js'-suffixed TS imports work on disk; a source-less bundle replay fails closed", withTmp(async (t, tmp) => {
@@ -507,6 +507,6 @@ describe('stasis run --import passthrough (spawned, concurrent)', { concurrency:
     t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderrChunks)}`)
     t.assert.match(stripVTControlCharacters(Buffer.concat(stderrChunks).toString()), /import: \[ '\.\/preload\.mjs' \]/)
     const lock = await readLock(tmp)
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.mjs', 'src/shared.mjs'])
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.mjs', 'src/shared.mjs'])
   }))
 })

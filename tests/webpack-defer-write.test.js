@@ -219,7 +219,7 @@ test('the deferred multi-compiler write produces the correct final bundle bytes'
   t.assert.equal(decoded.version, 1, 'deferred write emits a v1 bundle')
   t.assert.equal(decoded.config.scope, 'full')
   t.assert.equal(decoded.sources['.'].files['entry.js'], source, 'captured entry content round-trips')
-  t.assert.deepEqual(decoded.entries, ['entry.js'], 'the entry is recorded')
+  t.assert.deepStrictEqual(decoded.entries, ['entry.js'], 'the entry is recorded')
   // Sanity: the URL the plugin keyed addFile by matches the file we wrote.
   t.assert.ok(pathToFileURL(entry).toString().endsWith('/entry.js'))
 })

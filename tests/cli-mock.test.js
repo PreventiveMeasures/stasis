@@ -105,7 +105,7 @@ test('run --mock denies fs/child_process/network side-effects (fail closed) whil
   // The import graph is captured despite every side effect being denied.
   t.assert.ok(existsSync(bundlePath), 'bundle should be written by stasis (allowed path)')
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
-  t.assert.deepEqual(decoded.entries, ['src/entry.js'])
+  t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
   t.assert.ok(decoded.sources['.'].files['src/entry.js'])
   t.assert.ok(decoded.sources['.'].files['src/hello.js'])
   t.assert.equal(decoded.formats['src/entry.js'], 'module')

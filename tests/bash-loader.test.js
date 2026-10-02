@@ -36,50 +36,50 @@ const captureWarningsAsync = async (fn) => {
 }
 
 test('extractBashCalls finds `source ./file` references', (t) => {
-  t.assert.deepEqual(extractBashCalls('#!/usr/bin/env bash\nsource ./lib.sh\n'), ['./lib.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('#!/usr/bin/env bash\nsource ./lib.sh\n'), ['./lib.sh'])
 })
 
 test('extractBashCalls finds `bash`/`sh` exec references', (t) => {
-  t.assert.deepEqual(extractBashCalls('bash ./worker.sh\nsh helper.sh\n'), ['./worker.sh', 'helper.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('bash ./worker.sh\nsh helper.sh\n'), ['./worker.sh', 'helper.sh'])
 })
 
 test('extractBashCalls finds direct `./script.sh` invocations', (t) => {
-  t.assert.deepEqual(extractBashCalls('#!/usr/bin/env bash\n./worker.sh --flag\n'), ['./worker.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('#!/usr/bin/env bash\n./worker.sh --flag\n'), ['./worker.sh'])
 })
 
 test('extractBashCalls finds `# Depends on:` comment hints (.sh and .bash)', (t) => {
-  t.assert.deepEqual(extractBashCalls('# Depends on: helper.sh\n'), ['helper.sh'])
-  t.assert.deepEqual(extractBashCalls('# Depends on: helper.bash\n'), ['helper.bash'])
+  t.assert.deepStrictEqual(extractBashCalls('# Depends on: helper.sh\n'), ['helper.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('# Depends on: helper.bash\n'), ['helper.bash'])
 })
 
 test('extractBashCalls reads a `# shellcheck source=` directive (and drops the $VAR source line)', (t) => {
   const src = '# shellcheck source=../lib/config.sh\nsource "${LIB_DIR}/config.sh"\n'
-  t.assert.deepEqual(extractBashCalls(src), ['../lib/config.sh'])
+  t.assert.deepStrictEqual(extractBashCalls(src), ['../lib/config.sh'])
 })
 
 test('extractBashCalls reads source= alongside other shellcheck directives, ignores /dev/null', (t) => {
-  t.assert.deepEqual(extractBashCalls('# shellcheck disable=SC1091 source=lib/x.sh\n'), ['lib/x.sh'])
-  t.assert.deepEqual(extractBashCalls('# shellcheck source=/dev/null\nsource "$x"\n'), [])
+  t.assert.deepStrictEqual(extractBashCalls('# shellcheck disable=SC1091 source=lib/x.sh\n'), ['lib/x.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('# shellcheck source=/dev/null\nsource "$x"\n'), [])
 })
 
 test('extractBashCalls skips variable-expansion and flag references', (t) => {
   // `$DIR/lib.sh` is a dynamic path; `-c` is a flag — neither is a file.
-  t.assert.deepEqual(extractBashCalls('source "$DIR/lib.sh"\nbash -c "echo hi"\n'), [])
+  t.assert.deepStrictEqual(extractBashCalls('source "$DIR/lib.sh"\nbash -c "echo hi"\n'), [])
 })
 
 test('extractBashCalls captures a script in a command substitution without the closing delimiter', (t) => {
-  t.assert.deepEqual(extractBashCalls('result=$(bash ./worker.sh)\n'), ['./worker.sh'])
-  t.assert.deepEqual(extractBashCalls('`source ./config.sh`\n'), ['./config.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('result=$(bash ./worker.sh)\n'), ['./worker.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('`source ./config.sh`\n'), ['./config.sh'])
 })
 
 test('extractBashCalls finds scripts run via an absolute interpreter path', (t) => {
-  t.assert.deepEqual(extractBashCalls('/bin/sh ./run.sh\n'), ['./run.sh'])
-  t.assert.deepEqual(extractBashCalls('/usr/bin/bash ./deploy.sh\n'), ['./deploy.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('/bin/sh ./run.sh\n'), ['./run.sh'])
+  t.assert.deepStrictEqual(extractBashCalls('/usr/bin/bash ./deploy.sh\n'), ['./deploy.sh'])
 })
 
 test('extractBashCalls does not treat a trailing bare `.` (current dir) as a source', (t) => {
   // `grep -rn x .` ends in a bare dot that is NOT a `.`-source command.
-  t.assert.deepEqual(extractBashCalls('grep -rn "TODO" .\n'), [])
+  t.assert.deepStrictEqual(extractBashCalls('grep -rn "TODO" .\n'), [])
 })
 
 test('resolveBashCall resolves relative paths against the calling file (validation deferred)', (t) => {
@@ -126,29 +126,29 @@ test('resolveBashCall validates bare names against the filesystem in walk mode',
 
 test('collectBashFilesFromDisk walks `source` references from the entry', async (t) => {
   const sources = await collectBashFilesFromDisk(join(fixtures, 'basic'), ['main.sh'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
 })
 
 test('collectBashFilesFromDisk follows a multi-level source chain', async (t) => {
   const sources = await collectBashFilesFromDisk(join(fixtures, 'nested'), ['main.sh'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['a.sh', 'b.sh', 'main.sh'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['a.sh', 'b.sh', 'main.sh'])
 })
 
 test('collectBashFilesFromDisk loads a shared file once across entries', async (t) => {
   const sources = await collectBashFilesFromDisk(join(fixtures, 'shared'), ['a.sh', 'b.sh'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['a.sh', 'b.sh', 'shared.sh'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['a.sh', 'b.sh', 'shared.sh'])
 })
 
 test('collectBashFilesFromDisk does not follow PATH commands or non-script refs', async (t) => {
   const sources = await collectBashFilesFromDisk(join(fixtures, 'external'), ['main.sh'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
 })
 
 test('collectBashFilesFromDisk warns and skips a reference missing on disk', async (t) => {
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectBashFilesFromDisk(join(fixtures, 'missing-dep'), ['main.sh']),
   )
-  t.assert.deepEqual([...sources.keys()], ['main.sh'])
+  t.assert.deepStrictEqual([...sources.keys()], ['main.sh'])
   t.assert.ok(warnings.some((w) => w.includes('Missing file') && w.includes('gone.sh')))
 })
 
@@ -158,17 +158,17 @@ test('collectBashFilesFromDisk skips a reference that resolves to a directory (n
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectBashFilesFromDisk(join(fixtures, 'dir-ref'), ['main.sh']),
   )
-  t.assert.deepEqual([...sources.keys()], ['main.sh'])
+  t.assert.deepStrictEqual([...sources.keys()], ['main.sh'])
   t.assert.ok(warnings.some((w) => w.includes('directory reference') && w.includes('libs')))
 })
 
 test('buildBashTree records resolutions among the collected scripts', async (t) => {
   const sources = await collectBashFilesFromDisk(join(fixtures, 'basic'), ['main.sh'])
   const tree = buildBashTree(sources)
-  t.assert.deepEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
+  t.assert.deepStrictEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
   t.assert.equal(tree.resolutions.get('main.sh').get('./lib.sh'), 'lib.sh')
   t.assert.equal(tree.resolutions.get('lib.sh').size, 0)
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('buildBashTree records an unresolved relative .sh reference as missing', (t) => {
@@ -176,13 +176,13 @@ test('buildBashTree records an unresolved relative .sh reference as missing', (t
     buildBashTree(new Map([['main.sh', 'source ./gone.sh\n']])),
   )
   t.assert.equal(tree.resolutions.get('main.sh').size, 0)
-  t.assert.deepEqual(tree.missing, [{ spec: './gone.sh', from: 'main.sh' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: './gone.sh', from: 'main.sh' }])
   t.assert.ok(warnings.some((w) => w.includes('Missing file') && w.includes('./gone.sh')))
 })
 
 test('buildBashTree tolerates an unresolved bare .sh reference (ambiguous: PATH vs runtime cwd)', (t) => {
   const tree = buildBashTree(new Map([['main.sh', 'bash helper.sh\n']]))
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('buildBashTree tolerates unresolved absolute, escaping, and extensionless references', (t) => {
@@ -191,18 +191,18 @@ test('buildBashTree tolerates unresolved absolute, escaping, and extensionless r
   const tree = buildBashTree(new Map([
     ['main.sh', 'source /etc/x.sh\nsource ../outside.sh\nsource ./env\nsource config\n'],
   ]))
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('buildBashTree drops self-references without reporting them missing', (t) => {
   const tree = buildBashTree(new Map([['main.sh', 'source ./main.sh\n']]))
   t.assert.equal(tree.resolutions.get('main.sh').size, 0)
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('loadBash reads a .sh.txt listing and resolves among the listed files', async (t) => {
   const tree = await loadBash(join(fixtures, 'listing/list.sh.txt'))
-  t.assert.deepEqual([...tree.sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
   t.assert.equal(tree.resolutions.get('main.sh').get('./lib.sh'), 'lib.sh')
 })
 

@@ -681,8 +681,8 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const bundle = bundleFromLockfile(lockfile, { root: fullFixture })
 
     t.assert.ok(bundle instanceof Bundle)
-    t.assert.deepEqual(bundle.config, { scope: 'full' })
-    t.assert.deepEqual([...bundle.entries], ['src/entry.js'])
+    t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+    t.assert.deepStrictEqual([...bundle.entries], ['src/entry.js'])
     // Content is read back from disk verbatim.
     t.assert.equal(bundle.sources.get('src/entry.js'), readFileSync(join(fullFixture, 'src/entry.js'), 'utf-8'))
     t.assert.equal(bundle.sources.get('src/hello.js'), readFileSync(join(fullFixture, 'src/hello.js'), 'utf-8'))

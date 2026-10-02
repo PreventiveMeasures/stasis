@@ -144,7 +144,7 @@ test('Lockfile round-trip preserves formats', (t) => {
   const first = parsed.serialize()
   const second = Lockfile.parse(first).serialize()
   t.assert.equal(first, second)
-  t.assert.deepEqual(JSON.parse(first).formats, { 'src/a.js': 'module' })
+  t.assert.deepStrictEqual(JSON.parse(first).formats, { 'src/a.js': 'module' })
 })
 
 test('Lockfile.parse rejects a source bucket without a name or files, as Bundle.parse does', (t) => {
@@ -163,9 +163,9 @@ test('Lockfile.parse and Bundle.parse validate entries: in-root non-empty string
     t.assert.throws(() => Lockfile.parse(lock(bad)), /entr/, `lockfile ${JSON.stringify(bad)}`)
     t.assert.throws(() => Bundle.parse(bundle(bad)), /entr/, `bundle ${JSON.stringify(bad)}`)
   }
-  t.assert.deepEqual([...Lockfile.parse(lock(['src/a.js'])).entries], ['src/a.js'])
-  t.assert.deepEqual([...Bundle.parse(bundle(['src/a.js'])).entries], ['src/a.js'])
-  t.assert.deepEqual([...Bundle.parse(bundle([])).entries], [])
+  t.assert.deepStrictEqual([...Lockfile.parse(lock(['src/a.js'])).entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...Bundle.parse(bundle(['src/a.js'])).entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...Bundle.parse(bundle([])).entries], [])
 })
 
 test('Bundle.serialize and Lockfile.serialize refuse an entry their parsers would reject', (t) => {
@@ -175,9 +175,9 @@ test('Bundle.serialize and Lockfile.serialize refuse an entry their parsers woul
     t.assert.throws(() => new Lockfile({ entries: new Set([bad]), imports: new Map(), formats: new Map() }).serialize(), /lockfile: invalid entry/, `lockfile ${JSON.stringify(bad)}`)
   }
   const bundle = new Bundle({ entries: new Set(['src/a.js']), modules: new Map([['.', { name: 'x', version: '1.0.0', files: { 'src/a.js': 'A' } }]]) })
-  t.assert.deepEqual([...Bundle.parse(bundle.serialize()).entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...Bundle.parse(bundle.serialize()).entries], ['src/a.js'])
   const lockfile = new Lockfile({ entries: new Set(['src/a.js']), modules: new Map([['.', { name: 'x', version: '1.0.0', files: { 'src/a.js': 'sha512-aaa' } }]]), imports: new Map(), formats: new Map() })
-  t.assert.deepEqual([...Lockfile.parse(lockfile.serialize()).entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...Lockfile.parse(lockfile.serialize()).entries], ['src/a.js'])
 })
 
 test('Lockfile.parse requires both imports and formats', (t) => {
@@ -480,7 +480,7 @@ test('Bundle.serialize round-trip preserves entries, modules, formats, imports',
   t.assert.equal(typeof text, 'string')
   const parsed = Bundle.parse(text)
 
-  t.assert.deepEqual([...parsed.entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/a.js'])
   t.assert.equal(parsed.modules.get('.').name, 'x')
   t.assert.equal(parsed.modules.get('.').version, '1.0.0')
   t.assert.equal(parsed.modules.get('.').files['src/a.js'], 'export const x = 1\n')
@@ -507,7 +507,7 @@ test('Bundle.serialize writes the file contents last (sources, then modules)', (
     executable: new Set(['src/a.js']),
     reason: { bundle: ['src/a.js'] },
   })
-  t.assert.deepEqual(Object.keys(JSON.parse(full.serialize())),
+  t.assert.deepStrictEqual(Object.keys(JSON.parse(full.serialize())),
     ['version', 'config', 'entries', 'formats', 'imports', 'executable', 'reason', 'sources', 'modules'])
 
   const nm = new Bundle({
@@ -515,7 +515,7 @@ test('Bundle.serialize writes the file contents last (sources, then modules)', (
     modules: new Map([...modules].filter(([dir]) => dir !== '.')),
     formats: new Map([['node_modules/w/i.js', 'module']]),
   })
-  t.assert.deepEqual(Object.keys(JSON.parse(nm.serialize())), ['version', 'config', 'formats', 'imports', 'modules'])
+  t.assert.deepStrictEqual(Object.keys(JSON.parse(nm.serialize())), ['version', 'config', 'formats', 'imports', 'modules'])
 })
 
 test('Bundle round-trip carries code and resources side-by-side in one bundle', (t) => {
@@ -557,7 +557,7 @@ test('Bundle round-trip carries code and resources side-by-side in one bundle', 
   t.assert.equal(parsed.formats.get('src/icon.svg'), 'resource')
   t.assert.equal(parsed.formats.get('src/logo.png'), 'resource:base64')
   // Code entry survives the entries-only-when-code invariant.
-  t.assert.deepEqual([...parsed.entries], ['src/entry.js'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/entry.js'])
 })
 
 test('serialize emits the resource:base64 content as-is (raw bytes never leak)', (t) => {
@@ -582,7 +582,7 @@ test('serialize emits the resource:base64 content as-is (raw bytes never leak)',
   t.assert.equal(json.formats['node_modules/x/b.bin'], 'resource:base64')
   // Round-trip the decode path the reader uses (Buffer.from(content, 'base64'))
   // matches the original bytes.
-  t.assert.deepEqual(Buffer.from(json.modules['node_modules/x'].files['b.bin'], 'base64'), raw)
+  t.assert.deepStrictEqual(Buffer.from(json.modules['node_modules/x'].files['b.bin'], 'base64'), raw)
 })
 
 test('Bundle round-trip carries resources alone with no entries', (t) => {
@@ -637,7 +637,7 @@ test('Bundle.parse regroups v0 flat sources by inferred module dir', (t) => {
   })
   const parsed = Bundle.parse(v0)
 
-  t.assert.deepEqual([...parsed.modules.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...parsed.modules.keys()].toSorted(), [
     '.',
     'node_modules/@scope/pkg',
     'node_modules/foo',

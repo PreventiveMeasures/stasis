@@ -17,27 +17,27 @@ test('splitNodeModulesPath: a `foo_node_modules` prefix is NOT a dependency (seg
 })
 
 test('splitNodeModulesPath: genuine node_modules paths still split into the right bucket', (t) => {
-  t.assert.deepEqual(splitNodeModulesPath('node_modules/dep/index.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('node_modules/dep/index.js'),
     { dir: 'node_modules/dep', rel: 'index.js', name: 'dep' })
-  t.assert.deepEqual(splitNodeModulesPath('a/node_modules/dep/index.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('a/node_modules/dep/index.js'),
     { dir: 'a/node_modules/dep', rel: 'index.js', name: 'dep' })
-  t.assert.deepEqual(splitNodeModulesPath('node_modules/dep/lib/nested/file.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('node_modules/dep/lib/nested/file.js'),
     { dir: 'node_modules/dep', rel: 'lib/nested/file.js', name: 'dep' })
 })
 
 test('splitNodeModulesPath: scoped packages keep the two-segment name', (t) => {
-  t.assert.deepEqual(splitNodeModulesPath('node_modules/@scope/pkg/index.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('node_modules/@scope/pkg/index.js'),
     { dir: 'node_modules/@scope/pkg', rel: 'index.js', name: '@scope/pkg' })
-  t.assert.deepEqual(splitNodeModulesPath('a/node_modules/@scope/pkg/lib/x.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('a/node_modules/@scope/pkg/lib/x.js'),
     { dir: 'a/node_modules/@scope/pkg', rel: 'lib/x.js', name: '@scope/pkg' })
 })
 
 test('splitNodeModulesPath: nested node_modules resolves to the DEEPEST segment-aligned marker', (t) => {
-  t.assert.deepEqual(splitNodeModulesPath('node_modules/a/node_modules/b/c.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('node_modules/a/node_modules/b/c.js'),
     { dir: 'node_modules/a/node_modules/b', rel: 'c.js', name: 'b' })
   // A `foo_node_modules` deeper than a real one is ignored; the file belongs to package `a`, with
   // the impostor directory living inside `a` as part of `rel`.
-  t.assert.deepEqual(splitNodeModulesPath('node_modules/a/foo_node_modules/b/c.js'),
+  t.assert.deepStrictEqual(splitNodeModulesPath('node_modules/a/foo_node_modules/b/c.js'),
     { dir: 'node_modules/a', rel: 'foo_node_modules/b/c.js', name: 'a' })
 })
 

@@ -34,9 +34,9 @@ test('readToml gives the table tree the loaders walk', (t) => {
   t.assert.ok(isTomlTable(doc) && isTomlTable(doc.package) && isTomlTable(doc.package.version))
   t.assert.equal(Object.getPrototypeOf(doc.dependencies.serde), null)
   // however a table is spelled out, it is one table
-  t.assert.deepEqual(JSON.parse(JSON.stringify(doc.dependencies)), { serde: { version: '1', features: ['derive'] }, log: { version: '0.4' } })
-  t.assert.deepEqual(doc.package.metadata.list.map((x) => x.n), [1, 9223372036854775807n]) // past 2^53: a BigInt
-  t.assert.deepEqual([doc.profile.f.text, Number(doc.profile.f), isTomlTable(doc.profile.f)], ['1.0', 1, false]) // a float is an object, not a table
+  t.assert.deepStrictEqual(JSON.parse(JSON.stringify(doc.dependencies)), { serde: { version: '1', features: ['derive'] }, log: { version: '0.4' } })
+  t.assert.deepStrictEqual(doc.package.metadata.list.map((x) => x.n), [1, 9223372036854775807n]) // past 2^53: a BigInt
+  t.assert.deepStrictEqual([doc.profile.f.text, Number(doc.profile.f), isTomlTable(doc.profile.f)], ['1.0', 1, false]) // a float is an object, not a table
   t.assert.equal(doc.profile.__proto__, 'a key like any other')
   t.assert.equal(isTomlTable([]), false)
 })

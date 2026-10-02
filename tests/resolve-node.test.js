@@ -113,5 +113,5 @@ test('createNodeResolver(diskHost) agrees with require.resolve on every case, hi
     if (expected !== actual) mismatches.push({ parent: parent.slice(d.length), spec, conditions: c, expected, actual })
   }
   t.assert.ok(cases.length > 200)
-  t.assert.deepEqual(mismatches, [])
+  t.assert.deepStrictEqual(mismatches, [])
 }))

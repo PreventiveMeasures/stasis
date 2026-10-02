@@ -31,11 +31,11 @@ test('Bundle.merge unions entries, files, formats, and imports', (t) => {
 
   const merged = a.merge(b)
   // Neither input is mutated.
-  t.assert.deepEqual([...a.entries], ['src/a.js'])
-  t.assert.deepEqual([...b.entries], ['src/b.js'])
+  t.assert.deepStrictEqual([...a.entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...b.entries], ['src/b.js'])
 
-  t.assert.deepEqual([...merged.entries].toSorted(), ['src/a.js', 'src/b.js'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...merged.entries].toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual(
     Object.keys(merged.modules.get('.').files).toSorted(),
     ['src/a.js', 'src/b.js', 'src/shared.js'],
   )
@@ -47,7 +47,7 @@ test('Bundle.merge unions entries, files, formats, and imports', (t) => {
 
   // And the merged bundle is a valid, round-trippable artifact.
   const parsed = Bundle.parse(merged.serialize())
-  t.assert.deepEqual([...parsed.entries].toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual([...parsed.entries].toSorted(), ['src/a.js', 'src/b.js'])
 })
 
 test('Bundle.merge unions node_modules buckets alongside the workspace bucket', (t) => {
@@ -69,7 +69,7 @@ test('Bundle.merge unions node_modules buckets alongside the workspace bucket', 
   })
 
   const merged = a.merge(b)
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...merged.modules.keys()].toSorted(),
     ['.', 'node_modules/dep', 'node_modules/other'],
   )
@@ -85,8 +85,8 @@ test('Bundle.merge is a no-op for a re-added identical file', (t) => {
     formats: [['src/a.js', 'module']],
   })
   const merged = a.merge(a)
-  t.assert.deepEqual([...merged.entries], ['src/a.js'])
-  t.assert.deepEqual(Object.keys(merged.modules.get('.').files), ['src/a.js'])
+  t.assert.deepStrictEqual([...merged.entries], ['src/a.js'])
+  t.assert.deepStrictEqual(Object.keys(merged.modules.get('.').files), ['src/a.js'])
 })
 
 test('Bundle.merge preserves and unions per-platform (metro) edge targets', (t) => {
@@ -108,7 +108,7 @@ test('Bundle.merge preserves and unions per-platform (metro) edge targets', (t) 
   })
   const merged = a.merge(b)
   const edges = merged.imports.get('*').get('src/a.js')
-  t.assert.deepEqual([...edges.get('./p')], [['ios', 'src/p.ios.js'], ['android', 'src/p.android.js']])
+  t.assert.deepStrictEqual([...edges.get('./p')], [['ios', 'src/p.ios.js'], ['android', 'src/p.android.js']])
   t.assert.equal(edges.get('./q'), 'src/q.js')
 })
 
@@ -126,8 +126,8 @@ test('Bundle.merge unions the informational reason provenance per consumer', (t)
     reason: { run: ['src/b.js'], webpack: ['src/b.js'] },
   })
   const merged = a.merge(b)
-  t.assert.deepEqual(merged.reason.run, ['src/a.js', 'src/b.js'])
-  t.assert.deepEqual(merged.reason.webpack, ['src/b.js'])
+  t.assert.deepStrictEqual(merged.reason.run, ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual(merged.reason.webpack, ['src/b.js'])
 })
 
 test('Bundle.merge emits reason consumers in sorted order, not merge order', (t) => {
@@ -145,7 +145,7 @@ test('Bundle.merge emits reason consumers in sorted order, not merge order', (t)
     formats: [['src/a.js', 'module']],
     reason: { add: ['src/a.js'] },
   })
-  t.assert.deepEqual(Object.keys(a.merge(b).reason), ['add', 'webpack'])
+  t.assert.deepStrictEqual(Object.keys(a.merge(b).reason), ['add', 'webpack'])
 })
 
 test('Bundle.merge throws on a scope mismatch', (t) => {
@@ -280,12 +280,12 @@ test('Bundle.withReason attributes every file to the consumer in the reason map'
     formats: [['src/a.js', 'module'], ['src/b.js', 'module']],
   })
   const stamped = b.withReason('bundle')
-  t.assert.deepEqual(stamped.reason, { bundle: ['src/a.js', 'src/b.js'] })
+  t.assert.deepStrictEqual({ ...stamped.reason }, { bundle: ['src/a.js', 'src/b.js'] })
   // The original is untouched, and the file set / structure is preserved.
   t.assert.equal(b.reason, undefined)
-  t.assert.deepEqual([...stamped.sources.keys()].toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual([...stamped.sources.keys()].toSorted(), ['src/a.js', 'src/b.js'])
   // It round-trips through serialize/parse with the reason intact.
-  t.assert.deepEqual(Bundle.parse(stamped.serialize()).reason, { bundle: ['src/a.js', 'src/b.js'] })
+  t.assert.deepStrictEqual(Bundle.parse(stamped.serialize()).reason, { bundle: ['src/a.js', 'src/b.js'] })
 })
 
 test('Bundle.withReason unions with an existing attribution instead of replacing it', (t) => {
@@ -296,7 +296,7 @@ test('Bundle.withReason unions with an existing attribution instead of replacing
     reason: { run: ['src/a.js'] },
   })
   const stamped = b.withReason('bundle')
-  t.assert.deepEqual(stamped.reason, { run: ['src/a.js'], bundle: ['src/a.js'] })
+  t.assert.deepStrictEqual({ ...stamped.reason }, { run: ['src/a.js'], bundle: ['src/a.js'] })
 })
 
 test('Bundle.withReason emits a path-sorted file list, not discovery order', (t) => {
@@ -307,7 +307,7 @@ test('Bundle.withReason emits a path-sorted file list, not discovery order', (t)
     modules: [['.', { name: 'app', version: '1.0.0', files: { 'src/z.js': 'Z', 'src/a.js': 'A' } }]],
     formats: [['src/z.js', 'module'], ['src/a.js', 'module']],
   })
-  t.assert.deepEqual(b.withReason('bundle').reason, { bundle: ['src/a.js', 'src/z.js'] })
+  t.assert.deepStrictEqual({ ...b.withReason('bundle').reason }, { bundle: ['src/a.js', 'src/z.js'] })
 })
 
 test('Bundle.serialize canonicalizes reason: consumers sorted, files deduped and path-sorted', (t) => {
@@ -324,8 +324,8 @@ test('Bundle.serialize canonicalizes reason: consumers sorted, files deduped and
     reason: { run: ['src/b.js', 'src/a.js', 'src/b.js'], add: ['src/b.js'] },
   })
   const out = JSON.parse(Bundle.parse(raw).serialize())
-  t.assert.deepEqual(Object.keys(out.reason), ['add', 'run'])
-  t.assert.deepEqual(out.reason, { add: ['src/b.js'], run: ['src/a.js', 'src/b.js'] })
+  t.assert.deepStrictEqual(Object.keys(out.reason), ['add', 'run'])
+  t.assert.deepStrictEqual(out.reason, { add: ['src/b.js'], run: ['src/a.js', 'src/b.js'] })
 })
 
 // --- Bundle.parse -----------------------------------------------------------
@@ -358,7 +358,7 @@ test('Bundle.parse accepts distinct flat keys from nested buckets', (t) => {
     formats: { 'src/entry.js': 'module', 'node_modules/a/index.js': 'commonjs', 'node_modules/a/b/c.js': 'commonjs' },
     imports: {},
   })
-  t.assert.deepEqual([...Bundle.parse(legit).sources.keys()].toSorted(),
+  t.assert.deepStrictEqual([...Bundle.parse(legit).sources.keys()].toSorted(),
     ['node_modules/a/b/c.js', 'node_modules/a/index.js', 'src/entry.js'])
 })
 
@@ -388,8 +388,8 @@ test('Lockfile.merge unions entries, modules, imports, and formats', (t) => {
   })
 
   const merged = a.merge(b)
-  t.assert.deepEqual([...merged.entries].toSorted(), ['src/a.js', 'src/b.js'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...merged.entries].toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual(
     Object.keys(merged.modules.get('.').files).toSorted(),
     ['src/a.js', 'src/b.js', 'src/shared.js'],
   )
@@ -398,7 +398,7 @@ test('Lockfile.merge unions entries, modules, imports, and formats', (t) => {
 
   // Round-trips.
   const reparsed = Lockfile.parse(merged.serialize())
-  t.assert.deepEqual([...reparsed.entries].toSorted(), ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual([...reparsed.entries].toSorted(), ['src/a.js', 'src/b.js'])
 })
 
 test('Lockfile.merge throws when the same file has a different integrity hash', (t) => {

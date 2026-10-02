@@ -36,7 +36,7 @@ test('a `..`-prefixed name passes the symlink-containment and entry checks; a `.
     writeFileSync(outside, '')
     symlinkSync(outside, join(dir, 'escape.js'))
     t.assert.throws(() => assertRealPathWithinBase(dir, dir, 'escape.js'), /escaping bundle root/)
-    t.assert.deepEqual(normalizeEntries(['..cache/x.js'], dir), ['..cache/x.js'])
+    t.assert.deepStrictEqual(normalizeEntries(['..cache/x.js'], dir), ['..cache/x.js'])
     t.assert.throws(() => normalizeEntries(['../x.js'], dir), /escapes baseDir/)
   } finally {
     rmSync(dir, { recursive: true, force: true })

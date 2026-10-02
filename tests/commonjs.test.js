@@ -109,7 +109,7 @@ describe('CommonJS handling (spawned, concurrent)', { concurrency: CONCURRENCY }
     t.assert.equal(after, before, 'lock=add against a matching committed lockfile must be a no-op')
 
     const parsed = JSON.parse(after)
-    t.assert.deepEqual(parsed.entries, ['src/entry.cjs'])
+    t.assert.deepStrictEqual(parsed.entries, ['src/entry.cjs'])
     t.assert.ok(parsed.sources['.'].files['src/entry.cjs'].startsWith('sha512-'))
     t.assert.ok(parsed.sources['.'].files['src/hello.cjs'].startsWith('sha512-'))
   }))

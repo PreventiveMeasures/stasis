@@ -204,7 +204,7 @@ for (const [packageManager, m] of Object.entries(MANAGERS)) {
       t.assert.equal(built.bundle.serialize(), oracles[packageManager].bundle)
       t.assert.ok(built.lockfile instanceof Lockfile)
       t.assert.equal(built.lockfile.serialize(), oracles[packageManager].lockfile)
-      t.assert.deepEqual(pick(built.stats, m.stats), m.stats)
+      t.assert.deepStrictEqual(pick(built.stats, m.stats), m.stats)
       t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
     })
 
@@ -300,7 +300,7 @@ for (const [packageManager, m] of Object.entries(MANAGERS)) {
       t.assert.equal(bundle, oracles[packageManager].bundle)
       t.assert.equal(lockfile, oracles[packageManager].lockfile)
       t.assert.ok(read.length >= 86, 'the tarballs are read from the cache')
-      t.assert.deepEqual(read.filter((p) => !p.startsWith(`${cacheRoot}/`)), [], 'nothing else on disk is read')
+      t.assert.deepStrictEqual(read.filter((p) => !p.startsWith(`${cacheRoot}/`)), [], 'nothing else on disk is read')
     }))
   })
 }
@@ -330,7 +330,7 @@ describe('buildVfsBundle with pnpm, its cache and its lockfile', { concurrency: 
     const warm = await build(projectVfs('pnpm'))
     t.assert.equal(warm.stats.tarballs, 86)
     t.assert.equal(warm.bundle.serialize(), oracles.pnpm.bundle)
-    t.assert.deepEqual(await mtimes(), stamped, 'every tarball was served from the cache')
+    t.assert.deepStrictEqual(await mtimes(), stamped, 'every tarball was served from the cache')
     // Corrupt one cached tarball: the build stops there, fetches nothing over it, and leaves the
     // file for inspection.
     const cachedMs = join(tarballDir(), 'ms@2.1.3.tgz')
@@ -372,7 +372,7 @@ describe('buildVfsBundle with yarn1, its lockfile', { concurrency: 1 }, () => {
     const tree = await loadNodeModules({ vfs: projectVfs('yarn1'), packageManager: 'yarn1', cwd: '/src' })
     t.assert.equal(tree.root, '/')
     t.assert.equal(tree.packageManagerVersion, '1.22.22', 'as the fixture\'s packageManager pins')
-    t.assert.deepEqual(tree.vfs.readdir('/node_modules/express/node_modules'), ['debug', 'ms'])
+    t.assert.deepStrictEqual(tree.vfs.readdir('/node_modules/express/node_modules'), ['debug', 'ms'])
   })
 
   test('a resolved URL off the registry is refused', async (t) => {

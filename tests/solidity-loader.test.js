@@ -68,28 +68,28 @@ const captureWarningsAsync = async (fn) => {
 
 test('extractSolImports finds plain double-quote imports', (t) => {
   const src = readFileSync(join(fixtures, 'basic/src/A.sol'), 'utf8')
-  t.assert.deepEqual(extractSolImports(src), ['./B.sol'])
+  t.assert.deepStrictEqual(extractSolImports(src), ['./B.sol'])
 })
 
 test('extractSolImports finds remapped imports', (t) => {
   const src = readFileSync(join(fixtures, 'with-remappings-txt/src/A.sol'), 'utf8')
-  t.assert.deepEqual(extractSolImports(src), ['@openzeppelin/contracts/utils/Math.sol'])
+  t.assert.deepStrictEqual(extractSolImports(src), ['@openzeppelin/contracts/utils/Math.sol'])
 })
 
 test('parseRemappings handles one-per-line entries and refuses an invalid line, naming it', (t) => {
   const out = parseRemappings('@a/=lib/a/\n  @b/=lib/b/\r\n\n')
-  t.assert.deepEqual(out, [
+  t.assert.deepStrictEqual(out, [
     { context: null, prefix: '@a/', target: 'lib/a/' },
     { context: null, prefix: '@b/', target: 'lib/b/' },
   ])
   t.assert.throws(() => parseRemappings('@a/=lib/a/\ngarbage line\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
   // Lines are trimmed as Rust trims them: a byte-order mark isn't whitespace, and stays.
-  t.assert.deepEqual(parseRemappings('\uFEFFx/=a/\n'), [{ context: null, prefix: '\uFEFFx/', target: 'a/' }])
+  t.assert.deepStrictEqual(parseRemappings('\uFEFFx/=a/\n'), [{ context: null, prefix: '\uFEFFx/', target: 'a/' }])
   t.assert.throws(() => parseRemappings('\n=empty-prefix\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
 })
 
 test('parseRemappings reads a `context:` before the prefix', (t) => {
-  t.assert.deepEqual(parseRemappings('lib/a/:ds-test/=lib/a/lib/ds-test/src/\n:@b/=lib/b/\n'), [
+  t.assert.deepStrictEqual(parseRemappings('lib/a/:ds-test/=lib/a/lib/ds-test/src/\n:@b/=lib/b/\n'), [
     { context: 'lib/a/', prefix: 'ds-test/', target: 'lib/a/lib/ds-test/src/' },
     { context: null, prefix: '@b/', target: 'lib/b/' },
   ])
@@ -97,21 +97,21 @@ test('parseRemappings reads a `context:` before the prefix', (t) => {
 
 test('parseRemappingsFromToml extracts entries from a remappings array', (t) => {
   const toml = readFileSync(join(fixtures, 'with-foundry-toml/foundry.toml'), 'utf8')
-  t.assert.deepEqual(parseRemappingsFromToml(toml), [
+  t.assert.deepStrictEqual(parseRemappingsFromToml(toml), [
     { context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' },
   ])
 })
 
 test('parseRemappingsFromToml reads [profile.default], not the first `remappings` in the file', (t) => {
   const toml = '[profile.ci]\nremappings = ["@x/=lib/ci/"]\n\n[profile.default]\nremappings = [\n  # comment\n  "@x/=lib/default/", # trailing\n]\n'
-  t.assert.deepEqual(parseRemappingsFromToml(toml, { env: {} }), [{ context: null, prefix: '@x/', target: 'lib/default/' }])
+  t.assert.deepStrictEqual(parseRemappingsFromToml(toml, { env: {} }), [{ context: null, prefix: '@x/', target: 'lib/default/' }])
   // FOUNDRY_PROFILE overlays the selected profile's keys on the default's.
-  t.assert.deepEqual(parseRemappingsFromToml(toml, { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/ci/' }])
-  t.assert.deepEqual(parseRemappingsFromToml('[profile.default]\nremappings = ["@x/=lib/d/"]\n[profile.ci]\nsrc = "s"\n', { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/d/' }])
+  t.assert.deepStrictEqual(parseRemappingsFromToml(toml, { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/ci/' }])
+  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.default]\nremappings = ["@x/=lib/d/"]\n[profile.ci]\nsrc = "s"\n', { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/d/' }])
 })
 
 test('parseRemappingsFromToml returns [] when no remappings key present', (t) => {
-  t.assert.deepEqual(parseRemappingsFromToml('[profile.default]\nsrc = "src"\n'), [])
+  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.default]\nsrc = "src"\n'), [])
 })
 
 test('resolveSolImport resolves relative imports against the source file', (t) => {
@@ -233,14 +233,14 @@ test('resolveSolImport project-relative fallback is disabled without baseDir', (
 test('collectSolidityFilesFromDisk walks imports starting from entries', async (t) => {
   const baseDir = join(fixtures, 'basic')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], [])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
 })
 
 test('collectSolidityFilesFromDisk follows remappings', async (t) => {
   const baseDir = join(fixtures, 'with-remappings-txt')
   const remappings = await readRemappingsFile(join(baseDir, 'remappings.txt'))
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], remappings)
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...sources.keys()].toSorted(),
     ['lib/openzeppelin-contracts/contracts/utils/Math.sol', 'src/A.sol'],
   )
@@ -249,13 +249,13 @@ test('collectSolidityFilesFromDisk follows remappings', async (t) => {
 test('collectSolidityFilesFromDisk loads each shared file once', async (t) => {
   const baseDir = join(fixtures, 'shared')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol', 'src/B.sol'], [])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol', 'src/Shared.sol'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol', 'src/Shared.sol'])
 })
 
 test('collectSolidityFilesFromDisk accepts a non-relative import matching a caller-listed entry', async (t) => {
   const baseDir = join(fixtures, 'non-relative-entry')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol', 'src/B.sol'], [])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
 })
 
 test('collectSolidityFilesFromDisk walks project-relative imports even when the target is not a listed entry', async (t) => {
@@ -264,7 +264,7 @@ test('collectSolidityFilesFromDisk walks project-relative imports even when the 
   // via the project-relative fallback in resolveSolImport.
   const baseDir = join(fixtures, 'non-relative-entry')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/B.sol'], [])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.sol', 'src/B.sol'])
 })
 
 test('collectSolidityFilesFromDisk warns and skips a missing import', async (t) => {
@@ -272,7 +272,7 @@ test('collectSolidityFilesFromDisk warns and skips a missing import', async (t) 
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], []),
   )
-  t.assert.deepEqual([...sources.keys()], ['src/A.sol'])
+  t.assert.deepStrictEqual([...sources.keys()], ['src/A.sol'])
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('@missing/Nope.sol')))
 })
 
@@ -284,7 +284,7 @@ test('collectSolidityFilesFromDisk warns and skips when a resolved file is missi
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], remappings),
   )
-  t.assert.deepEqual([...sources.keys()], ['src/A.sol'])
+  t.assert.deepStrictEqual([...sources.keys()], ['src/A.sol'])
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('lib/oz/X.sol')))
 })
 
@@ -292,18 +292,18 @@ test('buildSolidityTree returns sources, resolutions, and a missing-imports list
   const baseDir = join(fixtures, 'basic')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], [])
   const tree = buildSolidityTree(sources, { remappings: [] })
-  t.assert.deepEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
+  t.assert.deepStrictEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
   t.assert.equal(tree.sources.get('src/A.sol'), sources.get('src/A.sol'))
   t.assert.equal(tree.resolutions.get('src/A.sol').get('./B.sol'), 'src/B.sol')
   t.assert.equal(tree.resolutions.get('src/B.sol').size, 0)
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('buildSolidityTree records unresolved imports in `missing`', async (t) => {
   const baseDir = join(fixtures, 'missing')
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], [])
   const { warnings, result: tree } = captureWarnings(() => buildSolidityTree(sources, { remappings: [] }))
-  t.assert.deepEqual(tree.missing, [{ spec: '@missing/Nope.sol', from: 'src/A.sol' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: '@missing/Nope.sol', from: 'src/A.sol' }])
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('@missing/Nope.sol')))
 })
 
@@ -319,17 +319,17 @@ test('buildSolidityTree warns and produces an empty resolution for a missing imp
 
 test('readRemappingsFile reads a remappings.txt', async (t) => {
   const r = await readRemappingsFile(join(fixtures, 'with-remappings-txt/remappings.txt'))
-  t.assert.deepEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
+  t.assert.deepStrictEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
 })
 
 test('readRemappingsFile reads a foundry.toml', async (t) => {
   const r = await readRemappingsFile(join(fixtures, 'with-foundry-toml/foundry.toml'), { env: {} })
-  t.assert.deepEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
+  t.assert.deepStrictEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
 })
 
 test('loadSolidity reads a .sol.txt listing with a remappings.txt header', async (t) => {
   const tree = await loadSolidity(join(fixtures, 'listing-txt/list.sol.txt'))
-  t.assert.deepEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
   // mapping file itself must NOT appear in sources
   t.assert.ok(!tree.sources.has('remappings.txt'))
   t.assert.equal(tree.resolutions.get('src/A.sol').get('@oz/X.sol'), 'lib/oz/X.sol')
@@ -337,7 +337,7 @@ test('loadSolidity reads a .sol.txt listing with a remappings.txt header', async
 
 test('loadSolidity reads a .sol.txt listing with a foundry.toml header', async (t) => {
   const tree = await loadSolidity(join(fixtures, 'listing-toml/list.sol.txt'))
-  t.assert.deepEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
   t.assert.ok(!tree.sources.has('foundry.toml'))
 })
 
@@ -379,7 +379,7 @@ test('extractSolImports skips imports inside // and /* */ comments', (t) => {
     '/// @dev see import "./Doc.sol"',
     'import "./Real.sol"; // import "./Trailing.sol";',
   ].join('\n')
-  t.assert.deepEqual(extractSolImports(src), ['./Real.sol'])
+  t.assert.deepStrictEqual(extractSolImports(src), ['./Real.sol'])
 })
 
 test('extractSolImports ignores the word import and paths inside string literals', (t) => {
@@ -391,7 +391,7 @@ test('extractSolImports ignores the word import and paths inside string literals
     '  uint importer = 0x1f; uint _import = 1e18;',
     '}',
   ].join('\n')
-  t.assert.deepEqual(extractSolImports(src), [])
+  t.assert.deepStrictEqual(extractSolImports(src), [])
 })
 
 test('extractSolImports reads every import form, over several lines', (t) => {
@@ -405,7 +405,7 @@ test('extractSolImports reads every import form, over several lines', (t) => {
     '} from "@scope/pkg/D.sol";',
     'import {G} from "lib/\\x47.sol";',
   ].join('\n')
-  t.assert.deepEqual(extractSolImports(src), ['./A.sol', './B.sol', './C.sol', '@scope/pkg/D.sol', 'lib/G.sol'])
+  t.assert.deepStrictEqual(extractSolImports(src), ['./A.sol', './B.sol', './C.sol', '@scope/pkg/D.sol', 'lib/G.sol'])
 })
 
 // --- solc's remapping rules -------------------------------------------------------------------
@@ -463,7 +463,7 @@ test('findRemappingsWithContext matches forge on its geb/recursive/hardhat layou
   'hh/node_modules/eth-gas-reporter/mock/contracts/ConvertLib.sol': '',
 }, (t, dir) => {
   const global = (lib) => findRemappingsWithContext(join(dir, lib)).global.map((r) => `${r.name}=${r.path.slice(dir.length + 1)}`).toSorted()
-  t.assert.deepEqual(global('geb/lib'), [
+  t.assert.deepStrictEqual(global('geb/lib'), [
     'ds-auth/=geb/lib/ds-token/lib/ds-stop/lib/ds-auth/src/',
     'ds-math/=geb/lib/ds-token/lib/ds-math/src/',
     'ds-note/=geb/lib/ds-token/lib/ds-stop/lib/ds-note/src/',
@@ -472,14 +472,14 @@ test('findRemappingsWithContext matches forge on its geb/recursive/hardhat layou
     'ds-token/=geb/lib/ds-token/src/',
     'erc20/=geb/lib/ds-token/lib/erc20/src/',
   ])
-  t.assert.deepEqual(global('rec/lib'), [
+  t.assert.deepStrictEqual(global('rec/lib'), [
     'ds-note/=rec/lib/repo1/lib/ds-token/lib/ds-stop/lib/ds-note/src/',
     'ds-test/=rec/lib/repo1/lib/ds-test/src/',
     'openzeppelin-contracts/=rec/lib/repo1/lib/openzeppelin-contracts/contracts/',
     'repo1/=rec/lib/repo1/src/',
     'solmate/=rec/lib/repo1/lib/solmate/src/',
   ])
-  t.assert.deepEqual(global('hh/node_modules'), [
+  t.assert.deepStrictEqual(global('hh/node_modules'), [
     '@aave/=hh/node_modules/@aave/',
     '@openzeppelin/=hh/node_modules/@openzeppelin/',
     'eth-gas-reporter/=hh/node_modules/eth-gas-reporter/',
@@ -498,7 +498,7 @@ test('foundryProject auto-detects lib/ remappings with no remappings.txt, and a 
 }, (t, dir) => {
   // Also what `forge remappings` prints for this tree (foundry v1.8.3): the dependency's
   // remappings.txt, relativised onto it, and its own forge-std copy scoped to it.
-  t.assert.deepEqual(forgeRemappings(dir), [
+  t.assert.deepStrictEqual(forgeRemappings(dir), [
     'lib/openzeppelin-contracts/:forge-std/=lib/openzeppelin-contracts/lib/forge-std/src/',
     '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',
     'ds-test/=lib/forge-std/lib/ds-test/src/',
@@ -506,7 +506,7 @@ test('foundryProject auto-detects lib/ remappings with no remappings.txt, and a 
     'openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/',
   ])
   const { files } = foundryProject(dir, { env: {} })
-  t.assert.deepEqual(files.toSorted(), ['foundry.toml', 'lib/openzeppelin-contracts/foundry.toml', 'lib/openzeppelin-contracts/remappings.txt'])
+  t.assert.deepStrictEqual(files.toSorted(), ['foundry.toml', 'lib/openzeppelin-contracts/foundry.toml', 'lib/openzeppelin-contracts/remappings.txt'])
 }))
 
 test('foundryProject orders user remappings like forge and drops aliases of src/test/script', withProject({
@@ -515,9 +515,9 @@ test('foundryProject orders user remappings like forge and drops aliases of src/
   'lib/forge-std/src/Test.sol': '',
 }, (t, dir) => {
   // `@a/b/` is shadowed by the `@a/` listed before it; unslashed ones get their `/`.
-  t.assert.deepEqual(forgeRemappings(dir), ['@a/=lib/a/', '@oz/=lib/oz/', 'x/=lib/x/', 'forge-std/=lib/forge-std/src/'])
-  t.assert.deepEqual(forgeRemappings(dir, { FOUNDRY_PROFILE: 'ci' }), ['@a/=lib/a/', '@ci/=lib/ci/', 'forge-std/=lib/forge-std/src/'])
-  t.assert.deepEqual(forgeRemappings(dir, { FOUNDRY_REMAPPINGS: '@env/=lib/env/' }), ['@env/=lib/env/', '@a/=lib/a/', '@oz/=lib/oz/', 'x/=lib/x/', 'forge-std/=lib/forge-std/src/'])
+  t.assert.deepStrictEqual(forgeRemappings(dir), ['@a/=lib/a/', '@oz/=lib/oz/', 'x/=lib/x/', 'forge-std/=lib/forge-std/src/'])
+  t.assert.deepStrictEqual(forgeRemappings(dir, { FOUNDRY_PROFILE: 'ci' }), ['@a/=lib/a/', '@ci/=lib/ci/', 'forge-std/=lib/forge-std/src/'])
+  t.assert.deepStrictEqual(forgeRemappings(dir, { FOUNDRY_REMAPPINGS: '@env/=lib/env/' }), ['@env/=lib/env/', '@a/=lib/a/', '@oz/=lib/oz/', 'x/=lib/x/', 'forge-std/=lib/forge-std/src/'])
 }))
 
 test('foundryProject honours auto_detect_remappings = false and `extends`', withProject({
@@ -525,8 +525,8 @@ test('foundryProject honours auto_detect_remappings = false and `extends`', with
   'base.toml': '[profile.default]\nremappings = ["@base/=lib/base/"]\n',
   'lib/forge-std/src/Test.sol': '',
 }, (t, dir) => {
-  t.assert.deepEqual(forgeRemappings(dir), ['@base/=lib/base/', '@local/=lib/local/'])
-  t.assert.deepEqual(foundryProject(dir, { env: {} }).files.toSorted(), ['base.toml', 'foundry.toml'])
+  t.assert.deepStrictEqual(forgeRemappings(dir), ['@base/=lib/base/', '@local/=lib/local/'])
+  t.assert.deepStrictEqual(foundryProject(dir, { env: {} }).files.toSorted(), ['base.toml', 'foundry.toml'])
 }))
 
 test('foundryProject reads a profile\'s sub-tables however they are spelled: `extends` as a table, a `no-collision` over `fuzz`', withProject({
@@ -546,13 +546,13 @@ test('discoverSolidityConfig: --mapping takes exactly that file\'s remappings; n
 }, async (t, dir) => {
   const pinned = await discoverSolidityConfig(dir, { mappingFile: 'mapping.txt', env: {} })
   // Slash-terminated as forge reads a remappings file.
-  t.assert.deepEqual(pinned.remappings.map(show), ['@m/=lib/m/', 'forge-std/=lib/forge-std/src/', 'console.sol=lib/forge-std/src/console.sol'])
+  t.assert.deepStrictEqual(pinned.remappings.map(show), ['@m/=lib/m/', 'forge-std/=lib/forge-std/src/', 'console.sol=lib/forge-std/src/console.sol'])
   // ...and the root foundry.toml, read for its lib dirs.
-  t.assert.deepEqual(pinned.files, ['mapping.txt', 'foundry.toml'])
-  t.assert.deepEqual((await discoverSolidityConfig(dir, { env: {} })).remappings.map(show), ['forge-std/=lib/forge-std/src/'])
+  t.assert.deepStrictEqual(pinned.files, ['mapping.txt', 'foundry.toml'])
+  t.assert.deepStrictEqual((await discoverSolidityConfig(dir, { env: {} })).remappings.map(show), ['forge-std/=lib/forge-std/src/'])
   const plain = await discoverSolidityConfig(join(dir, 'plain'), { env: {} })
-  t.assert.deepEqual(plain.remappings.map(show), ['@p/=lib/p/'])
-  t.assert.deepEqual(plain.libs, [])
+  t.assert.deepStrictEqual(plain.remappings.map(show), ['@p/=lib/p/'])
+  t.assert.deepStrictEqual(plain.libs, [])
 }))
 
 // --- Lookups past the remappings -------------------------------------------------------------
@@ -596,7 +596,7 @@ test('expandSolidityEntries replaces a directory with the .sol files under it', 
   'docs/': null,
 }, (t, dir) => {
   symlinkSync(join(dir, 'src'), join(dir, 'test/linked'))
-  t.assert.deepEqual(expandSolidityEntries(dir, ['src', 'test', 'src/A.sol']), [
+  t.assert.deepStrictEqual(expandSolidityEntries(dir, ['src', 'test', 'src/A.sol']), [
     'src/A.sol', 'src/nested/B.sol', 'test/A.t.sol', 'test/linked/A.sol', 'test/linked/nested/B.sol',
   ])
   t.assert.throws(() => expandSolidityEntries(dir, ['docs']), /No \.sol files under docs\//u)
@@ -606,21 +606,21 @@ test('expandSolidityEntries replaces a directory with the .sol files under it', 
 
 test('extractSolImports ends a // comment at \r and reads escapes as UTF-8 bytes, as solc does', (t) => {
   // solc-js 0.8.30: the import after a CR-only line break is live; `\xc3\xa9` is `é`.
-  t.assert.deepEqual(extractSolImports('// comment\rimport "./A.sol";'), ['./A.sol'])
-  t.assert.deepEqual(extractSolImports('import "./\\xc3\\xa9.sol";\nimport "./\\u00e9x.sol";'), ['./é.sol', './éx.sol'])
+  t.assert.deepStrictEqual(extractSolImports('// comment\rimport "./A.sol";'), ['./A.sol'])
+  t.assert.deepStrictEqual(extractSolImports('import "./\\xc3\\xa9.sol";\nimport "./\\u00e9x.sol";'), ['./é.sol', './éx.sol'])
   // An unterminated literal (solc rejects the file) ends the import instead of taking a later string.
-  t.assert.deepEqual(extractSolImports('import "./a\rb.sol"; string s = "x";'), [])
+  t.assert.deepStrictEqual(extractSolImports('import "./a\rb.sol"; string s = "x";'), [])
 })
 
 test('foundry.toml profiles: legacy [<name>] tables, case-insensitive names, quoted dotted names, escapes', (t) => {
   // `[default]` is still read (forge warns), and `[profile.<name>]` wins key by key.
-  t.assert.deepEqual(foundryTomlRemappings('[default]\nremappings = ["@legacy/=lib/legacy/"]\n').map((r) => r.name), ['@legacy/'])
-  t.assert.deepEqual(foundryTomlRemappings('[default]\nremappings = ["@old/=a/"]\n[profile.default]\nremappings = ["@new/=b/"]\n').map((r) => r.name), ['@new/'])
-  t.assert.deepEqual(parseRemappingsFromToml('[profile.CI]\nremappings = ["@ci/=lib/ci/"]\n', { env: { FOUNDRY_PROFILE: 'ci' } }).map((r) => r.prefix), ['@ci/'])
-  t.assert.deepEqual(parseRemappingsFromToml('[profile."ci.fast"]\nremappings = ["@f/=lib/\\u0066/"]\n', { env: { FOUNDRY_PROFILE: 'ci.fast' } }), [{ context: null, prefix: '@f/', target: 'lib/f/' }])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[default]\nremappings = ["@legacy/=lib/legacy/"]\n').map((r) => r.name), ['@legacy/'])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[default]\nremappings = ["@old/=a/"]\n[profile.default]\nremappings = ["@new/=b/"]\n').map((r) => r.name), ['@new/'])
+  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.CI]\nremappings = ["@ci/=lib/ci/"]\n', { env: { FOUNDRY_PROFILE: 'ci' } }).map((r) => r.prefix), ['@ci/'])
+  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile."ci.fast"]\nremappings = ["@f/=lib/\\u0066/"]\n', { env: { FOUNDRY_PROFILE: 'ci.fast' } }), [{ context: null, prefix: '@f/', target: 'lib/f/' }])
   // Standalone sections are not profiles; a top-level `remappings` is a mapping file's fallback.
-  t.assert.deepEqual(foundryTomlRemappings('[fmt]\nremappings = ["@x/=x/"]\n'), [])
-  t.assert.deepEqual(foundryTomlRemappings('remappings = ["@top/=lib/top/"]\n').map((r) => r.name), ['@top/'])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[fmt]\nremappings = ["@x/=x/"]\n'), [])
+  t.assert.deepStrictEqual(foundryTomlRemappings('remappings = ["@top/=lib/top/"]\n').map((r) => r.name), ['@top/'])
 })
 
 test('foundryTomlRemappings names the line of a foundry.toml that isn\'t TOML', (t) => {
@@ -683,7 +683,7 @@ test('solidityOwnership decides a path\'s owner from where it really is, and cat
   t.assert.equal(owner('node_modules/foo/F.sol'), 'dependency')
   t.assert.equal(owner('node_modules/.pnpm/foo@1/node_modules/bar/B.sol'), 'dependency')
   t.assert.equal(owner('secrets/Keys.sol'), 'project')
-  t.assert.deepEqual(of('lib/dep/src/Nope.sol'), { real: null, outside: false, dependency: false, escape: null, reason: null })
+  t.assert.deepStrictEqual(of('lib/dep/src/Nope.sol'), { real: null, outside: false, dependency: false, escape: null, reason: null })
 }))
 
 test('solidityOwnership: a link from outside the root back into it is untrusted, unless the root was named through it', async (t) => {
@@ -696,11 +696,11 @@ test('solidityOwnership: a link from outside the root back into it is untrusted,
     writeFileSync(join(proj, 'Own.sol'), '')
     symlinkSync('../../shared/evil', join(proj, 'lib/evil')) // the project's link to a dependency elsewhere
     symlinkSync('../../../proj/.env', join(tmp, 'shared/evil/src/Evil.sol')) // ...which links back in
-    t.assert.deepEqual(solidityOwnership(proj, { dirs: ['lib'] }).of('lib/evil/src/Evil.sol').escape, { link: '../shared/evil/src/Evil.sol', root: null })
+    t.assert.deepStrictEqual(solidityOwnership(proj, { dirs: ['lib'] }).of('lib/evil/src/Evil.sol').escape, { link: '../shared/evil/src/Evil.sol', root: null })
     // Named through a link (a symlinked checkout), an absolute link through that name is fine.
     symlinkSync(proj, join(tmp, 'named'))
     symlinkSync(join(tmp, 'named/Own.sol'), join(proj, 'Abs.sol'))
-    t.assert.deepEqual(solidityOwnership(join(tmp, 'named')).of('Abs.sol'), { real: 'Own.sol', outside: false, dependency: false, escape: null, reason: null })
+    t.assert.deepStrictEqual(solidityOwnership(join(tmp, 'named')).of('Abs.sol'), { real: 'Own.sol', outside: false, dependency: false, escape: null, reason: null })
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
@@ -747,14 +747,14 @@ test('readGitmodules reads .gitmodules as git does: quotes, escapes, comments, k
     '',
   ].join('\n'),
 }, (t, dir) => {
-  t.assert.deepEqual(readGitmodules(dir), [
+  t.assert.deepStrictEqual(readGitmodules(dir), [
     { path: 'vendor/a', url: 'https://github.com/o/a', branch: 'v1' },
     { path: 'lib/bx', url: 'git@github.com:o/b.git', branch: undefined },
     { path: 'vendor/d', url: 'https://github.com/o/d', branch: undefined },
     { path: 'lib/e', url: '../e.git', branch: undefined },
     { path: 'lib/f', url: undefined, branch: undefined },
   ])
-  t.assert.deepEqual(readGitmodules(join(dir, 'none')), [])
+  t.assert.deepStrictEqual(readGitmodules(join(dir, 'none')), [])
 }))
 
 test('readGitmodules reads what the library refuses submodule by submodule, warning what it drops', withProject({}, (t, dir) => {
@@ -801,7 +801,7 @@ test('readGitmodules reads what the library refuses submodule by submodule, warn
       '[submodule.Y], a section git reads as [submodule "y"]; reading it as that',
     ]],
   ]) {
-    t.assert.deepEqual(read(text), { submodules, warnings }, text)
+    t.assert.deepStrictEqual(read(text), { submodules, warnings }, text)
   }
 }))
 
@@ -833,7 +833,7 @@ test('readGitmodules refuses a .gitmodules git refuses, rather than read past wh
   const warn = console.warn
   console.warn = () => {}
   try {
-    t.assert.deepEqual(readGitmodules(dir), [{ path: 'lib/x', url: 'https://github.com/o/x', branch: undefined }])
+    t.assert.deepStrictEqual(readGitmodules(dir), [{ path: 'lib/x', url: 'https://github.com/o/x', branch: undefined }])
   } finally {
     console.warn = warn
   }
@@ -841,7 +841,7 @@ test('readGitmodules refuses a .gitmodules git refuses, rather than read past wh
 
 test('a remappings.txt taken as written (solc) may map a prefix to nothing', (t) => {
   const remappings = parseRemappings('x/=\nctx:y/=\n')
-  t.assert.deepEqual(remappings, [{ context: null, prefix: 'x/', target: '' }, { context: 'ctx', prefix: 'y/', target: '' }])
+  t.assert.deepStrictEqual(remappings, [{ context: null, prefix: 'x/', target: '' }, { context: 'ctx', prefix: 'y/', target: '' }])
   t.assert.equal(resolveSolImport('x/A.sol', 'src/B.sol', { remappings }), 'A.sol')
 })
 
@@ -863,8 +863,8 @@ test('a legacy [default] table\'s `extends` is ignored, as forge ignores it', wi
   'base.toml': '[profile.default]\nremappings = ["x/=lib/elsewhere/"]\n',
 }, (t, dir) => {
   const { remappings, files } = foundryProject(dir, { env: {} })
-  t.assert.deepEqual(files, ['foundry.toml'])
-  t.assert.deepEqual(remappings, [])
+  t.assert.deepStrictEqual(files, ['foundry.toml'])
+  t.assert.deepStrictEqual(remappings, [])
 }))
 
 test('discoverSolidityConfig with a mapping file: a foundry.toml forge rejects still gives lib dirs, and FOUNDRY_PROFILE is reported when it picks them', withProject({
@@ -879,15 +879,15 @@ test('discoverSolidityConfig with a mapping file: a foundry.toml forge rejects s
   const discover = (sub, env) => discoverSolidityConfig(join(dir, sub), { mappingFile: 'remappings.txt', env })
   try {
     const root = await discover('.', {})
-    t.assert.deepEqual([root.libs, root.envUsed], [['lib'], []])
+    t.assert.deepStrictEqual([root.libs, root.envUsed], [['lib'], []])
     t.assert.ok(lines.some((l) => l.includes('Using the default lib dirs') && l.includes('missing.toml')))
     const ci = await discover('ci', { FOUNDRY_PROFILE: 'ci' })
-    t.assert.deepEqual([ci.libs, ci.envUsed], [['deps'], ['FOUNDRY_PROFILE=ci']])
+    t.assert.deepStrictEqual([ci.libs, ci.envUsed], [['deps'], ['FOUNDRY_PROFILE=ci']])
     // A profile foundry.toml doesn't have picks nothing: said, and not reported as shaping the result.
     lines.length = 0
     const nope = await discover('ci', { FOUNDRY_PROFILE: 'nope' })
-    t.assert.deepEqual([nope.libs, nope.envUsed], [['lib'], []])
-    t.assert.deepEqual(lines, ['[loader.solidity] FOUNDRY_PROFILE=nope is not a profile in foundry.toml; using [profile.default]'])
+    t.assert.deepStrictEqual([nope.libs, nope.envUsed], [['lib'], []])
+    t.assert.deepStrictEqual(lines, ['[loader.solidity] FOUNDRY_PROFILE=nope is not a profile in foundry.toml; using [profile.default]'])
   } finally {
     console.warn = warn
   }
@@ -912,7 +912,7 @@ test('expandSolidityEntries follows symlinks the way walkdir does', withProject(
   symlinkSync(join(dir, 'shared'), join(dir, 'src/l1'))
   symlinkSync(join(dir, 'shared'), join(dir, 'src/l2')) // two links to one dir: both walked
   symlinkSync(dir, join(dir, 'src/up')) // above the walk: walked, up to its link back into src
-  t.assert.deepEqual(expandSolidityEntries(dir, ['src']), [
+  t.assert.deepStrictEqual(expandSolidityEntries(dir, ['src']), [
     'src/A.sol', 'src/l1/S.sol', 'src/l2/S.sol', 'src/sub/B.sol',
     'src/up/lib/x/X.sol', 'src/up/shared/S.sol', 'src/up/src/A.sol', 'src/up/src/l1/S.sol', 'src/up/src/l2/S.sol', 'src/up/src/sub/B.sol',
   ])

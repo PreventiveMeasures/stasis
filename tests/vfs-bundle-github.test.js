@@ -32,17 +32,17 @@ const SOLDEER = { 'foundry.toml': '[profile.default]\nlibs = ["dependencies"]\n\
 test('buildGitHubBundle builds a repo at a commit and stamps `repo` itself', async (t) => {
   const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   const { bundle, lockfile: lock } = await build({ client, entries: ['src/a.js'] })
-  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js'])
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
   t.assert.doesNotMatch(lock.serialize(), /ExodusOSS/u)
-  t.assert.deepEqual(client.calls, [['getRepoTarball', GITHUB, SHA]])
+  t.assert.deepStrictEqual(client.calls, [['getRepoTarball', GITHUB, SHA]])
 })
 
 test("buildGitHubBundle builds the default branch's head without a commit", async (t) => {
   const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   const { bundle } = await build({ client, sha: undefined, entries: ['src/a.js'] })
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
-  t.assert.deepEqual(client.calls, [['getRepoHead', GITHUB, undefined], ['getRepoTarball', GITHUB, HEAD]])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
+  t.assert.deepStrictEqual(client.calls, [['getRepoHead', GITHUB, undefined], ['getRepoTarball', GITHUB, HEAD]])
 })
 
 // pnpm installs a file: override's directory in the modes its files have, which deptree takes only
@@ -57,19 +57,19 @@ test('buildGitHubBundle builds the repo in the modes a checkout has', async (t) 
     'q/LICENSE': 'MIT\n',
   })
   const { bundle } = await build({ client, entries: ['src/a.js'] })
-  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js', 'node_modules/.pnpm/q@file+q/node_modules/q/index.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js', 'node_modules/.pnpm/q@file+q/node_modules/q/index.js'])
 })
 
 test('buildGitHubBundle builds the commit a tag names', async (t) => {
   const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
   const client = fakeClient(files, { tags: { 'v1.0.0': TAGGED } })
   const { bundle } = await build({ client, sha: undefined, tag: 'v1.0.0', entries: ['src/a.js'] })
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: TAGGED })
-  t.assert.deepEqual(client.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['getRepoTarball', GITHUB, TAGGED]])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: TAGGED })
+  t.assert.deepStrictEqual(client.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['getRepoTarball', GITHUB, TAGGED]])
   // A tag GitHub has no commit for is refused there, before the tree is fetched.
   const none = fakeClient(files)
   await t.assert.rejects(build({ client: none, sha: undefined, tag: 'v9.9.9', entries: ['src/a.js'] }), /^Error: getRepoTag: ExodusOSS\/example has no tag v9\.9\.9$/u)
-  t.assert.deepEqual(methods(none), ['getRepoTag'])
+  t.assert.deepStrictEqual(methods(none), ['getRepoTag'])
 })
 
 // A package whose package.json names entry points in every way it can, and some it can't be built from.
@@ -103,11 +103,11 @@ const namingEntries = {
 
 test('buildGitHubBundle takes the JS entry points the package.json names without entries', async (t) => {
   const { bundle } = await build({ client: fakeClient(namingEntries) })
-  t.assert.deepEqual([...bundle.entries], ['lib/index.js', 'esm/index.mjs', 'lib/util.js', 'bin/p.js'], 'main, each exports subpath for require() and import, and each bin')
+  t.assert.deepStrictEqual([...bundle.entries], ['lib/index.js', 'esm/index.mjs', 'lib/util.js', 'bin/p.js'], 'main, each exports subpath for require() and import, and each bin')
   const { bundle: custom } = await build({ client: fakeClient(namingEntries), conditions: ['custom'] })
-  t.assert.deepEqual([...custom.entries], ['lib/index.js', 'esm/index.mjs', 'lib/custom.js', 'bin/p.js'], 'as the conditions resolve them')
+  t.assert.deepStrictEqual([...custom.entries], ['lib/index.js', 'esm/index.mjs', 'lib/custom.js', 'bin/p.js'], 'as the conditions resolve them')
   const { bundle: index } = await build({ client: fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'index.js': '' }) })
-  t.assert.deepEqual([...index.entries], ['index.js'], "index.js, as require('./') takes it")
+  t.assert.deepStrictEqual([...index.entries], ['index.js'], "index.js, as require('./') takes it")
 })
 
 test("buildGitHubBundle takes the entry points of the directory's package.json, and only there", async (t) => {
@@ -121,7 +121,7 @@ test("buildGitHubBundle takes the entry points of the directory's package.json, 
     'packages/p/cli.js': '',
   })
   const { bundle } = await build({ client, directory: 'packages/p' })
-  t.assert.deepEqual([...bundle.entries], ['packages/p/cli.js'])
+  t.assert.deepStrictEqual([...bundle.entries], ['packages/p/cli.js'])
 })
 
 // A Vfs holding `files` as fakeClient serves them.
@@ -138,26 +138,26 @@ const vfsOf = (files) => {
 test('suggestedEntries suggests the entries buildGitHubBundle takes without any, of a repo or a Vfs', async (t) => {
   const named = ['lib/index.js', 'esm/index.mjs', 'lib/util.js', 'bin/p.js']
   const client = fakeClient(namingEntries)
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client }), named)
-  t.assert.deepEqual(client.calls, [['listRepoDir', GITHUB, SHA, undefined], ['getRepoTarball', GITHUB, SHA]])
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(namingEntries) }), named)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client }), named)
+  t.assert.deepStrictEqual(client.calls, [['listRepoDir', GITHUB, SHA, undefined], ['getRepoTarball', GITHUB, SHA]])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(namingEntries) }), named)
   const custom = ['lib/index.js', 'esm/index.mjs', 'lib/custom.js', 'bin/p.js']
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client, conditions: ['custom'] }), custom)
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(namingEntries), conditions: ['custom'] }), custom)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client, conditions: ['custom'] }), custom)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(namingEntries), conditions: ['custom'] }), custom)
   // At the default branch's head without a commit.
   const head = fakeClient(namingEntries)
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, client: head }), named)
-  t.assert.deepEqual(head.calls, [['getRepoHead', GITHUB, undefined], ['listRepoDir', GITHUB, HEAD, undefined], ['getRepoTarball', GITHUB, HEAD]])
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, client: head }), named)
+  t.assert.deepStrictEqual(head.calls, [['getRepoHead', GITHUB, undefined], ['listRepoDir', GITHUB, HEAD, undefined], ['getRepoTarball', GITHUB, HEAD]])
   // At the commit a tag names.
   const tagged = fakeClient(namingEntries, { tags: { 'v1.0.0': TAGGED } })
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, tag: 'v1.0.0', client: tagged }), named)
-  t.assert.deepEqual(tagged.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['listRepoDir', GITHUB, TAGGED, undefined], ['getRepoTarball', GITHUB, TAGGED]])
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, tag: 'v1.0.0', client: tagged }), named)
+  t.assert.deepStrictEqual(tagged.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['listRepoDir', GITHUB, TAGGED, undefined], ['getRepoTarball', GITHUB, TAGGED]])
   // None without a package.json.
   const bare = { 'pnpm-lock.yaml': lockfile('.'), 'a.js': '' }
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(bare) }), [])
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(bare) }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(bare) }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(bare) }), [])
   // Of the package manager given, whatever the lockfiles; else of the one detected, as the build detects it.
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf({ ...namingEntries, 'pnpm-lock.yaml': undefined }), packageManager: 'yarn1' }), named)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf({ ...namingEntries, 'pnpm-lock.yaml': undefined }), packageManager: 'yarn1' }), named)
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf({ 'a.js': '' }) }), /^Error: suggestedEntries: no packageManager given, and none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock installs \/$/u)
 })
 
@@ -192,15 +192,15 @@ test('suggestedEntries resolves the entries as the build does with metro, platfo
   ]
   await Promise.all(cases.map(async ([options, expected]) => {
     const what = JSON.stringify(options)
-    t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(reactNative), ...options }), expected, what)
-    t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(reactNative), ...options }), expected, `${what} in a Vfs`)
+    t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(reactNative), ...options }), expected, what)
+    t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(reactNative), ...options }), expected, `${what} in a Vfs`)
     const { bundle } = await build({ client: fakeClient(reactNative), ...options })
-    t.assert.deepEqual([...bundle.entries], expected, `${what}: buildGitHubBundle's default`)
+    t.assert.deepStrictEqual([...bundle.entries], expected, `${what}: buildGitHubBundle's default`)
   }))
   // An index by platform, as an RN app's.
   const app = { 'package.json': json({ name: 'app', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'index.ios.js': '', 'index.android.js': '', 'index.js': '' }
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios', 'android', 'web'] }), ['index.ios.js', 'index.android.js', 'index.js'])
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(app) }), ['index.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios', 'android', 'web'] }), ['index.ios.js', 'index.android.js', 'index.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app) }), ['index.js'])
   // Checked as the build checks them.
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), metro: true }), /^Error: suggestedEntries: --metro requires --platforms \(e\.g\. --platforms=ios,android\)$/u)
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(app), platforms: ['ios'] }), /^Error: suggestedEntries: --platforms is only valid with --metro$/u)
@@ -217,21 +217,21 @@ test('suggestedEntries maps what resolution misses to its TS source under typesc
     'lib/util.ts': 'export const y: number = 2\n',
     'lib/util.mts': 'export const z: number = 3\n',
   }
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(named) }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(named) }), [])
   const mapped = ['lib/index.ts', 'lib/util.ts', 'lib/util.mts']
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(named), typescript: true }), mapped)
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(named), typescript: true }), mapped)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(named), typescript: true }), mapped)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(named), typescript: true }), mapped)
   const { bundle } = await build({ client: fakeClient(named), typescript: true })
-  t.assert.deepEqual([...bundle.entries], mapped, "buildGitHubBundle's default")
+  t.assert.deepStrictEqual([...bundle.entries], mapped, "buildGitHubBundle's default")
   // An extensionless main, completed; a compiled file on disk wins over its source.
   const completed = { 'package.json': json({ name: 'c', version: '1.0.0', main: 'src/index' }), 'pnpm-lock.yaml': lockfile('.'), 'src/index.ts': '', 'src/index.d.ts': '' }
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(completed), typescript: true }), ['src/index.ts'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(completed), typescript: true }), ['src/index.ts'])
   const both = { 'package.json': json({ name: 'b', version: '1.0.0', main: 'index.js' }), 'pnpm-lock.yaml': lockfile('.'), 'index.js': '', 'index.ts': '' }
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(both), typescript: true }), ['index.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(both), typescript: true }), ['index.js'])
   // Through the field resolver, as under metro.
   const app = { 'package.json': json({ name: 'app', version: '1.0.0', main: 'lib/index.js' }), 'pnpm-lock.yaml': lockfile('.'), 'lib/index.ts': '' }
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'] }), [])
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'], typescript: true }), ['lib/index.ts'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'] }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'], typescript: true }), ['lib/index.ts'])
 })
 
 test("suggestedEntries downloads a directory as buildGitHubBundle does, and names nothing out of it", async (t) => {
@@ -265,13 +265,13 @@ test("suggestedEntries downloads a directory as buildGitHubBundle does, and name
   ]
   await Promise.all(cases.map(async ([directory, expected, called]) => {
     const client = fakeClient(files)
-    t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, directory, client }), expected, directory)
-    t.assert.deepEqual(methods(client), called, directory)
-    t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: directory }), expected, `${directory} in a Vfs`)
+    t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, directory, client }), expected, directory)
+    t.assert.deepStrictEqual(methods(client), called, directory)
+    t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: directory }), expected, `${directory} in a Vfs`)
     // Through the main fields too.
     const metro = { metro: true, platforms: ['ios'] }
-    t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, directory, client: fakeClient(files), ...metro }), expected, `${directory} with metro`)
-    t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: directory, ...metro }), expected, `${directory} in a Vfs with metro`)
+    t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, directory, client: fakeClient(files), ...metro }), expected, `${directory} with metro`)
+    t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: directory, ...metro }), expected, `${directory} in a Vfs with metro`)
   }))
 })
 
@@ -284,7 +284,7 @@ test('suggestedEntries checks its arguments before anything is fetched', async (
   await t.assert.rejects(suggestedEntries({ github: GITHUB, directory: '../up', client }), /^Error: suggestedEntries: invalid directory: "\.\.\/up"$/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, packageManager: 'bun', client }), /^TypeError: suggestedEntries: packageManager must be one of/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, packageManager: 'soldeer', conditions: ['x'], client }), /^Error: suggestedEntries: --conditions is only valid for JS bundles$/u)
-  t.assert.deepEqual(client.calls, [])
+  t.assert.deepStrictEqual(client.calls, [])
 })
 
 // A Foundry project, as Soldeer installs one, with .sol files that are entry points by name and
@@ -312,20 +312,20 @@ const foundry = {
 
 test('suggestedEntries suggests, for Soldeer, the .sol entry points by name and layout, as buildGitHubBundle takes them', async (t) => {
   const named = ['Root.sol', 'contracts/C.sol', 'src/A.sol', 'src/sub/B.sol']
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(foundry) }), named)
-  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(foundry) }), named)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(foundry) }), named)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(foundry) }), named)
   const built = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient(foundry) })
   t.assert.equal(built.packageManager, 'soldeer')
-  t.assert.deepEqual([...built.bundle.entries], named, "buildGitHubBundle's default")
+  t.assert.deepStrictEqual([...built.bundle.entries], named, "buildGitHubBundle's default")
   // Its source directory, from foundry.toml's default profile alone, else src/, as a soldeer.toml's.
   const { 'foundry.toml': _f, ...bare } = foundry
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf({ ...bare, 'soldeer.toml': '[dependencies]\n' }) }), named)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf({ ...bare, 'soldeer.toml': '[dependencies]\n' }) }), named)
   const sources = (src) => vfsOf({ ...foundry, 'foundry.toml': `[profile.default]\nlibs = ["dependencies"]\nsrc = "${src}"\n\n[profile.ci]\nsrc = "other"\n\n[dependencies]\n`, 'sources/S.sol': SOL })
-  t.assert.deepEqual(await suggestedEntries({ vfs: sources('sources') }), ['Root.sol', 'contracts/C.sol', 'sources/S.sol'])
-  t.assert.deepEqual(await suggestedEntries({ vfs: sources('../sources') }), ['Root.sol', 'contracts/C.sol'], 'none out of it')
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: sources('sources') }), ['Root.sol', 'contracts/C.sol', 'sources/S.sol'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: sources('../sources') }), ['Root.sol', 'contracts/C.sol'], 'none out of it')
   // A link to a directory is none: nothing twice, nor out of the project.
   const linked = Object.fromEntries(Object.entries(foundry).filter(([path]) => !path.startsWith('contracts/')))
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf({ ...linked, 'contracts': { symlink: 'src' } }) }), ['Root.sol', 'src/A.sol', 'src/sub/B.sol'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf({ ...linked, 'contracts': { symlink: 'src' } }) }), ['Root.sol', 'src/A.sol', 'src/sub/B.sol'])
   // None: refused by buildGitHubBundle.
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient({ ...SOLDEER, 'other/D.sol': SOL }) }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no entries given, and the repo root has no \\.sol entry point directly in it, under contracts/, or under its source directory$`, 'u'))
 })
@@ -352,9 +352,9 @@ test('buildGitHubBundle downloads a directory alone when its lockfile is there',
     'apps/p/src/a.js': 'module.exports = 1\n',
   })
   const { bundle } = await build({ client, directory: 'apps/p', entries: ['src/a.js'] })
-  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js'], 'built from the subtree alone')
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
-  t.assert.deepEqual(client.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['listRepoDir apps/p', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'], 'built from the subtree alone')
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
+  t.assert.deepStrictEqual(client.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['listRepoDir apps/p', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball'])
 })
 
 test('buildGitHubBundle builds a workspace member from the workspace, whatever lockfile it holds', async (t) => {
@@ -367,9 +367,9 @@ test('buildGitHubBundle builds a workspace member from the workspace, whatever l
     'packages/p/src/a.js': 'module.exports = 1\n',
   })
   const { bundle } = await build({ client, directory: 'packages/p', entries: ['src/a.js'] })
-  t.assert.deepEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
-  t.assert.deepEqual(client.calls.map(([method]) => method), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
 })
 
 test('buildGitHubBundle downloads the whole repo for a lockfile above the directory', async (t) => {
@@ -381,9 +381,9 @@ test('buildGitHubBundle downloads the whole repo for a lockfile above the direct
     'packages/p/src/a.js': 'module.exports = 1\n',
   })
   const { bundle } = await build({ client, directory: 'packages/p', entries: ['src/a.js'] })
-  t.assert.deepEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'where the lockfile is, which the paths are relative to')
-  t.assert.deepEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'where the lockfile is, which the paths are relative to')
+  t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
 })
 
 // The package-lock.json npm writes for a root `name` at 1.0.0, and `packages` beside it.
@@ -394,13 +394,13 @@ test('buildGitHubBundle builds with npm, told by its package-lock.json, a direct
   const client = fakeClient(files)
   const built = await buildGitHubBundle({ github: GITHUB, sha: SHA, client, directory: 'apps/p' })
   t.assert.equal(built.packageManager, 'npm')
-  t.assert.deepEqual([...built.bundle.sources.keys()], ['a.js'])
-  t.assert.deepEqual({ ...built.bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
-  t.assert.deepEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball'])
+  t.assert.deepStrictEqual([...built.bundle.sources.keys()], ['a.js'])
+  t.assert.deepStrictEqual({ ...built.bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
+  t.assert.deepStrictEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball'])
   // Its lockfile links a package above it: the whole repo, where deptree refuses the link.
   const linked = fakeClient({ ...files, 'apps/shared/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/p/package-lock.json': npmLock('p', { 'node_modules/shared': { resolved: '../shared', link: true }, '../shared': { version: '1.0.0' } }) })
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: linked, directory: 'apps/p' }))
-  t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
+  t.assert.deepStrictEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
 })
 
 test('suggestedEntries detects the package manager for the os given, as the build does', async (t) => {
@@ -413,10 +413,10 @@ test('suggestedEntries detects the package manager for the os given, as the buil
     'packages/b/index.js': '',
   }
   const none = /no packageManager given, and none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock installs \/packages\/b$/u
-  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: '/packages/b', os: 'linux' }), ['index.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: '/packages/b', os: 'linux' }), ['index.js'])
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(files), cwd: '/packages/b', os: 'darwin' }), none)
   const repo = { github: GITHUB, sha: SHA, directory: 'packages/b' }
-  t.assert.deepEqual(await suggestedEntries({ ...repo, client: fakeClient(files), os: 'linux' }), ['index.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ ...repo, client: fakeClient(files), os: 'linux' }), ['index.js'])
   await t.assert.rejects(suggestedEntries({ ...repo, client: fakeClient(files), os: 'darwin' }), none)
   await t.assert.rejects(suggestedEntries({ vfs: vfsOf(files), os: '' }), /^TypeError: suggestedEntries: os must be a non-empty string$/u)
 })
@@ -427,13 +427,13 @@ test('buildGitHubBundle downloads the whole repo for a lockfile naming the direc
   const linked = lockfile('.').replace('  .: {}\n', '  .:\n    dependencies:\n      shared:\n        specifier: link:..\n        version: link:..\n')
   const pnpm = fakeClient({ 'apps/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/index.js': '', 'apps/p/package.json': json({ name: 'p', version: '1.0.0', dependencies: { shared: 'link:..' } }), 'apps/p/pnpm-lock.yaml': linked, 'apps/p/a.js': "require('shared')\n" })
   const built = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: pnpm, directory: 'apps/p', packageManager: 'pnpm', entries: ['a.js'] })
-  t.assert.deepEqual(methods(pnpm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
-  t.assert.deepEqual([...built.bundle.sources.keys()].toSorted(), ['index.js', 'p/a.js'], 'what it links is there')
+  t.assert.deepStrictEqual(methods(pnpm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...built.bundle.sources.keys()].toSorted(), ['index.js', 'p/a.js'], 'what it links is there')
   // npm's `file:..`, as npm 11 writes it: the `..` above holds a package.json, so the directory is
   // never taken alone.
   const npm = fakeClient({ 'apps/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/p/package.json': json({ name: 'p', version: '1.0.0', dependencies: { shared: 'file:..' } }), 'apps/p/package-lock.json': npmLock('p', { '..': { name: 'shared', version: '1.0.0' }, 'node_modules/shared': { resolved: '..', link: true } }), 'apps/p/a.js': '' })
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: npm, directory: 'apps/p', packageManager: 'npm', entries: ['a.js'] }))
-  t.assert.deepEqual(methods(npm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(methods(npm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
 })
 
 const detect = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
@@ -442,52 +442,52 @@ test('buildGitHubBundle takes the one package manager whose lockfile installs th
   const root = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'yarn.lock': YARN_LOCK, 'src/a.js': '' })
   const built = await detect({ client: root, entries: ['src/a.js'] })
   t.assert.equal(built.packageManager, 'yarn1')
-  t.assert.deepEqual([...built.bundle.sources.keys()], ['src/a.js'])
-  t.assert.deepEqual(methods(root), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...built.bundle.sources.keys()], ['src/a.js'])
+  t.assert.deepStrictEqual(methods(root), ['listRepoDir', 'getRepoTarball'])
   // A directory alone, each listing read once for both.
   const alone = fakeClient({ 'README.md': 'x\n', 'apps/p/package.json': json({ name: 'p', version: '1.0.0', main: 'a.js' }), 'apps/p/pnpm-lock.yaml': lockfile('.'), 'apps/p/a.js': '' })
   const subtree = await detect({ client: alone, directory: 'apps/p' })
   t.assert.equal(subtree.packageManager, 'pnpm')
-  t.assert.deepEqual({ ...subtree.bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
-  t.assert.deepEqual(alone.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['listRepoDir apps/p', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball'])
+  t.assert.deepStrictEqual({ ...subtree.bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
+  t.assert.deepStrictEqual(alone.calls.map(([method, , , path]) => (method === 'listRepoDir' ? `${method} ${path}` : method)), ['listRepoDir apps/p', 'listRepoDir apps', 'listRepoDir undefined', 'getRepoTreeTarball'])
   // Soldeer, with its .sol entry points.
   const soldeer = fakeClient({ ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\n' })
   const sol = await detect({ client: soldeer })
   t.assert.equal(sol.packageManager, 'soldeer')
-  t.assert.deepEqual([...sol.bundle.entries], ['src/A.sol'])
-  t.assert.deepEqual(methods(soldeer), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...sol.bundle.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(methods(soldeer), ['listRepoDir', 'getRepoTarball'])
   // Options for the kind of entries the one told builds, checked once it is told, before the tree is fetched.
   const options = fakeClient({ ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\n' })
   await t.assert.rejects(detect({ client: options, conditions: ['x'] }), /^Error: buildGitHubBundle: --conditions is only valid for JS bundles$/u)
-  t.assert.deepEqual(methods(options), ['listRepoDir'])
+  t.assert.deepStrictEqual(methods(options), ['listRepoDir'])
   // The entries' kind is checked against the one told, before the tree is fetched.
   const js = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'a.sol': '' })
   await t.assert.rejects(detect({ client: js, entries: ['a.sol'] }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm$/u)
-  t.assert.deepEqual(methods(js), ['listRepoDir'])
+  t.assert.deepStrictEqual(methods(js), ['listRepoDir'])
 })
 
 test('buildGitHubBundle refuses to choose where no lockfile, or more than one, installs the directory', async (t) => {
   // None listed: refused from the listings alone.
   const none = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'apps/p/a.js': '' })
   await t.assert.rejects(detect({ client: none, directory: 'apps/p', entries: ['a.js'] }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no packageManager given, and none of pnpm-lock\\.yaml, yarn\\.lock, package-lock\\.json, soldeer\\.lock installs /apps/p$`, 'u'))
-  t.assert.deepEqual(methods(none), ['listRepoDir', 'listRepoDir', 'listRepoDir'])
+  t.assert.deepStrictEqual(methods(none), ['listRepoDir', 'listRepoDir', 'listRepoDir'])
   // More than one listed: the whole repo tells, here that both install it.
   const both = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'yarn.lock': YARN_LOCK, 'a.js': '' })
   await t.assert.rejects(detect({ client: both, entries: ['a.js'] }), /: no packageManager given, and more than one lockfile installs \/: \/pnpm-lock\.yaml \(pnpm\), \/yarn\.lock \(yarn1\)$/u)
-  t.assert.deepEqual(methods(both), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(methods(both), ['listRepoDir', 'getRepoTarball'])
   // ...and here that one does: yarn installs apps/p from the root, whose lockfile pnpm's is not.
   const one = fakeClient({ 'package.json': json({ name: 'root', version: '1.0.0', private: true }), 'pnpm-workspace.yaml': 'packages:\n  - apps/*\n', 'yarn.lock': YARN_LOCK, 'apps/p/package.json': json({ name: 'p', version: '1.0.0' }), 'apps/p/pnpm-lock.yaml': lockfile('.'), 'apps/p/a.js': '' })
   await t.assert.rejects(detect({ client: one, directory: 'apps/p', entries: ['a.js'] }), /does not install \/apps\/p: it is none of the lockfile's projects$/u, 'yarn1, detected, refuses a package no workspace declares')
-  t.assert.deepEqual(methods(one), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(methods(one), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
   // A directory no listing tells (a symlink): the whole repo.
   const linked = fakeClient({ ...appWithLockfile(), 'pkg': { symlink: 'apps/p' } })
   const built = await detect({ client: linked, directory: 'pkg', entries: ['src/a.js'] })
   t.assert.equal(built.packageManager, 'pnpm')
-  t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'getRepoTarball'])
   // Entries of a kind no package manager builds, before anything is fetched.
   const client = fakeClient({})
   await t.assert.rejects(detect({ client, entries: ['a.rs'] }), /^Error: buildGitHubBundle: only JS bundles \(pnpm, yarn1, npm\) and Solidity bundles \(soldeer\) are built$/u)
-  t.assert.deepEqual(client.calls, [])
+  t.assert.deepStrictEqual(client.calls, [])
 })
 
 test("stasis github-bundle builds the repo as it is, whatever FOUNDRY_PROFILE the shell sets", async (t) => {
@@ -496,7 +496,7 @@ test("stasis github-bundle builds the repo as it is, whatever FOUNDRY_PROFILE th
   const warn = t.mock.method(console, 'warn', () => {})
   const client = fakeClient({ ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\n' })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, client, env: { FOUNDRY_PROFILE: 'ci', FOUNDRY_REMAPPINGS: 'x/=y/' }, output: 'out.br' })
-  t.assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => /FOUNDRY|environment/u.test(line)), [])
+  t.assert.deepStrictEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => /FOUNDRY|environment/u.test(line)), [])
 })
 
 test('stasis github-bundle refuses --lockfile for the Solidity bundle of a Soldeer it detects', async (t) => {
@@ -504,12 +504,12 @@ test('stasis github-bundle refuses --lockfile for the Solidity bundle of a Solde
   t.after(() => rm(tmp, { recursive: true, force: true }))
   const client = fakeClient({ ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\n' })
   await t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, client, entries: ['src/A.sol'], output: 'out.br', lockfile: 'x.json' }), /^Error: buildGitHubBundle: --lockfile is only valid for JS bundles$/u)
-  t.assert.deepEqual(methods(client), [], 'of .sol entries, before anything is fetched')
+  t.assert.deepStrictEqual(methods(client), [], 'of .sol entries, before anything is fetched')
   // Without entries, once the listings tell Soldeer, before the tree is fetched.
   const listed = fakeClient({ ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\n' })
   await t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, client: listed, output: 'out.br', lockfile: 'x.json' }), /^Error: buildGitHubBundle: --lockfile is only valid for JS bundles$/u)
-  t.assert.deepEqual(methods(listed), ['listRepoDir'])
-  t.assert.deepEqual(await readdir(tmp), [], 'nothing is written')
+  t.assert.deepStrictEqual(methods(listed), ['listRepoDir'])
+  t.assert.deepStrictEqual(await readdir(tmp), [], 'nothing is written')
 })
 
 test('buildGitHubBundle checks its arguments before anything is fetched', async (t) => {
@@ -535,7 +535,7 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   // Without entries, as for the JS ones suggested.
   await t.assert.rejects(build({ client, mappingFile: 'remappings.txt' }), /^Error: buildGitHubBundle: --mapping is only valid for \.sol bundles$/u)
   await t.assert.rejects(build({ client, metro: true, metroResolver: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: metroResolver is not supported$/u)
-  t.assert.deepEqual(client.calls, [])
+  t.assert.deepStrictEqual(client.calls, [])
 })
 
 test("buildGitHubBundle reports the root listing's failure rather than taking it for a symlink's", async (t) => {
@@ -571,22 +571,22 @@ test('buildGitHubBundle falls back to the whole repo when the subtree does not s
   await Promise.all(Object.entries(cases).map(async ([what, extra]) => {
     const client = fakeClient(appWithLockfile(extra))
     const { bundle } = await build({ client, directory: 'apps/p', entries: ['src/a.js'] })
-    t.assert.deepEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'], what)
-    t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js', 'src/b.js'], what)
-    t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA }, what)
+    t.assert.deepStrictEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'], what)
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js', 'src/b.js'], what)
+    t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA }, what)
   }))
   // A tsconfig path within the subtree keeps it alone.
   const client = fakeClient(appWithLockfile({ 'apps/p/tsconfig.json': json({ extends: './tsconfig.base.json', include: ['./src'] }) }))
   await build({ client, directory: 'apps/p', entries: ['src/a.js'] })
-  t.assert.deepEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball'])
+  t.assert.deepStrictEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball'])
 })
 
 test('buildGitHubBundle resolves a directory that is a symlink in the repo through the whole repo', async (t) => {
   const client = fakeClient({ ...appWithLockfile(), 'pkg': { symlink: 'apps/p' } })
   const { bundle } = await build({ client, directory: 'pkg', entries: ['src/a.js'] })
-  t.assert.deepEqual(methods(client), ['listRepoDir', 'getRepoTarball'])
-  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js', 'src/b.js'])
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA }, 'the real directory, not the symlink')
+  t.assert.deepStrictEqual(methods(client), ['listRepoDir', 'getRepoTarball'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA }, 'the real directory, not the symlink')
 })
 
 test('buildGitHubBundle refuses a symlink out of the repo rather than resolving it inside', async (t) => {
@@ -702,13 +702,13 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
   const { built, refused, watching, read } = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
   t.assert.equal(watching, true, 'the watch on node:fs sees reads')
-  t.assert.deepEqual(read, [], 'nothing on disk is read')
-  t.assert.deepEqual(built.typescript.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/entry.ts', 'packages/p/index.js', 'packages/p/other.js', 'packages/p/package.json', 'packages/p/util.ts'], 'the link, the symlink and tsc\'s mapping resolve in the Vfs')
-  t.assert.deepEqual(built.typescript.repo, { github: GITHUB, root: true, commit: SHA })
-  t.assert.deepEqual(built.mainFields.sources.toSorted(), ['packages/app/node_modules/p/index.js', 'packages/app/node_modules/p/package.json', 'packages/app/package.json', 'packages/app/src/main.js'], 'the tree is read in place')
-  t.assert.deepEqual(built.mainFields.repo, { github: GITHUB, root: true, commit: SHA })
-  t.assert.deepEqual(built.defaults.sources, ['packages/p/index.js'], "the entries the package.json names")
-  t.assert.deepEqual(built.metroDefaults.sources, ['index.js'], 'as the field resolver resolves them, from the directory')
+  t.assert.deepStrictEqual(read, [], 'nothing on disk is read')
+  t.assert.deepStrictEqual(built.typescript.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/entry.ts', 'packages/p/index.js', 'packages/p/other.js', 'packages/p/package.json', 'packages/p/util.ts'], 'the link, the symlink and tsc\'s mapping resolve in the Vfs')
+  t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/node_modules/p/index.js', 'packages/app/node_modules/p/package.json', 'packages/app/package.json', 'packages/app/src/main.js'], 'the tree is read in place')
+  t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual(built.defaults.sources, ['packages/p/index.js'], "the entries the package.json names")
+  t.assert.deepStrictEqual(built.metroDefaults.sources, ['index.js'], 'as the field resolver resolves them, from the directory')
   for (const entry of otherLanguages) t.assert.match(refused[entry] ?? '', /only JS bundles are built with pnpm$/u, entry)
 })
 
@@ -718,18 +718,18 @@ test('stasis github-bundle writes the bundle and lockfile of the repo at the com
     const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
     await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out/b.br', lockfile: 'out/b.lock.json' })
     const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'out', 'b.br'))).toString('utf8'))
-    t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js'])
-    t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
-    t.assert.deepEqual([...Lockfile.parse(await readFile(join(tmp, 'out', 'b.lock.json'), 'utf8')).entries], ['src/a.js'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
+    t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+    t.assert.deepStrictEqual([...Lockfile.parse(await readFile(join(tmp, 'out', 'b.lock.json'), 'utf8')).entries], ['src/a.js'])
     // A Solidity bundle has no lockfile, which is said before anything is fetched.
     const none = fakeClient({})
     await t.assert.rejects(githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'soldeer', client: none, entries: ['src'], lockfile: 'x.json' }), /^Error: buildGitHubBundle: --lockfile is only valid for JS bundles$/u)
-    t.assert.deepEqual(none.calls, [])
+    t.assert.deepStrictEqual(none.calls, [])
     // Without a commit or entries, the default branch's head and what its package.json names.
     const warn = t.mock.method(console, 'warn', () => {})
     await githubBundleCommand({ cwd: tmp, github: GITHUB, packageManager: 'pnpm', client: fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0', main: 'src/a.js' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '' }), output: 'out/c.br' })
     const head = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'out', 'c.br'))).toString('utf8'))
-    t.assert.deepEqual([...head.entries], ['src/a.js'])
+    t.assert.deepStrictEqual([...head.entries], ['src/a.js'])
     t.assert.equal(head.repo.commit, HEAD)
     t.assert.match(warn.mock.calls.at(-1).arguments[0], new RegExp(`from ${GITHUB}@${HEAD} to out/c\\.br$`, 'u'))
   } finally {
@@ -743,9 +743,9 @@ test('stasis github-bundle names its output after the repo and commit by default
   const warn = t.mock.method(console, 'warn', () => {})
   const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, packageManager: 'pnpm', client, entries: ['src/a.js'] })
-  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example.bbbbbbb.stasis.code.br'], 'of the commit built: the head, where none is asked for')
+  t.assert.deepStrictEqual(await readdir(tmp), ['ExodusOSS-example.bbbbbbb.stasis.code.br'], 'of the commit built: the head, where none is asked for')
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.bbbbbbb.stasis.code.br'))).toString('utf8'))
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
   t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.bbbbbbb\.stasis\.code\.br$/u)
   // Whatever the repo is called, the name is of [A-Za-z0-9._-] alone.
   t.assert.equal(githubBundleFile({ github: GITHUB, commit: SHA }), 'ExodusOSS-example.aaaaaaa.stasis.code.br')
@@ -781,9 +781,9 @@ test('stasis github-bundle names the output of a directory after it, not where i
     'packages/app/src/a.js': 'module.exports = 1\n',
   })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory: 'packages/app', packageManager: 'pnpm', client, entries: ['src/a.js'] })
-  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
+  t.assert.deepStrictEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
-  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'the lockfile is at the root')
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'the lockfile is at the root')
   t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.packages-app\.aaaaaaa\.stasis\.code\.br$/u)
 })
 
@@ -799,11 +799,11 @@ test('stasis github-bundle writes the bundle of a directory too deep to name in 
   })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory, packageManager: 'pnpm', client, entries: ['src/a.js'] })
   const [name, ...rest] = await readdir(tmp)
-  t.assert.deepEqual(rest, [])
+  t.assert.deepStrictEqual(rest, [])
   t.assert.equal(name, githubBundleFile({ github: GITHUB, directory, commit: SHA }))
   t.assert.equal(name.length, 255)
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, name))).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
 })
 
 test('stasis github-bundle requires --github, and takes --sha or --tag', async (t) => {
@@ -820,5 +820,5 @@ test('stasis github-bundle requires --github, and takes --sha or --tag', async (
     [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0'], 'Error: github-bundle takes --sha or --tag, not both'],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
-  t.assert.deepEqual(results, cases.map(([, error]) => ({ status: 1, error })))
+  t.assert.deepStrictEqual(results, cases.map(([, error]) => ({ status: 1, error })))
 })

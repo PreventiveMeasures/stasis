@@ -48,14 +48,14 @@ test('Config defaults', (t) => {
   t.assert.equal(c.lock, 'add')
   t.assert.equal(c.writeLockfile, true)
   t.assert.equal(c.replaceLockfile, false)
-  t.assert.deepEqual(c.values, { scope: 'full' })
+  t.assert.deepStrictEqual(c.values, { scope: 'full' })
 })
 
 test('Config json output has trailing newline and stable shape', (t) => {
   const c = new Config()
   const out = c.json
   t.assert.equal(out.at(-1), '\n')
-  t.assert.deepEqual(JSON.parse(out), { scope: 'full', lock: 'add', bundle: 'none' })
+  t.assert.deepStrictEqual(JSON.parse(out), { scope: 'full', lock: 'add', bundle: 'none' })
 })
 
 test('loadConfig accepts empty object and keeps defaults', (t) => {
@@ -71,13 +71,13 @@ test('loadConfig with scope=node_modules', (t) => {
   c.loadConfig(json({ scope: 'node_modules' }))
   t.assert.equal(c.scope, 'node_modules')
   t.assert.equal(c.full, false)
-  t.assert.deepEqual(c.values, { scope: 'node_modules' })
+  t.assert.deepStrictEqual(c.values, { scope: 'node_modules' })
 })
 
 test('Config resources: option parses to a Set of extensions/filenames', (t) => {
   const c = new Config({ resources: ['.PNG', 'svg', 'LICENSE'] })
   t.assert.ok(c.resources instanceof Set)
-  t.assert.deepEqual([...c.resources].toSorted(), ['license', 'png', 'svg'])
+  t.assert.deepStrictEqual([...c.resources].toSorted(), ['license', 'png', 'svg'])
 })
 
 test('Config resources: empty by default and omitted from json', (t) => {
@@ -88,15 +88,15 @@ test('Config resources: empty by default and omitted from json', (t) => {
 
 test('Config resources: round-trips through json (sorted) and back via loadConfig', (t) => {
   const c = new Config({ resources: ['svg', 'png', 'LICENSE'] })
-  t.assert.deepEqual(JSON.parse(c.json).resources, ['license', 'png', 'svg'])
+  t.assert.deepStrictEqual(JSON.parse(c.json).resources, ['license', 'png', 'svg'])
   const c2 = new Config()
   c2.loadConfig(c.json)
-  t.assert.deepEqual([...c2.resources].toSorted(), ['license', 'png', 'svg'])
+  t.assert.deepStrictEqual([...c2.resources].toSorted(), ['license', 'png', 'svg'])
 })
 
 test('Config resources: env var parses (comma-separated) and a matching option agrees', withEnv({ EXODUS_STASIS_RESOURCES: 'png, svg' }, (t) => {
-  t.assert.deepEqual([...new Config().resources].toSorted(), ['png', 'svg'])
-  t.assert.deepEqual([...new Config({ resources: ['svg', 'png'] }).resources].toSorted(), ['png', 'svg'])
+  t.assert.deepStrictEqual([...new Config().resources].toSorted(), ['png', 'svg'])
+  t.assert.deepStrictEqual([...new Config({ resources: ['svg', 'png'] }).resources].toSorted(), ['png', 'svg'])
 }))
 
 test('Config resources: an option conflicting with the env var throws', withEnv({ EXODUS_STASIS_RESOURCES: 'png' }, (t) => {
@@ -304,7 +304,7 @@ test('loadConfig bundle=frozen composes with every lock mode (unlike load)', (t)
 test('json reflects bundle=frozen', (t) => {
   const c = new Config()
   c.loadConfig(json({ lock: 'none', bundle: 'frozen' }))
-  t.assert.deepEqual(JSON.parse(c.json), { scope: 'full', lock: 'none', bundle: 'frozen' })
+  t.assert.deepStrictEqual(JSON.parse(c.json), { scope: 'full', lock: 'none', bundle: 'frozen' })
 })
 
 test('loadConfig debug=true', (t) => {
@@ -474,7 +474,7 @@ test('loadConfig rejects malformed JSON', (t) => {
 test('json reflects loaded values', (t) => {
   const c = new Config()
   c.loadConfig(json({ scope: 'node_modules', lock: 'frozen', bundle: 'load' }))
-  t.assert.deepEqual(JSON.parse(c.json), {
+  t.assert.deepStrictEqual(JSON.parse(c.json), {
     scope: 'node_modules',
     lock: 'frozen',
     bundle: 'load',
@@ -484,7 +484,7 @@ test('json reflects loaded values', (t) => {
 test('json reflects replace modes', (t) => {
   const c = new Config()
   c.loadConfig(json({ lock: 'replace', bundle: 'replace' }))
-  t.assert.deepEqual(JSON.parse(c.json), {
+  t.assert.deepStrictEqual(JSON.parse(c.json), {
     scope: 'full',
     lock: 'replace',
     bundle: 'replace',
@@ -763,7 +763,7 @@ test('assertOptionsMatchConfig enforces packageJSON against the active config', 
 test('packageJSON is not serialized into json (a build-time flag, like debug/childProcess)', (t) => {
   const c = new Config({ packageJSON: true })
   t.assert.equal(JSON.parse(c.json).packageJSON, undefined)
-  t.assert.deepEqual(c.values, { scope: 'full' })
+  t.assert.deepStrictEqual(c.values, { scope: 'full' })
 })
 
 test('Config packageJSON env "1" is true', withEnv(

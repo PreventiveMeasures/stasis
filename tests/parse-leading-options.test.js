@@ -13,8 +13,8 @@ test('splits the leading options off argv and leaves the positionals behind', (t
     valueFlags: ['--output', '-o'],
     onError: throwingOnError,
   })
-  t.assert.deepEqual(values, { output: 'dir' })
-  t.assert.deepEqual(argv, ['bundle.br'], 'argv is mutated in place to hold only the positionals')
+  t.assert.deepStrictEqual({ ...values }, { output: 'dir' })
+  t.assert.deepStrictEqual(argv, ['bundle.br'], 'argv is mutated in place to hold only the positionals')
 })
 
 test('consumes a separate-token value for a short value flag', (t) => {
@@ -24,7 +24,7 @@ test('consumes a separate-token value for a short value flag', (t) => {
     onError: throwingOnError,
   })
   t.assert.equal(values.output, 'dir')
-  t.assert.deepEqual(argv, ['bundle.br'])
+  t.assert.deepStrictEqual(argv, ['bundle.br'])
 })
 
 test('accepts the =-form for a long option', (t) => {
@@ -34,7 +34,7 @@ test('accepts the =-form for a long option', (t) => {
     onError: throwingOnError,
   })
   t.assert.equal(values.output, 'dir')
-  t.assert.deepEqual(argv, ['bundle.br'])
+  t.assert.deepStrictEqual(argv, ['bundle.br'])
 })
 
 test('stops at the first positional so a forwarded child argv survives verbatim (run semantics)', (t) => {
@@ -44,7 +44,7 @@ test('stops at the first positional so a forwarded child argv survives verbatim 
     onError: throwingOnError,
   })
   t.assert.equal(values.lock, 'add')
-  t.assert.deepEqual(argv, ['app.js', '--app-flag', '-x'], 'nothing after the first positional is consumed')
+  t.assert.deepStrictEqual(argv, ['app.js', '--app-flag', '-x'], 'nothing after the first positional is consumed')
 })
 
 test('honors option defaults when the flag is absent', (t) => {
@@ -53,7 +53,7 @@ test('honors option defaults when the flag is absent', (t) => {
     onError: throwingOnError,
   })
   t.assert.equal(values.lock, 'none')
-  t.assert.deepEqual(argv, ['file.js'])
+  t.assert.deepStrictEqual(argv, ['file.js'])
 })
 
 test('works with no valueFlags (a boolean-only command like diff)', (t) => {
@@ -61,14 +61,14 @@ test('works with no valueFlags (a boolean-only command like diff)', (t) => {
   const values = parseLeadingOptions(argv, { stat: { type: 'boolean' }, imports: { type: 'boolean' } }, {
     onError: throwingOnError,
   })
-  t.assert.deepEqual(values, { stat: true, imports: true })
-  t.assert.deepEqual(argv, ['a.json', 'b.json'])
+  t.assert.deepStrictEqual({ ...values }, { stat: true, imports: true })
+  t.assert.deepStrictEqual(argv, ['a.json', 'b.json'])
 })
 
 test('empty argv yields empty values and leaves argv empty', (t) => {
   const argv = []
   const values = parseLeadingOptions(argv, { output: { type: 'string' } }, { onError: throwingOnError })
-  t.assert.deepEqual(argv, [])
+  t.assert.deepStrictEqual(argv, [])
   t.assert.ok(!('output' in values))
 })
 

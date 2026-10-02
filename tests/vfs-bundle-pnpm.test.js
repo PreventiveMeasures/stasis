@@ -38,7 +38,7 @@ test('pnpm: lays out, into a Vfs of its own, the lockfile of cwd or the nearest 
   t.assert.equal(tree.host.stat('/node_modules/.pnpm').isDirectory(), true)
   t.assert.equal((await load({ vfs })).stats.projects, 1, 'so it can be laid out from again')
   t.assert.equal(tree.packageManagerVersion, '10.33.4')
-  t.assert.deepEqual({ projects: tree.stats.projects, snapshots: tree.stats.snapshots, tarballs: tree.stats.tarballs }, { projects: 1, snapshots: 0, tarballs: 0 })
+  t.assert.deepStrictEqual({ projects: tree.stats.projects, snapshots: tree.stats.snapshots, tarballs: tree.stats.tarballs }, { projects: 1, snapshots: 0, tarballs: 0 })
 
   files['package.json'] = { name: 'p', version: '1.0.0', packageManager: 'pnpm@11.28.2+sha512.abc' }
   t.assert.equal((await load({ vfs: project(files) })).packageManagerVersion, '11.28.2')
@@ -76,7 +76,7 @@ test('pnpm: reads every project pnpm finds and every one the lockfile has, and t
   t.assert.equal((await load({ vfs: project({ ...files, 'src/package.json': { type: 'module' } }), cwd: '/src' })).stats.projects, 2)
   // A workspace is installed from its root, whatever pnpm-lock.yaml is nearer.
   const stray = await load({ vfs: project({ ...files, 'pkg/pnpm-lock.yaml': lockfile('.') }), cwd: '/pkg' })
-  t.assert.deepEqual([stray.root, stray.stats.projects], ['/', 2])
+  t.assert.deepStrictEqual([stray.root, stray.stats.projects], ['/', 2])
   const { 'pnpm-lock.yaml': _, ...unlocked } = files
   await t.assert.rejects(load({ vfs: project({ ...unlocked, 'pkg/pnpm-lock.yaml': lockfile('.') }), cwd: '/pkg' }), (err) => err.message === 'no pnpm-lock.yaml found in /, where /pkg is installed from')
   // A project pnpm finds through a link would have its node_modules laid out where the link leads.
@@ -121,8 +121,8 @@ test('pnpm: links a directory a `link:` override names, and installs one a `file
   t.assert.equal((await load({ vfs: project({ ...link, ...foo }) })).vfs.readlink('/node_modules/foo'), '../vendor/foo')
   const file = { ...link, ...foo, 'package.json': { ...link['package.json'], pnpm: { overrides: { foo: 'file:./vendor/foo' } } }, 'pnpm-lock.yaml': FILE_OVERRIDE }
   const { vfs } = await load({ vfs: project(file) })
-  t.assert.deepEqual(vfs.readdir('/node_modules/.pnpm/foo@file+vendor+foo/node_modules/foo'), ['index.js', 'package.json'], 'its node_modules left out, as pnpm leaves it out')
-  t.assert.deepEqual(vfs.readdir('/'), ['node_modules'], 'the tree alone')
+  t.assert.deepStrictEqual(vfs.readdir('/node_modules/.pnpm/foo@file+vendor+foo/node_modules/foo'), ['index.js', 'package.json'], 'its node_modules left out, as pnpm leaves it out')
+  t.assert.deepStrictEqual(vfs.readdir('/'), ['node_modules'], 'the tree alone')
 })
 
 test('buildVfsBundle checks its entries first, reads no EXODUS_STASIS_* setting and keeps no State', async (t) => {
@@ -145,10 +145,10 @@ test('buildVfsBundle checks its entries first, reads no EXODUS_STASIS_* setting 
   const env = process.env.EXODUS_STASIS_BUNDLE
   process.env.EXODUS_STASIS_BUNDLE = 'add'
   try {
-    t.assert.deepEqual([...(await build({ vfs, entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
-    t.assert.deepEqual([...(await build({ vfs, entries: ['src/b.js'] })).bundle.entries], ['src/b.js'], 'one project Vfs, built from twice')
-    t.assert.deepEqual([...(await build({ vfs, entries: ['src/a.js'], env: undefined })).bundle.entries], ['src/a.js'])
-    t.assert.deepEqual([...(await build({ vfs, entries: ['src/a.js'], env: process.env })).bundle.entries], ['src/a.js'])
+    t.assert.deepStrictEqual([...(await build({ vfs, entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
+    t.assert.deepStrictEqual([...(await build({ vfs, entries: ['src/b.js'] })).bundle.entries], ['src/b.js'], 'one project Vfs, built from twice')
+    t.assert.deepStrictEqual([...(await build({ vfs, entries: ['src/a.js'], env: undefined })).bundle.entries], ['src/a.js'])
+    t.assert.deepStrictEqual([...(await build({ vfs, entries: ['src/a.js'], env: process.env })).bundle.entries], ['src/a.js'])
   } finally {
     if (env === undefined) delete process.env.EXODUS_STASIS_BUNDLE
     else process.env.EXODUS_STASIS_BUNDLE = env
@@ -160,15 +160,15 @@ test('buildVfsBundle builds from a cwd named through a link, and for a project u
   const files = { 'p/package.json': { name: 'p', version: '1.0.0' }, 'p/pnpm-lock.yaml': lockfile('.'), 'p/src/a.js': 'module.exports = 1\n' }
   const aliased = project(files)
   aliased.symlink('p', '/alias')
-  t.assert.deepEqual([...(await build({ vfs: aliased, cwd: '/alias', entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...(await build({ vfs: aliased, cwd: '/alias', entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
 
   const vendored = project(Object.fromEntries(Object.entries(files).map(([rel, text]) => [rel.replace(/^p\//u, 'vendor/node_modules/app/'), text])))
   write(vendored, { 'vendor/node_modules/other/index.js': '' })
-  t.assert.deepEqual([...(await build({ vfs: vendored, cwd: '/vendor/node_modules/app', entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...(await build({ vfs: vendored, cwd: '/vendor/node_modules/app', entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
   const { host } = await load({ vfs: vendored, cwd: '/vendor/node_modules/app' })
   t.assert.equal(host.stat('/vendor/node_modules/app/src/a.js').isFile(), true)
   t.assert.equal(host.stat('/vendor/node_modules/other/index.js'), null, 'what else that node_modules holds is above the root')
-  t.assert.deepEqual(host.readdir('/vendor/node_modules').map((d) => d.name), ['app'])
+  t.assert.deepStrictEqual(host.readdir('/vendor/node_modules').map((d) => d.name), ['app'])
 })
 
 test('buildVfsBundle refuses, and never hangs on, a file with no package.json naming a package up to the root of the Vfs', { timeout: 30_000 }, async (t) => {
@@ -181,7 +181,7 @@ test('buildVfsBundle reads every package.json past a byte order mark, as Node do
   const pinned = project({ 'package.json': bom({ name: 'p', version: '1.0.0', packageManager: 'pnpm@11.28.2' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   t.assert.equal((await load({ vfs: pinned })).packageManagerVersion, '11.28.2', 'the pin')
   const marked = project({ 'package.json': { name: 'p', version: '1.0.0' }, 'pnpm-lock.yaml': lockfile('.'), 'src/package.json': bom({ type: 'module' }), 'src/a.js': 'export default 1\n' })
-  t.assert.deepEqual([...(await build({ vfs: marked, entries: ['src/a.js'] })).bundle.formats], [['src/a.js', 'module']], 'a `type` marker')
+  t.assert.deepStrictEqual([...(await build({ vfs: marked, entries: ['src/a.js'] })).bundle.formats], [['src/a.js', 'module']], 'a `type` marker')
   const workspace = project({
     'package.json': { name: 'p', version: '1.0.0', dependencies: { w: 'workspace:*' } },
     'pnpm-workspace.yaml': 'packages:\n  - w\n',
@@ -190,31 +190,31 @@ test('buildVfsBundle reads every package.json past a byte order mark, as Node do
     'w/i.js': 'module.exports = 2\n',
     'src/a.js': "require('w')\n",
   })
-  t.assert.deepEqual([...(await build({ vfs: workspace, entries: ['src/a.js'] })).bundle.sources.keys()], ['src/a.js', 'w/i.js'], 'a package State buckets')
+  t.assert.deepStrictEqual([...(await build({ vfs: workspace, entries: ['src/a.js'] })).bundle.sources.keys()], ['src/a.js', 'w/i.js'], 'a package State buckets')
 })
 
 test('buildVfsBundle walks up past a `type` marker to a package.json, refusing one that is no JSON object', async (t) => {
   const files = { 'package.json': { name: 'p', version: '1.0.0' }, 'pnpm-lock.yaml': lockfile('.'), 'src/sub/package.json': { type: 'module' }, 'src/sub/a.js': 'export default 1\n' }
   await t.assert.rejects(build({ vfs: project({ ...files, 'src/package.json': 'null\n' }), entries: ['src/sub/a.js'] }), (err) => err.code === 'ERR_INVALID_PACKAGE_CONFIG' && err.message.includes('/src/package.json'))
   const built = await build({ vfs: project({ ...files, 'src/package.json/x': '' }), entries: ['src/sub/a.js'] })
-  t.assert.deepEqual([...built.bundle.modules].map(([dir, { name }]) => [dir, name]), [['.', 'p']], 'a directory named package.json is passed over')
+  t.assert.deepStrictEqual([...built.bundle.modules].map(([dir, { name }]) => [dir, name]), [['.', 'p']], 'a directory named package.json is passed over')
 })
 
 test('buildVfsBundle puts `repo` on the Bundle, never on its lockfile, over what it detects', async (t) => {
   const vfs = project({ 'package.json': { name: 'p', version: '1.0.0' }, 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   const repo = { commit: 'a'.repeat(40), directory: 'packages/p', github: 'ExodusOSS/stasis' }
   const built = await build({ vfs, entries: ['src/a.js'], repo })
-  t.assert.deepEqual(built.bundle.repo, { github: 'ExodusOSS/stasis', directory: 'packages/p', commit: 'a'.repeat(40) })
-  t.assert.deepEqual(JSON.parse(built.bundle.serialize()).repo, built.bundle.repo)
+  t.assert.deepStrictEqual({ ...built.bundle.repo }, { github: 'ExodusOSS/stasis', directory: 'packages/p', commit: 'a'.repeat(40) })
+  t.assert.deepStrictEqual(JSON.parse(built.bundle.serialize()).repo, { ...built.bundle.repo })
   t.assert.doesNotMatch(built.lockfile.serialize(), /ExodusOSS/u)
-  t.assert.deepEqual(built.bundle.reason, { bundle: ['src/a.js'] })
+  t.assert.deepStrictEqual({ ...built.bundle.reason }, { bundle: ['src/a.js'] })
   const resolved = await build({ vfs, entries: ['src/a.js'], mainFields: ['main'], repo })
-  t.assert.deepEqual(resolved.bundle.repo, built.bundle.repo, 'with mainFields too')
+  t.assert.deepStrictEqual(resolved.bundle.repo, built.bundle.repo, 'with mainFields too')
   t.assert.equal((await build({ vfs, entries: ['src/a.js'] })).bundle.repo, undefined)
 
   // Detected in the Vfs, as `stasis bundle` detects it on disk, under what is given.
   const declared = project({ 'package.json': { name: 'p', version: '1.0.0', repository: 'github:ExodusOSS/stasis' }, 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
-  t.assert.deepEqual((await build({ vfs: declared, entries: ['src/a.js'] })).bundle.repo, { github: 'ExodusOSS/stasis', root: true })
-  t.assert.deepEqual((await build({ vfs: declared, entries: ['src/a.js'], mainFields: ['main'] })).bundle.repo, { github: 'ExodusOSS/stasis', root: true })
-  t.assert.deepEqual((await build({ vfs: declared, entries: ['src/a.js'], repo })).bundle.repo, built.bundle.repo)
+  t.assert.deepStrictEqual({ ...(await build({ vfs: declared, entries: ['src/a.js'] })).bundle.repo }, { github: 'ExodusOSS/stasis', root: true })
+  t.assert.deepStrictEqual({ ...(await build({ vfs: declared, entries: ['src/a.js'], mainFields: ['main'] })).bundle.repo }, { github: 'ExodusOSS/stasis', root: true })
+  t.assert.deepStrictEqual((await build({ vfs: declared, entries: ['src/a.js'], repo })).bundle.repo, built.bundle.repo)
 })
