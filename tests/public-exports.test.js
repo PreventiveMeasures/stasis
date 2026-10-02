@@ -168,6 +168,18 @@ test('Lockfile.parse and Bundle.parse validate entries: in-root non-empty string
   t.assert.deepEqual([...Bundle.parse(bundle([])).entries], [])
 })
 
+test('Bundle.serialize and Lockfile.serialize refuse an entry their parsers would reject', (t) => {
+  // An in-memory construct is the one way a bad entry can reach a serializer; the written bytes must round-trip.
+  for (const bad of [1, '', '../x', '/etc/passwd']) {
+    t.assert.throws(() => new Bundle({ entries: new Set([bad]) }).serialize(), /bundle: invalid entry/, `bundle ${JSON.stringify(bad)}`)
+    t.assert.throws(() => new Lockfile({ entries: new Set([bad]), imports: new Map(), formats: new Map() }).serialize(), /lockfile: invalid entry/, `lockfile ${JSON.stringify(bad)}`)
+  }
+  const bundle = new Bundle({ entries: new Set(['src/a.js']), modules: new Map([['.', { name: 'x', version: '1.0.0', files: { 'src/a.js': 'A' } }]]) })
+  t.assert.deepEqual([...Bundle.parse(bundle.serialize()).entries], ['src/a.js'])
+  const lockfile = new Lockfile({ entries: new Set(['src/a.js']), modules: new Map([['.', { name: 'x', version: '1.0.0', files: { 'src/a.js': 'sha512-aaa' } }]]), imports: new Map(), formats: new Map() })
+  t.assert.deepEqual([...Lockfile.parse(lockfile.serialize()).entries], ['src/a.js'])
+})
+
 test('Lockfile.parse requires both imports and formats', (t) => {
   // Every stasis writer emits both facets; a file missing either is not a stasis lockfile.
   const base = {

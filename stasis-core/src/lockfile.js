@@ -1,4 +1,4 @@
-import { assert, duplicateKeyError, serializeExecutable, fileMapToObject, fileSetToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, posixPathEscapes } from './artifact-util.js'
+import { assert, duplicateKeyError, serializeExecutable, fileMapToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, posixPathEscapes, serializeEntries } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -80,7 +80,7 @@ export class Lockfile {
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
     const { modules, sources } = groupModules(this.modules)
     const store = { version: this.version, config: this.config }
-    if (this.config.scope === 'full') Object.assign(store, { entries: fileSetToObject(this.entries), sources })
+    if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules
     if (this.imports !== null) store.imports = fileMapToObject(this.imports)
     if (this.formats !== null) store.formats = fileMapToObject(this.formats)

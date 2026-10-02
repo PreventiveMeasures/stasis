@@ -19,6 +19,7 @@ import {
   parseExecutable,
   parseFormats,
   parseImports,
+  serializeEntries,
   serializeExecutable,
   posixPathEscapes,
   splitNodeModulesPath,
@@ -260,7 +261,7 @@ export class Bundle {
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo
-    if (full) data.entries = fileSetToObject(this.entries)
+    if (full) data.entries = serializeEntries(this.entries, 'bundle')
     data.formats = fileMapToObject(this.formats)
     data.imports = fileMapToObject(this.imports)
     const executable = serializeExecutable(this.executable, {
