@@ -15,6 +15,12 @@ const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV'], soldeer: ['So
 // not be sent to a public registry (leaks names, adds noise).
 const ecosystemOf = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
+// A dependency's version as it is audited: a GitHub repo's `.gitmodules` branch `.`, git's for the
+// superproject's own branch, which the bundle does not know and advisories() takes for no branch, is
+// the 0.0.0 stasis versions a repo with no version of its own by. Every advisory range covers both,
+// as it does a branch name.
+const versionOf = (ecosystem, version) => (ecosystem === 'github' && version === '.' ? '0.0.0' : version)
+
 // A package's key across the audit: `name@version` for npm, as collectWhy keys its chains, and
 // prefixed by the ecosystem for the others, whose names may be npm's too.
 const keyOf = (ecosystem, name, version) => `${ecosystem === 'npm' ? '' : `${ecosystem}:`}${name}@${version}`
@@ -50,7 +56,7 @@ export function collectPackagesFromFile(file) {
     if (ecosystem === undefined) continue
     if (!name || !version) continue
     if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
-    out.push({ ecosystem, name, version })
+    out.push({ ecosystem, name, version: versionOf(ecosystem, version) })
   }
   return out
 }
@@ -91,7 +97,7 @@ export function collectReasons(files) {
       if (ecosystem === undefined || !name || !version) continue
       for (const rel of Object.keys(modFiles)) {
         if (!isEvidenceFile(name, version, rel, ecosystem)) continue
-        fileToPkg.set(moduleFileKey(dir, rel), keyOf(ecosystem, name, version))
+        fileToPkg.set(moduleFileKey(dir, rel), keyOf(ecosystem, name, versionOf(ecosystem, version)))
       }
     }
     for (const [f, consumers] of fileReasons) {

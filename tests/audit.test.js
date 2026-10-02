@@ -975,3 +975,29 @@ test('audit(--why --reason) keeps the advisories of other ecosystems by the cons
     }
   }
 ))
+
+test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
+  ({ url }) => {
+    if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+    throw new Error(`unexpected request: ${url}`)
+  },
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // `.` is git's for the superproject's own branch, which the bundle does not know: no version of
+      // its own, as 0.0.0 is, and no name advisories() takes. A branch it does take, every range covers.
+      const sources = {
+        '.': { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': '' } },
+        'lib/a': { name: 'acme/a', version: '.', ecosystem: 'github', files: { 'src/A.sol': '' } },
+        'lib/b': { name: 'acme/b', version: 'main', ecosystem: 'github', files: { 'src/B.sol': '' } },
+      }
+      const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources, modules: {} })
+      t.assert.deepEqual(collectPackages([bundle]).map(({ name, version }) => `${name}@${version}`), ['acme/a@0.0.0', 'acme/b@main'])
+      const advisory = { ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 2.0.0' }] }
+      const report = await audit([bundle], { github: { listRepoAdvisories: async () => [advisory] } })
+      t.assert.deepEqual(report.rows.map(({ package: pkg, installed }) => `${pkg}@${installed}`), ['acme/a@0.0.0', 'acme/b@main'])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
