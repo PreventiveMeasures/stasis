@@ -41,33 +41,21 @@ test('Bundle round-trips package after config and repo, in canonical key order',
   t.assert.deepEqual(Object.keys(JSON.parse(all.serialize()).package), ['npm', 'composer', 'cargo'])
 })
 
-test('Bundle accepts npm names and versions the registry takes', (t) => {
-  for (const name of ['pkg', '@scope/pkg', '@exodus/stasis-core', 'a.b_c-d', '-x', '0', '@a/b.c', 'x'.repeat(214)]) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ npm: { name, version: '1.0.0' } })).package.npm.name, name)
-  }
-  for (const version of ['0.0.1', '10.20.30', '1.0.0-beta.4', '1.0.0-0.3.7', '1.0.0-x.7.z.92', '1.0.0-alpha-a.b-c', '1.0.0-0a', '1.0.0--', `1.0.0-${'a'.repeat(250)}`]) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ npm: { name: 'pkg', version } })).package.npm.version, version)
-  }
-})
+const ECOSYSTEMS = ['npm', 'composer', 'cargo']
+// Some ecosystem's names and versions, legacy npm names among them.
+const GOOD = [
+  'pkg', '@scope/pkg', 'JSONStream', "a~b!c'd(e)f*g", 'symfony/console', 'serde_json', 'tokio-util',
+  '0.0.1', 'v6.4.8', '1.0.0-rc.1+build.01', 'dev-feature/x', '9007199254740992.0.0', 'x'.repeat(10_000),
+]
+// Space, `"#$%&,:;<=>?[\]^`{|}`, non-ASCII and control characters: in no ecosystem's names or versions.
+const BAD = [...' "#$%&,:;<=>?[\\]^`{|}'].map((c) => `a${c}b`).concat(['', 'é', '1.0.0\n', '\t', '\x7F', '\x00', '\u2028'])
 
-test('Bundle accepts Composer names and versions as published', (t) => {
-  for (const name of ['symfony/console', 'laravel/framework', 'a/b', 'vendor.x_y-z/pkg', 'v/p.q_r-s--t', '0/0']) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ composer: { name, version: '1.0.0' } })).package.composer.name, name)
-  }
-  for (const version of [
-    '1.0.0', 'v6.4.8', 'V1.0', '1', '1.2', '1.2.3.4', '2024.01.01', '1.0.0-beta1', '1.0.0-beta.2', 'v1.0.0-RC1',
-    '2.0.0-alpha', '1.0.0alpha3', '1.0.0-p1', '1.0.0-patch1', '1.0.0-pl2', '1.0.0-stable', '1.0.0.beta-1.2', '1.0.0-b3',
-  ]) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ composer: { name: 'v/p', version } })).package.composer.version, version)
-  }
-})
-
-test('Bundle accepts crates.io names and Cargo versions', (t) => {
-  for (const name of ['serde', 'serde_json', 'tokio-util', 'Inflector', 'a', 'a1', 'a'.repeat(64)]) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ cargo: { name, version: '1.0.0' } })).package.cargo.name, name)
-  }
-  for (const version of ['0.1.0', '1.0.0-alpha.1', '0.1.0+zstd.1.5.5', '1.0.0-rc.1+build.01', '1.0.0+20130313144700']) {
-    t.assert.equal(Bundle.parse(withPackageJSON({ cargo: { name: 'c', version } })).package.cargo.version, version)
+test('Bundle takes any name and version of characters some ecosystem uses', (t) => {
+  for (const ecosystem of ECOSYSTEMS) {
+    for (const value of GOOD) {
+      const parsed = Bundle.parse(withPackageJSON({ [ecosystem]: { name: value, version: value } })).package[ecosystem]
+      t.assert.deepEqual({ ...parsed }, { name: value, version: value }, `${ecosystem}: ${value}`)
+    }
   }
 })
 
@@ -91,51 +79,18 @@ test('Bundle rejects an invalid package block on parse and on construction', (t)
     { soldeer: { name: 'pkg' } },
     { github: { name: 'o/n' } },
     { Npm: { name: 'pkg' } },
-    { cargo: { name: 'c', version: '1.0.0', checksum: 'x' } },
     { npm: 'pkg@0.0.1' },
     { npm: null },
     { npm: [] },
     { npm: { name: 'pkg', version: '0.0.1', integrity: 'sha512-' } },
-    ...[
-      'Pkg', '.pkg', '_pkg', '@scope/.pkg', '@scope/_pkg', '@.scope/pkg', '@_scope/pkg', '@Scope/pkg',
-      'a b', ' pkg', 'a/b', '@scope', '@scope/', '@/pkg', '@scope/a/b', 'a~b', 'a!b', "a'b", 'a(b)', 'a*b', 'a%2Fb', 'é',
-      'node_modules', 'favicon.ico', 'x'.repeat(215), '', '.', '..', 42,
-    ].map((name) => ({ npm: { name } })),
-    ...[
-      'v1.0.0', '=1.0.0', '1.0', '1', '01.0.0', '1.00.0', '1.0.0-01', '1.0.0+build', '1.0.0-beta+exp.sha.5114f85',
-      '1.0.0-', '1.0.0-a..b', '1.0.0-a_b', ' 1.0.0', '', 1, `1.0.0-${'a'.repeat(251)}`,
-    ].map((version) => ({ npm: { version } })),
-    ...[
-      'symfony', 'Symfony/console', 'symfony/Console', '/console', 'symfony/', 'a/b/c', 'a//b', '-a/b', 'a-/b', 'a/-b', 'a/b-',
-      'a--b/c', 'a/b---c', 'a/b..c', 'a/b_.c', 'a b/c', 'é/b', '', 42,
-    ].map((name) => ({ composer: { name } })),
-    ...[
-      'dev-main', 'dev-feature/x', '1.x-dev', '1.0.0-dev', '1.0.0+build', '1.0.0.0.0', '1.0.0-foo', '1.0.0-1', 'v', 'vv1.0',
-      '^1.0', '~1.0', '1.0.*', '>=1.0', '1.0 ', '', 1,
-    ].map((version) => ({ composer: { version } })),
-    ...['1serde', '_serde', '-serde', 'serde.json', 'serde json', 'a'.repeat(65), 'é', '', 42].map((name) => ({ cargo: { name } })),
-    ...['v1.0.0', '1.0', '01.0.0', '1.0.0-01', '1.0.0+', '1.0.0+a..b', '1.0.0+a_b', '', 1].map((version) => ({ cargo: { version } })),
+    { cargo: { name: 'c', version: '1.0.0', checksum: 'x' } },
+    ...ECOSYSTEMS.flatMap((ecosystem) => [...BAD, 1, null, true, {}, ['pkg']].flatMap((value) =>
+      [{ [ecosystem]: { name: value } }, { [ecosystem]: { version: value } }])),
   ]
   for (const pkg of bad) {
     t.assert.throws(() => Bundle.parse(withPackageJSON(pkg)), undefined, `parse: ${JSON.stringify(pkg)}`)
     t.assert.throws(() => base(pkg), undefined, `constructor: ${JSON.stringify(pkg)}`)
   }
-})
-
-test('Bundle package validation stays linear on long near-misses', (t) => {
-  const long = '1'.repeat(50_000)
-  const bad = [
-    { npm: { name: `${'a'.repeat(50_000)}!` } },
-    { npm: { version: `1.0.0-${long}.${long}!` } },
-    { composer: { name: `${'a'.repeat(50_000)}!` } },
-    { composer: { name: `a/${'b'.repeat(50_000)}!` } },
-    { composer: { name: `${'a.'.repeat(25_000)}/b!` } },
-    { composer: { name: `a/${'b--'.repeat(25_000)}!` } },
-    { composer: { version: `1.0.0-beta${'1.'.repeat(25_000)}x` } },
-    { composer: { version: `1.0.0-beta${long}x` } },
-    { cargo: { version: `1.0.0+${'a.'.repeat(25_000)}!` } },
-  ]
-  for (const pkg of bad) t.assert.throws(() => base(pkg), /invalid bundle package\./u)
 })
 
 test('Bundle carries package through withReason', (t) => {
@@ -176,8 +131,8 @@ test('package never reaches a lockfile', (t) => {
 
 test('Bundle validates a directly assigned package', (t) => {
   const bundle = base()
-  t.assert.throws(() => { bundle.package = { npm: { name: 'Pkg' } } }, /invalid bundle package\.npm\.name/u)
-  t.assert.throws(() => { bundle.package = { npm: { version: 'v1' } } }, /invalid bundle package\.npm\.version/u)
+  t.assert.throws(() => { bundle.package = { npm: { name: 'a b' } } }, /invalid bundle package\.npm\.name/u)
+  t.assert.throws(() => { bundle.package = { npm: { version: 1 } } }, /invalid bundle package\.npm\.version/u)
   t.assert.throws(() => { bundle.package = { npm: { tag: 'latest' } } }, /unknown bundle package\.npm key 'tag'/u)
   t.assert.throws(() => { bundle.package = { pypi: {} } }, /unknown bundle package key 'pypi'/u)
   t.assert.equal(bundle.package, undefined, 'a rejected value is not stored')
@@ -186,6 +141,21 @@ test('Bundle validates a directly assigned package', (t) => {
   t.assert.deepEqual(JSON.parse(bundle.serialize()).package, PKG)
   bundle.package = { npm: {} }
   t.assert.equal(bundle.package, undefined)
+})
+
+test('Bundle package and repo are frozen, so serialize writes only what was validated', (t) => {
+  const bundle = base({ npm: { name: 'pkg', version: '0.0.1' } }, { github: 'o/n' })
+  t.assert.throws(() => { bundle.package.npm.name = 'a b' }, TypeError)
+  t.assert.throws(() => { bundle.package.npm.tag = 'latest' }, TypeError)
+  t.assert.throws(() => { bundle.package.pypi = {} }, TypeError)
+  t.assert.throws(() => { bundle.repo.github = 'not valid' }, TypeError)
+  t.assert.throws(() => { delete bundle.repo.github }, TypeError)
+  const json = JSON.parse(bundle.serialize())
+  t.assert.deepEqual(json.package, PKG)
+  t.assert.deepEqual(json.repo, { github: 'o/n' })
+  for (const merged of [bundle.merge(bundle), bundle.withReason('bundle'), Bundle.parse(bundle.serialize())]) {
+    t.assert.ok(Object.isFrozen(merged.package) && Object.isFrozen(merged.package.npm) && Object.isFrozen(merged.repo))
+  }
 })
 
 test('stasis add never sets package, and adding to a stamped bundle clears it', withTmp((t, tmp) => {

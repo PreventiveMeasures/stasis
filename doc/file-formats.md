@@ -250,12 +250,14 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   - `commit` must be a full lowercase git object id (a 40-hex SHA-1 or a 64-hex
     SHA-256).
 
-  Unknown keys and invalid values are rejected on both serialize and parse. The
-  field is **purely informational**: it is never attested, never written to the
-  lockfile, and ignored by every verification. Adding to an existing bundle
-  (`stasis add`, `stasis bundle --add`, `stasis run` with `bundle = add`) never
-  overwrites its `repo`: only the fields that agree between the existing bundle and
-  the new build survive, and none if `github` differs or the new build has none.
+  Unknown keys and invalid values are rejected on both serialize and parse. A
+  `Bundle` freezes the value it holds, so changing it means assigning a new one,
+  which is validated. The field is **purely informational**: it is never attested,
+  never written to the lockfile, and ignored by every verification. Adding to an
+  existing bundle (`stasis add`, `stasis bundle --add`, `stasis run` with
+  `bundle = add`) never overwrites its `repo`: only the fields that agree between
+  the existing bundle and the new build survive, and none if `github` differs or
+  the new build has none.
   `root` follows the same rule as `directory`. For example, the same repository
   and directory at a different commit keeps `github` and `directory` and drops
   `commit`.
@@ -286,40 +288,23 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
 - `package` (optional, right after `repo`) records which package the bundle is:
   `{ "npm": { "name": "pkg", "version": "0.0.1" } }`. It holds one block per
   ecosystem, named as a module's `ecosystem` is: `npm`, `composer` and `cargo`, in
-  that order. Every block and each of its fields are optional, and each is
-  validated only when present:
-  - `npm`:
-    - `name` must be an npm package name the registry accepts for a new package:
-      at most 214 characters of `[a-z0-9._-]`, optionally scoped (`@scope/name`),
-      with neither part starting with `.` or `_`, and not `node_modules` or
-      `favicon.ico`.
-    - `version` must be a full semver version as the registry records it, at most
-      256 characters: no `v` prefix, no leading zeros, and no build metadata (`+…`).
-  - `composer`:
-    - `name` must be a `vendor/package` name as `composer.json`'s schema takes it:
-      lowercase `[a-z0-9]` runs joined by single `_`, `.` or `-` (in `package`, also
-      `--`).
-    - `version` must be a release as published, its tag kept as is (`v6.4.8`,
-      `1.0.0-RC1`), as Composer's version parser reads it: an optional `v`, one to
-      four dot-separated numbers, and an optional stability suffix (`alpha`, `a`,
-      `beta`, `b`, `RC`, `patch`, `pl`, `p` or `stable`, any case, with an optional
-      number). Dev versions (`dev-main`, `1.x-dev`) and build metadata are rejected.
-  - `cargo`:
-    - `name` must be a crates.io name: a letter, then up to 63 characters of
-      `[A-Za-z0-9_-]`.
-    - `version` must be a full semver version: no `v` prefix and no leading zeros,
-      but build metadata (`+…`) is kept, as Cargo keeps it.
+  that order. Every block holds a `name` and a `version`; the block and each field
+  are optional, and each is validated only when present. Both fields are taken as
+  given, with no ecosystem's naming or versioning rules applied: each must be a
+  non-empty string of the characters some ecosystem's names or versions use, which
+  are `A-Z`, `a-z`, `0-9` and `._-+@/~'!()*` (npm's legacy names among them). So
+  any printable ASCII but space and ``"#$%&,:;<=>?[\]^`{|}`` is accepted.
 
   Unknown keys and invalid values are rejected on both serialize and parse, and an
-  empty block (`{}`, `{ "npm": {} }`) is not written. Like `repo`, the field is
-  **purely informational**: it is never attested, never written to the lockfile,
-  and ignored by every verification. No build sets it: bundles written by
-  `stasis run`, `stasis bundle` and `stasis add` never carry one. Merging two bundles
-  keeps only the fields that agree, each ecosystem on its own. A block is cleared
-  whole when the two names differ (compared exactly) or either side has none, and a
-  block or field that one side lacks is dropped. Since no build carries a `package`,
-  adding to a stamped bundle (`stasis add`, `stasis bundle --add`, `stasis run` with
-  `bundle = add`) clears it.
+  empty block (`{}`, `{ "npm": {} }`) is not written. Like `repo`, it is frozen on a
+  `Bundle`, and the field is **purely informational**: it is never attested, never
+  written to the lockfile, and ignored by every verification. No build sets it:
+  bundles written by `stasis run`, `stasis bundle` and `stasis add` never carry one.
+  Merging two bundles keeps only the fields that agree, each ecosystem on its own.
+  A block is cleared whole when the two names differ (compared exactly) or either
+  side has none, and a block or field that one side lacks is dropped. Since no build
+  carries a `package`, adding to a stamped bundle (`stasis add`,
+  `stasis bundle --add`, `stasis run` with `bundle = add`) clears it.
 
 A legacy `version: 0` shape — flat top-level `sources` keyed by project-relative
 path, with no `entries`/`modules`/`formats`/`imports` — is still accepted by
