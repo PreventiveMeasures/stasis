@@ -1,17 +1,8 @@
-import { KNOWN_FORMATS, assert, serializeExecutable, fileMapToObject, fileSetToObject, fromEntries, flatFileKeys, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, parseExecutable, posixPathEscapes, sortPaths } from './artifact-util.js'
+import { assert, duplicateKeyError, serializeExecutable, fileMapToObject, fileSetToObject, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseExecutable, parseFormats, parseImports, posixPathEscapes } from './artifact-util.js'
 
 const VERSION = 0
 
-const duplicateKey = (key) => assert(false, `duplicate file key '${key}' across lockfile buckets -- module bucketing ` +
-  `changed between writes (a workspace package without a version now owns its own ` +
-  `bucket); regenerate the lockfile (lock=replace)`)
-
-const normalize = ({ name, version, ecosystem, files }) => {
-  assert(ecosystem === undefined || typeof ecosystem === 'string')
-  // An absent version has one spelling: null (hand-edited or legacy JSON) folds into undefined so
-  // identity comparisons and JSON round-trips can't split on it.
-  return { name, version: version ?? undefined, ...(ecosystem === undefined ? {} : { ecosystem }), files: fromEntries(Object.entries(files)) }
-}
+const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
 export class Lockfile {
   static VERSION = VERSION
@@ -52,7 +43,7 @@ export class Lockfile {
     for (const [dir, info] of Object.entries(json.modules)) {
       assert(hasNodeModulesSegment(dir))
       assert(info?.name && info.version && info.files)
-      modules.set(dir, normalize(info))
+      modules.set(dir, normalizeModule(info))
     }
 
     let entries = new Set()
@@ -61,7 +52,7 @@ export class Lockfile {
       entries = new Set(json.entries)
       for (const [dir, info] of Object.entries(json.sources)) {
         assert(!hasNodeModulesSegment(dir))
-        modules.set(dir, normalize(info))
+        modules.set(dir, normalizeModule(info))
       }
     }
 
@@ -73,49 +64,8 @@ export class Lockfile {
     }
     const flatKeys = flatFileKeys(modules, 'lockfile', duplicateKey)
 
-    assert(isPlainObject(json.imports))
-    const imports = new Map()
-    for (const [conditions, byParent] of Object.entries(json.imports)) {
-      assert(isPlainObject(byParent))
-      const parents = new Map()
-      for (const [parent, specifiers] of Object.entries(byParent)) {
-        assert(!posixPathEscapes(parent))
-        assert(isPlainObject(specifiers))
-        const specs = new Map()
-        for (const [specifier, target] of Object.entries(specifiers)) {
-          if (typeof target === 'string') {
-            assert(!posixPathEscapes(target))
-            specs.set(specifier, target)
-          } else {
-            assert(isPlainObject(target) && Object.keys(target).length > 0,
-              'import target must be a file or a non-empty {platform: file} map')
-            const byPlatform = new Map()
-            for (const [platform, file] of Object.entries(target)) {
-              assert(typeof platform === 'string' && platform.length > 0 && !platform.includes('/'), `invalid platform key '${platform}'`)
-              assert(typeof file === 'string')
-              assert(!posixPathEscapes(file))
-              byPlatform.set(platform, file)
-            }
-            specs.set(specifier, byPlatform)
-          }
-        }
-        parents.set(parent, specs)
-      }
-      imports.set(conditions, parents)
-    }
-
-    assert(isPlainObject(json.formats))
-    const formats = new Map()
-    for (const [file, format] of Object.entries(json.formats)) {
-      assert(!posixPathEscapes(file))
-      // Reject unknown formats at the schema boundary (not downstream) so a tampered lockfile fails closed.
-      assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
-      // '' and '.' alias to the same key (older lockfiles keyed the root listing ''); normalize, fail closed on dupes.
-      const key = file === '' ? '.' : file
-      assert(!formats.has(key), `duplicate format key '${key}'`)
-      formats.set(key, format)
-    }
-
+    const imports = parseImports(json.imports)
+    const formats = parseFormats(json.formats)
     // Every executable must be a file this lockfile attests.
     const executable = json.executable === undefined
       ? new Set()
@@ -127,24 +77,12 @@ export class Lockfile {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const entries = fileSetToObject(this.entries)
-    const modules = []
-    const sources = []
-    for (const [dir, { name, version, ecosystem, files }] of this.modules) {
-      const inNodeModules = hasNodeModulesSegment(dir)
-      if (inNodeModules) assert(name && version && files)
-      const type = inNodeModules ? modules : sources
-      const sorted = fromEntries(Object.entries(files).toSorted((a, b) => sortPaths(a[0], b[0])))
-      type.push([dir, { name, version, ...(ecosystem === undefined ? {} : { ecosystem }), files: sorted }])
-    }
-    modules.sort((a, b) => sortPaths(a[0], b[0]))
-    sources.sort((a, b) => sortPaths(a[0], b[0]))
-
+    const { modules, sources } = groupModules(this.modules)
     const store = { version: this.version, config: this.config }
-    if (this.config.scope === 'full') Object.assign(store, { entries, sources: fromEntries(sources) })
-    Object.assign(store, { modules: fromEntries(modules) })
-    if (this.imports !== null) Object.assign(store, { imports: fileMapToObject(this.imports) })
-    if (this.formats !== null) Object.assign(store, { formats: fileMapToObject(this.formats) })
+    if (this.config.scope === 'full') Object.assign(store, { entries: fileSetToObject(this.entries), sources })
+    store.modules = modules
+    if (this.imports !== null) store.imports = fileMapToObject(this.imports)
+    if (this.formats !== null) store.formats = fileMapToObject(this.formats)
     const executable = serializeExecutable(this.executable, {
       what: 'lockfile',
       modules: this.modules,

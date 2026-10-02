@@ -8,7 +8,7 @@ import { Lockfile } from './lockfile.js'
 import { brotliOptions } from './brotli.js'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson } from './bundle-util.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix } from './util.js'
+import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix } from './util.js'
 
 const CONFIG_FILE = 'stasis.config.json'
 const LOCK_FILE = 'stasis.lock.json'
@@ -20,10 +20,11 @@ function sourceFormat(absFile, content) {
   return classifyFormat(absFile, { content }) ?? null
 }
 
-const tally = (bundle) => {
+// File and non-empty package counts of a bundle or lockfile.
+const tally = (artifact) => {
   let files = 0
   let packages = 0
-  for (const m of bundle.modules.values()) {
+  for (const m of artifact.modules.values()) {
     const n = Object.keys(m.files).length
     if (n > 0) {
       files += n
@@ -57,15 +58,11 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
-  const ensureBucket = (dir, name, version, ecosystem) => {
-    if (!modules.has(dir)) {
-      modules.set(dir, ecosystem === undefined
-        ? { name, version, files: Object.create(null) }
-        : { name, version, ecosystem, files: Object.create(null) })
-    }
-    return modules.get(dir)
+  const bucketFiles = (dir, name, version, ecosystem) => {
+    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem, files: Object.create(null) }))
+    return modules.get(dir).files
   }
-  // Memoize per directory: findPackageMetadata's result depends only on the file's directory.
+  // findPackageMetadata's result depends only on the file's directory.
   const metaByDir = new Map()
   const metaFor = (rel) => {
     const dir = dirname(rel)
@@ -75,32 +72,21 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
 
   for (const [rel, { content, format, executable: isExec }] of files) {
     const meta = metaFor(rel)
-    const inNodeModules = splitNodeModulesPath(rel) !== null
+    // A node_modules file whose nearest package.json is the workspace root (or none at all) is a misconfigured dep -- refuse.
+    if (splitNodeModulesPath(rel) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
+      throw new Error(`add: no package.json with name+version found for ${rel}`)
+    }
     if (meta) {
-      // A node_modules file whose nearest package.json is the workspace root is a misconfigured dep -- refuse.
-      if (inNodeModules && !hasNodeModulesSegment(meta.pkgDir)) {
-        throw new Error(`add: no package.json with name+version found for ${rel}`)
-      }
       const relInBucket = meta.pkgDir === '.' ? rel : rel.slice(meta.pkgDir.length + 1)
-      const ecosystem = hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined
-      ensureBucket(meta.pkgDir, meta.name, meta.version, ecosystem).files[relInBucket] = content
+      bucketFiles(meta.pkgDir, meta.name, meta.version, hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined)[relInBucket] = content
     } else {
-      if (inNodeModules) throw new Error(`add: no package.json with name+version found for ${rel}`)
-      ensureBucket('.', workspaceName, workspaceVersion).files[rel] = content
+      bucketFiles('.', workspaceName, workspaceVersion)[rel] = content
     }
     formats.set(rel, format)
     if (isExec) executable.add(rel)
   }
 
-  return new Bundle({
-    config: { scope: 'full' },
-    entries: new Set(),
-    modules,
-    formats,
-    imports: new Map(),
-    executable,
-    repo,
-  }).withReason('add')
+  return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason('add')
 }
 
 // Merge add-if-missing into any existing bundle (divergent bytes for an attested path throw -- see
@@ -136,7 +122,7 @@ function bundleToLockfile(bundle, integrities) {
   for (const [dir, m] of bundle.modules) {
     const files = Object.create(null)
     for (const rel of Object.keys(m.files)) files[rel] = integrities.get(moduleFileKey(dir, rel))
-    modules.set(dir, { name: m.name, version: m.version, ...(m.ecosystem === undefined ? {} : { ecosystem: m.ecosystem }), files })
+    modules.set(dir, moduleInfo({ ...m, files }))
   }
   return new Lockfile({ config: bundle.config, entries: bundle.entries, modules, imports: bundle.imports, formats: bundle.formats, executable: bundle.executable })
 }
@@ -169,12 +155,12 @@ function expandDirectories(baseDir, rels, outputs) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
   for (const rel of rels) {
-    const stats = statSync(join(baseDir, rel), { throwIfNoEntry: false })
+    const dirAbs = join(baseDir, rel)
+    const stats = statSync(dirAbs, { throwIfNoEntry: false })
     if (stats === undefined || !stats.isDirectory()) {
       files.set(rel, stats)
       continue
     }
-    const dirAbs = join(baseDir, rel)
     const found = []
     for (const match of globSync('**/*', { cwd: dirAbs })) {
       const fileAbs = join(dirAbs, match)
@@ -200,7 +186,6 @@ const listPaths = (rels) => [...rels].toSorted(sortPaths).join(', ')
 // One error for every file validation rejected, so a directory sweep names all of them at once
 // instead of one per re-run. A lone offender keeps its exact standalone message.
 function validationError({ missing, undeclared, nonUtf8 }) {
-  // `one`/`many` per category; empty categories contribute nothing.
   const phrase = (items, one, many) => (items.length === 1 ? [one(items[0])] : items.length > 1 ? [many(items)] : [])
   const named = ({ rel, format }) => `${rel} (format '${format}')`
   const parts = [
@@ -235,7 +220,6 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity }) {
       continue
     }
     const executable = isExecutableMode(stats)
-    // Refuse a symlink whose realpath escapes the project root -- a bundle carries only in-tree bytes.
     assertRealPathWithinBase(realBase, baseDir, rel)
     const abs = join(baseDir, rel)
     const buf = readFileSync(abs)
@@ -307,9 +291,8 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     planTarget(bundleFile, codeFiles, 'source')
     planTarget(resourcesBundleFile, resourceFiles, 'resource')
   } else {
-    const all = new Map([...codeFiles, ...resourceFiles])
     const kind = codeFiles.size > 0 && resourceFiles.size > 0 ? 'file' : resourceFiles.size > 0 ? 'resource' : 'source'
-    planTarget(bundleFile, all, kind)
+    planTarget(bundleFile, new Map([...codeFiles, ...resourceFiles]), kind)
   }
 
   // One lockfile attests both split targets, so merge in every packed file's integrity (code + resources together).

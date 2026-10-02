@@ -5,42 +5,27 @@
 // captured/served; anything else falls through to the real fs and is never attested.
 
 import { createRequire, syncBuiltinESMExports } from 'node:module'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { realReadFileSync } from './state-util.js'
-import { isDotEnvFile, isStasisArtifactName } from './util.js'
+import { isDotEnvFile, isPathWithin, isStasisArtifactName } from './util.js'
 
 const require = createRequire(import.meta.url)
 const fs = require('node:fs')
 
 // Snapshot the real fns while still genuine builtins; the hooks call THESE, never patched `fs.*`, so
-// there's no recursion and capture/containment always see real bytes/paths.
-const realReaddirSync = fs.readdirSync
-const realLstatSync = fs.lstatSync
-const realStatSync = fs.statSync
-const realRealpathSync = fs.realpathSync
-const realRealpathSyncNative = fs.realpathSync.native
-const realExistsSync = fs.existsSync
-const realAccessSync = fs.accessSync
-
-// Async counterparts, snapshotted for `--fs=async`. fs.promises IS node:fs/promises (same object).
-const realReadFile = fs.readFile
-const realReaddir = fs.readdir
-const realLstat = fs.lstat
-const realStat = fs.stat
-const realReadFileP = fs.promises.readFile
-const realReaddirP = fs.promises.readdir
-const realLstatP = fs.promises.lstat
-const realStatP = fs.promises.stat
-
-// The legacy callback fs.exists is deliberately NOT reassigned (wrapping would clobber its
-// util.promisify.custom); it still answers via the patched fs.access.
-const realAccess = fs.access
-const realAccessP = fs.promises.access
-const realRealpath = fs.realpath
-const realRealpathNative = fs.realpath.native
-const realRealpathP = fs.promises.realpath
+// there's no recursion and capture/containment always see real bytes/paths. fs.promises IS
+// node:fs/promises (same object). The legacy callback fs.exists is deliberately NOT reassigned
+// (wrapping would clobber its util.promisify.custom); it still answers via the patched fs.access.
+const {
+  readdirSync: realReaddirSync, lstatSync: realLstatSync, statSync: realStatSync, realpathSync: realRealpathSync,
+  existsSync: realExistsSync, accessSync: realAccessSync,
+  readFile: realReadFile, readdir: realReaddir, lstat: realLstat, stat: realStat, access: realAccess, realpath: realRealpath,
+} = fs
+const { readFile: realReadFileP, readdir: realReaddirP, lstat: realLstatP, stat: realStatP, access: realAccessP, realpath: realRealpathP } = fs.promises
+const realRealpathSyncNative = realRealpathSync.native
+const realRealpathNative = realRealpath.native
 
 // The bundle serves read-only, so only an F_OK/R_OK-only mode may be answered from it; allowlist form
 // so a W_OK/X_OK or out-of-range mode defers to the real fs.
@@ -53,12 +38,6 @@ function toAbsPath(path) {
   if (Buffer.isBuffer(path)) return resolve(path.toString())
   if (path instanceof URL) return path.protocol === 'file:' ? fileURLToPath(path) : null
   return null
-}
-
-// True when `abs` is the project root or lives beneath it -- lexical only (see realContained).
-function withinRoot(root, abs) {
-  const rel = relative(root, abs)
-  return !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 let realRootCache
@@ -76,22 +55,20 @@ function realRootOf(root) {
 function realContained(root, abs) {
   let real
   try { real = realRealpathSync(abs) } catch { return false }
-  const rel = relative(realRootOf(root), real)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return isPathWithin(realRootOf(root), real)
 }
 
 // At the project root, drop stasis's own artifacts from the RECORDED listing so it doesn't depend on
 // whether an earlier run left them behind; the program still receives the true on-disk `names`.
 function dirCaptureNames(root, abs, names) {
-  if (relative(root, abs) !== '') return names
+  if (!isPathWithin(abs, root)) return names
   return names.filter((name) => !isStasisArtifactName(name))
 }
 
 // Apply readFileSync's encoding arg to raw bytes; Buffer.toString matches fs's ERR_UNKNOWN_ENCODING.
 function decode(buf, options) {
   const encoding = typeof options === 'string' ? options : options?.encoding
-  if (encoding == null) return buf
-  return buf.toString(encoding)
+  return encoding == null ? buf : buf.toString(encoding)
 }
 
 // Honour realpath's `encoding` arg for the synthetic answer when a bundle-served path is gone from disk.
@@ -100,36 +77,19 @@ function encodeRealpath(abs, options) {
   return encoding === 'buffer' ? Buffer.from(abs) : abs
 }
 
-// Source-map sidecars (`*.map`) are NON-EXISTENT under --fs (faithful ENOENT in both modes, so a
-// captured build replays byte-identically). Opt out via `map` in resources, or bundle membership.
-function isSkippedSourceMap(state, abs) {
-  if (!abs.toLowerCase().endsWith('.map')) return false
-  if (state.config.resources?.has('map')) return false
-  if (state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined) return false
-  return true
-}
-
-// `.env`/`.env.*` are NON-EXISTENT under --fs so an automated capture can never bake a secret in. No
-// resources opt-in: the ONE way one serves at load is membership (an explicit `stasis add .env`).
-function isSkippedEnvFile(state, abs) {
-  if (!isDotEnvFile(abs)) return false
-  if (state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined) return false
-  return true
-}
-
+// NON-EXISTENT under --fs (faithful ENOENT in both modes): source-map sidecars (`*.map`, so a captured
+// build replays byte-identically; opt out via `map` in resources) and `.env`/`.env.*` (an automated
+// capture can never bake a secret in; no opt-in). The ONE way either serves at load is bundle
+// membership (an explicit `stasis add .env`).
 function isSkippedFsPath(state, abs) {
-  return isSkippedSourceMap(state, abs) || isSkippedEnvFile(state, abs)
+  const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
+  return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
 }
 
 // A faithful Node-shaped ENOENT, indistinguishable from a real absent file.
 function enoent(syscall, path) {
   const p = typeof path === 'string' ? path : Buffer.isBuffer(path) ? path.toString() : String(path)
-  const err = new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`)
-  err.code = 'ENOENT'
-  err.errno = -2
-  err.syscall = syscall
-  err.path = p
-  return err
+  return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`), { code: 'ENOENT', errno: -2, syscall, path: p })
 }
 
 // File-type bits, so code reading stats.mode (not the is*() methods) still sees file-vs-dir.
@@ -175,145 +135,112 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   if (installed) return
   installed = true
 
-  fs.readFileSync = function readFileSync(path, options) {
+  // Classify a path for every hook: null passes through to the real fs; else { mode, abs, url, state }
+  // with mode 'absent' (a skipped path: ENOENT), 'serve' (bundle=load; an uncaptured path still falls
+  // through to disk) or 'capture' (bundle=add|replace, outside a loader read). `skipped: false`
+  // leaves a skipped name to serve/capture (readdirSync, where only the async form treats it as absent).
+  const classify = (path, { skipped = true } = {}) => {
     const state = getState()
-    if (state) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) throw enoent('open', path)
-        const url = pathToFileURL(abs).toString()
-        if (state.config.loadBundle) {
-          const buf = state.getFsFileFamily(url)
-          if (buf !== undefined) return decode(buf, options)
-        } else if (state.config.writeBundle && !isLoadingModule()) {
-          const buf = realReadFileSync(path)
-          // A path whose real location escapes root (in-tree symlink) is read but NOT recorded, and
-          // neither is a read a bundler-plugin sidecar already attests.
-          if (realContained(state.root, abs) && !state.attestedBySidecar(url)) {
-            try { state.addFsFile(url, buf) } catch (err) { markAborted(err) }
-          }
-          return decode(buf, options)
-        }
-      }
+    if (!state) return null
+    const abs = toAbsPath(path)
+    if (abs === null || !isPathWithin(state.root, abs)) return null
+    if (skipped && isSkippedFsPath(state, abs)) return { mode: 'absent', abs }
+    const url = pathToFileURL(abs).toString()
+    if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
+    if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
+    return null
+  }
+  // A path the bundle knows (content, listing, stat record or implied dir), for the serve-only probes.
+  const served = (t) => t?.mode === 'serve' && t.state.getFsStatFamily(t.url) !== undefined
+
+  // Capture-side records; a rejected capture taints the run (markAborted) rather than failing the read.
+  const record = (fn) => { try { fn() } catch (err) { markAborted(err) } }
+  // A path whose real location escapes root (in-tree symlink) is read but NOT recorded, and neither is
+  // a read a bundler-plugin sidecar already attests.
+  const captureFile = ({ state, abs, url }, buf) => {
+    if (realContained(state.root, abs) && !state.attestedBySidecar(url)) record(() => state.addFsFile(url, buf))
+  }
+  const captureDir = ({ state, abs, url }, names) => {
+    if (realContained(state.root, abs)) record(() => state.addFsDir(url, dirCaptureNames(state.root, abs, names)))
+  }
+  // A stat records the path's KIND as a payload-free record so a stat-ONLY path's type getters answer
+  // at load. Only file and dir are modelled.
+  const captureStat = ({ state, abs, url }, stats) => {
+    const isDir = stats.isDirectory()
+    if (!isDir && !stats.isFile()) return
+    if (realContained(state.root, abs) && !state.attestedBySidecar(url)) record(() => state.addFsStat(url, isDir ? 'directory' : 'file'))
+  }
+
+  fs.readFileSync = function readFileSync(path, options) {
+    const t = classify(path)
+    if (t?.mode === 'absent') throw enoent('open', path)
+    if (t?.mode === 'serve') {
+      const buf = t.state.getFsFileFamily(t.url)
+      if (buf !== undefined) return decode(buf, options)
+    } else if (t?.mode === 'capture') {
+      const buf = realReadFileSync(path)
+      captureFile(t, buf)
+      return decode(buf, options)
     }
     return realReadFileSync(path, options)
   }
 
   fs.readdirSync = function readdirSync(path, options) {
-    const state = getState()
     // Single-argument form only; any options pass straight through.
-    if (state && options == null) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        const url = pathToFileURL(abs).toString()
-        if (state.config.loadBundle) {
-          const names = state.getFsDirFamily(url)
-          if (names !== undefined) return names // sorted at capture time
-        } else if (state.config.writeBundle && !isLoadingModule()) {
-          const names = realReaddirSync(path)
-          // As in readFileSync: a dir whose real path escapes root is not recorded.
-          if (realContained(state.root, abs)) {
-            try { state.addFsDir(url, dirCaptureNames(state.root, abs, names)) } catch (err) { markAborted(err) }
-          }
-          return names
-        }
-      }
+    const t = options == null ? classify(path, { skipped: false }) : null
+    if (t?.mode === 'serve') {
+      const names = t.state.getFsDirFamily(t.url)
+      if (names !== undefined) return names // sorted at capture time
+    } else if (t?.mode === 'capture') {
+      const names = realReaddirSync(path)
+      captureDir(t, names)
+      return names
     }
     return realReaddirSync(path, options)
   }
 
-  // Shared capture-side stat recording: record the path's KIND as a payload-free stat record so a
-  // stat-ONLY path's type getters answer at load. Only file and dir are modelled.
-  const captureStat = (state, abs, stats) => {
-    const isDir = stats.isDirectory()
-    if (!isDir && !stats.isFile()) return
-    const url = pathToFileURL(abs).toString()
-    if (!realContained(state.root, abs) || state.attestedBySidecar(url)) return
-    try { state.addFsStat(url, isDir ? 'directory' : 'file') } catch (err) { markAborted(err) }
-  }
-
-  fs.lstatSync = function lstatSync(path, options) {
-    const state = getState()
-    // Single-arg form only; capture still hands the caller the REAL Stats/errors.
-    if (state && options == null) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) throw enoent('lstat', path)
-        if (state.config.loadBundle) {
-          const kind = state.getFsStatFamily(pathToFileURL(abs).toString())
-          if (kind !== undefined) return bundleStats(realLstatSync, path, kind === 'directory')
-        } else if (state.config.writeBundle && !isLoadingModule()) {
-          const stats = realLstatSync(path)
-          captureStat(state, abs, stats)
-          return stats
-        }
+  // Single-arg form only; capture still hands the caller the REAL Stats/errors. statSync follows
+  // symlinks, so it must use the real statSync: an in-root symlink records the TARGET's kind there.
+  const servedStatSync = (syscall, realFn) => ({
+    [`${syscall}Sync`](path, options) {
+      const t = options == null ? classify(path) : null
+      if (t?.mode === 'absent') throw enoent(syscall, path)
+      if (t?.mode === 'serve') {
+        const kind = t.state.getFsStatFamily(t.url)
+        if (kind !== undefined) return bundleStats(realFn, path, kind === 'directory')
+      } else if (t?.mode === 'capture') {
+        const stats = realFn(path)
+        captureStat(t, stats)
+        return stats
       }
-    }
-    return realLstatSync(path, options)
-  }
-
-  // Mirrors lstatSync but follows symlinks, so it must use the real statSync: an in-root symlink
-  // records the TARGET's kind here, nothing under lstatSync.
-  fs.statSync = function statSync(path, options) {
-    const state = getState()
-    if (state && options == null) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) throw enoent('stat', path)
-        if (state.config.loadBundle) {
-          const kind = state.getFsStatFamily(pathToFileURL(abs).toString())
-          if (kind !== undefined) return bundleStats(realStatSync, path, kind === 'directory')
-        } else if (state.config.writeBundle && !isLoadingModule()) {
-          const stats = realStatSync(path)
-          captureStat(state, abs, stats)
-          return stats
-        }
-      }
-    }
-    return realStatSync(path, options)
-  }
+      return realFn(path, options)
+    },
+  })[`${syscall}Sync`]
+  fs.lstatSync = servedStatSync('lstat', realLstatSync)
+  fs.statSync = servedStatSync('stat', realStatSync)
 
   // existsSync/accessSync/realpathSync: existence + canonical-path PROBES, serve-only (bundle=load) --
   // a tool may probe before reading bytes (@babel/core does); capture mode and unrecorded paths defer.
   fs.existsSync = function existsSync(path) {
-    const state = getState()
-    if (state) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) return false
-        if (state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined) return true
-      }
-    }
-    return realExistsSync(path)
+    const t = classify(path)
+    if (t?.mode === 'absent') return false
+    return served(t) || realExistsSync(path)
   }
 
   fs.accessSync = function accessSync(path, mode) {
-    const state = getState()
-    if (state) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) throw enoent('access', path)
-        if (state.config.loadBundle && isReadOnlyAccessMode(mode) &&
-            state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined) {
-          return undefined
-        }
-      }
-    }
+    const t = classify(path)
+    if (t?.mode === 'absent') throw enoent('access', path)
+    if (isReadOnlyAccessMode(mode) && served(t)) return undefined
     return realAccessSync(path, mode)
   }
 
   // Try the real realpath first (true symlink resolution while on disk), fall back to the lexical abs
   // once gone (ancestor symlinks not re-resolved then).
   const servedRealpathSync = (realFn) => function realpathSync(path, options) {
-    const state = getState()
-    if (state) {
-      const abs = toAbsPath(path)
-      if (abs !== null && withinRoot(state.root, abs)) {
-        if (isSkippedFsPath(state, abs)) throw enoent('realpath', path)
-        if (state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined) {
-          try { return realFn(path, options) } catch { return encodeRealpath(abs, options) }
-        }
-      }
+    const t = classify(path)
+    if (t?.mode === 'absent') throw enoent('realpath', path)
+    if (served(t)) {
+      try { return realFn(path, options) } catch { return encodeRealpath(t.abs, options) }
     }
     return realFn(path, options)
   }
@@ -323,19 +250,9 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   // --fs=async counterparts; a served callback is deferred (queueMicrotask) to preserve fs's
   // always-async contract.
   if (patchAsync) {
-    // Classify a path as the sync readers do: 'serve', 'capture', 'absent', or null (pass through).
-    const fsTarget = (path) => {
-      const state = getState()
-      if (!state) return null
-      const abs = toAbsPath(path)
-      if (abs === null || !withinRoot(state.root, abs)) return null
-      if (isSkippedFsPath(state, abs)) return { mode: 'absent', abs }
-      const url = pathToFileURL(abs).toString()
-      if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
-      if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
-      return null
-    }
-
+    // Split a trailing callback from its optional options argument.
+    const cbArgs = (options, callback) => (typeof options === 'function' ? [undefined, options] : [options, callback])
+    const later = (cb, ...args) => queueMicrotask(() => cb(...args))
     // Route a decode error to the callback (as fs.readFile does); a throw from a deferred callback
     // would escape as an uncaught exception and crash the process.
     const decodeToCb = (cb, buf, options) => {
@@ -345,171 +262,136 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     }
 
     fs.readFile = function readFile(path, options, callback) {
-      const cb = typeof options === 'function' ? options : callback
-      const opts = typeof options === 'function' ? undefined : options
-      const t = typeof cb === 'function' ? fsTarget(path) : null
-      if (t?.mode === 'absent') { queueMicrotask(() => cb(enoent('open', path))); return }
+      const [opts, cb] = cbArgs(options, callback)
+      const t = typeof cb === 'function' ? classify(path) : null
+      if (t?.mode === 'absent') return later(cb, enoent('open', path))
       if (t?.mode === 'serve') {
         const buf = t.state.getFsFileFamily(t.url)
-        if (buf !== undefined) { queueMicrotask(() => decodeToCb(cb, buf, opts)); return }
+        if (buf !== undefined) return later(decodeToCb, cb, buf, opts)
       } else if (t?.mode === 'capture') {
-        realReadFile(path, (err, buf) => {
+        return realReadFile(path, (err, buf) => {
           if (err) return cb(err)
-          if (realContained(t.state.root, t.abs) && !t.state.attestedBySidecar(t.url)) { try { t.state.addFsFile(t.url, buf) } catch (e) { markAborted(e) } }
+          captureFile(t, buf)
           decodeToCb(cb, buf, opts)
         })
-        return
       }
       return realReadFile(path, options, callback)
     }
 
     fs.promises.readFile = async function readFile(path, options) {
-      const t = fsTarget(path)
+      const t = classify(path)
       if (t?.mode === 'absent') throw enoent('open', path)
       if (t?.mode === 'serve') {
         const buf = t.state.getFsFileFamily(t.url)
         if (buf !== undefined) return decode(buf, options)
       } else if (t?.mode === 'capture') {
         const buf = await realReadFileP(path)
-        if (realContained(t.state.root, t.abs) && !t.state.attestedBySidecar(t.url)) { try { t.state.addFsFile(t.url, buf) } catch (e) { markAborted(e) } }
+        captureFile(t, buf)
         return decode(buf, options)
       }
       return realReadFileP(path, options)
     }
 
     fs.readdir = function readdir(path, options, callback) {
-      const cb = typeof options === 'function' ? options : callback
+      const [opts, cb] = cbArgs(options, callback)
       // Single-arg form only, and a null options must count as "no options" (graceful-fs normalises to
       // that), else its reads never hit the bundle.
-      const t = ((options == null || typeof options === 'function') && typeof cb === 'function') ? fsTarget(path) : null
+      const t = opts == null && typeof cb === 'function' ? classify(path) : null
       if (t?.mode === 'serve') {
         const names = t.state.getFsDirFamily(t.url)
-        if (names !== undefined) { queueMicrotask(() => cb(null, names)); return }
+        if (names !== undefined) return later(cb, null, names)
       } else if (t?.mode === 'capture') {
-        realReaddir(path, (err, names) => {
+        return realReaddir(path, (err, names) => {
           if (err) return cb(err)
-          if (realContained(t.state.root, t.abs)) { try { t.state.addFsDir(t.url, dirCaptureNames(t.state.root, t.abs, names)) } catch (e) { markAborted(e) } }
+          captureDir(t, names)
           cb(null, names)
         })
-        return
       }
       return realReaddir(path, options, callback)
     }
 
     fs.promises.readdir = async function readdir(path, options) {
-      const t = options == null ? fsTarget(path) : null
+      const t = options == null ? classify(path) : null
       if (t?.mode === 'serve') {
         const names = t.state.getFsDirFamily(t.url)
         if (names !== undefined) return names
       } else if (t?.mode === 'capture') {
         const names = await realReaddirP(path)
-        if (realContained(t.state.root, t.abs)) { try { t.state.addFsDir(t.url, dirCaptureNames(t.state.root, t.abs, names)) } catch (e) { markAborted(e) } }
+        captureDir(t, names)
         return names
       }
       return realReaddirP(path, options)
     }
 
     // lstat/stat mirror their sync siblings; bundleStats's field fallback stays sync.
-    fs.lstat = function lstat(path, options, callback) {
-      const cb = typeof options === 'function' ? options : callback
-      const t = ((options == null || typeof options === 'function') && typeof cb === 'function') ? fsTarget(path) : null
-      if (t?.mode === 'absent') { queueMicrotask(() => cb(enoent('lstat', path))); return }
-      if (t?.mode === 'serve') {
-        const kind = t.state.getFsStatFamily(t.url)
-        if (kind !== undefined) { queueMicrotask(() => cb(null, bundleStats(realLstatSync, path, kind === 'directory'))); return }
-      } else if (t?.mode === 'capture') {
-        realLstat(path, (err, stats) => {
-          if (err) return cb(err)
-          captureStat(t.state, t.abs, stats)
-          cb(null, stats)
-        })
-        return
-      }
-      return realLstat(path, options, callback)
-    }
+    const servedStat = (syscall, realFn, realSyncFn) => ({
+      [syscall](path, options, callback) {
+        const [opts, cb] = cbArgs(options, callback)
+        const t = opts == null && typeof cb === 'function' ? classify(path) : null
+        if (t?.mode === 'absent') return later(cb, enoent(syscall, path))
+        if (t?.mode === 'serve') {
+          const kind = t.state.getFsStatFamily(t.url)
+          if (kind !== undefined) return later(cb, null, bundleStats(realSyncFn, path, kind === 'directory'))
+        } else if (t?.mode === 'capture') {
+          return realFn(path, (err, stats) => {
+            if (err) return cb(err)
+            captureStat(t, stats)
+            cb(null, stats)
+          })
+        }
+        return realFn(path, options, callback)
+      },
+    })[syscall]
+    fs.lstat = servedStat('lstat', realLstat, realLstatSync)
+    fs.stat = servedStat('stat', realStat, realStatSync)
 
-    fs.stat = function stat(path, options, callback) {
-      const cb = typeof options === 'function' ? options : callback
-      const t = ((options == null || typeof options === 'function') && typeof cb === 'function') ? fsTarget(path) : null
-      if (t?.mode === 'absent') { queueMicrotask(() => cb(enoent('stat', path))); return }
-      if (t?.mode === 'serve') {
-        const kind = t.state.getFsStatFamily(t.url)
-        if (kind !== undefined) { queueMicrotask(() => cb(null, bundleStats(realStatSync, path, kind === 'directory'))); return }
-      } else if (t?.mode === 'capture') {
-        realStat(path, (err, stats) => {
-          if (err) return cb(err)
-          captureStat(t.state, t.abs, stats)
-          cb(null, stats)
-        })
-        return
-      }
-      return realStat(path, options, callback)
-    }
-
-    fs.promises.lstat = async function lstat(path, options) {
-      const t = options == null ? fsTarget(path) : null
-      if (t?.mode === 'absent') throw enoent('lstat', path)
-      if (t?.mode === 'serve') {
-        const kind = t.state.getFsStatFamily(t.url)
-        if (kind !== undefined) return bundleStats(realLstatSync, path, kind === 'directory')
-      } else if (t?.mode === 'capture') {
-        const stats = await realLstatP(path)
-        captureStat(t.state, t.abs, stats)
-        return stats
-      }
-      return realLstatP(path, options)
-    }
-
-    fs.promises.stat = async function stat(path, options) {
-      const t = options == null ? fsTarget(path) : null
-      if (t?.mode === 'absent') throw enoent('stat', path)
-      if (t?.mode === 'serve') {
-        const kind = t.state.getFsStatFamily(t.url)
-        if (kind !== undefined) return bundleStats(realStatSync, path, kind === 'directory')
-      } else if (t?.mode === 'capture') {
-        const stats = await realStatP(path)
-        captureStat(t.state, t.abs, stats)
-        return stats
-      }
-      return realStatP(path, options)
-    }
+    const servedStatP = (syscall, realFn, realSyncFn) => ({
+      async [syscall](path, options) {
+        const t = options == null ? classify(path) : null
+        if (t?.mode === 'absent') throw enoent(syscall, path)
+        if (t?.mode === 'serve') {
+          const kind = t.state.getFsStatFamily(t.url)
+          if (kind !== undefined) return bundleStats(realSyncFn, path, kind === 'directory')
+        } else if (t?.mode === 'capture') {
+          const stats = await realFn(path)
+          captureStat(t, stats)
+          return stats
+        }
+        return realFn(path, options)
+      },
+    })[syscall]
+    fs.promises.lstat = servedStatP('lstat', realLstatP, realLstatSync)
+    fs.promises.stat = servedStatP('stat', realStatP, realStatSync)
 
     fs.access = function access(path, mode, callback) {
-      const cb = typeof mode === 'function' ? mode : callback
-      const accessMode = typeof mode === 'function' ? undefined : mode
-      const t = typeof cb === 'function' ? fsTarget(path) : null
-      if (t?.mode === 'absent') { queueMicrotask(() => cb(enoent('access', path))); return }
-      if (t?.mode === 'serve' && isReadOnlyAccessMode(accessMode) && t.state.getFsStatFamily(t.url) !== undefined) {
-        queueMicrotask(() => cb(null)); return
-      }
+      const [accessMode, cb] = cbArgs(mode, callback)
+      const t = typeof cb === 'function' ? classify(path) : null
+      if (t?.mode === 'absent') return later(cb, enoent('access', path))
+      if (isReadOnlyAccessMode(accessMode) && served(t)) return later(cb, null)
       return realAccess(path, mode, callback)
     }
 
     fs.promises.access = async function access(path, mode) {
-      const t = fsTarget(path)
+      const t = classify(path)
       if (t?.mode === 'absent') throw enoent('access', path)
-      if (t?.mode === 'serve' && isReadOnlyAccessMode(mode) && t.state.getFsStatFamily(t.url) !== undefined) return undefined
+      if (isReadOnlyAccessMode(mode) && served(t)) return undefined
       return realAccessP(path, mode)
     }
 
     const servedRealpath = (realFn) => function realpath(path, options, callback) {
-      const cb = typeof options === 'function' ? options : callback
-      const opts = typeof options === 'function' ? undefined : options
-      const t = typeof cb === 'function' ? fsTarget(path) : null
-      if (t?.mode === 'absent') { queueMicrotask(() => cb(enoent('realpath', path))); return }
-      if (t?.mode === 'serve' && t.state.getFsStatFamily(t.url) !== undefined) {
-        realFn(path, opts, (err, resolved) => (err ? cb(null, encodeRealpath(t.abs, opts)) : cb(null, resolved)))
-        return
-      }
+      const [opts, cb] = cbArgs(options, callback)
+      const t = typeof cb === 'function' ? classify(path) : null
+      if (t?.mode === 'absent') return later(cb, enoent('realpath', path))
+      if (served(t)) return realFn(path, opts, (err, resolved) => cb(null, err ? encodeRealpath(t.abs, opts) : resolved))
       return realFn(path, options, callback)
     }
     fs.realpath = servedRealpath(realRealpath)
     fs.realpath.native = servedRealpath(realRealpathNative)
 
     fs.promises.realpath = async function realpath(path, options) {
-      const t = fsTarget(path)
+      const t = classify(path)
       if (t?.mode === 'absent') throw enoent('realpath', path)
-      if (t?.mode === 'serve' && t.state.getFsStatFamily(t.url) !== undefined) {
+      if (served(t)) {
         try { return await realRealpathP(path, options) } catch { return encodeRealpath(t.abs, options) }
       }
       return realRealpathP(path, options)

@@ -1,47 +1,22 @@
 import assert from 'node:assert/strict'
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  renameSync,
-  rmdirSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs'
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path'
 
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js' // also runs the posix-sep assertion
-import { hasNodeModulesSegment, isPlainObject, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
+import { hasNodeModulesSegment, isPathWithin, isPlainObject, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
 
 const LOCKFILE = 'stasis.lock.json'
 
 // Fields copied (sanitised) from a dep's on-disk package.json; everything else is dropped as
 // attack surface (scripts especially).
-const ROOT_FIELD_ORDER = [
-  'license',
-  'type',
-  'main',
-  'module',
-  'jsnext:main',
-  'jsnext',
-  'source',
-  'browser',
-  'react-native',
-  'bin',
-  'sideEffects',
-  'exports',
-  'imports',
-]
+const ROOT_FIELD_ORDER = ['license', 'type', 'main', 'module', 'jsnext:main', 'jsnext', 'source', 'browser', 'react-native', 'bin', 'sideEffects', 'exports', 'imports']
 
 function assertGlobalVirtualStoreDisabled() {
   // Global virtual store fills node_modules with symlinks, which prune skips -- lockfile-vs-disk goes blind.
   const env = process.env.npm_config_enable_global_virtual_store
   if (env !== undefined && env !== 'false' && env !== '') {
-    throw new Error(
-      `stasis prune: enableGlobalVirtualStore must be false, got ${JSON.stringify(env)}`,
-    )
+    throw new Error(`stasis prune: enableGlobalVirtualStore must be false, got ${JSON.stringify(env)}`)
   }
 }
 
@@ -51,11 +26,13 @@ function loadLockfile(root) {
   return Lockfile.parse(readFileSync(path, 'utf8'))
 }
 
+// The file -> hash the lockfile expects under node_modules (workspace sources aren't pnpm-managed),
+// and the bucket dirs it knows.
 function buildExpected(lockfile) {
   const expected = new Map()
   const knownDirs = new Set()
   for (const [dir, { files }] of lockfile.modules) {
-    if (!hasNodeModulesSegment(dir)) continue // workspace sources, not pnpm-managed
+    if (!hasNodeModulesSegment(dir)) continue
     knownDirs.add(dir)
     for (const [rel, hash] of Object.entries(files)) {
       // moduleFileKey, not `${dir}/${rel}`: a root capture's rel === '' would demand a file at `<pkg>/`.
@@ -72,8 +49,7 @@ function buildExpected(lockfile) {
 const EXTENSIONS = ['.js', '.cjs', '.mjs', '.json', '.node']
 
 function normalizeRef(ref) {
-  if (typeof ref !== 'string' || ref === '') return null
-  if (posixPathEscapes(ref)) return null
+  if (typeof ref !== 'string' || ref === '' || posixPathEscapes(ref)) return null
   return posix.normalize(ref).replace(/^\.\//u, '')
 }
 
@@ -83,25 +59,22 @@ function referencesPresentFile(ref, present, { exact = false } = {}) {
   if (base.includes('*')) return true // subpath pattern: unverifiable, kept
   if (present.has(base)) return true
   if (exact) return false // exports/imports targets resolve verbatim -- no extension/index fallback
-  for (const ext of EXTENSIONS) if (present.has(base + ext)) return true
-  for (const ext of EXTENSIONS) if (present.has(`${base}/index${ext}`)) return true
-  return false
+  return EXTENSIONS.some((ext) => present.has(base + ext) || present.has(`${base}/index${ext}`))
 }
 
 // Cap the recursion; real exports/imports trees nest a few deep and a deep one must not overflow.
 const MAX_TARGET_DEPTH = 64
 
-// An object/array filtering to empty is dropped: `exports: {}` would block every subpath instead of `main`.
+// Filter a target tree to attested files. An object/array filtering to empty is dropped:
+// `exports: {}` would block every subpath instead of `main`.
 function filterTargets(value, present, opts, depth = 0) {
   if (depth > MAX_TARGET_DEPTH) return { keep: false }
   const { allowBare, allowFalse, exact } = opts
   if (value === null) return { keep: true, value: null }
   if (value === false) return allowFalse ? { keep: true, value: false } : { keep: false }
   if (typeof value === 'string') {
-    if (value.startsWith('.')) {
-      return referencesPresentFile(value, present, { exact }) ? { keep: true, value } : { keep: false }
-    }
-    return allowBare ? { keep: true, value } : { keep: false }
+    const keep = value.startsWith('.') ? referencesPresentFile(value, present, { exact }) : allowBare
+    return keep ? { keep: true, value } : { keep: false }
   }
   if (Array.isArray(value)) {
     const out = []
@@ -132,38 +105,28 @@ const isAscii = (s) => /^[\x20-\x7e]*$/u.test(s)
 // `browser`/`react-native`: a string, or a map to replacements/`false`. undefined means drop the field.
 function browserField(value, present) {
   if (typeof value === 'string') return referencesPresentFile(value, present) ? value : undefined
-  if (isPlainObject(value)) {
-    const r = filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
-    if (r.keep) return r.value
-  }
-  return undefined
+  if (!isPlainObject(value)) return undefined
+  const r = filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
+  return r.keep ? r.value : undefined
 }
 
 // Resolution fields (`type`, entry points, exports/imports), every file reference filtered to an attested file.
 function resolutionFields(pkg, present) {
   const out = { __proto__: null }
-
   // Only the values Node honours; a garbage `type` is dropped rather than recategorising the package's .js files.
   if (pkg.type === 'module' || pkg.type === 'commonjs') out.type = pkg.type
-
-  if (referencesPresentFile(pkg.main, present)) out.main = pkg.main
-  if (referencesPresentFile(pkg.module, present)) out.module = pkg.module
-
-  // Bundler `mainFields` entries: dropping jsnext/jsnext:main downgrades an older dep ESM->CJS under Vite.
-  for (const field of ['jsnext:main', 'jsnext', 'source']) {
+  // Bundler `mainFields` entries too: dropping jsnext/jsnext:main downgrades an older dep ESM->CJS under Vite.
+  for (const field of ['main', 'module', 'jsnext:main', 'jsnext', 'source']) {
     if (referencesPresentFile(pkg[field], present)) out[field] = pkg[field]
   }
-
   for (const field of ['browser', 'react-native']) {
     const v = browserField(pkg[field], present)
     if (v !== undefined) out[field] = v
   }
-
   const exp = filterTargets(pkg.exports, present, { allowBare: false, allowFalse: false, exact: true })
   if (exp.keep) out.exports = exp.value
   const imp = filterTargets(pkg.imports, present, { allowBare: true, allowFalse: false, exact: true })
   if (imp.keep) out.imports = imp.value
-
   return out
 }
 
@@ -202,18 +165,28 @@ function minimalRootFields(pkg, { name, version, present }) {
   return out
 }
 
-// A nested package.json flips its subtree's module system; dropping it would revert those .js files to the root's.
-function minimalNestedFields(pkg, present) {
+// The minimal manifest for a known module's package.json at `rel`, root or nested: a nested one's refs
+// are relative to its own dir, so the recorded files are re-based first, and it survives because it
+// flips its subtree's module system (dropping it would revert those .js files to the root's).
+function minimalManifest(lockfile, owner, rel, raw) {
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { parsed = null }
+  const pkg = isPlainObject(parsed) ? parsed : {}
+  const { name, version, files } = lockfile.modules.get(owner.dir)
+  // The package.json itself survives prune, so it's always a legal self-reference target.
+  const present = new Set(['package.json'])
+  if (dirname(rel) === owner.dir) {
+    for (const f of Object.keys(files)) present.add(f)
+    return minimalRootFields(pkg, { name, version, present })
+  }
+  const prefix = `${relative(owner.dir, dirname(rel))}/`
+  for (const f of Object.keys(files)) if (f.startsWith(prefix)) present.add(f.slice(prefix.length))
   return resolutionFields(pkg, present)
 }
 
-const PNPM_WORKSPACE = 'pnpm-workspace.yaml'
-
 // In a workspace the symlink-containment boundary widens from node_modules to the whole workspace,
 // since a dep legitimately links to a sibling package's source dir.
-function isPnpmWorkspaceRoot(root) {
-  return existsSync(join(root, PNPM_WORKSPACE))
-}
+const isPnpmWorkspaceRoot = (root) => existsSync(join(root, 'pnpm-workspace.yaml'))
 
 function discoverNodeModulesDirs(root) {
   const found = []
@@ -250,32 +223,26 @@ function assertSymlinkInternal({ root, realBoundary, label }, linkPath) {
     if (err.code === 'ENOENT') return
     throw err
   }
-  const rel = relative(realBoundary, real)
-  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return
-  throw new Error(`stasis prune: symlink escapes ${label}: ${relative(root, linkPath)} -> ${real}`)
-}
-
-function* walkFiles(nmRoot, ctx) {
-  if (!existsSync(nmRoot)) return
-  const stack = [nmRoot]
-  while (stack.length > 0) {
-    const dir = stack.pop()
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name)
-      if (entry.isSymbolicLink()) {
-        assertSymlinkInternal(ctx, full)
-        continue
-      }
-      if (entry.isDirectory()) stack.push(full)
-      else if (entry.isFile()) yield full
-    }
+  if (!isPathWithin(realBoundary, real)) {
+    throw new Error(`stasis prune: symlink escapes ${label}: ${relative(root, linkPath)} -> ${real}`)
   }
 }
 
-// Tag each file with its node_modules root so deletion and empty-dir pruning stay scoped to it.
-function* walkAll(nmRoots, ctx) {
+// Every regular file under the node_modules roots, tagged with its root so deletion and empty-dir
+// pruning stay scoped to it. Symlinks are checked, never followed.
+function* walkFiles(nmRoots, ctx) {
   for (const nmRoot of nmRoots) {
-    for (const full of walkFiles(nmRoot, ctx)) yield { full, nmRoot }
+    if (!existsSync(nmRoot)) continue
+    const stack = [nmRoot]
+    while (stack.length > 0) {
+      const dir = stack.pop()
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isSymbolicLink()) assertSymlinkInternal(ctx, full)
+        else if (entry.isDirectory()) stack.push(full)
+        else if (entry.isFile()) yield { full, nmRoot }
+      }
+    }
   }
 }
 
@@ -319,7 +286,7 @@ export function prune({ root = process.cwd() } = {}) {
   const seen = new Set()
   const mismatches = []
 
-  for (const { full, nmRoot } of walkAll(nmRoots, ctx)) {
+  for (const { full, nmRoot } of walkFiles(nmRoots, ctx)) {
     const rel = relative(root, full)
     const expectedHash = expected.get(rel)
     if (expectedHash !== undefined) {
@@ -335,53 +302,21 @@ export function prune({ root = process.cwd() } = {}) {
     }
 
     // package.json isn't lockfile-enumerated but drives resolution, so rewrite (not delete) it for a known module.
-    if (basename(rel) === 'package.json') {
-      const owner = splitNodeModulesPath(rel)
-      if (owner && knownDirs.has(owner.dir)) {
-        const raw = readFileSync(full, 'utf8')
-        let parsed
-        try {
-          parsed = JSON.parse(raw)
-        } catch {
-          parsed = null
-        }
-        const pkg = isPlainObject(parsed) ? parsed : {}
-        let next
-        if (dirname(rel) === owner.dir) {
-          const { name, version, files } = lockfile.modules.get(owner.dir)
-          // The package.json itself survives prune, so it's always a legal self-reference target.
-          const present = new Set([...Object.keys(files), 'package.json'])
-          next = minimalRootFields(pkg, { name, version, present })
-        } else {
-          // A nested package.json's refs are relative to its own dir, so re-base the recorded files first.
-          const { files } = lockfile.modules.get(owner.dir)
-          const prefix = `${relative(owner.dir, dirname(rel))}/`
-          const present = new Set(['package.json'])
-          for (const f of Object.keys(files)) {
-            if (f.startsWith(prefix)) present.add(f.slice(prefix.length))
-          }
-          next = minimalNestedFields(pkg, present)
-        }
-        const newText = `${JSON.stringify(next, undefined, 2)}\n`
-        kept.push(rel)
-        if (newText !== raw) toMinimize.push({ full, rel, text: newText })
-        continue
-      }
+    const owner = basename(rel) === 'package.json' ? splitNodeModulesPath(rel) : null
+    if (owner && knownDirs.has(owner.dir)) {
+      const raw = readFileSync(full, 'utf8')
+      const text = `${JSON.stringify(minimalManifest(lockfile, owner, rel, raw), undefined, 2)}\n`
+      kept.push(rel)
+      if (text !== raw) toMinimize.push({ full, rel, text })
+      continue
     }
 
     // Defense-in-depth: the walk should already guarantee this.
-    assert.ok(
-      full.startsWith(`${nmRoot}${sep}`),
-      `refusing to remove path outside node_modules: ${full}`,
-    )
+    assert.ok(full.startsWith(`${nmRoot}${sep}`), `refusing to remove path outside node_modules: ${full}`)
     toRemove.push({ full, nmRoot })
   }
 
-  const missing = []
-  for (const [rel] of expected) {
-    if (!seen.has(rel)) missing.push(rel)
-  }
-
+  const missing = [...expected.keys()].filter((rel) => !seen.has(rel))
   if (mismatches.length > 0) {
     const lines = mismatches.map(({ rel, expected: exp, actual }) =>
       `  ${rel}: expected ${exp}, got ${actual}`).join('\n')
@@ -409,9 +344,7 @@ export function prune({ root = process.cwd() } = {}) {
     removed.push(relative(root, full))
     touchedDirs.set(dirname(full), nmRoot)
   }
-
-  const sortedDirs = [...touchedDirs.keys()].toSorted((a, b) => b.length - a.length)
-  for (const d of sortedDirs) pruneEmptyDirs(d, touchedDirs.get(d))
+  for (const d of [...touchedDirs.keys()].toSorted((a, b) => b.length - a.length)) pruneEmptyDirs(d, touchedDirs.get(d))
 
   return { removed, validated, kept, minimized }
 }

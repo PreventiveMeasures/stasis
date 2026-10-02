@@ -27,17 +27,13 @@ export function packageType(file, host = diskHost) {
 // State#locateModule). Null if none. A malformed one is walked past, or with `strict` throws
 // (its files would otherwise land in the parent package); `check`, `host`: see readPackageJson.
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
-  let dir = dirname(fileRelPath)
-  while (true) {
+  for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const pkg = readPackageJson(baseDir, toPosix(join(dir, 'package.json')), { strict, check, host })
     if (pkg?.name && (pkg.version || !hasNodeModulesSegment(toPosix(dir)))) {
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined }
     }
-    if (dir === '.' || dir === '/' || dir === '') return null
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
+    if (dir === '.' || dir === '/' || dir === '' || dirname(dir) === dir) return null
   }
 }
 
@@ -130,9 +126,8 @@ function parseJson(text, rel) {
 export function normalizeEntries(entries, cwd) {
   const baseDir = resolve(cwd)
   return entries.map((e) => {
-    const abs = resolve(cwd, e)
-    const rel = toPosix(relative(baseDir, abs))
     // On Windows path.relative() returns an absolute path across drives (no leading '..'), so reject that form too.
+    const rel = toPosix(relative(baseDir, resolve(cwd, e)))
     if (rel.startsWith('..') || isAbsolute(rel)) throw new Error(`Entry escapes baseDir: ${e}`)
     return rel.replace(/^\.\//u, '')
   })
