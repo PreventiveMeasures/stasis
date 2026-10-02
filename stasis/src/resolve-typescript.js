@@ -29,7 +29,7 @@ const TS_SIBLING_EXTS = new Map([
   ['.mjs', ['.mts']],
   ['.cjs', ['.cts']],
 ])
-export const JS_OUTPUT_EXTS = new Set(TS_SIBLING_EXTS.keys())
+const JS_OUTPUT_EXTS = new Set(TS_SIBLING_EXTS.keys())
 
 // The TS source siblings of a path/specifier naming a JS output extension (./x.js -> ./x.ts).
 // Returns [] for a non-substitutable name (extensionless, already-TS, .json, unknown, dotfile --
@@ -131,7 +131,7 @@ function probeIndex(dir, exts, host) {
 // directory-only ('.', '..', a trailing '/'), so './' never probes the pathological '.ts' dotfile.
 // `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
 // so only substitution applies (matching tsc's node16 rules).
-export function probeTypescriptTarget(base, { tsx = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
+function probeTypescriptTarget(base, { tsx = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
   const exts = tsx ? ['.ts', '.tsx'] : ['.ts']
   if (!dirOnly) {
     const literal = probe(base, host)
@@ -225,9 +225,9 @@ function manifestTargets(map, subpathKey, conditions) {
   return resolveMapKey(byKey, subpathKey, conditions).filter((t) => validRelativeTarget(t))
 }
 
-// tsc's mapping of `key` ('.' or './sub') through the `exports` of the package in `pkgDir`: the
-// targets `conditions` select, substitution only (Node requires exports targets to name exact
-// files), the first on disk; or null.
+// tsc's mapping of `key` ('.' or './sub') through the `exports` of the package in `pkgDir` (or of
+// a '#name' key through its `imports`): the targets `conditions` select, substitution only (Node
+// requires exports/imports targets to name exact files), the first on disk; or null.
 export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), tsx = false, host = diskHost } = {}) {
   for (const target of manifestTargets(exports, key, conditions)) {
     const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { tsx, completion: false, dir: false, host })
@@ -400,12 +400,7 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), tsx = false, paths = null, host = diskHost } = {}) {
   if (spec.startsWith('#')) {
     const scope = nearestPackage(parentFile, host)
-    if (!scope?.pkg.imports) return null
-    for (const target of manifestTargets(scope.pkg.imports, spec, conditions)) {
-      const hit = probeTypescriptTarget(resolvePath(scope.pkgDir, target), { tsx, completion: false, dir: false, host })
-      if (hit) return hit
-    }
-    return null
+    return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, tsx, host }) : null
   }
   if (spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..' || isAbsolute(spec)) {
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)

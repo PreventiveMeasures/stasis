@@ -3,7 +3,7 @@ import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
-import { collectWhy } from './why.js'
+import { collectWhy, invertReason } from './why.js'
 
 // Only audit installed dependencies; first-party packages live under non-`node_modules` keys and
 // must not be sent to the public registry (leaks names, adds noise).
@@ -53,8 +53,8 @@ export function collectReasons(files) {
   const byPkg = new Map()
   for (const file of files) {
     const artifact = parseFile(file)
-    const reason = artifact.reason
-    if (!reason) continue
+    const fileReasons = invertReason(artifact.reason)
+    if (!fileReasons) continue
     const fileToPkg = new Map()
     for (const [dir, { name, version, files: modFiles }] of artifact.modules) {
       if (!dir.includes('node_modules') || !name || !version) continue
@@ -63,15 +63,12 @@ export function collectReasons(files) {
         fileToPkg.set(moduleFileKey(dir, rel), `${name}@${version}`)
       }
     }
-    for (const [consumer, list] of Object.entries(reason)) {
-      if (!Array.isArray(list)) continue
-      for (const f of list) {
-        const key = fileToPkg.get(f)
-        if (key === undefined) continue
-        let set = byPkg.get(key)
-        if (set === undefined) byPkg.set(key, (set = new Set()))
-        set.add(consumer)
-      }
+    for (const [f, consumers] of fileReasons) {
+      const key = fileToPkg.get(f)
+      if (key === undefined) continue
+      let set = byPkg.get(key)
+      if (set === undefined) byPkg.set(key, (set = new Set()))
+      for (const consumer of consumers) set.add(consumer)
     }
   }
   return byPkg
@@ -103,13 +100,10 @@ function reasonCell(pkg, affected, reasonsByPkg, whyByPkg, reasonFilter) {
   // split across affected versions); within a group collectWhy's compressed order
   // is preserved. Otherwise: the `, `-joined consumer set in the same order.
   if (whyByPkg) {
-    const byConsumer = new Map()
-    for (const line of parts) {
+    const byConsumer = Map.groupBy(parts, (line) => {
       const i = line.indexOf(': ')
-      const consumer = i === -1 ? '' : line.slice(0, i)
-      if (!byConsumer.has(consumer)) byConsumer.set(consumer, [])
-      byConsumer.get(consumer).push(line)
-    }
+      return i === -1 ? '' : line.slice(0, i)
+    })
     return [...byConsumer.keys()].toSorted(byConsumerOrder).flatMap((c) => byConsumer.get(c)).join('\n')
   }
   const consumers = reasonFilter ? [...parts].filter((c) => c === reasonFilter) : [...parts]

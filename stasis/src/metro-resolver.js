@@ -1,10 +1,10 @@
-import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire, isBuiltin } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { isTypeDeclaration } from '@exodus/stasis-core/util'
+import { readJson } from './resolve-typescript.js'
 
 // Adapter that drives the PROJECT's own `metro-resolver` from stasis's static scanner, so
 // `stasis bundle --metro --metro-resolver` resolves modules EXACTLY the way that project's
@@ -24,29 +24,10 @@ import { isTypeDeclaration } from '@exodus/stasis-core/util'
 // redirect via its own bundled helper, so the `redirectModulePath` we place on the context is
 // an inert placeholder that satisfies the type but is never consulted for base resolution.
 
-function readJson(file) {
-  let text
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch {
-    return null // absent / unreadable -- no package manifest here
-  }
-  // A manifest that EXISTS but is malformed must fail closed (Metro would throw, not resolve past it).
-  try {
-    return JSON.parse(text)
-  } catch (cause) {
-    throw new Error(`Invalid package.json: ${file}`, { cause })
-  }
-}
-
 // 'f' | 'd' | null for a path, without throwing.
 function pathType(p) {
-  try {
-    const s = statSync(p)
-    return s.isFile() ? 'f' : s.isDirectory() ? 'd' : null
-  } catch {
-    return null
-  }
+  const s = diskHost.stat(p)
+  return s?.isFile() ? 'f' : s?.isDirectory() ? 'd' : null
 }
 
 // A `.d.ts` is types-only, erased at runtime, so the resolver must never land on one: report it as
@@ -122,7 +103,7 @@ export function createMetroResolver({
       if (!type) return { exists: false }
       let realPath = abs
       try {
-        realPath = realpathSync(abs)
+        realPath = diskHost.realpath(abs)
       } catch { /* keep the lexical path when realpath fails (e.g. a broken symlink) */ }
       return { exists: true, type, realPath }
     },
