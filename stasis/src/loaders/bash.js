@@ -4,11 +4,13 @@
 // paths, absolute/escaping paths) is best-effort and dropped. A dynamically
 // sourced path can be pinned by a `# shellcheck source=...` directive.
 
-import { realpathSync, statSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, extname, join, resolve } from 'node:path'
 
 import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
+import { isFile } from '../resolve-typescript.js'
+import { applyToDir, assertWithinBase } from './paths.js'
 
 // The capture class excludes backtick/`(`/`)` so a ref inside a command
 // substitution (`` `source x.sh` ``, `$(bash x.sh)`) doesn't swallow the closing delimiter.
@@ -51,31 +53,12 @@ export function resolveBashCall(ref, fromFile, { knownFiles, baseDir } = {}) {
   const present = (p) => {
     if (!p) return false
     if (knownFiles) return knownFiles.has(p)
-    if (baseDir) {
-      try {
-        return statSync(join(baseDir, p)).isFile()
-      } catch {
-        return false
-      }
-    }
+    if (baseDir) return isFile(join(baseDir, p))
     return false
   }
 
-  const fromDir = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')) : ''
-  const resolveRel = (r) => {
-    const parts = [...(fromDir ? fromDir.split('/') : []), ...r.split('/')]
-    const out = []
-    for (const part of parts) {
-      if (part === '.' || part === '') continue
-      if (part === '..') {
-        if (out.length === 0) return null // escapes baseDir
-        out.pop()
-      } else {
-        out.push(part)
-      }
-    }
-    return out.join('/') || null
-  }
+  // Null when it escapes baseDir or names baseDir itself.
+  const resolveRel = (r) => applyToDir(fromFile, r.split('/')) || null
 
   // Absolute → project-relative, accepted only if it exists (so `/etc/...` is dropped).
   if (ref.startsWith('/')) {
@@ -171,16 +154,6 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
 
   await processWave(entries)
   return sources
-}
-
-// Reject absolute and `..`-escaping paths in a `.sh.txt` listing so it can't
-// read files outside the listing's own directory.
-function assertWithinBase(baseDir, candidate, label) {
-  if (isAbsolute(candidate)) throw new Error(`${label} must not be absolute: ${candidate}`)
-  const rel = relative(baseDir, resolve(baseDir, candidate)).split(/[\\/]/u).join('/')
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`${label} escapes baseDir: ${candidate}`)
-  }
 }
 
 // High-level entry: reads the scripts named in a `.sh.txt` listing (relative to

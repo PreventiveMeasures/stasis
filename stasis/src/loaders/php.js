@@ -3,11 +3,13 @@
 // (unresolved -> `missing`); Composer-autoloaded class refs are best-effort
 // (unresolved -> silently skipped).
 
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
-import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, toPosix } from '@exodus/stasis-core/util'
+import { isDir, isFile } from '../resolve-typescript.js'
+import { applyToDir } from './paths.js'
 
 // Cap concurrent reads per wave to avoid EMFILE on large directory globs.
 const READ_CONCURRENCY = 64
@@ -120,6 +122,10 @@ function stringLiterals(code) {
   return out
 }
 
+// Whether `pos` is inside one of `strings` (stringLiterals), and the literal starting at `pos`.
+const inString = (strings, pos) => strings.some(({ start, end }) => pos > start && pos < end)
+const stringAt = (strings, pos) => strings.find(({ start }) => start === pos)
+
 // Include keyword. The lookbehind rejects method/scope-resolution calls
 // (`$x->require`, `Foo::include`); the trailing `\b` stops matching inside
 // `requireConfig`. String-literal matches are filtered out by the caller.
@@ -179,7 +185,6 @@ function normalizeIncludePath(raw, dirRelative) {
 // `dynamic` at the first variable/function/constant/interpolation; `prefix` is
 // the static path up to there. Returns null with neither anchor nor static string.
 function parseArgPath(code, start, strings) {
-  const stringAt = (pos) => strings.find(({ start: s }) => s === pos)
   let i = start
   let dirRelative = false
   let up = 0
@@ -196,7 +201,7 @@ function parseArgPath(code, start, strings) {
   let dynamic = false
   let sawStatic = false
   for (;;) {
-    const lit = stringAt(i)
+    const lit = stringAt(strings, i)
     if (!lit) { dynamic = true; break }
     const interp = lit.quote === '"' ? lit.value.search(PHP_INTERPOLATION_RE) : -1
     if (interp >= 0) { prefix += lit.value.slice(0, interp); sawStatic = true; dynamic = true; break }
@@ -216,11 +221,10 @@ function parseArgPath(code, start, strings) {
 function scanIncludes(content) {
   const code = maskCommentsAndHeredocs(content)
   const strings = stringLiterals(code)
-  const inString = (pos) => strings.some(({ start, end }) => pos > start && pos < end)
 
   const out = []
   for (const m of code.matchAll(PHP_INCLUDE_KEYWORD_RE)) {
-    if (inString(m.index)) continue
+    if (inString(strings, m.index)) continue
     let i = skipWs(code, m.index + m[0].length)
     if (code[i] === '(') i = skipWs(code, i + 1)
     const arg = parseArgPath(code, i, strings)
@@ -247,13 +251,11 @@ function scanIncludes(content) {
 function scanPathLiterals(content) {
   const code = maskCommentsAndHeredocs(content)
   const strings = stringLiterals(code)
-  const inString = (pos) => strings.some(({ start, end }) => pos > start && pos < end)
-  const stringAt = (pos) => strings.find(({ start }) => start === pos)
 
   const out = []
   // Dir-anchored literals: `__DIR__ . '/x.php'` (resolve against the file).
   for (const m of code.matchAll(PHP_DIR_ANCHOR_FIND_RE)) {
-    if (inString(m.index)) continue
+    if (inString(strings, m.index)) continue
     const arg = parseArgPath(code, m.index, strings)
     if (!arg || arg.dynamic || !arg.sawStatic || !arg.dirRelative) continue
     const spec = normalizeIncludePath(arg.prefix, true)
@@ -261,8 +263,8 @@ function scanPathLiterals(content) {
   }
   // Laravel path helpers: `base_path('routes/web.php')` (resolve against project root).
   for (const m of code.matchAll(PHP_PATH_HELPER_FIND_RE)) {
-    if (inString(m.index)) continue
-    const lit = stringAt(skipWs(code, m.index + m[0].length))
+    if (inString(strings, m.index)) continue
+    const lit = stringAt(strings, skipWs(code, m.index + m[0].length))
     if (!lit || (lit.quote === '"' && PHP_INTERPOLATION_RE.test(lit.value))) continue
     const sub = PHP_PATH_HELPERS.get(m[1].toLowerCase())
     const arg = lit.value.replace(/^\/+/u, '')
@@ -272,15 +274,17 @@ function scanPathLiterals(content) {
   return out
 }
 
+const includeSpecs = (includes, kind) => includes.filter((e) => e.kind === kind).map((e) => e.spec)
+
 // Statically-resolvable include specifiers (concrete files). See scanIncludes.
 export function extractPhpImports(content) {
-  return scanIncludes(content).filter((e) => e.kind === 'file').map((e) => e.spec)
+  return includeSpecs(scanIncludes(content), 'file')
 }
 
 // Directory specifiers for dynamic includes; every `.php` file directly inside is
 // a candidate target.
 export function extractPhpImportDirs(content) {
-  return scanIncludes(content).filter((e) => e.kind === 'dir').map((e) => e.spec)
+  return includeSpecs(scanIncludes(content), 'dir')
 }
 
 // `.php` path literals used outside a `require` -- dir-anchored (`anchor: 'file'`)
@@ -295,38 +299,13 @@ export function extractPhpPathRefs(content) {
   })
 }
 
-// Apply `segments` on `fromFile`'s directory, resolving '.'/'..'. Returns a
-// baseDir-relative POSIX path, or null when traversal escapes the root.
-function applyToDir(fromFile, segments) {
-  const fromDir = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')) : ''
-  const parts = [...(fromDir ? fromDir.split('/') : []), ...segments]
-  const resolved = []
-  for (const part of parts) {
-    if (part === '.' || part === '') continue
-    if (part === '..') {
-      if (resolved.length === 0) return null
-      resolved.pop()
-    } else {
-      resolved.push(part)
-    }
-  }
-  return resolved.join('/')
-}
+const isFileOnDisk = (baseDir, rel) => isFile(join(baseDir, rel))
+const isDirOnDisk = (baseDir, rel) => isDir(join(baseDir, rel))
 
-function isFileOnDisk(baseDir, rel) {
-  try {
-    return statSync(join(baseDir, rel)).isFile()
-  } catch {
-    return false
-  }
-}
-
-function isDirOnDisk(baseDir, rel) {
-  try {
-    return statSync(join(baseDir, rel)).isDirectory()
-  } catch {
-    return false
-  }
+// `abs` as a baseDir-relative POSIX path ('' for baseDir itself), or null when it escapes the root.
+function projectRel(baseDir, abs) {
+  const rel = toPosix(relative(baseDir, abs))
+  return rel.startsWith('..') || isAbsolute(rel) ? null : rel
 }
 
 // Resolve a directory specifier to an existing baseDir-relative dir, or null.
@@ -340,10 +319,8 @@ export function resolvePhpDir(spec, fromFile, baseDir) {
   if (baseDir && !isAbsolute(spec)) {
     const fileRel = applyToDir(fromFile, spec.split('/'))
     if (fileRel && isDirOnDisk(baseDir, fileRel)) return fileRel
-    const projRel = relative(baseDir, resolve(baseDir, spec)).split(/[\\/]/u).join('/')
-    if (projRel !== '' && !projRel.startsWith('..') && !isAbsolute(projRel) && isDirOnDisk(baseDir, projRel)) {
-      return projRel
-    }
+    const projRel = projectRel(baseDir, resolve(baseDir, spec))
+    if (projRel && isDirOnDisk(baseDir, projRel)) return projRel
   }
   return null
 }
@@ -373,10 +350,8 @@ export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
     const fileRel = applyToDir(fromFile, specifier.split('/'))
     if (fileRel && isFileOnDisk(baseDir, fileRel)) return fileRel
 
-    const projRel = relative(baseDir, resolve(baseDir, specifier)).split(/[\\/]/u).join('/')
-    if (projRel !== '' && !projRel.startsWith('..') && !isAbsolute(projRel) && isFileOnDisk(baseDir, projRel)) {
-      return projRel
-    }
+    const projRel = projectRel(baseDir, resolve(baseDir, specifier))
+    if (projRel && isFileOnDisk(baseDir, projRel)) return projRel
   }
 
   return null
@@ -387,10 +362,7 @@ export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
 // (`src/foo/../../../secret.php`) are caught -- a leading-`..`/absolute check
 // alone would let files outside the project into the bundle.
 function normalizeProjectRel(baseDir, p) {
-  const rel = relative(baseDir, resolve(baseDir, p.replace(/\\/gu, '/'))).split(/[\\/]/u).join('/')
-  if (rel === '') return ''
-  if (rel.startsWith('..') || isAbsolute(rel)) return null
-  return rel
+  return projectRel(baseDir, resolve(baseDir, p.replace(/\\/gu, '/')))
 }
 
 // Evaluate a generated-autoload path expr (`$baseDir . '/src'`, a bare quoted
@@ -453,13 +425,26 @@ function readJsonIfExists(file) {
   }
 }
 
+// The root composer.json (null when absent or unparsable) and its baseDir-relative vendor dir.
+function readComposerJson(baseDir) {
+  const composerJson = readJsonIfExists(join(baseDir, 'composer.json'))
+  const vendorDir = normalizeProjectRel(baseDir, composerJson?.config?.['vendor-dir'] ?? 'vendor') ?? 'vendor'
+  return { composerJson, vendorDir }
+}
+
+// The packages `vendor/composer/installed.json` lists, in the Composer 2 ({ packages }) or
+// Composer 1 (flat array) shape.
+function readInstalledPackages(baseDir, vendorDir) {
+  const json = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
+  return Array.isArray(json) ? json : (json?.packages ?? [])
+}
+
 // Build the autoload config for `baseDir`, merging the root composer.json
 // `autoload`(+dev) with the generated `vendor/composer/autoload_*` maps. All
 // paths normalised to POSIX baseDir-relative (escapers dropped). Returns
 // `{ psr4, psr0, classmap, files }`, or null when no Composer config is found.
 export function loadComposerAutoload(baseDir) {
-  const composerJson = readJsonIfExists(join(baseDir, 'composer.json'))
-  const vendorDir = normalizeProjectRel(baseDir, composerJson?.config?.['vendor-dir'] ?? 'vendor') ?? 'vendor'
+  const { composerJson, vendorDir } = readComposerJson(baseDir)
 
   const psr4 = new Map()
   const psr0 = new Map()
@@ -467,6 +452,7 @@ export function loadComposerAutoload(baseDir) {
   const files = new Set()
   let found = false
 
+  const mergeDirs = (map, prefix, dirs) => map.set(prefix, [...new Set([...(map.get(prefix) ?? []), ...dirs])])
   const addPrefixDirs = (map, prefix, paths) => {
     const list = Array.isArray(paths) ? paths : [paths]
     const dirs = []
@@ -474,8 +460,7 @@ export function loadComposerAutoload(baseDir) {
       const rel = normalizeProjectRel(baseDir, String(p))
       if (rel !== null) dirs.push(rel)
     }
-    const prev = map.get(prefix) ?? []
-    map.set(prefix, [...new Set([...prev, ...dirs])])
+    mergeDirs(map, prefix, dirs)
   }
 
   // Root composer.json autoload (+ dev). PSR-4 keys keep their trailing '\'.
@@ -493,37 +478,26 @@ export function loadComposerAutoload(baseDir) {
   // Generated maps. `$vendorDir` = <baseDir>/<vendorDir>, `$baseDir` = <baseDir>.
   const composerGenDir = join(baseDir, vendorDir, 'composer')
   const vars = { baseDir: resolve(baseDir), vendorDir: resolve(baseDir, vendorDir) }
-  const toRel = (abs) => {
-    const rel = relative(baseDir, abs).split(/[\\/]/u).join('/')
-    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel) ? rel : null
-  }
-  const mergePrefixMap = (file, target) => {
-    if (!existsSync(file)) return
+  const toRel = (abs) => projectRel(baseDir, abs) || null
+  // A generated map's entries; none when the file is absent.
+  const generated = (name, multi) => {
+    const file = join(composerGenDir, name)
+    if (!existsSync(file)) return new Map()
     found = true
-    for (const [prefix, dirs] of parseGeneratedMap(readFileSync(file, 'utf8'), vars, true)) {
-      const rels = dirs.map(toRel).filter((d) => d !== null).map((d) => d.replace(/\/+$/u, ''))
-      const prev = target.get(prefix) ?? []
-      target.set(prefix, [...new Set([...prev, ...rels])])
+    return parseGeneratedMap(readFileSync(file, 'utf8'), vars, multi)
+  }
+  for (const [name, target] of [['autoload_psr4.php', psr4], ['autoload_namespaces.php', psr0]]) {
+    for (const [prefix, dirs] of generated(name, true)) {
+      mergeDirs(target, prefix, dirs.map(toRel).filter((d) => d !== null).map((d) => d.replace(/\/+$/u, '')))
     }
   }
-  mergePrefixMap(join(composerGenDir, 'autoload_psr4.php'), psr4)
-  mergePrefixMap(join(composerGenDir, 'autoload_namespaces.php'), psr0)
-
-  const classmapFile = join(composerGenDir, 'autoload_classmap.php')
-  if (existsSync(classmapFile)) {
-    found = true
-    for (const [fqcn, abs] of parseGeneratedMap(readFileSync(classmapFile, 'utf8'), vars, false)) {
-      const rel = toRel(abs)
-      if (rel) classmap.set(fqcn.replace(/^\\+/u, ''), rel)
-    }
+  for (const [fqcn, abs] of generated('autoload_classmap.php', false)) {
+    const rel = toRel(abs)
+    if (rel) classmap.set(fqcn.replace(/^\\+/u, ''), rel)
   }
-  const filesFile = join(composerGenDir, 'autoload_files.php')
-  if (existsSync(filesFile)) {
-    found = true
-    for (const [, abs] of parseGeneratedMap(readFileSync(filesFile, 'utf8'), vars, false)) {
-      const rel = toRel(abs)
-      if (rel) files.add(rel)
-    }
+  for (const [, abs] of generated('autoload_files.php', false)) {
+    const rel = toRel(abs)
+    if (rel) files.add(rel)
   }
 
   if (!found) return null
@@ -575,21 +549,18 @@ function matchingPrefixes(map, name) {
 
 // Read installed-package versions from `vendor/composer/installed.json` (the
 // authoritative source; a package's own composer.json usually omits `version`).
-// Handles the Composer 2 ({ packages }) and Composer 1 (flat array) shapes.
 function loadInstalledVersions(baseDir, vendorDir) {
-  const json = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
   const byDir = new Map()
   const byName = new Map()
-  const packages = Array.isArray(json) ? json : (json?.packages ?? [])
-  for (const p of packages) {
+  for (const p of readInstalledPackages(baseDir, vendorDir)) {
     if (!p?.name || !p.version) continue
     byName.set(p.name, p.version)
     // install-path is relative to vendor/composer; default layout is vendor/<name>.
     const abs = p['install-path']
       ? resolve(baseDir, vendorDir, 'composer', p['install-path'])
       : resolve(baseDir, vendorDir, p.name)
-    const rel = relative(baseDir, abs).split(/[\\/]/u).join('/')
-    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) byDir.set(rel, p.version)
+    const rel = projectRel(baseDir, abs)
+    if (rel) byDir.set(rel, p.version)
   }
   return { byDir, byName }
 }
@@ -617,9 +588,7 @@ function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
 // orphans -> the root "." bucket with the placeholder identity). Returns a
 // Map<dir, { name, version, files }>.
 export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion) {
-  const composerJson = readJsonIfExists(join(baseDir, 'composer.json'))
-  const vendorDir = normalizeProjectRel(baseDir, composerJson?.config?.['vendor-dir'] ?? 'vendor') ?? 'vendor'
-  const installed = loadInstalledVersions(baseDir, vendorDir)
+  const installed = loadInstalledVersions(baseDir, readComposerJson(baseDir).vendorDir)
 
   const modules = new Map()
   const ensureBucket = (dir, name, version, ecosystem) => {
@@ -655,13 +624,9 @@ export function loadLaravelProviderFiles(baseDir, autoload) {
   if (existsSync(join(baseDir, 'bootstrap', 'providers.php'))) files.add('bootstrap/providers.php')
   if (!autoload) return [...files]
 
-  const composerJson = readJsonIfExists(join(baseDir, 'composer.json'))
-  const vendorDir = normalizeProjectRel(baseDir, composerJson?.config?.['vendor-dir'] ?? 'vendor') ?? 'vendor'
-  const installed = readJsonIfExists(join(baseDir, vendorDir, 'composer', 'installed.json'))
-  const installedPackages = Array.isArray(installed) ? installed : (installed?.packages ?? [])
-
+  const { composerJson, vendorDir } = readComposerJson(baseDir)
   const fqcns = new Set(composerJson?.extra?.laravel?.providers ?? [])
-  for (const pkg of installedPackages) {
+  for (const pkg of readInstalledPackages(baseDir, vendorDir)) {
     for (const fqcn of pkg?.extra?.laravel?.providers ?? []) fqcns.add(fqcn)
   }
   for (const fqcn of fqcns) {
@@ -880,7 +845,8 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       if (!entry) continue
       const [relPath, content] = entry
       sources.set(relPath, content)
-      for (const spec of extractPhpImports(content)) {
+      const includes = scanIncludes(content)
+      for (const spec of includeSpecs(includes, 'file')) {
         const resolved = resolvePhpImport(spec, relPath, { baseDir })
         if (resolved) {
           if (!sources.has(resolved)) next.push(resolved)
@@ -890,7 +856,7 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       }
       // Dynamic includes with a static dir prefix: the exact file is known only
       // at runtime, so bundle every `.php` file in that directory as a candidate.
-      for (const dirSpec of extractPhpImportDirs(content)) {
+      for (const dirSpec of includeSpecs(includes, 'dir')) {
         const dir = resolvePhpDir(dirSpec, relPath, baseDir)
         if (!dir) continue
         for (const file of listPhpFiles(baseDir, dir)) {
