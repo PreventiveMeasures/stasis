@@ -184,13 +184,11 @@ process.on('exit', () => {
 // exits cleanly and the loader's beforeExit hook writes the bundle.
 const noop = () => undefined
 const pending = () => new Promise(() => {})
-for (const name of ['setTimeout', 'setInterval', 'setImmediate']) globalThis[name] = noop
-for (const name of ['clearTimeout', 'clearInterval', 'clearImmediate']) globalThis[name] = noop
+const TIMERS = ['setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate']
+for (const name of TIMERS) globalThis[name] = noop
 
 const timers = require('node:timers')
-for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate']) {
-  mock.method(timers, name, noop)
-}
+for (const name of TIMERS) mock.method(timers, name, noop)
 
 const timersPromises = require('node:timers/promises')
 mock.method(timersPromises, 'setTimeout', pending)

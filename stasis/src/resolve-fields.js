@@ -2,7 +2,7 @@ import { isBuiltin } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { isTypeDeclaration, stripTypeDeclaration } from '@exodus/stasis-core/util'
+import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
   isDir,
   isFile,
@@ -105,6 +105,8 @@ function resolveEntryThroughMap(map, main, opts) {
   return { entry: main }
 }
 
+const fileResolution = (path) => ({ url: pathToFileURL(path).toString() })
+
 // Match a package-relative path (`./x`) against the redirect map, trying `.js`/`.json` appended.
 function matchRedirect(map, relPath) {
   if (map.size === 0) return undefined
@@ -112,11 +114,6 @@ function matchRedirect(map, relPath) {
     if (map.has(cand)) return map.get(cand)
   }
   return undefined
-}
-
-// Match a bare specifier (`mod`, `mod/sub`) against the redirect map's bare keys.
-function matchBareRedirect(map, spec) {
-  return map.size === 0 ? undefined : map.get(spec)
 }
 
 // Probe `base` for a source file in platform order: bare name first, then per ext
@@ -140,7 +137,7 @@ function resolveSourceFile(base, opts) {
       scope = pkg ? { pkgDir: pkg.pkgDir, map: mergeRedirectMap(pkg.pkg, opts.mainFields) } : null
     }
     if (!scope || scope.map.size === 0) return p
-    const rel = `./${relative(scope.pkgDir, p).split(/[\\/]/u).join('/')}`
+    const rel = `./${toPosix(relative(scope.pkgDir, p))}`
     const r = matchRedirect(scope.map, rel)
     if (r === false) return false
     if (typeof r === 'string') return isAbsolute(r) ? r : resolvePath(scope.pkgDir, r)
@@ -197,7 +194,7 @@ function resolveSourceFile(base, opts) {
 // bare package-name imports, not to a path landing on a directory.
 function resolveFileOrDir(base, opts) {
   // resolveSourceFile yields a path, { empty: true } (a metro candidate-redirect hit), or null.
-  const asResolution = (hit) => (hit == null ? null : typeof hit === 'string' ? { url: pathToFileURL(hit).toString() } : hit)
+  const asResolution = (hit) => (hit == null ? null : typeof hit === 'string' ? fileResolution(hit) : hit)
   const file = asResolution(resolveSourceFile(base, opts))
   if (file) return file
   if (isDir(base, opts.host)) {
@@ -244,14 +241,15 @@ export function createFieldResolver({
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
   const resolve = function resolve(parentFile, specifier, callConditions) {
     const conds = new Set(callConditions ?? conditions)
-    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
-    if (specifier.startsWith('#')) {
+    const viaNode = (spec) => {
       try {
-        return { url: pathToFileURL(host.resolve(parentFile, specifier, conds)).toString() }
+        return fileResolution(host.resolve(parentFile, spec, conds))
       } catch {
         return null
       }
     }
+    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
+    if (specifier.startsWith('#')) return viaNode(specifier)
 
     let spec = specifier
     // Redirect via the IMPORTER's browser/react-native map, BEFORE the builtin check on purpose:
@@ -262,9 +260,9 @@ export function createFieldResolver({
       let r
       if (spec.startsWith('.') || isAbsolute(spec)) {
         const abs = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-        r = matchRedirect(map, `./${relative(imp.pkgDir, abs).split(/[\\/]/u).join('/')}`)
+        r = matchRedirect(map, `./${toPosix(relative(imp.pkgDir, abs))}`)
       } else {
-        r = matchBareRedirect(map, spec)
+        r = map.get(spec) // a bare specifier (`mod`, `mod/sub`) matches the map's bare keys
       }
       if (r === false) return { empty: true }
       if (typeof r === 'string') {
@@ -289,13 +287,7 @@ export function createFieldResolver({
     if (!loc) return null
     const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
     // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
-    if (pkg.exports != null) {
-      try {
-        return { url: pathToFileURL(host.resolve(parentFile, spec, conds)).toString() }
-      } catch {
-        return null
-      }
-    }
+    if (pkg.exports != null) return viaNode(spec)
     // A bare package import resolves its directory via the same dir algorithm as any other.
     if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, opts)
     const sub = `./${loc.subpath}`
@@ -320,7 +312,7 @@ export function createFieldResolver({
       paths: typescriptPaths,
       host,
     })
-    return hit == null ? null : { url: pathToFileURL(hit).toString() }
+    return hit == null ? null : fileResolution(hit)
   }
 }
 

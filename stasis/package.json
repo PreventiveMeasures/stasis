@@ -50,6 +50,7 @@
     "src/loaders/solidity-ownership.js",
     "src/loaders/toml.js",
     "src/loaders/php.js",
+    "src/loaders/paths.js",
     "src/lockfile.js",
     "src/metro.js",
     "src/metro-resolver.js",

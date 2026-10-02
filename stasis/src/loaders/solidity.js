@@ -28,6 +28,7 @@ import {
   toSolcRemapping,
 } from './foundry.js'
 import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
+import { assertWithinBase } from './paths.js'
 
 // --- Import scan ------------------------------------------------------------------------------
 
@@ -325,6 +326,9 @@ export const SOLIDITY_PACKAGE_MANIFESTS = ['package.json', FOUNDRY_TOML, REMAPPI
 
 // --- The walk -----------------------------------------------------------------------------------
 
+const warnUnresolved = (spec, from, reason) =>
+  console.warn(`[loader.solidity] ${reason ? 'Refused' : 'Missing'} import: ${spec} from ${from}${reason ? ` (${reason})` : ''}`)
+
 // Build `{ sources, resolutions, missing }` from already-loaded Solidity sources plus remappings.
 // Imports resolve as resolveSolImport does (`libs`, `ownership`, `host`: see there); as a final
 // fallback a specifier naming no file but matching a stored key verbatim is accepted. `missing`
@@ -343,7 +347,7 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
       if (resolved) {
         specMap.set(spec, resolved)
       } else {
-        console.warn(`[loader.solidity] ${r.reason ? 'Refused' : 'Missing'} import: ${spec} from ${path}${r.reason ? ` (${r.reason})` : ''}`)
+        warnUnresolved(spec, path, r.reason)
         missing.push(r.reason ? { spec, from: path, reason: r.reason } : { spec, from: path })
       }
     }
@@ -387,7 +391,7 @@ export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { lib
         if (resolved) {
           if (!sources.has(resolved)) next.push(resolved)
         } else {
-          console.warn(`[loader.solidity] ${r.reason ? 'Refused' : 'Missing'} import: ${spec} from ${relPath}${r.reason ? ` (${r.reason})` : ''}`)
+          warnUnresolved(spec, relPath, r.reason)
         }
       }
     }
@@ -452,16 +456,6 @@ export function expandSolidityEntries(baseDir, entries, host = diskHost) {
     throw new Error(`No .sol files under ${entries.map((e) => shown(e === '' ? '.' : e)).join(', ')} (a directory entry stands for the Solidity sources under it)`)
   }
   return [...out]
-}
-
-// Reject absolute and `..`-escaping paths in a `.sol.txt` listing so it can't
-// trick the loader into reading files outside the listing's directory.
-function assertWithinBase(baseDir, candidate, label) {
-  if (isAbsolute(candidate)) throw new Error(`${label} must not be absolute: ${candidate}`)
-  const rel = relative(baseDir, resolve(baseDir, candidate)).split(/[\\/]/u).join('/')
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`${label} escapes baseDir: ${candidate}`)
-  }
 }
 
 // High-level entry: a `.sol.txt` listing whose optional first line is a `*.toml`/`remappings.txt`

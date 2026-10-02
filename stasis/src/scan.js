@@ -274,8 +274,9 @@ export class Scan {
     // `-typescript` suffix; .jsx/.tsx deliberately land on plain module/commonjs (like a JSX-in-.js
     // file) — they're bundler-transformed, keyed by extension in `stasis build`, not Node-strippable,
     // so the "needs a JSX/TS transform" signal rides the .jsx/.tsx extension, not the format tag.
-    let format = declared
-      ?? `${parsed.module.hasModuleSyntax ? 'module' : 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
+    const tsSuffix = ext === '.ts' ? '-typescript' : ''
+    const detectedFormat = (p) => `${p.module.hasModuleSyntax ? 'module' : 'commonjs'}${tsSuffix}`
+    let format = declared ?? detectedFormat(parsed)
 
     // oxc recovers from syntax errors (reports them in parsed.errors) rather than throwing;
     // Warning/Advice severities aren't real parse errors.
@@ -289,7 +290,7 @@ export class Scan {
         const asModule = parser.parseSync(file, src, parseOptions('module'))
         if (nonWarning(asModule).length === 0) {
           parsed = asModule
-          format = `module${ext === '.ts' ? '-typescript' : ''}`
+          format = `module${tsSuffix}`
           errors = []
         }
       } catch { /* keep the script parse and its recorded errors */ }
@@ -308,7 +309,7 @@ export class Scan {
           const asFlow = parser.parseSync(file, flowSrc, parseOptions(baseSourceType))
           if (nonWarning(asFlow).length === 0) {
             parsed = asFlow
-            format = declared ?? `${parsed.module.hasModuleSyntax ? 'module' : 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
+            format = declared ?? detectedFormat(parsed)
             errors = []
           }
         } catch { /* keep the original parse + its errors */ }
@@ -354,9 +355,15 @@ export class Scan {
     const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
-    const record = (key, spec, childURL) => {
+    const addChild = (s, key, childURL, childPath) => {
+      edges.push({ ...s, child: childURL })
       if (!specMaps.has(key)) specMaps.set(key, new Map())
-      specMaps.get(key).set(spec, childURL)
+      specMaps.get(key).set(s.spec, childURL)
+      if (this.resolvableExts.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
+    }
+    const addUnresolved = (s, reason) => {
+      edges.push({ ...s, error: reason })
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
     }
 
     for (const s of specs) {
@@ -377,13 +384,9 @@ export class Scan {
         } else if (r?.empty) {
           edges.push({ ...s, empty: true })
         } else if (r?.url) {
-          edges.push({ ...s, child: r.url })
-          record(key, s.spec, r.url)
-          const childPath = fileURLToPath(r.url)
-          if (this.resolvableExts.has(extname(childPath)) || this.#isResource(childPath)) queue.push(r.url)
+          addChild(s, key, r.url, fileURLToPath(r.url))
         } else {
-          edges.push({ ...s, error: 'MODULE_NOT_FOUND' })
-          this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason: 'MODULE_NOT_FOUND' })
+          addUnresolved(s, 'MODULE_NOT_FOUND')
         }
         continue
       }
@@ -399,16 +402,11 @@ export class Scan {
         // stays keyed by the ORIGINAL specifier -- only the target is the mapped file.
         if (this.typescript) childPath = this.#typescriptResolve(file, s.spec, conditions)
         if (childPath == null) {
-          const reason = cause.code ?? cause.message
-          edges.push({ ...s, error: reason })
-          this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+          addUnresolved(s, cause.code ?? cause.message)
           continue
         }
       }
-      const childURL = pathToFileURL(childPath).toString()
-      edges.push({ ...s, child: childURL })
-      record(key, s.spec, childURL)
-      if (this.resolvableExts.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
+      addChild(s, key, pathToFileURL(childPath).toString(), childPath)
     }
 
     for (const [key, specMap] of specMaps) {

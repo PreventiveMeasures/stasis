@@ -133,13 +133,12 @@ function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
       set.add(dep ? pd : pf)
     }
   }
-  if (fileReasons === null) graphFor('') // the bare bucket exists even with no edges
   return graphs
 }
 
 // Invert the reason map to file -> Set(consumer). null when the artifact carries
 // no reason map (single-consumer bundle / lockfile) -> chains render bare.
-function invertReason(reason) {
+export function invertReason(reason) {
   if (!reason) return null
   const byFile = new Map()
   for (const [consumer, list] of Object.entries(reason)) {
@@ -198,6 +197,10 @@ function pathsTo(adjRev, isHead, isTerminal, targetDir) {
   return { results, truncated }
 }
 
+// A chain (node names, head first) from index `i` on, as a lookup key; and as a display line.
+const chainKey = (c, i = 0) => c.slice(i).join('\0')
+const renderChain = (c) => c.join(' -> ')
+
 // Display order for one bucket's (deduped) chains:
 //   1. a chain that is a full proper suffix of another always renders before it
 //      (`B -> C` before `A -> B -> C`) -- a hard constraint;
@@ -218,33 +221,22 @@ function orderChains(chains) {
   // by the node AT `depth` and order sibling groups shortest-max first.
   const arrange = (list, depth) => {
     if (list.length <= 1) return list
-    const groups = new Map()
-    for (const c of list) {
-      let g = groups.get(c[depth])
-      if (g === undefined) groups.set(c[depth], (g = []))
-      g.push(c)
-    }
-    return [...groups.entries()]
+    return [...Map.groupBy(list, (c) => c[depth])]
       .map(([node, g]) => ({ node, g, max: Math.max(...g.map((c) => c.length)) }))
       .toSorted((a, b) => a.max - b.max || a.node.localeCompare(b.node))
       .flatMap(({ g }) => arrange(g, depth + 1))
   }
 
-  const byHead = new Map()
-  for (const c of chains) {
-    let g = byHead.get(c[0])
-    if (g === undefined) byHead.set(c[0], (g = []))
-    g.push(c)
-  }
+  const byHead = Map.groupBy(chains, (c) => c[0])
 
   // Rule 1: whenever a chain is a full suffix of another, its head group must
   // render before the extension's head group.
-  const keys = new Set(chains.map((c) => c.join('\0')))
+  const keys = new Set(chains.map((c) => chainKey(c)))
   const succ = new Map([...byHead.keys()].map((h) => [h, new Set()]))
   const indeg = new Map([...byHead.keys()].map((h) => [h, 0]))
   for (const c of chains) {
     for (let i = 1; i < c.length; i++) {
-      if (!keys.has(c.slice(i).join('\0'))) continue
+      if (!keys.has(chainKey(c, i))) continue
       const suffixHead = c[i]
       if (suffixHead === c[0] || succ.get(suffixHead).has(c[0])) continue
       succ.get(suffixHead).add(c[0])
@@ -286,10 +278,8 @@ function orderChains(chains) {
 // that collapse to identical text are emitted once (a hub reached by several shown
 // sub-paths yields a single `importer -> hub -> ... -> target` per importer).
 function compressChains(chains) {
-  const full = (c) => c.join(' -> ')
-  const suffixKey = (c, i) => c.slice(i).join('\0')
-  const uniq = [...new Map(chains.map((c) => [full(c), c])).values()]
-  if (uniq.length <= 1) return uniq.map(full)
+  const uniq = [...new Map(chains.map((c) => [renderChain(c), c])).values()]
+  if (uniq.length <= 1) return uniq.map(renderChain)
   const sorted = orderChains(uniq)
   const target = sorted[0][sorted[0].length - 1]
 
@@ -307,7 +297,7 @@ function compressChains(chains) {
     // hidden) that an earlier line already made recoverable.
     let at = -1
     for (let i = 1; c.length - i >= 3; i++) {
-      if (revealed.has(suffixKey(c, i))) {
+      if (revealed.has(chainKey(c, i))) {
         at = i
         break
       }
@@ -315,10 +305,10 @@ function compressChains(chains) {
     // Index of the last node this line shows: all of them when full, the collapse
     // point otherwise.
     const visible = at === -1 ? c.length - 1 : at
-    if (at === -1) push(full(c))
-    else push(`${c.slice(0, at + 1).join(' -> ')} -> ... -> ${target}`)
+    if (at === -1) push(renderChain(c))
+    else push(`${renderChain(c.slice(0, at + 1))} -> ... -> ${target}`)
     // Every sub-path headed by a node this line shows is now recoverable.
-    for (let i = 0; i <= visible; i++) revealed.add(suffixKey(c, i))
+    for (let i = 0; i <= visible; i++) revealed.add(chainKey(c, i))
   }
   return out
 }
@@ -332,10 +322,10 @@ function compressChains(chains) {
 // merely share a tail (`E -> C -> B -> A` vs `D -> C -> B -> A`) both survive and
 // are left to compressChains. The shortest chain always survives.
 function dropSuffixed(chains) {
-  const keys = new Set(chains.map((c) => c.join('\0')))
+  const keys = new Set(chains.map((c) => chainKey(c)))
   return chains.filter((c) => {
     for (let i = 1; i < c.length; i++) {
-      if (keys.has(c.slice(i).join('\0'))) return false
+      if (keys.has(chainKey(c, i))) return false
     }
     return true
   })
@@ -364,7 +354,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
     if (chains === undefined) buckets.set(bucket, (chains = new Map()))
     return chains
   }
-  const addChain = (key, bucket, nodes) => bucketChains(key, bucket).set(nodes.join('\0'), nodes)
+  const addChain = (key, bucket, nodes) => bucketChains(key, bucket).set(chainKey(nodes), nodes)
 
   const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 
@@ -423,7 +413,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
 
   // --why-full: no `...` collapse -- every chain spelled out, in the same display
   // order as the collapsed rendering (see orderChains).
-  const renderFull = (chains) => orderChains(chains).map((c) => c.join(' -> '))
+  const renderFull = (chains) => orderChains(chains).map(renderChain)
 
   // Prune (unless deep), compress (unless full), and render each bucket (buckets
   // sorted so a consumer's chains group together; bare '' sorts first).

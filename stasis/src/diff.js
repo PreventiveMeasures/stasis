@@ -19,6 +19,8 @@ function digestOf(kind, format, value, hash) {
   return hash(value)
 }
 
+const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
+
 // Project an artifact onto a uniform shape: scope + Map<dir, { name, version, ecosystem,
 // files: Map<rel, digest> }>. `input` is { artifact, kind }; `hash` re-hashes bundle bytes only.
 export function normalizeArtifact(input, { hash } = {}) {
@@ -31,8 +33,7 @@ export function normalizeArtifact(input, { hash } = {}) {
   for (const [dir, { name, version, ecosystem, files }] of artifact.modules) {
     const digests = new Map()
     for (const [rel, value] of Object.entries(files)) {
-      const full = dir === '.' ? rel : `${dir}/${rel}`
-      digests.set(rel, digestOf(kind, formats.get(full), value, hash))
+      digests.set(rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash))
     }
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
     modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, files: digests })
@@ -41,8 +42,6 @@ export function normalizeArtifact(input, { hash } = {}) {
   // an artifact produces even when every digest matches -- it has to be part of "did these differ?".
   return { scope: artifact.config?.scope ?? 'full', modules, executable: artifact.executable ?? new Set() }
 }
-
-const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
 
 // Diff two `{ artifact, kind }` operands (`left` = baseline/"from", `right` = "to"). Modules are
 // compared whole-package; files only within packages present on BOTH sides (a one-sided package is
@@ -60,16 +59,17 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   const filesRemoved = []
   const filesDiffering = []
 
+  const summary = (dir, m) => ({ dir, name: m.name, version: m.version, ecosystem: m.ecosystem, files: m.files.size })
   const dirs = new Set([...L.modules.keys(), ...R.modules.keys()])
   for (const dir of dirs) {
     const l = L.modules.get(dir)
     const r = R.modules.get(dir)
     if (l && !r) {
-      modulesRemoved.push({ dir, name: l.name, version: l.version, ecosystem: l.ecosystem, files: l.files.size })
+      modulesRemoved.push(summary(dir, l))
       continue
     }
     if (!l && r) {
-      modulesAdded.push({ dir, name: r.name, version: r.version, ecosystem: r.ecosystem, files: r.files.size })
+      modulesAdded.push(summary(dir, r))
       continue
     }
 
