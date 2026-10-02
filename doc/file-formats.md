@@ -283,6 +283,24 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   neither `directory` nor `root`. In a split layout (`resourcesBundleFile`), each half
   records the origin of its own contents: a fresh write gives both the detected
   `repo`, and adding to one half merges only that half's.
+- `package` (optional, right after `repo`) records which package the bundle is:
+  `{ "npm": { "name": "pkg", "version": "0.0.1" } }`. `npm` is the only ecosystem.
+  The ecosystem block and each of its fields are optional, and each is validated only when present:
+  - `name` must be an npm package name the registry accepts for a new package: at
+    most 214 characters of `[a-z0-9._-]`, optionally scoped (`@scope/name`), with
+    neither part starting with `.` or `_`, and not `node_modules` or `favicon.ico`.
+  - `version` must be a full semver version as the registry records it, at most 256
+    characters: no `v` prefix, no leading zeros, and no build metadata (`+…`).
+
+  Unknown keys and invalid values are rejected on both serialize and parse, and an
+  empty block (`{}`, `{ "npm": {} }`) is not written. Like `repo`, the field is
+  **purely informational**: it is never attested, never written to the lockfile,
+  and ignored by every verification. No build sets it: bundles written by
+  `stasis run`, `stasis bundle` and `stasis add` never carry one. Merging two bundles
+  keeps only the fields that agree. An `npm` block is cleared whole when the two
+  names differ, and a block or field that one side lacks is dropped. Since no build
+  carries a `package`, adding to a stamped bundle (`stasis add`, `stasis bundle --add`,
+  `stasis run` with `bundle = add`) clears it.
 
 A legacy `version: 0` shape — flat top-level `sources` keyed by project-relative
 path, with no `entries`/`modules`/`formats`/`imports` — is still accepted by

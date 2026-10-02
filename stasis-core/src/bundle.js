@@ -90,17 +90,59 @@ export const mergeRepo = (a, b) => {
   return fromEntries(kept.map((key) => [key, a[key]]))
 }
 
+// Validate a block against its `fields` (all optional); canonical key order, undefined if empty.
+const normalizeBlock = (block, fields, what) => {
+  if (block === undefined) return undefined
+  assert(isPlainObject(block), `bundle ${what} must be an object`)
+  for (const [key, value] of Object.entries(block)) {
+    assert(Object.hasOwn(fields, key), `unknown bundle ${what} key '${key}'`)
+    assert(value === undefined || fields[key](value), `invalid bundle ${what}.${key}: ${JSON.stringify(value)}`)
+  }
+  const keys = Object.keys(fields).filter((key) => block[key] !== undefined)
+  return keys.length === 0 ? undefined : fromEntries(keys.map((key) => [key, block[key]]))
+}
+
 // Validate `repo` (all fields optional); canonical key order, undefined if empty.
 const normalizeRepo = (repo) => {
-  if (repo === undefined) return undefined
-  assert(isPlainObject(repo), 'bundle repo must be an object')
-  for (const [key, value] of Object.entries(repo)) {
-    assert(Object.hasOwn(REPO_FIELDS, key), `unknown bundle repo key '${key}'`)
-    assert(value === undefined || REPO_FIELDS[key](value), `invalid bundle repo.${key}: ${JSON.stringify(value)}`)
+  const normalized = normalizeBlock(repo, REPO_FIELDS, 'repo')
+  assert(normalized?.directory === undefined || normalized.root === undefined, 'bundle repo has both directory and root')
+  return normalized
+}
+
+// npm package name as the registry takes a new one (`@scope/` optional): `[a-z0-9._-]`, no part leading with `.` or `_`.
+const NPM_NAME = /^(?!(?:node_modules|favicon\.ico)$)(?:@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9-][a-z0-9._-]*$/u
+// Full semver as the registry records it: no `v` prefix, leading zeros or build metadata.
+const NUMERIC_ID = String.raw`(?:0|[1-9]\d*)`
+const PRERELEASE_ID = String.raw`(?:${NUMERIC_ID}|\d*[A-Za-z-][\dA-Za-z-]*)`
+const NPM_VERSION = new RegExp(String.raw`^${NUMERIC_ID}\.${NUMERIC_ID}\.${NUMERIC_ID}(?:-${PRERELEASE_ID}(?:\.${PRERELEASE_ID})*)?$`, 'u')
+// Ecosystem -> its block's fields (all optional); `name` says which package the block is.
+const PACKAGE_FIELDS = {
+  npm: {
+    name: (v) => typeof v === 'string' && v.length <= 214 && NPM_NAME.test(v),
+    version: (v) => typeof v === 'string' && v.length <= 256 && NPM_VERSION.test(v),
+  },
+}
+
+// Validate `package` (every ecosystem and field optional); canonical key order, empty blocks dropped, undefined if empty.
+const normalizePackage = (pkg) => {
+  if (pkg === undefined) return undefined
+  assert(isPlainObject(pkg), 'bundle package must be an object')
+  for (const key of Object.keys(pkg)) assert(Object.hasOwn(PACKAGE_FIELDS, key), `unknown bundle package key '${key}'`)
+  const blocks = Object.entries(PACKAGE_FIELDS)
+    .map(([ecosystem, fields]) => [ecosystem, normalizeBlock(pkg[ecosystem], fields, `package.${ecosystem}`)])
+    .filter(([, block]) => block !== undefined)
+  return blocks.length === 0 ? undefined : fromEntries(blocks)
+}
+
+// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none if the names differ.
+const mergePackage = (a, b) => {
+  const merged = Object.create(null)
+  for (const [ecosystem, fields] of Object.entries(PACKAGE_FIELDS)) {
+    const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
+    if (x?.name !== undefined && y?.name !== undefined && x.name !== y.name) continue
+    merged[ecosystem] = fromEntries(Object.keys(fields).filter((key) => x?.[key] !== undefined && x[key] === y?.[key]).map((key) => [key, x[key]]))
   }
-  assert(repo.directory === undefined || repo.root === undefined, 'bundle repo has both directory and root')
-  const keys = Object.keys(REPO_FIELDS).filter((key) => repo[key] !== undefined)
-  return keys.length === 0 ? undefined : fromEntries(keys.map((key) => [key, repo[key]]))
+  return normalizePackage(merged)
 }
 
 // JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize always writes v1.
@@ -125,8 +167,17 @@ export class Bundle {
   set repo(repo) {
     this.#repo = normalizeRepo(repo)
   }
+  // `{ npm: { name, version } }`: the package this bundle is. Informational, not attested, never in a
+  // lockfile, never set by a build; validated on every assignment.
+  #package
+  get package() {
+    return this.#package
+  }
+  set package(pkg) {
+    this.#package = normalizePackage(pkg)
+  }
 
-  constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, version = VERSION } = {}) {
+  constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, package: pkg, version = VERSION } = {}) {
     assert([LEGACY_VERSION, VERSION].includes(version))
     assert(['node_modules', 'full'].includes(config.scope))
     this.version = version
@@ -138,6 +189,7 @@ export class Bundle {
     this.executable = executable ?? new Set()
     this.reason = reason
     this.repo = normalizeRepo(repo)
+    this.package = normalizePackage(pkg)
   }
 
   // Flat project-relative view of the raw stored file contents (resources stay base64).
@@ -251,6 +303,7 @@ export class Bundle {
         : new Set(),
       reason: isPlainObject(json.reason) ? json.reason : undefined,
       repo: json.repo,
+      package: json.package,
     })
   }
 
@@ -261,6 +314,7 @@ export class Bundle {
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo
+    if (this.package !== undefined) data.package = this.package
     if (full) data.entries = serializeEntries(this.entries, 'bundle')
     data.formats = fileMapToObject(this.formats)
     data.imports = fileMapToObject(this.imports)
@@ -278,9 +332,9 @@ export class Bundle {
 
   // Stamp `consumer` onto every carried file in the informational `reason` map.
   withReason(consumer) {
-    const { version, config, entries, modules, formats, imports, executable, repo } = this
+    const { version, config, entries, modules, formats, imports, executable, repo, package: pkg } = this
     const reason = mergeReason(this.reason, { [consumer]: [...this.sources.keys()] })
-    return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo })
+    return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo, package: pkg })
   }
 
   // Strict union of two Bundles (returns a NEW one): any genuine conflict throws -- a bundle is an attestation.
@@ -297,6 +351,7 @@ export class Bundle {
       executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
       reason: mergeReason(this.reason, other.reason),
       repo: mergeRepo(this.repo, other.repo),
+      package: mergePackage(this.package, other.package),
     })
   }
 }
