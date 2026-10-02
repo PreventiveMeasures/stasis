@@ -2,7 +2,7 @@ import { join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
-import { isAutoExcludedDir, isPlainObject, posixPathEscapes } from '@exodus/stasis-core/util'
+import { isAutoExcludedDir, isPlainObject, posixPathEscapes, relativeEscapes } from '@exodus/stasis-core/util'
 import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
@@ -29,7 +29,7 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
   const found = new Set()
   const add = (file) => {
     const rel = file === undefined ? '' : relative(real, file)
-    if (rel !== '' && !rel.startsWith('..') && JS.test(rel)) found.add(rel)
+    if (rel !== '' && !relativeEscapes(rel) && JS.test(rel)) found.add(rel)
   }
   const passes = metro || mainFields !== undefined
     ? (metro ? platforms : [null]).map((platform) => fieldResolverFor(platform, { mainFields, metro, conditions, jsx, typescript, host }))

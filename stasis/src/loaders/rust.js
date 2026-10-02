@@ -11,9 +11,9 @@
 import { isUtf8 } from 'node:buffer'
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { dirname, extname, join, posix, relative, resolve } from 'node:path'
 
-import { assertRealPathWithinBase, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { TARGET_CFG_KEYS, TARGET_UNIT, VENDOR_DIR, cached, cfgName, createCargoContext, evalCfg, evalCfgKey, isTestTargetPath, normName, normalizeCfg, normalizeRel } from './cargo.js'
 import { assertWithinBase } from './paths.js'
@@ -1053,7 +1053,7 @@ export function withinRealDir(baseDir, rel, within, { who = 'loader.rust', realD
   if (within === '.') return true
   if (!realDirs.has(within)) realDirs.set(within, realpathSync(join(baseDir, within)))
   const back = toPosix(relative(realDirs.get(within), realpathSync(join(baseDir, rel))))
-  if (!back.startsWith('..') && !isAbsolute(back)) return true
+  if (!relativeEscapes(back)) return true
   console.warn(`[${who}] Refusing file outside its package: ${rel} (a link out of ${within})`)
   return false
 }
