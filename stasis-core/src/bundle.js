@@ -90,16 +90,17 @@ export const mergeRepo = (a, b) => {
   return fromEntries(kept.map((key) => [key, a[key]]))
 }
 
-// Validate a block against its `fields` (all optional); canonical key order, frozen, undefined if empty.
+// Validate a block against its `fields` (each optional: a check, or a nested block's fields); canonical, frozen, undefined if empty.
 const normalizeBlock = (block, fields, what) => {
   if (block === undefined) return undefined
   assert(isPlainObject(block), `bundle ${what} must be an object`)
-  for (const [key, value] of Object.entries(block)) {
-    assert(Object.hasOwn(fields, key), `unknown bundle ${what} key '${key}'`)
-    assert(value === undefined || fields[key](value), `invalid bundle ${what}.${key}: ${JSON.stringify(value)}`)
-  }
-  const keys = Object.keys(fields).filter((key) => block[key] !== undefined)
-  return keys.length === 0 ? undefined : Object.freeze(fromEntries(keys.map((key) => [key, block[key]])))
+  for (const key of Object.keys(block)) assert(Object.hasOwn(fields, key), `unknown bundle ${what} key '${key}'`)
+  const entries = Object.entries(fields).map(([key, check]) => {
+    if (typeof check === 'object') return [key, normalizeBlock(block[key], check, `${what}.${key}`)]
+    assert(block[key] === undefined || check(block[key]), `invalid bundle ${what}.${key}: ${JSON.stringify(block[key])}`)
+    return [key, block[key]]
+  }).filter(([, value]) => value !== undefined)
+  return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
 }
 
 // Validate `repo` (all fields optional); canonical key order, undefined if empty.
@@ -109,35 +110,17 @@ const normalizeRepo = (repo) => {
   return normalized
 }
 
-// A package name or version: non-empty, of the characters some ecosystem's names or versions use
-// (npm's legacy `~'!()*` among them), so printable ASCII but space and `"#$%&,:;<=>?[\]^`{|}`.
-const PACKAGE_STRING = /^[\w.+@/~'!()*-]+$/u
-const isPackageString = (v) => typeof v === 'string' && PACKAGE_STRING.test(v)
+// A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
+const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
 const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
-// Ecosystem (a module `ecosystem`) -> its block's fields (all optional); `name` says which package the block is.
+// One block per ecosystem, named as a module's `ecosystem` is.
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
-// Validate `package` (every ecosystem and field optional); canonical key order, frozen, empty blocks dropped, undefined if empty.
-const normalizePackage = (pkg) => {
-  if (pkg === undefined) return undefined
-  assert(isPlainObject(pkg), 'bundle package must be an object')
-  for (const key of Object.keys(pkg)) assert(Object.hasOwn(PACKAGE_FIELDS, key), `unknown bundle package key '${key}'`)
-  const blocks = Object.entries(PACKAGE_FIELDS)
-    .map(([ecosystem, fields]) => [ecosystem, normalizeBlock(pkg[ecosystem], fields, `package.${ecosystem}`)])
-    .filter(([, block]) => block !== undefined)
-  return blocks.length === 0 ? undefined : Object.freeze(fromEntries(blocks))
-}
-
-// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none if `name` differs or is missing.
-const mergePackage = (a, b) => {
-  const merged = Object.create(null)
-  for (const [ecosystem, fields] of Object.entries(PACKAGE_FIELDS)) {
-    const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
-    if (x?.name === undefined || x.name !== y?.name) continue
-    merged[ecosystem] = fromEntries(Object.keys(fields).filter((key) => x[key] !== undefined && x[key] === y[key]).map((key) => [key, x[key]]))
-  }
-  return normalizePackage(merged)
-}
+// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none unless `name` does.
+const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => {
+  const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
+  return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
+}))
 
 // JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize always writes v1.
 export class Bundle {
@@ -161,14 +144,13 @@ export class Bundle {
   set repo(repo) {
     this.#repo = normalizeRepo(repo)
   }
-  // `{ npm | composer | cargo: { name, version } }`: the package this bundle is. Informational, not
-  // attested, never in a lockfile, never set by a build; validated on every assignment, and frozen.
+  // `{ npm | composer | cargo: { name, version } }`: the package this bundle is; as `repo`, but never set by a build.
   #package
   get package() {
     return this.#package
   }
   set package(pkg) {
-    this.#package = normalizePackage(pkg)
+    this.#package = normalizeBlock(pkg, PACKAGE_FIELDS, 'package')
   }
 
   constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, package: pkg, version = VERSION } = {}) {
@@ -183,7 +165,7 @@ export class Bundle {
     this.executable = executable ?? new Set()
     this.reason = reason
     this.repo = normalizeRepo(repo)
-    this.package = normalizePackage(pkg)
+    this.package = pkg
   }
 
   // Flat project-relative view of the raw stored file contents (resources stay base64).
