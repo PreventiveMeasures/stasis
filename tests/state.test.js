@@ -194,8 +194,8 @@ test('addImport renormalizes an absolute-path specifier relative to the importin
 test('absolute-path specifier is renormalized in both the lockfile and the bundle', (t) => {
   const lockImports = JSON.parse(state.lockData).imports['require, node']['src/bar.js']
   const bundleImports = JSON.parse(state.sourceData).imports['require, node']['src/bar.js']
-  t.assert.deepEqual(Object.keys(lockImports), ['./foo.js'], 'lockfile key is parent-relative')
-  t.assert.deepEqual(Object.keys(bundleImports), ['./foo.js'], 'bundle key is parent-relative')
+  t.assert.deepStrictEqual(Object.keys(lockImports), ['./foo.js'], 'lockfile key is parent-relative')
+  t.assert.deepStrictEqual(Object.keys(bundleImports), ['./foo.js'], 'bundle key is parent-relative')
 })
 
 test('bare and relative specifiers are left untouched', (t) => {
@@ -229,7 +229,7 @@ test('in-root absolute specifiers renormalize to distinct ../-prefixed keys (loa
     state.addImport(parentURL, join(root, p), pathToFileURL(join(root, p)).toString(), { conditions: ['loaders'] })
   }
   const keys = [...state.imports.get('loaders').get('src/bar.js').keys()]
-  t.assert.deepEqual(keys, ['../node_modules/a-loader/index.js', '../node_modules/b-loader/index.js'])
+  t.assert.deepStrictEqual(keys, ['../node_modules/a-loader/index.js', '../node_modules/b-loader/index.js'])
   t.assert.ok(!keys.some((k) => k.startsWith('/')), 'no absolute key recorded')
 })
 
@@ -246,7 +246,7 @@ test('a literal specifier and a renormalized absolute specifier do not collide',
   t.assert.doesNotThrow(() =>
     state.addImport(parentURL, join(root, 'lib', 'dep.js'), intoSrc, { conditions: ['collide'] }))
   const keys = [...state.imports.get('collide').get('src/bar.js').keys()].toSorted()
-  t.assert.deepEqual(keys, ['../lib/dep.js', 'lib/dep.js'])
+  t.assert.deepStrictEqual(keys, ['../lib/dep.js', 'lib/dep.js'])
 })
 
 // The intended unification: requiring a file by its absolute path produces the
@@ -258,7 +258,7 @@ test('an absolute specifier unifies with the relative import of the same file', 
   state.addImport(parentURL, './foo.js', childURL, { conditions: ['unify'] })
   t.assert.doesNotThrow(() =>
     state.addImport(parentURL, fileAbs, childURL, { conditions: ['unify'] }))
-  t.assert.deepEqual([...state.imports.get('unify').get('src/bar.js').keys()], ['./foo.js'])
+  t.assert.deepStrictEqual([...state.imports.get('unify').get('src/bar.js').keys()], ['./foo.js'])
 })
 
 // Statically-built bundles record edges under the '*' conditions key; a runtime
@@ -401,7 +401,7 @@ test('lockData is well-formed JSON with the expected shape', (t) => {
   t.assert.equal(text.at(-1), '\n')
   const parsed = JSON.parse(text)
   t.assert.equal(parsed.version, 0)
-  t.assert.deepEqual(parsed.config, { scope: 'full' })
+  t.assert.deepStrictEqual(parsed.config, { scope: 'full' })
   t.assert.ok(Array.isArray(parsed.entries))
   t.assert.ok(parsed.entries.includes('src/foo.js'))
   t.assert.ok(parsed.sources)
@@ -415,12 +415,12 @@ test('sourceData is JSON text in v1 format', (t) => {
   t.assert.equal(typeof text, 'string')
   const parsed = JSON.parse(text)
   t.assert.equal(parsed.version, 1)
-  t.assert.deepEqual(parsed.config, { scope: 'full' })
+  t.assert.deepStrictEqual(parsed.config, { scope: 'full' })
   t.assert.ok(Array.isArray(parsed.entries))
   t.assert.ok(parsed.entries.includes('src/foo.js'))
   t.assert.equal(parsed.sources['.'].name, 'stasis-test-root')
   t.assert.equal(parsed.sources['.'].files['src/foo.js'], 'export const a = 1\n')
-  t.assert.deepEqual(parsed.modules, {})
+  t.assert.deepStrictEqual(parsed.modules, {})
   t.assert.equal(parsed.formats['src/foo.js'], 'module')
 })
 
@@ -603,7 +603,7 @@ test('shardSnapshot forwards only this-session observations, not the seeded lock
     child.addFile(pathToFileURL(join(dir, 'childonly.js')).toString(), { source: Buffer.from('export const b = 2\n'), format: 'module' })
     const shard = JSON.parse(child.shardSnapshot())
 
-    t.assert.deepEqual(shard.files, ['childonly.js'],
+    t.assert.deepStrictEqual(shard.files, ['childonly.js'],
       'shard carries only the observed child-only file, not the seeded baseline.js')
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -841,13 +841,13 @@ test('bundle records a `reason` map only when more than one consumer contributes
     shared.addFile(url('b.js'), { source: src('b.js'), format: 'module', reason: 'metro' })
     shared.addFile(url('c.js'), { source: src('c.js'), format: 'module', reason: 'metro' })
     const expected = { run: ['a.js'], metro: ['b.js', 'c.js'] }
-    t.assert.deepEqual(JSON.parse(shared.sourceData).reason, expected,
+    t.assert.deepStrictEqual(JSON.parse(shared.sourceData).reason, expected,
       'reason maps each consumer to the files it recorded (whichever are used)')
     // Consumer keys are SORTED for reproducible output, not in record order (here 'run' is recorded
     // first but sorts after 'metro') -- every other bundle map is sorted, so this must be too.
-    t.assert.deepEqual(Object.keys(JSON.parse(shared.sourceData).reason), ['metro', 'run'])
+    t.assert.deepStrictEqual(Object.keys(JSON.parse(shared.sourceData).reason), ['metro', 'run'])
     // Informational, preserved across a Bundle.parse round-trip.
-    t.assert.deepEqual(Bundle.parse(shared.sourceData).reason, expected)
+    t.assert.deepStrictEqual(Bundle.parse(shared.sourceData).reason, expected)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -915,8 +915,8 @@ test('bundle `reason`: run does not claim a file it only fs-reads AFTER a plugin
     const reason = JSON.parse(s.sourceData).reason
     // app.js is dropped from run (fs-only, post-plugin, bundled); early.js stays (fs-read BEFORE the
     // plugin); entry.js stays (a genuine run import). The plugin keeps everything it bundled.
-    t.assert.deepEqual(reason.run, ['early.js', 'entry.js'])
-    t.assert.deepEqual(reason.webpack, ['app.js', 'early.js'])
+    t.assert.deepStrictEqual(reason.run, ['early.js', 'entry.js'])
+    t.assert.deepStrictEqual(reason.webpack, ['app.js', 'early.js'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -939,7 +939,7 @@ test('bundle=add carries a loaded multi-consumer `reason` forward instead of dro
     const seed = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
     seed.addFile(url('a.js'), { source: src('a.js'), format: 'module', isEntry: true }) // run (default)
     seed.addFile(url('b.js'), { source: src('b.js'), format: 'module', reason: 'webpack' })
-    t.assert.deepEqual(JSON.parse(seed.sourceData).reason, { webpack: ['b.js'], run: ['a.js'] })
+    t.assert.deepStrictEqual(JSON.parse(seed.sourceData).reason, { webpack: ['b.js'], run: ['a.js'] })
     writeFileSync(join(dir, 'stasis.code.br'), brotliCompressSync(seed.sourceData))
 
     // Re-run under bundle=add: absorb the bundle, then observe files the way a real run does --
@@ -950,7 +950,7 @@ test('bundle=add carries a loaded multi-consumer `reason` forward instead of dro
 
     // webpack's attribution survives even though this run never recorded it, and the new
     // 'run' file is unioned onto the loaded 'run' entry -- no consumer is lost.
-    t.assert.deepEqual(JSON.parse(rerun.sourceData).reason,
+    t.assert.deepStrictEqual(JSON.parse(rerun.sourceData).reason,
       { webpack: ['b.js'], run: ['a.js', 'c.js'] })
   } finally {
     rmSync(dir, { recursive: true, force: true })

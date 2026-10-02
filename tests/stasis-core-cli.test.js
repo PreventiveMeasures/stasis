@@ -120,7 +120,7 @@ test('run: a forked child is enforced from the bundle but does not write (via th
   )
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stdout, /^WORKER hello, child lock=frozen bundle=load$/m)
-  t.assert.deepEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'child must not rewrite the lockfile')
+  t.assert.deepStrictEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'child must not rewrite the lockfile')
 }))
 
 test('run reports 128+signo when the child dies from a signal', withTmp((t, tmp) => {

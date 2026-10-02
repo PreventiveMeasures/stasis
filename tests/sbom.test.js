@@ -71,7 +71,7 @@ test('buildPurl returns null for ecosystems without a registered purl type', (t)
 // ── collectComponents ────────────────────────────────────────────────────────
 
 test('collectComponents includes workspace and dependency packages (unlike audit)', (t) => {
-  t.assert.deepEqual(collectComponents([lockOf(LOCK)]), [
+  t.assert.deepStrictEqual(collectComponents([lockOf(LOCK)]), [
     { name: '@scope/bar', version: '4.5.6', scope: 'dependency', ecosystem: 'npm', purl: 'pkg:npm/%40scope/bar@4.5.6' },
     { name: 'foo', version: '1.2.3', scope: 'dependency', ecosystem: 'npm', purl: 'pkg:npm/foo@1.2.3' },
     { name: 'top-pkg', version: '1.0.0', scope: 'workspace', ecosystem: 'npm', purl: 'pkg:npm/top-pkg@1.0.0' },
@@ -98,7 +98,7 @@ test('collectComponents uses the per-dependency ecosystem field for purls and sc
   }
   const byName = Object.fromEntries(collectComponents([lockOf(tagged)]).map((c) => [c.name, c]))
   // workspace root: untagged, ecosystem inferred (npm), still a purl
-  t.assert.deepEqual(byName.app, { name: 'app', version: '1.0.0', scope: 'workspace', ecosystem: 'npm', purl: 'pkg:npm/app@1.0.0' })
+  t.assert.deepStrictEqual(byName.app, { name: 'app', version: '1.0.0', scope: 'workspace', ecosystem: 'npm', purl: 'pkg:npm/app@1.0.0' })
   t.assert.equal(byName['acme/lib'].purl, 'pkg:composer/acme/lib@1.4.2')
   t.assert.equal(byName['acme/lib'].scope, 'dependency')
   t.assert.equal(byName['vectorized/solady'].purl, 'pkg:github/vectorized/solady@0.1.0')
@@ -111,7 +111,7 @@ test('collectComponents uses the per-dependency ecosystem field for purls and sc
 
 test('collectComponents skips buckets without name+version (legacy v0 bundle)', (t) => {
   const v0 = { version: 0, config: { scope: 'full' }, formats: {}, imports: {}, sources: { 'node_modules/foo/index.js': 'x' } }
-  t.assert.deepEqual(collectComponents([codeOf(v0)]), [])
+  t.assert.deepStrictEqual(collectComponents([codeOf(v0)]), [])
 })
 
 test('collectComponents takes a legacy artifact\'s node_modules as a path segment, not a substring', (t) => {
@@ -126,7 +126,7 @@ test('collectComponents dedupes by ecosystem+name+version across artifacts', (t)
 test('collectComponents keeps the same name at different versions', (t) => {
   const other = { ...LOCK, modules: { 'node_modules/foo': { name: 'foo', version: '2.0.0', files: { 'index.js': 'sha512-y' } } } }
   const foos = collectComponents([lockOf(LOCK), lockOf(other)]).filter((c) => c.name === 'foo')
-  t.assert.deepEqual(foos.map((c) => c.version), ['1.2.3', '2.0.0'])
+  t.assert.deepStrictEqual(foos.map((c) => c.version), ['1.2.3', '2.0.0'])
 })
 
 test('collectComponents classifies a package as workspace if any input is first-party (order-independent)', (t) => {
@@ -160,7 +160,7 @@ test('collectComponents treats a legacy PHP bundle (php format, no ecosystem fie
     formats: { 'index.php': 'php', 'vendor/monolog/monolog/src/Logger.php': 'php' },
     imports: {},
   })
-  t.assert.deepEqual(collectComponents([php]), [
+  t.assert.deepStrictEqual(collectComponents([php]), [
     { name: 'acme/app', version: '1.0.0', scope: 'workspace', ecosystem: 'composer', purl: 'pkg:composer/acme/app@1.0.0' },
     { name: 'monolog/monolog', version: '3.5.0', scope: 'dependency', ecosystem: 'composer', purl: 'pkg:composer/monolog/monolog@3.5.0' },
   ])
@@ -184,7 +184,7 @@ test('buildPurl omits the version qualifier when there is none', (t) => {
 
 test('collectComponents keeps a versionless workspace package', (t) => {
   const components = collectComponents([lockOf(NOVERSION)])
-  t.assert.deepEqual(components.map((c) => c.name), ['dep', 'pkg-noversion'])
+  t.assert.deepStrictEqual(components.map((c) => c.name), ['dep', 'pkg-noversion'])
   const ws = components[1]
   t.assert.equal(ws.version, undefined)
   t.assert.equal(ws.scope, 'workspace')
@@ -208,7 +208,7 @@ test('toCyclonedx keeps a versionless primary as metadata.component without a ve
   t.assert.equal(doc.metadata.component.name, 'pkg-noversion')
   t.assert.ok(!('version' in doc.metadata.component), 'version must be omitted, not "undefined"')
   t.assert.equal(doc.metadata.component.purl, 'pkg:npm/pkg-noversion')
-  t.assert.deepEqual(doc.dependencies, [{ ref: 'pkg:npm/pkg-noversion', dependsOn: ['pkg:npm/dep@1.0.0'] }])
+  t.assert.deepStrictEqual(doc.dependencies, [{ ref: 'pkg:npm/pkg-noversion', dependsOn: ['pkg:npm/dep@1.0.0'] }])
 })
 
 // ── toSpdx ───────────────────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ test('toSpdx DESCRIBES the single workspace root and the root DEPENDS_ON each de
   t.assert.equal(doc.SPDXID, 'SPDXRef-DOCUMENT')
   t.assert.equal(doc.name, 'top-pkg@1.0.0')
   t.assert.equal(doc.creationInfo.created, '2026-01-02T03:04:05Z')
-  t.assert.deepEqual(doc.creationInfo.creators, [
+  t.assert.deepStrictEqual(doc.creationInfo.creators, [
     `Tool: @exodus/stasis-${pkg.version}`,
     'Organization: Exodus Movement, Inc.',
   ])
@@ -274,7 +274,7 @@ test('toSpdx with several workspace roots DESCRIBES each root and emits no DEPEN
   ], fixed)
   t.assert.equal(doc.name, 'stasis-sbom')
   const describes = doc.relationships.filter((r) => r.relationshipType === 'DESCRIBES')
-  t.assert.deepEqual(describes.map((r) => r.relatedSpdxElement).toSorted(), ['SPDXRef-Package-0', 'SPDXRef-Package-1'])
+  t.assert.deepStrictEqual(describes.map((r) => r.relatedSpdxElement).toSorted(), ['SPDXRef-Package-0', 'SPDXRef-Package-1'])
   t.assert.ok(describes.every((r) => r.spdxElementId === 'SPDXRef-DOCUMENT'))
   t.assert.equal(doc.relationships.filter((r) => r.relationshipType === 'DEPENDS_ON').length, 0)
 })
@@ -288,7 +288,7 @@ test('toCyclonedx sets the root as metadata.component and lists deps with a flat
   t.assert.equal(doc.serialNumber, 'urn:uuid:00000000-0000-4000-8000-000000000000')
   t.assert.equal(doc.version, 1)
   t.assert.equal(doc.metadata.timestamp, '2026-01-02T03:04:05Z')
-  t.assert.deepEqual(doc.metadata.tools, {
+  t.assert.deepStrictEqual(doc.metadata.tools, {
     components: [{ type: 'application', publisher: 'Exodus Movement, Inc.', name: '@exodus/stasis', version: pkg.version }],
   })
 
@@ -303,7 +303,7 @@ test('toCyclonedx sets the root as metadata.component and lists deps with a flat
 
   t.assert.equal(doc.dependencies.length, 1)
   t.assert.equal(doc.dependencies[0].ref, 'pkg:npm/top-pkg@1.0.0')
-  t.assert.deepEqual(doc.dependencies[0].dependsOn.toSorted(), [
+  t.assert.deepStrictEqual(doc.dependencies[0].dependsOn.toSorted(), [
     'pkg:npm/%40scope/bar@4.5.6',
     'pkg:npm/foo@1.2.3',
   ])
@@ -325,7 +325,7 @@ test('toCyclonedx with several workspace roots lists them all as components, no 
   ], fixed)
   t.assert.equal(doc.metadata.component, undefined)
   t.assert.equal(doc.dependencies, undefined)
-  t.assert.deepEqual(doc.components.map((c) => c.name).toSorted(), ['app-a', 'app-b'])
+  t.assert.deepStrictEqual(doc.components.map((c) => c.name).toSorted(), ['app-a', 'app-b'])
 })
 
 test('toCyclonedx bom-ref falls back to ecosystem:name@version when a dep has no purl', (t) => {
@@ -336,7 +336,7 @@ test('toCyclonedx bom-ref falls back to ecosystem:name@version when a dep has no
   const dep = doc.components[0]
   t.assert.equal(dep['bom-ref'], 'soldeer:solmate@6.8.0')
   t.assert.equal(dep.purl, undefined)
-  t.assert.deepEqual(doc.dependencies[0].dependsOn, ['soldeer:solmate@6.8.0'])
+  t.assert.deepStrictEqual(doc.dependencies[0].dependsOn, ['soldeer:solmate@6.8.0'])
 })
 
 // ── generateSbom / sbom ──────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ test('importing @exodus/stasis/sbom does not pull in brotli (node:zlib)', (t) =>
   const probe = `await import(${JSON.stringify(url)}); process.stdout.write(JSON.stringify(process.moduleLoadList.filter((m) => /zlib/u.test(m))))`
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { encoding: 'utf8' })
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepEqual(JSON.parse(r.stdout), [], 'the sbom API must not load node:zlib')
+  t.assert.deepStrictEqual(JSON.parse(r.stdout), [], 'the sbom API must not load node:zlib')
 })
 
 // ── sbomCommand (CLI glue, reads/writes files) ───────────────────────────────
@@ -437,7 +437,7 @@ test('sbom --format=spdx streams a valid SPDX document to stdout', withTmp((t, t
   t.assert.equal(r.status, 0)
   const doc = JSON.parse(r.stdout)
   t.assert.equal(doc.spdxVersion, 'SPDX-2.3')
-  t.assert.deepEqual(doc.packages.map((p) => p.name).toSorted(), ['@scope/bar', 'foo', 'top-pkg'])
+  t.assert.deepStrictEqual(doc.packages.map((p) => p.name).toSorted(), ['@scope/bar', 'foo', 'top-pkg'])
   // summary goes to stderr so it never corrupts the piped document
   t.assert.match(r.stderr, /\[stasis] Wrote spdx SBOM with 3 components to <stdout>/)
 }))
@@ -459,7 +459,7 @@ test('sbom --format=cyclonedx reads a brotli bundle and streams a valid document
   const doc = JSON.parse(r.stdout)
   t.assert.equal(doc.bomFormat, 'CycloneDX')
   t.assert.equal(doc.metadata.component.name, 'app')
-  t.assert.deepEqual(doc.components.map((c) => c.purl), ['pkg:npm/foo@2.0.0'])
+  t.assert.deepStrictEqual(doc.components.map((c) => c.purl), ['pkg:npm/foo@2.0.0'])
 }))
 
 test('sbom -o writes the document to a file and keeps stdout clean', withTmp((t, tmp) => {

@@ -111,7 +111,7 @@ test('the diff API does not load node:zlib or node:crypto', (t) => {
   const probe = `await import(${JSON.stringify(url)}); process.stdout.write(JSON.stringify(process.moduleLoadList.filter((m) => /zlib|crypto/u.test(m))))`
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { encoding: 'utf8' })
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepEqual(JSON.parse(r.stdout), [], 'the diff API must not load node:zlib or node:crypto')
+  t.assert.deepStrictEqual(JSON.parse(r.stdout), [], 'the diff API must not load node:zlib or node:crypto')
 })
 
 // ── diffArtifacts: module level ──────────────────────────────────────────────
@@ -134,18 +134,18 @@ test('diffArtifacts reports added, removed, and version-changed modules', (t) =>
   }
   const { modules } = diffArtifacts(lockOf(left), lockOf(right))
 
-  t.assert.deepEqual(modules.added.map((m) => m.dir), ['node_modules/added'])
+  t.assert.deepStrictEqual(modules.added.map((m) => m.dir), ['node_modules/added'])
   t.assert.equal(modules.added[0].files, 2)
-  t.assert.deepEqual(modules.removed.map((m) => m.dir), ['node_modules/gone'])
+  t.assert.deepStrictEqual(modules.removed.map((m) => m.dir), ['node_modules/gone'])
   t.assert.equal(modules.removed[0].files, 1)
-  t.assert.deepEqual(modules.changed, [{ dir: 'node_modules/foo', name: 'foo', versionChange: { from: '1.0.0', to: '2.0.0' } }])
+  t.assert.deepStrictEqual(modules.changed, [{ dir: 'node_modules/foo', name: 'foo', versionChange: { from: '1.0.0', to: '2.0.0' } }])
 })
 
 test('diffArtifacts reports a module name change at the same dir', (t) => {
   const left = { version: 0, config: { scope: 'node_modules' }, modules: { 'node_modules/x': { name: 'old', version: '1.0.0', files: { 'i.js': 'sha512-a' } } } }
   const right = { version: 0, config: { scope: 'node_modules' }, modules: { 'node_modules/x': { name: 'new', version: '1.0.0', files: { 'i.js': 'sha512-a' } } } }
   const { modules } = diffArtifacts(lockOf(left), lockOf(right))
-  t.assert.deepEqual(modules.changed, [{ dir: 'node_modules/x', name: 'new', nameChange: { from: 'old', to: 'new' } }])
+  t.assert.deepStrictEqual(modules.changed, [{ dir: 'node_modules/x', name: 'new', nameChange: { from: 'old', to: 'new' } }])
 })
 
 test('diffArtifacts does not report a version change when one side lacks a version (v0 bundle)', (t) => {
@@ -177,9 +177,9 @@ test('diffArtifacts reports added, removed, and differing files within shared mo
     modules: {},
   }
   const { files } = diffArtifacts(lockOf(left), lockOf(right))
-  t.assert.deepEqual(files.added, ['src/new.js'])
-  t.assert.deepEqual(files.removed, ['src/old.js'])
-  t.assert.deepEqual(files.differing, ['src/changed.js'])
+  t.assert.deepStrictEqual(files.added, ['src/new.js'])
+  t.assert.deepStrictEqual(files.removed, ['src/old.js'])
+  t.assert.deepStrictEqual(files.differing, ['src/changed.js'])
 })
 
 test('diffArtifacts does not re-list files of an added/removed module at the file level', (t) => {
@@ -192,10 +192,10 @@ test('diffArtifacts does not re-list files of an added/removed module at the fil
     },
   }
   const diff = diffArtifacts(lockOf(left), lockOf(right))
-  t.assert.deepEqual(diff.modules.added.map((m) => m.dir), ['node_modules/fresh'])
+  t.assert.deepStrictEqual(diff.modules.added.map((m) => m.dir), ['node_modules/fresh'])
   // The two files of the freshly-added module are summarized by the module entry,
   // not re-counted as added files.
-  t.assert.deepEqual(diff.files.added, [])
+  t.assert.deepStrictEqual(diff.files.added, [])
 })
 
 test('diffArtifacts compares a lockfile against a code bundle by rehashing the bundle bytes', (t) => {
@@ -214,7 +214,7 @@ test('diffArtifacts compares a lockfile against a code bundle by rehashing the b
   })
   const diff = diffArtifacts(lock, bundle, HASH)
   // src/index.js content is byte-identical → no diff; foo/index.js bytes differ → flagged.
-  t.assert.deepEqual(diff.files.differing, ['node_modules/foo/index.js'])
+  t.assert.deepStrictEqual(diff.files.differing, ['node_modules/foo/index.js'])
   t.assert.equal(diff.files.added.length + diff.files.removed.length, 0)
 })
 
@@ -222,7 +222,7 @@ test('diffArtifacts notes scope differences in the result', (t) => {
   const full = { version: 0, config: { scope: 'full' }, entries: ['src/i.js'], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/i.js': 'sha512-a' } } }, modules: {} }
   const nm = { version: 0, config: { scope: 'node_modules' }, modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', files: { 'i.js': 'sha512-b' } } } }
   const diff = diffArtifacts(lockOf(full), lockOf(nm))
-  t.assert.deepEqual(diff.scope, { left: 'full', right: 'node_modules' })
+  t.assert.deepStrictEqual(diff.scope, { left: 'full', right: 'node_modules' })
   // workspace "." is only in the full-scope side → removed module
   t.assert.ok(diff.modules.removed.some((m) => m.dir === '.'))
 })
@@ -241,7 +241,7 @@ test('diffArtifacts sorts multi-file buckets by the project sortPaths rule', (t)
     modules: {},
   }
   const { files } = diffArtifacts(lockOf(left), lockOf(right))
-  t.assert.deepEqual(files.added, ['README.md', 'src/z.js', 'src/lib/a.js'])
+  t.assert.deepStrictEqual(files.added, ['README.md', 'src/z.js', 'src/lib/a.js'])
 })
 
 // ── diffArtifacts: imports (opt-in) ──────────────────────────────────────────
@@ -280,9 +280,9 @@ test('diffArtifacts reports added, removed, and redirected import edges', (t) =>
     },
   })
   const { imports } = diffArtifacts(lockOf(left), lockOf(right), { imports: true })
-  t.assert.deepEqual(imports.added, [{ parent: 'node_modules/foo/index.js', specifier: './fresh.js', to: ['node_modules/foo/fresh.js'] }])
-  t.assert.deepEqual(imports.removed, [{ parent: 'node_modules/foo/index.js', specifier: './gone.js', from: ['node_modules/foo/gone.js'] }])
-  t.assert.deepEqual(imports.changed, [{ parent: 'node_modules/foo/index.js', specifier: './moved.js', from: ['node_modules/foo/old.js'], to: ['node_modules/foo/new.js'] }])
+  t.assert.deepStrictEqual(imports.added, [{ parent: 'node_modules/foo/index.js', specifier: './fresh.js', to: ['node_modules/foo/fresh.js'] }])
+  t.assert.deepStrictEqual(imports.removed, [{ parent: 'node_modules/foo/index.js', specifier: './gone.js', from: ['node_modules/foo/gone.js'] }])
+  t.assert.deepStrictEqual(imports.changed, [{ parent: 'node_modules/foo/index.js', specifier: './moved.js', from: ['node_modules/foo/old.js'], to: ['node_modules/foo/new.js'] }])
   // a redirect is a real difference even when every file hash is unchanged
   t.assert.equal(hasDifferences(diffArtifacts(lockOf(left), lockOf(right), { imports: true })), true)
 })
@@ -294,13 +294,13 @@ test('diffImports reconciles wildcard "*" edges against precise condition sets (
   const wildcard = importsLock({ '*': { 'node_modules/foo/index.js': { './a.js': 'node_modules/foo/a.js' } } })
   const precise = importsLock({ 'node, import': { 'node_modules/foo/index.js': { './a.js': 'node_modules/foo/a.js' } } })
   const { imports } = diffArtifacts(lockOf(wildcard), lockOf(precise), { imports: true })
-  t.assert.deepEqual(imports, { attested: { left: true, right: true }, added: [], removed: [], changed: [] })
+  t.assert.deepStrictEqual(imports, { attested: { left: true, right: true }, added: [], removed: [], changed: [] })
   t.assert.equal(hasDifferences(diffArtifacts(lockOf(wildcard), lockOf(precise), { imports: true })), false)
 
   // ...but a genuine redirect under differing conditions is still caught.
   const redirected = importsLock({ 'node, import': { 'node_modules/foo/index.js': { './a.js': 'node_modules/foo/b.js' } } })
   const diff = diffArtifacts(lockOf(wildcard), lockOf(redirected), { imports: true })
-  t.assert.deepEqual(diff.imports.changed, [{ parent: 'node_modules/foo/index.js', specifier: './a.js', from: ['node_modules/foo/a.js'], to: ['node_modules/foo/b.js'] }])
+  t.assert.deepStrictEqual(diff.imports.changed, [{ parent: 'node_modules/foo/index.js', specifier: './a.js', from: ['node_modules/foo/a.js'], to: ['node_modules/foo/b.js'] }])
 })
 
 test('diffImports unions targets across conditions for a (parent, specifier)', (t) => {
@@ -318,7 +318,7 @@ test('diffImports unions targets across conditions for a (parent, specifier)', (
 
   const narrower = importsLock({ '*': { 'node_modules/foo/index.js': { './x.js': 'node_modules/foo/node.js' } } })
   const diff = diffArtifacts(lockOf(twoConds), lockOf(narrower), { imports: true })
-  t.assert.deepEqual(diff.imports.changed, [{
+  t.assert.deepStrictEqual(diff.imports.changed, [{
     parent: 'node_modules/foo/index.js', specifier: './x.js',
     from: ['node_modules/foo/browser.js', 'node_modules/foo/node.js'], to: ['node_modules/foo/node.js'],
   }])
@@ -345,7 +345,7 @@ test('diffArtifacts skips the import diff (without flipping hasDifferences) when
   const legacy = { artifact: new Lockfile({ config: { scope: 'node_modules' }, modules: new Map([['node_modules/foo', { name: 'foo', version: '1.0.0', files: { 'index.js': 'sha512-same' } }]]) }), kind: 'lockfile' }
   const withEdges = importsLock({ '*': { 'node_modules/foo/index.js': { './a.js': 'node_modules/foo/a.js' } } })
   const diff = diffArtifacts(legacy, lockOf(withEdges), { imports: true })
-  t.assert.deepEqual(diff.imports.attested, { left: false, right: true })
+  t.assert.deepStrictEqual(diff.imports.attested, { left: false, right: true })
   t.assert.equal(diff.imports.added.length + diff.imports.removed.length + diff.imports.changed.length, 0)
   // nothing else differs, and an un-comparable import graph must not invent one
   t.assert.equal(hasDifferences(diff), false)

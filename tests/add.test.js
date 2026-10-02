@@ -85,14 +85,14 @@ test('addCommand splits source files to bundleFile and declared resources to res
 
   // Source files -> the code bundle, path-inferred format, no imports. `add` records NO entries
   // (attested files aren't entry points), unlike the deep `bundle`.
-  t.assert.deepEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs'])
+  t.assert.deepStrictEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs'])
   t.assert.equal(code.entries.size, 0, 'add files are attested, never entries')
   t.assert.equal(code.formats.get('src/a.js'), 'module') // package "type": "module"
   t.assert.equal(code.formats.get('src/b.cjs'), 'commonjs')
   t.assert.equal(code.imports.size, 0)
 
   // Declared resources -> the resources bundle: no entries, resource formats, binary base64.
-  t.assert.deepEqual(Object.keys(res.modules.get('.').files).toSorted(), ['src/icon.svg', 'src/logo.png'])
+  t.assert.deepStrictEqual(Object.keys(res.modules.get('.').files).toSorted(), ['src/icon.svg', 'src/logo.png'])
   t.assert.equal(res.entries.size, 0, 'a resources bundle has no entries')
   t.assert.equal(res.imports.size, 0)
   t.assert.equal(res.formats.get('src/icon.svg'), 'resource')
@@ -165,7 +165,7 @@ test('addCommand carries a BINARY plist as a declared resource; a text plist sta
 
   const res = decode(join(tmp, 'dist/res.br'))
   t.assert.equal(res.formats.get('Binary.plist'), 'resource:base64')
-  t.assert.deepEqual(Buffer.from(res.modules.get('.').files['Binary.plist'], 'base64'), BPLIST)
+  t.assert.deepStrictEqual(Buffer.from(res.modules.get('.').files['Binary.plist'], 'base64'), BPLIST)
   // The TEXT plist is unaffected: still code, tagged xml.
   const code = decode(join(tmp, 'dist/code.br'))
   t.assert.equal(code.formats.get('Text.plist'), 'xml')
@@ -218,19 +218,19 @@ test('addCommand attributes packed files to the `add` consumer in `reason`', wit
   seed(tmp)
   addCommand({ cwd: tmp, entries: ['src/a.js', 'src/icon.svg'] })
   const code = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual(Object.keys(code.reason), ['add'], 'add attributes under `add`, not `bundle`')
-  t.assert.deepEqual(code.reason.add.toSorted(), ['src/a.js'])
+  t.assert.deepStrictEqual(Object.keys(code.reason), ['add'], 'add attributes under `add`, not `bundle`')
+  t.assert.deepStrictEqual(code.reason.add.toSorted(), ['src/a.js'])
   const res = decode(join(tmp, 'dist/res.br'))
-  t.assert.deepEqual(Object.keys(res.reason), ['add'])
-  t.assert.deepEqual(res.reason.add.toSorted(), ['src/icon.svg'])
+  t.assert.deepStrictEqual(Object.keys(res.reason), ['add'])
+  t.assert.deepStrictEqual(res.reason.add.toSorted(), ['src/icon.svg'])
 }))
 
 test('addCommand is additive across runs (merges into each split bundle)', withTmp(async (t, tmp) => {
   seed(tmp)
   addCommand({ cwd: tmp, entries: ['src/a.js', 'src/icon.svg'] })
   addCommand({ cwd: tmp, entries: ['src/b.cjs', 'src/logo.png'] })
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
-  t.assert.deepEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
 }))
 
 test('addCommand preserves an existing bundle’s entries and adds none of its own', withTmp(async (t, tmp) => {
@@ -248,8 +248,8 @@ test('addCommand preserves an existing bundle’s entries and adds none of its o
 
   addCommand({ cwd: tmp, entries: ['src/b.cjs'] })
   const code = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs'])
-  t.assert.deepEqual([...code.entries], ['src/a.js'], 'the deep entry is preserved; add adds none')
+  t.assert.deepStrictEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs'])
+  t.assert.deepStrictEqual([...code.entries], ['src/a.js'], 'the deep entry is preserved; add adds none')
 }))
 
 test('addCommand expands a directory entry to the files under it (recursive glob)', withTmp(async (t, tmp) => {
@@ -260,8 +260,8 @@ test('addCommand expands a directory entry to the files under it (recursive glob
   addCommand({ cwd: tmp, entries: ['src'] })
 
   // Every file under src/ is classified and split, at any depth.
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs', 'src/nested/c.mjs'])
-  t.assert.deepEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs', 'src/nested/c.mjs'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
 }))
 
 test('addCommand refuses an undeclared file swept in by a directory entry', withTmp(async (t, tmp) => {
@@ -296,9 +296,9 @@ test('addCommand auto-excludes declarations, secrets, native noise, and whole di
   // Only the real source survives the filter: a `.d.ts` would otherwise be packed as
   // `module-typescript` code, a `web.env` as `env` code carrying secrets, and the `examples/`,
   // `examples/__tests__/` and `__mocks__/` trees would come along as ordinary modules.
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
   // The declared resources are untouched by the filter -- they still go through the resources check.
-  t.assert.deepEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/res.br'), ['src/icon.svg', 'src/logo.png'])
 }))
 
 test('addCommand sweeps an excluded directory the caller named itself', withTmp(async (t, tmp) => {
@@ -308,7 +308,7 @@ test('addCommand sweeps an excluded directory the caller named itself', withTmp(
   seedExcluded(tmp)
   addCommand({ cwd: tmp, entries: ['src/examples'] })
   // Its own files are swept in; a nested excluded dir (`__tests__`) is still not descended into.
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/examples/demo.js'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/examples/demo.js'])
 }))
 
 test('addCommand honours a named subtree the same run also swept past', withTmp(async (t, tmp) => {
@@ -319,7 +319,7 @@ test('addCommand honours a named subtree the same run also swept past', withTmp(
   for (const entries of [['src', 'src/examples'], ['src/examples', 'src']]) {
     rmSync(join(tmp, 'dist'), { recursive: true, force: true })
     addCommand({ cwd: tmp, entries })
-    t.assert.deepEqual(
+    t.assert.deepStrictEqual(
       packedFiles(tmp, 'dist/code.br'),
       ['src/a.js', 'src/b.cjs', 'src/examples/demo.js'],
       `entries: ${entries.join(' ')}`,
@@ -333,7 +333,7 @@ test('addCommand still adds an auto-excluded file that is named explicitly', wit
   seedExcluded(tmp)
   addCommand({ cwd: tmp, entries: ['src/types.d.ts', 'src/web.env', 'src/.env'] })
   const code = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/.env', 'src/types.d.ts', 'src/web.env'])
+  t.assert.deepStrictEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/.env', 'src/types.d.ts', 'src/web.env'])
   t.assert.equal(code.formats.get('src/types.d.ts'), 'module-typescript')
   t.assert.equal(code.formats.get('src/web.env'), 'env')
 }))
@@ -343,7 +343,7 @@ test('addCommand keeps an explicitly named file the same run also sweeps', withT
   seed(tmp)
   seedExcluded(tmp)
   addCommand({ cwd: tmp, entries: ['src', 'src/types.d.ts'] })
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs', 'src/types.d.ts'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs', 'src/types.d.ts'])
 }))
 
 test('addCommand keeps auto-excluding a swept file whose extension is declared in resources', withTmp(async (t, tmp) => {
@@ -375,7 +375,7 @@ test('addCommand never sweeps in its own outputs, so `add .` is repeatable', wit
   t.assert.ok(!files.includes('stasis.lock.json'), 'the lockfile is never attested')
   // Repeatable: the second run finds the artifacts on disk and still adds nothing new.
   addCommand({ cwd: tmp, entries: ['.'] })
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), files)
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), files)
 }))
 
 test('addCommand errors when a directory matched only auto-excluded files', withTmp(async (t, tmp) => {
@@ -411,7 +411,7 @@ test('addCommand buckets a node_modules file into its own npm package bucket', w
   seed(tmp)
   addCommand({ cwd: tmp, entries: ['src/a.js', 'node_modules/dep/index.js'] })
   const code = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual([...code.modules.keys()].toSorted(), ['.', 'node_modules/dep'])
+  t.assert.deepStrictEqual([...code.modules.keys()].toSorted(), ['.', 'node_modules/dep'])
   const dep = code.modules.get('node_modules/dep')
   t.assert.equal(dep.name, 'dep')
   t.assert.equal(dep.version, '2.0.0')
@@ -434,13 +434,13 @@ test('addCommand updates an existing stasis.lock.json (one lockfile covers both 
   addCommand({ cwd: tmp, entries: ['src/b.cjs', 'src/icon.svg'] })
 
   const lock = Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))
-  t.assert.deepEqual(Object.keys(lock.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs', 'src/icon.svg'])
+  t.assert.deepStrictEqual(Object.keys(lock.modules.get('.').files).toSorted(), ['src/a.js', 'src/b.cjs', 'src/icon.svg'])
   // Integrity is hashed from the raw bytes (so a frozen run reading disk matches).
   t.assert.equal(lock.modules.get('.').files['src/b.cjs'], sha512integrity(readFileSync(join(tmp, 'src/b.cjs'))))
   t.assert.equal(lock.formats.get('src/b.cjs'), 'commonjs')
   t.assert.equal(lock.formats.get('src/icon.svg'), 'resource')
   // add adds no entries: only the pre-existing src/a.js stays an entry (src/b.cjs is attested, not an entry).
-  t.assert.deepEqual([...lock.entries].toSorted(), ['src/a.js'])
+  t.assert.deepStrictEqual([...lock.entries].toSorted(), ['src/a.js'])
 }))
 
 test('addCommand never creates a lockfile when none is present', withTmp(async (t, tmp) => {
@@ -498,7 +498,7 @@ test('addCommand defaults a missing bundleFile to stasis.code.br', withTmp(async
   seed(tmp, { resources: ['svg'] }) // config present, but no bundleFile / resourcesBundleFile
   addCommand({ cwd: tmp, entries: ['src/a.js'] })
   const code = decode(join(tmp, 'stasis.code.br'))
-  t.assert.deepEqual(Object.keys(code.modules.get('.').files), ['src/a.js'])
+  t.assert.deepStrictEqual(Object.keys(code.modules.get('.').files), ['src/a.js'])
   t.assert.equal(code.formats.get('src/a.js'), 'module')
 }))
 
@@ -508,7 +508,7 @@ test('addCommand without a resourcesBundleFile writes resources into bundleFile 
   t.assert.ok(!existsSync(join(tmp, 'dist/res.br')), 'no separate resources bundle in non-split mode')
   // Code and declared resources coexist in the one bundle; add records no entries.
   const bundle = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/a.js', 'src/icon.svg', 'src/logo.png'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/a.js', 'src/icon.svg', 'src/logo.png'])
   t.assert.equal(bundle.entries.size, 0, 'add files are attested, never entries')
   t.assert.equal(bundle.formats.get('src/icon.svg'), 'resource')
   t.assert.equal(bundle.formats.get('src/logo.png'), 'resource:base64')
@@ -545,7 +545,7 @@ test('CLI (stasis-core): add expands a directory argument', withTmp(async (t, tm
   rmSync(join(tmp, 'src', 'data.txt'))
   const r = runCli(coreCli, ['add', 'src'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  t.assert.deepEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
+  t.assert.deepStrictEqual(packedFiles(tmp, 'dist/code.br'), ['src/a.js', 'src/b.cjs'])
 }))
 
 test('CLI (stasis-core): add reports what a directory sweep auto-excluded', withTmp(async (t, tmp) => {
@@ -596,7 +596,7 @@ test('addCommand records .jsx/.tsx as source with no loader format, as the runti
   writeFileSync(join(tmp, 'src', 'Comp.tsx'), 'export const Comp = (): null => null\n')
   addCommand({ cwd: tmp, entries: ['src/App.jsx', 'src/Comp.tsx'] })
   const code = decode(join(tmp, 'dist/code.br'))
-  t.assert.deepEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/App.jsx', 'src/Comp.tsx'])
+  t.assert.deepStrictEqual(Object.keys(code.modules.get('.').files).toSorted(), ['src/App.jsx', 'src/Comp.tsx'])
   t.assert.equal(code.modules.get('.').files['src/App.jsx'], 'export const App = () => <div />\n')
   // A JS-family file whose loader format nothing here decides: attested without one, never as a resource.
   t.assert.equal(code.formats.has('src/App.jsx'), false)

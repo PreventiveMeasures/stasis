@@ -155,7 +155,7 @@ test('buildBundle --metro --metro-resolver matches the built-in resolver for thi
   const builtin = await buildBundle(opts)
   const viaMetro = await buildBundle({ ...opts, metroResolver: true })
   // entry.js imports only cases both resolvers agree on, so the bundles are file-for-file equal.
-  t.assert.deepEqual([...viaMetro.sources.keys()].toSorted(), [...builtin.sources.keys()].toSorted())
+  t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), [...builtin.sources.keys()].toSorted())
 })
 
 test('CLI: bundle --metro --metro-resolver writes a bundle + lockfile that round-trip', ifMetro, withTmp((t, tmp) => {
@@ -201,7 +201,7 @@ test('buildBundle --metro --metro-resolver: --jsx carries a .tsx dependency, and
 
   // With --jsx: the .tsx source is scanned and carried, tagged as a buildable code format.
   const bundle = await buildBundle({ ...opts, jsx: true })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.sources.keys()].toSorted(),
     ['node_modules/safe-area-like/src/index.tsx', 'src/entry.js'],
   )

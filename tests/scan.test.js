@@ -73,27 +73,27 @@ function captureRuntimeBundle(fixture, entry, tmp, { full = false } = {}) {
 
 test('scan walks a relative CJS require chain without executing it', (t) => {
   const result = scan([join(cjsFixture, 'src/entry.cjs')]).toRelative(cjsFixture)
-  t.assert.deepEqual([...result.entries], ['src/entry.cjs'])
-  t.assert.deepEqual([...result.files.keys()].toSorted(), ['src/entry.cjs', 'src/hello.cjs'])
+  t.assert.deepStrictEqual([...result.entries], ['src/entry.cjs'])
+  t.assert.deepStrictEqual([...result.files.keys()].toSorted(), ['src/entry.cjs', 'src/hello.cjs'])
   t.assert.equal(result.files.get('src/entry.cjs').format, 'commonjs')
   t.assert.equal(result.files.get('src/hello.cjs').format, 'commonjs')
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
 
   const edges = result.files.get('src/entry.cjs').edges
   t.assert.equal(edges.length, 1)
-  t.assert.deepEqual(edges[0], { kind: 'require', spec: './hello.cjs', child: 'src/hello.cjs' })
+  t.assert.deepStrictEqual(edges[0], { kind: 'require', spec: './hello.cjs', child: 'src/hello.cjs' })
 })
 
 test('scan resolves bare specifiers through node_modules without executing them', (t) => {
   const result = scan([join(nmCjsFixture, 'src/entry.js')]).toRelative(nmCjsFixture)
-  t.assert.deepEqual([...result.files.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...result.files.keys()].toSorted(), [
     'node_modules/fake-cjs-nm/index.js',
     'src/entry.js',
   ])
   const entry = result.files.get('src/entry.js')
   t.assert.equal(entry.format, 'module')
   t.assert.equal(entry.edges.length, 1)
-  t.assert.deepEqual(entry.edges[0], {
+  t.assert.deepStrictEqual(entry.edges[0], {
     kind: 'import',
     spec: 'fake-cjs-nm',
     child: 'node_modules/fake-cjs-nm/index.js',
@@ -131,7 +131,7 @@ test('scan records module files that fail to parse in parseErrors with no edges'
   t.assert.equal(result.parseErrors[0].recovered, true)
   const info = [...result.files].find(([url]) => url.endsWith('/broken.mjs'))[1]
   t.assert.ok(info.parseError, 'files entry must carry the parseError flag')
-  t.assert.deepEqual(info.edges, [], 'a module file we could not parse must not contribute edges')
+  t.assert.deepStrictEqual(info.edges, [], 'a module file we could not parse must not contribute edges')
 
   // toRelative carries parseErrors through, root-relative.
   const rel = scan([entry]).toRelative(tmp)
@@ -171,7 +171,7 @@ test('scan applies Node module-syntax detection to ambiguous .js (no "type" in s
   const depInfo = [...result.files].find(([url]) => url.endsWith('/dep.js'))[1]
   t.assert.equal(depInfo.format, 'module')
   t.assert.equal(depInfo.edges.length, 1)
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   // dynamic import() alone must NOT flip a CJS file to module (matches Node).
   const plain = join(tmp, 'plain.js')
   writeFileSync(plain, "import('./leaf.js').catch(() => {})\nmodule.exports = 1\n")
@@ -184,7 +184,7 @@ test('scan applies Node module-syntax detection to ambiguous .js (no "type" in s
   writeFileSync(tla, 'const one = await Promise.resolve(1)\n')
   const r3 = scan([tla])
   t.assert.equal([...r3.files].find(([url]) => url.endsWith('/tla.js'))[1].format, 'module')
-  t.assert.deepEqual(r3.parseErrors, [])
+  t.assert.deepStrictEqual(r3.parseErrors, [])
 }))
 
 test('scan records a parse error for JSX in a .js file, and js:true parses past it', withTmp((t, tmp) => {
@@ -202,7 +202,7 @@ test('scan records a parse error for JSX in a .js file, and js:true parses past 
   t.assert.ok(![...def.files].some(([url]) => url.endsWith('/greet.js')), 'edge behind the JSX is unreachable by default')
 
   const withJsx = scan([entry], { jsx: true })
-  t.assert.deepEqual(withJsx.parseErrors, [], 'jsx:true parses the JSX cleanly')
+  t.assert.deepStrictEqual(withJsx.parseErrors, [], 'jsx:true parses the JSX cleanly')
   t.assert.ok([...withJsx.files].some(([url]) => url.endsWith('/greet.js')), 'the import past the JSX is now walked')
 }))
 
@@ -216,7 +216,7 @@ test('scan jsx:true parses JSX in a typeless package and still detects module vs
   writeFileSync(esm, "import { greet } from './greet.js'\nexport const App = () => <Text>{greet}</Text>\n")
   writeFileSync(join(tmp, 'greet.js'), "export const greet = 'hi'\n")
   const esmScan = scan([esm], { jsx: true })
-  t.assert.deepEqual(esmScan.parseErrors, [], 'JSX in a typeless .js must parse under jsx:true')
+  t.assert.deepStrictEqual(esmScan.parseErrors, [], 'JSX in a typeless .js must parse under jsx:true')
   t.assert.equal([...esmScan.files].find(([url]) => url.endsWith('/esm.js'))[1].format, 'module',
     'import/export syntax must still be detected as module even with JSX enabled')
   t.assert.ok([...esmScan.files].some(([url]) => url.endsWith('/greet.js')), 'the edge behind the JSX is walked')
@@ -224,7 +224,7 @@ test('scan jsx:true parses JSX in a typeless package and still detects module vs
   const cjs = join(tmp, 'cjs.js')
   writeFileSync(cjs, "const { Row } = require('./greet.js')\nmodule.exports = () => <Row/>\n")
   const cjsScan = scan([cjs], { jsx: true })
-  t.assert.deepEqual(cjsScan.parseErrors, [], 'JSX in a typeless CJS .js must parse under jsx:true')
+  t.assert.deepStrictEqual(cjsScan.parseErrors, [], 'JSX in a typeless CJS .js must parse under jsx:true')
   t.assert.equal([...cjsScan.files].find(([url]) => url.endsWith('/cjs.js'))[1].format, 'commonjs',
     'require/module.exports must still be detected as commonjs even with JSX enabled')
 }))
@@ -235,7 +235,7 @@ test('scan jsx:true does not enable JSX for the .ts family (its <T> generics col
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'jsxts', version: '0.0.0', type: 'module' }))
   const generic = join(tmp, 'ok.ts')
   writeFileSync(generic, 'export function id<T>(x: T): T {\n  return x\n}\n')
-  t.assert.deepEqual(scan([generic], { jsx: true }).parseErrors, [], 'a generic .ts still parses under jsx:true')
+  t.assert.deepStrictEqual(scan([generic], { jsx: true }).parseErrors, [], 'a generic .ts still parses under jsx:true')
 
   const jsxTs = join(tmp, 'bad.ts')
   writeFileSync(jsxTs, 'export const App = () => <Text>hi</Text>\n')
@@ -281,7 +281,7 @@ test('static scan agrees with runtime loader on the CJS fixture', withTmp((t, tm
   const runtime = captureRuntimeBundle(tmp, 'src/entry.cjs', tmp, { full: true })
   const staticGraph = scan([join(tmp, 'src/entry.cjs')]).toRelative(tmp)
 
-  t.assert.deepEqual([...staticGraph.entries], runtime.entries)
+  t.assert.deepStrictEqual([...staticGraph.entries], runtime.entries)
 
   const runtimeFiles = new Set(Object.keys(runtime.sources['.'].files))
   const staticFiles = new Set(staticGraph.files.keys())
@@ -301,15 +301,15 @@ test('static scan agrees with runtime loader on the node_modules CJS fixture', w
 
 test('scan walks a TS import chain and records Node\'s type-stripping formats', (t) => {
   const result = scan([join(tsFixture, 'src/entry.ts')]).toRelative(tsFixture)
-  t.assert.deepEqual([...result.entries], ['src/entry.ts'])
-  t.assert.deepEqual([...result.files.keys()].toSorted(), ['src/entry.ts', 'src/hello.ts'])
+  t.assert.deepStrictEqual([...result.entries], ['src/entry.ts'])
+  t.assert.deepStrictEqual([...result.files.keys()].toSorted(), ['src/entry.ts', 'src/hello.ts'])
   // type: module package → .ts files are module-typescript, mirroring .js → module
   t.assert.equal(result.files.get('src/entry.ts').format, 'module-typescript')
   t.assert.equal(result.files.get('src/hello.ts').format, 'module-typescript')
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
 
   const edges = result.files.get('src/entry.ts').edges
-  t.assert.deepEqual(edges, [{ kind: 'import', spec: './hello.ts', child: 'src/hello.ts' }])
+  t.assert.deepStrictEqual(edges, [{ kind: 'import', spec: './hello.ts', child: 'src/hello.ts' }])
 })
 
 test('scan derives commonjs-typescript for .ts in a CJS package and per-extension for .cts/.mts', withTmp((t, tmp) => {
@@ -345,10 +345,10 @@ test('scan records `import x = require(...)` edges (TS-only CJS import form)', w
   writeFileSync(join(tmp, 'dep.cts'), 'exports.x = (): void => {}\n')
   const result = scan([join(tmp, 'entry.cts')]).toRelative(tmp)
   t.assert.ok(result.files.has('dep.cts'), 'import = require() target must be walked into the bundle')
-  t.assert.deepEqual(result.files.get('entry.cts').edges, [
+  t.assert.deepStrictEqual(result.files.get('entry.cts').edges, [
     { kind: 'require', spec: './dep.cts', child: 'dep.cts' },
   ])
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
 }))
 
 test('scan erases statement-level type imports only, like Node type stripping (verbatimModuleSyntax)', withTmp((t, tmp) => {
@@ -378,14 +378,14 @@ test('scan erases statement-level type imports only, like Node type stripping (v
   for (const loaded of ['mixed.ts', 'inline-only.ts', 'empty.ts', 'export-inline.ts', 'export-empty.ts']) {
     t.assert.ok(result.files.has(loaded), `${loaded} still loads at runtime, so it must be bundled`)
   }
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
 }))
 
 test('scan files TS ESM-parent edges under the full ESM condition key Node uses', (t) => {
   // module-typescript parents must resolve with the `import` condition set,
   // exactly like module parents -- not the `require` fallback.
   const result = scan([join(tsFixture, 'src/entry.ts')]).toRelative(tsFixture)
-  t.assert.deepEqual([...result.imports.keys()], ['node, import, module-sync, node-addons'])
+  t.assert.deepStrictEqual([...result.imports.keys()], ['node, import, module-sync, node-addons'])
 })
 
 test('scan without --flow cannot parse a Flow-typed file (edges vanish, parse error recorded)', withTmp((t, tmp) => {
@@ -398,7 +398,7 @@ test('scan without --flow cannot parse a Flow-typed file (edges vanish, parse er
   const result = scan([join(tmp, 'entry.js')]).toRelative(tmp)
   t.assert.equal(result.parseErrors.length, 1)
   t.assert.equal(result.parseErrors[0].file, 'entry.js')
-  t.assert.deepEqual(result.files.get('entry.js').edges, [], 'a Flow file oxc cannot parse contributes no edges')
+  t.assert.deepStrictEqual(result.files.get('entry.js').edges, [], 'a Flow file oxc cannot parse contributes no edges')
   t.assert.ok(!result.files.has('dep.js'), 'the unparsed edge means dep.js is never walked')
 }))
 
@@ -426,10 +426,10 @@ test('scan --flow strips Flow type syntax before oxc so the real import graph re
   writeFileSync(join(tmp, 'dep.js'), 'export const dep = 1\n')
   writeFileSync(join(tmp, 'types.js'), 'export const T = 1\n')
   const result = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
-  t.assert.deepEqual(result.parseErrors, [])
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.parseErrors, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   const edges = result.files.get('entry.js').edges
-  t.assert.deepEqual(edges, [{ kind: 'import', spec: './dep.js', child: 'dep.js' }])
+  t.assert.deepStrictEqual(edges, [{ kind: 'import', spec: './dep.js', child: 'dep.js' }])
   t.assert.ok(result.files.has('dep.js'), 'the value import is walked')
   t.assert.ok(!result.files.has('types.js'), 'the Flow type-only import is erased, so types.js is never walked')
 }))
@@ -439,7 +439,7 @@ test('scan --flow works on Flow files with no @flow pragma (all:true ignores the
   writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v: number = dep\n')
   writeFileSync(join(tmp, 'dep.js'), 'export const dep = 1\n')
   const result = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
-  t.assert.deepEqual(result.parseErrors, [])
+  t.assert.deepStrictEqual(result.parseErrors, [])
   t.assert.ok(result.files.has('dep.js'))
 }))
 
@@ -451,7 +451,7 @@ test('scan --flow leaves .ts sources to oxc (does not run flow-remove-types on T
     'import { dep } from "./dep.ts"\nexport enum E { A, B }\nexport const v: E = dep\n')
   writeFileSync(join(tmp, 'dep.ts'), 'export const dep = 0\n')
   const result = scan([join(tmp, 'entry.ts')], { flow: true }).toRelative(tmp)
-  t.assert.deepEqual(result.parseErrors, [])
+  t.assert.deepStrictEqual(result.parseErrors, [])
   t.assert.equal(result.files.get('entry.ts').format, 'module-typescript')
   t.assert.ok(result.files.has('dep.ts'), 'the TS import graph is unaffected by --flow')
 }))
@@ -469,8 +469,8 @@ test('scan typescript:true maps a missing ./x.js to its on-disk ./x.ts, keyed by
   writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "./a.js"\nexport const v: number = a\n')
   writeFileSync(join(tmp, 'a.ts'), 'export const a: number = 1\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved, [])
-  t.assert.deepEqual(result.files.get('entry.ts').edges, [{ kind: 'import', spec: './a.js', child: 'a.ts' }])
+  t.assert.deepStrictEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.files.get('entry.ts').edges, [{ kind: 'import', spec: './a.js', child: 'a.ts' }])
   t.assert.equal(result.files.get('a.ts').format, 'module-typescript')
   // The recorded edge keeps the source's specifier -- only the target is the mapped file.
   const byParent = flattenImports(result.imports)
@@ -483,7 +483,7 @@ test('scan typescript:true never remaps a specifier whose literal target resolve
   writeFileSync(join(tmp, 'a.js'), 'export const a = 1\n')
   writeFileSync(join(tmp, 'a.ts'), 'export const a: number = 999\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.files.get('entry.ts').edges, [{ kind: 'import', spec: './a.js', child: 'a.js' }])
+  t.assert.deepStrictEqual(result.files.get('entry.ts').edges, [{ kind: 'import', spec: './a.js', child: 'a.js' }])
   t.assert.ok(!result.files.has('a.ts'), 'the shadowed .ts twin must not be walked')
 }))
 
@@ -504,7 +504,7 @@ test('scan typescript:true maps .mjs -> .mts and .cjs -> .cts', withTmp((t, tmp)
   writeFileSync(join(tmp, 'm.mts'), 'export const m: number = 1\n')
   writeFileSync(join(tmp, 'c.cts'), 'exports.x = 2 as number\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   const byParent = flattenImports(result.imports)
   t.assert.equal(byParent.get('entry.ts').get('./m.mjs'), 'm.mts')
   t.assert.equal(byParent.get('entry.ts').get('./c.cjs'), 'c.cts')
@@ -527,7 +527,7 @@ test('scan typescript:true completes extensionless and directory specifiers with
   t.assert.equal(byParent.get('entry.ts').get('./util'), 'util.ts')
   t.assert.equal(byParent.get('entry.ts').get('./dir'), 'dir/index.ts')
   t.assert.equal(byParent.get('entry.ts').get('./x.service'), 'x.service.ts')
-  t.assert.deepEqual(result.unresolved.map((u) => u.spec), ['./only-mts'], 'extensionless never lands on .mts/.cts')
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['./only-mts'], 'extensionless never lands on .mts/.cts')
 }))
 
 test('scan typescript:true probes .tsx only under jsx (off, a .tsx twin stays unresolved)', withTmp((t, tmp) => {
@@ -537,7 +537,7 @@ test('scan typescript:true probes .tsx only under jsx (off, a .tsx twin stays un
   const off = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
   t.assert.equal(off.unresolved.length, 1, 'without jsx the scanner cannot carry .tsx, so it must not resolve to one')
   const on = scan([join(tmp, 'entry.ts')], { typescript: true, jsx: true }).toRelative(tmp)
-  t.assert.deepEqual(on.unresolved, [])
+  t.assert.deepStrictEqual(on.unresolved, [])
   t.assert.equal(flattenImports(on.imports).get('entry.ts').get('./App.js'), 'App.tsx')
 }))
 
@@ -565,7 +565,7 @@ test('scan typescript:true substitutes bare package subpaths and manifest entry 
     JSON.stringify({ name: 'expdep', version: '1.0.0', exports: { '.': { default: './lib/main.js' } } }))
   writeFileSync(join(tmp, 'node_modules', 'expdep', 'lib', 'main.ts'), 'export const e: number = 3\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   const byParent = flattenImports(result.imports)
   t.assert.equal(byParent.get('entry.ts').get('dep/sub.js'), 'node_modules/dep/sub.ts')
   t.assert.equal(byParent.get('entry.ts').get('maindep'), 'node_modules/maindep/lib/main.ts')
@@ -583,7 +583,7 @@ test('scan typescript:true respects the exports map (a subpath it does not expor
     JSON.stringify({ name: 'sealed', version: '1.0.0', exports: { '.': './lib/main.js' } }))
   writeFileSync(join(tmp, 'node_modules', 'sealed', 'lib', 'hidden.ts'), 'export const h: number = 1\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved.map((u) => u.spec), ['sealed/lib/hidden.js'])
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['sealed/lib/hidden.js'])
 }))
 
 test('scan typescript:true resolves a relative directory through its package.json main', withTmp((t, tmp) => {
@@ -594,7 +594,7 @@ test('scan typescript:true resolves a relative directory through its package.jso
   writeFileSync(join(tmp, 'sub', 'package.json'), JSON.stringify({ name: 'sub', version: '0.0.1', main: './lib/main.js' }))
   writeFileSync(join(tmp, 'sub', 'lib', 'main.ts'), 'export const s: number = 1\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   t.assert.equal(flattenImports(result.imports).get('entry.ts').get('./sub'), 'sub/lib/main.ts')
 }))
 
@@ -608,7 +608,7 @@ test("scan typescript:true treats '.', '..' and a trailing '/' as directory impo
   // A file literally named '.ts': naive `spec + '.ts'` concatenation would land './sub/' on it.
   writeFileSync(join(tmp, 'sub', '.ts'), 'exports.bad = 1\n')
   const result = scan([join(tmp, 'entry.ts'), join(tmp, 'sub', 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.unresolved, [])
   const byParent = flattenImports(result.imports)
   t.assert.equal(byParent.get('entry.ts').get('./sub/'), 'sub/index.ts')
   t.assert.equal(byParent.get('sub/entry.ts').get('.'), 'sub/index.ts')
@@ -649,7 +649,7 @@ test('scan typescriptPaths maps aliases: exact keys, longest-prefix patterns, JS
   t.assert.equal(byParent.get('entry.ts').get('@/deep/two.js'), 'src/deeper/two.ts')
   t.assert.equal(byParent.get('entry.ts').get('exact'), 'src/one.ts')
   // `paths` replaces wholesale across extends (tsc never merges maps), so the base key is gone.
-  t.assert.deepEqual(result.unresolved.map((u) => u.spec), ['dropped/one.js'])
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['dropped/one.js'])
 }))
 
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
@@ -673,7 +673,7 @@ test('scan typescriptPaths never applies to node_modules parents and never beats
   t.assert.equal(byParent.get('entry.ts').get('real'), 'node_modules/real/index.js')
   t.assert.equal(byParent.get('entry.ts').get('dep'), 'shim/dep.ts')
   // The dependency's own bare import stays unresolved rather than mapping through the app alias.
-  t.assert.deepEqual(result.unresolved.map((u) => u.spec), ['inner'])
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['inner'])
 }))
 
 test('scan typescript:true never lands on a type declaration (./x.d + .ts spells one)', withTmp((t, tmp) => {
@@ -682,7 +682,7 @@ test('scan typescript:true never lands on a type declaration (./x.d + .ts spells
   writeFileSync(join(tmp, 'entry.ts'), 'require("./x.d")\nmodule.exports = 1\n')
   writeFileSync(join(tmp, 'x.d.ts'), 'export declare const x: number\n')
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.deepEqual(result.unresolved.map((u) => u.spec), ['./x.d'])
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['./x.d'])
   t.assert.ok(!result.files.has('x.d.ts'))
 }))
 
@@ -724,9 +724,9 @@ test('scan files ESM-parent edges under the full ESM condition key Node uses', (
   // packages whose `exports` map gated on `module-sync` resolved to a
   // different file under static scan than under plain Node.
   const ESM_KEY = 'node, import, module-sync, node-addons'
-  t.assert.deepEqual([...result.imports.keys()], [ESM_KEY])
+  t.assert.deepStrictEqual([...result.imports.keys()], [ESM_KEY])
   const specs = result.imports.get(ESM_KEY).get('src/entry.js')
-  t.assert.deepEqual(Object.fromEntries(specs), {
+  t.assert.deepStrictEqual(Object.fromEntries(specs), {
     dualpkg: 'node_modules/dualpkg/esm.mjs',
     esmonly: 'node_modules/esmonly/idx.js',
   })

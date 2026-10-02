@@ -66,7 +66,7 @@ const writeBundle = (dir, name = 'snapshot.br', extra = {}) => {
 test('collectPackages reads name/version from a lockfile (node_modules only)', withTmp((t, tmp) => {
   const file = writeLock(tmp)
   const pkgs = collectPackagesFromFile(file)
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     pkgs.toSorted((a, b) => (a.name < b.name ? -1 : 1)),
     [
       { ecosystem: 'npm', name: 'bar', version: '4.5.6' },
@@ -78,7 +78,7 @@ test('collectPackages reads name/version from a lockfile (node_modules only)', w
 test('collectPackages reads name/version from a brotli bundle (node_modules only)', withTmp((t, tmp) => {
   const file = writeBundle(tmp)
   const pkgs = collectPackagesFromFile(file)
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     pkgs.toSorted((a, b) => (a.name < b.name ? -1 : 1)),
     [
       { ecosystem: 'npm', name: 'baz', version: '0.0.1' },
@@ -104,8 +104,8 @@ test('collectPackages and collectReasons take node_modules as a path segment, no
     sources: { '.': { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': 'export const x = 1\n' } }, 'tools/foo_node_modules': { ...tool, files: { 'index.js': 'export const t = 1\n' } } },
     reason: { run: ['src/entry.js', 'tools/foo_node_modules/index.js', 'node_modules/foo/index.js'] },
   })
-  t.assert.deepEqual(collectPackages([lock, bundle]).map((p) => `${p.name}@${p.version}`), ['bar@4.5.6', 'baz@0.0.1', 'foo@1.2.3', 'foo@2.0.0'])
-  t.assert.deepEqual([...collectReasons([bundle]).keys()], ['foo@2.0.0'])
+  t.assert.deepStrictEqual(collectPackages([lock, bundle]).map((p) => `${p.name}@${p.version}`), ['bar@4.5.6', 'baz@0.0.1', 'foo@1.2.3', 'foo@2.0.0'])
+  t.assert.deepStrictEqual([...collectReasons([bundle]).keys()], ['foo@2.0.0'])
 }))
 
 // A bundle of every ecosystem a dependency is tagged with: an npm package, a vendored crate, a
@@ -132,7 +132,7 @@ const ECOSYSTEMS_BUNDLE = {
 
 test('collectPackages takes every ecosystem a dependency is tagged with, and no first-party package', withTmp((t, tmp) => {
   const bundle = writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)
-  t.assert.deepEqual(collectPackages([bundle]), [
+  t.assert.deepStrictEqual(collectPackages([bundle]), [
     { ecosystem: 'cargo', name: 'serde', version: '1.0.100' },
     { ecosystem: 'composer', name: 'acme/tools', version: 'dev-main' },
     { ecosystem: 'composer', name: 'monolog/monolog', version: '2.9.1' },
@@ -143,7 +143,7 @@ test('collectPackages takes every ecosystem a dependency is tagged with, and no 
   ])
   // One crate and one npm package of a name and version are two packages, each with its reasons.
   const reasoned = writeBundle(tmp, 'reasoned.br', { ...ECOSYSTEMS_BUNDLE, reason: { run: ['node_modules/serde/index.js'], webpack: ['vendor/serde/src/lib.rs', 'vendor/serde/Cargo.toml'] } })
-  t.assert.deepEqual(Object.fromEntries([...collectReasons([reasoned])].map(([key, set]) => [key, [...set]])), { 'serde@1.0.100': ['run'], 'cargo:serde@1.0.100': ['webpack'] })
+  t.assert.deepStrictEqual(Object.fromEntries([...collectReasons([reasoned])].map(([key, set]) => [key, [...set]])), { 'serde@1.0.100': ['run'], 'cargo:serde@1.0.100': ['webpack'] })
 }))
 
 test('collectPackages skips bundle modules without name/version (v0 legacy)', withTmp((t, tmp) => {
@@ -156,7 +156,7 @@ test('collectPackages skips bundle modules without name/version (v0 legacy)', wi
     sources: { 'node_modules/foo/index.js': 'x' },
   }
   writeFileSync(path, brotliCompressSync(Buffer.from(JSON.stringify(legacy))))
-  t.assert.deepEqual(collectPackagesFromFile(path), [])
+  t.assert.deepStrictEqual(collectPackagesFromFile(path), [])
 }))
 
 test('collectPackages deduplicates across files', withTmp((t, tmp) => {
@@ -164,7 +164,7 @@ test('collectPackages deduplicates across files', withTmp((t, tmp) => {
   const bundle = writeBundle(tmp)
   const pkgs = collectPackages([lock, bundle])
   // foo appears in both at different versions, both should remain
-  t.assert.deepEqual(pkgs, [
+  t.assert.deepStrictEqual(pkgs, [
     { ecosystem: 'npm', name: 'bar', version: '4.5.6' },
     { ecosystem: 'npm', name: 'baz', version: '0.0.1' },
     { ecosystem: 'npm', name: 'foo', version: '1.2.3' },
@@ -191,7 +191,7 @@ test('collectPackages skips ws recorded only as its noop browser.js (+ manifest)
       'node_modules/foo': { name: 'foo', version: '2.0.0', files: { 'index.js': '// f\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'foo', version: '2.0.0' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'foo', version: '2.0.0' }])
 }))
 
 test('collectPackages keeps ws when any real file of it is recorded', withTmp((t, tmp) => {
@@ -200,7 +200,7 @@ test('collectPackages keeps ws when any real file of it is recorded', withTmp((t
       'node_modules/ws': { name: 'ws', version: '7.5.9', files: { 'browser.js': '// noop\n', 'lib.js': '// real\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '7.5.9' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '7.5.9' }])
 }))
 
 test('collectPackages flags recorded code even when no import edge targets it', withTmp((t, tmp) => {
@@ -214,7 +214,7 @@ test('collectPackages flags recorded code even when no import edge targets it', 
     },
     imports: { '*': { 'src/entry.js': { foo: 'node_modules/foo/index.js' } } },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [
+  t.assert.deepStrictEqual(collectPackages([bundle]), [
     { ecosystem: 'npm', name: 'added', version: '1.0.0' },
     { ecosystem: 'npm', name: 'foo', version: '2.0.0' },
   ])
@@ -228,7 +228,7 @@ test('collectPackages does not correct ws versions outside the verified range', 
       'node_modules/ws': { name: 'ws', version: '9.0.0', files: { 'browser.js': '// ?\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '9.0.0' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '9.0.0' }])
 }))
 
 test('collectPackages skips node-fetch recorded only as browser.js (<= 2.7.0)', withTmp((t, tmp) => {
@@ -239,7 +239,7 @@ test('collectPackages skips node-fetch recorded only as browser.js (<= 2.7.0)', 
       'node_modules/node-fetch': { name: 'node-fetch', version: '2.7.0', files: { 'browser.js': '// native fetch\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [])
 }))
 
 test('collectPackages keeps node-fetch 3.x (no browser.js correction)', withTmp((t, tmp) => {
@@ -248,7 +248,7 @@ test('collectPackages keeps node-fetch 3.x (no browser.js correction)', withTmp(
       'node_modules/node-fetch': { name: 'node-fetch', version: '3.3.2', files: { 'src.js': '// impl\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'node-fetch', version: '3.3.2' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'node-fetch', version: '3.3.2' }])
 }))
 
 test('collectPackages corrections are package-specific', withTmp((t, tmp) => {
@@ -258,7 +258,7 @@ test('collectPackages corrections are package-specific', withTmp((t, tmp) => {
       'node_modules/other': { name: 'other', version: '1.0.0', files: { 'browser.js': '// b\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'other', version: '1.0.0' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'other', version: '1.0.0' }])
 }))
 
 test('collectPackages never counts a package.json manifest as presence', withTmp((t, tmp) => {
@@ -269,7 +269,7 @@ test('collectPackages never counts a package.json manifest as presence', withTmp
       'node_modules/meta-only': { name: 'meta-only', version: '1.0.0', files: { 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [])
 }))
 
 test('collectPackages applies the same evidence rule to lockfiles', withTmp((t, tmp) => {
@@ -281,7 +281,7 @@ test('collectPackages applies the same evidence rule to lockfiles', withTmp((t, 
       'node_modules/foo': { name: 'foo', version: '1.2.3', files: { 'index.js': 'sha512-y', 'package.json': 'sha512-p' } },
     },
   })
-  t.assert.deepEqual(collectPackages([lock]), [{ ecosystem: 'npm', name: 'foo', version: '1.2.3' }])
+  t.assert.deepStrictEqual(collectPackages([lock]), [{ ecosystem: 'npm', name: 'foo', version: '1.2.3' }])
 }))
 
 test('collectReasons excludes a consumer that recorded only corrected files', withTmp((t, tmp) => {
@@ -297,7 +297,7 @@ test('collectReasons excludes a consumer that recorded only corrected files', wi
       run: ['node_modules/ws/index.js'],
     },
   })
-  t.assert.deepEqual([...collectReasons([bundle]).get('ws@7.5.9')], ['run'])
+  t.assert.deepStrictEqual([...collectReasons([bundle]).get('ws@7.5.9')], ['run'])
 }))
 
 test('collectPackagesFromFile rejects unknown JSON shape with a lockfile-specific error', withTmp((t, tmp) => {
@@ -339,7 +339,7 @@ test('collectPackagesFromFile accepts a bundle carrying only resources', withTmp
     imports: {},
   }
   writeFileSync(file, brotliCompressSync(Buffer.from(JSON.stringify(json))))
-  t.assert.deepEqual(collectPackagesFromFile(file), [{ ecosystem: 'npm', name: 'lib', version: '3.2.1' }])
+  t.assert.deepStrictEqual(collectPackagesFromFile(file), [{ ecosystem: 'npm', name: 'lib', version: '3.2.1' }])
 }))
 
 test('collectPackages does not collapse different packages at the same version', withTmp((t, tmp) => {
@@ -354,7 +354,7 @@ test('collectPackages does not collapse different packages at the same version',
     imports: {},
     formats: {},
   }))
-  t.assert.deepEqual(collectPackages([file]), [
+  t.assert.deepStrictEqual(collectPackages([file]), [
     { ecosystem: 'npm', name: 'a', version: '1.0.0' },
     { ecosystem: 'npm', name: 'b', version: '1.0.0' },
   ])
@@ -369,8 +369,8 @@ test('collectReasons maps a bundle reason map to node_modules packages', withTmp
     },
   })
   const reasons = collectReasons([file])
-  t.assert.deepEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
-  t.assert.deepEqual([...reasons.get('baz@0.0.1')].toSorted(), ['webpack'])
+  t.assert.deepStrictEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
+  t.assert.deepStrictEqual([...reasons.get('baz@0.0.1')].toSorted(), ['webpack'])
 }))
 
 test('collectReasons returns nothing for a lockfile (no reason map)', withTmp((t, tmp) => {
@@ -387,7 +387,7 @@ test('collectReasons unions reasons across multiple files', withTmp((t, tmp) => 
   const a = writeBundle(tmp, 'a.br', { reason: { run: ['node_modules/foo/index.js'] } })
   const b = writeBundle(tmp, 'b.br', { reason: { webpack: ['node_modules/foo/index.js'] } })
   const reasons = collectReasons([a, b])
-  t.assert.deepEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
+  t.assert.deepStrictEqual([...reasons.get('foo@2.0.0')].toSorted(), ['run', 'webpack'])
 }))
 
 // A row as @preventive/upstream's advisories() answers it.
@@ -400,7 +400,7 @@ test('flattenAdvisories sorts by severity then package', (t) => {
     found('foo', ['1.0.0'], { severity: 'critical', title: 't2', range: '<2' }),
   ]
   const rows = flattenAdvisories(result)
-  t.assert.deepEqual(rows.map((r) => [r.severity, r.package, r.title]), [
+  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package, r.title]), [
     ['critical', 'bar', 'aaa'],
     ['critical', 'foo', 't2'],
     ['low', 'foo', 't1'],
@@ -409,7 +409,7 @@ test('flattenAdvisories sorts by severity then package', (t) => {
 
 test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
-  t.assert.deepEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
+  t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
 })
 
 test('flattenAdvisories joins the reasons of the affected versions, sorted', (t) => {
@@ -469,7 +469,7 @@ test('flattenAdvisories --reason narrows the consumer list and drops unrelated r
   ])
   const rows = flattenAdvisories(result, reasons, null, 'run')
   // bar is only webpack -> dropped; foo's cell is narrowed to run.
-  t.assert.deepEqual(rows.map((r) => [r.package, r.reason]), [['foo', 'run']])
+  t.assert.deepStrictEqual(rows.map((r) => [r.package, r.reason]), [['foo', 'run']])
 })
 
 test('formatTable renders a multiline cell across physical rows', (t) => {
@@ -566,7 +566,7 @@ test('printAuditReport reports 0 alerts and prints no table', (t) => {
   const err = []
   printAuditReport({ packages: [{ name: 'foo', version: '1.0.0' }], rows: [] }, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } })
   t.assert.equal(err.join(''), 'Scanned 1 package: 0 alerts\n')
-  t.assert.deepEqual(out, [])
+  t.assert.deepStrictEqual(out, [])
 })
 
 test('printAuditReport hints when nothing was scanned', (t) => {
@@ -700,7 +700,7 @@ test('audit() POSTs grouped versions to the npm bulk endpoint and joins rows', w
       t.assert.equal(calls[0].url, 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk')
       t.assert.equal(calls[0].opts.method, 'POST')
       const body = JSON.parse(calls[0].opts.body)
-      t.assert.deepEqual(body, { bar: ['4.5.6'], foo: ['1.2.3'] }, 'workspace top-pkg must not be sent')
+      t.assert.deepStrictEqual(body, { bar: ['4.5.6'], foo: ['1.2.3'] }, 'workspace top-pkg must not be sent')
       t.assert.equal(report.rows.length, 1)
       t.assert.equal(report.rows[0].severity, 'high')
       t.assert.equal(report.rows[0].installed, '1.2.3')
@@ -723,7 +723,7 @@ test('audit() collects from a brotli bundle and POSTs its node_modules versions'
       t.assert.equal(calls[0].url, 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk')
       t.assert.equal(calls[0].opts.method, 'POST')
       const body = JSON.parse(calls[0].opts.body)
-      t.assert.deepEqual(body, { baz: ['0.0.1'], foo: ['2.0.0'] }, 'workspace top-pkg must not be sent')
+      t.assert.deepStrictEqual(body, { baz: ['0.0.1'], foo: ['2.0.0'] }, 'workspace top-pkg must not be sent')
       t.assert.equal(report.rows.length, 1)
       t.assert.equal(report.rows[0].severity, 'critical')
       t.assert.equal(report.rows[0].installed, '2.0.0')
@@ -881,7 +881,7 @@ test('audit() lists only the installed versions a range covers, and drops ranges
     const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
     try {
       const report = await audit([writeLock(tmp)])
-      t.assert.deepEqual(report.rows.map((r) => [r.package, r.installed, r.vulnerable, r.title, r.id]), [
+      t.assert.deepStrictEqual(report.rows.map((r) => [r.package, r.installed, r.vulnerable, r.title, r.id]), [
         ['bar', '4.5.6', '*', 'any', 'npm:3'],
         ['foo', '1.2.3', '>=1.2.0 <2', 'current', 'GHSA-5555-6666-7777'],
       ])
@@ -923,16 +923,16 @@ test('audit() asks npm for npm packages, OSV for crates and Composer packages, a
       }
       const report = await audit([writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)], { github })
       const body = (url) => JSON.parse(calls.find((call) => call.url === url).opts.body)
-      t.assert.deepEqual(body('https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'), { foo: ['2.0.0'], serde: ['1.0.100'] })
+      t.assert.deepStrictEqual(body('https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'), { foo: ['2.0.0'], serde: ['1.0.100'] })
       // A batch for each ecosystem OSV is asked about.
       const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
-      t.assert.deepEqual(queries.toSorted((a, b) => a.package.name.localeCompare(b.package.name)), [
+      t.assert.deepStrictEqual(queries.toSorted((a, b) => a.package.name.localeCompare(b.package.name)), [
         { package: { name: 'monolog/monolog', ecosystem: 'Packagist' }, version: '2.9.1' },
         { package: { name: 'serde', ecosystem: 'crates.io' }, version: '1.0.100' },
       ], 'the Composer dev version is not asked about')
-      t.assert.deepEqual(asked.toSorted(), ['OpenZeppelin/openzeppelin-contracts', 'foundry-rs/forge-std'])
-      t.assert.deepEqual(report.skipped, [{ ecosystem: 'composer', name: 'acme/tools', version: 'dev-main', because: 'a Composer dev version, which no advisory database lists' }])
-      t.assert.deepEqual(report.rows.map(({ ecosystem, package: pkg, installed, id }) => ({ ecosystem, package: pkg, installed, id })), [
+      t.assert.deepStrictEqual(asked.toSorted(), ['OpenZeppelin/openzeppelin-contracts', 'foundry-rs/forge-std'])
+      t.assert.deepStrictEqual(report.skipped, [{ ecosystem: 'composer', name: 'acme/tools', version: 'dev-main', because: 'a Composer dev version, which no advisory database lists' }])
+      t.assert.deepStrictEqual(report.rows.map(({ ecosystem, package: pkg, installed, id }) => ({ ecosystem, package: pkg, installed, id })), [
         { ecosystem: 'github', package: 'OpenZeppelin/openzeppelin-contracts', installed: '4.9.0', id: 'GHSA-9999-8888-7777' },
         { ecosystem: 'cargo', package: 'serde', installed: '1.0.100', id: 'RUSTSEC-2099-0001' },
       ])
@@ -967,9 +967,9 @@ test('audit(--why --reason) keeps the advisories of other ecosystems by the cons
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, reason: { webpack: ['vendor/serde/src/lib.rs'], run: ['node_modules/foo/index.js'] } })
       const github = { listRepoAdvisories: async () => [] }
       const kept = await audit([bundle], { github, why: true, reason: 'webpack' })
-      t.assert.deepEqual(kept.rows.map(({ ecosystem, package: pkg, reason }) => ({ ecosystem, package: pkg, reason })), [{ ecosystem: 'cargo', package: 'serde', reason: 'webpack' }])
-      t.assert.deepEqual((await audit([bundle], { github, why: true, reason: 'run' })).rows, [], 'run recorded none of it')
-      t.assert.deepEqual((await audit([bundle], { github, why: true })).rows.map((row) => row.reason), ['webpack'])
+      t.assert.deepStrictEqual(kept.rows.map(({ ecosystem, package: pkg, reason }) => ({ ecosystem, package: pkg, reason })), [{ ecosystem: 'cargo', package: 'serde', reason: 'webpack' }])
+      t.assert.deepStrictEqual((await audit([bundle], { github, why: true, reason: 'run' })).rows, [], 'run recorded none of it')
+      t.assert.deepStrictEqual((await audit([bundle], { github, why: true })).rows.map((row) => row.reason), ['webpack'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -992,10 +992,10 @@ test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` a
         'lib/b': { name: 'acme/b', version: 'main', ecosystem: 'github', files: { 'src/B.sol': '' } },
       }
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources, modules: {} })
-      t.assert.deepEqual(collectPackages([bundle]).map(({ name, version }) => `${name}@${version}`), ['acme/a@0.0.0', 'acme/b@main'])
+      t.assert.deepStrictEqual(collectPackages([bundle]).map(({ name, version }) => `${name}@${version}`), ['acme/a@0.0.0', 'acme/b@main'])
       const advisory = { ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 2.0.0' }] }
       const report = await audit([bundle], { github: { listRepoAdvisories: async () => [advisory] } })
-      t.assert.deepEqual(report.rows.map(({ package: pkg, installed }) => `${pkg}@${installed}`), ['acme/a@0.0.0', 'acme/b@main'])
+      t.assert.deepStrictEqual(report.rows.map(({ package: pkg, installed }) => `${pkg}@${installed}`), ['acme/a@0.0.0', 'acme/b@main'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

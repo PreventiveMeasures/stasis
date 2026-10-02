@@ -45,8 +45,8 @@ test('write splits code into bundleFile and resources into resourcesBundleFile',
 
   const codeFiles = [...code.sources.keys()].toSorted()
   const resFiles = [...res.sources.keys()].toSorted()
-  t.assert.deepEqual(codeFiles, ['entry.js'], 'code bundle carries only code files')
-  t.assert.deepEqual(resFiles, ['logo.png', 'note.txt'], 'resources bundle carries only resource files')
+  t.assert.deepStrictEqual(codeFiles, ['entry.js'], 'code bundle carries only code files')
+  t.assert.deepStrictEqual(resFiles, ['logo.png', 'note.txt'], 'resources bundle carries only resource files')
 
   t.assert.equal(code.formats.get('entry.js'), 'module')
   t.assert.equal(code.formats.get('logo.png'), undefined, 'resource formats absent from code bundle')

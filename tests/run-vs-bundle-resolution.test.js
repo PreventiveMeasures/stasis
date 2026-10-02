@@ -212,14 +212,14 @@ console.log('require', require('dual').which)
     t.assert.equal(run.status, 0, run.stderr)
     t.assert.equal(run.stdout, plain.stdout, 'the observing loader must not change behavior')
     const runLock = flattenLock(join(dirs.run, 'stasis.lock.json'))
-    t.assert.deepEqual(
+    t.assert.deepStrictEqual(
       new Set(Object.values(runLock.edges.get('main.mjs :: dual'))),
       new Set(['node_modules/dual/esm.mjs', 'node_modules/dual/cjs.cjs']),
     )
 
     t.assert.equal((await stasisBundle(dirs.bundle, entry)).status, 0)
     const staticLock = flattenLock(join(dirs.bundle, 'static.lock.json'))
-    t.assert.deepEqual(staticLock.edges.get('main.mjs :: dual'), {
+    t.assert.deepStrictEqual(staticLock.edges.get('main.mjs :: dual'), {
       [IMPORT_KEY]: 'node_modules/dual/esm.mjs',
       [REQUIRE_KEY]: 'node_modules/dual/cjs.cjs',
     })
@@ -253,7 +253,7 @@ import('dual').then((m) => {
 
     t.assert.equal((await stasisBundle(dirs.bundle, entry)).status, 0)
     const staticLock = flattenLock(join(dirs.bundle, 'static.lock.json'))
-    t.assert.deepEqual(staticLock.edges.get('main.cjs :: dual'), {
+    t.assert.deepStrictEqual(staticLock.edges.get('main.cjs :: dual'), {
       [IMPORT_KEY]: 'node_modules/dual/esm.mjs',
       [REQUIRE_KEY]: 'node_modules/dual/cjs.cjs',
     })

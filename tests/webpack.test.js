@@ -84,11 +84,11 @@ describe('StasisWebpack (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.config, { scope: 'full' })
-    t.assert.deepEqual(lock.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(lock.config, { scope: 'full' })
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.js'])
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
     t.assert.ok(lock.sources['.'].files['src/hello.js'].startsWith('sha512-'))
-    t.assert.deepEqual(lock.modules, {})
+    t.assert.deepStrictEqual(lock.modules, {})
   }))
 
   test('lock=frozen succeeds with the committed lockfile', withTmp(async (t, tmp) => {
@@ -545,7 +545,7 @@ describe('StasisWebpack (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const r = await run('src/entry.js', { cwd: tmp, env: withOpts({ lock: 'add' }) })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.js'])
     t.assert.ok(lock.sources['.'].files['src/hello.js'].startsWith('sha512-'))
   }))
 

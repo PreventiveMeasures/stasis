@@ -44,7 +44,7 @@ test('Lockfile omits `executable` when nothing is executable and emits a sorted 
   ])
   const plain = new Lockfile({ config: { scope: 'full' }, entries: new Set(), modules: modules(), imports: new Map(), formats: new Map() })
   t.assert.ok(!Object.hasOwn(JSON.parse(plain.serialize()), 'executable'))
-  t.assert.deepEqual([...plain.executable], [])
+  t.assert.deepStrictEqual([...plain.executable], [])
 
   const marked = new Lockfile({
     config: { scope: 'full' },
@@ -56,11 +56,11 @@ test('Lockfile omits `executable` when nothing is executable and emits a sorted 
     executable: new Set(['src/index.js', 'run.sh']),
   })
   const json = JSON.parse(marked.serialize())
-  t.assert.deepEqual(json.executable, ['run.sh', 'src/index.js'])
+  t.assert.deepStrictEqual(json.executable, ['run.sh', 'src/index.js'])
   // Last key, after the attestation maps.
   t.assert.equal(Object.keys(json).at(-1), 'executable')
 
-  t.assert.deepEqual([...Lockfile.parse(marked.serialize()).executable].toSorted(), ['run.sh', 'src/index.js'])
+  t.assert.deepStrictEqual([...Lockfile.parse(marked.serialize()).executable].toSorted(), ['run.sh', 'src/index.js'])
 })
 
 test('Bundle omits `executable` when empty and round-trips it when set', (t) => {
@@ -76,8 +76,8 @@ test('Bundle omits `executable` when empty and round-trips it when set', (t) => 
     modules: modules(),
     executable: new Set(['run.sh']),
   })
-  t.assert.deepEqual(JSON.parse(marked.serialize()).executable, ['run.sh'])
-  t.assert.deepEqual([...Bundle.parse(marked.serialize()).executable], ['run.sh'])
+  t.assert.deepStrictEqual(JSON.parse(marked.serialize()).executable, ['run.sh'])
+  t.assert.deepStrictEqual([...Bundle.parse(marked.serialize()).executable], ['run.sh'])
 })
 
 // ── parse: fail closed on an entry that names no file ────────────────────────
@@ -131,7 +131,7 @@ test('Lockfile.parse refuses an `executable` entry that names no attested file',
     formats: { 'run.sh': 'shell', 'probed.sh': 'stat:file' },
     executable,
   })
-  t.assert.deepEqual([...Lockfile.parse(raw(['run.sh'])).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...Lockfile.parse(raw(['run.sh'])).executable], ['run.sh'])
   t.assert.throws(() => Lockfile.parse(raw(['probed.sh'])), /names no file the lockfile records/)
   t.assert.throws(() => Lockfile.parse(raw(['/etc/passwd'])), /escapes the root/)
   // Duplicates fail closed like every sibling parse rule, rather than silently collapsing and
@@ -168,7 +168,7 @@ test('Bundle.parse ignores an `executable` list on a legacy v0 bundle', (t) => {
     imports: {},
     executable: ['run.sh'],
   })
-  t.assert.deepEqual([...Bundle.parse(raw).executable], [])
+  t.assert.deepStrictEqual([...Bundle.parse(raw).executable], [])
 })
 
 // ── the two invariants, enforced on BOTH sides ───────────────────────────────
@@ -247,8 +247,8 @@ test('a non-full-scope artifact may list only node_modules executables', (t) => 
   t.assert.throws(() => lock(['run.sh']).serialize(),
     /is outside node_modules, which a 'node_modules'-scope lockfile does not record/)
   const ok = lock(['node_modules/dep/cli.js']).serialize()
-  t.assert.deepEqual(JSON.parse(ok).executable, ['node_modules/dep/cli.js'])
-  t.assert.deepEqual([...Lockfile.parse(ok).executable], ['node_modules/dep/cli.js'])
+  t.assert.deepStrictEqual(JSON.parse(ok).executable, ['node_modules/dep/cli.js'])
+  t.assert.deepStrictEqual([...Lockfile.parse(ok).executable], ['node_modules/dep/cli.js'])
 
   // The read side states the same rule directly, so a hand-edited artifact gets the same diagnosis
   // rather than a bare "names no file" (which is also true, but says less).
@@ -276,9 +276,9 @@ test('merge lets the incoming artifact clear a bit for a file it records', (t) =
   })
   // `stasis add` / `stasis bundle --add` re-read the file and put the fresh build on the RIGHT. A
   // plain union would resurrect the stale bit and `extract` would keep granting +x forever.
-  t.assert.deepEqual([...bundle(['run.sh']).merge(bundle([])).executable], [])
+  t.assert.deepStrictEqual([...bundle(['run.sh']).merge(bundle([])).executable], [])
   // ...and the reverse still grants it.
-  t.assert.deepEqual([...bundle([]).merge(bundle(['run.sh'])).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...bundle([]).merge(bundle(['run.sh'])).executable], ['run.sh'])
 
   const lock = (executable) => new Lockfile({
     config: { scope: 'full' },
@@ -288,7 +288,7 @@ test('merge lets the incoming artifact clear a bit for a file it records', (t) =
     formats: new Map([['run.sh', 'shell']]),
     executable: new Set(executable),
   })
-  t.assert.deepEqual([...lock(['run.sh']).merge(lock([])).executable], [])
+  t.assert.deepStrictEqual([...lock(['run.sh']).merge(lock([])).executable], [])
 })
 
 test('merge unions the executable lists of both artifacts', (t) => {
@@ -300,9 +300,9 @@ test('merge unions the executable lists of both artifacts', (t) => {
     executable: new Set(executable),
   })
   const merged = bundle('a.sh', '#!/bin/sh\n', ['a.sh']).merge(bundle('b.sh', '#!/bin/sh\n', []))
-  t.assert.deepEqual([...merged.executable], ['a.sh'])
+  t.assert.deepStrictEqual([...merged.executable], ['a.sh'])
   // And the merged artifact still parses -- both files are carried, so the entry stays valid.
-  t.assert.deepEqual([...Bundle.parse(merged.serialize()).executable], ['a.sh'])
+  t.assert.deepStrictEqual([...Bundle.parse(merged.serialize()).executable], ['a.sh'])
 
   const lock = (rel, executable) => new Lockfile({
     config: { scope: 'full' },
@@ -312,7 +312,7 @@ test('merge unions the executable lists of both artifacts', (t) => {
     formats: new Map([[rel, 'shell']]),
     executable: new Set(executable),
   })
-  t.assert.deepEqual([...lock('a.sh', ['a.sh']).merge(lock('b.sh', ['b.sh'])).executable].toSorted(), ['a.sh', 'b.sh'])
+  t.assert.deepStrictEqual([...lock('a.sh', ['a.sh']).merge(lock('b.sh', ['b.sh'])).executable].toSorted(), ['a.sh', 'b.sh'])
 })
 
 // ── State capture ────────────────────────────────────────────────────────────
@@ -331,9 +331,9 @@ test('State records the execute bit of a captured file into both the bundle and 
   state.addFile(pathToFileURL(join(tmp, 'plain.cjs')).toString(), { format: 'commonjs', isEntry: true })
   state.addFile(pathToFileURL(join(tmp, 'run.sh')).toString(), { format: 'shell' })
 
-  t.assert.deepEqual([...state.executable], ['run.sh'])
-  t.assert.deepEqual([...state.sourceBundle.executable], ['run.sh'])
-  t.assert.deepEqual(JSON.parse(state.lockData).executable, ['run.sh'])
+  t.assert.deepStrictEqual([...state.executable], ['run.sh'])
+  t.assert.deepStrictEqual([...state.sourceBundle.executable], ['run.sh'])
+  t.assert.deepStrictEqual(JSON.parse(state.lockData).executable, ['run.sh'])
 }))
 
 test('State drops a stale execute bit once the file loses it on disk', posixOnly, withTmp('exec-restat')((t, tmp) => {
@@ -343,16 +343,16 @@ test('State drops a stale execute bit once the file loses it on disk', posixOnly
   const first = new State(tmp, { scope: 'full', bundle: 'add' })
   first.addFile(pathToFileURL(join(tmp, 'run.sh')).toString(), { format: 'shell', isEntry: true })
   first.write()
-  t.assert.deepEqual(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable, ['run.sh'])
-  t.assert.deepEqual(decode(join(tmp, 'stasis.code.br')).executable, new Set(['run.sh']))
+  t.assert.deepStrictEqual(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable, ['run.sh'])
+  t.assert.deepStrictEqual(decode(join(tmp, 'stasis.code.br')).executable, new Set(['run.sh']))
 
   // chmod -x, then re-capture with lock=add: the bytes are unchanged, so this is not a conflict --
   // disk simply wins, and the stale entry is gone from both artifacts.
   chmodSync(join(tmp, 'run.sh'), 0o644)
   const second = new State(tmp, { scope: 'full', bundle: 'add' })
-  t.assert.deepEqual([...second.executable], ['run.sh'], 'seeded from the artifacts on disk')
+  t.assert.deepStrictEqual([...second.executable], ['run.sh'], 'seeded from the artifacts on disk')
   second.addFile(pathToFileURL(join(tmp, 'run.sh')).toString(), { format: 'shell', isEntry: true })
-  t.assert.deepEqual([...second.executable], [])
+  t.assert.deepStrictEqual([...second.executable], [])
   t.assert.ok(!Object.hasOwn(JSON.parse(second.lockData), 'executable'))
   t.assert.ok(!Object.hasOwn(JSON.parse(second.sourceData), 'executable'))
 }))
@@ -367,7 +367,7 @@ test('a bundle=load State serves the executable list it absorbed', posixOnly, wi
   // assertion would pass even if the bundle-absorb path recorded nothing. This isolates the bundle.
   rmSync(join(tmp, 'stasis.lock.json'))
   const load = new State(tmp, { scope: 'full', bundle: 'load', lock: 'ignore' })
-  t.assert.deepEqual([...load.executable], ['run.sh'])
+  t.assert.deepStrictEqual([...load.executable], ['run.sh'])
 }))
 
 test('a split bundle layout lists only its own executables in each half', posixOnly, withTmp('exec-split')((t, tmp) => {
@@ -390,14 +390,14 @@ test('a split bundle layout lists only its own executables in each half', posixO
 
   // The code half claims only the script, the resources half only the binary -- neither lists a
   // file it doesn't carry (which Bundle.parse would refuse).
-  t.assert.deepEqual([...state.codeBundle.executable], ['run.sh'])
-  t.assert.deepEqual([...state.resourcesBundle.executable], ['tool.bin'])
+  t.assert.deepStrictEqual([...state.codeBundle.executable], ['run.sh'])
+  t.assert.deepStrictEqual([...state.resourcesBundle.executable], ['tool.bin'])
   // The single lockfile attests both.
-  t.assert.deepEqual(JSON.parse(state.lockData).executable, ['run.sh', 'tool.bin'])
+  t.assert.deepStrictEqual(JSON.parse(state.lockData).executable, ['run.sh', 'tool.bin'])
 
   state.write()
-  t.assert.deepEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
-  t.assert.deepEqual([...decode(join(tmp, 'res.br')).executable], ['tool.bin'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'res.br')).executable], ['tool.bin'])
 }))
 
 test('a `directory` capture drops an execute bit a prior content record left on that path', posixOnly, withTmp('exec-dir')((t, tmp) => {
@@ -413,13 +413,13 @@ test('a `directory` capture drops an execute bit a prior content record left on 
   state.executable.add('src')
   state.addFsDir(pathToFileURL(join(tmp, 'src')).toString(), ['a.js'])
   t.assert.equal(state.formats.get('src'), 'directory')
-  t.assert.deepEqual([...state.executable], [])
-  t.assert.deepEqual([...state.sourceBundle.executable], [])
+  t.assert.deepStrictEqual([...state.executable], [])
+  t.assert.deepStrictEqual([...state.sourceBundle.executable], [])
 
   // Belt and braces: even if a stale entry survived on the live set, the narrowing that feeds both
   // artifacts drops a `directory`-format path, so neither can emit one its own parser would refuse.
   state.executable.add('src')
-  t.assert.deepEqual([...state.sourceBundle.executable], [])
+  t.assert.deepStrictEqual([...state.sourceBundle.executable], [])
   t.assert.ok(!Object.hasOwn(JSON.parse(state.lockData), 'executable'))
 }))
 
@@ -439,8 +439,8 @@ test('scope=node_modules never emits an executable the serialized artifact drops
   state.addFile(pathToFileURL(join(tmp, 'node_modules', 'dep', 'cli.js')).toString(), { format: 'commonjs' })
 
   // The workspace script is dropped with its bucket; the dependency's CLI survives in both.
-  t.assert.deepEqual(JSON.parse(state.lockData).executable, ['node_modules/dep/cli.js'])
-  t.assert.deepEqual(JSON.parse(state.sourceData).executable, ['node_modules/dep/cli.js'])
+  t.assert.deepStrictEqual(JSON.parse(state.lockData).executable, ['node_modules/dep/cli.js'])
+  t.assert.deepStrictEqual(JSON.parse(state.sourceData).executable, ['node_modules/dep/cli.js'])
   // Both artifacts round-trip through their own parsers -- the property the bug violated.
   t.assert.doesNotThrow(() => Lockfile.parse(state.lockData))
   t.assert.doesNotThrow(() => Bundle.parse(state.sourceData))
@@ -466,14 +466,14 @@ test('a sidecar re-read clears the execute bit the parent seeded from the lockfi
   }
 
   const first = capture('side-1.br')
-  t.assert.deepEqual(JSON.parse(first.parent.lockData).executable, ['run.sh'])
+  t.assert.deepStrictEqual(JSON.parse(first.parent.lockData).executable, ['run.sh'])
   first.parent.write()
   first.sidecar.write()
 
   // The bytes are unchanged, so nothing else about the re-capture differs.
   chmodSync(join(tmp, 'run.sh'), 0o644)
   const second = capture('side-2.br')
-  t.assert.deepEqual([...second.sidecar.executable], [], 'the sidecar that re-read it drops the bit')
+  t.assert.deepStrictEqual([...second.sidecar.executable], [], 'the sidecar that re-read it drops the bit')
   t.assert.ok(!Object.hasOwn(JSON.parse(second.parent.lockData), 'executable'),
     'and the lockfile the parent writes drops it too')
 }))
@@ -495,9 +495,9 @@ test('a re-read clears the execute bit across the whole sidecar family', posixOn
   // child->parent clear alone could not handle.
   chmodSync(join(tmp, 'run.sh'), 0o644)
   parent.addFile(url, { format: 'shell', isEntry: true })
-  t.assert.deepEqual([...parent.executable], [])
-  t.assert.deepEqual([...a.executable], [], 'sidecar A drops it too')
-  t.assert.deepEqual([...b.executable], [], 'and so does sibling B')
+  t.assert.deepStrictEqual([...parent.executable], [])
+  t.assert.deepStrictEqual([...a.executable], [], 'sidecar A drops it too')
+  t.assert.deepStrictEqual([...b.executable], [], 'and so does sibling B')
   t.assert.ok(!Object.hasOwn(JSON.parse(parent.lockData), 'executable'))
 }))
 
@@ -512,7 +512,7 @@ test('mergeShard revokes a bit the child observed as gone, not just grants', pos
   const first = new State(tmp, { scope: 'full', lock: 'add', bundle: 'ignore', childProcess: true })
   first.addFile(url, { format: 'shell', isEntry: true })
   first.write()
-  t.assert.deepEqual(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable, ['run.sh'])
+  t.assert.deepStrictEqual(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable, ['run.sh'])
 
   chmodSync(join(tmp, 'run.sh'), 0o644)
   // The child re-reads it and correctly records no bit.
@@ -523,9 +523,9 @@ test('mergeShard revokes a bit the child observed as gone, not just grants', pos
 
   // The root never touches run.sh itself; only the merge can carry the refutation.
   const root = new State(tmp, { scope: 'full', lock: 'add', bundle: 'ignore', childProcess: true })
-  t.assert.deepEqual([...root.executable], ['run.sh'], 'seeded from the lockfile')
+  t.assert.deepStrictEqual([...root.executable], ['run.sh'], 'seeded from the lockfile')
   root.mergeShard(shard)
-  t.assert.deepEqual([...root.executable], [])
+  t.assert.deepStrictEqual([...root.executable], [])
   t.assert.ok(!Object.hasOwn(JSON.parse(root.lockData), 'executable'))
 }))
 
@@ -538,8 +538,8 @@ test('the bash bundler records the execute bit of every script it walks', posixO
   chmodSync(join(tmp, 'main.sh'), 0o755) // the entry is runnable, the sourced library is not
 
   const bundle = await buildBashBundle({ cwd: tmp, entries: ['main.sh'] })
-  t.assert.deepEqual([...bundle.executable], ['main.sh'])
-  t.assert.deepEqual([...Bundle.parse(bundle.serialize()).executable], ['main.sh'])
+  t.assert.deepStrictEqual([...bundle.executable], ['main.sh'])
+  t.assert.deepStrictEqual([...Bundle.parse(bundle.serialize()).executable], ['main.sh'])
 }))
 
 test('`stasis bundle --lockfile` writes the same executable list to both artifacts', posixOnly, withTmp('exec-cmd')(async (t, tmp) => {
@@ -558,8 +558,8 @@ test('`stasis bundle --lockfile` writes the same executable list to both artifac
   })
   const bundle = decode(join(tmp, 'out.br'))
   const lock = Lockfile.parse(readFileSync(join(tmp, 'out.lock.json'), 'utf8'))
-  t.assert.deepEqual([...bundle.executable], ['cli.mjs'])
-  t.assert.deepEqual([...lock.executable], ['cli.mjs'])
+  t.assert.deepStrictEqual([...bundle.executable], ['cli.mjs'])
+  t.assert.deepStrictEqual([...lock.executable], ['cli.mjs'])
   // Every listed file is one the artifacts actually carry (the parses above already enforce it).
   for (const file of bundle.executable) t.assert.ok(bundle.sources.has(file), `${file} is carried`)
 }))
@@ -571,7 +571,7 @@ test('bundleFromLockfile carries the lockfile executable list into the rebuilt b
   state.write()
 
   const lock = Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))
-  t.assert.deepEqual([...bundleFromLockfile(lock, { root: tmp }).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...bundleFromLockfile(lock, { root: tmp }).executable], ['run.sh'])
 }))
 
 // ── stasis add ───────────────────────────────────────────────────────────────
@@ -589,8 +589,8 @@ test('`stasis add` records the execute bit into the bundle and the companion loc
 
   addCommand({ cwd: tmp, entries: ['run.sh', 'lib.sh'] })
 
-  t.assert.deepEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
-  t.assert.deepEqual([...Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable], ['run.sh'])
 }))
 
 // `stasis-core add` with split targets: each half must list only its own executables, since neither
@@ -607,8 +607,8 @@ test('`stasis add` with split targets records each half’s own executables', po
   chmodSync(join(tmp, 'tool.bin'), 0o755)
 
   addCommand({ cwd: tmp, entries: ['run.sh', 'lib.sh', 'tool.bin'] })
-  t.assert.deepEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
-  t.assert.deepEqual([...decode(join(tmp, 'res.br')).executable], ['tool.bin'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'res.br')).executable], ['tool.bin'])
 }))
 
 test('a `stasis add` re-run clears a bit the file lost on disk', posixOnly, withTmp('exec-add-clear')((t, tmp) => {
@@ -621,14 +621,14 @@ test('a `stasis add` re-run clears a bit the file lost on disk', posixOnly, with
   }).serialize())
 
   addCommand({ cwd: tmp, entries: ['run.sh'] })
-  t.assert.deepEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'code.br')).executable], ['run.sh'])
 
   // Bytes unchanged, so the merge into the on-disk artifact raises no conflict -- the stale bit has
   // to lose to the fresh observation, or `add` could only ever grant +x and never revoke it.
   chmodSync(join(tmp, 'run.sh'), 0o644)
   addCommand({ cwd: tmp, entries: ['run.sh'] })
-  t.assert.deepEqual([...decode(join(tmp, 'code.br')).executable], [])
-  t.assert.deepEqual([...Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable], [])
+  t.assert.deepStrictEqual([...decode(join(tmp, 'code.br')).executable], [])
+  t.assert.deepStrictEqual([...Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).executable], [])
 }))
 
 // ── diff ─────────────────────────────────────────────────────────────────────
@@ -645,13 +645,13 @@ test('stasis diff reports an execute-bit change between otherwise identical arti
   const diff = diffArtifacts({ artifact: lock([]), kind: 'lockfile' }, { artifact: lock(['run.sh']), kind: 'lockfile' })
   // Every digest matches, so without the executable facet this reads as "no differences" -- yet the
   // two artifacts extract to trees that differ in whether run.sh is runnable.
-  t.assert.deepEqual(diff.files, { added: [], removed: [], differing: [] })
-  t.assert.deepEqual(diff.executable, { added: ['run.sh'], removed: [] })
+  t.assert.deepStrictEqual(diff.files, { added: [], removed: [], differing: [] })
+  t.assert.deepStrictEqual(diff.executable, { added: ['run.sh'], removed: [] })
   t.assert.ok(hasDifferences(diff))
   t.assert.match(formatDiffStat(diff), /Executable: 1 added, 0 removed/u)
 
   const reverse = diffArtifacts({ artifact: lock(['run.sh']), kind: 'lockfile' }, { artifact: lock([]), kind: 'lockfile' })
-  t.assert.deepEqual(reverse.executable, { added: [], removed: ['run.sh'] })
+  t.assert.deepStrictEqual(reverse.executable, { added: [], removed: ['run.sh'] })
   t.assert.ok(hasDifferences(reverse))
 
   // Identical artifacts stay clean, and the section is omitted rather than printing a zero row.
@@ -690,8 +690,8 @@ test('extract chmods the files the bundle marks executable and leaves the rest a
 
   // The derived lockfile beside the tree agrees with the bundle.
   const lock = Lockfile.parse(readFileSync(join(out, 'stasis.lock.json'), 'utf8'))
-  t.assert.deepEqual([...lock.executable], ['main.sh'])
-  t.assert.deepEqual([...lockfileFromBundle(decode(bundlePath)).executable], ['main.sh'])
+  t.assert.deepStrictEqual([...lock.executable], ['main.sh'])
+  t.assert.deepStrictEqual([...lockfileFromBundle(decode(bundlePath)).executable], ['main.sh'])
 }))
 
 test('extract of a bundle with nothing executable chmods nothing', posixOnly, withTmp('exec-extract-none')(async (t, tmp) => {
@@ -702,7 +702,7 @@ test('extract of a bundle with nothing executable chmods nothing', posixOnly, wi
 
   const bundlePath = join(tmp, 'out.br')
   await bundleCommand({ cwd: src, entries: ['main.sh'], output: bundlePath })
-  t.assert.deepEqual([...decode(bundlePath).executable], [])
+  t.assert.deepStrictEqual([...decode(bundlePath).executable], [])
 
   const out = join(tmp, 'out')
   t.assert.equal(extractCommand({ cwd: tmp, bundleFile: bundlePath, output: out }).executable, 0)
@@ -810,7 +810,7 @@ test('extract ignores an `executable` list on a legacy v0 bundle', posixOnly, wi
     imports: {},
     executable: ['run.sh'],
   })))
-  t.assert.deepEqual([...decode(bundlePath).executable], [])
+  t.assert.deepStrictEqual([...decode(bundlePath).executable], [])
   const out = join(tmp, 'out')
   t.assert.equal(extractCommand({ cwd: tmp, bundleFile: bundlePath, output: out }).executable, 0)
   t.assert.ok(!isExec(join(out, 'run.sh')))

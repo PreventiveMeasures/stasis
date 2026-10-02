@@ -60,7 +60,7 @@ test('a Vfs host follows the store\'s symlinks, reports stats as fs does, and re
   t.assert.equal(host.stat('/node_modules/missing'), null)
   t.assert.equal(host.stat('/node_modules/dep/r.js/below-a-file'), null)
   t.assert.throws(() => host.realpath('/node_modules/loop/x'), { code: 'ELOOP' })
-  t.assert.deepEqual(host.readdir('/node_modules').map((d) => `${d.name}${d.isSymbolicLink() ? '@' : '/'}`), ['.pnpm/', 'dep@', 'loop@', 'loop2@'])
+  t.assert.deepStrictEqual(host.readdir('/node_modules').map((d) => `${d.name}${d.isSymbolicLink() ? '@' : '/'}`), ['.pnpm/', 'dep@', 'loop@', 'loop2@'])
   t.assert.throws(() => host.readFile('/node_modules/dep'), { code: 'EISDIR' })
   t.assert.equal(host.findPackageJSON('/node_modules/dep/r.js'), `${store}/dep@1.0.0/node_modules/dep/package.json`, 'from the file\'s real path, as Node\'s')
   t.assert.equal(host.findPackageJSON('/src/entry.js'), '/package.json')
@@ -106,14 +106,14 @@ test('the host loadNodeModules gives serves each pnpm project\'s node_modules fr
   })
   const { root, projects, host } = await loadNodeModules({ vfs, packageManager: 'pnpm', cwd: '/p/src' })
   t.assert.equal(root, '/p')
-  t.assert.deepEqual([...projects], ['.', 'packages/ws'])
+  t.assert.deepStrictEqual([...projects], ['.', 'packages/ws'])
   t.assert.equal(host.stat('/p/node_modules/installed/index.js'), null, 'what is installed in the project is invisible')
   t.assert.equal(host.stat('/p/packages/ws/node_modules/wsdep/index.js'), null, 'in every project')
   t.assert.equal(host.stat('/p/src/node_modules/vendored/index.js').isFile(), true, 'a node_modules pnpm never manages is the project\'s')
   t.assert.equal(host.stat('/node_modules/above/index.js'), null, 'and one above the root is none')
-  t.assert.deepEqual(host.readdir('/').map((d) => d.name), ['p'])
-  t.assert.deepEqual(host.readdir('/p').map((d) => d.name), ['node_modules', 'package.json', 'packages', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'src', 'vendor'], 'the project lists the tree\'s node_modules')
-  t.assert.deepEqual(host.readdir('/p/node_modules').map((d) => d.name), ['.pnpm', 'base', 'ws'])
+  t.assert.deepStrictEqual(host.readdir('/').map((d) => d.name), ['p'])
+  t.assert.deepStrictEqual(host.readdir('/p').map((d) => d.name), ['node_modules', 'package.json', 'packages', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'src', 'vendor'], 'the project lists the tree\'s node_modules')
+  t.assert.deepStrictEqual(host.readdir('/p/node_modules').map((d) => d.name), ['.pnpm', 'base', 'ws'])
   t.assert.equal(host.realpath('/p/node_modules/ws/lib.js'), '/p/packages/ws/lib.js', 'a link out of the tree lands in the project')
   t.assert.equal(host.resolve('/p/src/entry.js', 'ws'), '/p/packages/ws/lib.js')
   t.assert.equal(host.stat('/p/package.json/'), null)
@@ -160,7 +160,7 @@ test('with yarn1, the installed node_modules of the root and of each workspace a
   t.assert.equal(host.stat('/node_modules/installed/index.js'), null)
   t.assert.equal(host.stat('/packages/b/node_modules/a/index.js'), null)
   t.assert.equal(host.stat('/src/node_modules/vendored/index.js').isFile(), true)
-  t.assert.deepEqual(host.readdir('/node_modules').map((d) => `${d.name}${d.isSymbolicLink() ? '@' : '/'}`), ['a@', 'b@'])
+  t.assert.deepStrictEqual(host.readdir('/node_modules').map((d) => `${d.name}${d.isSymbolicLink() ? '@' : '/'}`), ['a@', 'b@'])
   t.assert.equal(host.resolve('/packages/b/index.js', 'a'), '/packages/a/index.js')
 })
 
@@ -202,9 +202,9 @@ test('a tsconfig extends a base in node_modules through the tree, never the one 
   })
   const { host } = await loadNodeModules({ vfs, packageManager: 'pnpm', cwd: '/p' })
   const paths = loadTsconfigPaths('/p/tsconfig.json', host)
-  t.assert.deepEqual(paths.matchPaths('@virtual/a'), ['/p/vendor/base/virtual/a'])
-  t.assert.deepEqual(paths.matchPaths('@installed/a'), [])
-  t.assert.deepEqual(loadTsconfigPaths('/p/tsconfig.json', createVfsHost(vfs)).matchPaths('@installed/a'), ['/p/node_modules/base/installed/a'], 'the project\'s Vfs alone holds the installed one')
+  t.assert.deepStrictEqual(paths.matchPaths('@virtual/a'), ['/p/vendor/base/virtual/a'])
+  t.assert.deepStrictEqual(paths.matchPaths('@installed/a'), [])
+  t.assert.deepStrictEqual(loadTsconfigPaths('/p/tsconfig.json', createVfsHost(vfs)).matchPaths('@installed/a'), ['/p/node_modules/base/installed/a'], 'the project\'s Vfs alone holds the installed one')
 })
 
 test('a package.json that is there but can\'t be read is refused as Node refuses it, and one that leads nowhere is none, on disk and in a Vfs', withTmp((t, tmp) => {
@@ -236,7 +236,7 @@ test('a package.json that is there but can\'t be read is refused as Node refuses
   // to each.
   const theirs = Object.fromEntries(['loop', 'dirloop', 'dangling'].map((dir) => [dir, outcome(() => node.resolve(`./${dir}`))]))
   const unreadable = theirs.loop === 'ERR_INVALID_PACKAGE_CONFIG' ? () => 'ERR_INVALID_PACKAGE_CONFIG' : (dir) => join(tmp, dir, 'index.js')
-  t.assert.deepEqual(theirs, { loop: unreadable('loop'), dirloop: unreadable('dirloop'), dangling: join(tmp, 'dangling', 'index.js') }, `Node ${process.version}`)
+  t.assert.deepStrictEqual(theirs, { loop: unreadable('loop'), dirloop: unreadable('dirloop'), dangling: join(tmp, 'dangling', 'index.js') }, `Node ${process.version}`)
   t.assert.equal(resolve('loop'), 'ERR_INVALID_PACKAGE_CONFIG')
   t.assert.equal(resolve('dirloop'), 'ERR_INVALID_PACKAGE_CONFIG')
   t.assert.equal(resolve('dangling'), theirs.dangling)
@@ -344,7 +344,7 @@ test('a Solidity bundle read through a Vfs host holds a dependency to its own fi
     await t.assert.rejects(build, (err) => err.message.includes('refused: lib/evil/src/Evil.sol is a link out of the dependency lib/evil'))
     vfs.unlink('/lib/evil/src/Evil.sol')
     vfs.writeFile('/lib/evil/src/Evil.sol', 'contract Evil {}\n')
-    t.assert.deepEqual([...(await build()).sources.keys()].toSorted(), ['lib/evil/src/E.sol', 'lib/evil/src/Evil.sol', 'src/A.sol'])
+    t.assert.deepStrictEqual([...(await build()).sources.keys()].toSorted(), ['lib/evil/src/E.sol', 'lib/evil/src/Evil.sol', 'src/A.sol'])
   } finally {
     console.warn = warn
   }

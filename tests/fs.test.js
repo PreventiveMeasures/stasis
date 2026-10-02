@@ -159,7 +159,7 @@ test('addFsDir stores a sorted JSON listing as a directory payload, integrity ov
   t.assert.equal(state.resources.get('assets'), '["blob.bin","data.json","message.txt"]')
   t.assert.match(state.hashes.get('assets'), /^sha512-/)
   // getFsDir round-trips the listing (and re-asserts the hash via getFile).
-  t.assert.deepEqual(state.getFsDir(fileURL(dir, 'assets')), ['blob.bin', 'data.json', 'message.txt'])
+  t.assert.deepStrictEqual(state.getFsDir(fileURL(dir, 'assets')), ['blob.bin', 'data.json', 'message.txt'])
 }))
 
 test('addFsDir is idempotent for an identical listing regardless of input order', withProject((t, dir) => {
@@ -174,7 +174,7 @@ test('getFsFile / getFsDir distinguish files from directories and miss cleanly',
   state.addFsDir(fileURL(dir, 'assets'), ['message.txt', 'data.json', 'blob.bin'])
 
   // A captured file yields its raw bytes as a Buffer.
-  t.assert.deepEqual(state.getFsFile(fileURL(dir, 'assets', 'message.txt')), Buffer.from('hello\n'))
+  t.assert.deepStrictEqual(state.getFsFile(fileURL(dir, 'assets', 'message.txt')), Buffer.from('hello\n'))
   // readFileSync of a captured directory must not return the listing.
   t.assert.equal(state.getFsFile(fileURL(dir, 'assets')), undefined)
   // readdirSync of a captured file must not return a listing.
@@ -194,9 +194,9 @@ test('fs captures round-trip through a written bundle into a load-mode State', w
 
   // Reload from the persisted lockfile + bundle, frozen so getFile re-verifies hashes.
   const load = new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile })
-  t.assert.deepEqual(load.getFsFile(fileURL(dir, 'assets', 'message.txt')), Buffer.from('hello\n'))
-  t.assert.deepEqual(load.getFsFile(fileURL(dir, 'assets', 'blob.bin')), BINARY)
-  t.assert.deepEqual(load.getFsDir(fileURL(dir, 'assets')), ['blob.bin', 'data.json', 'message.txt'])
+  t.assert.deepStrictEqual(load.getFsFile(fileURL(dir, 'assets', 'message.txt')), Buffer.from('hello\n'))
+  t.assert.deepStrictEqual(load.getFsFile(fileURL(dir, 'assets', 'blob.bin')), BINARY)
+  t.assert.deepStrictEqual(load.getFsDir(fileURL(dir, 'assets')), ['blob.bin', 'data.json', 'message.txt'])
   t.assert.equal(load.formats.get('assets'), 'directory')
 }))
 
@@ -231,7 +231,7 @@ test('addFsDir resolves the bucket for a directory captured AT a package/project
   t.assert.equal(state.formats.get('.'), 'directory')
   t.assert.equal(state.resources.get('.'), '["assets","package.json"]')
   t.assert.match(state.hashes.get('.'), /^sha512-/)
-  t.assert.deepEqual(state.getFsDir(pathToFileURL(dir).toString()), ['assets', 'package.json'])
+  t.assert.deepStrictEqual(state.getFsDir(pathToFileURL(dir).toString()), ['assets', 'package.json'])
   t.assert.equal(state.getFsStat(pathToFileURL(dir).toString()), 'directory')
 }))
 
@@ -256,7 +256,7 @@ test('a project-root readdir capture round-trips through a written lockfile + bu
   const load = new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile })
   t.assert.equal(load.hashes.get('.'), lock.sources['.'].files[''])
   t.assert.equal(load.formats.get('.'), 'directory')
-  t.assert.deepEqual(load.getFsDir(rootURL), ['assets', 'package.json'])
+  t.assert.deepStrictEqual(load.getFsDir(rootURL), ['assets', 'package.json'])
   t.assert.equal(load.getFsStat(rootURL), 'directory')
   t.assert.equal(load.getFsFile(rootURL), undefined, 'a readFileSync of the root must not serve the listing')
 }))
@@ -283,7 +283,7 @@ test('legacy artifacts keying the root listing at \'\' are normalized to "." on 
 
   const load = new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile })
   t.assert.equal(load.formats.get('.'), 'directory') // normalized on parse
-  t.assert.deepEqual(load.getFsDir(rootURL), ['assets', 'package.json'])
+  t.assert.deepStrictEqual(load.getFsDir(rootURL), ['assets', 'package.json'])
   t.assert.equal(load.getFsStat(rootURL), 'directory')
 }))
 
@@ -300,7 +300,7 @@ test('addFsFile records a type-less .js without a format so the loader stays aut
   state.addFsFile(url, Buffer.from('export const x = 1\n')) // fs read first (the harder order)
   t.assert.equal(state.formats.get('lib.js'), undefined, 'no format imposed by the fs read')
   // getFsFile still serves the bytes even with no recorded format.
-  t.assert.deepEqual(state.getFsFile(url), Buffer.from('export const x = 1\n'))
+  t.assert.deepStrictEqual(state.getFsFile(url), Buffer.from('export const x = 1\n'))
   // The loader records the authoritative format afterwards -- must not conflict.
   t.assert.doesNotThrow(() => state.addFile(url, { source: 'export const x = 1\n', format: 'module' }))
   t.assert.equal(state.formats.get('lib.js'), 'module')
@@ -414,12 +414,12 @@ test('--fs serves a load-mode sidecar\'s graph file via the family (getFs*Family
 
   // main carries the non-graph read directly; the graph file is absent from main but served
   // through the family from the load-mode sidecar.
-  t.assert.deepEqual(loadParent.getFsFile(helperURL), Buffer.from('export const y = 2\n'))
+  t.assert.deepStrictEqual(loadParent.getFsFile(helperURL), Buffer.from('export const y = 2\n'))
   t.assert.equal(loadParent.getFsFile(libURL), undefined)            // not in main
   t.assert.equal(loadParent.getFsStat(libURL), undefined)            // ...nor stat-able from main alone
   t.assert.equal(loadParent.getFsStatFamily(libURL), 'file')          // but the family has it
-  t.assert.deepEqual(loadParent.getFsFileFamily(libURL), Buffer.from('export const x = 1\n'))
-  t.assert.deepEqual(loadSidecar.getFsFile(libURL), Buffer.from('export const x = 1\n')) // the sidecar itself carries it
+  t.assert.deepStrictEqual(loadParent.getFsFileFamily(libURL), Buffer.from('export const x = 1\n'))
+  t.assert.deepStrictEqual(loadSidecar.getFsFile(libURL), Buffer.from('export const x = 1\n')) // the sidecar itself carries it
 
   // attestedBySidecar is a CAPTURE concern (write-mode contributors); at load there are none.
   t.assert.equal(loadParent.attestedBySidecar(libURL), false)

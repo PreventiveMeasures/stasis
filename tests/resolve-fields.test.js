@@ -274,22 +274,22 @@ test('locatePackage matches the node_modules segment exactly, not a *-node_modul
 // --- TypeScript extension substitution (`typescript: true` / --typescript). ---
 
 test('typescriptSiblings maps JS output extensions to their TS sources (tsx only when probeable)', (t) => {
-  t.assert.deepEqual(typescriptSiblings('./x.js'), ['./x.ts'])
-  t.assert.deepEqual(typescriptSiblings('./x.js', { tsx: true }), ['./x.ts', './x.tsx'])
-  t.assert.deepEqual(typescriptSiblings('./x.jsx'), [])
-  t.assert.deepEqual(typescriptSiblings('./x.jsx', { tsx: true }), ['./x.tsx'])
-  t.assert.deepEqual(typescriptSiblings('./x.mjs'), ['./x.mts'])
-  t.assert.deepEqual(typescriptSiblings('./x.cjs'), ['./x.cts'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.js'), ['./x.ts'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.js', { tsx: true }), ['./x.ts', './x.tsx'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.jsx'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.jsx', { tsx: true }), ['./x.tsx'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.mjs'), ['./x.mts'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.cjs'), ['./x.cts'])
   // Not substitutable: extensionless, already-TS, .json, unknown extensions.
-  t.assert.deepEqual(typescriptSiblings('./x'), [])
-  t.assert.deepEqual(typescriptSiblings('./x.ts'), [])
-  t.assert.deepEqual(typescriptSiblings('./x.json'), [])
-  t.assert.deepEqual(typescriptSiblings('./x.service'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./x'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.ts'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.json'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.service'), [])
   // A dotfile has no extension (extname sees none), so nothing to substitute.
-  t.assert.deepEqual(typescriptSiblings('./.js'), [])
+  t.assert.deepStrictEqual(typescriptSiblings('./.js'), [])
   // A candidate spelling a type declaration IS returned -- every probe site refuses declarations
   // (the screen lives at probe time, once), pinned by the "never lands on a type declaration" tests.
-  t.assert.deepEqual(typescriptSiblings('./x.d.js'), ['./x.d.ts'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.d.js'), ['./x.d.ts'])
 })
 
 test('typescript: a missing x.js resolves to its x.ts sibling; an existing x.js wins', withTsTmp((t, tmp) => {

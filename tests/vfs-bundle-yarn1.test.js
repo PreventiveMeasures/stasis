@@ -27,8 +27,8 @@ test('yarn1: lays out, into a Vfs of its own, the yarn.lock of cwd or the neares
   t.assert.equal(tree.root, '/')
   t.assert.equal(tree.packageManager, 'yarn1')
   t.assert.equal(tree.packageManagerVersion, '1.22.22')
-  t.assert.deepEqual([...tree.projects], ['.'])
-  t.assert.deepEqual(tree.vfs.readdir('/'), ['node_modules'])
+  t.assert.deepStrictEqual([...tree.projects], ['.'])
+  t.assert.deepStrictEqual(tree.vfs.readdir('/'), ['node_modules'])
   t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
   t.assert.equal(tree.host.stat('/src/deep/a.js').isFile(), true)
 
@@ -52,18 +52,18 @@ test('yarn1: links each workspace, and cwd may be in any of them', async (t) => 
     'packages/b/index.js': 'require("a")\n',
   }
   const tree = await load({ vfs: project(files), cwd: '/packages/b' })
-  t.assert.deepEqual([...tree.projects], ['.', 'packages/a', 'packages/b'])
+  t.assert.deepStrictEqual([...tree.projects], ['.', 'packages/a', 'packages/b'])
   t.assert.equal(tree.stats.links, 2)
   t.assert.equal(tree.vfs.readlink('/node_modules/a'), '../packages/a')
   t.assert.equal(tree.host.resolve('/packages/b/index.js', 'a'), '/packages/a/index.js')
   // Below a package.json that is only a `type` marker, still the root's; a package of its own, not.
-  t.assert.deepEqual([...(await load({ vfs: project({ ...files, 'src/package.json': { type: 'module' } }), cwd: '/src' })).projects], ['.', 'packages/a', 'packages/b'])
+  t.assert.deepStrictEqual([...(await load({ vfs: project({ ...files, 'src/package.json': { type: 'module' } }), cwd: '/src' })).projects], ['.', 'packages/a', 'packages/b'])
   await t.assert.rejects(load({ vfs: project({ ...files, 'tools/package.json': { name: 'tools', version: '1.0.0' } }), cwd: '/tools' }), (err) => err.message === "/yarn.lock does not install /tools: it is none of the lockfile's projects")
   // A workspace is installed from the root that declares it, whatever yarn.lock is nearer; a package
   // that is no workspace, from its own.
   t.assert.equal((await load({ vfs: project({ ...files, 'packages/b/yarn.lock': LOCKFILE }), cwd: '/packages/b' })).root, '/')
   const website = await load({ vfs: project({ ...files, 'website/package.json': { name: 'website', version: '1.0.0' }, 'website/yarn.lock': LOCKFILE }), cwd: '/website' })
-  t.assert.deepEqual([website.root, [...website.projects]], ['/website', ['.']])
+  t.assert.deepStrictEqual([website.root, [...website.projects]], ['/website', ['.']])
 })
 
 test('yarn1: refuses, naming the file, what it cannot reproduce', async (t) => {

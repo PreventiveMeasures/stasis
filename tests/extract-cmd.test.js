@@ -64,12 +64,12 @@ test('lockfileFromBundle hashes every source and carries entries/config/metadata
   const bundle = await buildSolidityBundle({ cwd: join(solFixtures, 'basic'), entries: ['src/A.sol'] })
   const lock = lockfileFromBundle(bundle)
   t.assert.ok(lock instanceof Lockfile)
-  t.assert.deepEqual(lock.config, bundle.config)
-  t.assert.deepEqual([...lock.entries], [...bundle.entries])
+  t.assert.deepStrictEqual(lock.config, bundle.config)
+  t.assert.deepStrictEqual([...lock.entries], [...bundle.entries])
 
   // Same bucket dirs, and each file's recorded value is the SRI digest of the
   // bundle's source bytes (not the bytes themselves).
-  t.assert.deepEqual([...lock.modules.keys()].toSorted(), [...bundle.modules.keys()].toSorted())
+  t.assert.deepStrictEqual([...lock.modules.keys()].toSorted(), [...bundle.modules.keys()].toSorted())
   for (const [dir, { files }] of bundle.modules) {
     for (const [rel, content] of Object.entries(files)) {
       t.assert.equal(lock.modules.get(dir).files[rel], sha512integrity(content))
@@ -102,7 +102,7 @@ test('extractCommand writes a stasis.lock.json that is consistent with the extra
   t.assert.ok(existsSync(lockPath), 'lockfile must be written into the output dir')
   const lock = Lockfile.parse(readFileSync(lockPath, 'utf8'))
 
-  t.assert.deepEqual([...lock.entries].toSorted(), [...bundle.entries].toSorted())
+  t.assert.deepStrictEqual([...lock.entries].toSorted(), [...bundle.entries].toSorted())
   // Every hash in the lockfile matches the on-disk file we just extracted.
   for (const [dir, { files }] of lock.modules) {
     for (const [rel, hash] of Object.entries(files)) {
@@ -112,9 +112,9 @@ test('extractCommand writes a stasis.lock.json that is consistent with the extra
   }
   // The bundle's resolution + format maps are carried across, so the derived
   // lockfile attests resolutions and formats, not just bytes.
-  t.assert.deepEqual(lock.imports, bundle.imports)
+  t.assert.deepStrictEqual(lock.imports, bundle.imports)
   t.assert.ok(lock.imports.size > 0, 'fixture bundle must have resolution edges to make this meaningful')
-  t.assert.deepEqual(lock.formats, bundle.formats)
+  t.assert.deepStrictEqual(lock.formats, bundle.formats)
   t.assert.ok(lock.formats.size > 0, 'fixture bundle must have formats to make this meaningful')
 }))
 
@@ -134,7 +134,7 @@ test('extractCommand round-trips a scope=full bundle with workspace sources + no
 
   // node_modules buckets carry their package identity through to the lockfile.
   const lock = Lockfile.parse(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'))
-  t.assert.deepEqual([...lock.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual([...lock.entries], ['src/A.sol'])
   t.assert.equal(lock.modules.get('node_modules/foo')?.name, 'foo')
   t.assert.equal(lock.modules.get('node_modules/foo')?.version, '1.2.3')
   t.assert.equal(lock.modules.get('node_modules/@oz/contracts')?.name, '@oz/contracts')
@@ -153,8 +153,8 @@ test('an extracted tree validates cleanly under stasis prune', withTmp(async (t,
   // the extracted node_modules files from disk. A consistent extract validates
   // every dependency file and removes none.
   const { removed, validated } = prune({ root: outDir })
-  t.assert.deepEqual(removed, [])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(removed, [])
+  t.assert.deepStrictEqual(
     validated.toSorted(),
     ['node_modules/@oz/contracts/utils/Math.sol', 'node_modules/foo/X.sol'],
   )
@@ -342,8 +342,8 @@ test('extractCommand extracts a scope=node_modules bundle and its lockfile valid
   t.assert.equal(lock.modules.get('node_modules/foo')?.version, '1.2.3')
 
   const { removed, validated } = prune({ root: outDir })
-  t.assert.deepEqual(removed, [])
-  t.assert.deepEqual(validated, ['node_modules/foo/index.js'])
+  t.assert.deepStrictEqual(removed, [])
+  t.assert.deepStrictEqual(validated, ['node_modules/foo/index.js'])
 }))
 
 test('extractCommand extracts an empty bundle to just a lockfile', withTmp((t, tmp) => {

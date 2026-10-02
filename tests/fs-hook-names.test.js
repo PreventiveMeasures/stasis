@@ -64,7 +64,7 @@ test('capture + load: a `..`-prefixed in-root name is captured and then served, 
   // A declared resource, so the bundle carries no code and needs no entry to be loadable.
   const capture = new State(dir, { scope: 'full', lock: 'add', bundle: 'add', bundleFile, resources: ['txt'] })
   active = capture
-  t.assert.deepEqual(nodeFs.readdirSync(cacheDir), ['data.txt'])
+  t.assert.deepStrictEqual(nodeFs.readdirSync(cacheDir), ['data.txt'])
   t.assert.equal(nodeFs.readFileSync(dataFile, 'utf8'), 'cached\n')
   t.assert.equal(nodeFs.statSync(dataFile).isFile(), true)
   active = null
@@ -77,9 +77,9 @@ test('capture + load: a `..`-prefixed in-root name is captured and then served, 
   rmSync(cacheDir, { recursive: true })
   const load = new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile, resources: ['txt'] })
   active = load
-  t.assert.deepEqual(nodeFs.readdirSync(cacheDir), ['data.txt'])
+  t.assert.deepStrictEqual(nodeFs.readdirSync(cacheDir), ['data.txt'])
   t.assert.equal(nodeFs.readFileSync(dataFile, 'utf8'), 'cached\n')
   t.assert.equal(nodeFs.existsSync(dataFile), true)
   t.assert.equal(nodeFs.statSync(dataFile).isFile(), true)
-  t.assert.deepEqual(await nodeFs.promises.readdir(cacheDir), ['data.txt'])
+  t.assert.deepStrictEqual(await nodeFs.promises.readdir(cacheDir), ['data.txt'])
 }))

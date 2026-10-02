@@ -190,8 +190,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(after, before)
 
     const parsed = JSON.parse(after)
-    t.assert.deepEqual(parsed.config, { scope: 'full' })
-    t.assert.deepEqual(parsed.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(parsed.config, { scope: 'full' })
+    t.assert.deepStrictEqual(parsed.entries, ['src/entry.js'])
     t.assert.ok(parsed.sources['.'].files['src/entry.js'].startsWith('sha512-'))
     t.assert.ok(parsed.sources['.'].files['src/hello.js'].startsWith('sha512-'))
   }))
@@ -638,7 +638,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     const after = readFileSync(lockPath, 'utf-8')
     t.assert.notEqual(after, before, 'lockfile must be rewritten with new hashes')
     const parsed = JSON.parse(after)
-    t.assert.deepEqual(parsed.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(parsed.entries, ['src/entry.js'])
     // hash for hello.js must reflect the new bytes, not the stale committed value
     const beforeHash = JSON.parse(before).sources['.'].files['src/hello.js']
     const afterHash = parsed.sources['.'].files['src/hello.js']
@@ -747,8 +747,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
 
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
     t.assert.equal(decoded.version, 1)
-    t.assert.deepEqual(decoded.config, { scope: 'full' })
-    t.assert.deepEqual(decoded.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(decoded.config, { scope: 'full' })
+    t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].name, 'stasis-cli-run')
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(tmp, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(tmp, 'src/hello.js'), 'utf-8'))
@@ -803,8 +803,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
 
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
     t.assert.equal(decoded.version, 1)
-    t.assert.deepEqual(decoded.config, { scope: 'full' })
-    t.assert.deepEqual(decoded.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(decoded.config, { scope: 'full' })
+    t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(runFixture, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(runFixture, 'src/hello.js'), 'utf-8'))
     t.assert.equal(decoded.formats['src/entry.js'], 'module')
@@ -863,7 +863,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
       { cwd: tmp }
     )
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-    t.assert.deepEqual(readFileSync(bundlePath), before, 'bundle=frozen must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), before, 'bundle=frozen must not rewrite the bundle')
   }))
 
   test('run --bundle=frozen rejects a source file changed on disk', withTmp(async (t, tmp) => {
@@ -956,7 +956,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.match(r.stderr, /lock: 'frozen'/)
     t.assert.match(r.stderr, /bundle: 'frozen'/)
     t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'), lockBefore, 'lock=frozen must not rewrite the lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
   }))
 
   test('run --lock=replace --bundle=frozen writes the lockfile but leaves the frozen bundle untouched', withTmp(async (t, tmp) => {
@@ -980,7 +980,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.equal(r.stdout, 'hello, world\n')
     t.assert.ok(existsSync(join(tmp, 'stasis.lock.json')), 'lock=replace must write a lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
   }))
 
   test('run --lock=add --bundle=frozen bootstraps a lockfile from the verified run, without a pre-existing one', withTmp(async (t, tmp) => {
@@ -997,7 +997,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.equal(r.stdout, 'hello, world\n')
     t.assert.ok(existsSync(join(tmp, 'stasis.lock.json')), 'lock=add must bootstrap a lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'bundle=frozen must not rewrite the bundle')
   }))
 
   test('run --bundle=frozen fails closed with no stasis files at all (no silent skip)', withTmp(async (t, tmp) => {
@@ -1437,7 +1437,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.ok(!existsSync(lockPath), 'lockfile must not be created')
 
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
-    t.assert.deepEqual(decoded.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(tmp, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(tmp, 'src/hello.js'), 'utf-8'))
   }))
@@ -1533,7 +1533,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     const r = await run(['run', '--lock=frozen', '--bundle=ignore', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.equal(r.stdout, 'hello, world\n')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBefore, 'bundle=ignore must not touch the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'bundle=ignore must not touch the bundle')
   }))
 
   test('run --lock=frozen --bundle=load rejects a bundle with mismatching scope', withTmp(async (t, tmp) => {
@@ -1706,7 +1706,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.ok(lock.imports, 'lockfile must record imports')
     const buckets = Object.values(lock.imports)
     t.assert.equal(buckets.length, 1)
-    t.assert.deepEqual(buckets[0], { 'src/entry.js': { './hello.js': 'src/hello.js' } })
+    t.assert.deepStrictEqual(buckets[0], { 'src/entry.js': { './hello.js': 'src/hello.js' } })
   }))
 
   test('run --lock=add records loader formats in the lockfile formats map', withTmp(async (t, tmp) => {
@@ -1717,7 +1717,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.formats, { 'src/entry.js': 'module', 'src/hello.js': 'module' })
+    t.assert.deepStrictEqual(lock.formats, { 'src/entry.js': 'module', 'src/hello.js': 'module' })
   }))
 
   test('run --lock=frozen rejects an on-disk format flip (tampered package.json type)', withTmp(async (t, tmp) => {
@@ -2200,8 +2200,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     )
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.match(r.stdout, /WORKER hello, child/, 'the forked child ran')
-    t.assert.deepEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'child must not rewrite the lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBaseline, 'child must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'child must not rewrite the lockfile')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBaseline, 'child must not rewrite the bundle')
   }))
 
   test('run --bundle=load: a forked child is served from the bundle (entry need not be declared)', withTmp(async (t, tmp) => {
@@ -2257,8 +2257,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     )
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.match(r.stdout, /WORKER hello, child/, 'the spawned child ran')
-    t.assert.deepEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'a non-fork child must not rewrite the lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBaseline, 'a non-fork child must not rewrite the bundle')
+    t.assert.deepStrictEqual(readFileSync(join(tmp, 'stasis.lock.json')), lockBaseline, 'a non-fork child must not rewrite the lockfile')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBaseline, 'a non-fork child must not rewrite the bundle')
   }))
 
   // --- child→root capture forwarding (shards, --child-process) -------------------------
@@ -2304,8 +2304,8 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
       const ok = await run(['run', '--lock=add', '--child-process', 'src/entry.js'], { cwd: tmp, env: { ...cleanEnv, TMPDIR: tmpHome } })
       t.assert.equal(ok.status, 0, `stderr: ${ok.stderr}`)
       t.assert.match(ok.stdout, /WORKER extra=child-only-dep/, 'the shard channel was exercised')
-      t.assert.deepEqual(shardDirs(), [], 'shard dir removed after a clean run')
-      t.assert.deepEqual(readdirSync(tmp).filter((n) => n.includes('stasis-shard')), [], 'never minted under the project')
+      t.assert.deepStrictEqual(shardDirs(), [], 'shard dir removed after a clean run')
+      t.assert.deepStrictEqual(readdirSync(tmp).filter((n) => n.includes('stasis-shard')), [], 'never minted under the project')
 
       // Aborted capture: drifting a recorded file makes the re-run's lock=add conflict (addFile throws
       // -> aborted) AFTER the dir is minted. Cleanup lives in save()'s finally (not gated on a clean
@@ -2315,7 +2315,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
       const aborted = await run(['run', '--lock=add', '--child-process', 'src/entry.js'], { cwd: tmp, env: { ...cleanEnv, TMPDIR: tmpHome } })
       t.assert.notEqual(aborted.status, 0, 'the drifted re-run must abort (lock=add conflict on the entry)')
       t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'), lockBefore, 'aborted run must not rewrite the lockfile')
-      t.assert.deepEqual(shardDirs(), [], 'shard dir removed even after an aborted run')
+      t.assert.deepStrictEqual(shardDirs(), [], 'shard dir removed even after an aborted run')
     } finally {
       rmSync(tmpHome, { recursive: true, force: true })
     }

@@ -13,6 +13,8 @@ import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 const PKG = { npm: { name: 'pkg', version: '0.0.1' } }
 const base = (pkg, repo) => new Bundle({ config: { scope: 'node_modules' }, package: pkg, repo })
 const withPackageJSON = (pkg) => JSON.stringify({ ...JSON.parse(base().serialize()), package: pkg })
+// `package` and its ecosystem blocks are null-prototype: copy both levels to compare with plain literals.
+const plainPackage = (pkg) => Object.fromEntries(Object.entries(pkg).map(([ecosystem, block]) => [ecosystem, { ...block }]))
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-package-'))
@@ -32,13 +34,13 @@ test('Bundle omits package when unset', (t) => {
 
 test('Bundle round-trips package after config and repo, in canonical key order', (t) => {
   const json = JSON.parse(base({ npm: { version: '0.0.1', name: 'pkg' } }).serialize())
-  t.assert.deepEqual(Object.keys(json).slice(0, 3), ['version', 'config', 'package'])
-  t.assert.deepEqual(Object.keys(json.package.npm), ['name', 'version'])
-  t.assert.deepEqual(Bundle.parse(JSON.stringify(json)).package, PKG)
+  t.assert.deepStrictEqual(Object.keys(json).slice(0, 3), ['version', 'config', 'package'])
+  t.assert.deepStrictEqual(Object.keys(json.package.npm), ['name', 'version'])
+  t.assert.deepStrictEqual(plainPackage(Bundle.parse(JSON.stringify(json)).package), PKG)
   const both = JSON.parse(base(PKG, { github: 'o/n' }).serialize())
-  t.assert.deepEqual(Object.keys(both).slice(0, 4), ['version', 'config', 'repo', 'package'])
+  t.assert.deepStrictEqual(Object.keys(both).slice(0, 4), ['version', 'config', 'repo', 'package'])
   const all = base({ cargo: { name: 'c', version: '1.0.0' }, composer: { name: 'v/p', version: 'v1.0.0' }, npm: PKG.npm })
-  t.assert.deepEqual(Object.keys(JSON.parse(all.serialize()).package), ['npm', 'composer', 'cargo'])
+  t.assert.deepStrictEqual(Object.keys(JSON.parse(all.serialize()).package), ['npm', 'composer', 'cargo'])
 })
 
 const ECOSYSTEMS = ['npm', 'composer', 'cargo']
@@ -54,14 +56,14 @@ test('Bundle takes any name and version of characters some ecosystem uses', (t) 
   for (const ecosystem of ECOSYSTEMS) {
     for (const value of GOOD) {
       const parsed = Bundle.parse(withPackageJSON({ [ecosystem]: { name: value, version: value } })).package[ecosystem]
-      t.assert.deepEqual({ ...parsed }, { name: value, version: value }, `${ecosystem}: ${value}`)
+      t.assert.deepStrictEqual({ ...parsed }, { name: value, version: value }, `${ecosystem}: ${value}`)
     }
   }
 })
 
 test('Bundle package fields are each optional, and an empty block is no block', (t) => {
   for (const pkg of [{ npm: { name: 'pkg' } }, { npm: { version: '1.0.0' } }]) {
-    t.assert.deepEqual(Bundle.parse(withPackageJSON(pkg)).package, pkg)
+    t.assert.deepStrictEqual(plainPackage(Bundle.parse(withPackageJSON(pkg)).package), pkg)
   }
   for (const pkg of [{}, { npm: {} }, { npm: undefined }, { npm: { name: undefined } }]) {
     t.assert.equal(base(pkg).package, undefined, JSON.stringify(pkg))
@@ -94,17 +96,17 @@ test('Bundle rejects an invalid package block on parse and on construction', (t)
 })
 
 test('Bundle carries package through withReason', (t) => {
-  t.assert.deepEqual(base(PKG).withReason('bundle').package, PKG)
+  t.assert.deepStrictEqual(plainPackage(base(PKG).withReason('bundle').package), PKG)
 })
 
 test('Bundle merge keeps only agreeing package fields, and no npm block of another or no name', (t) => {
   const stamped = base(PKG)
-  t.assert.deepEqual(stamped.merge(base(PKG)).package, PKG, 'agreeing: kept as is')
-  t.assert.deepEqual(stamped.merge(base({ npm: { name: 'pkg', version: '0.0.2' } })).package, { npm: { name: 'pkg' } },
+  t.assert.deepStrictEqual(plainPackage(stamped.merge(base(PKG)).package), PKG, 'agreeing: kept as is')
+  t.assert.deepStrictEqual(plainPackage(stamped.merge(base({ npm: { name: 'pkg', version: '0.0.2' } })).package), { npm: { name: 'pkg' } },
     'same name, another version: only the version is dropped')
   t.assert.equal(stamped.merge(base({ npm: { name: 'other', version: '0.0.1' } })).package, undefined,
     'another name: the npm block is cleared, though the version agrees, and the empty package with it')
-  t.assert.deepEqual(stamped.merge(base({ npm: { name: 'pkg' } })).package, { npm: { name: 'pkg' } }, 'a field one side lacks is dropped')
+  t.assert.deepStrictEqual(plainPackage(stamped.merge(base({ npm: { name: 'pkg' } })).package), { npm: { name: 'pkg' } }, 'a field one side lacks is dropped')
   t.assert.equal(stamped.merge(base({ npm: { version: '0.0.1' } })).package, undefined,
     'a name one side lacks: the npm block is cleared, though the version agrees')
   t.assert.equal(base({ npm: { version: '0.0.1' } }).merge(base({ npm: { version: '0.0.1' } })).package, undefined,
@@ -118,11 +120,11 @@ test('Bundle merge takes each package ecosystem on its own', (t) => {
   const composer = { name: 'v/p', version: 'v1.0.0' }
   const cargo = { name: 'c', version: '0.1.0+build.1' }
   const all = base({ ...PKG, composer, cargo })
-  t.assert.deepEqual(all.merge(base({ ...PKG, composer, cargo })).package, { ...PKG, composer, cargo }, 'agreeing: kept as is')
-  t.assert.deepEqual(all.merge(base({ ...PKG, composer: { ...composer, version: '1.0.0' }, cargo: { name: 'd', version: cargo.version } })).package,
+  t.assert.deepStrictEqual(plainPackage(all.merge(base({ ...PKG, composer, cargo })).package), { ...PKG, composer, cargo }, 'agreeing: kept as is')
+  t.assert.deepStrictEqual(plainPackage(all.merge(base({ ...PKG, composer: { ...composer, version: '1.0.0' }, cargo: { name: 'd', version: cargo.version } })).package),
     { ...PKG, composer: { name: 'v/p' } }, 'composer: a version spelled otherwise is dropped; cargo: another name clears the block')
-  t.assert.deepEqual(all.merge(base({ cargo })).package, { cargo }, 'only what both sides know')
-  t.assert.deepEqual(all.merge(base({ cargo: { name: 'C', version: cargo.version } })).package, undefined, 'names compare exactly')
+  t.assert.deepStrictEqual(plainPackage(all.merge(base({ cargo })).package), { cargo }, 'only what both sides know')
+  t.assert.deepStrictEqual(all.merge(base({ cargo: { name: 'C', version: cargo.version } })).package, undefined, 'names compare exactly')
 })
 
 test('package never reaches a lockfile', (t) => {
@@ -137,8 +139,8 @@ test('Bundle validates a directly assigned package', (t) => {
   t.assert.throws(() => { bundle.package = { pypi: {} } }, /unknown bundle package key 'pypi'/u)
   t.assert.equal(bundle.package, undefined, 'a rejected value is not stored')
   bundle.package = { npm: { version: '0.0.1', name: 'pkg' } }
-  t.assert.deepEqual(Object.keys(bundle.package.npm), ['name', 'version'], 'normalized on assignment')
-  t.assert.deepEqual(JSON.parse(bundle.serialize()).package, PKG)
+  t.assert.deepStrictEqual(Object.keys(bundle.package.npm), ['name', 'version'], 'normalized on assignment')
+  t.assert.deepStrictEqual(JSON.parse(bundle.serialize()).package, PKG)
   bundle.package = { npm: {} }
   t.assert.equal(bundle.package, undefined)
 })
@@ -151,8 +153,8 @@ test('Bundle package and repo are frozen, so serialize writes only what was vali
   t.assert.throws(() => { bundle.repo.github = 'not valid' }, TypeError)
   t.assert.throws(() => { delete bundle.repo.github }, TypeError)
   const json = JSON.parse(bundle.serialize())
-  t.assert.deepEqual(json.package, PKG)
-  t.assert.deepEqual(json.repo, { github: 'o/n' })
+  t.assert.deepStrictEqual(json.package, PKG)
+  t.assert.deepStrictEqual(json.repo, { github: 'o/n' })
   for (const merged of [bundle.merge(bundle), bundle.withReason('bundle'), Bundle.parse(bundle.serialize())]) {
     t.assert.ok(Object.isFrozen(merged.package) && Object.isFrozen(merged.package.npm) && Object.isFrozen(merged.repo))
   }

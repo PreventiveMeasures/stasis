@@ -117,11 +117,11 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.config, { scope: 'full' })
-    t.assert.deepEqual(lock.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(lock.config, { scope: 'full' })
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.js'])
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
     t.assert.ok(lock.sources['.'].files['src/hello.js'].startsWith('sha512-'))
-    t.assert.deepEqual(lock.modules, {})
+    t.assert.deepStrictEqual(lock.modules, {})
     // The as-written specifier './hello.js' is recorded as the resolution edge.
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
@@ -180,7 +180,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const newHash = after.sources['.'].files['src/hello.js']
     t.assert.notEqual(newHash, oldHash)
     t.assert.ok(newHash.startsWith('sha512-'))
-    t.assert.deepEqual(after.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(after.entries, ['src/entry.js'])
   }))
 
   test('lock=ignore tolerates the committed lockfile and does not touch it', withTmp(async (t, tmp) => {
@@ -213,8 +213,8 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
 
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
     t.assert.equal(decoded.version, 1)
-    t.assert.deepEqual(decoded.config, { scope: 'full' })
-    t.assert.deepEqual(decoded.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(decoded.config, { scope: 'full' })
+    t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(tmp, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(tmp, 'src/hello.js'), 'utf-8'))
     t.assert.equal(decoded.formats['src/entry.js'], 'module')
@@ -255,7 +255,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(r.stdout.match(/stasis base: 2 modules/gu)?.length, 2, `stdout: ${r.stdout}`)
     // Nothing captured, nothing written.
     t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'), lockBefore, 'load must not touch the lockfile')
-    t.assert.deepEqual(readFileSync(bundlePath), bundleBefore, 'load must not touch the bundle')
+    t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'load must not touch the bundle')
   }))
 
   test('capture refuses a second serialization (watch/dev-server rebuild)', withTmp(async (t, tmp) => {
@@ -288,7 +288,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.config, { scope: 'node_modules' })
+    t.assert.deepStrictEqual(lock.config, { scope: 'node_modules' })
     t.assert.equal(lock.entries, undefined)
     t.assert.equal(lock.sources, undefined)
     t.assert.ok(lock.modules['node_modules/fake-esm-pkg'])
@@ -336,7 +336,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.entries, ['src/entry.js'])
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.js'])
     t.assert.ok(lock.sources['.'].files['src/hello.js'].startsWith('sha512-'))
   }))
 
@@ -719,7 +719,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.formats['src/icon.svg'], 'resource', 'UTF-8 asset tagged "resource"')
     t.assert.equal(lock.formats['src/logo.png'], 'resource:base64', 'binary asset tagged "resource:base64"')
     // Resource imports carry no resolution edge (matches webpack/esbuild).
-    t.assert.deepEqual(lock.imports, {})
+    t.assert.deepStrictEqual(lock.imports, {})
 
     // Bundle: all three files live together; resources are tagged in formats.
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
@@ -764,7 +764,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
   // Models the two well-known packages whose files StasisMetro auto-includes. Every OTHER
   // test in this suite runs without them, which doubles as coverage for the both-absent
   // case: an unresolvable auto-include is skipped silently (e.g. the first test's
-  // `lock.modules` deepEqual {}).
+  // `lock.modules` deepStrictEqual {}).
   const ASYNC_REQUIRE = 'node_modules/metro-runtime/src/modules/asyncRequire.js'
   const SETUP_ENV = 'node_modules/@react-native-community/cli/setup_env.sh'
   const writeAutoIncludePackages = (tmp, { asyncRequire = true, setupEnv = true } = {}) => {
@@ -1300,7 +1300,7 @@ process.exit(1)
     const r = await run('src/entry.js', { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' } })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(lock.modules, {}, 'no native modules attested when the RN CLI is absent')
+    t.assert.deepStrictEqual(lock.modules, {}, 'no native modules attested when the RN CLI is absent')
   }))
 
   test('native modules: a native dep whose JS is imported is captured once; its native surface is still added', withTmp(async (t, tmp) => {
@@ -1434,9 +1434,9 @@ process.exit(1)
     })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.deepEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.js', 'src/hello.js'])
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.js', 'src/hello.js'])
     // Only the real, resolved code edge is attested.
-    t.assert.deepEqual(lock.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js' })
+    t.assert.deepStrictEqual(lock.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js' })
   }))
 
   test('real-Metro contract smoke test (ReadOnlyGraph / customSerializer / transformer)', { skip: 'metro is not a dependency; see comment' }, () => {

@@ -44,7 +44,7 @@ test('run --lock=add records an ESM entry that imports both ESM and CJS node_mod
   t.assert.equal(after, before)
 
   const parsed = JSON.parse(after)
-  t.assert.deepEqual(parsed.entries, ['src/entry.js'])
+  t.assert.deepStrictEqual(parsed.entries, ['src/entry.js'])
   t.assert.ok(parsed.modules['node_modules/fake-esm-pkg'])
   t.assert.ok(parsed.modules['node_modules/fake-cjs-pkg'])
 })

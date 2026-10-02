@@ -25,7 +25,7 @@ test('Lockfile serializes `ecosystem` next to name/version for an npm dep and om
 
   const json = JSON.parse(lock.serialize())
   // Dependency: ecosystem present, and positioned right after name/version.
-  t.assert.deepEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'files'])
+  t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'files'])
   t.assert.equal(json.modules['node_modules/dep'].ecosystem, 'npm')
   // Workspace/top-level: no ecosystem key at all.
   t.assert.ok(!Object.hasOwn(json.sources['.'], 'ecosystem'))
@@ -52,7 +52,7 @@ test('Lockfile carries a `composer` ecosystem on a (non-node_modules) vendor dep
   // A Composer vendor package isn't under node_modules, so it lands in the
   // `sources` section — but still carries its `composer` ecosystem.
   t.assert.equal(json.sources['vendor/acme/lib'].ecosystem, 'composer')
-  t.assert.deepEqual(Object.keys(json.sources['vendor/acme/lib']), ['name', 'version', 'ecosystem', 'files'])
+  t.assert.deepStrictEqual(Object.keys(json.sources['vendor/acme/lib']), ['name', 'version', 'ecosystem', 'files'])
   t.assert.ok(!Object.hasOwn(json.sources['.'], 'ecosystem'))
 
   const parsed = Lockfile.parse(lock.serialize())
@@ -71,7 +71,7 @@ test('Bundle code round-trips `ecosystem` for deps and omits it for the workspac
   })
 
   const json = JSON.parse(bundle.serialize())
-  t.assert.deepEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'files'])
+  t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'files'])
   t.assert.equal(json.modules['node_modules/dep'].ecosystem, 'npm')
   t.assert.ok(!Object.hasOwn(json.sources['.'], 'ecosystem'))
 

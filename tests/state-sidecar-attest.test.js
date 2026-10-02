@@ -130,6 +130,6 @@ test('load-mode sidecar does NOT contribute attestations to the parent-owned loc
   // formats -- here that would be a no-op anyway because the bundle's data is
   // already in the lockfile, but the invariant "load-mode sidecar doesn't
   // mutate parent.lockData" is what we're pinning.
-  t.assert.deepEqual(after, before,
+  t.assert.deepStrictEqual(after, before,
     "load-mode sidecar construction must not change parent's lockData")
 })

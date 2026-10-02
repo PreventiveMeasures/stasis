@@ -65,15 +65,15 @@ test('buildSolidityBundle produces a Bundle with sources, formats, imports, entr
   const bundle = await buildSolidityBundle({ cwd, entries: ['src/A.sol'] })
 
   t.assert.ok(bundle instanceof Bundle)
-  t.assert.deepEqual(bundle.config, { scope: 'full' })
-  t.assert.deepEqual([...bundle.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+  t.assert.deepStrictEqual([...bundle.entries], ['src/A.sol'])
 
   // No package.json anywhere in the basic fixture → fallback bucket "."
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'solidity-bundle')
   t.assert.equal(workspace.version, '0.0.0')
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(workspace.files).toSorted(),
     ['src/A.sol', 'src/B.sol'],
   )
@@ -84,7 +84,7 @@ test('buildSolidityBundle produces a Bundle with sources, formats, imports, entr
   t.assert.equal(bundle.formats.get('src/B.sol'), 'solidity')
 
   // Imports live under the "solidity" condition key (not the JS-bundle "*")
-  t.assert.deepEqual([...bundle.imports.keys()], ['solidity'])
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['solidity'])
   t.assert.equal(bundle.imports.get('solidity').get('src/A.sol').get('./B.sol'), 'src/B.sol')
 })
 
@@ -95,7 +95,7 @@ test('buildSolidityBundle reads remappings from a remappings.txt mapping file', 
     entries: ['src/A.sol'],
     mappingFile: 'remappings.txt',
   })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['lib/openzeppelin-contracts/contracts/utils/Math.sol', 'src/A.sol'],
   )
@@ -114,7 +114,7 @@ test('buildSolidityBundle places node_modules files in per-package modules bucke
     entries: ['src/A.sol'],
     mappingFile: 'remappings.txt',
   })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.modules.keys()].toSorted(),
     ['.', 'node_modules/@oz/contracts', 'node_modules/foo'],
   )
@@ -125,7 +125,7 @@ test('buildSolidityBundle places node_modules files in per-package modules bucke
   t.assert.equal(workspace.name, 'my-app')
   t.assert.equal(workspace.version, '0.1.0')
   t.assert.equal(workspace.ecosystem, undefined)
-  t.assert.deepEqual(Object.keys(workspace.files), ['src/A.sol'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files), ['src/A.sol'])
 
   // Unscoped node_modules package: a dependency. It resolves out of
   // node_modules — npm's install layout — so its ecosystem is `npm`, not anything
@@ -134,14 +134,14 @@ test('buildSolidityBundle places node_modules files in per-package modules bucke
   t.assert.equal(foo.name, 'foo')
   t.assert.equal(foo.version, '1.2.3')
   t.assert.equal(foo.ecosystem, 'npm')
-  t.assert.deepEqual(Object.keys(foo.files), ['X.sol'])
+  t.assert.deepStrictEqual(Object.keys(foo.files), ['X.sol'])
 
   // Scoped node_modules package; rel path preserves the deep subdir.
   const oz = bundle.modules.get('node_modules/@oz/contracts')
   t.assert.equal(oz.name, '@oz/contracts')
   t.assert.equal(oz.version, '5.0.0')
   t.assert.equal(oz.ecosystem, 'npm')
-  t.assert.deepEqual(Object.keys(oz.files), ['utils/Math.sol'])
+  t.assert.deepStrictEqual(Object.keys(oz.files), ['utils/Math.sol'])
 
   // Resolutions still use the full project-relative paths, regardless
   // of which bucket the target ended up in.
@@ -163,21 +163,21 @@ test('buildSolidityBundle attributes Soldeer deps as `soldeer` and github-submod
 
   // Each non-npm dependency lands in its own install-dir bucket, alongside the
   // workspace "." bucket — none folds into the workspace anymore.
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.modules.keys()].toSorted(),
     ['.', 'dependencies/solmate-6.8.0', 'lib/openzeppelin-contracts'],
   )
 
   // Workspace: the entry, no ecosystem.
   t.assert.equal(bundle.modules.get('.').ecosystem, undefined)
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files), ['src/A.sol'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files), ['src/A.sol'])
 
   // Soldeer: name/version parsed from the `dependencies/<name>-<version>` dir.
   const soldeer = bundle.modules.get('dependencies/solmate-6.8.0')
   t.assert.equal(soldeer.name, 'solmate')
   t.assert.equal(soldeer.version, '6.8.0')
   t.assert.equal(soldeer.ecosystem, 'soldeer')
-  t.assert.deepEqual(Object.keys(soldeer.files), ['src/Token.sol'])
+  t.assert.deepStrictEqual(Object.keys(soldeer.files), ['src/Token.sol'])
 
   // forge git submodule with a github.com URL in .gitmodules → ecosystem
   // `github`, named with the Package-URL `owner/repo` slug. No package.json or
@@ -186,7 +186,7 @@ test('buildSolidityBundle attributes Soldeer deps as `soldeer` and github-submod
   t.assert.equal(oz.name, 'OpenZeppelin/openzeppelin-contracts')
   t.assert.equal(oz.version, '0.0.0')
   t.assert.equal(oz.ecosystem, 'github')
-  t.assert.deepEqual(Object.keys(oz.files), ['contracts/utils/Math.sol'])
+  t.assert.deepStrictEqual(Object.keys(oz.files), ['contracts/utils/Math.sol'])
 })
 
 test('buildSolidityBundle resolves @-scoped imports via node_modules with no mapping file', async (t) => {
@@ -194,7 +194,7 @@ test('buildSolidityBundle resolves @-scoped imports via node_modules with no map
   // node_modules/@oz/contracts/utils/Math.sol on disk.
   const cwd = join(fixtures, 'nm-fallback')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src/A.sol'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.modules.keys()].toSorted(),
     ['.', 'node_modules/@oz/contracts'],
   )
@@ -213,7 +213,7 @@ test('buildSolidityBundle resolves nested node_modules from the importing source
   // walk back to a sibling at node_modules/@inner/z (which doesn't exist).
   const cwd = join(fixtures, 'nm-nested')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src/A.sol'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.modules.keys()].toSorted(),
     ['.', 'node_modules/@dep/x', 'node_modules/@dep/x/node_modules/@inner/z'],
   )
@@ -243,7 +243,7 @@ test('buildSolidityBundle reads remappings from a foundry.toml mapping file', as
     entries: ['src/A.sol'],
     mappingFile: 'foundry.toml',
   })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['lib/openzeppelin-contracts/contracts/utils/Math.sol', 'src/A.sol'],
   )
@@ -258,8 +258,8 @@ test('buildSolidityBundle resolves Foundry-style project-relative imports withou
   // make this work.
   const cwd = join(fixtures, 'non-relative-entry')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src/B.sol'] })
-  t.assert.deepEqual([...bundle.entries], ['src/B.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...bundle.entries], ['src/B.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol'],
   )
@@ -272,8 +272,8 @@ test('buildSolidityBundle resolves Foundry-style project-relative imports withou
 test('buildSolidityBundle deduplicates files imported by multiple entries', async (t) => {
   const cwd = join(fixtures, 'shared')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src/A.sol', 'src/B.sol'] })
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol', 'src/Shared.sol'],
   )
@@ -282,7 +282,7 @@ test('buildSolidityBundle deduplicates files imported by multiple entries', asyn
 test('buildSolidityBundle normalises ./src/A.sol-style entries', async (t) => {
   const cwd = join(fixtures, 'basic')
   const bundle = await buildSolidityBundle({ cwd, entries: ['./src/A.sol'] })
-  t.assert.deepEqual([...bundle.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.entries], ['src/A.sol'])
 })
 
 test('buildSolidityBundle rejects an empty entry list', async (t) => {
@@ -369,9 +369,9 @@ test('buildSolidityBundle bundles a Foundry project the way forge build resolves
   const cwd = join(fixtures, 'foundry-project')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src', 'test', 'script'], env: {} })
   // Directory entries: every .sol under src/test/script, imported or not (Standalone.sol).
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['script/Deploy.s.sol', 'src/Counter.sol', 'src/Standalone.sol', 'test/Counter.t.sol'])
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['script/Deploy.s.sol', 'src/Counter.sol', 'src/Standalone.sol', 'test/Counter.t.sol'])
   // Commented-out imports and strings are not followed; no config file is bundled by default.
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), foundryProjectFiles)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), foundryProjectFiles)
   const edges = bundle.imports.get('solidity')
   // [profile.default]'s (auto-detected) remappings, not [profile.ci]'s listed above them.
   t.assert.equal(edges.get('src/Counter.sol').get('@openzeppelin/contracts/token/ERC20.sol'), 'lib/openzeppelin-contracts/contracts/token/ERC20.sol')
@@ -389,7 +389,7 @@ test('buildSolidityBundle with manifests carries the build description files', a
   const cwd = join(fixtures, 'foundry-project')
   const bundle = await buildSolidityBundle({ cwd, entries: ['src', 'test', 'script'], manifests: true, env: {} })
   const manifests = ['.gitmodules', 'foundry.toml', 'lib/forge-std/foundry.toml', 'lib/openzeppelin-contracts/foundry.toml', 'lib/openzeppelin-contracts/remappings.txt']
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [...foundryProjectFiles, ...manifests].toSorted())
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...foundryProjectFiles, ...manifests].toSorted())
   for (const m of manifests) {
     t.assert.equal(bundle.formats.get(m), 'resource', m)
     t.assert.equal(bundle.sources.get(m), readFileSync(join(cwd, m), 'utf8'))
@@ -412,7 +412,7 @@ test('buildSolidityBundle with manifests carries package.json identities as json
   writeFileSync(join(tmp, 'node_modules/hardhat/console.sol'), 'library console {}\n')
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['contracts'], manifests: true, env: {} })
   // hardhat.config.* is code that may hold keys: never carried.
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'contracts/A.sol', 'node_modules/hardhat/console.sol', 'node_modules/hardhat/package.json', 'package.json',
   ])
   t.assert.equal(bundle.formats.get('package.json'), 'json')
@@ -529,7 +529,7 @@ test('buildSolidityBundle keeps a dependency\'s imports inside the dependencies'
   writeFileSync(join(tmp, 'lib/evil/src/E.sol'), 'import "ok/B.sol";\n')
   writeProject(tmp, { 'lib/ok/src/B.sol': 'contract B {}\n' })
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/evil/src/E.sol', 'lib/ok/src/B.sol', 'script/Secrets.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/evil/src/E.sol', 'lib/ok/src/B.sol', 'script/Secrets.sol', 'src/A.sol'])
 }))
 
 test('buildSolidityBundle never reads through a link a dependency planted out of itself', withTmp(async (t, tmp) => {
@@ -587,7 +587,7 @@ test('buildSolidityBundle lets a linked dependency (workspace package, symlinked
   mkdirSync(join(tmp, 'node_modules/@org'), { recursive: true })
   symlinkSync('../../packages/lib', join(tmp, 'node_modules/@org/lib'))
   let bundle = await buildSolidityBundle({ cwd: tmp, entries: ['contracts'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['contracts/A.sol', 'node_modules/@org/lib/A.sol', 'node_modules/@org/lib/B.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['contracts/A.sol', 'node_modules/@org/lib/A.sol', 'node_modules/@org/lib/B.sol'])
 
   const forge = join(tmp, 'forge')
   writeProject(forge, {
@@ -600,7 +600,7 @@ test('buildSolidityBundle lets a linked dependency (workspace package, symlinked
   })
   symlinkSync('../vendor/forge-std', join(forge, 'lib/forge-std'))
   bundle = await buildSolidityBundle({ cwd: forge, entries: ['src'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/forge-std/src/Test.sol', 'lib/forge-std/src/Vm.sol', 'lib/solmate/src/S.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/forge-std/src/Test.sol', 'lib/forge-std/src/Vm.sol', 'lib/solmate/src/S.sol', 'src/A.sol'])
 }))
 
 test('buildSolidityBundle with manifests carries no dependency config reached through its link out', withTmp(async (t, tmp) => {
@@ -616,7 +616,7 @@ test('buildSolidityBundle with manifests carries no dependency config reached th
   symlinkSync('../../.env', join(tmp, 'lib/evil/remappings.txt'))
   symlinkSync('../../.env', join(tmp, 'lib/evil2/foundry.toml'))
   const { result: bundle, lines } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src'], manifests: true, env: {} }))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['.gitmodules', 'foundry.toml', 'lib/evil/foundry.toml', 'lib/evil/src/E.sol', 'lib/evil2/src/E.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['.gitmodules', 'foundry.toml', 'lib/evil/foundry.toml', 'lib/evil/src/E.sol', 'lib/evil2/src/E.sol', 'src/A.sol'])
   // Nor are they read as its config.
   t.assert.ok(lines.includes("[loader.solidity] Skipping a dependency's lib/evil/remappings.txt: lib/evil/remappings.txt is a link out of the dependency lib/evil"), lines.join('\n'))
   t.assert.ok(lines.some((l) => l.includes("Skipping a dependency's config") && l.includes('lib/evil2/foundry.toml: refusing to read it')))
@@ -693,7 +693,7 @@ test('buildSolidityBundle with manifests carries the config of a /proc lib by it
   process.chdir(tmp)
   try {
     const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], manifests: true, env: {} })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['foundry.toml', 'lib/x/foundry.toml', 'lib/x/remappings.txt', 'src/A.sol'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['foundry.toml', 'lib/x/foundry.toml', 'lib/x/remappings.txt', 'src/A.sol'])
   } finally {
     process.chdir(cwd)
   }
@@ -795,7 +795,7 @@ test('buildSolidityBundle follows a dependency\'s config linked into another dep
   })
   symlinkSync('../shared/remappings.txt', join(tmp, 'lib/a/remappings.txt'))
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/b/src/X.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/b/src/X.sol', 'src/A.sol'])
 }))
 
 test('buildSolidityBundle fails on a foundry.toml that isn\'t TOML, naming the file and line', withTmp(async (t, tmp) => {
@@ -847,7 +847,7 @@ test('buildSolidityBundle fails on an invalid remapping, the project\'s or a dep
   await fails({}, 'lib/dep/remappings.txt:2: invalid remapping, expected [context:]prefix=target')
   writeFileSync(join(tmp, 'lib/dep/remappings.txt'), 'y/=src/\n')
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/dep/src/D.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/dep/src/D.sol', 'src/A.sol'])
 }))
 
 test('buildSolidityBundle refuses a dependency config whose real path the OS can\'t resolve (past PATH_MAX)', withTmp(async (t, tmp) => {
@@ -910,7 +910,7 @@ test('buildSolidityBundle with manifests fails on a config the resolution read b
     // Without --manifests there's nothing to carry: the resolution is forge's.
     // eslint-disable-next-line no-await-in-loop -- each run rewrites foundry.toml
     const bundle = await buildSolidityBundle({ cwd: proj, entries: ['src'], env: {} })
-    t.assert.deepEqual([...bundle.sources.keys()], ['src/A.sol'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/A.sol'])
   }
 }))
 
@@ -955,7 +955,7 @@ test('buildSolidityBundle never reads the process\'s stdin as a config, a depend
   symlinkSync('/dev/stdin', join(tmp, 'lib/b/foundry.toml'))
   symlinkSync('/proc/self/fd/0', join(tmp, 'lib/c/base.toml'))
   const unresolved = (path) => `${path} crosses a link stasis can't follow the way the filesystem does`
-  t.assert.deepEqual(await bundleWithOpenStdin(tmp), [
+  t.assert.deepStrictEqual(await bundleWithOpenStdin(tmp), [
     `[loader.solidity] Skipping a dependency's lib/a/remappings.txt: ${unresolved('lib/a/remappings.txt')}`,
     `[loader.solidity] Skipping a dependency's config: lib/b/foundry.toml: refusing to read it: ${unresolved('lib/b/foundry.toml')}`,
     `[loader.solidity] Skipping a dependency's config: lib/c/foundry.toml: refusing to extend base.toml: ${unresolved('lib/c/base.toml')}`,
@@ -964,7 +964,7 @@ test('buildSolidityBundle never reads the process\'s stdin as a config, a depend
   // The project's own link to it, or a FIFO, is read only if it's a regular file: it isn't.
   rmSync(join(tmp, 'lib'), { recursive: true })
   symlinkSync('/dev/stdin', join(tmp, 'remappings.txt'))
-  t.assert.deepEqual(await bundleWithOpenStdin(tmp), ['ERR remappings.txt: not a regular file'])
+  t.assert.deepStrictEqual(await bundleWithOpenStdin(tmp), ['ERR remappings.txt: not a regular file'])
   rmSync(join(tmp, 'remappings.txt'))
   spawnSync('mkfifo', [join(tmp, 'remappings.txt')])
   await t.assert.rejects(() => buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} }), { message: 'remappings.txt: not a regular file' })
@@ -998,7 +998,7 @@ test('buildSolidityBundle never fails on a .gitmodules the library refuses, and 
     writeFileSync(join(tmp, '.gitmodules'), `[submodule "x"]\n\tpath = lib/x\n${url}`)
     // eslint-disable-next-line no-await-in-loop -- each run rewrites .gitmodules
     const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} })
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/x/src/X.sol', 'src/A.sol'])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/x/src/X.sol', 'src/A.sol'])
     t.assert.equal(bundle.modules.get('lib/x'), undefined)
   }
 }))
@@ -1073,7 +1073,7 @@ test('buildSolidityBundle fails on a package.json or config that is there but ca
   // A link to nothing is no package.json, as to Node.
   rmSync(join(tmp, 'lib/dep/package.json'))
   symlinkSync('gone.json', join(tmp, 'lib/dep/package.json'))
-  t.assert.deepEqual([...(await build()).sources.keys()].toSorted(), ['lib/dep/src/D.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...(await build()).sources.keys()].toSorted(), ['lib/dep/src/D.sol', 'src/A.sol'])
   // The project's own config that loops: named from the root.
   symlinkSync('remappings.txt', join(tmp, 'remappings.txt'))
   await t.assert.rejects(build, { message: "remappings.txt: can't be read (ELOOP)" })
@@ -1110,7 +1110,7 @@ test('buildSolidityBundle resolves a dependency\'s `extends` through its own sym
   symlinkSync('real/in', join(tmp, 'lib/dep/sub'))
   const { result: bundle, lines } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src'], env: {} }))
   t.assert.equal(bundle.imports.get('solidity').get('src/A.sol').get('y/Y.sol'), 'lib/dep/src/Y.sol')
-  t.assert.deepEqual(lines, [])
+  t.assert.deepStrictEqual(lines, [])
 }))
 
 test('buildSolidityBundle with --mapping and manifests carries the root config read for its lib dirs, `extends` base included', withTmp(async (t, tmp) => {
@@ -1124,7 +1124,7 @@ test('buildSolidityBundle with --mapping and manifests carries the root config r
   })
   const opts = { cwd: proj, entries: ['src'], mappingFile: 'remappings.txt', manifests: true, env: {} }
   const bundle = await buildSolidityBundle(opts)
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['base.toml', 'deps/x/X.sol', 'foundry.toml', 'remappings.txt', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['base.toml', 'deps/x/X.sol', 'foundry.toml', 'remappings.txt', 'src/A.sol'])
   // ...and fails on one it can't carry, as without --mapping.
   writeFileSync(join(tmp, 'shared-base.toml'), '[profile.default]\nlibs = ["deps"]\n')
   writeFileSync(join(proj, 'foundry.toml'), '[profile.default]\nextends = "../shared-base.toml"\n')
@@ -1144,7 +1144,7 @@ test('buildSolidityBundle reads a package.json with a byte-order mark, as npm do
   writeFileSync(join(tmp, 'src/A.sol'), 'import "dep/D.sol";\n')
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['src'], manifests: true, env: {} })
   t.assert.equal(bundle.sources.get('package.json'), pkg)
-  t.assert.deepEqual([...bundle.modules.keys()].toSorted(), ['.', 'node_modules/dep'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(), ['.', 'node_modules/dep'])
   t.assert.equal(bundle.modules.get('node_modules/dep').version, '2.0.0')
 }))
 
@@ -1157,8 +1157,8 @@ test('buildBashBundle and buildRustBundle walk past a malformed package.json, as
     'src/a.rs': '',
     'src/package.json': '{ bad',
   })
-  t.assert.deepEqual([...(await buildBashBundle({ cwd: tmp, entries: ['run.sh'] })).sources.keys()].toSorted(), ['run.sh', 'sub/lib.sh'])
-  t.assert.deepEqual([...(await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })).sources.keys()].toSorted(), ['src/a.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...(await buildBashBundle({ cwd: tmp, entries: ['run.sh'] })).sources.keys()].toSorted(), ['run.sh', 'sub/lib.sh'])
+  t.assert.deepStrictEqual([...(await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })).sources.keys()].toSorted(), ['src/a.rs', 'src/main.rs'])
 }))
 
 test('buildBashBundle tags only node_modules buckets npm, node_modules a path segment as stasis add has it', withTmp(async (t, tmp) => {
@@ -1171,7 +1171,7 @@ test('buildBashBundle tags only node_modules buckets npm, node_modules a path se
     'node_modules/dep/d.sh': 'echo dep\n',
   })
   const { modules } = await buildBashBundle({ cwd: tmp, entries: ['run.sh'] })
-  t.assert.deepEqual(Object.fromEntries([...modules].map(([dir, m]) => [dir, m.ecosystem])), { '.': undefined, 'tools/foo_node_modules': undefined, 'node_modules/dep': 'npm' })
+  t.assert.deepStrictEqual(Object.fromEntries([...modules].map(([dir, m]) => [dir, m.ecosystem])), { '.': undefined, 'tools/foo_node_modules': undefined, 'node_modules/dep': 'npm' })
 }))
 
 test('buildSolidityBundle with --mapping bundles when forge would reject the root foundry.toml', withTmp(async (t, tmp) => {
@@ -1182,7 +1182,7 @@ test('buildSolidityBundle with --mapping bundles when forge would reject the roo
     'src/A.sol': 'import "x/X.sol";\n',
   })
   const { result: bundle, lines } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src'], mappingFile: 'remappings.txt', env: {} }))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/x/X.sol', 'src/A.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/x/X.sol', 'src/A.sol'])
   t.assert.ok(lines.some((l) => l.includes('Using the default lib dirs')))
 }))
 
@@ -1237,7 +1237,7 @@ test('buildSolidityBundle with manifests carries configs as written, never `.env
   const { result: bundle, lines } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src'], manifests: true, env: {} }))
   // The configs are carried byte for byte, whatever they hold; stasis doesn't edit them.
   const carried = [...bundle.sources].filter(([p]) => !p.endsWith('.sol'))
-  t.assert.deepEqual(carried.map(([p]) => p).toSorted(), ['.gitmodules', 'foundry.toml', 'lib/dep/foundry.toml'])
+  t.assert.deepStrictEqual(carried.map(([p]) => p).toSorted(), ['.gitmodules', 'foundry.toml', 'lib/dep/foundry.toml'])
   for (const [p, text] of carried) t.assert.equal(text, files[p], p)
   // `.env` and hardhat.config.* are never carried, and the submodule's `extends` reaching the
   // project's `.env` is neither read as config nor carried.
@@ -1263,7 +1263,7 @@ test('buildSolidityBundle says when the environment shaped the resolution; build
 test('buildSolidityBundle skips a missing or empty entry directory, as forge skips an absent script/', withTmp(async (t, tmp) => {
   writeProject(tmp, { 'foundry.toml': '[profile.default]\n', 'src/A.sol': 'contract A {}\n', 'test/A.t.sol': 'contract T {}\n' })
   const { result: bundle, lines } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src', 'test', 'script'], env: {} }))
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['src/A.sol', 'test/A.t.sol'])
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['src/A.sol', 'test/A.t.sol'])
   t.assert.ok(lines.some((l) => l.includes('Skipping script/: no such directory')))
   mkdirSync(join(tmp, 'script'))
   const { lines: empty } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src', 'test', 'script'], env: {} }))
@@ -1287,7 +1287,7 @@ test('buildSolidityBundle with --mapping keeps forge\'s library lookups and the 
   const mappings = ['foundry.toml', 'mapping.toml']
   const bundles = await Promise.all(mappings.map((mappingFile) => buildSolidityBundle({ cwd: tmp, entries: ['src'], mappingFile, env: {} })))
   bundles.forEach((bundle, i) => {
-    t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['lib/dep/src/A.sol', 'lib/dep/src/B.sol', 'src/A.sol'], mappings[i])
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['lib/dep/src/A.sol', 'lib/dep/src/B.sol', 'src/A.sol'], mappings[i])
   })
 }))
 
@@ -1313,7 +1313,7 @@ test('buildSolidityBundle resolves unscoped node_modules packages (hardhat/conso
   writeFileSync(join(tmp, 'node_modules/@scope/pkg/package.json'), '{"name":"@scope/pkg","version":"1.0.0","exports":{".":"./index.js"}}')
   writeFileSync(join(tmp, 'node_modules/@scope/pkg/contracts/X.sol'), 'contract X {}\n')
   const bundle = await buildSolidityBundle({ cwd: tmp, entries: ['contracts/A.sol'], env: {} })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['contracts/A.sol', 'node_modules/@scope/pkg/contracts/X.sol', 'node_modules/hardhat/console.sol'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['contracts/A.sol', 'node_modules/@scope/pkg/contracts/X.sol', 'node_modules/hardhat/console.sol'])
 }))
 
 test('buildSolidityBundle rejects a directory entry holding no .sol file', async (t) => {
@@ -1361,8 +1361,8 @@ test('bundleCommand writes a brotli-compressed stasis Bundle that round-trips th
   t.assert.notEqual(buf[0], 0x7b)
   const text = brotliDecompressSync(buf).toString('utf8')
   const parsed = Bundle.parse(text)
-  t.assert.deepEqual([...parsed.entries], ['src/A.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol'],
   )
@@ -1435,8 +1435,8 @@ test('CLI: bundle writes a brotli-compressed Bundle to stasis.code.br by default
   const buf = readFileSync(join(tmp, 'stasis.code.br'))
   t.assert.notEqual(buf[0], 0x7b, 'output must be brotli, not JSON')
   const parsed = Bundle.parse(brotliDecompressSync(buf).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/A.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol'],
   )
@@ -1453,8 +1453,8 @@ test('CLI: bundle writes a brotli-compressed Bundle to stdout with --output=-', 
   t.assert.notEqual(r.stdout[0], 0x7b, 'stdout must be brotli, not JSON')
   t.assert.ok(!existsSync(join(fixtures, 'basic', 'stasis.code.br')), '--output=- must not write a file')
   const parsed = Bundle.parse(brotliDecompressSync(r.stdout).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/A.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol'],
   )
@@ -1467,7 +1467,7 @@ test('CLI: bundle -o writes a brotli-compressed Bundle to the given path', withT
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
   const parsed = Bundle.parse(brotliDecompressSync(buf).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.sol'])
 }))
 
 test('CLI: bundle --mapping=remappings.txt resolves @-prefixed imports', withTmp((t, tmp) => {
@@ -1478,7 +1478,7 @@ test('CLI: bundle --mapping=remappings.txt resolves @-prefixed imports', withTmp
   )
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['lib/openzeppelin-contracts/contracts/utils/Math.sol', 'src/A.sol'],
   )
@@ -1493,7 +1493,7 @@ test('CLI: bundle --mapping=foundry.toml resolves @-prefixed imports', withTmp((
   )
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['lib/openzeppelin-contracts/contracts/utils/Math.sol', 'src/A.sol'],
   )
@@ -1554,8 +1554,8 @@ test('CLI: bundle accepts multiple .sol entries', withTmp((t, tmp) => {
   )
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol', 'src/Shared.sol'],
   )
@@ -1568,15 +1568,15 @@ test('buildPhpBundle produces a Bundle with sources, formats, imports, entries',
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php'] })
 
   t.assert.ok(bundle instanceof Bundle)
-  t.assert.deepEqual(bundle.config, { scope: 'full' })
-  t.assert.deepEqual([...bundle.entries], ['src/A.php'])
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+  t.assert.deepStrictEqual([...bundle.entries], ['src/A.php'])
 
   // No package.json anywhere in the basic fixture → fallback bucket "."
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'php-bundle')
   t.assert.equal(workspace.version, '0.0.0')
-  t.assert.deepEqual(Object.keys(workspace.files).toSorted(), ['src/A.php', 'src/B.php'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['src/A.php', 'src/B.php'])
   t.assert.equal(workspace.files['src/A.php'], readFileSync(join(cwd, 'src/A.php'), 'utf8'))
 
   // Every loaded file gets a 'php' format tag.
@@ -1584,7 +1584,7 @@ test('buildPhpBundle produces a Bundle with sources, formats, imports, entries',
   t.assert.equal(bundle.formats.get('src/B.php'), 'php')
 
   // Includes live under the "php" condition key (not the JS-bundle "*").
-  t.assert.deepEqual([...bundle.imports.keys()], ['php'])
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['php'])
   t.assert.equal(bundle.imports.get('php').get('src/A.php').get('./B.php'), 'src/B.php')
 })
 
@@ -1601,17 +1601,17 @@ test('buildPhpBundle refuses a source that isn\'t UTF-8, rather than bundle it w
 test('buildPhpBundle takes the workspace name+version from the nearest composer.json', async (t) => {
   const cwd = join(phpFixtures, 'with-composer-json')
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php'] })
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'my-php-app')
   t.assert.equal(workspace.version, '2.1.0')
-  t.assert.deepEqual(Object.keys(workspace.files).toSorted(), ['src/A.php', 'src/B.php'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['src/A.php', 'src/B.php'])
 })
 
 test('buildPhpBundle resolves bare includes file- and project-relative', async (t) => {
   const cwd = join(phpFixtures, 'bare')
   const bundle = await buildPhpBundle({ cwd, entries: ['index.php'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['helpers.php', 'index.php', 'lib/Util.php'],
   )
@@ -1623,7 +1623,7 @@ test('buildPhpBundle resolves bare includes file- and project-relative', async (
 test('buildPhpBundle follows nested ../ includes across subdirectories', async (t) => {
   const cwd = join(phpFixtures, 'nested')
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/A.php', 'src/C.php', 'src/sub/B.php'],
   )
@@ -1638,7 +1638,7 @@ test('buildPhpBundle follows the Composer autoload graph and bundles only refere
 
   // Explicit includes (vendor/autoload.php + the composer machinery it requires)
   // AND autoloaded classes reachable from index.php's references.
-  t.assert.deepEqual(files, [
+  t.assert.deepStrictEqual(files, [
     'index.php',
     'src/Helper.php', // same-namespace reference, no `use`
     'src/Legacy/Thing.php', // resolved via the classmap
@@ -1660,7 +1660,7 @@ test('buildPhpBundle follows the Composer autoload graph and bundles only refere
   const lib = bundle.modules.get('vendor/acme/lib')
   t.assert.equal(lib.name, 'acme/lib')
   t.assert.equal(lib.version, '1.4.2')
-  t.assert.deepEqual(Object.keys(lib.files), ['src/Client.php'])
+  t.assert.deepStrictEqual(Object.keys(lib.files), ['src/Client.php'])
   t.assert.ok(!Object.keys(bundle.modules.get('.').files).includes('vendor/acme/lib/src/Client.php'))
 
   // The two classes that exist + are resolvable via the autoload maps but are
@@ -1685,7 +1685,7 @@ test('buildPhpBundle bundles the static directory of a dynamic include', async (
   // non-.php modules/notes.txt is not), and the bundle succeeds.
   const cwd = join(phpFixtures, 'dynamic-include')
   const bundle = await buildPhpBundle({ cwd, entries: ['index.php'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['bootstrap.php', 'index.php', 'modules/admin.php', 'modules/default.php'],
   )
@@ -1697,7 +1697,7 @@ test('buildPhpBundle bundles dir-anchored .php paths passed as arguments (Larave
   // providers.php is too, while `dirname(__DIR__)` (a dir) and `'/up'` are not.
   const cwd = join(phpFixtures, 'path-refs')
   const bundle = await buildPhpBundle({ cwd, entries: ['bootstrap/app.php'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['bootstrap/app.php', 'bootstrap/providers.php', 'routes/api.php', 'routes/web.php'],
   )
@@ -1709,7 +1709,7 @@ test('buildPhpBundle bundles files referenced via Laravel path helpers (base_pat
   // framework loads. Both must be bundled.
   const cwd = join(phpFixtures, 'path-helpers')
   const bundle = await buildPhpBundle({ cwd, entries: ['app/Providers/BroadcastServiceProvider.php'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['app/Providers/BroadcastServiceProvider.php', 'config/broadcasting.php', 'routes/channels.php'],
   )
@@ -1723,7 +1723,7 @@ test('buildPhpBundle follows auto-discovered Laravel providers and the files the
   const cwd = join(phpFixtures, 'laravel-providers')
   const bundle = await buildPhpBundle({ cwd, entries: ['public/index.php'] })
   const files = new Set(bundle.sources.keys())
-  t.assert.deepEqual([...bundle.entries], ['public/index.php'])
+  t.assert.deepStrictEqual([...bundle.entries], ['public/index.php'])
   // Auto-discovered providers (vendor + app) are reached.
   t.assert.ok(files.has('vendor/spatie/laravel-ignition/src/IgnitionServiceProvider.php'))
   t.assert.ok(files.has('app/Providers/AppServiceProvider.php'))
@@ -1770,8 +1770,8 @@ test('buildPhpBundle refuses an installed.json that is not the install of compos
 test('buildPhpBundle deduplicates files included by multiple entries', async (t) => {
   const cwd = join(phpFixtures, 'shared')
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php', 'src/B.php'] })
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['src/A.php', 'src/B.php'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['src/A.php', 'src/B.php'])
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/A.php', 'src/B.php', 'src/Shared.php'],
   )
@@ -1779,7 +1779,7 @@ test('buildPhpBundle deduplicates files included by multiple entries', async (t)
 
 test('buildPhpBundle normalises ./src/A.php-style entries', async (t) => {
   const bundle = await buildPhpBundle({ cwd: join(phpFixtures, 'basic'), entries: ['./src/A.php'] })
-  t.assert.deepEqual([...bundle.entries], ['src/A.php'])
+  t.assert.deepStrictEqual([...bundle.entries], ['src/A.php'])
 })
 
 test('buildPhpBundle rejects an empty entry list', async (t) => {
@@ -1820,8 +1820,8 @@ test('bundleCommand writes a brotli-compressed PHP Bundle that round-trips throu
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
   const parsed = Bundle.parse(brotliDecompressSync(buf).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/A.php'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.php'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.php', 'src/B.php'],
   )
@@ -1836,8 +1836,8 @@ test('CLI: bundle accepts .php entries and writes a Bundle', withTmp((t, tmp) =>
   const r = runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/A.php'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/A.php'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.php', 'src/B.php'],
   )
@@ -1893,8 +1893,8 @@ test('CLI: bundle accepts a .ts entry and records type-stripping formats', withT
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 1 package from src to /)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/entry.ts'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries], ['src/entry.ts'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/entry.ts', 'src/hello.ts'],
   )
@@ -1917,7 +1917,7 @@ test('CLI: bundle allows mixing .ts and .js entries (both are JS-family)', withT
   const r = runCli(['bundle', '-o', outPath, 'a.ts', 'b.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries].toSorted(), ['a.ts', 'b.js'])
+  t.assert.deepStrictEqual([...parsed.entries].toSorted(), ['a.ts', 'b.js'])
   t.assert.equal(parsed.formats.get('a.ts'), 'module-typescript')
   t.assert.equal(parsed.formats.get('b.js'), 'module')
 }))
@@ -2026,7 +2026,7 @@ test('CLI: bundle (JS) does not inherit stale formats/imports from a pre-existin
   t.assert.equal(r2.status, 0, `second bundle stderr: ${r2.stderr}`)
 
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf-8'))
-  t.assert.deepEqual([...decoded.entries].toSorted(), ['entry.js'],
+  t.assert.deepStrictEqual([...decoded.entries].toSorted(), ['entry.js'],
     'second bundle must not carry the first bundle\'s entries')
   // formats and imports must NOT mention seed.js / seedlib.js
   t.assert.ok(!Object.keys(decoded.formats).includes('seed.js'),
@@ -2068,19 +2068,19 @@ const rnpkgFiles = (bundle) => [...bundle.sources.keys()].filter((f) => f.includ
 
 test('buildBundle (JS) follows the default exports branch when no conditions are given', async (t) => {
   const bundle = await buildBundle({ cwd: conditionsFixture, entries: ['src/entry.js'] })
-  t.assert.deepEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/default.js'],
+  t.assert.deepStrictEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/default.js'],
     'no extra conditions -> resolves like plain Node (default branch)')
 })
 
 test('buildBundle (JS) follows the react-native exports branch under conditions=[react-native]', async (t) => {
   const bundle = await buildBundle({ cwd: conditionsFixture, entries: ['src/entry.js'], conditions: ['react-native'] })
-  t.assert.deepEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/rn.js'],
+  t.assert.deepStrictEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/rn.js'],
     'the react-native condition selects the react-native export, not default')
 })
 
 test('buildBundle (JS) follows the browser exports branch under conditions=[browser]', async (t) => {
   const bundle = await buildBundle({ cwd: conditionsFixture, entries: ['src/entry.js'], conditions: ['browser'] })
-  t.assert.deepEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/browser.js'])
+  t.assert.deepStrictEqual(rnpkgFiles(bundle), ['node_modules/rnpkg/browser.js'])
 })
 
 test('buildBundle rejects conditions for non-JS entries', async (t) => {
@@ -2097,7 +2097,7 @@ test('CLI: bundle --conditions selects the matching exports branch', withTmp((t,
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   const files = [...parsed.sources.keys()].filter((f) => f.includes('rnpkg'))
   // react-native is listed before browser in rnpkg's exports, so it wins.
-  t.assert.deepEqual(files, ['node_modules/rnpkg/rn.js'])
+  t.assert.deepStrictEqual(files, ['node_modules/rnpkg/rn.js'])
 }))
 
 test('CLI: bundle without --conditions resolves like plain Node (default branch)', withTmp((t, tmp) => {
@@ -2106,7 +2106,7 @@ test('CLI: bundle without --conditions resolves like plain Node (default branch)
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   const files = [...parsed.sources.keys()].filter((f) => f.includes('rnpkg'))
-  t.assert.deepEqual(files, ['node_modules/rnpkg/default.js'])
+  t.assert.deepStrictEqual(files, ['node_modules/rnpkg/default.js'])
 }))
 
 test('CLI: bundle rejects --conditions for .sol entries', (t) => {
@@ -2169,7 +2169,7 @@ test('buildBundle (JS) --flow resolves the Flow import graph and stores the pris
   writeFlowProject(tmp)
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.js'], flow: true })
   // The value import is walked; the type-only import is erased (never loaded at runtime).
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
   t.assert.ok(!bundle.sources.has('types.js'), 'the Flow type-only import must not be bundled')
   t.assert.equal(bundle.imports.get('*').get('entry.js').get('./dep.js'), 'dep.js')
   // Attestation covers the real bytes: the stored source keeps its Flow annotations verbatim.
@@ -2198,7 +2198,7 @@ test('CLI: bundle --flow strips Flow types so a Flow-typed entry bundles', withT
   const r = runCli(['bundle', '--flow', `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
-  t.assert.deepEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
   // Stored source is the original Flow bytes, not the whitespace-blanked parse input.
   t.assert.equal(parsed.sources.get('entry.js'), readFileSync(join(tmp, 'entry.js'), 'utf8'))
 }))
@@ -2232,7 +2232,7 @@ test('CLI: bundle rejects --flow for .sol entries', (t) => {
 test('buildBundle --flow threads through the legacy-field resolver (--mainFields path)', withTmp(async (t, tmp) => {
   writeFlowProject(tmp)
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.js'], mainFields: ['browser', 'main'], flow: true })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
   t.assert.equal(bundle.sources.get('entry.js'), readFileSync(join(tmp, 'entry.js'), 'utf8'))
 }))
 
@@ -2250,7 +2250,7 @@ test('CLI: bundle --flow --jsx bundles React-Native-style Flow+JSX source', with
   const r = runCli(['bundle', '--flow', '--jsx', `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
-  t.assert.deepEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
   // The stored source keeps both the Flow annotation and the JSX verbatim.
   t.assert.match(parsed.sources.get('entry.js'), /React\$Node/)
   t.assert.match(parsed.sources.get('entry.js'), /<Dep count=/)
@@ -2285,7 +2285,7 @@ const writeTsProject = (dir) => {
 test('buildBundle (JS) --typescript resolves .js specifiers to their on-disk .ts sources', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.ts'], typescript: true })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
   // The edge keeps the source's specifier; only the target is the mapped file.
   t.assert.equal(bundle.imports.get('*').get('entry.ts').get('./dep.js'), 'dep.ts')
   t.assert.equal(bundle.formats.get('dep.ts'), 'module-typescript')
@@ -2323,7 +2323,7 @@ test('buildBundle --typescript threads through the legacy-field resolver (--main
   writeFileSync(join(tmp, 'entry.ts'),
     'import { dep } from "./dep.js"\nimport { m } from "tsdep"\nexport const v: number = dep + m\n')
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.ts'], mainFields: ['main'], typescript: true })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...bundle.sources.keys()].toSorted(),
     ['dep.ts', 'entry.ts', 'node_modules/tsdep/lib/main.ts'],
   )
@@ -2345,7 +2345,7 @@ test('CLI: bundle --typescript bundles a nodenext-style TS project and the bundl
   const r = runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
-  t.assert.deepEqual([...parsed.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
   // Stored source keeps the .js specifier verbatim; the recorded edge does the mapping at load.
   t.assert.match(parsed.sources.get('entry.ts'), /from "\.\/dep\.js"/)
   // The mapped edge round-trips: --bundle=load resolves ./dep.js -> dep.ts from the import map
@@ -2403,7 +2403,7 @@ test('CLI: bundle --typescript auto-discovers tsconfig paths and the aliased bun
   const r = runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
-  t.assert.deepEqual([...parsed.sources.keys()].toSorted(), ['entry.ts', 'src/dep.ts'])
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['entry.ts', 'src/dep.ts'])
   t.assert.equal(parsed.imports.get('*').get('entry.ts').get('@/dep.js'), 'src/dep.ts')
   // The aliased edge round-trips: --bundle=load resolves it from the import map (plain node cannot).
   const run = runCli(['run', '--lock=none', '--bundle=load', 'entry.ts'], { cwd: tmp })
@@ -2481,7 +2481,7 @@ test('buildBundle --metro bundles every platform at once: union files, divergent
   // Both platform variants are carried (the file set is the union across platforms).
   t.assert.ok(files.has('src/Button.ios.js') && files.has('src/Button.android.js'))
   // The divergent edge unflattens to a { platform: file } map keyed by the supplied platforms.
-  t.assert.deepEqual(importTarget(bundle, 'src/entry.js', './Button'), {
+  t.assert.deepStrictEqual(importTarget(bundle, 'src/entry.js', './Button'), {
     android: 'src/Button.android.js',
     ios: 'src/Button.ios.js',
   })
@@ -2512,7 +2512,7 @@ test('buildBundle --metro: a base .js can appear when one platform resolves to i
   // ios resolves Button.ios.js; web has no Button.web.js and excludes .native, so it
   // resolves the base Button.js -- the edge unflattens and the base file is carried.
   const bundle = await buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'web'] })
-  t.assert.deepEqual(importTarget(bundle, 'src/entry.js', './Button'), {
+  t.assert.deepStrictEqual(importTarget(bundle, 'src/entry.js', './Button'), {
     ios: 'src/Button.ios.js',
     web: 'src/Button.js',
   })
@@ -2528,7 +2528,7 @@ test('CLI: bundle --metro --platforms writes a bundle + lockfile that round-trip
   )
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
-  t.assert.deepEqual(Object.fromEntries(bundle.imports.get('*').get('src/entry.js').get('./Button')), {
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('src/entry.js').get('./Button')), {
     android: 'src/Button.android.js',
     ios: 'src/Button.ios.js',
   })
@@ -2536,7 +2536,7 @@ test('CLI: bundle --metro --platforms writes a bundle + lockfile that round-trip
   const lockfile = Lockfile.parse(readFileSync(lock, 'utf8'))
   const lt = lockfile.imports.get('*').get('src/entry.js').get('./Button')
   t.assert.ok(lt instanceof Map)
-  t.assert.deepEqual(Object.fromEntries(lt), { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(lt), { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
 }))
 
 test('CLI: --platforms accepts repeats and comma lists, unioned', withTmp((t, tmp) => {
@@ -2548,7 +2548,7 @@ test('CLI: --platforms accepts repeats and comma lists, unioned', withTmp((t, tm
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   // Both platforms took effect (the edge unflattened across ios+android).
-  t.assert.deepEqual(Object.keys(Object.fromEntries(bundle.imports.get('*').get('src/entry.js').get('./Button'))), ['android', 'ios'])
+  t.assert.deepStrictEqual(Object.keys(Object.fromEntries(bundle.imports.get('*').get('src/entry.js').get('./Button'))), ['android', 'ios'])
 }))
 
 test('CLI: a --metro multi-platform bundle fails closed under plain --bundle=load', withTmp((t, tmp) => {
@@ -2783,9 +2783,9 @@ test('buildBundle --metro carries a bundled native dep\'s ios/android sources + 
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/logo.png'), 'resource:base64')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/index.js'), 'commonjs')
   // The base64 payload decodes back to the exact bytes.
-  t.assert.deepEqual(Buffer.from(mod.files['ios/logo.png'], 'base64'), PNG_BYTES)
+  t.assert.deepStrictEqual(Buffer.from(mod.files['ios/logo.png'], 'base64'), PNG_BYTES)
   // A JS-only bundled dep contributes no native surface (only its reached JS).
-  t.assert.deepEqual(Object.keys(bundle.modules.get('node_modules/js-only').files), ['index.js'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('node_modules/js-only').files), ['index.js'])
 }))
 
 test('buildBundle --metro --resources plist carries a BINARY plist as base64 (opt-in)', withTmp(async (t, tmp) => {
@@ -2797,7 +2797,7 @@ test('buildBundle --metro --resources plist carries a BINARY plist as base64 (op
   t.assert.ok(Object.keys(mod.files).includes('ios/Binary.plist'), 'the binary plist is carried when opted in')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Binary.plist'), 'resource:base64')
   // The payload decodes back to the exact bplist bytes.
-  t.assert.deepEqual(Buffer.from(mod.files['ios/Binary.plist'], 'base64'),
+  t.assert.deepStrictEqual(Buffer.from(mod.files['ios/Binary.plist'], 'base64'),
     Buffer.concat([Buffer.from('bplist00'), Buffer.from([0xd1, 0xff, 0xfe, 0x00])]))
   // A TEXT plist stays on the code path as 'xml' regardless of the resources opt-in.
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/RNThing-Info.plist'), 'xml')
@@ -2865,8 +2865,8 @@ test('CLI: diff folds per-platform edges to the resolved-file set (detects a div
   t.assert.ok(buttonChange, './Button must be reported as a changed import')
   // The FOLD reduces each side's per-platform Map to its resolved-file SET; assert those
   // exact sets, so the test fails if the fold is removed (the targets would be raw Maps).
-  t.assert.deepEqual(new Set(buttonChange.from), new Set(['src/Button.android.js', 'src/Button.ios.js']))
-  t.assert.deepEqual(new Set(buttonChange.to), new Set(['src/Button.ios.js', 'src/Button.js']))
+  t.assert.deepStrictEqual(new Set(buttonChange.from), new Set(['src/Button.android.js', 'src/Button.ios.js']))
+  t.assert.deepStrictEqual(new Set(buttonChange.to), new Set(['src/Button.ios.js', 'src/Button.js']))
   // A --metro bundle still diffs clean against an identical copy (no false positives).
   const copy = join(tmp, 'copy.br')
   t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${copy}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
@@ -2880,7 +2880,7 @@ test('CLI: extract unpacks a --metro multi-platform bundle (both variants + a pl
   t.assert.equal(runCli(['extract', `--output=${dir}`, out]).status, 0)
   t.assert.ok(existsSync(join(dir, 'src', 'Button.ios.js')) && existsSync(join(dir, 'src', 'Button.android.js')))
   const lock = JSON.parse(readFileSync(join(dir, 'stasis.lock.json'), 'utf8'))
-  t.assert.deepEqual(lock.imports['*']['src/entry.js']['./Button'], { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
+  t.assert.deepStrictEqual(lock.imports['*']['src/entry.js']['./Button'], { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
 }))
 
 test('CLI: bundle --mainFields rejects a non-JS bundle and an empty value', (t) => {
@@ -3097,7 +3097,7 @@ test('CLI: bundle (JS) salvages edges from a CJS file with a top-level return (v
   t.assert.match(r.stderr, /file\(s\) with parse errors; their recorded imports may be incomplete/)
   t.assert.match(r.stderr, /guard\.cjs/)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.cjs', 'extra.cjs', 'guard.cjs'],
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.cjs', 'extra.cjs', 'guard.cjs'],
     'the require edge inside the parse-error file must be salvaged and walked')
 }))
 
@@ -3115,7 +3115,7 @@ test('CLI: bundle (JS) tolerates a missing static import behind a dynamic import
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /unresolved import\(s\); they will fall through at load time/)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.mjs', 'optional.mjs'])
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.mjs', 'optional.mjs'])
 }))
 
 test('CLI: bundle (JS) fails closed when an edge resolves to a file a source bundle cannot carry', withTmp((t, tmp) => {
@@ -3159,7 +3159,7 @@ test('CLI: bundle --jsx parses JSX in a .js file and walks its import graph', wi
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   // The JSX file parsed cleanly and the edge behind it was followed.
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.js', 'greet.js'],
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.js', 'greet.js'],
     'the import edge past the JSX must be discovered and bundled')
   // JSX source is stored verbatim (untransformed) -- `stasis build --loader=.js:jsx` transforms it later.
   t.assert.match(decoded.sources['.'].files['entry.js'], /<Text>\{greet\}<\/Text>/u)
@@ -3180,7 +3180,7 @@ test('CLI: bundle --metro --jsx bundles a React Native JSX-in-.js entry (the rep
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
     'the whole JSX chain must be walked on every platform')
 }))
 
@@ -3197,7 +3197,7 @@ test('CLI: bundle --metro --jsx handles a typeless package (RN convention: no "t
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
     'the whole JSX chain must be walked in a typeless package')
   // ESM syntax must still be detected under lang:jsx -> module format, not commonjs.
   t.assert.equal(decoded.formats['index.js'], 'module', 'import/export syntax must resolve to module even with JSX enabled')
@@ -3222,7 +3222,7 @@ test('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-p
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/, '--jsx must parse the CJS JSX cleanly (no salvaged-parse warning)')
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Row.js', 'index.js'])
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Row.js', 'index.js'])
   t.assert.equal(decoded.formats['index.js'], 'commonjs', 'the require/module.exports file stays CommonJS')
 }))
 
@@ -3260,7 +3260,7 @@ test('buildBundle threads jsx through to the scanner (programmatic API)', withTm
     'default (no jsx) must fail closed on JSX-in-.js',
   )
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.js'], jsx: true })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['entry.js', 'x.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['entry.js', 'x.js'])
 }))
 
 // --- .jsx/.tsx made carryable by --jsx -----------------------------------------------------
@@ -3300,7 +3300,7 @@ test('CLI: bundle --metro carries a .tsx dependency only under --jsx (else fails
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/tsx-dep/src/index.tsx'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/tsx-dep/src/index.tsx'],
     'the .tsx dependency must be scanned and carried under --jsx')
   // Stored verbatim (untransformed) and tagged as a buildable code format.
   t.assert.match(bundle.sources.get('node_modules/tsx-dep/src/index.tsx'), /<View>hi<\/View>/u)
@@ -3324,7 +3324,7 @@ test('CLI: bundle --metro --jsx probes .tsx for an extensionless import (sourceE
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['Widget.tsx', 'index.js'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['Widget.tsx', 'index.js'],
     'the extensionless import must resolve to Widget.tsx and carry it')
 }))
 
@@ -3347,7 +3347,7 @@ test('CLI: bundle (plain, no --metro) --jsx carries explicit .tsx AND .jsx impor
   const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'legacy.jsx', 'widget.tsx'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'legacy.jsx', 'widget.tsx'],
     'both the .tsx and .jsx dependency must be carried under --jsx on the plain path')
 }))
 
@@ -3370,7 +3370,7 @@ test('CLI: bundle --jsx --flow strips Flow types from a .jsx dependency and walk
   const r = runCli(['bundle', '--jsx', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'dep.js', 'index.js'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'dep.js', 'index.js'],
     'stripping Flow from the .jsx must reveal its edge to dep.js')
   // Stored bytes are pristine: the Flow annotation survives in the bundle (only parsing saw it stripped).
   t.assert.match(bundle.sources.get('comp.jsx'), /x: number/u)
@@ -3402,7 +3402,7 @@ test('CLI: bundle --metro carries reached assets only with --resources (binary -
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png,svg', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js', 'logo.png'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js', 'logo.png'],
     'both assets must be carried alongside the entry')
   // Byte-derived formats: binary -> base64, UTF-8 -> verbatim resource.
   t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
@@ -3427,7 +3427,7 @@ test('CLI: bundle (plain, no --metro) --resources carries a reached asset', with
   const r = runCli(['bundle', '--resources=png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'logo.png'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'logo.png'])
   t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
 }))
 
@@ -3451,7 +3451,7 @@ test('buildBundle threads resources through to the scanner (programmatic API)', 
     'default (no resources) must fail closed on a reached asset',
   )
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], resources: ['svg'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js'])
   t.assert.equal(bundle.formats.get('icon.svg'), 'resource')
 }))
 
@@ -3479,7 +3479,7 @@ test('CLI: bundle --resources carries an extensionless allowlisted filename and 
   const r = runCli(['bundle', '--resources=NOTICE,png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['NOTICE', 'index.js'],
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['NOTICE', 'index.js'],
     'the extensionless allowlisted file is carried; the unreached png extension adds nothing')
   t.assert.equal(bundle.formats.get('NOTICE'), 'resource')
 }))
@@ -3610,7 +3610,7 @@ test('CLI: bundle (JS) still warns and writes the bundle for an unresolved requi
   t.assert.match(r.stderr, /unresolved import\(s\); they will fall through at load time/)
   t.assert.match(r.stderr, /require not-installed-pkg from .*entry\.cjs \(MODULE_NOT_FOUND\)/)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepEqual(Object.keys(decoded.sources['.'].files), ['entry.cjs'])
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files), ['entry.cjs'])
 }))
 
 // --- Bash bundles ---
@@ -3620,15 +3620,15 @@ test('buildBashBundle produces a Bundle with sources, formats, imports, entries'
   const bundle = await buildBashBundle({ cwd, entries: ['main.sh'] })
 
   t.assert.ok(bundle instanceof Bundle)
-  t.assert.deepEqual(bundle.config, { scope: 'full' })
-  t.assert.deepEqual([...bundle.entries], ['main.sh'])
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+  t.assert.deepStrictEqual([...bundle.entries], ['main.sh'])
 
   // No package.json → fallback "." bucket with placeholder identity.
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'bash-bundle')
   t.assert.equal(workspace.version, '0.0.0')
-  t.assert.deepEqual(Object.keys(workspace.files).toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['lib.sh', 'main.sh'])
   t.assert.equal(workspace.files['main.sh'], readFileSync(join(cwd, 'main.sh'), 'utf8'))
 
   // Every loaded file gets a 'shell' format tag.
@@ -3636,7 +3636,7 @@ test('buildBashBundle produces a Bundle with sources, formats, imports, entries'
   t.assert.equal(bundle.formats.get('lib.sh'), 'shell')
 
   // Imports live under the "shell" condition key.
-  t.assert.deepEqual([...bundle.imports.keys()], ['shell'])
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['shell'])
   t.assert.equal(bundle.imports.get('shell').get('main.sh').get('./lib.sh'), 'lib.sh')
 })
 
@@ -3649,20 +3649,20 @@ test('buildBashBundle takes the workspace bucket name/version from package.json'
 
 test('buildBashBundle follows a multi-level source chain', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'nested'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.sh', 'b.sh', 'main.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.sh', 'b.sh', 'main.sh'])
   t.assert.equal(bundle.imports.get('shell').get('main.sh').get('./a.sh'), 'a.sh')
   t.assert.equal(bundle.imports.get('shell').get('a.sh').get('./b.sh'), 'b.sh')
 })
 
 test('buildBashBundle deduplicates a file sourced by multiple entries', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'shared'), entries: ['a.sh', 'b.sh'] })
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['a.sh', 'b.sh'])
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.sh', 'b.sh', 'shared.sh'])
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['a.sh', 'b.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.sh', 'b.sh', 'shared.sh'])
 })
 
 test('buildBashBundle resolves bash/sh exec references', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'exec'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['helper.sh', 'main.sh', 'worker.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['helper.sh', 'main.sh', 'worker.sh'])
   const edges = bundle.imports.get('shell').get('main.sh')
   t.assert.equal(edges.get('./worker.sh'), 'worker.sh')
   t.assert.equal(edges.get('helper.sh'), 'helper.sh')
@@ -3670,13 +3670,13 @@ test('buildBashBundle resolves bash/sh exec references', async (t) => {
 
 test('buildBashBundle resolves direct ./script.sh invocations', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'direct'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['main.sh', 'worker.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['main.sh', 'worker.sh'])
   t.assert.equal(bundle.imports.get('shell').get('main.sh').get('./worker.sh'), 'worker.sh')
 })
 
 test('buildBashBundle resolves `# Depends on:` comment hints', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'comment'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['helper.sh', 'main.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['helper.sh', 'main.sh'])
   t.assert.equal(bundle.imports.get('shell').get('main.sh').get('helper.sh'), 'helper.sh')
 })
 
@@ -3684,13 +3684,13 @@ test('buildBashBundle resolves a `${VAR}` source via its `# shellcheck source=` 
   // `source "${LIB_DIR}/config.sh"` can't be resolved statically; the
   // `# shellcheck source=../lib/config.sh` directive pins the real location.
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'shellcheck'), entries: ['bin/main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['bin/main.sh', 'lib/config.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['bin/main.sh', 'lib/config.sh'])
   t.assert.equal(bundle.imports.get('shell').get('bin/main.sh').get('../lib/config.sh'), 'lib/config.sh')
 })
 
 test('buildBashBundle resolves ../ references across subdirectories', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'subdir'), entries: ['bin/main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['bin/main.sh', 'lib/helper.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['bin/main.sh', 'lib/helper.sh'])
   t.assert.equal(bundle.imports.get('shell').get('bin/main.sh').get('../lib/helper.sh'), 'lib/helper.sh')
 })
 
@@ -3698,19 +3698,19 @@ test('buildBashBundle bundles local sources but tolerates commands and absolute 
   // main.sh sources ./lib.sh (bundled) plus an absolute /opt/legacy/system.sh and
   // grep/curl/node — none of those is bundled, and none is treated as a missing script.
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'external'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
 })
 
 test('buildBashBundle tolerates a ../ source that escapes the bundle root', async (t) => {
   // main.sh sources ./lib.sh (bundled) and ../shared/common.sh (escapes cwd →
   // unbundlable → tolerated as external, not a fatal missing script).
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'escaping'), entries: ['main.sh'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
 })
 
 test('buildBashBundle accepts .bash entries', async (t) => {
   const bundle = await buildBashBundle({ cwd: join(bashFixtures, 'dotbash'), entries: ['main.bash'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.bash'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.bash'])
   t.assert.equal(bundle.formats.get('main.bash'), 'shell')
 })
 
@@ -3769,8 +3769,8 @@ test('bundleCommand writes a bash Bundle that round-trips through Bundle.parse',
   const outPath = join(tmp, 'out.stasis.code.br')
   await bundleCommand({ cwd: join(bashFixtures, 'basic'), entries: ['main.sh'], output: outPath })
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['main.sh'])
-  t.assert.deepEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
+  t.assert.deepStrictEqual([...parsed.entries], ['main.sh'])
+  t.assert.deepStrictEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['lib.sh', 'main.sh'])
   t.assert.equal(parsed.formats.get('main.sh'), 'shell')
   t.assert.equal(parsed.imports.get('shell').get('main.sh').get('./lib.sh'), 'lib.sh')
 }))
@@ -3782,7 +3782,7 @@ test('CLI: bundle writes a brotli-compressed Bundle for a .sh entry', withTmp((t
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
   const parsed = Bundle.parse(brotliDecompressSync(buf).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['main.sh'])
+  t.assert.deepStrictEqual([...parsed.entries], ['main.sh'])
   t.assert.equal(parsed.imports.get('shell').get('main.sh').get('./lib.sh'), 'lib.sh')
 }))
 
@@ -3805,25 +3805,25 @@ test('buildRustBundle produces a Bundle with sources, formats, imports, entries'
   const bundle = await buildRustBundle({ cwd, entries: ['src/main.rs'] })
 
   t.assert.ok(bundle instanceof Bundle)
-  t.assert.deepEqual(bundle.config, { scope: 'full' })
-  t.assert.deepEqual([...bundle.entries], ['src/main.rs'])
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+  t.assert.deepStrictEqual([...bundle.entries], ['src/main.rs'])
 
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'rust-bundle')
   t.assert.equal(workspace.version, '0.0.0')
-  t.assert.deepEqual(Object.keys(workspace.files).toSorted(), ['src/foo.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['src/foo.rs', 'src/main.rs'])
 
   t.assert.equal(bundle.formats.get('src/main.rs'), 'rust')
   t.assert.equal(bundle.formats.get('src/foo.rs'), 'rust')
 
-  t.assert.deepEqual([...bundle.imports.keys()], ['rust'])
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['rust'])
   t.assert.equal(bundle.imports.get('rust').get('src/main.rs').get('mod foo'), 'src/foo.rs')
 })
 
 test('buildRustBundle records mod edges and crate:: use edges', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'use-crate'), entries: ['src/main.rs'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/main.rs'])
   const main = bundle.imports.get('rust').get('src/main.rs')
   t.assert.equal(main.get('mod foo'), 'src/foo.rs')
   t.assert.equal(main.get('mod bar'), 'src/bar.rs')
@@ -3833,7 +3833,7 @@ test('buildRustBundle records mod edges and crate:: use edges', async (t) => {
 
 test('buildRustBundle follows nested mods into stem subdirectories', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'nested'), entries: ['src/main.rs'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/foo.rs', 'src/foo/bar.rs', 'src/main.rs'],
   )
@@ -3842,7 +3842,7 @@ test('buildRustBundle follows nested mods into stem subdirectories', async (t) =
 
 test('buildRustBundle follows mod.rs-style submodules', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'mod-rs'), entries: ['src/main.rs'] })
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(bundle.modules.get('.').files).toSorted(),
     ['src/foo/bar.rs', 'src/foo/mod.rs', 'src/main.rs'],
   )
@@ -3850,30 +3850,30 @@ test('buildRustBundle follows mod.rs-style submodules', async (t) => {
 
 test('buildRustBundle bundles from a lib.rs crate root', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'lib'), entries: ['src/lib.rs'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/lib.rs'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/lib.rs'])
   t.assert.equal(bundle.imports.get('rust').get('src/lib.rs').get('mod foo'), 'src/foo.rs')
   t.assert.equal(bundle.imports.get('rust').get('src/lib.rs').get('mod bar'), 'src/bar.rs')
 })
 
 test('buildRustBundle does not follow inline mods', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'inline-mod'), entries: ['src/main.rs'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/main.rs', 'src/real.rs'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/main.rs', 'src/real.rs'])
 })
 
 test('buildRustBundle does not bundle external crates that are not vendored', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'external-crate'), entries: ['src/main.rs'] })
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/local.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['src/local.rs', 'src/main.rs'])
 })
 
 test('buildRustBundle collects a `cargo vendor` crate into its own bucket tagged `cargo`', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'with-vendored-crate'), entries: ['src/main.rs'] })
 
-  t.assert.deepEqual([...bundle.modules.keys()].toSorted(), ['.', 'vendor/cool-lib'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(), ['.', 'vendor/cool-lib'])
 
   // Workspace: the project's own code, no ecosystem.
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.ecosystem, undefined)
-  t.assert.deepEqual(Object.keys(workspace.files).toSorted(), ['src/main.rs', 'src/util.rs'])
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['src/main.rs', 'src/util.rs'])
 
   // Vendored crate: reached via `use cool_lib::…` (the on-disk package dir
   // hyphenates the crate's snake_case lib name), bucketed with name/version from
@@ -3882,7 +3882,7 @@ test('buildRustBundle collects a `cargo vendor` crate into its own bucket tagged
   t.assert.equal(crate.name, 'cool-lib')
   t.assert.equal(crate.version, '0.4.2')
   t.assert.equal(crate.ecosystem, 'cargo')
-  t.assert.deepEqual(Object.keys(crate.files).toSorted(), ['src/inner.rs', 'src/lib.rs'])
+  t.assert.deepStrictEqual(Object.keys(crate.files).toSorted(), ['src/inner.rs', 'src/lib.rs'])
 
   // The cross-crate dependency is recorded as a `use <crate>` edge to its root.
   t.assert.equal(
@@ -3911,8 +3911,8 @@ const captureWarningsAsync = async (fn) => {
 
 test('buildRustBundle pulls the package\'s own lib in when main.rs uses it, bucketed by Cargo.toml', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'lib-bin'), entries: ['src/main.rs'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'src/main.rs'])
-  t.assert.deepEqual([...bundle.modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
   const workspace = bundle.modules.get('.')
   t.assert.equal(workspace.name, 'my-app')
   t.assert.equal(workspace.version, '0.1.0')
@@ -3925,22 +3925,22 @@ test('buildRustBundle pulls the package\'s own lib in when main.rs uses it, buck
 
 test('buildRustBundle treats src/bin and tests entries as crate roots (sibling modules, own lib)', async (t) => {
   const bin = await buildRustBundle({ cwd: join(rustFixtures, 'lib-bin'), entries: ['src/bin/tool.rs'] })
-  t.assert.deepEqual([...bin.sources.keys()].toSorted(), ['src/bin/helper.rs', 'src/bin/tool.rs', 'src/cli.rs', 'src/config.rs', 'src/lib.rs'])
+  t.assert.deepStrictEqual([...bin.sources.keys()].toSorted(), ['src/bin/helper.rs', 'src/bin/tool.rs', 'src/cli.rs', 'src/config.rs', 'src/lib.rs'])
   t.assert.equal(bin.imports.get('rust').get('src/bin/tool.rs').get('mod helper'), 'src/bin/helper.rs')
   t.assert.equal(bin.imports.get('rust').get('src/bin/tool.rs').get('use my_app'), 'src/lib.rs')
 
   const it = await buildRustBundle({ cwd: join(rustFixtures, 'lib-bin'), entries: ['tests/smoke.rs'] })
-  t.assert.deepEqual([...it.sources.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'tests/common/mod.rs', 'tests/helpers.rs', 'tests/smoke.rs'])
+  t.assert.deepStrictEqual([...it.sources.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'tests/common/mod.rs', 'tests/helpers.rs', 'tests/smoke.rs'])
   t.assert.equal(it.imports.get('rust').get('tests/smoke.rs').get('mod common'), 'tests/common/mod.rs')
 })
 
 test('buildRustBundle follows Cargo path dependencies across a workspace, one bucket per member', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'workspace'), entries: ['crates/app/src/main.rs'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'crates/app/src/local.rs', 'crates/app/src/main.rs', 'crates/tools/src/lib.rs', 'crates/util/src/detail.rs', 'crates/util/src/std_impl.rs', 'crates/util/src/util_lib.rs',
   ])
   const buckets = [...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem])
-  t.assert.deepEqual(buckets.toSorted(), [
+  t.assert.deepStrictEqual(buckets.toSorted(), [
     ['crates/app', 'app', '0.3.0', undefined], // version.workspace = true -> [workspace.package]
     ['crates/tools', 'dev-tools', '1.0.0', undefined], // reached as `tools` (package = "dev-tools")
     ['crates/util', 'util', '0.2.0', undefined], // workspace = true dep with a [lib] path
@@ -3953,7 +3953,7 @@ test('buildRustBundle follows Cargo path dependencies across a workspace, one bu
 
 test('buildRustBundle honours #[path] (crate root, non-root sibling, inside an inline module) and cfg_attr variants', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'path-attr'), entries: ['src/lib.rs'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'src/de.rs', 'src/de/extra.rs', 'src/de/seed.rs', 'src/discouraged.rs', 'src/documented.rs', 'src/lib.rs', 'src/parse.rs', 'src/private/mod.rs',
     'src/raw/mod.rs', 'src/sys.rs', 'src/sys/unix.rs', 'src/sys/windows.rs',
   ])
@@ -3961,7 +3961,7 @@ test('buildRustBundle honours #[path] (crate root, non-root sibling, inside an i
   t.assert.equal(lib.get('mod __private'), 'src/private/mod.rs')
   t.assert.equal(lib.get('mod seed'), 'src/de/seed.rs')
   t.assert.equal(lib.get('mod raw::inner'), 'src/raw/mod.rs')
-  t.assert.deepEqual(Object.fromEntries(lib.get('mod sys')), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
+  t.assert.deepStrictEqual(Object.fromEntries(lib.get('mod sys')), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
   t.assert.equal(bundle.imports.get('rust').get('src/parse.rs').get('mod discouraged'), 'src/discouraged.rs')
 })
 
@@ -3971,7 +3971,7 @@ test('bundleCommand round-trips a cfg-keyed mod target through Bundle.parse', wi
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   const sys = parsed.imports.get('rust').get('src/lib.rs').get('mod sys')
   t.assert.ok(sys instanceof Map)
-  t.assert.deepEqual(Object.fromEntries(sys), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
+  t.assert.deepStrictEqual(Object.fromEntries(sys), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
 }))
 
 test('buildRustBundle refuses a #[path] escaping the crate root as an unresolved module', async (t) => {
@@ -3983,7 +3983,7 @@ test('buildRustBundle refuses a #[path] escaping the crate root as an unresolved
 
 test('buildRustBundle resolves a mod declared inside inline modules under their directories', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'inline-nested'), entries: ['src/main.rs'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/main.rs', 'src/outer/deep/leaf.rs', 'src/outer/inner.rs'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/main.rs', 'src/outer/deep/leaf.rs', 'src/outer/inner.rs'])
   const main = bundle.imports.get('rust').get('src/main.rs')
   t.assert.equal(main.get('mod outer::inner'), 'src/outer/inner.rs')
   t.assert.equal(main.get('mod outer::deep::leaf'), 'src/outer/deep/leaf.rs')
@@ -3992,15 +3992,15 @@ test('buildRustBundle resolves a mod declared inside inline modules under their 
 
 test('buildRustBundle leaves test/doc-only modules and the dev-deps they reach out of the bundle', async (t) => {
   const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: join(rustFixtures, 'cfg-test'), entries: ['src/lib.rs'] }))
-  t.assert.deepEqual(warnings, ["[stasis] Rust features from a replay of the manifests, not cargo's resolver: no --cargo-target"])
+  t.assert.deepStrictEqual(warnings, ["[stasis] Rust features from a replay of the manifests, not cargo's resolver: no --cargo-target"])
   // Not bundled: src/tests/mod.rs, src/prop/strategies.rs, src/doc_only.rs, src/sys/mock.rs, src/maybe.rs (its feature
   // is off), vendor/proptest, vendor/quickcheck, serde's test helpers.
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'src/backend.rs', 'src/lib.rs', 'src/real.rs', 'src/sys/unix.rs', 'src/sys/windows.rs', 'vendor/serde/src/lib.rs',
   ])
-  t.assert.deepEqual([...bundle.modules.keys()].toSorted(), ['.', 'vendor/serde'])
+  t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(), ['.', 'vendor/serde'])
   const lib = bundle.imports.get('rust').get('src/lib.rs')
-  t.assert.deepEqual(Object.fromEntries(lib.get('mod sys')), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs' })
+  t.assert.deepStrictEqual(Object.fromEntries(lib.get('mod sys')), { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs' })
   t.assert.equal(lib.get('mod backend'), 'src/backend.rs')
 })
 
@@ -4053,14 +4053,14 @@ test('CLI: bundle --cargo-manifests adds the package manifest, lockfile and buil
   t.assert.equal(withManifests.status, 0, withManifests.stderr)
   t.assert.match(withManifests.stderr, /Bundled 11 files in 1 package/u)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), [
     'Cargo.lock', 'Cargo.toml', 'README.md', 'build.rs', 'build/helper.rs', 'data/blob.bin', 'data/table.txt',
     'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs',
   ])
   t.assert.equal(parsed.formats.get('Cargo.toml'), 'resource')
   t.assert.equal(parsed.formats.get('build.rs'), 'rust')
   t.assert.equal(parsed.imports.get('rust').get('build.rs').get('mod helper'), 'build/helper.rs')
-  t.assert.deepEqual([...parsed.entries], ['src/lib.rs'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/lib.rs'])
 }))
 
 const hasRustc = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0
@@ -4110,9 +4110,9 @@ test('CLI: bundle --cargo-features enables a root feature (repeatable, comma-sep
 
 test('buildRustBundle follows cfg_if!-style mods and tolerates macro-generated ones with no .rs file', async (t) => {
   const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: join(rustFixtures, 'macro-mods'), entries: ['src/main.rs'] }))
-  t.assert.deepEqual(warnings, [])
+  t.assert.deepStrictEqual(warnings, [])
   // The .md files behind serde_with's generate_guide! are docs, not modules: not bundled, not an error.
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/imp_other.rs', 'src/imp_unix.rs', 'src/main.rs', 'src/real.rs'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/imp_other.rs', 'src/imp_unix.rs', 'src/main.rs', 'src/real.rs'])
   const main = bundle.imports.get('rust').get('src/main.rs')
   t.assert.equal(main.get('mod imp_unix'), 'src/imp_unix.rs')
   t.assert.equal(main.get('mod imp_other'), 'src/imp_other.rs')
@@ -4120,7 +4120,7 @@ test('buildRustBundle follows cfg_if!-style mods and tolerates macro-generated o
 
 test('buildRustBundle records edges for grouped/multi-line use trees, super::/self:: paths and one-line attributes', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'use-groups'), entries: ['src/main.rs'] })
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'src/a.rs', 'src/after_string.rs', 'src/b.rs', 'src/config.rs', 'src/errors.rs', 'src/macros.rs', 'src/main.rs',
     'src/net/client.rs', 'src/net/mod.rs', 'src/net/server.rs', 'src/util.rs',
   ])
@@ -4142,10 +4142,10 @@ test('buildRustBundle records edges for grouped/multi-line use trees, super::/se
 
 test('buildRustBundle follows a vendored crate\'s vendored dependency and records the edge (extern crate … as)', async (t) => {
   const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: join(rustFixtures, 'vendored-transitive'), entries: ['src/main.rs'] }))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'src/main.rs', 'vendor/alpha/src/inner.rs', 'vendor/alpha/src/lib.rs', 'vendor/beta-lib/src/lib.rs', 'vendor/delta/src/lib.rs', 'vendor/gamma/src/lib.rs',
   ])
-  t.assert.deepEqual([...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem]).toSorted(), [
+  t.assert.deepStrictEqual([...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem]).toSorted(), [
     ['.', 'rust-bundle', '0.0.0', undefined],
     ['vendor/alpha', 'alpha', '1.0.0', 'cargo'],
     ['vendor/beta-lib', 'beta-lib', '2.0.0', 'cargo'],
@@ -4164,7 +4164,7 @@ test('buildRustBundle follows a vendored crate\'s vendored dependency and record
 
 test('buildRustBundle bundles what is in-tree and hints at `cargo vendor` when deps are referenced with no vendor/ dir', async (t) => {
   const { result: bundle, warnings } = await captureWarningsAsync(() => buildRustBundle({ cwd: join(rustFixtures, 'no-vendor'), entries: ['src/main.rs'] }))
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['src/a.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a.rs', 'src/main.rs'])
   // Two short lines: the crates, then the remedy (no absolute path).
   const listed = warnings.find((w) => w.includes('referenced but not in the bundle'))
   t.assert.equal(listed, '[stasis] 2 crates referenced but not in the bundle: serde, syn') // not std, not the local module `a`
@@ -4219,8 +4219,8 @@ test('bundleCommand writes a rust Bundle that round-trips through Bundle.parse',
   const outPath = join(tmp, 'out.stasis.code.br')
   await bundleCommand({ cwd: join(rustFixtures, 'use-crate'), entries: ['src/main.rs'], output: outPath })
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/main.rs'])
-  t.assert.deepEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/main.rs'])
+  t.assert.deepStrictEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['src/bar.rs', 'src/foo.rs', 'src/main.rs'])
   t.assert.equal(parsed.formats.get('src/main.rs'), 'rust')
   t.assert.equal(parsed.imports.get('rust').get('src/main.rs').get('mod foo'), 'src/foo.rs')
 }))
@@ -4232,7 +4232,7 @@ test('CLI: bundle writes a brotli-compressed Bundle for a .rs entry', withTmp((t
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
   const parsed = Bundle.parse(brotliDecompressSync(buf).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries], ['src/main.rs'])
+  t.assert.deepStrictEqual([...parsed.entries], ['src/main.rs'])
   t.assert.equal(parsed.imports.get('rust').get('src/main.rs').get('mod foo'), 'src/foo.rs')
 }))
 
@@ -4348,8 +4348,8 @@ test('buildBundle builds a JS Bundle identical to what bundleCommand writes, wit
 
   const bundle = await buildBundle({ cwd: tmp, entries: ['a.js'] })
   t.assert.ok(bundle instanceof Bundle)
-  t.assert.deepEqual([...bundle.entries], ['a.js'])
-  t.assert.deepEqual([...bundle.sources.keys()].toSorted(), ['a.js', 'b.js'])
+  t.assert.deepStrictEqual([...bundle.entries], ['a.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['a.js', 'b.js'])
   t.assert.equal(bundle.formats.get('a.js'), 'module')
   // Static JS bundles store edges under the wildcard '*' condition key
   t.assert.equal(bundle.imports.get('*').get('a.js').get('./b.js'), 'b.js')
@@ -4401,15 +4401,15 @@ test('bundleCommand --add merges a second entry\'s graph into an existing bundle
   // First build: A.sol pulls in Shared.sol.
   await bundleCommand({ cwd, entries: ['src/A.sol'], output: outPath })
   const first = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual([...first.entries], ['src/A.sol'])
-  t.assert.deepEqual(Object.keys(first.modules.get('.').files).toSorted(), ['src/A.sol', 'src/Shared.sol'])
+  t.assert.deepStrictEqual([...first.entries], ['src/A.sol'])
+  t.assert.deepStrictEqual(Object.keys(first.modules.get('.').files).toSorted(), ['src/A.sol', 'src/Shared.sol'])
 
   // Add B.sol (which also imports Shared.sol) to the same bundle.
   await bundleCommand({ cwd, entries: ['src/B.sol'], output: outPath, add: true })
   const merged = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   // Entries and files are unioned; the shared file is not duplicated.
-  t.assert.deepEqual([...merged.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...merged.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(merged.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol', 'src/Shared.sol'],
   )
@@ -4425,7 +4425,7 @@ test('bundleCommand --add writes a fresh bundle when the target does not exist y
   await bundleCommand({ cwd: join(fixtures, 'basic'), entries: ['src/A.sol'], output: outPath, add: true })
   t.assert.ok(existsSync(outPath))
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual(Object.keys(parsed.modules.get('.').files).toSorted(), ['src/A.sol', 'src/B.sol'])
 }))
 
 test('bundleCommand --add cannot stream to stdout', async (t) => {
@@ -4445,7 +4445,7 @@ test('bundleCommand --add fails closed on a file whose bytes conflict, leaving t
     /content mismatch for 'src\/A\.sol'/,
   )
   // The pre-existing bundle is untouched (the merge throws before any write).
-  t.assert.deepEqual(readFileSync(outPath), before)
+  t.assert.deepStrictEqual(readFileSync(outPath), before)
 }))
 
 test('CLI: bundle --add merges into stasis.code.br and reports the added count', withTmp((t, tmp) => {
@@ -4459,8 +4459,8 @@ test('CLI: bundle --add merges into stasis.code.br and reports the added count',
   t.assert.match(r2.stderr, /\[stasis\] Added 1 file \(3 total in 1 package\) from src to stasis\.code\.br/)
 
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
-  t.assert.deepEqual([...parsed.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual([...parsed.entries].toSorted(), ['src/A.sol', 'src/B.sol'])
+  t.assert.deepStrictEqual(
     Object.keys(parsed.modules.get('.').files).toSorted(),
     ['src/A.sol', 'src/B.sol', 'src/Shared.sol'],
   )
@@ -4487,13 +4487,13 @@ test('CLI: bundle --add (JS) carries both entries and unions the companion lockf
   t.assert.match(r2.stderr, /\[stasis\] Added 1 file/)
 
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf8'))
-  t.assert.deepEqual([...bundle.entries].toSorted(), ['a.js', 'b.js'])
-  t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.js', 'b.js', 'shared.js'])
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['a.js', 'b.js'])
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['a.js', 'b.js', 'shared.js'])
 
   // The companion lockfile attests the whole merged graph, not just b.js's subset.
   const lockfile = Lockfile.parse(readFileSync(lockPath, 'utf8'))
-  t.assert.deepEqual([...lockfile.entries].toSorted(), ['a.js', 'b.js'])
-  t.assert.deepEqual(Object.keys(lockfile.modules.get('.').files).toSorted(), ['a.js', 'b.js', 'shared.js'])
+  t.assert.deepStrictEqual([...lockfile.entries].toSorted(), ['a.js', 'b.js'])
+  t.assert.deepStrictEqual(Object.keys(lockfile.modules.get('.').files).toSorted(), ['a.js', 'b.js', 'shared.js'])
 }))
 
 test('CLI: bundle --add with --output=- prints usage', (t) => {
@@ -4513,12 +4513,12 @@ test('bundleCommand attributes every bundled file to the `bundle` consumer', wit
   const outPath = join(tmp, 'out.stasis.code.br')
   await bundleCommand({ cwd: join(fixtures, 'basic'), entries: ['src/A.sol'], output: outPath })
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepEqual(parsed.reason, { bundle: ['src/A.sol', 'src/B.sol'] })
+  t.assert.deepStrictEqual(parsed.reason, { bundle: ['src/A.sol', 'src/B.sol'] })
 }))
 
 test('buildBundle attributes files to `bundle`, matching what bundleCommand writes', async (t) => {
   const bundle = await buildBundle({ cwd: join(fixtures, 'basic'), entries: ['src/A.sol'] })
-  t.assert.deepEqual(bundle.reason, { bundle: ['src/A.sol', 'src/B.sol'] })
+  t.assert.deepStrictEqual({ ...bundle.reason }, { bundle: ['src/A.sol', 'src/B.sol'] })
 })
 
 test('bundleCommand --add unions the `bundle` attribution across builds', withTmp(async (t, tmp) => {
@@ -4528,7 +4528,7 @@ test('bundleCommand --add unions the `bundle` attribution across builds', withTm
   await bundleCommand({ cwd, entries: ['src/B.sol'], output: outPath, add: true })
   const merged = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   // Both builds attributed under `bundle`; the union covers every merged file.
-  t.assert.deepEqual(merged.reason, { bundle: ['src/A.sol', 'src/B.sol', 'src/Shared.sol'] })
+  t.assert.deepStrictEqual(merged.reason, { bundle: ['src/A.sol', 'src/B.sol', 'src/Shared.sol'] })
 }))
 
 test('bundleCommand --add preserves other consumers when growing a captured bundle', withTmp(async (t, tmp) => {
@@ -4553,9 +4553,9 @@ test('bundleCommand --add preserves other consumers when growing a captured bund
   const merged = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   // Original consumers survive; the added file (B.sol) is attributed to `bundle`.
   // (Shared.sol was re-bundled by the static build too, so `bundle` names it as well.)
-  t.assert.deepEqual(merged.reason.run, ['src/A.sol'])
-  t.assert.deepEqual(merged.reason.webpack, ['src/Shared.sol'])
-  t.assert.deepEqual(merged.reason.bundle, ['src/B.sol', 'src/Shared.sol'])
+  t.assert.deepStrictEqual(merged.reason.run, ['src/A.sol'])
+  t.assert.deepStrictEqual(merged.reason.webpack, ['src/Shared.sol'])
+  t.assert.deepStrictEqual(merged.reason.bundle, ['src/B.sol', 'src/Shared.sol'])
 }))
 
 test('bundleCommand --add refuses to write an under-attesting lockfile when the bundle exists but its lockfile does not', withTmp(async (t, tmp) => {
@@ -4611,7 +4611,7 @@ test('buildBundle (plain JS) packageJSON is idempotent with an already-reached p
 
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], packageJSON: true })
   const keys = [...bundle.sources.keys()].filter((k) => k === 'node_modules/dep/package.json')
-  t.assert.deepEqual(keys, ['node_modules/dep/package.json'], 'no duplicate entry')
+  t.assert.deepStrictEqual(keys, ['node_modules/dep/package.json'], 'no duplicate entry')
 }))
 
 test('bundleCommand (JS + lockfile) with packageJSON attests the added package.json in the lockfile', withTmp(async (t, tmp) => {

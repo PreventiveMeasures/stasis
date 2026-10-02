@@ -52,22 +52,22 @@ test('isExcludedNativeDir: windows/ is excluded off Windows, kept on Windows; io
 })
 
 test('classifyNativeCapture: excluded files skip; a .bat is win32-conditional', (t) => {
-  t.assert.deepEqual(classifyNativeCapture('README.md', NOT_WIN), { action: 'skip' })
-  t.assert.deepEqual(classifyNativeCapture('bundle.js.map', NOT_WIN), { action: 'skip' })
-  t.assert.deepEqual(classifyNativeCapture('install.bat', NOT_WIN), { action: 'skip' })
+  t.assert.deepStrictEqual(classifyNativeCapture('README.md', NOT_WIN), { action: 'skip' })
+  t.assert.deepStrictEqual(classifyNativeCapture('bundle.js.map', NOT_WIN), { action: 'skip' })
+  t.assert.deepStrictEqual(classifyNativeCapture('install.bat', NOT_WIN), { action: 'skip' })
   // On Windows a .bat is a build script -> a resource, not skipped.
-  t.assert.deepEqual(classifyNativeCapture('install.bat', WIN), { action: 'resource' })
+  t.assert.deepStrictEqual(classifyNativeCapture('install.bat', WIN), { action: 'resource' })
   // A real native source still classifies as code with its language tag, regardless of platform.
-  t.assert.deepEqual(classifyNativeCapture('RNThing.mm', NOT_WIN), { action: 'code', format: 'objcpp' })
+  t.assert.deepStrictEqual(classifyNativeCapture('RNThing.mm', NOT_WIN), { action: 'code', format: 'objcpp' })
   // A .sh script is 'shell' code from the one shared vocab (like gradlew), not a resource.
-  t.assert.deepEqual(classifyNativeCapture('build-phase.sh', NOT_WIN), { action: 'code', format: 'shell' })
+  t.assert.deepStrictEqual(classifyNativeCapture('build-phase.sh', NOT_WIN), { action: 'code', format: 'shell' })
   // A `*.cmake.in` is a CMake configure_file template (build input) -> cmake code, by compound
   // suffix (pathExt only sees the trailing `.in`).
-  t.assert.deepEqual(classifyNativeCapture('ReactABI.cmake.in', NOT_WIN), { action: 'code', format: 'cmake' })
+  t.assert.deepStrictEqual(classifyNativeCapture('ReactABI.cmake.in', NOT_WIN), { action: 'code', format: 'cmake' })
   // ...but only `.cmake.in`, NOT a bare `.in`: a config.h.in isn't cmake (stays a resource).
-  t.assert.deepEqual(classifyNativeCapture('config.h.in', NOT_WIN), { action: 'resource' })
+  t.assert.deepStrictEqual(classifyNativeCapture('config.h.in', NOT_WIN), { action: 'resource' })
   // A `.patch` unified diff (pnpm patchedDependencies, patch-package) is 'patch' code.
-  t.assert.deepEqual(classifyNativeCapture('patches/dep@1.0.0.patch', NOT_WIN), { action: 'code', format: 'patch' })
+  t.assert.deepStrictEqual(classifyNativeCapture('patches/dep@1.0.0.patch', NOT_WIN), { action: 'code', format: 'patch' })
 })
 
 test('isAppleSliceDir: per-arch prebuilt slice dirs are matched; real source dirs are not', (t) => {
@@ -120,7 +120,7 @@ test('isBinaryPlist: a bplist is detected by bytes, so callers can route it off 
   t.assert.equal(isBinaryPlist('ios/PrivacyInfo.plist', binary), true)
   // A TEXT (XML) plist is unaffected -- it stays on the code path as 'xml'.
   t.assert.equal(isBinaryPlist('Info.plist', Buffer.from('<?xml version="1.0"?>\n<plist/>\n')), false)
-  t.assert.deepEqual(classifyNativeCapture('Info.plist', NOT_WIN), { action: 'code', format: 'xml' })
+  t.assert.deepStrictEqual(classifyNativeCapture('Info.plist', NOT_WIN), { action: 'code', format: 'xml' })
   // Only a `.plist` counts: other binary bytes are handled by their own rules.
   t.assert.equal(isBinaryPlist('logo.png', binary), false)
   // Needs the bytes: a name alone can't tell a binary plist from a text one.
@@ -134,18 +134,18 @@ test('refineNativeCapture: the byte-level half both native walks share', (t) => 
   const code = { action: 'code', format: 'xml' }
 
   // A prebuilt compiled tool with no extension (Hermes' `hermesc`) is not source.
-  t.assert.deepEqual(refineNativeCapture({ action: 'resource' }, 'hermesc', elf), { action: 'skip' })
+  t.assert.deepStrictEqual(refineNativeCapture({ action: 'resource' }, 'hermesc', elf), { action: 'skip' })
   // A binary plist: an opaque resource when `.plist` is declared, else skipped. A 'resource' result
   // carries NO format -- the storage layer derives resource vs resource:base64 from the bytes.
-  t.assert.deepEqual(refineNativeCapture(code, 'Info.plist', bplist, new Set(['plist'])), { action: 'resource' })
-  t.assert.deepEqual(refineNativeCapture(code, 'Info.plist', bplist, new Set()), { action: 'skip' })
-  t.assert.deepEqual(refineNativeCapture(code, 'Info.plist', bplist), { action: 'skip' }, 'no allowlist -> skip')
+  t.assert.deepStrictEqual(refineNativeCapture(code, 'Info.plist', bplist, new Set(['plist'])), { action: 'resource' })
+  t.assert.deepStrictEqual(refineNativeCapture(code, 'Info.plist', bplist, new Set()), { action: 'skip' })
+  t.assert.deepStrictEqual(refineNativeCapture(code, 'Info.plist', bplist), { action: 'skip' }, 'no allowlist -> skip')
   // A TEXT plist is untouched: still code, still tagged xml.
-  t.assert.deepEqual(refineNativeCapture(code, 'Info.plist', Buffer.from('<plist/>\n'), new Set(['plist'])), code)
+  t.assert.deepStrictEqual(refineNativeCapture(code, 'Info.plist', Buffer.from('<plist/>\n'), new Set(['plist'])), code)
   // Neither rule fires -> the name-derived classification passes through verbatim.
-  t.assert.deepEqual(refineNativeCapture({ action: 'code', format: 'c-header' }, 'RNThing.h', text),
+  t.assert.deepStrictEqual(refineNativeCapture({ action: 'code', format: 'c-header' }, 'RNThing.h', text),
     { action: 'code', format: 'c-header' })
-  t.assert.deepEqual(refineNativeCapture({ action: 'resource' }, 'logo.png', elf), { action: 'resource' })
+  t.assert.deepStrictEqual(refineNativeCapture({ action: 'resource' }, 'logo.png', elf), { action: 'resource' })
 })
 
 test('classifyNativeCapture: TypeScript source (.ts/.tsx/.d.ts) is skipped -- Metro owns the JS graph', (t) => {
@@ -153,8 +153,8 @@ test('classifyNativeCapture: TypeScript source (.ts/.tsx/.d.ts) is skipped -- Me
   // it is never a native build input, so the native capture never emits it (a .ts is not expected to
   // cross the node_modules boundary as a build input). The type-only .d.ts is skipped too.
   for (const name of ['index.ts', 'src/index.ts', 'Widget.tsx', 'types/index.d.ts', 'global.d.ts']) {
-    t.assert.deepEqual(classifyNativeCapture(name, NOT_WIN), { action: 'skip' }, `${name} skipped`)
-    t.assert.deepEqual(classifyNativeCapture(name, WIN), { action: 'skip' }, `${name} skipped on Windows too`)
+    t.assert.deepStrictEqual(classifyNativeCapture(name, NOT_WIN), { action: 'skip' }, `${name} skipped`)
+    t.assert.deepStrictEqual(classifyNativeCapture(name, WIN), { action: 'skip' }, `${name} skipped on Windows too`)
   }
 })
 
@@ -167,8 +167,8 @@ test('classifyNativeCapture: the whole env family (`.env`, `.env.*`, `*.env`) is
     'web.env', '.abc.env', '.dev.env', 'ios/config.env', 'compose/db.env',
   ]) {
     t.assert.equal(isDotEnvFile(name), true, `${name} is in the env family`)
-    t.assert.deepEqual(classifyNativeCapture(name, NOT_WIN), { action: 'skip' }, `${name} skipped`)
-    t.assert.deepEqual(classifyNativeCapture(name, WIN), { action: 'skip' }, `${name} skipped on Windows too`)
+    t.assert.deepStrictEqual(classifyNativeCapture(name, NOT_WIN), { action: 'skip' }, `${name} skipped`)
+    t.assert.deepStrictEqual(classifyNativeCapture(name, WIN), { action: 'skip' }, `${name} skipped on Windows too`)
   }
   // Only the FINAL extension counts: an env-like stem with another extension is not in the family.
   t.assert.equal(isDotEnvFile('ios/env.plist'), false)
@@ -177,13 +177,13 @@ test('classifyNativeCapture: the whole env family (`.env`, `.env.*`, `*.env`) is
 
 test('classifyNativeCapture: an extensionless shell shebang is shell code (content-based)', (t) => {
   const bash = Buffer.from('#!/usr/bin/env bash\nexec gradle "$@"\n')
-  t.assert.deepEqual(classifyNativeCapture('run-tool', { win32: false, content: bash }),
+  t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content: bash }),
     { action: 'code', format: 'shell' })
   // No content -> the shebang rule can't fire, so an extensionless non-build-input is a resource.
-  t.assert.deepEqual(classifyNativeCapture('run-tool', NOT_WIN), { action: 'resource' })
+  t.assert.deepStrictEqual(classifyNativeCapture('run-tool', NOT_WIN), { action: 'resource' })
   // An extensionless file whose shebang is NOT a shell interpreter stays a resource.
   const nodeScript = Buffer.from('#!/usr/bin/env node\nconsole.log(1)\n')
-  t.assert.deepEqual(classifyNativeCapture('run-node', { win32: false, content: nodeScript }),
+  t.assert.deepStrictEqual(classifyNativeCapture('run-node', { win32: false, content: nodeScript }),
     { action: 'resource' })
 })
 

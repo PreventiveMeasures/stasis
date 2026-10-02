@@ -27,7 +27,7 @@ const importSpecifiers = (file) => {
     for (const entry of exp.entries) if (entry.moduleRequest) specs.push(entry.moduleRequest.value)
   }
   // A dynamic import() would defeat the pin as thoroughly as a static edge; oxc reports only the
-  // request's span, so record its raw source text -- any occurrence fails the deepEqual below.
+  // request's span, so record its raw source text -- any occurrence fails the deepStrictEqual below.
   for (const dyn of module.dynamicImports) {
     specs.push(text.slice(dyn.moduleRequest.start, dyn.moduleRequest.end))
   }
@@ -35,9 +35,9 @@ const importSpecifiers = (file) => {
 }
 
 test('the artifact data model imports no Node builtins', (t) => {
-  t.assert.deepEqual(importSpecifiers('artifact-util.js'), [])
+  t.assert.deepStrictEqual(importSpecifiers('artifact-util.js'), [])
   for (const file of ['bundle.js', 'lockfile.js', 'shard.js']) {
-    t.assert.deepEqual(importSpecifiers(file), ['./artifact-util.js'], file)
+    t.assert.deepStrictEqual(importSpecifiers(file), ['./artifact-util.js'], file)
   }
 })
 

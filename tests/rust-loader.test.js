@@ -75,40 +75,40 @@ test('lexRust keeps UTF-16 offsets aligned across astral chars in strings and co
   t.assert.equal(masked.length, src.length)
   t.assert.match(masked, /"        "; {6}\nuse serde::Serialize;/u)
   const items = scanRustItems(src)
-  t.assert.deepEqual(items.refs.map((r) => r.spec), ['serde::Serialize'])
-  t.assert.deepEqual(items.mods[0].paths, [{ path: 'x.rs', cfg: null }])
+  t.assert.deepStrictEqual(items.refs.map((r) => r.spec), ['serde::Serialize'])
+  t.assert.deepStrictEqual(items.mods[0].paths, [{ path: 'x.rs', cfg: null }])
 })
 
 // --- use trees ---
 
 test('parseUseTree flattens brace groups (incl. nested and multi-line) into one path each', (t) => {
-  t.assert.deepEqual(parseUseTree(' crate::{a::B, c::D}').map((p) => p.spec), ['crate::a::B', 'crate::c::D'])
-  t.assert.deepEqual(parseUseTree('\n  crate::{\n    a::{B, C},\n    d,\n  }').map((p) => p.spec), ['crate::a::B', 'crate::a::C', 'crate::d'])
+  t.assert.deepStrictEqual(parseUseTree(' crate::{a::B, c::D}').map((p) => p.spec), ['crate::a::B', 'crate::c::D'])
+  t.assert.deepStrictEqual(parseUseTree('\n  crate::{\n    a::{B, C},\n    d,\n  }').map((p) => p.spec), ['crate::a::B', 'crate::a::C', 'crate::d'])
 })
 
 test('parseUseTree handles globs, `self` in a group, `as` renames, leading `::` and raw identifiers', (t) => {
-  t.assert.deepEqual(parseUseTree(' a::b::*').map((p) => p.spec), ['a::b'])
-  t.assert.deepEqual(parseUseTree(' foo::{self, Bar}').map((p) => p.spec), ['foo', 'foo::Bar'])
-  t.assert.deepEqual(parseUseTree(' crate::util::helper as help').map((p) => p.spec), ['crate::util::helper'])
+  t.assert.deepStrictEqual(parseUseTree(' a::b::*').map((p) => p.spec), ['a::b'])
+  t.assert.deepStrictEqual(parseUseTree(' foo::{self, Bar}').map((p) => p.spec), ['foo', 'foo::Bar'])
+  t.assert.deepStrictEqual(parseUseTree(' crate::util::helper as help').map((p) => p.spec), ['crate::util::helper'])
   const abs = parseUseTree(' ::serde::Serialize')
-  t.assert.deepEqual(abs.map((p) => [p.spec, p.absolute]), [['::serde::Serialize', true]])
-  t.assert.deepEqual(parseUseTree(' crate::r#type::X').map((p) => p.segments), [['crate', 'type', 'X']])
+  t.assert.deepStrictEqual(abs.map((p) => [p.spec, p.absolute]), [['::serde::Serialize', true]])
+  t.assert.deepStrictEqual(parseUseTree(' crate::r#type::X').map((p) => p.segments), [['crate', 'type', 'X']])
 })
 
 // --- item scanning ---
 
 test('scanRustItems finds external mod declarations (incl. pub / pub(crate)) and skips inline ones', (t) => {
-  t.assert.deepEqual(modNames('mod foo;\npub mod bar;\npub(crate) mod baz;\nmod inline {\n    pub fn x() {}\n}\nmod real;\n'),
+  t.assert.deepStrictEqual(modNames('mod foo;\npub mod bar;\npub(crate) mod baz;\nmod inline {\n    pub fn x() {}\n}\nmod real;\n'),
     ['foo', 'bar', 'baz', 'real'])
 })
 
 test('scanRustItems records an external mod declared inside inline modules with its inline path, and the directories those stand for', (t) => {
   const { mods } = scanRustItems('mod outer {\n    pub mod inner;\n    mod deep {\n        mod leaf;\n    }\n}\nmod top;\n')
-  t.assert.deepEqual(mods.map((m) => [m.name, m.inlinePath, m.inlineDirs]), [['inner', ['outer'], ['outer']], ['leaf', ['outer', 'deep'], ['outer', 'deep']], ['top', [], []]])
+  t.assert.deepStrictEqual(mods.map((m) => [m.name, m.inlinePath, m.inlineDirs]), [['inner', ['outer'], ['outer']], ['leaf', ['outer', 'deep'], ['outer', 'deep']], ['top', [], []]])
   // solana-program: `#[path = ""] mod non_bpf_modules { mod account_keys; }` puts account_keys.rs
   // beside the file; a non-empty path names the directory in the module name's stead.
   const solana = scanRustItems('#[cfg(not(target_os = "solana"))]\n#[path = ""]\nmod non_bpf_modules {\n    mod account_keys;\n    #[path = "thread_files"]\n    mod thread { mod local_data; }\n}\n')
-  t.assert.deepEqual(solana.mods.map((m) => [m.name, m.inlinePath, m.inlineDirs]), [
+  t.assert.deepStrictEqual(solana.mods.map((m) => [m.name, m.inlinePath, m.inlineDirs]), [
     ['account_keys', ['non_bpf_modules'], ['']],
     ['local_data', ['non_bpf_modules', 'thread'], ['', 'thread_files']],
   ])
@@ -128,10 +128,10 @@ test('scanRustItems takes `use` for an import only when a use tree follows it', 
     'use std::io::{self, Read};',
   ].join('\n')
   const { refs, imports, bindings } = scanRustItems(src)
-  t.assert.deepEqual(refs.filter((r) => r.fromUse).map((r) => r.spec), ['crate::real::Item', '::libc::c_int', 'crate::ref', 'crate::split_at::SplitAt', 'std::io', 'std::io::Read'])
-  t.assert.deepEqual(refs.filter((r) => !r.fromUse).map((r) => r.spec), ['crate::util::go']) // `$trait::fmt` is a metavariable's
-  t.assert.deepEqual(imports.map((im) => im.binding), ['Item', 'c_int', null, 'SplitAt', 'io', 'Read'])
-  t.assert.deepEqual([...bindings], ['Item', 'c_int', 'SplitAt', 'io', 'Read'])
+  t.assert.deepStrictEqual(refs.filter((r) => r.fromUse).map((r) => r.spec), ['crate::real::Item', '::libc::c_int', 'crate::ref', 'crate::split_at::SplitAt', 'std::io', 'std::io::Read'])
+  t.assert.deepStrictEqual(refs.filter((r) => !r.fromUse).map((r) => r.spec), ['crate::util::go']) // `$trait::fmt` is a metavariable's
+  t.assert.deepStrictEqual(imports.map((im) => im.binding), ['Item', 'c_int', null, 'SplitAt', 'io', 'Read'])
+  t.assert.deepStrictEqual([...bindings], ['Item', 'c_int', 'SplitAt', 'io', 'Read'])
 })
 
 test('scanRustItems gates the declarations inside a cfg-gated block or inline module on its cfg', (t) => {
@@ -144,7 +144,7 @@ test('scanRustItems gates the declarations inside a cfg-gated block or inline mo
     'mod plain;',
   ].join('\n')
   // A later `cfg_if!` branch applies only when the earlier ones' cfgs don't hold.
-  t.assert.deepEqual(scanRustItems(src).mods.map((m) => [m.name, m.cfg, m.conditional, m.macro]), [
+  t.assert.deepStrictEqual(scanRustItems(src).mods.map((m) => [m.name, m.cfg, m.conditional, m.macro]), [
     ['imp', 'unix', true, 'cfg_if'],
     ['imp', 'all(not(unix), windows)', true, 'cfg_if'],
     ['imp', 'all(not(unix), not(windows))', true, 'cfg_if'],
@@ -154,8 +154,8 @@ test('scanRustItems gates the declarations inside a cfg-gated block or inline mo
     ['plain', null, false, null],
   ])
   // With the feature on, `outer`'s scope is as firm as none; a dead one skips the whole block.
-  t.assert.deepEqual(scanRustItems(src, { features: new Set(['std']) }).mods.filter((m) => m.inlinePath.length > 0).map((m) => [m.name, m.cfg, m.conditional]), [['a', 'feature = "std"', false], ['b', 'all(feature = "std", unix)', true]])
-  t.assert.deepEqual(scanRustItems(src, { features: new Set() }).mods.map((m) => m.name), ['imp', 'imp', 'imp', 'atomic', 'plain'])
+  t.assert.deepStrictEqual(scanRustItems(src, { features: new Set(['std']) }).mods.filter((m) => m.inlinePath.length > 0).map((m) => [m.name, m.cfg, m.conditional]), [['a', 'feature = "std"', false], ['b', 'all(feature = "std", unix)', true]])
+  t.assert.deepStrictEqual(scanRustItems(src, { features: new Set() }).mods.map((m) => m.name), ['imp', 'imp', 'imp', 'atomic', 'plain'])
 })
 
 test('buildRustTree keeps every file of same-name mods a cfg_if! or cfg macros declare, keyed by branch cfg or macro', (t) => {
@@ -174,19 +174,19 @@ test('buildRustTree keeps every file of same-name mods a cfg_if! or cfg macros d
     ['src/sys/other.rs', 'pub fn name() {}\n'],
   ])
   const { resolutions, missing, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([missing, [...unresolvedCrates]], [[], []]) // `static_macro` is a module, not a crate
+  t.assert.deepStrictEqual([missing, [...unresolvedCrates]], [[], []]) // `static_macro` is a module, not a crate
   // No definition of the gate macros here: which variant a path means is each's, under its gate.
-  t.assert.deepEqual(edges(resolutions.get('src/atomic.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/atomic.rs')), {
     'mod imp': { 'cfg_has_atomic_u64!': 'src/atomic_native.rs', 'cfg_not_has_atomic_u64!': 'src/atomic_as_mutex.rs' },
     'imp::AtomicU64': { 'cfg_has_atomic_u64!': 'src/atomic_native.rs', 'cfg_not_has_atomic_u64!': 'src/atomic_as_mutex.rs' },
   })
   // The second variant's own declarations and paths resolve: it is in the module tree.
-  t.assert.deepEqual(edges(resolutions.get('src/atomic_as_mutex.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/atomic_as_mutex.rs')), {
     'mod static_macro': { 'cfg_has_const_mutex_new!': 'src/static_const_new.rs', 'cfg_not_has_const_mutex_new!': 'src/static_once_cell.rs' },
     'static_macro::StaticAtomicU64': { 'cfg_has_const_mutex_new!': 'src/static_const_new.rs', 'cfg_not_has_const_mutex_new!': 'src/static_once_cell.rs' },
   })
   // The `else` branch is keyed by what it means: the earlier cfg not holding.
-  t.assert.deepEqual(edges(resolutions.get('src/sys.rs')), { 'mod imp': { unix: 'src/sys/unix.rs', 'not(unix)': 'src/sys/other.rs' }, imp: 'src/sys/unix.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys.rs')), { 'mod imp': { unix: 'src/sys/unix.rs', 'not(unix)': 'src/sys/other.rs' }, imp: 'src/sys/unix.rs' })
 })
 
 test('buildRustTree resolves an include!d file\'s mods beside that file, and anchors its paths in the including module', (t) => {
@@ -202,20 +202,20 @@ test('buildRustTree resolves an include!d file\'s mods beside that file, and anc
     ['src/net/codes.rs', 'pub struct Decoy;\n'],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
-  t.assert.deepEqual(edges(resolutions.get('src/net/gen/list.rs')), {
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/net/gen/list.rs')), {
     'mod codes': 'src/net/gen/codes.rs', // beside the included file, not src/net/codes.rs nor src/net/gen/list/codes.rs
     'self::codes::Code': 'src/net/gen/codes.rs',
     'super::Top': 'src/lib.rs', // `super` of `crate::net`, the module these tokens are in, is the root
     'crate::net::Conn::new': 'src/net/mod.rs',
     'codes::lookup': 'src/net/gen/codes.rs',
   })
-  t.assert.deepEqual(edges(resolutions.get('src/net/gen/codes.rs')), { 'mod sub': 'src/net/gen/codes/sub.rs' }) // `crate::net::codes::Code` is this file: no self edge
+  t.assert.deepStrictEqual(edges(resolutions.get('src/net/gen/codes.rs')), { 'mod sub': 'src/net/gen/codes/sub.rs' }) // `crate::net::codes::Code` is this file: no self edge
 })
 
 test('scanRustItems keeps a file whose macro body holds a false inner #![cfg]', (t) => {
   const items = scanRustItems('m!(\n    #![cfg(test)]\n    mod x;\n);\nmod real;\n')
-  t.assert.deepEqual(items.mods.map((m) => m.name), ['x', 'real'])
+  t.assert.deepStrictEqual(items.mods.map((m) => m.name), ['x', 'real'])
 })
 
 test('scanRustItems reads every include argument form, and counts the ones it cannot follow', (t) => {
@@ -227,14 +227,14 @@ test('scanRustItems reads every include argument form, and counts the ones it ca
     'const E: &str = include_str!(concat!(env!("OUT_DIR"), "/gen.rs"));',
     'macro_rules! doc { () => { include_str!("../README.md") } }',
   ].join('\n'))
-  t.assert.deepEqual(items.includes, [
+  t.assert.deepStrictEqual(items.includes, [
     { kind: 'include_str', path: 'with "quote" and \\ back.txt', base: 'file', conditional: false },
     { kind: 'include_str', path: 'raw "quoted".txt', base: 'file', conditional: false },
     { kind: 'include_bytes', path: 'data/blob.bin', base: 'manifest', conditional: false },
   ])
   t.assert.equal(items.unfollowed, 1) // `concat!("../", "x.txt")`; the OUT_DIR one is build output
   // The include in a macro body is the macro's: resolved relative to whichever file invokes it.
-  t.assert.deepEqual(items.macros.map(({ name, exported, includes }) => ({ name, exported, includes })), [{ name: 'doc', exported: false, includes: [{ kind: 'include_str', path: '../README.md', base: 'file' }] }])
+  t.assert.deepStrictEqual(items.macros.map(({ name, exported, includes }) => ({ name, exported, includes })), [{ name: 'doc', exported: false, includes: [{ kind: 'include_str', path: '../README.md', base: 'file' }] }])
 })
 
 test('buildRustTree resolves an include in a macro_rules! body relative to each invoking file, and a manifest-relative one from the package root', (t) => {
@@ -248,10 +248,10 @@ test('buildRustTree resolves an include in a macro_rules! body relative to each 
   ])
   const formats = new Map([['src/deep/data.txt', 'resource'], ['src/data.txt', 'resource'], ['data/blob.bin', 'resource']])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'], formats })
-  t.assert.deepEqual(edges(resolutions.get('src/deep/mod.rs')), { 'doc_of!': 'src/macros.rs', 'include_str data.txt': 'src/deep/data.txt' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/deep/mod.rs')), { 'doc_of!': 'src/macros.rs', 'include_str data.txt': 'src/deep/data.txt' })
   t.assert.equal(resolutions.get('src/macros.rs').size, 0) // not relative to the defining file
   // Without a Cargo context the package root is unknown: the manifest-relative include is not placed.
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', 'mod deep': 'src/deep/mod.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', 'mod deep': 'src/deep/mod.rs' })
 })
 
 test('buildRustTree gives a bare macro call an edge only to a macro in its textual scope', (t) => {
@@ -265,7 +265,7 @@ test('buildRustTree gives a bare macro call an edge only to a macro in its textu
   // `vec!` is std's: other.rs's private `macro_rules! vec` is not in scope here. Nor is its
   // exported one by bare name -- rustc: "cannot find macro `exported` in this scope … have you
   // added the `#[macro_use]` on the module?" -- though `crate::exported!` and the root file see it.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'ready!': 'src/macros.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'ready!': 'src/macros.rs' })
 })
 
 test('buildRustTree finds the modules of an inline module with its own #[path]', (t) => {
@@ -277,8 +277,8 @@ test('buildRustTree finds the modules of an inline module with its own #[path]',
     ['src/user.rs', ''],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
-  t.assert.deepEqual(edges(resolutions.get('src/message/mod.rs')), {
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/message/mod.rs')), {
     'mod non_bpf_modules::account_keys': 'src/message/account_keys.rs',
     'mod non_bpf_modules::versions': 'src/message/versions/mod.rs',
     account_keys: 'src/message/account_keys.rs', // `pub use {account_keys::*, …}` inside the inline module
@@ -297,7 +297,7 @@ test('scanRustItems marks #[cfg]-gated modules (and those inside a gated inline 
     'mod real;',
     '#[cfg(unix)]', 'mod sys {', '    mod imp;', '}',
   ].join('\n'))
-  t.assert.deepEqual(mods.map((m) => [m.name, m.cfg, m.conditional]), [
+  t.assert.deepStrictEqual(mods.map((m) => [m.name, m.cfg, m.conditional]), [
     ['featured', 'feature = "x"', true],
     ['not_gated', null, false],
     // `cfg_attr(x, cfg(y))`: gated on y only when x holds -- compiled unless x && !y
@@ -309,9 +309,9 @@ test('scanRustItems marks #[cfg]-gated modules (and those inside a gated inline 
   ])
   // With x off the cfg_attr never applies its cfg: the module is unconditional, not skipped.
   const off = scanRustItems('#[cfg_attr(feature = "x", cfg(feature = "y"))]\nmod m;\n', { features: new Set() }).mods
-  t.assert.deepEqual(off.map((m) => [m.name, m.conditional]), [['m', false]])
+  t.assert.deepStrictEqual(off.map((m) => [m.name, m.conditional]), [['m', false]])
   // With x on and y off it is dead.
-  t.assert.deepEqual(scanRustItems('#[cfg_attr(feature = "x", cfg(feature = "y"))]\nmod m;\n', { features: new Set(['x']) }).mods, [])
+  t.assert.deepStrictEqual(scanRustItems('#[cfg_attr(feature = "x", cfg(feature = "y"))]\nmod m;\n', { features: new Set(['x']) }).mods, [])
 })
 
 test('scanRustItems skips a dead field, variant, tuple field or match arm without running past its enclosing block', (t) => {
@@ -324,15 +324,15 @@ test('scanRustItems skips a dead field, variant, tuple field or match arm withou
     '#[cfg(feature = "tls")] fn tls_only() { client::connect() }', 'mod last;',
   ].join('\n')
   const { mods } = scanRustItems(src, { features: new Set() })
-  t.assert.deepEqual(mods.map((m) => [...m.inlinePath, m.name].join('::')), ['client', 'imp::server', 'after_enum', 'after_tuple', 'after_fn', 'last'])
+  t.assert.deepStrictEqual(mods.map((m) => [...m.inlinePath, m.name].join('::')), ['client', 'imp::server', 'after_enum', 'after_tuple', 'after_fn', 'last'])
 })
 
 test('scanRustItems compiles a test target with cfg(test): #[test] fns and #[cfg(test)] items are live', (t) => {
   const src = '#[cfg(test)]\nmod helpers;\n#[test]\nfn t() { quickcheck::quickcheck(1); }\n'
-  t.assert.deepEqual(scanRustItems(src).mods, [])
+  t.assert.deepStrictEqual(scanRustItems(src).mods, [])
   const live = scanRustItems(src, { test: true })
-  t.assert.deepEqual(live.mods.map((m) => [m.name, m.conditional]), [['helpers', false]])
-  t.assert.deepEqual(live.refs.map((r) => r.spec), ['quickcheck::quickcheck'])
+  t.assert.deepStrictEqual(live.mods.map((m) => [m.name, m.conditional]), [['helpers', false]])
+  t.assert.deepStrictEqual(live.refs.map((r) => r.spec), ['quickcheck::quickcheck'])
 })
 
 test('evalCfg decides test/doc-only predicates and leaves target/feature ones unknown', (t) => {
@@ -366,7 +366,7 @@ test('evalCfg decides a predicate an unknown leaf repeats in when it holds, or f
   t.assert.equal(evalCfg('all(unix, windows)'), null) // two leaves, each once: left to the ranking (cfgExclusive)
   t.assert.equal(evalCfg('all(feature = "x", not(feature = "x"), kani)', { features: null }), false)
   const { refs } = scanRustItems('#[cfg(any(test, kani))]\nmod tests {\n    #[cfg(not(kani))]\n    mod compatibility {\n        pub(super) use rand::Rng;\n    }\n    use proptest::prelude::*;\n}\n')
-  t.assert.deepEqual(refs.map((r) => r.spec), ['proptest::prelude']) // under kani, which may be set
+  t.assert.deepStrictEqual(refs.map((r) => r.spec), ['proptest::prelude']) // under kani, which may be set
 })
 
 test('evalCfg decides target predicates against a target cfg set, profile and custom ones never', (t) => {
@@ -405,14 +405,14 @@ test('scanRustItems drops target-gated items and cfg_attr path variants for anot
   ].join('\n')
   const linux = new Set(['unix', 'target_os="linux"', 'target_family="unix"'])
   const items = scanRustItems(src, { target: linux })
-  t.assert.deepEqual(items.mods.map((m) => [m.name, m.conditional, m.paths]), [
+  t.assert.deepStrictEqual(items.mods.map((m) => [m.name, m.conditional, m.paths]), [
     ['nix', false, []], // decidably on: as firm as no cfg
     ['sys', false, [{ path: 'sys/unix.rs', cfg: null }]], // the variant that holds is the `#[path]`
     ['plain', false, []],
   ])
-  t.assert.deepEqual(items.refs.map((r) => r.spec), ['libc::epoll_create1'])
+  t.assert.deepStrictEqual(items.refs.map((r) => r.spec), ['libc::epoll_create1'])
   // Without a target both variants and both modules stay, undecided.
-  t.assert.deepEqual(scanRustItems(src).mods.map((m) => [m.name, m.conditional]), [['win', true], ['nix', true], ['sys', false], ['plain', false]])
+  t.assert.deepStrictEqual(scanRustItems(src).mods.map((m) => [m.name, m.conditional]), [['win', true], ['nix', true], ['sys', false], ['plain', false]])
 })
 
 test('scanRustItems skips a dead item that starts with no word: a block, a pattern arm, a tuple type, a `*` statement', (t) => {
@@ -440,8 +440,8 @@ test('scanRustItems skips a dead item that starts with no word: a block, a patte
     'mod after;',
   ].join('\n')
   const { mods, refs } = scanRustItems(src, { features: new Set() })
-  t.assert.deepEqual(mods.map((m) => m.name), ['after'])
-  t.assert.deepEqual(refs.map((r) => r.spec).toSorted(), ['live::C', 'live::fallback'])
+  t.assert.deepStrictEqual(mods.map((m) => m.name), ['after'])
+  t.assert.deepStrictEqual(refs.map((r) => r.spec).toSorted(), ['live::C', 'live::fallback'])
 })
 
 test('scanRustItems skips a dead item whole whatever commas its generics or where clause hold, and a dead field through its generic type', (t) => {
@@ -466,8 +466,8 @@ test('scanRustItems skips a dead item whole whatever commas its generics or wher
     'fn live() -> Result<(), E> { crate::real::go(); }',
   ].join('\n')
   const { mods, refs } = scanRustItems(src, { features: new Set() })
-  t.assert.deepEqual(mods.map((m) => m.name), ['after'])
-  t.assert.deepEqual(refs.map((r) => r.spec), ['crate::real::go'])
+  t.assert.deepStrictEqual(mods.map((m) => m.name), ['after'])
+  t.assert.deepStrictEqual(refs.map((r) => r.spec), ['crate::real::go'])
 })
 
 test('scanRustItems blanks the attributes of a dead item and a cfg_attr whose predicate never holds', (t) => {
@@ -483,9 +483,9 @@ test('scanRustItems blanks the attributes of a dead item and a cfg_attr whose pr
   ].join('\n')
   const off = scanRustItems(src, { features: new Set(['arbitrary']) })
   // Only the `cfg_attr` whose feature is on names anything live.
-  t.assert.deepEqual(off.refs.map((r) => r.spec), ['arbitrary::Arbitrary'])
+  t.assert.deepStrictEqual(off.refs.map((r) => r.spec), ['arbitrary::Arbitrary'])
   // Undecided features keep the attribute's paths (the crate may well be compiled with them).
-  t.assert.deepEqual(scanRustItems(src).refs.map((r) => r.spec).toSorted(), ['arbitrary::Arbitrary', 'serde::Deserialize', 'serde::Serialize'])
+  t.assert.deepStrictEqual(scanRustItems(src).refs.map((r) => r.spec).toSorted(), ['arbitrary::Arbitrary', 'serde::Deserialize', 'serde::Serialize'])
 })
 
 test('scanRustItems records use imports with their visibility, macro_rules! definitions and inline modules', (t) => {
@@ -512,7 +512,7 @@ test('scanRustItems records use imports with their visibility, macro_rules! defi
     'macro_rules! never { () => {} }',
     'macro_rules! local { () => {} }',
   ].join('\n'), { features: new Set(['std']) })
-  t.assert.deepEqual(items.imports.map((r) => [r.inlinePath.join('::'), r.segments.join('::'), r.absolute, r.binding, r.glob, r.vis]), [
+  t.assert.deepStrictEqual(items.imports.map((r) => [r.inlinePath.join('::'), r.segments.join('::'), r.absolute, r.binding, r.glob, r.vis]), [
     ['__private', 'serde_core', false, 'serde', false, 'crate'],
     ['__private', 'secret::Thing', false, 'Thing', false, null],
     ['__private', 'crate::x::Y', false, 'Y', false, 'super'],
@@ -523,19 +523,19 @@ test('scanRustItems records use imports with their visibility, macro_rules! defi
     ['', 'serde_core', true, 's', false, 'self'], // `extern crate x as y` is `use ::x as y`
     ['', 'crate', false, 'me', false, null], // `extern crate self as me` is `use crate as me`
   ])
-  t.assert.deepEqual(items.macros.map(({ name, exported, includes }) => ({ name, exported, includes })), [
+  t.assert.deepStrictEqual(items.macros.map(({ name, exported, includes }) => ({ name, exported, includes })), [
     { name: 'exported', exported: true, includes: [] },
     { name: 'exported_too', exported: true, includes: [] },
     { name: 'exported_when', exported: true, includes: [] },
     { name: 'local', exported: false, includes: [] },
   ])
   t.assert.ok(items.macros.every((m) => Number.isInteger(m.offset)) && items.macros[0].offset < items.macros[1].offset)
-  t.assert.deepEqual(items.inlineModules, [['__private']])
+  t.assert.deepStrictEqual(items.inlineModules, [['__private']])
 })
 
 test('scanRustItems marks an invoked path as a macro call', (t) => {
   const { refs } = scanRustItems('fn f() { $crate::span!(1); crate::span::Span::new(); if crate::flag::x != 1 { crate::m! { } } }\n')
-  t.assert.deepEqual(refs.map((r) => [r.spec, r.macroCall]), [['crate::span', true], ['crate::span::Span::new', false], ['crate::flag::x', false], ['crate::m', true]])
+  t.assert.deepStrictEqual(refs.map((r) => [r.spec, r.macroCall]), [['crate::span', true], ['crate::span::Span::new', false], ['crate::flag::x', false], ['crate::m', true]])
 })
 
 test('scanRustItems records include macros with a literal path and bare macro invocations, and honours an inner #![cfg]', (t) => {
@@ -547,7 +547,7 @@ test('scanRustItems records include macros with a literal path and bare macro in
     'mod dead { #![cfg(feature = "never")] mod ghost; use phantom::X; }',
     'mod live;',
   ].join('\n'), { features: new Set() })
-  t.assert.deepEqual(items.includes, [
+  t.assert.deepStrictEqual(items.includes, [
     { kind: 'include', path: 'generated/consts.rs', base: 'file', conditional: false },
     { kind: 'include_str', path: '../data/table.txt', base: 'file', conditional: false }, // the build-output one is no literal
   ])
@@ -561,14 +561,14 @@ test('scanRustItems records include macros with a literal path and bare macro in
     '#[doc = include_str!("docs/dead.md")]',
     'pub fn dead() {}',
   ].join('\n'), { features: new Set() })
-  t.assert.deepEqual(attrs.includes.map((inc) => inc.path), ['../README.md', 'docs/live.md'])
-  t.assert.deepEqual([...items.invocations].toSorted(), ['concat', 'env', 'include', 'include_bytes', 'include_str', 'println', 'ready']) // `a != b` is no invocation
-  t.assert.deepEqual(items.mods.map((m) => m.name), ['live']) // the inline module's inner cfg can't hold: emptied
-  t.assert.deepEqual(items.refs.map((r) => r.spec), [])
+  t.assert.deepStrictEqual(attrs.includes.map((inc) => inc.path), ['../README.md', 'docs/live.md'])
+  t.assert.deepStrictEqual([...items.invocations].toSorted(), ['concat', 'env', 'include', 'include_bytes', 'include_str', 'println', 'ready']) // `a != b` is no invocation
+  t.assert.deepStrictEqual(items.mods.map((m) => m.name), ['live']) // the inline module's inner cfg can't hold: emptied
+  t.assert.deepStrictEqual(items.refs.map((r) => r.spec), [])
   // At the top of a file such an inner cfg empties the whole file.
   const gated = scanRustItems('#![cfg(feature = "never")]\nmod ghost;\nuse phantom::X;\n', { features: new Set() })
-  t.assert.deepEqual([gated.mods, gated.refs], [[], []])
-  t.assert.deepEqual(scanRustItems('#![cfg(feature = "never")]\nmod ghost;\n').mods.map((m) => m.name), ['ghost']) // undecided: kept
+  t.assert.deepStrictEqual([gated.mods, gated.refs], [[], []])
+  t.assert.deepStrictEqual(scanRustItems('#![cfg(feature = "never")]\nmod ghost;\n').mods.map((m) => m.name), ['ghost']) // undecided: kept
 })
 
 test('scanRustItems skips test/doc-only items whole: their mods, uses and paths are never recorded', (t) => {
@@ -583,20 +583,20 @@ test('scanRustItems skips test/doc-only items whole: their mods, uses and paths 
     'mod real;',
     'fn keep() { real::go(); }',
   ].join('\n'))
-  t.assert.deepEqual(mods.map((m) => m.name), ['real'])
-  t.assert.deepEqual(refs.map((r) => r.spec), ['real::go'])
-  t.assert.deepEqual(externCrates, [])
+  t.assert.deepStrictEqual(mods.map((m) => m.name), ['real'])
+  t.assert.deepStrictEqual(refs.map((r) => r.spec), ['real::go'])
+  t.assert.deepStrictEqual(externCrates, [])
 })
 
 test('scanRustItems reports the names a file\'s use items and extern-crate aliases bind, not a crate imported under its own name', (t) => {
   const { bindings } = scanRustItems('use std::io;\nuse crate::{config::Config, util::helper as help};\nuse foo::*;\nuse bar::_x as _;\nextern crate alpha as a;\nuse serde_json;\nuse rand::{self, Rng};\nuse tokio as tk;\n')
   // `serde_json` and `rand` name the crates themselves; `tk` is an alias for one (so `tk::…` is not a crate lookup)
-  t.assert.deepEqual([...bindings].toSorted(), ['Config', 'Rng', 'a', 'help', 'io', 'tk'])
+  t.assert.deepStrictEqual([...bindings].toSorted(), ['Config', 'Rng', 'a', 'help', 'io', 'tk'])
 })
 
 test('scanRustItems matches a mod with its attribute on the same line', (t) => {
   const { mods } = scanRustItems('#[macro_use] mod macros;\n#[cfg(unix)] mod unix;\n#[doc(hidden)] pub mod hidden;\n')
-  t.assert.deepEqual(mods.map((m) => [m.name, m.conditional]), [['macros', false], ['unix', true], ['hidden', false]])
+  t.assert.deepStrictEqual(mods.map((m) => [m.name, m.conditional]), [['macros', false], ['unix', true], ['hidden', false]])
 })
 
 test('scanRustItems marks a mod inside a macro invocation body conditional (cfg_if!, generate_guide!, macro_rules!)', (t) => {
@@ -607,7 +607,7 @@ test('scanRustItems marks a mod inside a macro invocation body conditional (cfg_
     'let x = !flag; if !(a || b) { mod not_a_macro; }',
     'mod real;',
   ].join('\n'))
-  t.assert.deepEqual(mods.map((m) => [m.name, m.inlinePath, m.conditional]), [
+  t.assert.deepStrictEqual(mods.map((m) => [m.name, m.inlinePath, m.conditional]), [
     ['imp_unix', [], true],
     ['imp_other', [], true],
     ['feature_flags', ['guide'], true], // the macro's `pub mod guide {` still nests like an inline module
@@ -623,9 +623,9 @@ test('scanRustItems extracts #[path] and #[cfg_attr(…, path)] targets', (t) =>
     '#[doc(hidden)]', '#[path = "private/mod.rs"]', 'pub mod __private;',
     '#[cfg_attr(unix, path = "sys/unix.rs")]', '#[cfg_attr(all(windows, not(target_env = "msvc")), path = "sys/win.rs")]', 'mod sys;',
   ].join('\n'))
-  t.assert.deepEqual(mods[0].paths, [{ path: 'private/mod.rs', cfg: null }])
+  t.assert.deepStrictEqual(mods[0].paths, [{ path: 'private/mod.rs', cfg: null }])
   t.assert.equal(mods[0].conditional, false)
-  t.assert.deepEqual(mods[1].paths, [
+  t.assert.deepStrictEqual(mods[1].paths, [
     { path: 'sys/unix.rs', cfg: 'unix' },
     { path: 'sys/win.rs', cfg: 'all(windows, not(target_env = "msvc"))' },
   ])
@@ -634,13 +634,13 @@ test('scanRustItems extracts #[path] and #[cfg_attr(…, path)] targets', (t) =>
 
 test('scanRustItems ignores commented-out declarations and `mod` inside strings', (t) => {
   const src = '/*\nmod blockgone;\n*/\n// mod linegone;\n// use crate::gone::X;\nconst S: &str = "mod strgone;";\nmod real;\nuse crate::foo::Y;\n'
-  t.assert.deepEqual(modNames(src), ['real'])
-  t.assert.deepEqual(refSpecs(src), ['crate::foo::Y'])
+  t.assert.deepStrictEqual(modNames(src), ['real'])
+  t.assert.deepStrictEqual(refSpecs(src), ['crate::foo::Y'])
 })
 
 test('scanRustItems collects use paths (flattened), expression paths, and their inline module', (t) => {
   const { refs } = scanRustItems('use crate::{a::B, c::D};\nfn f() { let _ = crate::e::run(); super::g(); }\nmod tests {\n    use super::*;\n}\n')
-  t.assert.deepEqual(refs.map((r) => [r.spec, r.inlinePath, r.fromUse]), [
+  t.assert.deepStrictEqual(refs.map((r) => [r.spec, r.inlinePath, r.fromUse]), [
     ['crate::a::B', [], true],
     ['crate::c::D', [], true],
     ['super', ['tests'], true],
@@ -651,12 +651,12 @@ test('scanRustItems collects use paths (flattened), expression paths, and their 
 
 test('scanRustItems does not re-scan a use item as expression paths', (t) => {
   // `parse::Parse` inside the group is syn's module, not a local one; only the tree parser sees it.
-  t.assert.deepEqual(refSpecs('use syn::{parse::Parse, Ident};\n'), ['syn::parse::Parse', 'syn::Ident'])
+  t.assert.deepStrictEqual(refSpecs('use syn::{parse::Parse, Ident};\n'), ['syn::parse::Parse', 'syn::Ident'])
 })
 
 test('scanRustItems finds `extern crate`, with an `as` alias', (t) => {
   const { externCrates } = scanRustItems('extern crate alpha as a;\npub extern crate beta;\nextern "C" { fn c(); }\n')
-  t.assert.deepEqual(externCrates.map((e) => e.name), ['alpha', 'beta'])
+  t.assert.deepStrictEqual(externCrates.map((e) => e.name), ['alpha', 'beta'])
 })
 
 // --- module files ---
@@ -725,26 +725,26 @@ test('resolveExplicitModPath refuses absolute and root-escaping paths', (t) => {
 test('resolveModDecl lists cfg_attr variants under their predicate plus the default file as fallback', (t) => {
   const known = new Map([['src/sys/unix.rs', ''], ['src/sys/windows.rs', ''], ['src/sys/mock.rs', ''], ['src/sys.rs', '']])
   const decl = { name: 'sys', inlinePath: [], conditional: false, paths: [{ path: 'sys/unix.rs', cfg: 'unix' }, { path: 'sys/windows.rs', cfg: 'windows' }, { path: 'sys/nope.rs', cfg: 'wasi' }] }
-  t.assert.deepEqual(resolveModDecl(decl, 'src/lib.rs', { knownSources: known }), [
+  t.assert.deepStrictEqual(resolveModDecl(decl, 'src/lib.rs', { knownSources: known }), [
     { cfg: 'unix', file: 'src/sys/unix.rs', explicit: true },
     { cfg: 'windows', file: 'src/sys/windows.rs', explicit: true },
     { cfg: null, file: 'src/sys.rs', explicit: false },
   ])
   // A variant whose predicate can't hold is the scanner's to drop, for the build it scans under.
   const src = '#[cfg_attr(unix, path = "sys/unix.rs")]\n#[cfg_attr(test, path = "sys/mock.rs")]\nmod sys;\n'
-  t.assert.deepEqual(scanRustItems(src).mods[0].paths, [{ path: 'sys/unix.rs', cfg: 'unix' }])
+  t.assert.deepStrictEqual(scanRustItems(src).mods[0].paths, [{ path: 'sys/unix.rs', cfg: 'unix' }])
   // rustc applies the first variant whose predicate holds. One that holds in the scanned build ends
   // the list and rules out the default lookup; it is the `#[path]` outright only when nothing
   // undecided precedes it.
   const inTest = scanRustItems(src, { test: true }).mods[0]
-  t.assert.deepEqual([inTest.paths, inTest.noDefault], [[{ path: 'sys/unix.rs', cfg: 'unix' }, { path: 'sys/mock.rs', cfg: 'test' }], true])
-  t.assert.deepEqual(resolveModDecl(inTest, 'src/lib.rs', { knownSources: known }).map((x) => x.file), ['src/sys/unix.rs', 'src/sys/mock.rs'])
+  t.assert.deepStrictEqual([inTest.paths, inTest.noDefault], [[{ path: 'sys/unix.rs', cfg: 'unix' }, { path: 'sys/mock.rs', cfg: 'test' }], true])
+  t.assert.deepStrictEqual(resolveModDecl(inTest, 'src/lib.rs', { knownSources: known }).map((x) => x.file), ['src/sys/unix.rs', 'src/sys/mock.rs'])
   const mockFirst = scanRustItems('#[cfg_attr(test, path = "sys/mock.rs")]\n#[cfg_attr(unix, path = "sys/unix.rs")]\nmod sys;\n', { test: true }).mods[0]
-  t.assert.deepEqual([mockFirst.paths, mockFirst.noDefault], [[{ path: 'sys/mock.rs', cfg: null }], true])
+  t.assert.deepStrictEqual([mockFirst.paths, mockFirst.noDefault], [[{ path: 'sys/mock.rs', cfg: null }], true])
   t.assert.equal(scanRustItems(src).mods[0].noDefault, false)
   // an unconditional #[path] is authoritative: no default lookup
   const explicit = { name: 'seed', inlinePath: [], conditional: false, paths: [{ path: 'sys/unix.rs', cfg: null }] }
-  t.assert.deepEqual(resolveModDecl(explicit, 'src/lib.rs', { knownSources: known }), [{ cfg: null, file: 'src/sys/unix.rs', explicit: true }])
+  t.assert.deepStrictEqual(resolveModDecl(explicit, 'src/lib.rs', { knownSources: known }), [{ cfg: null, file: 'src/sys/unix.rs', explicit: true }])
 })
 
 test('resolveModPath treats a #[path]-loaded file like mod.rs: its submodules sit beside it', (t) => {
@@ -768,22 +768,22 @@ test('parseCargoManifest reads package, lib, dependencies in every shape, and wo
     '[workspace.package]', 'version = "0.9.0"',
     '[workspace.dependencies]', 'shared = { path = "crates/shared" }',
   ].join('\n'))
-  t.assert.deepEqual(m.package, { name: 'my-app', version: '0.9.0', edition: '2021', build: null }) // the version its own [workspace] gives
-  t.assert.deepEqual(m.lib, { name: 'myapp_lib', path: 'src/the_lib.rs', procMacro: false })
+  t.assert.deepStrictEqual(m.package, { name: 'my-app', version: '0.9.0', edition: '2021', build: null }) // the version its own [workspace] gives
+  t.assert.deepStrictEqual(m.lib, { name: 'myapp_lib', path: 'src/the_lib.rs', procMacro: false })
   const dep = (k) => {
     const d = m.deps.get(k)
     const [r] = d.kinds.values() // one table each here: a dependency's identity is its table's
     return { path: r.path, package: r.package, renamed: r.renamed, inherited: r.inherited, kinds: [...d.kinds.keys()].toSorted() }
   }
-  t.assert.deepEqual([...m.deps.keys()].toSorted(), ['inline_sub', 'nix', 'serde', 'shared', 'tempfile', 'tools', 'util'])
-  t.assert.deepEqual(dep('inline_sub'), { path: '../sub', package: 'inline-sub', renamed: false, inherited: false, kinds: ['normal'] })
-  t.assert.deepEqual(dep('nix'), { path: '../nix', package: 'nix', renamed: false, inherited: false, kinds: ['normal@cfg(unix)'] }) // a target table: its own request
-  t.assert.deepEqual(dep('serde'), { path: null, package: 'serde', renamed: false, inherited: false, kinds: ['normal'] })
-  t.assert.deepEqual(dep('shared'), { path: 'crates/shared', package: 'shared', renamed: false, inherited: true, kinds: ['normal'] }) // relative to the workspace root
-  t.assert.deepEqual(dep('tempfile'), { path: null, package: 'tempfile', renamed: false, inherited: false, kinds: ['dev'] })
-  t.assert.deepEqual(dep('tools'), { path: '../tools', package: 'dev-tools', renamed: true, inherited: false, kinds: ['normal'] })
+  t.assert.deepStrictEqual([...m.deps.keys()].toSorted(), ['inline_sub', 'nix', 'serde', 'shared', 'tempfile', 'tools', 'util'])
+  t.assert.deepStrictEqual(dep('inline_sub'), { path: '../sub', package: 'inline-sub', renamed: false, inherited: false, kinds: ['normal'] })
+  t.assert.deepStrictEqual(dep('nix'), { path: '../nix', package: 'nix', renamed: false, inherited: false, kinds: ['normal@cfg(unix)'] }) // a target table: its own request
+  t.assert.deepStrictEqual(dep('serde'), { path: null, package: 'serde', renamed: false, inherited: false, kinds: ['normal'] })
+  t.assert.deepStrictEqual(dep('shared'), { path: 'crates/shared', package: 'shared', renamed: false, inherited: true, kinds: ['normal'] }) // relative to the workspace root
+  t.assert.deepStrictEqual(dep('tempfile'), { path: null, package: 'tempfile', renamed: false, inherited: false, kinds: ['dev'] })
+  t.assert.deepStrictEqual(dep('tools'), { path: '../tools', package: 'dev-tools', renamed: true, inherited: false, kinds: ['normal'] })
   t.assert.equal(m.isWorkspace, true)
-  t.assert.deepEqual(m.cargo.workspace.members, ['crates/*'])
+  t.assert.deepStrictEqual(m.cargo.workspace.members, ['crates/*'])
 })
 
 test('parseCargoManifest returns no package for a virtual manifest, and refuses a package without a name', (t) => {
@@ -793,8 +793,8 @@ test('parseCargoManifest returns no package for a virtual manifest, and refuses 
 
 test('createCargoContext identifies the owning package, resolving version.workspace through the root', (t) => {
   const cargo = createCargoContext(join(fixtures, 'workspace'))
-  t.assert.deepEqual(cargo.packageInfo('crates/app/src/main.rs'), { dir: 'crates/app', name: 'app', version: '0.3.0' })
-  t.assert.deepEqual(cargo.packageInfo('crates/util/src/detail.rs'), { dir: 'crates/util', name: 'util', version: '0.2.0' })
+  t.assert.deepStrictEqual(cargo.packageInfo('crates/app/src/main.rs'), { dir: 'crates/app', name: 'app', version: '0.3.0' })
+  t.assert.deepStrictEqual(cargo.packageInfo('crates/util/src/detail.rs'), { dir: 'crates/util', name: 'util', version: '0.2.0' })
   t.assert.equal(cargo.packageInfo('Cargo.toml'), null) // the workspace root has no [package]
   t.assert.equal(createCargoContext(join(fixtures, 'basic')).packageInfo('src/main.rs'), null)
 })
@@ -829,69 +829,69 @@ test('resolveVendoredCrate finds a vendored root among known sources, either spe
 
 test('collectRustFilesFromDisk walks mod declarations from the entry', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'basic'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/foo.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/foo.rs', 'src/main.rs'])
 })
 
 test('collectRustFilesFromDisk follows nested mods into stem subdirectories', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'nested'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/foo.rs', 'src/foo/bar.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/foo.rs', 'src/foo/bar.rs', 'src/main.rs'])
 })
 
 test('collectRustFilesFromDisk follows mod.rs-style submodules', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'mod-rs'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/foo/bar.rs', 'src/foo/mod.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/foo/bar.rs', 'src/foo/mod.rs', 'src/main.rs'])
 })
 
 test('collectRustFilesFromDisk does not follow inline mods or absent mods', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'inline-mod'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/main.rs', 'src/real.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/main.rs', 'src/real.rs'])
 })
 
 test('collectRustFilesFromDisk does not pull in external crates that are not in-tree', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'external-crate'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/local.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/local.rs', 'src/main.rs'])
 })
 
 test('collectRustFilesFromDisk treats every entry as a crate root (src/bin, tests) and pulls the own lib in', async (t) => {
   const bin = await collectRustFilesFromDisk(join(fixtures, 'lib-bin'), ['src/bin/tool.rs'])
-  t.assert.deepEqual([...bin.keys()].toSorted(), ['src/bin/helper.rs', 'src/bin/tool.rs', 'src/cli.rs', 'src/config.rs', 'src/lib.rs'])
+  t.assert.deepStrictEqual([...bin.keys()].toSorted(), ['src/bin/helper.rs', 'src/bin/tool.rs', 'src/cli.rs', 'src/config.rs', 'src/lib.rs'])
   // tests/smoke.rs is a test target: its `#[cfg(test)] mod helpers;` is live
   const it = await collectRustFilesFromDisk(join(fixtures, 'lib-bin'), ['tests/smoke.rs'])
-  t.assert.deepEqual([...it.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'tests/common/mod.rs', 'tests/helpers.rs', 'tests/smoke.rs'])
+  t.assert.deepStrictEqual([...it.keys()].toSorted(), ['src/cli.rs', 'src/config.rs', 'src/lib.rs', 'tests/common/mod.rs', 'tests/helpers.rs', 'tests/smoke.rs'])
 })
 
 test('collectRustFilesFromDisk honours #[path] in every position and inline-nested mods', async (t) => {
   // src/de/seed.rs is loaded via #[path]: its own `mod extra;` is src/de/extra.rs, beside it, like a mod.rs
   const paths = await collectRustFilesFromDisk(join(fixtures, 'path-attr'), ['src/lib.rs'])
-  t.assert.deepEqual([...paths.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...paths.keys()].toSorted(), [
     'src/de.rs', 'src/de/extra.rs', 'src/de/seed.rs', 'src/discouraged.rs', 'src/documented.rs', 'src/lib.rs', 'src/parse.rs', 'src/private/mod.rs',
     'src/raw/mod.rs', 'src/sys.rs', 'src/sys/unix.rs', 'src/sys/windows.rs',
   ])
   const inline = await collectRustFilesFromDisk(join(fixtures, 'inline-nested'), ['src/main.rs'])
-  t.assert.deepEqual([...inline.keys()].toSorted(), ['src/main.rs', 'src/outer/deep/leaf.rs', 'src/outer/inner.rs'])
+  t.assert.deepStrictEqual([...inline.keys()].toSorted(), ['src/main.rs', 'src/outer/deep/leaf.rs', 'src/outer/inner.rs'])
 })
 
 test('collectRustFilesFromDisk follows path deps and vendored crates transitively (`extern crate … as` too)', async (t) => {
   // util's `std` is a default feature; app's `default-features = false` on the inherited entry is ignored
   // (the workspace entry keeps defaults), so std_impl.rs is in.
   const ws = await collectRustFilesFromDisk(join(fixtures, 'workspace'), ['crates/app/src/main.rs'])
-  t.assert.deepEqual([...ws.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...ws.keys()].toSorted(), [
     'crates/app/src/local.rs', 'crates/app/src/main.rs', 'crates/tools/src/lib.rs', 'crates/util/src/detail.rs', 'crates/util/src/std_impl.rs', 'crates/util/src/util_lib.rs',
   ])
   // `use gamma;` and `use delta::{self, D};` name the crates themselves: followed like any other import
   const vendored = await collectRustFilesFromDisk(join(fixtures, 'vendored-transitive'), ['src/main.rs'])
-  t.assert.deepEqual([...vendored.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...vendored.keys()].toSorted(), [
     'src/main.rs', 'vendor/alpha/src/inner.rs', 'vendor/alpha/src/lib.rs', 'vendor/beta-lib/src/lib.rs', 'vendor/delta/src/lib.rs', 'vendor/gamma/src/lib.rs',
   ])
 })
 
 test('collectRustFilesFromDisk keeps the modules after a dead field, variant or arm, in and out of inline modules', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'dead-fields'), ['src/lib.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), [
     'src/after_enum.rs', 'src/after_fn.rs', 'src/after_tuple.rs', 'src/client.rs', 'src/imp/server.rs', 'src/last.rs', 'src/lib.rs',
   ])
   const { missing, resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'], baseDir: join(fixtures, 'dead-fields') })
-  t.assert.deepEqual(missing, [])
+  t.assert.deepStrictEqual(missing, [])
   t.assert.equal(resolutions.get('src/lib.rs').get('mod imp::server'), 'src/imp/server.rs')
 })
 
@@ -899,7 +899,7 @@ test('collectRustFilesFromDisk keeps the modules after a dead field, variant or 
 
 test('crateRoots is every main.rs/lib.rs first, then the loaded entries', (t) => {
   const sources = new Map([['src/bin/tool.rs', ''], ['src/lib.rs', ''], ['src/util.rs', ''], ['vendor/x/src/lib.rs', ''], ['vendor/x/src/main.rs', '']])
-  t.assert.deepEqual([...crateRoots(sources, ['src/bin/tool.rs', 'gone.rs'])], ['src/lib.rs', 'vendor/x/src/lib.rs', 'vendor/x/src/main.rs', 'src/bin/tool.rs'])
+  t.assert.deepStrictEqual([...crateRoots(sources, ['src/bin/tool.rs', 'gone.rs'])], ['src/lib.rs', 'vendor/x/src/lib.rs', 'vendor/x/src/main.rs', 'src/bin/tool.rs'])
 })
 
 test('buildModuleTrees lets a named root claim a glob-listed module file before that file claims itself', (t) => {
@@ -921,7 +921,7 @@ test('buildModuleTrees maps module paths to files per crate root, and files back
   t.assert.equal(tree.get('crate'), 'src/main.rs')
   t.assert.equal(tree.get('crate::foo'), 'src/foo.rs')
   t.assert.equal(tree.get('crate::foo::bar'), 'src/foo/bar.rs')
-  t.assert.deepEqual(files.get('src/foo/bar.rs'), { root: 'src/main.rs', modulePath: 'crate::foo::bar', leaves: [], parent: 'src/foo.rs', roots: new Set(['src/main.rs']) })
+  t.assert.deepStrictEqual(files.get('src/foo/bar.rs'), { root: 'src/main.rs', modulePath: 'crate::foo::bar', leaves: [], parent: 'src/foo.rs', roots: new Set(['src/main.rs']) })
 })
 
 test('buildModuleTrees keeps a lib and a bin apart (no shared `crate` key) whatever the entry order', (t) => {
@@ -960,10 +960,10 @@ test('buildModuleTrees handles a pathologically deep mod chain without overflowi
 test('buildRustTree records mod edges and crate:: use edges', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'use-crate'), ['src/main.rs'])
   const tree = buildRustTree(sources)
-  t.assert.deepEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources', 'unresolvedCrates', 'wantedRoots', 'wantedUnits'])
-  t.assert.deepEqual(tree.wantedRoots, [])
-  t.assert.deepEqual(tree.missing, [])
-  t.assert.deepEqual([...tree.unresolvedCrates], [])
+  t.assert.deepStrictEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources', 'unresolvedCrates', 'wantedRoots', 'wantedUnits'])
+  t.assert.deepStrictEqual(tree.wantedRoots, [])
+  t.assert.deepStrictEqual(tree.missing, [])
+  t.assert.deepStrictEqual([...tree.unresolvedCrates], [])
 
   const main = tree.resolutions.get('src/main.rs')
   t.assert.equal(main.get('mod foo'), 'src/foo.rs')
@@ -979,7 +979,7 @@ test('buildRustTree records mod edges and crate:: use edges', async (t) => {
 test('buildRustTree records an edge per path of a brace-grouped / multi-line use', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'use-groups'), ['src/main.rs'])
   const { resolutions, missing } = buildRustTree(sources)
-  t.assert.deepEqual(missing, [])
+  t.assert.deepStrictEqual(missing, [])
   const main = edges(resolutions.get('src/main.rs'))
   t.assert.equal(main['crate::config::Config'], 'src/config.rs')
   t.assert.equal(main['crate::errors::AppError'], 'src/errors.rs')
@@ -1023,8 +1023,8 @@ test('buildRustTree follows pub use re-exports and #[macro_export] macros, so `$
     ['vendor/serde_core/src/lib.rs', 'pub trait Serialize {}\n'],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
-  t.assert.deepEqual(edges(resolutions.get('src/external.rs')), {
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/external.rs')), {
     'mod serde': 'src/external/serde.rs',
     'crate::serde::serialize': 'src/external/serde.rs', // through the root's `pub use external::*`
     'use serde_core': 'vendor/serde_core/src/lib.rs', // `crate::__private::serde::Serialize`, through two re-exports
@@ -1034,7 +1034,7 @@ test('buildRustTree follows pub use re-exports and #[macro_export] macros, so `$
     'crate::__private::core::result::Result::Ok': 'src/traits.rs',
     // `$crate::__impl_external_serde!` is defined in this very file: a self edge, dropped.
   })
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), {
     'crate::external::__private': 'src/external.rs',
     'crate::traits::__private': 'src/traits.rs',
     external: 'src/external.rs',
@@ -1054,7 +1054,7 @@ test('buildRustTree keeps a path whose re-export chain leaves the bundle on the 
     ['src/other.rs', 'fn f() -> crate::__private::Result<()> { todo!() }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/macros.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/macros.rs')), {
     // `Result` is bound by the `lib` module's `pub use self::core::result` (its `core::*` glob into
     // the sysroot can't place `result`): an item of lib.rs, as far as the bundle knows …
     'crate::__private::Result::Ok': 'src/lib.rs',
@@ -1062,7 +1062,7 @@ test('buildRustTree keeps a path whose re-export chain leaves the bundle on the 
     'crate::__private::Error': 'src/private/mod.rs',
   })
   // With nothing else pointing at private/mod.rs, the `__private` module the path went through is recorded.
-  t.assert.deepEqual(edges(resolutions.get('src/other.rs')), { 'crate::__private::Result': 'src/lib.rs', 'crate::__private': 'src/private/mod.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/other.rs')), { 'crate::__private::Result': 'src/lib.rs', 'crate::__private': 'src/private/mod.rs' })
 })
 
 test('buildRustTree records the module a path went through when its import leads on elsewhere and nothing else points there', (t) => {
@@ -1075,13 +1075,13 @@ test('buildRustTree records the module a path went through when its import leads
     ['vendor/serde_core/src/lib.rs', 'pub trait Serialize {}\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'use serde_core': 'vendor/serde_core/src/lib.rs', // where `util::serde` leads
     'crate::util::Thing': 'src/types.rs', // where `util::Thing` leads
     'crate::util': 'src/util.rs', // and the module both went through, which nothing else here names
   })
   // `crate::util::helper` already points at util.rs: no prefix edge needed.
-  t.assert.deepEqual(edges(resolutions.get('src/other.rs')), { 'crate::util::Thing': 'src/types.rs', 'crate::util::helper': 'src/util.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/other.rs')), { 'crate::util::Thing': 'src/types.rs', 'crate::util::helper': 'src/util.rs' })
 })
 
 test('buildRustTree records include edges and edges to the file defining a macro invoked by bare name', (t) => {
@@ -1092,8 +1092,8 @@ test('buildRustTree records include edges and edges to the file defining a macro
     ['data/table.txt', 'a,b\n'],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'], formats: new Map([['data/table.txt', 'resource']]) })
-  t.assert.deepEqual(missing, [])
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), {
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), {
     'mod macros': 'src/macros.rs',
     'include generated/consts.rs': 'src/generated/consts.rs',
     'include_str ../data/table.txt': 'data/table.txt',
@@ -1106,15 +1106,15 @@ test('collectRustFilesFromDisk follows include!, carries include_str!/include_by
   const baseDir = rustFixture('includes')
   const formats = new Map()
   const sources = await collectRustFilesFromDisk(baseDir, ['src/lib.rs'], { formats })
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
-  t.assert.deepEqual([...formats].toSorted(), [['README.md', 'resource'], ['data/blob.bin', 'resource:base64'], ['data/table.txt', 'resource']])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['README.md', 'data/blob.bin', 'data/table.txt', 'src/gated.rs', 'src/generated/consts.rs', 'src/lib.rs', 'src/macros.rs'])
+  t.assert.deepStrictEqual([...formats].toSorted(), [['README.md', 'resource'], ['data/blob.bin', 'resource:base64'], ['data/table.txt', 'resource']])
   t.assert.equal(sources.get('data/blob.bin'), Buffer.from([0, 0xff, 0xfe, 1]).toString('base64'))
   t.assert.equal(sources.get('data/table.txt'), 'a,b\n1,2\n')
   // src/gated.rs opens with `#![cfg(feature = "never")]`: carried, but its `mod ghost;` and its
   // `use phantom_crate::…` are compiled out, so nothing is missing or unresolved.
   const { missing, unresolvedCrates, resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'], baseDir, formats })
-  t.assert.deepEqual([missing, [...unresolvedCrates]], [[], []])
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), {
+  t.assert.deepStrictEqual([missing, [...unresolvedCrates]], [[], []])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), {
     'include_str ../README.md': 'README.md', // the crate docs' `#![doc = include_str!(…)]`
     'mod macros': 'src/macros.rs',
     'mod gated': 'src/gated.rs',
@@ -1139,15 +1139,15 @@ test('buildRustTree lets a glob provide a name only from a module of this crate 
     ['vendor/serde/src/lib.rs', 'pub trait Serialize {}\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/b.rs')), { 'use serde': 'vendor/serde/src/lib.rs' }) // `use core::arch::x86_64::*` hides nothing
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/b.rs')), { 'use serde': 'vendor/serde/src/lib.rs' }) // `use core::arch::x86_64::*` hides nothing
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::Item': 'src/c.rs', // through `pub use a::*`, then a's `pub use crate::c::Item`
     'crate::inner::f': 'src/a/inner.rs', // through `pub use a::*`: a child module of a
     'crate::Own': 'src/a.rs', // through `pub use a::*`: a struct a.rs defines
     'crate::Read': 'src/lib.rs', // from the sysroot, through `pub use std::io::prelude::*`
     'use serde': 'vendor/serde/src/lib.rs',
   })
-  t.assert.deepEqual([...unresolvedCrates].toSorted(), ['rayon', 'serde_json'])
+  t.assert.deepStrictEqual([...unresolvedCrates].toSorted(), ['rayon', 'serde_json'])
 })
 
 test('buildRustTree places an item a module defines behind a glob, before a later glob\'s re-export of the name', (t) => {
@@ -1161,9 +1161,9 @@ test('buildRustTree places an item a module defines behind a glob, before a late
     ['src/user.rs', 'use crate::sigset_t;\nuse crate::c_int;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::sigset_t': 'src/fuchsia.rs', 'crate::c_int': 'src/fuchsia.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/unix.rs')), { 'mod generic': 'src/unix/generic.rs', 'self::generic::sigset_t': 'src/unix/generic.rs', 'crate::c_int': 'src/fuchsia.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/fuchsia.rs')), {}) // its own struct: no self edge
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::sigset_t': 'src/fuchsia.rs', 'crate::c_int': 'src/fuchsia.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/unix.rs')), { 'mod generic': 'src/unix/generic.rs', 'self::generic::sigset_t': 'src/unix/generic.rs', 'crate::c_int': 'src/fuchsia.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/fuchsia.rs')), {}) // its own struct: no self edge
 })
 
 test('buildRustTree keeps a private mod and an impl\'s associated items out of what a glob brings in', (t) => {
@@ -1175,7 +1175,7 @@ test('buildRustTree keeps a private mod and an impl\'s associated items out of w
     ['src/user.rs', 'use crate::inner::Hidden;\nuse crate::shown;\nuse crate::len;\nuse crate::N;\nuse crate::getpid;\nuse crate::local;\nuse crate::helper;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::inner::Hidden': 'src/lib.rs', // `mod inner` is private to a: not re-exported by `pub use a::*`
     'crate::shown': 'src/a/shown.rs',
     'crate::len': 'src/lib.rs', // a method, not an item of a
@@ -1195,8 +1195,8 @@ test('buildRustTree resolves a fn call at the root through a glob before an expo
     ['vendor/log/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::helper': 'src/facade.rs', // the fn call: the glob's re-export
     'crate::helper!': 'src/macros.rs', // the invocation: the macro, under a spec of its own
     'use log': 'vendor/log/src/lib.rs', // a private `macro_rules! log` in macros.rs is not what `use log` names
@@ -1220,8 +1220,8 @@ test('buildRustTree does not report a lead a glob into another crate may provide
   // `missing_crate` (tracing's `use tracing_core::*;` must not hide its `tracing_attributes`). A
   // glob into a crate that isn't (proc_macro2 here) may bring anything in, `unseen` included; a
   // sysroot glob or an enum's brings in no crate-like lead.
-  t.assert.deepEqual([...unresolvedCrates].toSorted(), ['missing_crate', 'other_missing', 'proc_macro2'])
-  t.assert.deepEqual(edges(resolutions.get('src/a.rs')), { 'use syn': 'vendor/syn/src/lib.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates].toSorted(), ['missing_crate', 'other_missing', 'proc_macro2'])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a.rs')), { 'use syn': 'vendor/syn/src/lib.rs' })
 })
 
 test('buildRustTree follows the crate root\'s `extern crate … as` alias from any module', (t) => {
@@ -1231,8 +1231,8 @@ test('buildRustTree follows the crate root\'s `extern crate … as` alias from a
     ['vendor/serde_core/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/a.rs')), { 'use serde_core': 'vendor/serde_core/src/lib.rs' })
-  t.assert.deepEqual([...unresolvedCrates], ['missing_dep']) // by its crate name, not the alias
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a.rs')), { 'use serde_core': 'vendor/serde_core/src/lib.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], ['missing_dep']) // by its crate name, not the alias
 })
 
 test('buildRustTree resolves `self::` paths and glob-provided names in a cfg-variant file through that file\'s own imports', (t) => {
@@ -1244,8 +1244,8 @@ test('buildRustTree resolves `self::` paths and glob-provided names in a cfg-var
     ['src/w.rs', 'pub struct Handle;\npub mod helper { pub fn go() {} }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/unix.rs')), { 'crate::u::Handle': 'src/u.rs', 'crate::u': 'src/u.rs', 'self::Handle::new': 'src/u.rs', 'self::helper::go': 'src/u.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/windows.rs')), { 'crate::w::Handle': 'src/w.rs', 'crate::w': 'src/w.rs', 'self::Handle::new': 'src/w.rs', 'self::helper::go': 'src/w.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/unix.rs')), { 'crate::u::Handle': 'src/u.rs', 'crate::u': 'src/u.rs', 'self::Handle::new': 'src/u.rs', 'self::helper::go': 'src/u.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/windows.rs')), { 'crate::w::Handle': 'src/w.rs', 'crate::w': 'src/w.rs', 'self::Handle::new': 'src/w.rs', 'self::helper::go': 'src/w.rs' })
 })
 
 test('buildRustTree prefers a mod file to an inline module of the same name whatever the declaration order, nested mods included', (t) => {
@@ -1256,9 +1256,9 @@ test('buildRustTree prefers a mod file to an inline module of the same name what
     ['src/user.rs', 'use crate::imp::f;\n'],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
+  t.assert.deepStrictEqual(missing, [])
   // The file is the module in the tree; the path means either, each under its cfg.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::imp::f': { unix: 'src/imp.rs', 'not(unix)': 'src/lib.rs' } })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::imp::f': { unix: 'src/imp.rs', 'not(unix)': 'src/lib.rs' } })
 })
 
 test('scanRustItems skips the else branches of a dead `if`, and takes a bare macro call after a single `:` for one', (t) => {
@@ -1270,8 +1270,8 @@ test('scanRustItems skips the else branches of a dead `if`, and takes a bare mac
     '    let p = std::path::Path::new("x");',
     '}',
   ].join('\n'), { features: new Set() })
-  t.assert.deepEqual(items.refs.map((r) => r.spec), [])
-  t.assert.deepEqual([...items.invocations].toSorted(), ['helper', 'other'])
+  t.assert.deepStrictEqual(items.refs.map((r) => r.spec), [])
+  t.assert.deepStrictEqual([...items.invocations].toSorted(), ['helper', 'other'])
 })
 
 test('buildRustTree resolves through several globs of one module, and through each import under its own cfg', (t) => {
@@ -1285,7 +1285,7 @@ test('buildRustTree resolves through several globs of one module, and through ea
     ['src/user.rs', 'use crate::deep::D;\nuse crate::X;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::deep::D': 'src/foo/b/deep.rs', // `deep` through the second glob
     // Under unix the `pub use notvendored::X` binds it -- a crate that isn't in-tree, so the name
     // is lib.rs's as far as the bundle knows -- under windows `crate::b::X`.
@@ -1304,8 +1304,8 @@ test('buildRustTree prefers a mod file to an inline module of the same name, and
     ['src/user.rs', 'use crate::imp::f;\nuse crate::sys::Handle;\nuse crate::sys::Other;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs'))['mod sys'], { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs'))['mod sys'], { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::imp::f': { unix: 'src/imp.rs', 'not(unix)': 'src/lib.rs' },
     'crate::sys::Handle': { unix: 'src/u.rs', windows: 'src/w.rs' }, // each variant's import, under its cfg
     'crate::sys': 'src/sys/unix.rs', // the module the paths went through, in the file whose import was followed first
@@ -1313,7 +1313,7 @@ test('buildRustTree prefers a mod file to an inline module of the same name, and
   })
   // A path anchored on the module's own import names no module of its own: no edge for the module,
   // whichever variant holds the import.
-  t.assert.deepEqual(edges(resolutions.get('src/sys/windows.rs')), { 'crate::w::Handle': 'src/w.rs', 'crate::w::Other': 'src/w.rs', 'helper::go': 'src/w.rs', 'crate::w::helper': 'src/w.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/windows.rs')), { 'crate::w::Handle': 'src/w.rs', 'crate::w::Other': 'src/w.rs', 'helper::go': 'src/w.rs', 'crate::w::helper': 'src/w.rs' })
 })
 
 test('buildRustTree names a macro by path only as the final segment of an invocation or at the crate root', (t) => {
@@ -1325,13 +1325,13 @@ test('buildRustTree names a macro by path only as the final segment of an invoca
     ['src/user.rs', 'fn f() { $crate::span!(); crate::span::Span::new(); $crate::helper!(); crate::helper(); }\nuse log::info;\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::span!': 'src/macros.rs', // `$crate::span!()`: the macro, not the module of that name
     'crate::span::Span::new': 'src/span.rs',
     'crate::helper!': 'src/macros.rs', // the invocation: the exported macro
     'crate::helper': 'src/facade.rs', // the path: the glob's re-export
   })
-  t.assert.deepEqual([...unresolvedCrates], ['log']) // `use log::debug` names the crate, not the crate's own `log!` macro
+  t.assert.deepStrictEqual([...unresolvedCrates], ['log']) // `use log::debug` names the crate, not the crate's own `log!` macro
 })
 
 test('buildRustTree follows a `use` of a macro_rules! macro defined in the crate, not a crate of that name', (t) => {
@@ -1342,12 +1342,12 @@ test('buildRustTree follows a `use` of a macro_rules! macro defined in the crate
     ['vendor/cfg-if/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'mod util': 'src/util.rs', 'mod user': 'src/user.rs' }) // `use cfg_if` is the macro above, not vendor/cfg-if
-  t.assert.deepEqual(edges(resolutions.get('src/util.rs')), {})
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'mod util': 'src/util.rs', 'mod user': 'src/user.rs' }) // `use cfg_if` is the macro above, not vendor/cfg-if
+  t.assert.deepStrictEqual(edges(resolutions.get('src/util.rs')), {})
   // The bare `cfg_if!` call also sees lib.rs's `macro_rules!` textually (an ancestor file, defined
   // before `mod user;`); `helper!` lives in a sibling file, and reaches this one through the `use`.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::cfg_if': 'src/lib.rs', 'crate::util::helper': 'src/util.rs', 'cfg_if!': 'src/lib.rs', 'helper!': 'src/util.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::cfg_if': 'src/lib.rs', 'crate::util::helper': 'src/util.rs', 'cfg_if!': 'src/lib.rs', 'helper!': 'src/util.rs' })
 })
 
 test('buildRustTree answers through an import cycle the same whichever side is asked first', (t) => {
@@ -1365,10 +1365,10 @@ test('buildRustTree answers through an import cycle the same whichever side is a
   ])
   // (`crate::a` / `crate::b`: the modules the paths went through, which nothing else here names.)
   const want = { 'crate::b::X': 'src/c.rs', 'crate::a::Y': 'src/d.rs', 'crate::a::X': 'src/c.rs', 'crate::b::Y': 'src/d.rs', 'crate::b': 'src/b.rs', 'crate::a': 'src/a.rs' }
-  t.assert.deepEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/first.rs')), want)
+  t.assert.deepStrictEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/first.rs')), want)
   // The other order of first questions: swap which user file the walk meets first.
   const swapped = new Map([...sources].map(([p, c]) => [p, p === 'src/lib.rs' ? c.replace('mod first;\nmod second;', 'mod second;\nmod first;') : c]))
-  t.assert.deepEqual(edges(buildRustTree(swapped, { roots: ['src/lib.rs'] }).resolutions.get('src/first.rs')), want)
+  t.assert.deepStrictEqual(edges(buildRustTree(swapped, { roots: ['src/lib.rs'] }).resolutions.get('src/first.rs')), want)
   // Three modules in a ring, the item two hops away.
   const ring = new Map([
     ['src/lib.rs', 'mod a;\nmod b;\nmod c;\nmod user;\n'],
@@ -1377,7 +1377,7 @@ test('buildRustTree answers through an import cycle the same whichever side is a
     ['src/c.rs', 'pub use crate::a::*;\npub struct C;\n'],
     ['src/user.rs', 'use crate::b::A;\nuse crate::a::C;\nuse crate::c::B;\nuse crate::a::B;\nuse crate::b::C;\nuse crate::c::A;\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(ring, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(buildRustTree(ring, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), {
     'crate::b::A': 'src/a.rs', 'crate::a::C': 'src/c.rs', 'crate::c::B': 'src/b.rs', 'crate::a::B': 'src/b.rs', 'crate::b::C': 'src/c.rs', 'crate::c::A': 'src/a.rs',
   })
   // A name found only around the cycle: `a::X` through b, whose glob comes back through a.
@@ -1388,7 +1388,7 @@ test('buildRustTree answers through an import cycle the same whichever side is a
     ['src/c.rs', 'pub mod inner { pub struct X; }\n'],
     ['src/user.rs', 'use crate::a::X;\nuse crate::b::X as Y;\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(around, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'crate::a::X': 'src/c.rs', 'crate::b::X': 'src/c.rs', 'crate::a': 'src/a.rs', 'crate::b': 'src/b.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(around, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'crate::a::X': 'src/c.rs', 'crate::b::X': 'src/c.rs', 'crate::a': 'src/a.rs', 'crate::b': 'src/b.rs' })
 })
 
 test('buildRustTree survives a `use log;` or `use x::{self}` in a module spread over platform files', (t) => {
@@ -1401,8 +1401,8 @@ test('buildRustTree survives a `use log;` or `use x::{self}` in a module spread 
     ['src/x.rs', 'pub struct Y;\npub fn g() {}\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/u.rs')), { 'crate::x': 'src/x.rs', 'crate::x::Y': 'src/x.rs', 'x::g': 'src/x.rs' })
-  t.assert.deepEqual([...unresolvedCrates], ['log'])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/u.rs')), { 'crate::x': 'src/x.rs', 'crate::x::Y': 'src/x.rs', 'x::g': 'src/x.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], ['log'])
 })
 
 test('buildRustTree keeps a path under one platform out of the other platforms\' files', (t) => {
@@ -1418,10 +1418,10 @@ test('buildRustTree keeps a path under one platform out of the other platforms\'
     ['src/user.rs', 'use crate::c_int;\nuse crate::sigset_t;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/unix/linux.rs')), { 'crate::c_int': 'src/unix.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/unix.rs')), { 'mod linux': 'src/unix/linux.rs', 'self::linux::sigset_t': 'src/unix/linux.rs', 'crate::sigset_t::default': 'src/unix/linux.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/unix/linux.rs')), { 'crate::c_int': 'src/unix.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/unix.rs')), { 'mod linux': 'src/unix/linux.rs', 'self::linux::sigset_t': 'src/unix/linux.rs', 'crate::sigset_t::default': 'src/unix/linux.rs' })
   // A file under no platform cfg: every platform's, each under its cfg -- not the first written.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::c_int': { windows: 'src/windows.rs', 'target_os = "fuchsia"': 'src/fuchsia.rs', unix: 'src/unix.rs' },
     'crate::sigset_t': { windows: 'src/windows.rs', 'target_os = "fuchsia"': 'src/fuchsia.rs', unix: 'src/unix/linux.rs' },
   })
@@ -1436,7 +1436,7 @@ test('buildRustTree keeps a path under one platform out of the other platforms\'
     ['src/sys/unix/waker.rs', 'pub struct Waker;\n'],
     ['src/sys/windows/mod.rs', 'pub struct Waker;\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(mio, { roots: ['src/lib.rs'] }).resolutions.get('src/sys/unix/selector_epoll.rs')), { 'crate::sys::Waker': 'src/sys/unix/waker.rs', 'crate::sys': 'src/sys.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(mio, { roots: ['src/lib.rs'] }).resolutions.get('src/sys/unix/selector_epoll.rs')), { 'crate::sys::Waker': 'src/sys/unix/waker.rs', 'crate::sys': 'src/sys.rs' })
   // tokio: a file under one macro-keyed variant of `mod imp` means that variant's items.
   const tokio = new Map([
     ['src/lib.rs', 'mod atomic;\n'],
@@ -1445,7 +1445,7 @@ test('buildRustTree keeps a path under one platform out of the other platforms\'
     ['src/atomic_as_mutex.rs', 'mod static_macro;\npub struct AtomicU64;\n'],
     ['src/atomic_as_mutex/static_macro.rs', 'use super::AtomicU64;\nfn f() { crate::atomic::imp::AtomicU64::new(); }\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(tokio, { roots: ['src/lib.rs'] }).resolutions.get('src/atomic_as_mutex/static_macro.rs')), { 'super::AtomicU64': 'src/atomic_as_mutex.rs', 'crate::atomic::imp::AtomicU64::new': 'src/atomic_as_mutex.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(tokio, { roots: ['src/lib.rs'] }).resolutions.get('src/atomic_as_mutex/static_macro.rs')), { 'super::AtomicU64': 'src/atomic_as_mutex.rs', 'crate::atomic::imp::AtomicU64::new': 'src/atomic_as_mutex.rs' })
 })
 
 test('buildRustTree takes a one-segment root path for an exported macro when no crate has the name', (t) => {
@@ -1455,8 +1455,8 @@ test('buildRustTree takes a one-segment root path for an exported macro when no 
     ['src/macros.rs', '#[macro_export]\nmacro_rules! anyhow { () => {} }\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', anyhow: 'src/macros.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', anyhow: 'src/macros.rs' })
 })
 
 test('scanRustItems leaves template items, `static ref`, fn-body items and template imports out of what a module defines', (t) => {
@@ -1467,15 +1467,15 @@ test('scanRustItems leaves template items, `static ref`, fn-body items and templ
     'extern "C" { pub fn getpid() -> i32; }',
     'pub struct Real;',
   ].join('\n'))
-  t.assert.deepEqual(items.defined.map((d) => d.name), ['TABLE', 'cb', 'getpid', 'Real'])
-  t.assert.deepEqual(items.imports.map((im) => [im.segments.join('::'), im.glob, im.macro]), [['crate::a', true, 'macro_rules']]) // recorded, but not as this module's (buildRustTree skips it)
+  t.assert.deepStrictEqual(items.defined.map((d) => d.name), ['TABLE', 'cb', 'getpid', 'Real'])
+  t.assert.deepStrictEqual(items.imports.map((im) => [im.segments.join('::'), im.glob, im.macro]), [['crate::a', true, 'macro_rules']]) // recorded, but not as this module's (buildRustTree skips it)
 })
 
 test('scanRustItems skips a quote!-family body wherever it comes from, unless the file defines that macro itself', (t) => {
   const own = scanRustItems('macro_rules! quote { ($($t:tt)*) => {} }\nfn f() { quote! { crate::a::b() } }\n')
-  t.assert.deepEqual(own.refs.map((r) => r.spec), ['crate::a::b'])
+  t.assert.deepStrictEqual(own.refs.map((r) => r.spec), ['crate::a::b'])
   const ext = scanRustItems('fn f() { quote::quote! { crate::a::b() } ::quote::quote_spanned! { crate::c::d() } }\n')
-  t.assert.deepEqual(ext.refs.map((r) => r.spec), [])
+  t.assert.deepStrictEqual(ext.refs.map((r) => r.spec), [])
 })
 
 test('buildRustTree flattens a mod whose every cfg names the same file', (t) => {
@@ -1484,7 +1484,7 @@ test('buildRustTree flattens a mod whose every cfg names the same file', (t) => 
     ['src/lib.rs', '#[cfg(unix)] mod primitives;\n#[cfg(windows)] mod primitives;\n#[cfg(target_os = "fuchsia")] mod primitives;\n'],
     ['src/primitives.rs', ''],
   ])
-  t.assert.deepEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs')), { 'mod primitives': 'src/primitives.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs')), { 'mod primitives': 'src/primitives.rs' })
 })
 
 test('scanRustItems takes a dead `let` or arm\'s else branches with it, and the branches after a cfg_if! branch that holds', (t) => {
@@ -1499,10 +1499,10 @@ test('scanRustItems takes a dead `let` or arm\'s else branches with it, and the 
     '}',
     'cfg_if! { if #[cfg(unix)] { mod u; use live_u::X; } else if #[cfg(windows)] { mod w; use dead_w::Y; } else { mod o; use dead_o::Z; } }',
   ].join('\n'), { features: new Set(), target })
-  t.assert.deepEqual(items.refs.map((r) => r.spec).toSorted(), ['live::j', 'live_u::X'])
-  t.assert.deepEqual(items.mods.map((m) => m.name), ['u'])
+  t.assert.deepStrictEqual(items.refs.map((r) => r.spec).toSorted(), ['live::j', 'live_u::X'])
+  t.assert.deepStrictEqual(items.mods.map((m) => m.name), ['u'])
   // Without a target the branches stay, each under what it means.
-  t.assert.deepEqual(scanRustItems('cfg_if! { if #[cfg(unix)] { mod u; } else if #[cfg(windows)] { mod w; } else { mod o; } }').mods.map((m) => [m.name, m.cfg]), [['u', 'unix'], ['w', 'all(not(unix), windows)'], ['o', 'all(not(unix), not(windows))']])
+  t.assert.deepStrictEqual(scanRustItems('cfg_if! { if #[cfg(unix)] { mod u; } else if #[cfg(windows)] { mod w; } else { mod o; } }').mods.map((m) => [m.name, m.cfg]), [['u', 'unix'], ['w', 'all(not(unix), windows)'], ['o', 'all(not(unix), not(windows))']])
 })
 
 test('buildRustTree gives a bare macro call its textual scope: definitions before the mounting mod, a #[macro_use] mod\'s within its module', (t) => {
@@ -1516,16 +1516,16 @@ test('buildRustTree gives a bare macro call its textual scope: definitions befor
     ['src/b.rs', 'fn f() { nested!(); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/early.rs')), {}) // `late!` is defined after `mod early;`
-  t.assert.deepEqual(edges(resolutions.get('src/later.rs')), { 'late!': 'src/lib.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/a.rs')), { 'mod inner_macros': 'src/a/inner_macros.rs', 'mod uses': 'src/a/uses.rs', 'nested!': 'src/a/inner_macros.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/a/uses.rs')), { 'nested!': 'src/a/inner_macros.rs' }) // mounted after the `#[macro_use] mod`
-  t.assert.deepEqual(edges(resolutions.get('src/b.rs')), {}) // a's `#[macro_use]` reaches a, not the crate
+  t.assert.deepStrictEqual(edges(resolutions.get('src/early.rs')), {}) // `late!` is defined after `mod early;`
+  t.assert.deepStrictEqual(edges(resolutions.get('src/later.rs')), { 'late!': 'src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a.rs')), { 'mod inner_macros': 'src/a/inner_macros.rs', 'mod uses': 'src/a/uses.rs', 'nested!': 'src/a/inner_macros.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a/uses.rs')), { 'nested!': 'src/a/inner_macros.rs' }) // mounted after the `#[macro_use] mod`
+  t.assert.deepStrictEqual(edges(resolutions.get('src/b.rs')), {}) // a's `#[macro_use]` reaches a, not the crate
 })
 
 test('scanRustItems reads a manifest-relative include inside a doc attribute', (t) => {
   const items = scanRustItems('#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]\n#[doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/a.md"))]\npub struct S;\n')
-  t.assert.deepEqual(items.includes, [
+  t.assert.deepStrictEqual(items.includes, [
     { kind: 'include_str', path: 'README.md', base: 'manifest', conditional: false },
     { kind: 'include_str', path: 'docs/a.md', base: 'manifest', conditional: false },
   ])
@@ -1542,11 +1542,11 @@ test('buildRustTree honours restricted visibility on re-exports', (t) => {
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
   // Inside `a`: everything (and `super`, the module whose imports the paths went through).
-  t.assert.deepEqual(edges(resolutions.get('src/a/inner.rs')), { 'super::InA': 'src/c.rs', 'super::Priv': 'src/c.rs', 'crate::a::ToParent': 'src/c.rs', super: 'src/a.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/a/other.rs')), { 'super::InA': 'src/c.rs', super: 'src/a.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a/inner.rs')), { 'super::InA': 'src/c.rs', 'super::Priv': 'src/c.rs', 'crate::a::ToParent': 'src/c.rs', super: 'src/a.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a/other.rs')), { 'super::InA': 'src/c.rs', super: 'src/a.rs' })
   // From b (a sibling of a, inside the crate root): only what `pub(super)` -- the root -- lets out;
   // the other two names are a's own, as far as b can see.
-  t.assert.deepEqual(edges(resolutions.get('src/b.rs')), { 'crate::a::ToParent': 'src/c.rs', 'crate::a::InA': 'src/a.rs', 'crate::a::Priv': 'src/a.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/b.rs')), { 'crate::a::ToParent': 'src/c.rs', 'crate::a::InA': 'src/a.rs', 'crate::a::Priv': 'src/a.rs' })
 })
 
 test('buildRustTree follows `extern crate … as` like a use, and `extern crate self` to the crate root', (t) => {
@@ -1558,13 +1558,13 @@ test('buildRustTree follows `extern crate … as` like a use, and `extern crate 
     ['vendor/serde_core/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'use serde_core': 'vendor/serde_core/src/lib.rs', // `s::Value`, through the alias
     'use serde_json': 'vendor/serde_json/src/lib.rs', // `crate::json::Value`, through the root's `pub extern crate … as json`
     'me::util::f': 'src/util.rs', // `crate::util::f`: the root's `extern crate self as me` is in the extern prelude
   })
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'use serde_json': 'vendor/serde_json/src/lib.rs', 'mod util': 'src/util.rs', 'mod user': 'src/user.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'use serde_json': 'vendor/serde_json/src/lib.rs', 'mod util': 'src/util.rs', 'mod user': 'src/user.rs' })
 })
 
 test('buildRustTree records no via edge for the crate root, however the path reaches it', (t) => {
@@ -1576,7 +1576,7 @@ test('buildRustTree records no via edge for the crate root, however the path rea
     ['src/ext.rs', 'use super::ToTokens;\nuse crate::__private::push_ident;\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/ext.rs')), { 'super::ToTokens': 'src/to_tokens.rs', 'crate::__private::push_ident': 'src/runtime.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/ext.rs')), { 'super::ToTokens': 'src/to_tokens.rs', 'crate::__private::push_ident': 'src/runtime.rs' })
 })
 
 test('buildRustTree anchors a path on the module\'s own imports: a `use`d name, or one a glob re-export provides', (t) => {
@@ -1593,9 +1593,9 @@ test('buildRustTree anchors a path on the module\'s own imports: a `use`d name, 
     ['src/user.rs', 'use crate::consts::U1;\nuse crate::linux::types::Foo;\nuse crate::U1 as Root;\n'],
   ])
   const { resolutions, missing, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), {
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), {
     'mod gen': 'src/gen.rs',
     'mod uapi': 'src/uapi.rs',
     'mod user': 'src/user.rs',
@@ -1604,7 +1604,7 @@ test('buildRustTree anchors a path on the module\'s own imports: a `use`d name, 
     uapi: 'src/uapi.rs',
     'linux::types': 'src/uapi/linux/types.rs', // `linux` through `pub use uapi::*`
   })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::consts::U1': 'src/gen/consts.rs',
     'crate::linux::types::Foo': 'src/uapi/linux/types.rs',
     'crate::U1': 'src/gen/consts.rs', // an item behind a glob: the module defining it, through `pub use consts::*`
@@ -1620,23 +1620,23 @@ test('buildRustTree resolves the submodules of a file mounted both through #[pat
     ['src/b/c.rs', ''],
   ])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
+  t.assert.deepStrictEqual(missing, [])
   t.assert.equal(resolutions.get('src/b.rs').get('mod c'), 'src/b/c.rs')
 })
 
 test('buildRustTree rescans a file whose content changed in a reused sources map', (t) => {
   const sources = new Map([['src/lib.rs', 'mod a;\n'], ['src/a.rs', ''], ['src/b.rs', '']])
-  t.assert.deepEqual([...buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').keys()], ['mod a'])
+  t.assert.deepStrictEqual([...buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').keys()], ['mod a'])
   sources.set('src/lib.rs', 'mod a;\nmod b;\n')
-  t.assert.deepEqual([...buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').keys()], ['mod a', 'mod b'])
+  t.assert.deepStrictEqual([...buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').keys()], ['mod a', 'mod b'])
 })
 
 test('buildRustTree resolves super:: and self:: paths against the module tree', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'use-groups'), ['src/main.rs'])
   const { resolutions } = buildRustTree(sources)
-  t.assert.deepEqual(edges(resolutions.get('src/util.rs')), { 'super::config::Config': 'src/config.rs', super: 'src/main.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/util.rs')), { 'super::config::Config': 'src/config.rs', super: 'src/main.rs' })
   t.assert.equal(resolutions.get('src/net/mod.rs').get('self::client::Client'), 'src/net/client.rs')
-  t.assert.deepEqual(edges(resolutions.get('src/net/client.rs')), { 'super::server::Server': 'src/net/server.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/net/client.rs')), { 'super::server::Server': 'src/net/server.rs' })
   // `use super::*` inside `mod tests { }` names the enclosing file itself: no self edge.
   t.assert.ok(![...resolutions.get('src/util.rs').values()].includes('src/util.rs'))
 })
@@ -1644,7 +1644,7 @@ test('buildRustTree resolves super:: and self:: paths against the module tree', 
 test('buildRustTree keys a mod inside inline modules by its inline path, and resolves paths into it', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'inline-nested'), ['src/main.rs'])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/main.rs'] })
-  t.assert.deepEqual(missing, []) // `mod fixtures;` under #[cfg(test)] with no file is tolerated
+  t.assert.deepStrictEqual(missing, []) // `mod fixtures;` under #[cfg(test)] with no file is tolerated
   const main = edges(resolutions.get('src/main.rs'))
   t.assert.equal(main['mod outer::inner'], 'src/outer/inner.rs')
   t.assert.equal(main['mod outer::deep::leaf'], 'src/outer/deep/leaf.rs')
@@ -1657,27 +1657,27 @@ test('buildRustTree keys a mod inside inline modules by its inline path, and res
 test('buildRustTree records #[cfg_attr(…, path)] variants as a cfg-keyed map with the default under "*"', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'path-attr'), ['src/lib.rs'])
   const { resolutions, missing } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(missing, [])
+  t.assert.deepStrictEqual(missing, [])
   const lib = edges(resolutions.get('src/lib.rs'))
   t.assert.equal(lib['mod __private'], 'src/private/mod.rs')
   t.assert.equal(lib['mod seed'], 'src/de/seed.rs')
   t.assert.equal(lib['mod raw::inner'], 'src/raw/mod.rs')
   t.assert.equal(lib.inner, 'src/raw/mod.rs') // `pub use inner::*` inside `raw`
-  t.assert.deepEqual(lib['mod sys'], { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
+  t.assert.deepStrictEqual(lib['mod sys'], { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs', '*': 'src/sys.rs' })
   t.assert.ok(!('mod exotic' in lib)) // platform-gated with nothing on disk: omitted, not missing
   t.assert.equal(lib['mod documented'], 'src/documented.rs')
   t.assert.equal(resolutions.get('src/parse.rs').get('mod discouraged'), 'src/discouraged.rs')
-  t.assert.deepEqual(edges(resolutions.get('src/de.rs')), { 'crate::__private::helper': 'src/private/mod.rs', 'super::seed::Seed': 'src/de/seed.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/de.rs')), { 'crate::__private::helper': 'src/private/mod.rs', 'super::seed::Seed': 'src/de/seed.rs' })
   t.assert.equal(resolutions.get('src/de/seed.rs').get('mod extra'), 'src/de/extra.rs') // the #[path]-loaded file owns its dir
 })
 
 test('buildRustTree follows a mod inside a macro body when its file exists and tolerates it when it does not', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'macro-mods'), ['src/main.rs'])
   // cfg_if!'s modules are bundled; serde_with's guide "modules" have only .md docs, never .rs files.
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/imp_other.rs', 'src/imp_unix.rs', 'src/main.rs', 'src/real.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/imp_other.rs', 'src/imp_unix.rs', 'src/main.rs', 'src/real.rs'])
   const { result: tree, warnings } = captureWarnings(() => buildRustTree(sources, { roots: ['src/main.rs'] }))
-  t.assert.deepEqual(tree.missing, [])
-  t.assert.deepEqual(warnings, [])
+  t.assert.deepStrictEqual(tree.missing, [])
+  t.assert.deepStrictEqual(warnings, [])
   const main = edges(tree.resolutions.get('src/main.rs'))
   t.assert.equal(main['mod imp_unix'], 'src/imp_unix.rs')
   t.assert.equal(main['mod imp_other'], 'src/imp_other.rs')
@@ -1687,44 +1687,44 @@ test('buildRustTree follows a mod inside a macro body when its file exists and t
 
 test('buildRustTree records an unresolvable mod declaration in `missing`', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'missing-mod'), ['src/main.rs'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/main.rs', 'src/real.rs'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/main.rs', 'src/real.rs'])
   const { result: tree, warnings } = captureWarnings(() => buildRustTree(sources))
   const main = tree.resolutions.get('src/main.rs')
   t.assert.equal(main.get('mod real'), 'src/real.rs')
   t.assert.ok(!main.has('mod gone'))
-  t.assert.deepEqual(tree.missing, [{ spec: 'mod gone', from: 'src/main.rs' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: 'mod gone', from: 'src/main.rs' }])
   t.assert.ok(warnings.some((w) => w.includes('Missing module') && w.includes('gone')))
 })
 
 test('buildRustTree flags an unconditional #[path] that escapes the bundle root as missing', (t) => {
   const { result: tree } = captureWarnings(() => buildRustTree(new Map([['src/main.rs', '#[path = "../../outside.rs"]\nmod evil;\n']])))
-  t.assert.deepEqual(tree.missing, [{ spec: 'mod evil', from: 'src/main.rs' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: 'mod evil', from: 'src/main.rs' }])
 })
 
 test('buildRustTree does not flag a cfg-gated mod with no file as missing', (t) => {
   // #[cfg(feature = "x")] mod extra; with no extra.rs must not fail the bundle.
   const tree = buildRustTree(new Map([['src/lib.rs', '#[cfg(feature = "x")]\nmod extra;\npub fn f() {}\n']]))
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
   t.assert.equal(tree.resolutions.get('src/lib.rs').size, 0)
 })
 
 test('buildRustTree flags an unconditional mod under a non-gating cfg_attr as missing, and one under not(test) too', (t) => {
   const { result: tree } = captureWarnings(() => buildRustTree(new Map([['src/lib.rs', '#[cfg_attr(docsrs, doc(cfg(feature = "x")))]\npub mod gone;\n#[cfg(not(test))]\nmod also_gone;\n']])))
-  t.assert.deepEqual(tree.missing, [{ spec: 'mod gone', from: 'src/lib.rs' }, { spec: 'mod also_gone', from: 'src/lib.rs' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: 'mod gone', from: 'src/lib.rs' }, { spec: 'mod also_gone', from: 'src/lib.rs' }])
 })
 
 test('buildRustTree skips test/doc-only code: no files, no edges, no dev-dep pull-in', async (t) => {
   const sources = await collectRustFilesFromDisk(join(fixtures, 'cfg-test'), ['src/lib.rs'])
   // maybe.rs sits behind `any(test, feature = "extra")`: `extra` is declared and off, so it is dead too.
-  t.assert.deepEqual([...sources.keys()].toSorted(), [
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), [
     'src/backend.rs', 'src/lib.rs', 'src/real.rs', 'src/sys/unix.rs', 'src/sys/windows.rs', 'vendor/serde/src/lib.rs',
   ])
   const { result: tree, warnings } = captureWarnings(() => buildRustTree(sources, { roots: ['src/lib.rs'], baseDir: join(fixtures, 'cfg-test') }))
-  t.assert.deepEqual(tree.missing, [])
-  t.assert.deepEqual(warnings, [])
-  t.assert.deepEqual([...tree.unresolvedCrates], []) // proptest/quickcheck are reached from test code only
+  t.assert.deepStrictEqual(tree.missing, [])
+  t.assert.deepStrictEqual(warnings, [])
+  t.assert.deepStrictEqual([...tree.unresolvedCrates], []) // proptest/quickcheck are reached from test code only
   const lib = edges(tree.resolutions.get('src/lib.rs'))
-  t.assert.deepEqual(lib, {
+  t.assert.deepStrictEqual(lib, {
     'use serde': 'vendor/serde/src/lib.rs',
     'mod real': 'src/real.rs',
     'mod sys': { unix: 'src/sys/unix.rs', windows: 'src/sys/windows.rs' }, // same-name cfg-exclusive declarations, merged
@@ -1743,8 +1743,8 @@ test('buildRustTree does not take a name a file imported for a crate', (t) => {
   ])
   const tree = buildRustTree(sources, { roots: ['src/main.rs'] })
   const main = edges(tree.resolutions.get('src/main.rs'))
-  t.assert.deepEqual(main, { 'use alpha': 'vendor/alpha/src/lib.rs' })
-  t.assert.deepEqual([...tree.unresolvedCrates], [])
+  t.assert.deepStrictEqual(main, { 'use alpha': 'vendor/alpha/src/lib.rs' })
+  t.assert.deepStrictEqual([...tree.unresolvedCrates], [])
 })
 
 test('buildRustTree ignores mod declarations inside comments, and a `//` inside a string is not a comment', (t) => {
@@ -1752,7 +1752,7 @@ test('buildRustTree ignores mod declarations inside comments, and a `//` inside 
     ['src/main.rs', '/*\nmod blockgone;\n*/\n// mod linegone;\nconst U: &str = "http://x"; mod real;\nfn main() {}\n'],
     ['src/real.rs', ''],
   ]))
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
   t.assert.equal(tree.resolutions.get('src/main.rs').get('mod real'), 'src/real.rs')
 })
 
@@ -1765,11 +1765,11 @@ test('buildRustTree resolves crate references to in-tree roots and reports the r
   const alpha = edges(tree.resolutions.get('vendor/alpha/src/lib.rs'))
   t.assert.equal(alpha['use beta_lib'], 'vendor/beta-lib/src/lib.rs') // vendored -> vendored
   t.assert.equal(alpha['crate::inner::x'], 'vendor/alpha/src/inner.rs') // a vendored crate's own tree
-  t.assert.deepEqual([...tree.unresolvedCrates], ['missing_crate'])
+  t.assert.deepStrictEqual([...tree.unresolvedCrates], ['missing_crate'])
 
   const none = await collectRustFilesFromDisk(join(fixtures, 'no-vendor'), ['src/main.rs'])
   const { unresolvedCrates } = buildRustTree(none, { roots: ['src/main.rs'], baseDir: join(fixtures, 'no-vendor') })
-  t.assert.deepEqual([...unresolvedCrates].toSorted(), ['serde', 'syn']) // not std, not the local module `a`
+  t.assert.deepStrictEqual([...unresolvedCrates].toSorted(), ['serde', 'syn']) // not std, not the local module `a`
 })
 
 test('buildRustTree without baseDir still resolves vendored crates among the loaded sources', async (t) => {
@@ -1782,7 +1782,7 @@ test('buildRustTree without baseDir still resolves vendored crates among the loa
 
 test('loadRust reads a .rs.txt listing and walks the crate', async (t) => {
   const tree = await loadRust(join(fixtures, 'listing/list.rs.txt'))
-  t.assert.deepEqual([...tree.sources.keys()].toSorted(), ['src/foo.rs', 'src/main.rs'])
+  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['src/foo.rs', 'src/main.rs'])
   t.assert.equal(tree.resolutions.get('src/main.rs').get('mod foo'), 'src/foo.rs')
 })
 
@@ -1822,8 +1822,8 @@ test('buildRustTree follows the same `use log;` in two platform files of one mod
     ['vendor/log/src/lib.rs', ''],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/u.rs')), { 'use log': 'vendor/log/src/lib.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/w.rs')), { 'use log': 'vendor/log/src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/u.rs')), { 'use log': 'vendor/log/src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/w.rs')), { 'use log': 'vendor/log/src/lib.rs' })
   // The same through cfg_if! branches both importing the crate.
   const chain = new Map([
     ['src/lib.rs', 'cfg_if! { if #[cfg(unix)] { use libc; mod u; } else { use libc; mod w; } }\n'],
@@ -1832,7 +1832,7 @@ test('buildRustTree follows the same `use log;` in two platform files of one mod
     ['vendor/libc/src/lib.rs', ''],
   ])
   const r = buildRustTree(chain, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(r.resolutions.get('src/u.rs')), { 'use libc': 'vendor/libc/src/lib.rs' })
+  t.assert.deepStrictEqual(edges(r.resolutions.get('src/u.rs')), { 'use libc': 'vendor/libc/src/lib.rs' })
 })
 
 test('buildRustTree resolves a glob written in a platform file beside a glob of its parent', (t) => {
@@ -1845,13 +1845,13 @@ test('buildRustTree resolves a glob written in a platform file beside a glob of 
     ['src/user.rs', ''],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/u.rs')), { super: 'src/sys.rs', helpers: 'src/sys/helpers.rs', 'helpers::Thing': 'src/sys/helpers.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/sys/w.rs')), {})
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/u.rs')), { super: 'src/sys.rs', helpers: 'src/sys/helpers.rs', 'helpers::Thing': 'src/sys/helpers.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sys/w.rs')), {})
 })
 
 test('buildRustTree never lets a value item lead a path: `fn log` and `*const libc::c_char` beside the crates', (t) => {
   const items = scanRustItems('extern "C" { pub fn f(p: *const libc::c_char) -> *mut libc::c_void; }\nfn g(p: *const libc::c_char) {}\nfn log() {}\nstatic S: u8 = 0;\nconst C: u8 = 0;\nstruct T;\nuse log::info;\n')
-  t.assert.deepEqual(items.defined.map((d) => [d.name, d.ns]), [['f', 'value'], ['g', 'value'], ['log', 'value'], ['S', 'value'], ['C', 'value'], ['T', 'type']])
+  t.assert.deepStrictEqual(items.defined.map((d) => [d.name, d.ns]), [['f', 'value'], ['g', 'value'], ['log', 'value'], ['S', 'value'], ['C', 'value'], ['T', 'type']])
   const sources = new Map([
     ['src/lib.rs', 'mod net;\n'],
     ['src/net.rs', 'use libc;\nfn g(p: *const libc::c_char) {}\nfn log() {}\nuse log::info;\n'],
@@ -1859,11 +1859,11 @@ test('buildRustTree never lets a value item lead a path: `fn log` and `*const li
     ['vendor/log/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/net.rs')), { 'use libc': 'vendor/libc/src/lib.rs', 'use log': 'vendor/log/src/lib.rs' })
-  t.assert.deepEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/net.rs')), { 'use libc': 'vendor/libc/src/lib.rs', 'use log': 'vendor/log/src/lib.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
   // A one-segment path may still name the fn (`log()` is `crate::log`).
   const own = buildRustTree(new Map([['src/lib.rs', 'mod net;\nmod user;\n'], ['src/net.rs', 'pub fn log() {}\n'], ['src/user.rs', 'fn f() { crate::net::log(); }\n']]), { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(own.resolutions.get('src/user.rs')), { 'crate::net::log': 'src/net.rs' })
+  t.assert.deepStrictEqual(edges(own.resolutions.get('src/user.rs')), { 'crate::net::log': 'src/net.rs' })
 })
 
 test('buildRustTree gives the same answers whatever order the sources come in', (t) => {
@@ -1883,7 +1883,7 @@ test('buildRustTree gives the same answers whatever order the sources come in', 
   }
   t.assert.equal(answers.size, 1)
   const [only] = answers
-  t.assert.deepEqual(JSON.parse(only).find(([f]) => f === 'src/user.rs')[1]['crate::sys::Thing'], { unix: 'src/sys/u.rs', windows: 'src/sys/w.rs' }) // each variant, under its cfg
+  t.assert.deepStrictEqual(JSON.parse(only).find(([f]) => f === 'src/user.rs')[1]['crate::sys::Thing'], { unix: 'src/sys/u.rs', windows: 'src/sys/w.rs' }) // each variant, under its cfg
 })
 
 test('buildRustTree keeps a file mounted under several cfgs under any of them, and an any(…) branch out of another target_os', (t) => {
@@ -1897,8 +1897,8 @@ test('buildRustTree keeps a file mounted under several cfgs under any of them, a
     ['src/user2.rs', 'fn f() { crate::T; }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user_aix.rs')), { 'crate::T': 'src/aix.rs', 'crate::U': 'src/aix.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/user2.rs')), { 'crate::T': 'src/aix.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user_aix.rs')), { 'crate::T': 'src/aix.rs', 'crate::U': 'src/aix.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user2.rs')), { 'crate::T': 'src/aix.rs' })
 })
 
 test('buildRustTree keeps a module two glob paths reach under either path\'s cfg', (t) => {
@@ -1911,7 +1911,7 @@ test('buildRustTree keeps a module two glob paths reach under either path\'s cfg
     ['src/user.rs', 'fn f() { crate::T; }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::T': 'src/c.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::T': 'src/c.rs' })
 })
 
 test('buildRustTree checks every hop of an import chain against the asking file\'s cfgs', (t) => {
@@ -1923,12 +1923,12 @@ test('buildRustTree checks every hop of an import chain against the asking file\
     ['src/user.rs', 'fn f() { crate::X; }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::X': 'src/u.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::X': 'src/u.rs' })
 })
 
 test('scanRustItems keeps a nested cfg_if! chain apart from the chain around it', (t) => {
   const src = 'cfg_if! { if #[cfg(unix)] { cfg_if! { if #[cfg(target_os = "linux")] { mod l; } else { mod o; } } mod after; } else { mod w; } }\ncfg_if! { if #[cfg(a)] { mod x; } else { mod y; } }\n'
-  t.assert.deepEqual(scanRustItems(src).mods.map((m) => [m.name, m.cfg]), [
+  t.assert.deepStrictEqual(scanRustItems(src).mods.map((m) => [m.name, m.cfg]), [
     ['l', 'all(unix, target_os = "linux")'],
     ['o', 'all(unix, not(target_os = "linux"))'],
     ['after', 'unix'],
@@ -1944,9 +1944,9 @@ test('buildRustTree shadows macros in source order: a #[macro_use] mod and the f
     ['src/macros.rs', 'macro_rules! tri { () => {} }\n'],
     ['src/user.rs', 'fn f() { tri!(); }\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(first, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'tri!': 'src/macros.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(first, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'tri!': 'src/macros.rs' })
   const second = new Map([...first, ['src/lib.rs', '#[macro_use]\nmod macros;\nmacro_rules! tri { () => {} }\nmod user;\n']])
-  t.assert.deepEqual(edges(buildRustTree(second, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'tri!': 'src/lib.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(second, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'tri!': 'src/lib.rs' })
 })
 
 test('buildRustTree puts what a macro_rules! template declares where the macro is invoked', (t) => {
@@ -1959,13 +1959,13 @@ test('buildRustTree puts what a macro_rules! template declares where the macro i
     ['src/later.rs', 'fn f() { tri!(); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/before.rs')), { 'tri!': 'src/m.rs' }) // mounted before the invocation
-  t.assert.deepEqual(edges(resolutions.get('src/de.rs')), { 'tri!': 'src/lib.rs' }) // `tri` stands before `mod de` in the template
-  t.assert.deepEqual(edges(resolutions.get('src/later.rs')), { 'tri!': 'src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/before.rs')), { 'tri!': 'src/m.rs' }) // mounted before the invocation
+  t.assert.deepStrictEqual(edges(resolutions.get('src/de.rs')), { 'tri!': 'src/lib.rs' }) // `tri` stands before `mod de` in the template
+  t.assert.deepStrictEqual(edges(resolutions.get('src/later.rs')), { 'tri!': 'src/lib.rs' })
   const items = scanRustItems(sources.get('src/lib.rs'))
   const call = sources.get('src/lib.rs').indexOf('root!()')
-  t.assert.deepEqual(items.mods.filter((m) => m.name === 'de').map((m) => [m.template, m.offset === call]), [['root', true]])
-  t.assert.deepEqual(items.macros.map((m) => [m.name, m.template, m.offset === call]), [['root', null, false], ['tri', 'root', true]])
+  t.assert.deepStrictEqual(items.mods.filter((m) => m.name === 'de').map((m) => [m.template, m.offset === call]), [['root', true]])
+  t.assert.deepStrictEqual(items.macros.map((m) => [m.name, m.template, m.offset === call]), [['root', null, false], ['tri', 'root', true]])
 })
 
 test('buildRustTree takes a one-segment path for an exported macro only at the crate root', (t) => {
@@ -1975,9 +1975,9 @@ test('buildRustTree takes a one-segment path for an exported macro only at the c
     ['src/child.rs', 'use anyhow;\nuse crate::anyhow as also;\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', 'mod child': 'src/child.rs', anyhow: 'src/macros.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/child.rs')), { 'crate::anyhow': 'src/macros.rs' }) // `use anyhow;` in a child names the crate
-  t.assert.deepEqual([...unresolvedCrates], ['anyhow'])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'mod macros': 'src/macros.rs', 'mod child': 'src/child.rs', anyhow: 'src/macros.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/child.rs')), { 'crate::anyhow': 'src/macros.rs' }) // `use anyhow;` in a child names the crate
+  t.assert.deepStrictEqual([...unresolvedCrates], ['anyhow'])
 })
 
 test('buildRustTree lets a glob into an in-tree crate explain the names of the module it names there', (t) => {
@@ -1991,9 +1991,9 @@ test('buildRustTree lets a glob into an in-tree crate explain the names of the m
     ['vendor/tokio/src/sync/inner/oneshot.rs', 'pub struct Sender;\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'use tokio': 'vendor/tokio/src/lib.rs', 'mod deep': 'src/deep.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/deep.rs')), { 'use tokio': 'vendor/tokio/src/lib.rs' })
-  t.assert.deepEqual([...unresolvedCrates], ['nothere'])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'use tokio': 'vendor/tokio/src/lib.rs', 'mod deep': 'src/deep.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/deep.rs')), { 'use tokio': 'vendor/tokio/src/lib.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], ['nothere'])
 })
 
 test('buildRustTree reads a quote!-family body as macro input throughout a package that defines the macro itself', (t) => {
@@ -2005,17 +2005,17 @@ test('buildRustTree reads a quote!-family body as macro input throughout a packa
     ['vendor/other/src/lib.rs', 'fn g() { quote! { crate::a::b() } }\n'], // another package: a template, skipped
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs', 'vendor/other/src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::a::b': 'src/a.rs', 'quote!': 'src/m.rs' })
-  t.assert.deepEqual(edges(resolutions.get('vendor/other/src/lib.rs')), {})
-  t.assert.deepEqual([...scanRustItems(sources.get('src/user.rs')).skipped], ['quote'])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::a::b': 'src/a.rs', 'quote!': 'src/m.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('vendor/other/src/lib.rs')), {})
+  t.assert.deepStrictEqual([...scanRustItems(sources.get('src/user.rs')).skipped], ['quote'])
 })
 
 // --- sixth review: unknown gates, cycles' cached answers, imported values, reached-again modules ---
 
 test('buildRustTree reads a #[cfg] on a macro invocation as gating its body, and a cfg_<x>! body as a gate of its own', (t) => {
   const items = scanRustItems('#[cfg(any(unix, target_os = "hermit"))]\ncfg_os_poll! {\n    mod unix;\n    pub use self::unix::*;\n}\n#[cfg(windows)]\ncfg_os_poll! {\n    mod windows;\n}\ncfg_not_os_poll! {\n    mod shell;\n    pub(crate) use self::shell::*;\n}\n#[cfg(feature = "x")]\nmacro_rules! m { () => { mod inner; } }\n')
-  t.assert.deepEqual(items.mods.map((m) => [m.name, m.cfg, m.macro]), [['unix', 'any(unix, target_os = "hermit")', 'cfg_os_poll'], ['windows', 'windows', 'cfg_os_poll'], ['shell', null, 'cfg_not_os_poll'], ['inner', null, 'macro_rules']])
-  t.assert.deepEqual(items.imports.map((im) => [im.segments.join('::'), im.cfg, im.macro]), [['self::unix', 'any(unix, target_os = "hermit")', 'cfg_os_poll'], ['self::shell', null, 'cfg_not_os_poll']])
+  t.assert.deepStrictEqual(items.mods.map((m) => [m.name, m.cfg, m.macro]), [['unix', 'any(unix, target_os = "hermit")', 'cfg_os_poll'], ['windows', 'windows', 'cfg_os_poll'], ['shell', null, 'cfg_not_os_poll'], ['inner', null, 'macro_rules']])
+  t.assert.deepStrictEqual(items.imports.map((im) => [im.segments.join('::'), im.cfg, im.macro]), [['self::unix', 'any(unix, target_os = "hermit")', 'cfg_os_poll'], ['self::shell', null, 'cfg_not_os_poll']])
   // mio: a unix waker's `crate::sys::Selector` is its own platform's selector, not the windows
   // one (whose `#[cfg(windows)]` sits on the `cfg_os_poll!` invocation) nor the shell one (under
   // `cfg_not_os_poll!`, whose definition wraps items in the negation of the waker's gate).
@@ -2051,7 +2051,7 @@ test('buildRustTree drops the answers imports gave on top of a short closure whe
     ['src/user.rs', 'fn f() { crate::run(); crate::child::run(); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::run': 'src/c.rs', 'crate::child::run': 'src/c.rs', 'crate::child': 'src/child.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::run': 'src/c.rs', 'crate::child::run': 'src/c.rs', 'crate::child': 'src/child.rs' })
 })
 
 test('buildRustTree lets a name imported as a value still lead a path to the crate of that name', (t) => {
@@ -2062,13 +2062,13 @@ test('buildRustTree lets a name imported as a value still lead a path to the cra
     ['vendor/log/src/lib.rs', ''],
   ])
   const { resolutions, unresolvedCrates, wantedRoots } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::util::log': 'src/util.rs', 'crate::util::TABLE': 'src/util.rs', 'crate::util::real': 'src/util.rs', 'use log': 'vendor/log/src/lib.rs', 'fmt::Formatter': 'src/util.rs' })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(wantedRoots, [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::util::log': 'src/util.rs', 'crate::util::TABLE': 'src/util.rs', 'crate::util::real': 'src/util.rs', 'use log': 'vendor/log/src/lib.rs', 'fmt::Formatter': 'src/util.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(wantedRoots, [])
   // The crate's root not among the sources (the walk took `log` for the fn): asked for.
   const without = new Map([...sources].filter(([f]) => f !== 'vendor/log/src/lib.rs'))
   const r = buildRustTree(without, { roots: ['src/lib.rs'], baseDir: join(fixtures, 'use-crate') })
-  t.assert.deepEqual(edges(r.resolutions.get('src/user.rs'))['use log'], undefined)
+  t.assert.deepStrictEqual(edges(r.resolutions.get('src/user.rs'))['use log'], undefined)
 })
 
 test('buildRustTree walks on from a module a second glob path reaches under another cfg', (t) => {
@@ -2082,7 +2082,7 @@ test('buildRustTree walks on from a module a second glob path reaches under anot
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
   // deep is reached through mid under linux first, then under aix: under either, so the aix user finds T there.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::T': 'src/deep.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::T': 'src/deep.rs' })
 })
 
 test('buildRustTree puts a mod a template declares at the invocation in another file, for textual macro scope', (t) => {
@@ -2099,7 +2099,7 @@ test('buildRustTree puts a mod a template declares at the invocation in another 
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
   t.assert.equal(resolutions.get('src/lib.rs').get('mod de'), 'src/de.rs')
   t.assert.equal(resolutions.get('src/core/crate_root.rs').get('mod de'), undefined)
-  t.assert.deepEqual(edges(resolutions.get('src/de.rs')), { 'forward_to_deserialize_any!': 'src/core/macros.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/de.rs')), { 'forward_to_deserialize_any!': 'src/core/macros.rs' })
 })
 
 test('buildRustTree decides a bare macro call\'s scope at the call: a later definition in the file does not shadow it', (t) => {
@@ -2109,8 +2109,8 @@ test('buildRustTree decides a bare macro call\'s scope at the call: a later defi
     ['src/user.rs', 'fn f() { x!(); }\nmacro_rules! x { () => {} }\nfn g() { x!(); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'x!': 'src/m.rs' })
-  t.assert.deepEqual([...scanRustItems(sources.get('src/user.rs')).calls], [['x', [9, 54]]])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'x!': 'src/m.rs' })
+  t.assert.deepStrictEqual([...scanRustItems(sources.get('src/user.rs')).calls], [['x', [9, 54]]])
 })
 
 test('buildRustTree takes a candidate under a custom cfg only after one under none: `loom` is off in a default build', (t) => {
@@ -2122,7 +2122,7 @@ test('buildRustTree takes a candidate under a custom cfg only after one under no
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
   // `any(loom, target_os = "aix")` may hold on aix: no target, so a's Y is one of two.
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'crate::X': 'src/b.rs', 'crate::Y': { 'any(loom, target_os = "aix")': 'src/a.rs', unix: 'src/b.rs' } })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'crate::X': 'src/b.rs', 'crate::Y': { 'any(loom, target_os = "aix")': 'src/a.rs', unix: 'src/b.rs' } })
 })
 
 test('scanRustItems reads the cfg a gate macro\'s definition wraps items in; buildRustTree ranks by it', (t) => {
@@ -2133,7 +2133,7 @@ test('scanRustItems reads the cfg a gate macro\'s definition wraps items in; bui
     'macro_rules! cfg_plain { ($($item:item)*) => { $( $item )* } }', // wraps nothing in a cfg: unreadable
     'macro_rules! cfg_not_plain { ($($item:item)*) => { $( $item )* } }',
   ].join('\n')
-  t.assert.deepEqual(scanRustItems(macros).macros.map((m) => [m.name, m.gate]), [
+  t.assert.deepStrictEqual(scanRustItems(macros).macros.map((m) => [m.name, m.gate]), [
     ['cfg_rt', 'feature = "rt"'], ['cfg_not_rt', 'not(feature = "rt")'], ['cfg_both', 'all(feature = "rt", unix)'], ['cfg_plain', null], ['cfg_not_plain', null],
   ])
   const sources = new Map([
@@ -2145,7 +2145,7 @@ test('scanRustItems reads the cfg a gate macro\'s definition wraps items in; bui
   ])
   // No features known: either, each under its gate's cfg; `rt` off: `cfg_not_rt!`'s is what the
   // build compiles, and it is taken though written second.
-  t.assert.deepEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs'))['crate::X'], { 'feature = "rt"': 'src/a.rs', 'not(feature = "rt")': 'src/b.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs'))['crate::X'], { 'feature = "rt"': 'src/a.rs', 'not(feature = "rt")': 'src/b.rs' })
   // A context's features are settled once resolved (builds are interned per context): one each.
   const cargoWith = (features) => ({ packageInfo: () => ({ dir: '.' }), isTestTarget: () => false, isVendored: () => false, featuresFor: () => features, maybeFeaturesFor: () => null, platformOf: () => null, cfgsSetFor: () => null, resolveCrate: () => null, isLibRoot: () => false, unitOfCrate: (_, u) => u })
   t.assert.equal(edges(buildRustTree(sources, { roots: ['src/lib.rs'], cargo: cargoWith(new Set()) }).resolutions.get('src/user.rs'))['crate::X'], 'src/b.rs')
@@ -2177,8 +2177,8 @@ test('buildRustTree resolves a template\'s bare calls where the macro is invoked
     ['src/user.rs', 'fn f() { outer!(a); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'outer!': 'src/m1.rs', 'inner!': 'src/m2.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/m1.rs')), {})
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'outer!': 'src/m1.rs', 'inner!': 'src/m2.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/m1.rs')), {})
   // What a template emits stands at the file's real invocation, not at a recursive arm's call
   // inside the definition: `made` is in scope in late.rs, not in early.rs.
   const made = new Map([
@@ -2187,7 +2187,7 @@ test('buildRustTree resolves a template\'s bare calls where the macro is invoked
     ['src/late.rs', 'fn f() { made!(); }\n'],
   ])
   const tree = buildRustTree(made, { roots: ['src/lib.rs'] }).resolutions
-  t.assert.deepEqual([edges(tree.get('src/early.rs'))['made!'], edges(tree.get('src/late.rs'))['made!']], [undefined, 'src/lib.rs'])
+  t.assert.deepStrictEqual([edges(tree.get('src/early.rs'))['made!'], edges(tree.get('src/late.rs'))['made!']], [undefined, 'src/lib.rs'])
 })
 
 test('buildRustTree resolves a template\'s mod beside the files invoking the macro, else beside its definition', (t) => {
@@ -2202,8 +2202,8 @@ test('buildRustTree resolves a template\'s mod beside the files invoking the mac
     ['src/solo.rs', ''],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/a.rs')), { 'decl!': 'src/lib.rs', 'mod gm1': 'src/a/gm1.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/a.rs')), { 'decl!': 'src/lib.rs', 'mod gm1': 'src/a/gm1.rs' })
   t.assert.equal(resolutions.get('src/lib.rs').get('gm1::X'), 'src/a/gm1.rs')
   t.assert.equal(resolutions.get('src/lib.rs').get('mod gm1'), undefined)
   t.assert.equal(resolutions.get('src/lib.rs').get('mod solo'), 'src/solo.rs')
@@ -2219,8 +2219,8 @@ test('buildRustTree lets a child module under a custom cfg give way to an import
     ['vendor/serde_core/src/lib.rs', 'pub mod de { pub trait Error {} }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/private.rs')), { 'use serde_core': 'vendor/serde_core/src/lib.rs' })
-  t.assert.deepEqual(edges(resolutions.get('src/docs.rs')), { 'crate::de::Error': 'src/de.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/private.rs')), { 'use serde_core': 'vendor/serde_core/src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/docs.rs')), { 'crate::de::Error': 'src/de.rs' })
 })
 
 test('buildRustTree ranks a module\'s own items with its imports, one leading out of the bundle included', (t) => {
@@ -2238,7 +2238,7 @@ test('buildRustTree ranks a module\'s own items with its imports, one leading ou
     ['src/user.rs', 'use crate::atomic_u64::AtomicU64;\npub(crate) fn trace_leaf() {}\nfn f() { crate::trace::trace_leaf(); }\n'],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), {
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), {
     'crate::atomic_u64::AtomicU64': { 'target_has_atomic = "64"': 'src/native.rs', 'not(target_has_atomic = "64")': 'src/as_mutex.rs' },
     'crate::trace::trace_leaf': 'src/trace.rs',
     'crate::atomic_u64': 'src/atomic_u64.rs',
@@ -2251,8 +2251,8 @@ test('buildRustTree reads `extern crate self as x;` as the crate root from every
     ['src/b.rs', 'use gm1::X;\nmod inner { use gm1::X; }\n'],
   ])
   const { resolutions, unresolvedCrates } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual([...unresolvedCrates], [])
-  t.assert.deepEqual(edges(resolutions.get('src/b.rs')), { 'gm1::X': 'src/lib.rs' })
+  t.assert.deepStrictEqual([...unresolvedCrates], [])
+  t.assert.deepStrictEqual(edges(resolutions.get('src/b.rs')), { 'gm1::X': 'src/lib.rs' })
 })
 
 test('buildRustTree places an exported template\'s mod at its invocation in another crate, as rustc expands it', (t) => {
@@ -2280,9 +2280,9 @@ test('buildRustTree keeps a template\'s calls and includes with the template whe
     ['src/data.txt', 'x'],
   ])
   const items = scanRustItems(sources.get('src/lib.rs'))
-  t.assert.deepEqual(items.macros.map((m) => [m.name, m.includes.map((i) => i.path), [...m.calls]]), [['helper', [], []], ['outer', ['data.txt'], ['helper', 'include_str']], ['inner', [], []]])
+  t.assert.deepStrictEqual(items.macros.map((m) => [m.name, m.includes.map((i) => i.path), [...m.calls]]), [['helper', [], []], ['outer', ['data.txt'], ['helper', 'include_str']], ['inner', [], []]])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/user.rs')), { 'outer!': 'src/lib.rs', 'include_str data.txt': 'src/data.txt', 'helper!': 'src/lib.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/user.rs')), { 'outer!': 'src/lib.rs', 'include_str data.txt': 'src/data.txt', 'helper!': 'src/lib.rs' })
 })
 
 test('buildRustTree lets a local module under a custom cfg give way to a glob or a binding of the module, as a doubtful candidate does', (t) => {
@@ -2319,7 +2319,7 @@ test('evalCfg and buildRustTree keep cfg values that differ only in spaces apart
   t.assert.equal(evalCfg('all(my="a b", not(my = "a b"))'), false) // the same leaf, spaced differently
   for (const cfg of ['all(my = "a b", not(my = "ab"))', 'all(my = "a  b", not(my = "a b"))']) {
     const { resolutions } = buildRustTree(new Map([['src/lib.rs', `#[cfg(${cfg})]\nmod x;\n`], ['src/x.rs', '']]), { roots: ['src/lib.rs'] })
-    t.assert.deepEqual(edges(resolutions.get('src/lib.rs')), { 'mod x': 'src/x.rs' })
+    t.assert.deepStrictEqual(edges(resolutions.get('src/lib.rs')), { 'mod x': 'src/x.rs' })
   }
 })
 
@@ -2355,7 +2355,7 @@ test('buildRustTree resolves an include in a nested macro_rules! where that macr
     ['src/data.txt', 'a decoy rustc never reads'],
   ])
   const items = scanRustItems(nested)
-  t.assert.deepEqual(items.macros.map((m) => [m.name, m.includes.map((i) => i.path)]), [['outer', []], ['inner', ['data.txt']]])
+  t.assert.deepStrictEqual(items.macros.map((m) => [m.name, m.includes.map((i) => i.path)]), [['outer', []], ['inner', ['data.txt']]])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
   t.assert.equal(resolutions.get('src/sub/user.rs').get('include_str data.txt'), 'src/sub/data.txt')
   t.assert.equal(resolutions.get('src/lib.rs').get('include_str data.txt'), undefined)
@@ -2386,7 +2386,7 @@ test('buildRustTree keeps every candidate under an any(…) of more alternatives
     ['src/b.rs', 'pub struct T;\n'],
     ['src/user.rs', 'fn f(_: crate::T) {}\n'],
   ])
-  t.assert.deepEqual(files(buildRustTree(listed, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs').get('crate::T')), ['src/a.rs', 'src/b.rs'])
+  t.assert.deepStrictEqual(files(buildRustTree(listed, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs').get('crate::T')), ['src/a.rs', 'src/b.rs'])
   // a module 17 cfg-gated glob paths reach, beside the named import linux builds
   const globbed = new Map([
     ['src/lib.rs', `mod common;\nmod lin;\n${MANY_OSES.map((os, k) => `mod v${k};\n#[cfg(target_os = "${os}")]\npub use crate::v${k}::*;\n`).join('')}#[cfg(target_os = "linux")]\npub use lin::T;\nmod user;\n`],
@@ -2395,7 +2395,7 @@ test('buildRustTree keeps every candidate under an any(…) of more alternatives
     ['src/user.rs', 'fn f(_: crate::T) {}\n'],
     ...MANY_OSES.map((_, k) => [`src/v${k}.rs`, 'pub use crate::common::*;\n']),
   ])
-  t.assert.deepEqual(files(buildRustTree(globbed, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs').get('crate::T')), ['src/common.rs', 'src/lin.rs'])
+  t.assert.deepStrictEqual(files(buildRustTree(globbed, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs').get('crate::T')), ['src/common.rs', 'src/lin.rs'])
 })
 
 test('buildRustTree lets a local module give way to a glob of its name only when none of its files may be there', (t) => {
@@ -2431,7 +2431,7 @@ test('buildRustTree finds another crate\'s macro as that crate\'s root does: und
   t.assert.equal(resolutions.get('src/a.rs').get('mk!'), 'vendor/dep/src/mac.rs')
   t.assert.equal(resolutions.get('src/a.rs').get('dep!'), 'vendor/dep/src/mac.rs')
   // one definition per platform, neither certain: both
-  t.assert.deepEqual(edges(resolutions.get('src/b.rs'))['dep::plat!'], { unix: 'vendor/dep/src/unix.rs', windows: 'vendor/dep/src/windows.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/b.rs'))['dep::plat!'], { unix: 'vendor/dep/src/unix.rs', windows: 'vendor/dep/src/windows.rs' })
   // the root's `pub use util::helper;` of a fn is no `helper!`: the exported macro is
   const own = new Map([
     ['src/lib.rs', 'mod util;\n#[macro_use]\nmod macros;\nmod user;\npub use util::helper;\n'],
@@ -2439,7 +2439,7 @@ test('buildRustTree finds another crate\'s macro as that crate\'s root does: und
     ['src/macros.rs', '#[macro_export]\nmacro_rules! helper { () => {} }\n'],
     ['src/user.rs', 'fn f() { crate::helper(); crate::helper!(); }\n'],
   ])
-  t.assert.deepEqual(edges(buildRustTree(own, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'crate::helper': 'src/util.rs', 'crate::helper!': 'src/macros.rs' })
+  t.assert.deepStrictEqual(edges(buildRustTree(own, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')), { 'crate::helper': 'src/util.rs', 'crate::helper!': 'src/macros.rs' })
 })
 
 test('buildRustTree declares a template\'s mod and include where the macro is invoked by path, and in the inline module invoking it', (t) => {
@@ -2457,9 +2457,9 @@ test('buildRustTree declares a template\'s mod and include where the macro is in
   t.assert.equal(embed.get('src/sub/mod.rs').get('include_str data.txt'), 'src/sub/data.txt')
   // invoked inside an inline module: that module's (src/outer/inner.rs); defined in one: the invoker's
   const inline = r([['src/lib.rs', 'macro_rules! decl { () => { pub mod inner; } }\npub mod outer { decl!(); }\n'], ['src/outer/inner.rs', ''], ['src/inner.rs', '']])
-  t.assert.deepEqual(edges(inline.get('src/lib.rs')), { 'mod outer::inner': 'src/outer/inner.rs' })
+  t.assert.deepStrictEqual(edges(inline.get('src/lib.rs')), { 'mod outer::inner': 'src/outer/inner.rs' })
   const definedInline = r([['src/lib.rs', '#[macro_use]\nmod defs { macro_rules! decl { () => { pub mod inner; } } }\ndecl!();\n'], ['src/inner.rs', ''], ['src/defs/inner.rs', '']])
-  t.assert.deepEqual(edges(definedInline.get('src/lib.rs')), { 'mod inner': 'src/inner.rs' })
+  t.assert.deepStrictEqual(edges(definedInline.get('src/lib.rs')), { 'mod inner': 'src/inner.rs' })
 })
 
 test('buildRustTree declares and calls what a nested macro_rules! body holds where that inner macro is invoked', (t) => {
@@ -2473,7 +2473,7 @@ test('buildRustTree declares and calls what a nested macro_rules! body holds whe
     ['src/data.txt', ''],
   ])
   const { resolutions } = buildRustTree(sources, { roots: ['src/lib.rs'] })
-  t.assert.deepEqual(edges(resolutions.get('src/sub/mod.rs')), { 'mod x': 'src/sub/x.rs', 'include_str data.txt': 'src/sub/data.txt', 'inner!': 'src/lib.rs', 'embed!': 'src/helpers.rs' })
+  t.assert.deepStrictEqual(edges(resolutions.get('src/sub/mod.rs')), { 'mod x': 'src/sub/x.rs', 'include_str data.txt': 'src/sub/data.txt', 'inner!': 'src/lib.rs', 'embed!': 'src/helpers.rs' })
   t.assert.equal(resolutions.get('src/lib.rs').get('mod x'), undefined)
   t.assert.equal(resolutions.get('src/lib.rs').get('include_str data.txt'), undefined)
 })
@@ -2488,15 +2488,15 @@ test('buildRustTree follows a path through every module a segment may name: alia
     ['src/user.rs', 'fn f(_: crate::imp::X, _: crate::sys::net::X) {}\n'],
   ])
   const user = buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/user.rs')
-  t.assert.deepEqual(values(user.get('crate::imp::X')), ['src/unix.rs', 'src/windows.rs'])
-  t.assert.deepEqual(values(user.get('crate::sys::net::X')), ['src/unix.rs', 'src/windows.rs'])
+  t.assert.deepStrictEqual(values(user.get('crate::imp::X')), ['src/unix.rs', 'src/windows.rs'])
+  t.assert.deepStrictEqual(values(user.get('crate::sys::net::X')), ['src/unix.rs', 'src/windows.rs'])
   // `#[cfg(not(unix))] mod sys;` beside `#[cfg(unix)] use fallback as sys;`: a unix build takes the alias
   const beside = new Map([
     ['src/lib.rs', '#[cfg(not(unix))]\nmod sys;\nmod fallback;\n#[cfg(unix)]\nuse fallback as sys;\nfn g() { sys::X::f() }\n'],
     ['src/sys.rs', 'pub struct X;\n'],
     ['src/fallback.rs', 'pub struct X;\n'],
   ])
-  t.assert.deepEqual(values(buildRustTree(beside, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').get('sys::X::f')), ['src/fallback.rs', 'src/sys.rs'])
+  t.assert.deepStrictEqual(values(buildRustTree(beside, { roots: ['src/lib.rs'] }).resolutions.get('src/lib.rs').get('sys::X::f')), ['src/fallback.rs', 'src/sys.rs'])
 })
 
 test('buildRustTree resolves a file no build compiles -- its own cfgs contradict each other -- to every candidate', (t) => {
@@ -2512,5 +2512,5 @@ test('buildRustTree resolves a file no build compiles -- its own cfgs contradict
   ])
   const target = buildRustTree(sources, { roots: ['src/lib.rs'] }).resolutions.get('src/once_cell.rs').get('super::AtomicU64')
   t.assert.ok(target instanceof Map)
-  t.assert.deepEqual([...target.values()].toSorted(), ['src/as_mutex.rs', 'src/native.rs'])
+  t.assert.deepStrictEqual([...target.values()].toSorted(), ['src/as_mutex.rs', 'src/native.rs'])
 })

@@ -145,8 +145,8 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     const code = decode(codePath)
     const res = decode(resPath)
     // Code half: the entry + the .json (code-by-extension). Resources half: the txt/bin/dir captures.
-    t.assert.deepEqual(Object.keys(code.sources['.'].files).toSorted(), ['src/assets/data.json', 'src/entry.js'])
-    t.assert.deepEqual(Object.keys(res.sources['.'].files).toSorted(), ['src/assets', 'src/assets/blob.bin', 'src/assets/message.txt'])
+    t.assert.deepStrictEqual(Object.keys(code.sources['.'].files).toSorted(), ['src/assets/data.json', 'src/entry.js'])
+    t.assert.deepStrictEqual(Object.keys(res.sources['.'].files).toSorted(), ['src/assets', 'src/assets/blob.bin', 'src/assets/message.txt'])
     // Formats are partitioned to their own half.
     t.assert.equal(code.formats['src/assets/data.json'], 'json')
     t.assert.equal(code.formats['src/assets/message.txt'], undefined, 'resource formats absent from the code half')
@@ -184,8 +184,8 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
 
     const code = decode(codePath)
     const res = decode(resPath)
-    t.assert.deepEqual(Object.keys(code.sources['.'].files).toSorted(), ['src/assets/data.json', 'src/entry.js'])
-    t.assert.deepEqual(Object.keys(res.sources['.'].files).toSorted(), ['src/assets', 'src/assets/blob.bin', 'src/assets/message.txt'])
+    t.assert.deepStrictEqual(Object.keys(code.sources['.'].files).toSorted(), ['src/assets/data.json', 'src/entry.js'])
+    t.assert.deepStrictEqual(Object.keys(res.sources['.'].files).toSorted(), ['src/assets', 'src/assets/blob.bin', 'src/assets/message.txt'])
     t.assert.equal(res.formats['src/assets'], 'directory')
 
     writeConfig('frozen', 'load')
@@ -377,7 +377,7 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     t.assert.ok(existsSync(bundlePath), 'declared -> bundle written')
     const bundle = decode(bundlePath)
     t.assert.equal(bundle.formats['src/Binary.plist'], 'resource:base64')
-    t.assert.deepEqual(Buffer.from(bundle.sources['.'].files['src/Binary.plist'], 'base64'), bplist)
+    t.assert.deepStrictEqual(Buffer.from(bundle.sources['.'].files['src/Binary.plist'], 'base64'), bplist)
   }))
 
   test('stasis-core run --fs captures and serves the same way', withTmp(async (t, tmp) => {

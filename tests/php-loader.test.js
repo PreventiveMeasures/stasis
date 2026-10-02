@@ -47,47 +47,47 @@ const captureWarningsAsync = async (fn) => {
 }
 
 test('extractPhpImports normalises a __DIR__-relative require to a ./ specifier', (t) => {
-  t.assert.deepEqual(extractPhpImports("require_once __DIR__ . '/B.php';"), ['./B.php'])
-  t.assert.deepEqual(extractPhpImports('require_once __DIR__ . "/B.php";'), ['./B.php'])
+  t.assert.deepStrictEqual(extractPhpImports("require_once __DIR__ . '/B.php';"), ['./B.php'])
+  t.assert.deepStrictEqual(extractPhpImports('require_once __DIR__ . "/B.php";'), ['./B.php'])
   // No spaces around the concatenation operator.
-  t.assert.deepEqual(extractPhpImports("require __DIR__.'/lib/X.php';"), ['./lib/X.php'])
+  t.assert.deepStrictEqual(extractPhpImports("require __DIR__.'/lib/X.php';"), ['./lib/X.php'])
 })
 
 test('extractPhpImports handles the legacy dirname(__FILE__) form', (t) => {
-  t.assert.deepEqual(extractPhpImports("include dirname(__FILE__) . '/Bar.php';"), ['./Bar.php'])
-  t.assert.deepEqual(extractPhpImports('include dirname( __FILE__ )."/Bar.php";'), ['./Bar.php'])
+  t.assert.deepStrictEqual(extractPhpImports("include dirname(__FILE__) . '/Bar.php';"), ['./Bar.php'])
+  t.assert.deepStrictEqual(extractPhpImports('include dirname( __FILE__ )."/Bar.php";'), ['./Bar.php'])
 })
 
 test('extractPhpImports returns bare specifiers verbatim', (t) => {
-  t.assert.deepEqual(extractPhpImports("require 'helpers.php';"), ['helpers.php'])
-  t.assert.deepEqual(extractPhpImports("include_once 'lib/Util.php';"), ['lib/Util.php'])
+  t.assert.deepStrictEqual(extractPhpImports("require 'helpers.php';"), ['helpers.php'])
+  t.assert.deepStrictEqual(extractPhpImports("include_once 'lib/Util.php';"), ['lib/Util.php'])
 })
 
 test('extractPhpImports accepts the parenthesised call form', (t) => {
-  t.assert.deepEqual(extractPhpImports("require(__DIR__ . '/B.php');"), ['./B.php'])
-  t.assert.deepEqual(extractPhpImports("require('helpers.php');"), ['helpers.php'])
+  t.assert.deepStrictEqual(extractPhpImports("require(__DIR__ . '/B.php');"), ['./B.php'])
+  t.assert.deepStrictEqual(extractPhpImports("require('helpers.php');"), ['helpers.php'])
 })
 
 test('extractPhpImports finds every include in a file, in source order', (t) => {
   const src = "<?php\nrequire_once __DIR__ . '/A.php';\ninclude 'B.php';\nrequire __DIR__ . '/sub/C.php';\n"
-  t.assert.deepEqual(extractPhpImports(src), ['./A.php', 'B.php', './sub/C.php'])
+  t.assert.deepStrictEqual(extractPhpImports(src), ['./A.php', 'B.php', './sub/C.php'])
 })
 
 test('extractPhpImports ignores method calls and scope resolutions named like the keywords', (t) => {
   // `$loader->require(...)` and `Autoloader::include(...)` are ordinary calls,
   // not language constructs — the leading lookbehind must skip them.
-  t.assert.deepEqual(extractPhpImports("$loader->require('x.php');"), [])
-  t.assert.deepEqual(extractPhpImports("Autoloader::include('y.php');"), [])
+  t.assert.deepStrictEqual(extractPhpImports("$loader->require('x.php');"), [])
+  t.assert.deepStrictEqual(extractPhpImports("Autoloader::include('y.php');"), [])
 })
 
 test('extractPhpImports does not match a keyword embedded in a longer identifier', (t) => {
-  t.assert.deepEqual(extractPhpImports("requireConfig('x.php');"), [])
-  t.assert.deepEqual(extractPhpImports("$x = include_once_helper('y.php');"), [])
+  t.assert.deepStrictEqual(extractPhpImports("requireConfig('x.php');"), [])
+  t.assert.deepStrictEqual(extractPhpImports("$x = include_once_helper('y.php');"), [])
 })
 
 test('extractPhpImports reads __DIR__ includes from a real fixture file', (t) => {
   const src = readFileSync(join(fixtures, 'basic/src/A.php'), 'utf8')
-  t.assert.deepEqual(extractPhpImports(src), ['./B.php'])
+  t.assert.deepStrictEqual(extractPhpImports(src), ['./B.php'])
 })
 
 test('extractPhpImports ignores require keywords inside a heredoc', (t) => {
@@ -98,7 +98,7 @@ test('extractPhpImports ignores require keywords inside a heredoc', (t) => {
     'SQL;',
     "require __DIR__ . '/real.php';",
   ].join('\n')
-  t.assert.deepEqual(extractPhpImports(src), ['./real.php'])
+  t.assert.deepStrictEqual(extractPhpImports(src), ['./real.php'])
 })
 
 test('the non-code lexer is linear on adversarial unterminated input (ReDoS guard)', (t) => {
@@ -107,8 +107,8 @@ test('the non-code lexer is linear on adversarial unterminated input (ReDoS guar
   // timing out, a catastrophic-backtracking regex has been reintroduced.
   const heredoc = `<?php ${'<<<X\n'.repeat(80000)}` // ~400 KB
   const dquote = `<?php ${'"a\\"'.repeat(80000)}`
-  t.assert.deepEqual(extractPhpImports(heredoc), [])
-  t.assert.deepEqual(extractPhpImports(dquote), [])
+  t.assert.deepStrictEqual(extractPhpImports(heredoc), [])
+  t.assert.deepStrictEqual(extractPhpImports(dquote), [])
 })
 
 test('phpClassDependencies is linear on a token before a long blanked run (ReDoS guard)', (t) => {
@@ -116,9 +116,9 @@ test('phpClassDependencies is linear on a token before a long blanked run (ReDoS
   // followed by a long blank span with no `$var`/`)`/`:` after it used to make
   // the type-hint and catch regexes backtrack cubically. These must return
   // promptly; a timeout means a backtracking-prone regex has come back.
-  t.assert.deepEqual([...phpClassDependencies(`<?php foo ${' '.repeat(50000)}`)], [])
-  t.assert.deepEqual([...phpClassDependencies(`<?php try {} catch (${' '.repeat(50000)})`)], [])
-  t.assert.deepEqual([...phpClassDependencies(`<?php ${'<<<X\n'.repeat(50000)}`)], [])
+  t.assert.deepStrictEqual([...phpClassDependencies(`<?php foo ${' '.repeat(50000)}`)], [])
+  t.assert.deepStrictEqual([...phpClassDependencies(`<?php try {} catch (${' '.repeat(50000)})`)], [])
+  t.assert.deepStrictEqual([...phpClassDependencies(`<?php ${'<<<X\n'.repeat(50000)}`)], [])
 })
 
 test('extractPhpImports ignores require/include keywords that are string values (method blacklists)', (t) => {
@@ -134,7 +134,7 @@ test('extractPhpImports ignores require/include keywords that are string values 
     ');',
     "require __DIR__ . '/Real.php';",
   ].join('\n')
-  t.assert.deepEqual(extractPhpImports(src), ['./Real.php'])
+  t.assert.deepStrictEqual(extractPhpImports(src), ['./Real.php'])
 })
 
 test('extractPhpImports ignores include keywords inside comments and strings', (t) => {
@@ -145,45 +145,45 @@ test('extractPhpImports ignores include keywords inside comments and strings', (
     "/* include 'block.php' */",
     "include 'real.php';",
   ].join('\n')
-  t.assert.deepEqual(extractPhpImports(src), ['real.php'])
+  t.assert.deepStrictEqual(extractPhpImports(src), ['real.php'])
 })
 
 test('extractPhpImports does not extract a file from a dynamic include', (t) => {
   // A path with a variable or `"…$interp…"` is dynamic -> no concrete file
   // (it is offered as a directory instead; see extractPhpImportDirs).
-  t.assert.deepEqual(extractPhpImports("<?php require __DIR__ . '/data/' . $lang . '.php';"), [])
-  t.assert.deepEqual(extractPhpImports('<?php require __DIR__ . "/views/$view.php";'), [])
-  t.assert.deepEqual(extractPhpImports('<?php require $base . "/x.php";'), [])
-  t.assert.deepEqual(extractPhpImports('<?php require $path;'), [])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require __DIR__ . '/data/' . $lang . '.php';"), [])
+  t.assert.deepStrictEqual(extractPhpImports('<?php require __DIR__ . "/views/$view.php";'), [])
+  t.assert.deepStrictEqual(extractPhpImports('<?php require $base . "/x.php";'), [])
+  t.assert.deepStrictEqual(extractPhpImports('<?php require $path;'), [])
 })
 
 test('extractPhpImports concatenates consecutive static string literals', (t) => {
   // A path split across static literals is still fully static and resolvable.
-  t.assert.deepEqual(extractPhpImports("<?php require __DIR__ . '/a' . '/b.php';"), ['./a/b.php'])
-  t.assert.deepEqual(extractPhpImports("<?php require __DIR__ . '' . '/x.php';"), ['./x.php'])
-  t.assert.deepEqual(extractPhpImports("<?php require __DIR__ . '/data/ascii.php';"), ['./data/ascii.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require __DIR__ . '/a' . '/b.php';"), ['./a/b.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require __DIR__ . '' . '/x.php';"), ['./x.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require __DIR__ . '/data/ascii.php';"), ['./data/ascii.php'])
   // Single quotes never interpolate, so a literal `$` stays part of the path.
-  t.assert.deepEqual(extractPhpImports("<?php require __DIR__ . '/v/$x.php';"), ['./v/$x.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require __DIR__ . '/v/$x.php';"), ['./v/$x.php'])
 })
 
 test('extractPhpImportDirs offers the static directory of a dynamic include', (t) => {
   // Laravel: require __DIR__ . "/.../components/$view.php" -> bundle that dir.
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     extractPhpImportDirs('<?php require __DIR__ . "/../../resources/views/components/$view.php";'),
     ['../../resources/views/components'],
   )
   // Interpolation with braces, and concatenation with a variable.
-  t.assert.deepEqual(extractPhpImportDirs('<?php require __DIR__ . "/views/{$view}.php";'), ['./views'])
-  t.assert.deepEqual(extractPhpImportDirs("<?php require __DIR__ . '/data/' . $lang . '.php';"), ['./data'])
+  t.assert.deepStrictEqual(extractPhpImportDirs('<?php require __DIR__ . "/views/{$view}.php";'), ['./views'])
+  t.assert.deepStrictEqual(extractPhpImportDirs("<?php require __DIR__ . '/data/' . $lang . '.php';"), ['./data'])
   // No static directory to fall back on (path starts with a variable) -> nothing.
-  t.assert.deepEqual(extractPhpImportDirs('<?php require $base . "/views/$v.php";'), [])
+  t.assert.deepStrictEqual(extractPhpImportDirs('<?php require $base . "/views/$v.php";'), [])
   // A fully-static include is a file, not a directory.
-  t.assert.deepEqual(extractPhpImportDirs("<?php require __DIR__ . '/data/ascii.php';"), [])
+  t.assert.deepStrictEqual(extractPhpImportDirs("<?php require __DIR__ . '/data/ascii.php';"), [])
 })
 
 test('extractPhpImports resolves dirname(__DIR__) and dirname(__DIR__, N) includes', (t) => {
-  t.assert.deepEqual(extractPhpImports("<?php require dirname(__DIR__) . '/bootstrap.php';"), ['../bootstrap.php'])
-  t.assert.deepEqual(extractPhpImports("<?php require dirname(__DIR__, 2) . '/config/app.php';"), ['../../config/app.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require dirname(__DIR__) . '/bootstrap.php';"), ['../bootstrap.php'])
+  t.assert.deepStrictEqual(extractPhpImports("<?php require dirname(__DIR__, 2) . '/config/app.php';"), ['../../config/app.php'])
 })
 
 test('extractPhpPathRefs finds dir-anchored .php paths used outside a require', (t) => {
@@ -198,28 +198,28 @@ test('extractPhpPathRefs finds dir-anchored .php paths used outside a require', 
     "    health: '/up',", // bare string, not a path
     '  );',
   ].join('\n')
-  t.assert.deepEqual(extractPhpPathRefs(app), [
+  t.assert.deepStrictEqual(extractPhpPathRefs(app), [
     { spec: '../routes/web.php', anchor: 'file' },
     { spec: '../routes/api.php', anchor: 'file' },
   ])
   // A bare (non-dir-anchored) string is not treated as a path reference.
-  t.assert.deepEqual(extractPhpPathRefs("<?php $x = 'config/app.php';"), [])
+  t.assert.deepStrictEqual(extractPhpPathRefs("<?php $x = 'config/app.php';"), [])
 })
 
 test('extractPhpPathRefs resolves Laravel path helpers against the project root', (t) => {
   // Laravel's BroadcastServiceProvider does `require base_path('routes/channels.php')`.
-  t.assert.deepEqual(extractPhpPathRefs("<?php require base_path('routes/channels.php');"), [
+  t.assert.deepStrictEqual(extractPhpPathRefs("<?php require base_path('routes/channels.php');"), [
     { spec: 'routes/channels.php', anchor: 'root' },
   ])
   // Other helpers prepend their fixed subdirectory.
-  t.assert.deepEqual(extractPhpPathRefs("<?php $c = config_path('app.php');"), [
+  t.assert.deepStrictEqual(extractPhpPathRefs("<?php $c = config_path('app.php');"), [
     { spec: 'config/app.php', anchor: 'root' },
   ])
-  t.assert.deepEqual(extractPhpPathRefs("<?php require app_path('Helpers.php');"), [
+  t.assert.deepStrictEqual(extractPhpPathRefs("<?php require app_path('Helpers.php');"), [
     { spec: 'app/Helpers.php', anchor: 'root' },
   ])
   // A dynamic helper argument (concatenation) is not a static path -> skipped.
-  t.assert.deepEqual(extractPhpPathRefs("<?php require base_path('routes/' . $f);"), [])
+  t.assert.deepStrictEqual(extractPhpPathRefs("<?php require base_path('routes/' . $f);"), [])
 })
 
 test('resolvePhpImport resolves ./ and ../ against the including file', (t) => {
@@ -313,25 +313,25 @@ test('resolvePhpDir resolves an existing directory and rejects a missing one', (
 test('collectPhpFilesFromDisk walks __DIR__ includes starting from entries', async (t) => {
   const baseDir = join(fixtures, 'basic')
   const sources = await collectPhpFilesFromDisk(baseDir, ['src/A.php'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/B.php'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/B.php'])
 })
 
 test('collectPhpFilesFromDisk follows ../ includes across subdirectories', async (t) => {
   const baseDir = join(fixtures, 'nested')
   const sources = await collectPhpFilesFromDisk(baseDir, ['src/A.php'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/C.php', 'src/sub/B.php'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/C.php', 'src/sub/B.php'])
 })
 
 test('collectPhpFilesFromDisk loads each shared file once', async (t) => {
   const baseDir = join(fixtures, 'shared')
   const sources = await collectPhpFilesFromDisk(baseDir, ['src/A.php', 'src/B.php'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/B.php', 'src/Shared.php'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['src/A.php', 'src/B.php', 'src/Shared.php'])
 })
 
 test('collectPhpFilesFromDisk resolves bare includes file- and project-relative', async (t) => {
   const baseDir = join(fixtures, 'bare')
   const sources = await collectPhpFilesFromDisk(baseDir, ['index.php'])
-  t.assert.deepEqual([...sources.keys()].toSorted(), ['helpers.php', 'index.php', 'lib/Util.php'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['helpers.php', 'index.php', 'lib/Util.php'])
 })
 
 test('collectPhpFilesFromDisk skips a directory-valued include without crashing (EISDIR)', async (t) => {
@@ -339,7 +339,7 @@ test('collectPhpFilesFromDisk skips a directory-valued include without crashing 
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectPhpFilesFromDisk(baseDir, ['index.php']),
   )
-  t.assert.deepEqual([...sources.keys()], ['index.php'])
+  t.assert.deepStrictEqual([...sources.keys()], ['index.php'])
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('lib')))
 })
 
@@ -349,7 +349,7 @@ test('collectPhpFilesFromDisk bundles every .php in the static dir of a dynamic 
   // (non-.php files are not).
   const baseDir = join(fixtures, 'dynamic-include')
   const sources = await collectPhpFilesFromDisk(baseDir, ['index.php'])
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     [...sources.keys()].toSorted(),
     ['bootstrap.php', 'index.php', 'modules/admin.php', 'modules/default.php'],
   )
@@ -360,7 +360,7 @@ test('collectPhpFilesFromDisk warns and skips a missing include', async (t) => {
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectPhpFilesFromDisk(baseDir, ['src/A.php']),
   )
-  t.assert.deepEqual([...sources.keys()], ['src/A.php'])
+  t.assert.deepStrictEqual([...sources.keys()], ['src/A.php'])
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('src/Nope.php')))
 })
 
@@ -368,10 +368,10 @@ test('buildPhpTree returns sources, resolutions, and a missing-imports list', as
   const baseDir = join(fixtures, 'basic')
   const sources = await collectPhpFilesFromDisk(baseDir, ['src/A.php'])
   const tree = buildPhpTree(sources, { baseDir })
-  t.assert.deepEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
+  t.assert.deepStrictEqual(Object.keys(tree).toSorted(), ['missing', 'resolutions', 'sources'])
   t.assert.equal(tree.resolutions.get('src/A.php').get('./B.php'), 'src/B.php')
   t.assert.equal(tree.resolutions.get('src/B.php').size, 0)
-  t.assert.deepEqual(tree.missing, [])
+  t.assert.deepStrictEqual(tree.missing, [])
 })
 
 test('buildPhpTree records unresolved includes in `missing`', async (t) => {
@@ -380,7 +380,7 @@ test('buildPhpTree records unresolved includes in `missing`', async (t) => {
     collectPhpFilesFromDisk(baseDir, ['src/A.php']),
   ).then((r) => r.result)
   const { result: tree, warnings } = captureWarnings(() => buildPhpTree(sources, { baseDir }))
-  t.assert.deepEqual(tree.missing, [{ spec: './Nope.php', from: 'src/A.php' }])
+  t.assert.deepStrictEqual(tree.missing, [{ spec: './Nope.php', from: 'src/A.php' }])
   t.assert.equal(tree.resolutions.get('src/A.php').size, 0)
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('./Nope.php')))
 })
@@ -408,7 +408,7 @@ test('bucketizePhpSources groups vendor packages with name+version from composer
   t.assert.equal(lib.name, 'acme/lib')
   t.assert.equal(lib.version, '1.4.2')
   t.assert.equal(lib.ecosystem, 'composer')
-  t.assert.deepEqual(Object.keys(lib.files), ['src/Client.php']) // package-relative
+  t.assert.deepStrictEqual(Object.keys(lib.files), ['src/Client.php']) // package-relative
 
   // Workspace bucket: root composer.json name; carries everything without a
   // nearer package (incl. the autoloader glue), keyed project-relative. No
@@ -416,7 +416,7 @@ test('bucketizePhpSources groups vendor packages with name+version from composer
   const root = modules.get('.')
   t.assert.equal(root.name, 'acme/app')
   t.assert.equal(root.ecosystem, undefined)
-  t.assert.deepEqual(
+  t.assert.deepStrictEqual(
     Object.keys(root.files).toSorted(),
     ['index.php', 'src/Service.php', 'vendor/autoload.php'],
   )
@@ -424,7 +424,7 @@ test('bucketizePhpSources groups vendor packages with name+version from composer
 
 test('bucketizePhpSources falls back to the placeholder identity with no composer.json', (t) => {
   const modules = bucketizePhpSources(join(fixtures, 'basic'), new Map([['src/A.php', '<?php']]), 'php-bundle', '0.0.0')
-  t.assert.deepEqual([...modules.keys()], ['.'])
+  t.assert.deepStrictEqual([...modules.keys()], ['.'])
   t.assert.equal(modules.get('.').name, 'php-bundle')
   t.assert.equal(modules.get('.').version, '0.0.0')
 })
@@ -432,7 +432,7 @@ test('bucketizePhpSources falls back to the placeholder identity with no compose
 test('loadLaravelProviderFiles discovers vendor (installed.json) and app (bootstrap) providers', (t) => {
   const baseDir = join(fixtures, 'laravel-providers')
   const files = loadLaravelProviderFiles(baseDir, loadComposerAutoload(baseDir)).toSorted()
-  t.assert.deepEqual(files, [
+  t.assert.deepStrictEqual(files, [
     'bootstrap/providers.php', // Laravel 11 app provider list
     'vendor/spatie/laravel-ignition/src/IgnitionServiceProvider.php', // auto-discovered vendor provider
   ])
@@ -441,7 +441,7 @@ test('loadLaravelProviderFiles discovers vendor (installed.json) and app (bootst
 test('loadLaravelProviderFiles returns no provider classes without an autoload config', (t) => {
   // bootstrap/providers.php is still seeded if present, but vendor providers
   // can't be resolved without the autoload maps.
-  t.assert.deepEqual(loadLaravelProviderFiles(join(fixtures, 'basic'), null), [])
+  t.assert.deepStrictEqual(loadLaravelProviderFiles(join(fixtures, 'basic'), null), [])
 })
 
 // --- Composer packages: composer.lock, and vendor/composer/installed.json ---
@@ -597,7 +597,7 @@ test('loadComposerAutoload merges composer.json and generated maps into baseDir-
   const a = loadComposerAutoload(composer)
   // PSR-4: App\ from composer.json + generated; Vendor\Acme\ from generated only.
   t.assert.ok(a.psr4.get('App\\').includes('src'))
-  t.assert.deepEqual(a.psr4.get('Vendor\\Acme\\'), ['vendor/acme/lib/src'])
+  t.assert.deepStrictEqual(a.psr4.get('Vendor\\Acme\\'), ['vendor/acme/lib/src'])
   // classmap: exact FQCN -> file, with the doubled backslashes unescaped.
   t.assert.equal(a.classmap.get('Legacy\\Thing'), 'src/Legacy/Thing.php')
   t.assert.equal(a.classmap.get('App\\Orphan'), 'src/Orphan.php')
@@ -605,15 +605,15 @@ test('loadComposerAutoload merges composer.json and generated maps into baseDir-
   t.assert.ok(a.files.includes('src/helpers.php'))
   // PSR-4 dir lists are de-duplicated (App\ is in both composer.json and the
   // generated map).
-  t.assert.deepEqual(a.psr4.get('App\\'), ['src'])
+  t.assert.deepStrictEqual(a.psr4.get('App\\'), ['src'])
 })
 
 test('loadComposerAutoload drops autoload paths that escape the project root', (t) => {
   // composer.json autoload entries with interior `..` (e.g. `src/../../../etc`)
   // must not let the bundler read files outside the project.
   const a = loadComposerAutoload(join(fixtures, 'escape'))
-  t.assert.deepEqual(a.psr4.get('App\\'), ['src'])
-  t.assert.deepEqual(a.psr4.get('Bad\\'), []) // escaping dir rejected
+  t.assert.deepStrictEqual(a.psr4.get('App\\'), ['src'])
+  t.assert.deepStrictEqual(a.psr4.get('Bad\\'), []) // escaping dir rejected
   t.assert.ok(a.files.includes('src/helpers.php'))
   t.assert.ok(!a.files.some((f) => f.includes('etc') || f.includes('..'))) // escaping file rejected
 })

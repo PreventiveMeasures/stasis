@@ -522,7 +522,7 @@ describe('static bundle (stasis bundle) on the 10-package set', { concurrency: C
     const decoded = JSON.parse(brotliDecompressSync(await readFile(bundlePath)).toString('utf-8'))
     // scope=full bundles list entries; both must be present and marked.
     t.assert.equal(decoded.config.scope, 'full')
-    t.assert.deepEqual([...decoded.entries].toSorted(), ['src/entry.js', 'src/entry2.js'])
+    t.assert.deepStrictEqual([...decoded.entries].toSorted(), ['src/entry.js', 'src/entry2.js'])
     // Workspace bucket carries the entry sources alongside node_modules buckets.
     t.assert.ok(decoded.sources['.']?.files?.['src/entry.js'], 'entry.js must be in the workspace bucket')
     t.assert.ok(decoded.sources['.']?.files?.['src/entry2.js'], 'entry2.js must be in the workspace bucket')
@@ -598,7 +598,7 @@ describe('lock x bundle matrix with statically-built bundle', { concurrency: CON
         if (bundle === 'none') {
           t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), 'bundle=none must not write a bundle')
         } else if (bundle === 'load' || bundle === 'ignore') {
-          t.assert.deepEqual(await readFile(bundlePath), staticBundleBuf, `bundle=${bundle} must not modify the static bundle`)
+          t.assert.deepStrictEqual(await readFile(bundlePath), staticBundleBuf, `bundle=${bundle} must not modify the static bundle`)
         } else {
           decodeBundle(await readFile(bundlePath))
         }
@@ -656,9 +656,9 @@ describe('lock x bundle x mock matrix', { concurrency: CONCURRENCY }, () => {
           if (bundle === 'none') {
             t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), 'bundle=none must not write a bundle')
           } else if (bundle === 'load' || bundle === 'ignore') {
-            t.assert.deepEqual(await readFile(bundlePath), bundleBuf, `bundle=${bundle} must not modify the bundle`)
+            t.assert.deepStrictEqual(await readFile(bundlePath), bundleBuf, `bundle=${bundle} must not modify the bundle`)
           } else if (mock) {
-            t.assert.deepEqual(await readFile(bundlePath), bundleBuf, `bundle=${bundle} --mock must produce the same bundle as without --mock`)
+            t.assert.deepStrictEqual(await readFile(bundlePath), bundleBuf, `bundle=${bundle} --mock must produce the same bundle as without --mock`)
           } else {
             decodeBundle(await readFile(bundlePath)) // add/replace: a valid bundle was written
           }

@@ -77,7 +77,7 @@ test('collectWhy prefixes each chain with its head\'s top-level importer reasons
   // deep: default pruning would drop `run: a -> b -> c` (its full suffix b -> c is
   // its own run chain); this test is about prefix attribution, so keep everything.
   const why = collectWhy([file], new Set(['c@1.0.0']), null, { deep: true })
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), [
     'run: a -> b -> c', // a is imported only by runEntry
     'run: b -> c',      // b is imported by both entries -> two lines
     'webpack: b -> c',
@@ -99,7 +99,7 @@ test('collectWhy with a reason filter keeps only that consumer\'s chains', withT
   })
   const why = collectWhy([file], new Set(['c@1.0.0']), 'run', { deep: true })
   // Under --reason the column is all one consumer, so chains render bare (no prefix).
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c', 'b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c', 'b -> c'])
 }))
 
 test('collectWhy with a reason filter drops bare (unattributed) chains', withTmp((t, tmp) => {
@@ -118,7 +118,7 @@ test('collectWhy renders bare chains when a bundle has no reason map', withTmp((
     edges: [['e', 'a'], ['e', 'b'], ['e', 'x'], ['a', 'b'], ['x', 'b'], ['b', 'c']],
   })
   const why = collectWhy([file], new Set(['c@1.0.0']), null, { deep: true })
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c', 'b -> c', 'x -> b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c', 'b -> c', 'x -> b -> c'])
 }))
 
 test('collectWhy includes a chain whose head is not imported by src (top of the tree)', withTmp((t, tmp) => {
@@ -133,7 +133,7 @@ test('collectWhy includes a chain whose head is not imported by src (top of the 
     scope: 'node_modules',
   })
   const why = collectWhy([file], new Set(['c@1.0.0']))
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: a -> b -> c', 'webpack: b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['run: a -> b -> c', 'webpack: b -> c'])
 }))
 
 test('collectWhy falls back to the head\'s own reasons when there is no top-level importer', withTmp((t, tmp) => {
@@ -145,7 +145,7 @@ test('collectWhy falls back to the head\'s own reasons when there is no top-leve
     scope: 'node_modules',
   })
   const why = collectWhy([file], new Set(['c@1.0.0']))
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: a -> b -> c', 'webpack: a -> b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['run: a -> b -> c', 'webpack: a -> b -> c'])
 }))
 
 test('collectWhy renders bare chains for a node_modules bundle with no reason map', withTmp((t, tmp) => {
@@ -155,7 +155,7 @@ test('collectWhy renders bare chains for a node_modules bundle with no reason ma
     scope: 'node_modules',
   })
   const why = collectWhy([file], new Set(['c@1.0.0']))
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c'])
 }))
 
 test('collectWhy shows a single-node chain for a directly-imported dependency', withTmp((t, tmp) => {
@@ -168,7 +168,7 @@ test('collectWhy shows a single-node chain for a directly-imported dependency', 
   // c is imported by src file e (recorded by run) -> `run: c`. webpack recorded
   // c's own file too, so even though it never imports c through the graph, the
   // flagged package still surfaces for it as a bare `webpack: c`.
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: c', 'webpack: c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['run: c', 'webpack: c'])
 }))
 
 test('collectWhy takes node_modules as a path segment: a workspace package named so is no dependency', withTmp((t, tmp) => {
@@ -186,7 +186,7 @@ test('collectWhy takes node_modules as a path segment: a workspace package named
     reason: { run: ['src/e.js', toolFile, 'node_modules/c/index.js'] },
   }))))
   const why = collectWhy([path], new Set(['c@1.0.0', 'tool@1.0.0']))
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: c'], 'imported by first-party code')
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['run: c'], 'imported by first-party code')
   t.assert.equal(why.has('tool@1.0.0'), false)
 }))
 
@@ -203,7 +203,7 @@ test('collectWhy attributes a chain per reason at the file-edge level', withTmp(
       metro: ['e', 'A', 'C', 'D'], // B missing -> the B -> C edge isn't metro's
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
     'metro: C -> D',
     'run: A -> B -> C -> D',
   ])
@@ -218,7 +218,7 @@ test('collectWhy surfaces a flagged package for a reason that shipped it but nev
     edges: [['e', 'A'], ['A', 'D']],
     reason: { run: ['e', 'A', 'D'], metro: ['D'] },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
     'metro: D',
     'run: A -> D',
   ])
@@ -230,7 +230,7 @@ test('collectWhy terminates on cycles and keeps only simple paths', withTmp((t, 
     edges: [['e', 'a'], ['a', 'b'], ['b', 'c'], ['c', 'a']], // a -> b -> c -> a cycle
   })
   const why = collectWhy([file], new Set(['c@1.0.0']))
-  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c'])
+  t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c'])
 }))
 
 test('collectWhy restricts work to the requested target keys', withTmp((t, tmp) => {
@@ -239,8 +239,8 @@ test('collectWhy restricts work to the requested target keys', withTmp((t, tmp) 
     edges: [['e', 'a'], ['a', 'b']],
   })
   const why = collectWhy([file], new Set(['b@1.0.0']))
-  t.assert.deepEqual([...why.keys()], ['b@1.0.0'])
-  t.assert.deepEqual(linesFor(why, 'b@1.0.0'), ['a -> b'])
+  t.assert.deepStrictEqual([...why.keys()], ['b@1.0.0'])
+  t.assert.deepStrictEqual(linesFor(why, 'b@1.0.0'), ['a -> b'])
 }))
 
 test('collectWhy returns nothing for an artifact with an empty imports graph', withTmp((t, tmp) => {
@@ -272,7 +272,7 @@ test('collectWhy collapses the shared tail, shortest chain shown in full', withT
     deps: ['a', 'b', 'c', 'd'],
     edges: [['e', 'a'], ['e', 'b'], ['a', 'b'], ['b', 'c'], ['c', 'd']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
     'b -> c -> d',        // shortest -> full, first
     'a -> b -> ... -> d', // collapse the shared `b -> c -> d` tail
   ])
@@ -284,7 +284,7 @@ test('collectWhy orders shortest-first, then alphabetically', withTmp((t, tmp) =
     deps: ['a', 'x', 'b', 'c', 'd'],
     edges: [['e', 'a'], ['e', 'x'], ['e', 'b'], ['a', 'b'], ['x', 'b'], ['b', 'c'], ['c', 'd']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
     'b -> c -> d',        // shortest -> full canonical, first
     'a -> b -> ... -> d', // len 4, alpha before x
     'x -> b -> ... -> d',
@@ -299,7 +299,7 @@ test('collectWhy collapses through a branch hub once both sub-paths are shown', 
     deps: ['a', 'b', 'c', 'f', 'd'],
     edges: [['e', 'a'], ['e', 'b'], ['a', 'b'], ['b', 'c'], ['b', 'f'], ['c', 'd'], ['f', 'd']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['d@1.0.0']), null, { deep: true }).get('d@1.0.0'), [
     'b -> c -> d',
     'b -> f -> d',
     'a -> b -> ... -> d',
@@ -317,7 +317,7 @@ test('collectWhy collapses every importer of a hub to one line per importer', wi
       ['B', 'C'], ['C', 'A'], ['B', 'D'], ['D', 'A'], ['P', 'B'], ['Q', 'B'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
     'B -> C -> A',
     'B -> D -> A',
     'P -> B -> ... -> A',
@@ -336,7 +336,7 @@ test('collectWhy collapses transitively onto an already-collapsed line', withTmp
       ['s', 'E'], ['E', 'B'], ['s', 'F'], ['F', 'E'], ['s', 'G'], ['G', 'E'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
     'B -> C -> A',
     'B -> D -> A',
     'E -> B -> ... -> A',
@@ -358,7 +358,7 @@ test('collectWhy collapses each chain at the first already-shown sub-path', with
       ['E', 'D'], ['D', 'C'], ['C', 'B'], ['B', 'A'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
     'D -> C -> B -> A',         // shared tail, shown once, first
     'P -> E -> D -> ... -> A',  // D's tail is in the full line
     'Q -> E -> ... -> A',       // E's tail is now visible in P's line
@@ -379,7 +379,7 @@ test('collectWhy collapses against a standalone sub-family tail, not just the bu
       ['C', 'B'], ['D', 'B'], ['E', 'C'], ['F', 'C'], ['B', 'A'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true }).get('A@1.0.0'), [
     'C -> B -> A',
     'D -> B -> A',
     'E -> C -> ... -> A',
@@ -396,7 +396,7 @@ test('collectWhy collapses a shared tail that is not itself a standalone line', 
     deps: ['A', 'B', 'C', 'D', 'E'],
     edges: [['e', 'D'], ['e', 'E'], ['D', 'C'], ['E', 'C'], ['C', 'B'], ['B', 'A']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0'])).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0'])).get('A@1.0.0'), [
     'D -> C -> B -> A',
     'E -> C -> ... -> A',
   ])
@@ -413,7 +413,7 @@ test('collectWhy compresses only within a single reason bucket', withTmp((t, tmp
       webpack: ['wpEntry', 'b', 'c', 'd'],
     },
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['d@1.0.0'])).get('d@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['d@1.0.0'])).get('d@1.0.0'), [
     'run: a -> b -> c -> d',
     'webpack: b -> c -> d',
   ])
@@ -434,7 +434,7 @@ test('collectWhy keeps head groups contiguous, shortest-max group first', withTm
       ['K', 'L'], ['L', 'M'], ['M', 'D'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
     'K -> L -> M -> D',
     'A -> B -> D',
     'A -> C -> E -> F -> D',
@@ -453,7 +453,7 @@ test('collectWhy keeps subpath groups contiguous too, shortest-max first', withT
       ['Z', 'K'], ['K', 'L'], ['L', 'M'], ['M', 'D'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
     'Z -> K -> L -> M -> D',
     'Z -> A -> B -> D',
     'Z -> A -> C -> E -> F -> D',
@@ -466,7 +466,7 @@ test('collectWhy orders sibling subpaths shortest-first', withTmp((t, tmp) => {
     deps: ['A', 'B', 'C', 'D', 'Z'],
     edges: [['e', 'Z'], ['Z', 'A'], ['A', 'D'], ['Z', 'B'], ['B', 'C'], ['C', 'D']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
     'Z -> A -> D',
     'Z -> B -> C -> D',
   ])
@@ -479,7 +479,7 @@ test('collectWhy always renders a full-suffix chain before its extensions', with
     deps: ['A', 'B', 'C', 'D'],
     edges: [['e', 'A'], ['e', 'B'], ['A', 'B'], ['B', 'C'], ['C', 'D']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0']), null, { deep: true }).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0']), null, { deep: true }).get('D@1.0.0'), [
     'B -> C -> D',
     'A -> B -> ... -> D',
   ])
@@ -495,7 +495,7 @@ test('collectWhy by default drops a chain whose full suffix is its own chain', w
     deps: ['A', 'B', 'C', 'D'],
     edges: [['e', 'A'], ['e', 'B'], ['A', 'B'], ['B', 'C'], ['C', 'D']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), [
     'B -> C -> D',
   ])
 }))
@@ -508,7 +508,7 @@ test('collectWhy default pruning requires a FULL suffix, not a shared sub-path',
     deps: ['A', 'B', 'C', 'D', 'E'],
     edges: [['e', 'D'], ['e', 'E'], ['D', 'C'], ['E', 'C'], ['C', 'B'], ['B', 'A']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0'])).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0'])).get('A@1.0.0'), [
     'D -> C -> B -> A',
     'E -> C -> ... -> A',
   ])
@@ -526,7 +526,7 @@ test('collectWhy default pruning is per reason bucket', withTmp((t, tmp) => {
       run: ['runEntry', 'B', 'C', 'D'],
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['D@1.0.0'])), 'D@1.0.0'), [
     'metro: A -> B -> C -> D',
     'run: B -> C -> D',
   ])
@@ -544,13 +544,13 @@ test('collectWhy full skips the `...` collapse and spells every chain out', with
       ['E', 'D'], ['D', 'C'], ['C', 'B'], ['B', 'A'],
     ],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true, full: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { deep: true, full: true }).get('A@1.0.0'), [
     'D -> C -> B -> A',
     'P -> E -> D -> C -> B -> A',
     'Q -> E -> D -> C -> B -> A',
   ])
   // full without deep: the pruning still applies first.
-  t.assert.deepEqual(collectWhy([file], new Set(['A@1.0.0']), null, { full: true }).get('A@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['A@1.0.0']), null, { full: true }).get('A@1.0.0'), [
     'D -> C -> B -> A',
   ])
 }))
@@ -562,8 +562,8 @@ test('collectWhy by default shows only the bare line for a src-direct flagged pa
     deps: ['A', 'B', 'D'],
     edges: [['e', 'D'], ['e', 'A'], ['A', 'B'], ['B', 'D']],
   })
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), ['D'])
-  t.assert.deepEqual(collectWhy([file], new Set(['D@1.0.0']), null, { deep: true }).get('D@1.0.0'), [
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0'])).get('D@1.0.0'), ['D'])
+  t.assert.deepStrictEqual(collectWhy([file], new Set(['D@1.0.0']), null, { deep: true }).get('D@1.0.0'), [
     'D',
     'A -> B -> D',
   ])
@@ -603,9 +603,9 @@ test('collectWhy ignores react-native edges into another package\'s package.json
   const why = collectWhy([file])
   // The react-native -> foo/package.json edge is dropped, so foo is not
   // attributed to react-native (it shows as an orphan head instead)...
-  t.assert.deepEqual(linesFor(why, 'foo@1.0.0'), ['foo'])
+  t.assert.deepStrictEqual(linesFor(why, 'foo@1.0.0'), ['foo'])
   // ...but a real react-native -> bar dependency still shows.
-  t.assert.deepEqual(linesFor(why, 'bar@1.0.0'), ['react-native -> bar'])
+  t.assert.deepStrictEqual(linesFor(why, 'bar@1.0.0'), ['react-native -> bar'])
 }))
 
 // --- corrections: an edge into a corrected file is not a dependency ---
@@ -643,7 +643,7 @@ test('collectWhy drops chains that reach the target through a corrected file', w
   const file = writeWsBundle(tmp)
   // a -> ws targets only the noop browser.js stub -- not a dependency on ws, so
   // no `a -> ws` chain; the b -> ws edge targets real code and is the one shown.
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['ws@7.5.9'])), 'ws@7.5.9'), ['b -> ws'])
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['ws@7.5.9'])), 'ws@7.5.9'), ['b -> ws'])
 }))
 
 test('collectWhy reasons exclude a consumer that recorded only corrected files', withTmp((t, tmp) => {
@@ -656,8 +656,8 @@ test('collectWhy reasons exclude a consumer that recorded only corrected files',
   // webpack shipped nothing of ws but the stub (+ manifest): it is NOT one of
   // ws's reasons, in --why nor in the plain column -- the two must match.
   const why = collectWhy([file], new Set(['ws@7.5.9']))
-  t.assert.deepEqual(linesFor(why, 'ws@7.5.9'), ['run: b -> ws'])
-  t.assert.deepEqual([...collectReasons([file]).get('ws@7.5.9')], ['run'])
+  t.assert.deepStrictEqual(linesFor(why, 'ws@7.5.9'), ['run: b -> ws'])
+  t.assert.deepStrictEqual([...collectReasons([file]).get('ws@7.5.9')], ['run'])
 }))
 
 test('collectWhy keeps a bare line for a reason whose only paths are corrected edges', withTmp((t, tmp) => {
@@ -685,7 +685,7 @@ test('collectWhy keeps a bare line for a reason whose only paths are corrected e
       run: ['src/run.js', 'node_modules/a/index.js', 'node_modules/ws/browser.js', 'node_modules/ws/index.js'],
     },
   }))))
-  t.assert.deepEqual(linesFor(collectWhy([path], new Set(['ws@7.5.9'])), 'ws@7.5.9'), ['run: ws'])
+  t.assert.deepStrictEqual(linesFor(collectWhy([path], new Set(['ws@7.5.9'])), 'ws@7.5.9'), ['run: ws'])
 }))
 
 // --- terminal packages: never walk past @babel/core / react-native / metro ---
@@ -703,7 +703,7 @@ test('collectWhy stops a chain at a terminal package, keeping its reason prefix'
       metro: ['mid', 'victim'],
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['victim@1.0.0'])), 'victim@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['victim@1.0.0'])), 'victim@1.0.0'), [
     'metro: mid -> victim',
     'run: @babel/core -> mid -> victim',
   ])
@@ -715,8 +715,8 @@ test('collectWhy treats metro and react-native as terminal too', withTmp((t, tmp
     edges: [['e', 'top'], ['top', 'metro'], ['metro', 'x'], ['e', 'react-native'], ['react-native', 'y']],
   })
   const why = collectWhy([file])
-  t.assert.deepEqual(linesFor(why, 'x@1.0.0'), ['metro -> x']) // `top` dropped past metro
-  t.assert.deepEqual(linesFor(why, 'y@1.0.0'), ['react-native -> y'])
+  t.assert.deepStrictEqual(linesFor(why, 'x@1.0.0'), ['metro -> x']) // `top` dropped past metro
+  t.assert.deepStrictEqual(linesFor(why, 'y@1.0.0'), ['react-native -> y'])
 }))
 
 test('collectWhy renders a terminal target bare, once per reason that reaches it', withTmp((t, tmp) => {
@@ -735,7 +735,7 @@ test('collectWhy renders a terminal target bare, once per reason that reaches it
       metro: ['metroEntry', 'c', 'd', '@babel/core'],
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['@babel/core@1.0.0'])), '@babel/core@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['@babel/core@1.0.0'])), '@babel/core@1.0.0'), [
     'metro: @babel/core',
     'run: @babel/core',
   ])
@@ -757,7 +757,7 @@ test('collectWhy keeps every reason for a terminal head, even one src-imported u
       metro: ['metroEntry', '@babel/core', 'victim'],
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['victim@1.0.0'])), 'victim@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['victim@1.0.0'])), 'victim@1.0.0'), [
     'metro: @babel/core -> victim',
     'run: @babel/core -> victim',
   ])
@@ -779,7 +779,7 @@ test('collectWhy reports only the reasons the flagged package itself was recorde
       metro: ['metroEntry', 'c', 'd'], //            metro imports it via d but never recorded it
     },
   })
-  t.assert.deepEqual(linesFor(collectWhy([file], new Set(['@babel/core@1.0.0'])), '@babel/core@1.0.0'), [
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['@babel/core@1.0.0'])), '@babel/core@1.0.0'), [
     'run: @babel/core',
   ])
 }))
@@ -798,6 +798,6 @@ test('collectWhy --why reason set matches the non-why reasons of the flagged pac
   const why = collectWhy([file], new Set(['c@1.0.0']))
   const whyReasons = [...new Set([...why.get('c@1.0.0')].map((l) => l.split(':')[0]))].toSorted()
   const flagged = [...collectReasons([file]).get('c@1.0.0')].toSorted()
-  t.assert.deepEqual(whyReasons, flagged)
-  t.assert.deepEqual(flagged, ['metro', 'run'])
+  t.assert.deepStrictEqual(whyReasons, flagged)
+  t.assert.deepStrictEqual(flagged, ['metro', 'run'])
 }))

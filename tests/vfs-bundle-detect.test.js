@@ -35,7 +35,7 @@ test('buildVfsBundle takes the one package manager whose lockfile installs cwd',
   await Promise.all(cases.map(async ([expected, files, entries]) => {
     const built = await buildVfsBundle({ vfs: vfsOf(files), entries })
     t.assert.equal(built.packageManager, expected, Object.keys(files).join(' '))
-    t.assert.deepEqual([...built.bundle.sources.keys()], entries)
+    t.assert.deepStrictEqual([...built.bundle.sources.keys()], entries)
   }))
   // One given is taken whatever the lockfiles.
   const both = vfsOf({ ...pkg, 'pnpm-lock.yaml': lockfile('.'), 'yarn.lock': YARN_LOCK })
@@ -70,7 +70,7 @@ test('loadNodeModules takes the one of pnpm, yarn 1 and npm whose lockfile insta
   // Through a link, where it leads, as for one given.
   const linked = vfsOf({ 'apps/package.json': json({ name: 'apps', version: '1.0.0' }), 'apps/yarn.lock': YARN_LOCK, 'apps/p/a.js': '', 'pkg': { symlink: 'apps/p' } })
   const tree = await loadNodeModules({ vfs: linked, cwd: '/pkg' })
-  t.assert.deepEqual([tree.packageManager, tree.root], ['yarn1', '/apps'])
+  t.assert.deepStrictEqual([tree.packageManager, tree.root], ['yarn1', '/apps'])
   t.assert.equal((await loadNodeModules({ vfs: linked, cwd: '/pkg', packageManager: 'yarn1' })).root, '/apps')
 })
 

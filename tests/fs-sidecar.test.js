@@ -60,23 +60,23 @@ test('capture: --fs skips recording sidecar-attested reads into main, records ot
     active = parent
     // SYNC: a program read of a sidecar-attested graph file returns real bytes but is NOT
     // recorded into main (the graph stays in the sidecar); a non-graph read IS recorded.
-    t.assert.deepEqual(nodeFs.readFileSync(libPath), Buffer.from('export const x = 1\n'))
+    t.assert.deepStrictEqual(nodeFs.readFileSync(libPath), Buffer.from('export const x = 1\n'))
     t.assert.equal(parent.getFsStat(libURL), undefined, 'sidecar-attested read must not be recorded into main')
-    t.assert.deepEqual(nodeFs.readFileSync(helperPath), Buffer.from('export const y = 2\n'))
+    t.assert.deepStrictEqual(nodeFs.readFileSync(helperPath), Buffer.from('export const y = 2\n'))
     t.assert.equal(parent.getFsStat(helperURL), 'file', 'a non-graph read must be recorded into main')
 
     // ASYNC (--fs=async patches fs.promises.readFile too): the same split holds.
-    t.assert.deepEqual(await nodeFs.promises.readFile(lib2Path), Buffer.from('export const x2 = 3\n'))
+    t.assert.deepStrictEqual(await nodeFs.promises.readFile(lib2Path), Buffer.from('export const x2 = 3\n'))
     t.assert.equal(parent.getFsStat(lib2URL), undefined, 'sidecar-attested async read must not be recorded into main')
-    t.assert.deepEqual(await nodeFs.promises.readFile(helper2Path), Buffer.from('export const y2 = 4\n'))
+    t.assert.deepStrictEqual(await nodeFs.promises.readFile(helper2Path), Buffer.from('export const y2 = 4\n'))
     t.assert.equal(parent.getFsStat(helper2URL), 'file', 'a non-graph async read must be recorded into main')
 
     // CALLBACK form (fs.readFile, patched under --fs=async): the same capture-skip applies.
-    // Resolve with the error-or-bytes (single resolve) so a failure surfaces in the deepEqual.
+    // Resolve with the error-or-bytes (single resolve) so a failure surfaces in the deepStrictEqual.
     const cbRead = (p) => new Promise((res) => nodeFs.readFile(p, (e, buf) => res(e ?? buf)))
-    t.assert.deepEqual(await cbRead(lib3Path), Buffer.from('export const x3 = 5\n'))
+    t.assert.deepStrictEqual(await cbRead(lib3Path), Buffer.from('export const x3 = 5\n'))
     t.assert.equal(parent.getFsStat(lib3URL), undefined, 'sidecar-attested callback read must not be recorded into main')
-    t.assert.deepEqual(await cbRead(helper3Path), Buffer.from('export const y3 = 6\n'))
+    t.assert.deepStrictEqual(await cbRead(helper3Path), Buffer.from('export const y3 = 6\n'))
     t.assert.equal(parent.getFsStat(helper3URL), 'file', 'a non-graph callback read must be recorded into main')
     t.assert.equal(lastAbort, null, 'no capture conflict should be raised')
   } finally {
@@ -115,15 +115,15 @@ test('load: --fs serves a load-mode sidecar\'s graph file through the real readF
     const loadParent = new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile: mainFile })
     // Constructing the load-mode sidecar registers it into loadParent.#readSidecars.
     const loadSidecar = new State(dir, { parent: loadParent, scope: 'full', lock: 'frozen', bundle: 'load', bundleFile: sidecarFile })
-    t.assert.deepEqual(loadSidecar.getFsFile(libURL), Buffer.from('export const x = 1\n')) // the sidecar carries it
+    t.assert.deepStrictEqual(loadSidecar.getFsFile(libURL), Buffer.from('export const x = 1\n')) // the sidecar carries it
 
     active = loadParent
     // SYNC serve through the real hook: getState()->loadParent (loadBundle) -> getFsFileFamily
     // -> #readSidecars -> the sidecar's bytes. If the serve site were wired to the own-only
     // getter (or the wrong registry), this would fall through to disk and throw ENOENT.
-    t.assert.deepEqual(nodeFs.readFileSync(libPath), Buffer.from('export const x = 1\n'))
+    t.assert.deepStrictEqual(nodeFs.readFileSync(libPath), Buffer.from('export const x = 1\n'))
     // ASYNC serve through the real hook.
-    t.assert.deepEqual(await nodeFs.promises.readFile(lib2Path), Buffer.from('export const x2 = 3\n'))
+    t.assert.deepStrictEqual(await nodeFs.promises.readFile(lib2Path), Buffer.from('export const x2 = 3\n'))
 
     // PROBES (existsSync/accessSync/realpathSync + async forms) must serve from the SAME family,
     // else a check-then-read tool -- e.g. @babel/core's existsSync(config)+realpath BEFORE

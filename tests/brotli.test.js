@@ -20,17 +20,17 @@ const QUALITY = zlibConstants.BROTLI_PARAM_QUALITY
 
 test('brotliOptions() with no env and no quality falls back to the stasis default', withEnv(undefined, (t) => {
   t.assert.equal(DEFAULT_BROTLI_QUALITY, 9)
-  t.assert.deepEqual(brotliOptions(), { params: { [QUALITY]: DEFAULT_BROTLI_QUALITY } })
+  t.assert.deepStrictEqual(brotliOptions(), { params: { [QUALITY]: DEFAULT_BROTLI_QUALITY } })
 }))
 
 test('brotliOptions(quality) returns the quality param', withEnv(undefined, (t) => {
-  t.assert.deepEqual(brotliOptions(5), { params: { [QUALITY]: 5 } })
+  t.assert.deepStrictEqual(brotliOptions(5), { params: { [QUALITY]: 5 } })
 }))
 
 test('brotliOptions accepts the range edges 0 and 11', withEnv(undefined, (t) => {
   // 0 is valid AND falsy -- pins that no truthiness shortcut drops it.
-  t.assert.deepEqual(brotliOptions(0), { params: { [QUALITY]: 0 } })
-  t.assert.deepEqual(brotliOptions(11), { params: { [QUALITY]: 11 } })
+  t.assert.deepStrictEqual(brotliOptions(0), { params: { [QUALITY]: 0 } })
+  t.assert.deepStrictEqual(brotliOptions(11), { params: { [QUALITY]: 11 } })
 }))
 
 test('brotliOptions rejects out-of-range or non-integer quality', withEnv(undefined, (t) => {
@@ -40,12 +40,12 @@ test('brotliOptions rejects out-of-range or non-integer quality', withEnv(undefi
 }))
 
 test('brotliOptions falls back to EXODUS_STASIS_BROTLI_QUALITY', withEnv('3', (t) => {
-  t.assert.deepEqual(brotliOptions(), { params: { [QUALITY]: 3 } })
+  t.assert.deepStrictEqual(brotliOptions(), { params: { [QUALITY]: 3 } })
 }))
 
 test('brotliOptions env "" is unset; falls back to the default, explicit quality still applies', withEnv('', (t) => {
-  t.assert.deepEqual(brotliOptions(), { params: { [QUALITY]: DEFAULT_BROTLI_QUALITY } })
-  t.assert.deepEqual(brotliOptions(2), { params: { [QUALITY]: 2 } })
+  t.assert.deepStrictEqual(brotliOptions(), { params: { [QUALITY]: DEFAULT_BROTLI_QUALITY } })
+  t.assert.deepStrictEqual(brotliOptions(2), { params: { [QUALITY]: 2 } })
 }))
 
 test('brotliOptions rejects an invalid env value', withEnv('max', (t) => {
@@ -61,7 +61,7 @@ for (const bad of ['5.0', '05', '   ', ' 5 ', '0x5', '5e0', '+5']) {
 }
 
 test('brotliOptions env agreeing with an explicit quality is accepted', withEnv('4', (t) => {
-  t.assert.deepEqual(brotliOptions(4), { params: { [QUALITY]: 4 } })
+  t.assert.deepStrictEqual(brotliOptions(4), { params: { [QUALITY]: 4 } })
 }))
 
 test('brotliOptions env conflicting with an explicit quality throws', withEnv('4', (t) => {
