@@ -94,6 +94,19 @@ test('npm: installs a package from the first directory above whose workspaces ta
   await t.assert.rejects(load({ vfs: project(files), cwd: '/packages/a/examples/e' }), /^Error: no package-lock\.json found in \/packages\/a, where \/packages\/a\/examples\/e is installed from$/u)
 })
 
+test('npm: reads the nearest package-lock.json beside a package.json, as npm finds its prefix', async (t) => {
+  // A package-lock.json in a directory holding no package.json is none npm reads: as `npm prefix`
+  // says there, it installs from the package above.
+  const below = { 'package.json': ROOT, 'src/package-lock.json': lockOf({ name: 'other', version: '2.0.0' }), 'src/a.js': '' }
+  const files = { ...below, 'package-lock.json': lockOf(ROOT) }
+  t.assert.equal(lockfileRoot(vfsHost(project(files)), 'npm', '/src'), '/')
+  const tree = await load({ vfs: project(files), cwd: '/src' })
+  t.assert.deepEqual([tree.root, [...tree.projects]], ['/', ['.']])
+  await t.assert.rejects(load({ vfs: project(below), cwd: '/src' }), /^Error: no package-lock\.json found in \/src or any parent directory$/u)
+  // One beside a `type` marker is, as npm takes the marker's directory for its prefix.
+  t.assert.equal(lockfileRoot(vfsHost(project({ ...files, 'src/package.json': { type: 'module' } })), 'npm', '/src'), '/src')
+})
+
 test('npm: takes a root declaring its workspaces as yarn does, `{ packages: [...] }`, as npm does', async (t) => {
   const files = {
     'package.json': { name: 'root', version: '1.0.0', private: true, workspaces: { packages: ['packages/*'] } },

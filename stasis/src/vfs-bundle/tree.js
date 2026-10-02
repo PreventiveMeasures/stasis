@@ -137,7 +137,7 @@ function holdsPackage(host, dir) {
 // npm installs the package cwd is in from the first directory above it whose workspaces, as npm's
 // glob finds them on `os`, take it -- whatever package-lock.json is nearer, and past a workspace
 // declaring workspaces of its own, as npm finds its local prefix -- and any other package from the
-// nearest package-lock.json.
+// nearest package-lock.json beside a package.json, npm's prefix being no directory without one.
 function npmRoot(host, cwd, os) {
   const own = nearest(cwd, (dir) => holdsPackage(host, dir))
   for (let dir = own; dir !== null && dirname(dir) !== dir;) {
@@ -147,7 +147,7 @@ function npmRoot(host, cwd, os) {
     if (!Array.isArray(declared) && !Array.isArray(declared?.packages)) continue
     if (findNpmWorkspaces({ project: projectView(host, dir), os: target({ os }).os }).includes(relative(dir, own))) return dir
   }
-  return nearest(cwd, holding(host, 'package-lock.json'))
+  return nearest(cwd, (dir) => holding(host, 'package-lock.json')(dir) && holding(host, 'package.json')(dir))
 }
 
 // npm's host: the machine's, but a libc npm finds only as glibc or musl, and none where it finds
