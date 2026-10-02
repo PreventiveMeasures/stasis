@@ -893,20 +893,23 @@ test('audit() lists only the installed versions a range covers, and drops ranges
 
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 
+// npm's, OSV's and Soldeer's answers for ECOSYSTEMS_BUNDLE: an advisory on the crate serde alone.
+const ecosystemsFetch = ({ url, opts }) => {
+  if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+  if (url === 'https://api.osv.dev/v1/querybatch') {
+    return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'serde' ? { vulns: [{ id: 'RUSTSEC-2099-0001' }] } : {})) })
+  }
+  if (url === 'https://api.osv.dev/v1/vulns/RUSTSEC-2099-0001') {
+    return json({ id: 'RUSTSEC-2099-0001', summary: 'serde bug', affected: [{ package: { ecosystem: 'crates.io', name: 'serde' } }] })
+  }
+  if (url === 'https://api.soldeer.xyz/api/v1/project?project_name=forge-std') {
+    return json({ data: [{ name: 'forge-std', github_url: 'https://github.com/foundry-rs/forge-std' }] })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+
 test('audit() asks npm for npm packages, OSV for crates and Composer packages, and GitHub for Soldeer packages and GitHub repos', withFetch(
-  ({ url, opts }) => {
-    if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
-    if (url === 'https://api.osv.dev/v1/querybatch') {
-      return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'serde' ? { vulns: [{ id: 'RUSTSEC-2099-0001' }] } : {})) })
-    }
-    if (url === 'https://api.osv.dev/v1/vulns/RUSTSEC-2099-0001') {
-      return json({ id: 'RUSTSEC-2099-0001', summary: 'serde bug', affected: [{ package: { ecosystem: 'crates.io', name: 'serde' } }] })
-    }
-    if (url === 'https://api.soldeer.xyz/api/v1/project?project_name=forge-std') {
-      return json({ data: [{ name: 'forge-std', github_url: 'https://github.com/foundry-rs/forge-std' }] })
-    }
-    throw new Error(`unexpected request: ${url}`)
-  },
+  ecosystemsFetch,
   async (t, calls) => {
     const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
     try {
@@ -949,6 +952,24 @@ test('audit() names the sources it asked when a request fails', withFetch(
       const { 'dependencies/forge-std-1.9.2': _soldeer, 'lib/openzeppelin-contracts': _github, ...sources } = ECOSYSTEMS_BUNDLE.sources
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources })
       await t.assert.rejects(audit([bundle]), /^Error: OSV\/npm advisories request failed: /u)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit(--why --reason) keeps the advisories of other ecosystems by the consumers that recorded them', withFetch(
+  ecosystemsFetch,
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // webpack recorded the crate, run the npm packages: collectWhy follows npm's import graph alone.
+      const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, reason: { webpack: ['vendor/serde/src/lib.rs'], run: ['node_modules/foo/index.js'] } })
+      const github = { listRepoAdvisories: async () => [] }
+      const kept = await audit([bundle], { github, why: true, reason: 'webpack' })
+      t.assert.deepEqual(kept.rows.map(({ ecosystem, package: pkg, reason }) => ({ ecosystem, package: pkg, reason })), [{ ecosystem: 'cargo', package: 'serde', reason: 'webpack' }])
+      t.assert.deepEqual((await audit([bundle], { github, why: true, reason: 'run' })).rows, [], 'run recorded none of it')
+      t.assert.deepEqual((await audit([bundle], { github, why: true })).rows.map((row) => row.reason), ['webpack'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

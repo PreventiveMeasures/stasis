@@ -120,10 +120,11 @@ const byConsumerOrder = (a, b) => consumerRank(a) - consumerRank(b) || a.localeC
 // `reasonFilter`, when set, narrows the cell to a single consumer: the `--why`
 // chains are already filtered upstream (see collectWhy), so only the consumer
 // list needs pruning here. collectWhy follows npm's import graph alone, so an
-// advisory of another ecosystem has no `--why` chains.
+// advisory of another ecosystem keeps its consumer list under `--why` too.
 function reasonCell({ ecosystem, name, versions: affected }, reasonsByPkg, whyByPkg, reasonFilter) {
+  const chains = whyByPkg !== null && ecosystem === 'npm'
   const parts = new Set()
-  const source = whyByPkg ?? reasonsByPkg
+  const source = chains ? whyByPkg : reasonsByPkg
   for (const v of affected) {
     for (const p of source.get(keyOf(ecosystem, name, v)) ?? []) parts.add(p)
   }
@@ -131,7 +132,7 @@ function reasonCell({ ecosystem, name, versions: affected }, reasonsByPkg, whyBy
   // plugins -> run -> add (this also re-unites a consumer's lines when they were
   // split across affected versions); within a group collectWhy's compressed order
   // is preserved. Otherwise: the `, `-joined consumer set in the same order.
-  if (whyByPkg) {
+  if (chains) {
     const byConsumer = Map.groupBy(parts, (line) => {
       const i = line.indexOf(': ')
       return i === -1 ? '' : line.slice(0, i)
@@ -242,14 +243,18 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   // `--why` REPLACES the consumer list with per-consumer import paths, so only
-  // one of the two is computed. Restrict the (potentially expensive) path search
-  // to the packages that actually carry an advisory. `reason` (--reason) narrows
-  // both the paths (in collectWhy) and the consumer list (in flattenAdvisories)
-  // to a single consumer, dropping advisories unrelated to it.
+  // one of the two is computed for npm's advisories, the only ones collectWhy has
+  // paths for: another ecosystem's keep their consumers. Restrict the (potentially
+  // expensive) path search to the packages that actually carry an advisory.
+  // `reason` (--reason) narrows both the paths (in collectWhy) and the consumer
+  // list (in flattenAdvisories) to a single consumer, dropping advisories
+  // unrelated to it.
   let rows
   if (why) {
-    const targetKeys = new Set(result.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
-    rows = flattenAdvisories(result, undefined, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason)
+    const npm = result.filter((adv) => adv.ecosystem === 'npm')
+    const targetKeys = new Set(npm.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
+    const reasons = npm.length < result.length ? collectReasons(files) : undefined
+    rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason)
   } else {
     rows = flattenAdvisories(result, collectReasons(files), null, reason)
   }
