@@ -79,7 +79,8 @@ function usage(prefix = '') {
   (foundry.toml's src, else src/), but tests, scripts, mocks and dependency or build directories;
   not with --metro-resolver, --cargo* or --add; writes to owner-name.<commit's first 7>.stasis.code.br
   by default, owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with
-  --directory, each character outside [A-Za-z0-9._-] made _; --output=- streams to stdout)
+  --directory, each character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in
+  255 characters cut, with a hash of it; --output=- streams to stdout)
  stasis add path/to/(file|dir) ...
  (adds the listed files to the project's bundle(s) with no dependency resolution;
   a directory expands to its files. Requires a stasis.config.json (all fields optional).)
