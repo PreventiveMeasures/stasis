@@ -392,11 +392,13 @@ export function canonicalFileKey(dir, rel, what) {
   return key
 }
 
-// Maps each file's flat key to its bucket; rejects non-canonical keys, reports duplicates to onDuplicate.
+// Maps each file's flat key to its bucket; rejects non-canonical keys and refused bucket dirs (an empty
+// bucket's too, which no file key would reach), reports duplicates to onDuplicate.
 export function flatFileKeys(modules, what, onDuplicate) {
   const owners = new Map()
   for (const [dir, { files }] of modules) {
     if (typeof dir !== 'string') assert(false, `${what}: bucket dir ${String(dir)} is not a string`)
+    assertArtifactPath(dir, what)
     for (const rel of Object.keys(files)) {
       const key = canonicalFileKey(dir, rel, what)
       const owner = owners.get(key)

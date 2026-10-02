@@ -165,6 +165,11 @@ test('no artifact path holds a \\: refused when written, read or streamed, never
   t.assert.throws(() => new Bundle({ config: { scope: 'full' }, modules: files, formats: badFormats }).serialize(), /formats: path 'a\\b\.cjs'/u)
   t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: files, imports: badImports, formats: new Map() }).serialize(), outside)
   t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: files, imports: new Map(), formats: badFormats }).serialize(), /formats: path 'a\\b\.cjs'/u)
+  // An empty bucket's dir too: no file key reaches it, and Lockfile.serialize writes empty buckets.
+  for (const dir of ['bad\\bucket', '../outside']) {
+    const empty = new Map([...files, [dir, { name: 'x', version: '1.0.0', files: {} }]])
+    t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: empty, imports: new Map(), formats: new Map() }).serialize(), { message: `lockfile: path '${dir}' escapes the root or holds a '\\'` }, dir)
+  }
   t.assert.throws(() => serializeShard({ scope: 'full', files: ['a\\b.cjs'], formats: new Map(), imports: new Map() }), /shard file: a\\b\.cjs/u)
   t.assert.throws(() => serializeShard({ scope: 'full', files: [], formats: new Map(), imports: badImports }), /shard import target from main\.cjs: \.\.\\outside\.cjs/u)
   // Off Windows `\\` is part of a name, so a path holding one is refused rather than re-keyed.
