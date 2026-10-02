@@ -798,10 +798,11 @@ test code reaches for. Two kinds of cfg are decided:
   refuses what cargo would refuse or what it can't tell how cargo reads: a
   `Cargo.toml` with a key cargo doesn't know, a feature naming nothing, a
   `dep?/x` of a dependency no table makes optional, `[replace]`; a `Cargo.lock`
-  older than version 3 (no `version`), or one that could be read two ways. Any
-  of those stops the build, naming the file -- and so does text that isn't TOML,
-  naming the line, or TOML those files are never written in (a local date, a
-  byte order mark, U+FFFD where bytes weren't UTF-8); so is a `foundry.toml`.
+  older than version 3 (no `version`), one listing a registry's package without
+  its checksum, or one that could be read two ways. Any of those stops the
+  build, naming the file -- and so does text that isn't TOML, naming the line,
+  or TOML those files are never written in (a local date, a byte order mark,
+  U+FFFD where bytes weren't UTF-8); so is a `foundry.toml`.
   - **Cargo's resolver**, where the loader holds all it takes: the lockfile,
     `--cargo-target`, every package the lockfile has in-tree (each path package
     inside the bundle root, every other one vendored with its

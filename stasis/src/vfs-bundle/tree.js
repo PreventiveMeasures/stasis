@@ -13,10 +13,10 @@ import { settleSoldeer } from './soldeer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
 // A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm
-// install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 10, 11 or 12, `yarn
-// install --frozen-lockfile --ignore-scripts` with yarn 1.22, or `soldeer install` its dependencies
-// folder with Soldeer 0.12, and the host that reads the project through them. The project is read
-// through a host it is given, and nothing else.
+// install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 9, 10, 11 or 12,
+// `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, or `soldeer install` its
+// dependencies folder with Soldeer 0.12, and the host that reads the project through them. The
+// project is read through a host it is given, and nothing else.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 function nearest(cwd, holds) {

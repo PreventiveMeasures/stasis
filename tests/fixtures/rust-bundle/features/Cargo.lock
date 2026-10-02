@@ -17,6 +17,7 @@ dependencies = [
 name = "extra-dep"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [[package]]
 name = "lib-a"
@@ -31,23 +32,28 @@ dependencies = [
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [[package]]
 name = "proptest"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 [[package]]
 name = "serde"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
 [[package]]
 name = "winnowish"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
 [[package]]
 name = "winnowish"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"

@@ -35,18 +35,18 @@ export const fakeClient = (files) => {
       calls.push(['getRepoHead', repo, branch])
       return { branch: branch ?? 'main', oid: HEAD }
     },
-    async listRepoDir({ repo, sha, path }) {
-      calls.push(['listRepoDir', repo, sha, path])
-      const prefix = path === undefined ? '' : `${path}/`
+    async listRepoDir({ repo, sha, directory }) {
+      calls.push(['listRepoDir', repo, sha, directory])
+      const prefix = directory === undefined ? '' : `${directory}/`
       const names = Object.keys(files).filter((f) => f.startsWith(prefix)).map((f) => f.slice(prefix.length))
       // As upstream refuses a path that is no directory in git (a symlink, or under one).
-      if (names.length === 0) throw new Error(`listRepoDir: ${repo}@${sha} has no directory at ${path}`)
+      if (names.length === 0) throw new Error(`listRepoDir: ${repo}@${sha} has no directory at ${directory}`)
       return names.map((name) => (name.includes('/') ? { path: name.split('/')[0], type: 'tree', sha: `tree:${prefix}${name.split('/')[0]}` } : { path: name, type: 'blob' }))
     },
-    async getRepoTreeId({ repo, sha, path }) {
-      calls.push(['getRepoTreeId', repo, sha, path])
-      if (!Object.keys(files).some((f) => f.startsWith(`${path}/`))) throw new Error(`getRepoTreeId: ${repo}@${sha} has no directory at ${path}`)
-      return `tree:${path}`
+    async getRepoTreeId({ repo, sha, directory }) {
+      calls.push(['getRepoTreeId', repo, sha, directory])
+      if (!Object.keys(files).some((f) => f.startsWith(`${directory}/`))) throw new Error(`getRepoTreeId: ${repo}@${sha} has no directory at ${directory}`)
+      return `tree:${directory}`
     },
     async getRepoTreeTarball({ repo, tree }) {
       calls.push(['getRepoTreeTarball', repo, tree])

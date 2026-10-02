@@ -66,7 +66,7 @@ function usage(prefix = '') {
  (bundles a GitHub repo at a commit, its default branch's head without --sha, as "stasis bundle"
   bundles a clone of it once installed: the tree is fetched (with GITHUB_TOKEN where set) and held
   to its git tree id, and the dependencies are laid out in memory from the lockfile alone, as
-  "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 10, 11 or 12), "yarn install
+  "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 9, 10, 11 or 12), "yarn install
   --frozen-lockfile --ignore-scripts" (yarn 1.22) or "soldeer install" (0.12, for .sol entries)
   would: nothing is installed, no package script runs, and every tarball and zip is held to the
   lockfile, all cached where "stasis audit" caches. Without --package-manager, the one whose

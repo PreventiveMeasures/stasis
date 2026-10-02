@@ -81,9 +81,9 @@ function checkRepo(name, { github, sha, directory }) {
 // listRepoDir's listing of a directory of the repo at `sha`, each listed once.
 function lister(client, { github, sha }) {
   const listings = new Map()
-  return (path) => {
-    if (!listings.has(path)) listings.set(path, client.listRepoDir({ repo: github, sha, path }))
-    return listings.get(path)
+  return (directory) => {
+    if (!listings.has(directory)) listings.set(directory, client.listRepoDir({ repo: github, sha, directory }))
+    return listings.get(directory)
   }
 }
 
