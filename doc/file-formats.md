@@ -123,8 +123,14 @@ attested.
 - Dependency records carry an `ecosystem` (beside `name`/`version`) naming where
   the package resolved, using the SBOM/Package-URL `type` vocabulary: `npm`
   (`node_modules`), `composer` (Composer `vendor/…`), `cargo` (`cargo vendor`
-  crates), `github` (`forge install` git submodules from github.com), `soldeer`
-  (the Foundry Solidity package manager — no purl type exists). It reflects where
+  crates copied from a registry), `github` (`forge install` git submodules from
+  github.com), `soldeer` (the Foundry Solidity package manager — no purl type
+  exists). A `cargo vendor` crate copied from a git checkout is `cargo-git`, and
+  one with no `.cargo-checksum.json`, which could be either, `cargo-unknown`:
+  neither is known to be crates.io's crate of that name, so neither has a purl
+  type or is audited (see the Rust bundle's table below). An artifact from
+  before these two tags has every vendored crate `cargo`; regenerate it (adding
+  to it fails on the ecosystem mismatch). It reflects where
   the package physically resolved, not the bundle's language — a Solidity or Bash
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
@@ -792,13 +798,23 @@ file resolves out of:
 | any | dep under `node_modules` | `npm` |
 | Solidity | Soldeer `dependencies/<name>-<version>/` | `soldeer` (name/version from dir) |
 | Solidity | `forge install` submodule `lib/<dir>/` | `github` (`owner/repo` from `.gitmodules` URL) |
-| Rust | `use <crate>` → `cargo vendor`'s `vendor/<crate>/` | `cargo` (name/version from `Cargo.toml`) |
+| Rust | `use <crate>` → `cargo vendor`'s `vendor/<crate>/`, a registry's copy | `cargo` (name/version from `Cargo.toml`) |
+| Rust | the same, a git checkout's copy | `cargo-git` (name/version from `Cargo.toml`) |
+| Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
 
 A dep under `node_modules` is `npm` whatever the language. A git submodule with no
 `package.json`/`branch`, or a Soldeer dir with no version suffix, falls back to
 `0.0.0`; the workspace bucket carries no `ecosystem`. A Rust crate reached
 through a Cargo `path` dependency is first-party (its own `Cargo.toml` bucket, no
-`ecosystem`), not a registry dep.
+`ecosystem`), not a registry dep. Where a vendored crate was copied from, its
+`.cargo-checksum.json` tells: `cargo vendor` writes a registry crate's with the
+package's checksum, a git dependency's with `"package": null`. Only a registry's
+copy is `cargo`, which `stasis audit` asks OSV about as crates.io's crate and
+`stasis sbom` mints a `pkg:cargo` purl for (an alternate registry's copy too:
+nothing in the copy tells registries apart); a `cargo-git` or `cargo-unknown` crate is
+neither sent to a public advisory database (a private git dependency's name has
+no place there, and a crates.io crate of the same name isn't it) nor given a
+purl.
 
 What counts as a fatal unresolved reference differs by language:
 

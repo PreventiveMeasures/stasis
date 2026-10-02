@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -938,6 +938,57 @@ test('audit() asks npm for npm packages, OSV for crates and Composer packages, a
       ])
       // Soldeer packages and GitHub repos have their repository's advisories alone: no client, no audit.
       await t.assert.rejects(audit([writeBundle(tmp, 'again.br', ECOSYSTEMS_BUNDLE)]), /soldeer packages need a github client|github packages need a github client/u)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit() asks OSV about a crate vendored from crates.io, never one vendored from git or with no .cargo-checksum.json', withFetch(
+  ({ url, opts }) => {
+    if (url === 'https://api.osv.dev/v1/querybatch') {
+      return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'itoa' ? { vulns: [{ id: 'RUSTSEC-2099-0002' }] } : {})) })
+    }
+    if (url === 'https://api.osv.dev/v1/vulns/RUSTSEC-2099-0002') {
+      return json({ id: 'RUSTSEC-2099-0002', summary: 'itoa bug', affected: [{ package: { ecosystem: 'crates.io', name: 'itoa' } }] })
+    }
+    throw new Error(`unexpected request: ${url}`)
+  },
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const files = {
+        'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nitoa = "1"\nprivate-lib = { git = "https://git.example.com/private-lib" }\nloose = "1"\n',
+        'src/main.rs': 'use itoa::Buffer;\nuse private_lib::secret;\nuse loose::thing;\nfn main() {}\n',
+        'vendor/itoa/Cargo.toml': '[package]\nname = "itoa"\nversion = "1.0.18"\n',
+        'vendor/itoa/.cargo-checksum.json': JSON.stringify({ files: {}, package: 'a'.repeat(64) }),
+        'vendor/itoa/src/lib.rs': 'pub struct Buffer;\n',
+        // A git dependency's checkout, as `cargo vendor` copies it: no package checksum.
+        'vendor/private-lib/Cargo.toml': '[package]\nname = "private-lib"\nversion = "0.1.0"\n',
+        'vendor/private-lib/.cargo-checksum.json': JSON.stringify({ files: {}, package: null }),
+        'vendor/private-lib/src/lib.rs': 'pub fn secret() {}\n',
+        // No .cargo-checksum.json: a registry's copy or a git checkout's, nothing tells.
+        'vendor/loose/Cargo.toml': '[package]\nname = "loose"\nversion = "1.0.0"\n',
+        'vendor/loose/src/lib.rs': 'pub fn thing() {}\n',
+      }
+      for (const [rel, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(tmp, 'app', rel)), { recursive: true })
+        writeFileSync(join(tmp, 'app', rel), text)
+      }
+      const bundle = join(tmp, 'app.stasis.code.br')
+      const built = runCli(['bundle', '-o', bundle, 'src/main.rs'], { cwd: join(tmp, 'app') })
+      t.assert.equal(built.status, 0, built.stderr)
+      const report = await audit([bundle])
+      const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepStrictEqual(queries, [{ package: { name: 'itoa', ecosystem: 'crates.io' }, version: '1.0.18' }])
+      t.assert.ok(!calls.some((call) => /private-lib|loose/u.test(`${call.url} ${call.opts?.body ?? ''}`)), 'no request names the other two')
+      t.assert.deepStrictEqual(report.skipped, [
+        { ecosystem: 'cargo-git', name: 'private-lib', version: '0.1.0', because: 'a crate vendored from a git repository, not crates.io' },
+        { ecosystem: 'cargo-unknown', name: 'loose', version: '1.0.0', because: 'a vendored crate with no .cargo-checksum.json, which may be a git checkout, not crates.io\'s' },
+      ])
+      t.assert.deepStrictEqual(report.rows.map(({ ecosystem, package: pkg, installed, id }) => ({ ecosystem, package: pkg, installed, id })), [
+        { ecosystem: 'cargo', package: 'itoa', installed: '1.0.18', id: 'RUSTSEC-2099-0002' },
+      ])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

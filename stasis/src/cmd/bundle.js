@@ -124,16 +124,26 @@ function makeSolidityClassifier(baseDir, ownership, host) {
   }
 }
 
+// A vendored crate's ecosystem, by where `cargo vendor` copied it from (vendoredFrom): a registry's
+// copy is `cargo`, which `stasis audit` asks OSV about as a crates.io crate's; a git checkout's is
+// `cargo-git`, and a copy with no `.cargo-checksum.json`, which could be either, `cargo-unknown`.
+// Neither is ever sent to a public advisory database: a private git dependency's name has no place
+// there, and a crates.io crate of the same name isn't it.
+const vendoredEcosystem = (from) => {
+  if (from === 'registry') return 'cargo'
+  return from === 'git' ? 'cargo-git' : 'cargo-unknown'
+}
+
 // Classify a Rust file by the nearest Cargo.toml `[package]`: a `cargo vendor`ed crate under the
 // vendor dir (`vendor/<dir>/`, or where .cargo/config.toml points) is a dependency (tagged
-// `cargo`); any other package (the crate itself, a workspace member reached through a `path`
-// dependency) is first-party, so no ecosystem. Null (no manifest above the file) defers to the
-// package.json/placeholder logic.
+// `cargo`, `cargo-git` or `cargo-unknown`: see vendoredEcosystem); any other package (the crate
+// itself, a workspace member reached through a `path` dependency) is first-party, so no
+// ecosystem. Null (no manifest above the file) defers to the package.json/placeholder logic.
 function makeRustClassifier(cargo) {
   return (path) => {
     const pkg = cargo.packageInfo(path)
     if (!pkg) return null
-    return { bucketDir: pkg.dir, name: pkg.name, version: pkg.version, ecosystem: cargo.isVendored(path) ? 'cargo' : undefined }
+    return { bucketDir: pkg.dir, name: pkg.name, version: pkg.version, ecosystem: cargo.isVendored(path) ? vendoredEcosystem(cargo.vendoredFrom(path)) : undefined }
   }
 }
 

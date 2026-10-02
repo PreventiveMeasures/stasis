@@ -5,10 +5,19 @@ import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 import { collectWhy, invertReason } from './why.js'
 
-// Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates and
-// Composer packages; for Soldeer packages and GitHub repos (Foundry's lib/ submodules), the
-// advisories their GitHub repository publishes, a Soldeer package's as Soldeer names it.
+// Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates (those
+// vendored from a registry, which OSV takes for crates.io's) and Composer packages; for Soldeer
+// packages and GitHub repos (Foundry's lib/ submodules), the advisories their GitHub repository
+// publishes, a Soldeer package's as Soldeer names it.
 const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV'], soldeer: ['Soldeer', 'GitHub'], github: ['GitHub'] }
+
+// Why a vendored crate that may not be crates.io's is asked nowhere: by its name, crates.io's
+// advisories would be another crate's, and a private git dependency's name must not reach a public
+// database at all.
+const UNREGISTERED_CRATES = {
+  'cargo-git': 'a crate vendored from a git repository, not crates.io',
+  'cargo-unknown': 'a vendored crate with no .cargo-checksum.json, which may be a git checkout, not crates.io\'s',
+}
 
 // A bundle's dependency's ecosystem: its bucket's `ecosystem` tag, or npm for an untagged bucket
 // under node_modules (an artifact from before the tag); undefined for first-party code, which must
@@ -31,13 +40,15 @@ const isComposerDev = (version) => /^dev-|-dev$/iu.test(version.replace(/#.*$/su
 
 // Why `pkg` cannot be audited, or undefined where it can.
 function unaudited({ ecosystem, version }) {
+  if (Object.hasOwn(UNREGISTERED_CRATES, ecosystem)) return UNREGISTERED_CRATES[ecosystem]
   if (!Object.hasOwn(SOURCES, ecosystem)) return `no advisories are looked up for ${ecosystem}`
   if (ecosystem === 'composer' && isComposerDev(version)) return 'a Composer dev version, which no advisory database lists'
   return undefined
 }
 
 // Only audit installed dependencies, `{ ecosystem, name, version }`: an npm package, a vendored
-// crate, a Composer package, a Soldeer package or a GitHub repo, as the bundle tags it.
+// crate, a Composer package, a Soldeer package or a GitHub repo, as the bundle tags it (a crate
+// vendored from git, or from where no `.cargo-checksum.json` tells, is listed but never asked about).
 //
 // A package counts as present only when its REAL code is, and recorded = present:
 // an artifact records exactly the files it ships or attested -- imported, entry,

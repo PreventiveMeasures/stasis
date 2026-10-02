@@ -782,6 +782,12 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     // sha256, as `cargo vendor` listed them, path relative to the package.
     return value === null ? null : { text, git: (value?.package ?? null) === null, files: isPlainObject(value?.files) ? value.files : {} }
   })
+  // Where `cargo vendor` copied the vendored package at `dir` from, as its `.cargo-checksum.json`
+  // tells: `registry` or `git` (a git checkout); null without that file, when it could be either.
+  const copySource = (dir) => {
+    const git = checksumOf(dir)?.git
+    return git === undefined ? null : (git ? 'git' : 'registry')
+  }
   // Throws when `fileRel`, a file of the vendored package at `dir`, isn't byte for byte (`buf`) the
   // file its `.cargo-checksum.json` lists -- edited after `cargo vendor`: cargo refuses to build
   // the package, and so the bundle does. A file the list doesn't name, or a package without one,
@@ -900,8 +906,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   const lockKeysOf = (lk, m) => {
     const keys = lk.byId.get(`${normName(m.package.name)} ${version(m)}`) ?? []
     if (!isVendoredDir(m.dir)) return keys.filter((k) => lk.lock.packages[k].source === undefined)
-    const git = checksumOf(m.dir)?.git
-    const kind = git === undefined ? null : (git ? 'git' : 'registry')
+    const kind = copySource(m.dir)
     return keys.filter((k) => lk.lock.packages[k].source !== undefined && (kind === null || sourceKind(lk.lock.packages[k].source) === kind))
   }
   // Dependency → package, memoized per (package, request): the fixed-point loop asks many times.
@@ -1613,10 +1618,18 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const m = packageFor(fileRel)
       if (m !== null && isVendoredDir(m.dir)) checkVendored(m.dir, fileRel, buf)
     },
-    // Whether `fileRel` belongs to a vendored package (a registry crate `cargo vendor` copied in).
+    // Whether `fileRel` belongs to a vendored package (a crate `cargo vendor` copied in, a registry's
+    // or a git checkout's: see vendoredFrom).
     isVendored(fileRel) {
       const m = packageFor(fileRel)
       return m !== null && isVendoredDir(m.dir)
+    },
+    // Where `cargo vendor` copied the vendored package owning `fileRel` from, as its
+    // `.cargo-checksum.json` tells: `registry` (a package checksum) or `git` (a git checkout's: none);
+    // null when it has no such file, and so could be either, or isn't vendored.
+    vendoredFrom(fileRel) {
+      const m = packageFor(fileRel)
+      return m !== null && isVendoredDir(m.dir) ? copySource(m.dir) : null
     },
     // The build script of `fileRel`'s package, project-relative, when there is one on disk:
     // `[package] build = "…"`, else `build.rs` beside the manifest; `build = false` means none. A
