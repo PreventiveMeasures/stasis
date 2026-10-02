@@ -879,7 +879,7 @@ test code reaches for. Two kinds of cfg are decided:
     and never count (sha2's `[dev-dependencies] digest = { features = ["dev"]
     }` doesn't turn on digest's `dev`); an entries' package's own count under
     resolver 1, and where an entry is a test, bench or example of it. Resolver 2
-    (edition 2021+, or `resolver = "2"`) also resolves what is built for the
+    (edition 2021, or `resolver = "2"`) also resolves what is built for the
     host -- build-dependencies, proc-macro crates and what they depend on --
     apart from what is built for the target: a feature a build-dependency asks
     of a crate isn't on in that crate as a normal dependency. A dependency no
@@ -887,8 +887,11 @@ test code reaches for. Two kinds of cfg are decided:
     of it, and the build linking it is a dependency the bundle lacks (see
     above). The entries' packages are the members, each given the
     `--cargo-features` it has: one no package has stops the build, as cargo
-    refuses it. Resolver 1 unifies it all, every table included. The resolver
-    is the workspace's: its `resolver`, else its edition.
+    refuses it. Resolver 1 unifies it all, every table included. Resolver 3
+    (edition 2024, or `resolver = "3"`) resolves features as resolver 2 does:
+    it differs in picking versions by `rust-version`, which the lockfile and
+    the vendored copies have decided. The resolver is the workspace's: its
+    `resolver`, else its edition's.
 
   Either way, a target-specific dependency table counts when `--cargo-target`
   says it applies (a build-dependency's table against the host), and not when

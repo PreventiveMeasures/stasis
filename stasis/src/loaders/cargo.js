@@ -1002,16 +1002,20 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
 
   // --- feature resolution
 
-  // Cargo's feature resolver: v2 (edition 2021+, or `resolver = "2"`/`"3"`) leaves dev-dependencies
-  // out of a normal build's unification, resolves what is built for the host apart from what is
-  // built for the target, and ignores the tables of platforms not being built; v1 unifies them all.
-  // It is the workspace's setting: the build's workspace root's (buildWorkspaceRoot) `resolver`,
-  // else its edition -- never that of a vendored crate an entry is in, where cargo isn't run.
+  // Cargo's feature resolver: v2 (edition 2021, or `resolver = "2"`) leaves dev-dependencies out of
+  // a normal build's unification, resolves what is built for the host apart from what is built for
+  // the target, and ignores the tables of platforms not being built; v1 unifies them all. v3
+  // (edition 2024, or `resolver = "3"`) resolves features as v2 does, and picks versions by
+  // `rust-version` too, which the lockfile and the vendored copies have decided here. It is the
+  // workspace's setting: the build's workspace root's (buildWorkspaceRoot) `resolver`, else its
+  // edition's, as linkCargo gives it -- never that of a vendored crate an entry is in, where cargo
+  // isn't run.
   let resolverMemo = null
   const resolverVersion = () => {
     if (resolverMemo === null) {
       const root = buildWorkspaceRoot()
-      resolverMemo = root?.resolver ?? (Number(root?.package?.edition ?? 0) >= 2021 ? 2 : 1)
+      const edition = Number(root?.package?.edition ?? 0)
+      resolverMemo = root?.resolver ?? (edition >= 2024 ? 3 : (edition >= 2021 ? 2 : 1))
     }
     return resolverMemo
   }

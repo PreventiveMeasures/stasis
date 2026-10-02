@@ -328,6 +328,8 @@ test('createCargoContext picks the feature resolver from a workspace-inherited e
   })
   // edition 2021 → resolver 2: what the root's dev-dependencies ask stays out of a normal build
   withProject(files('2021'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/dep': [] }))
+  // edition 2024 → resolver 3, which resolves features as resolver 2 does
+  withProject(files('2024'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/dep': [] }))
   // edition 2018 → resolver 1: it joins
   withProject(files('2018'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/dep': ['dev'] }))
 })
