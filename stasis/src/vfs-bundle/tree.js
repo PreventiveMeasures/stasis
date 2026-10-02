@@ -1,9 +1,9 @@
 import { constants } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 
-import { packageJSONStat, packageJSONText, readJson } from '@exodus/stasis-core/bundle-util'
+import { NO_ENTRY, packageJSONStat, packageJSONText, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
 import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.js'
@@ -179,6 +179,9 @@ const PACKAGE_MANAGERS = {
   },
 }
 
+// Their names.
+const PACKAGE_MANAGER_NAMES = Object.keys(PACKAGE_MANAGERS)
+
 // layOutTree's tree, with the host reading `project` through it: the tree serves what the package
 // manager installs, and any file it writes beside it at the root.
 export async function loadTree(options) {
@@ -209,11 +212,11 @@ function rootOf(host, pm, cwd) {
 export const lockfileRoot = (host, packageManager, cwd) => rootOf(host, PACKAGE_MANAGERS[packageManager], host.realpath(cwd))
 
 // The package managers that install node_modules.
-export const NODE_MODULES_MANAGERS = Object.keys(PACKAGE_MANAGERS).filter((name) => PACKAGE_MANAGERS[name].installs === 'node_modules')
+export const NODE_MODULES_MANAGERS = PACKAGE_MANAGER_NAMES.filter((name) => PACKAGE_MANAGERS[name].installs === 'node_modules')
 
 // The one of the package managers `names` that installs `cwd` in the project `host` reads from a
 // directory holding its lockfile, as lockfileRoot finds it: refused where none or more than one does.
-export function detectPackageManager(name, host, cwd, names = Object.keys(PACKAGE_MANAGERS)) {
+export function detectPackageManager(name, host, cwd, names = PACKAGE_MANAGER_NAMES) {
   const real = host.realpath(cwd)
   const found = names.flatMap((pm) => {
     const root = rootOf(host, PACKAGE_MANAGERS[pm], real)
@@ -225,14 +228,14 @@ export function detectPackageManager(name, host, cwd, names = Object.keys(PACKAG
 }
 
 // That none of the lockfiles of `names` installs `place`.
-export const noLockfile = (name, place, names = Object.keys(PACKAGE_MANAGERS)) => new Error(`${name}: no packageManager given, and none of ${names.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')} installs ${place}`)
+export const noLockfile = (name, place, names = PACKAGE_MANAGER_NAMES) => new Error(`${name}: no packageManager given, and none of ${names.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')} installs ${place}`)
 
 // Whether a directory's listing (listRepoDir's) holds `packageManager`'s lockfile.
 const listsLockfile = (listing, packageManager) => listing.some((entry) => entry.path === PACKAGE_MANAGERS[packageManager].lockfile && entry.type === 'blob')
 
 // The package managers whose lockfile `listings` (a directory's and those above it) hold, which are
 // the only ones that may install that directory.
-export const lockfilesListed = (listings) => Object.keys(PACKAGE_MANAGERS).filter((pm) => listings.some((listing) => listsLockfile(listing, pm)))
+export const lockfilesListed = (listings) => PACKAGE_MANAGER_NAMES.filter((pm) => listings.some((listing) => listsLockfile(listing, pm)))
 
 // A `packageManagerVersion` is one of the package manager given, never of one detected.
 export function checkVersion(name, { packageManager, packageManagerVersion }) {
@@ -241,7 +244,7 @@ export function checkVersion(name, { packageManager, packageManagerVersion }) {
 
 // The package manager of `names` the project `host` reads is built with at `cwd`: `packageManager`
 // if given, else the one detected.
-export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion }, names = Object.keys(PACKAGE_MANAGERS)) {
+export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion }, names = PACKAGE_MANAGER_NAMES) {
   checkVersion(name, { packageManager, packageManagerVersion })
   if (packageManager === undefined) return detectPackageManager(name, host, cwd, names)
   packageManagerOf(name, packageManager, names)
@@ -251,7 +254,7 @@ export function packageManagerFor(name, host, cwd, { packageManager, packageMana
 const KIND_LABELS = { js: 'JS', sol: 'Solidity' }
 
 // Refused where no package manager of `names` builds bundles of `kind`.
-export function checkKind(name, kind, names = Object.keys(PACKAGE_MANAGERS)) {
+export function checkKind(name, kind, names = PACKAGE_MANAGER_NAMES) {
   if (names.some((pm) => PACKAGE_MANAGERS[pm].kind === kind)) return
   const kinds = [...new Set(names.map((pm) => PACKAGE_MANAGERS[pm].kind))]
   const builders = (of) => names.filter((pm) => PACKAGE_MANAGERS[pm].kind === of).join(', ')
@@ -261,7 +264,7 @@ export function checkKind(name, kind, names = Object.keys(PACKAGE_MANAGERS)) {
 }
 
 // The PACKAGE_MANAGERS entry of `packageManager`, which has to be one of `names`.
-export function packageManagerOf(name, packageManager, names = Object.keys(PACKAGE_MANAGERS)) {
+export function packageManagerOf(name, packageManager, names = PACKAGE_MANAGER_NAMES) {
   if (!names.includes(packageManager)) throw new TypeError(`${name}: packageManager must be one of ${names.map((n) => `'${n}'`).join(', ')}`)
   return PACKAGE_MANAGERS[packageManager]
 }
@@ -328,7 +331,7 @@ function lstatOrNull(vfs, p) {
   try {
     return vfs.lstat(p)
   } catch (err) {
-    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null
+    if (NO_ENTRY.has(err?.code)) return null
     throw err
   }
 }
@@ -439,7 +442,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       error = null
       try {
         const data = JSON.parse(packageJSONText(host.readFile(path)))
-        if (data === null || typeof data !== 'object' || Array.isArray(data)) error = invalidPackageConfig(path)
+        if (!isPlainObject(data)) error = invalidPackageConfig(path)
       } catch (cause) {
         error = invalidPackageConfig(path, cause)
       }

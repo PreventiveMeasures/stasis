@@ -2,7 +2,7 @@ import { join, normalize, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
-import { isAutoExcludedDir } from '@exodus/stasis-core/util'
+import { isAutoExcludedDir, isPlainObject, posixPathEscapes } from '@exodus/stasis-core/util'
 import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
@@ -10,8 +10,6 @@ import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-t
 import { checkKind, checkVersion, packageManagerOf, vfsHost } from './tree.js'
 
 const JS = /\.[cm]?[jt]s$/u
-// A path out of the package's directory, which may be the root of a subtree held alone.
-const outward = (path) => /^(?:\/|\.\.(?:\/|$))/u.test(normalize(path))
 // Node's own conditions for require() and for import, which the build's are added to.
 const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['import', 'node', 'node-addons', 'module-sync']]
 
@@ -23,11 +21,11 @@ const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['im
 // fields, else index); each subpath `exports` holds (but a pattern), as the package's name resolves
 // for require() and for import, with the conditions the build adds (the RN ones under `metro`); and
 // each `bin`. Only JS files in `dir` that are there, named from within it; none without a package.json.
-export function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], jsx = false, typescript = false } = {}) {
+function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], jsx = false, typescript = false } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
   const pkg = readJson(manifest, host)
-  if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) return []
+  if (!isPlainObject(pkg)) return []
   const found = new Set()
   const add = (file) => {
     const rel = file === undefined ? '' : relative(real, file)
@@ -49,7 +47,7 @@ export function packageEntries(host, dir, { conditions = [], mainFields, metro =
   }
   for (const { extras, mainFields: fields, resolver } of passes) {
     const entry = fields.map((name) => pkg[name]).find((value) => typeof value === 'string' && value !== '')
-    if (entry !== undefined && outward(entry)) continue
+    if (entry !== undefined && posixPathEscapes(entry)) continue
     if (resolver === undefined) {
       add(viaNode('./', NODE_CONDITIONS[0], extras, (set) => resolveTypescriptFallback(manifest, './', { conditions: set, tsx: jsx, host })))
     } else {
@@ -59,7 +57,7 @@ export function packageEntries(host, dir, { conditions = [], mainFields, metro =
     }
   }
   const { exports, name } = pkg
-  const keyed = exports !== null && typeof exports === 'object' && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith('.'))
+  const keyed = isPlainObject(exports) && Object.keys(exports).some((key) => key.startsWith('.'))
   const subpaths = keyed ? Object.keys(exports) : exports === undefined || exports === null ? [] : ['.']
   for (const subpath of typeof name === 'string' ? subpaths : []) {
     if (!subpath.startsWith('.') || subpath.includes('*') || subpath.endsWith('/')) continue
@@ -70,7 +68,7 @@ export function packageEntries(host, dir, { conditions = [], mainFields, metro =
   }
   const bins = typeof pkg.bin === 'string' ? [pkg.bin] : pkg.bin !== null && typeof pkg.bin === 'object' ? Object.values(pkg.bin) : []
   for (const bin of bins) {
-    if (typeof bin === 'string' && !outward(bin) && host.stat(join(real, bin))?.isFile()) add(host.realpath(join(real, bin)))
+    if (typeof bin === 'string' && !posixPathEscapes(bin) && host.stat(join(real, bin))?.isFile()) add(host.realpath(join(real, bin)))
   }
   return [...found]
 }
@@ -104,9 +102,9 @@ function solidityFiles(host, real, rel) {
 // .sol files directly in it, then those under contracts/, then those under its source directory
 // (its foundry.toml's default profile's `src`, else `src`); none of its tests, scripts or mocks,
 // nor any in what it depends on or builds. A link to a directory is none.
-export function solidityEntries(host, dir) {
+function solidityEntries(host, dir) {
   const real = host.realpath(dir)
-  const isDirectory = (rel) => !outward(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null
+  const isDirectory = (rel) => !posixPathEscapes(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null
   const under = (rel) => (isDirectory(rel) ? solidityFiles(host, real, rel) : [])
   const src = normalize(foundrySourceDir(real, { host })).replace(/\/+$/u, '')
   const own = host.readdir(real).filter(isEntrySol).map((entry) => entry.name).toSorted()

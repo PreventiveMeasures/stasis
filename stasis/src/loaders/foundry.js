@@ -118,7 +118,7 @@ const rustTrim = (s) => s.replaceAll(/^\p{White_Space}+|\p{White_Space}+$/gu, ''
 // `[context:]name=path`, as forge (`Remapping::from_str`) and solc split it: at the first `=`, then
 // the first `:` before it. An empty context is global; an empty name or path is invalid (null),
 // but for solc (`emptyPath`) only an empty name is: `x/=` maps `x/A.sol` to `A.sol`.
-export function parseRemapping(entry, { emptyPath = false } = {}) {
+function parseRemapping(entry, { emptyPath = false } = {}) {
   const eq = entry.indexOf('=')
   if (eq === -1) return null
   let name = entry.slice(0, eq)
@@ -379,7 +379,7 @@ function dependencyOwner(root, windowStart) {
   const rest = stripPrefix(windowStart, root)
   if (rest === null) return null
   const parts = normalComps(rest)
-  const barrier = parts.findLastIndex((c) => c === 'lib' || c === 'node_modules')
+  const barrier = parts.findLastIndex(isLibName)
   return barrier > 0 ? parts.slice(0, barrier).reduce((p, c) => rustJoin(p, c), root) : null
 }
 
@@ -388,6 +388,9 @@ const byContextDepth = (a, b) => {
   const y = b.context ?? ''
   return compCount(y) - compCount(x) || cmpStr(x, y)
 }
+
+// A map's entries, sorted by key with `cmp`.
+const sortedEntries = (map, cmp) => [...map].toSorted(([a], [b]) => cmp(a, b))
 
 // `Remapping::find_many_with_context(dir)`: `{ global, contextual }` remappings for the packages
 // under a lib dir, `contextual` keyed by the dependency whose own lib dir holds the package.
@@ -411,7 +414,6 @@ export function findRemappingsWithContext(dir, host = diskHost) {
     }
     insertPrioritized(global, key, c.sourceDir)
   }
-  const sortedEntries = (map, cmp) => [...map].toSorted(([a], [b]) => cmp(a, b))
   return {
     global: sortedEntries(global, cmpStr).map(([name, path]) => ({ context: null, name, path: `${path}/` })),
     contextual: sortedEntries(contextual, cmpPath)
@@ -848,7 +850,7 @@ function providerRemappings(root, { userRemappings, libs, autoDetect, profile, f
   for (const c of [...explicitContextual.toSorted(byContextDepth), ...contextualRemappings.toSorted(byContextDepth)]) {
     if (!explicit.has(relKey(relativePreservingBoundary(c, root)))) all.push(c)
   }
-  for (const [name, path] of [...closest].toSorted(([a], [b]) => cmpStr(a, b))) all.push({ context: null, name, path })
+  for (const [name, path] of sortedEntries(closest, cmpStr)) all.push({ context: null, name, path })
   return all.intoInner()
 }
 

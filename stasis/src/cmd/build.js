@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -10,6 +10,7 @@ import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { parseFileWithKind } from '../parse.js'
+import { writeFile } from './output.js'
 
 export { bundleFromLockfile }
 
@@ -281,10 +282,7 @@ export async function buildCommand({
     for (const line of formatted) process.stderr.write(line)
   }
 
-  for (const file of result.outputFiles) {
-    mkdirSync(dirname(file.path), { recursive: true })
-    writeFileSync(file.path, file.contents)
-  }
+  for (const file of result.outputFiles) writeFile(file.path, file.contents)
 
   console.warn(`[stasis] Built ${selectedEntry} from ${kind} ${artifact} to ${output}`)
   return { entry: selectedEntry, dir: asFile ? undefined : outAbs, outfile: asFile ? outAbs : undefined }
