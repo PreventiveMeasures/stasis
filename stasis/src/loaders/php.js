@@ -3,6 +3,7 @@
 // (unresolved -> `missing`); Composer-autoloaded class refs are best-effort
 // (unresolved -> silently skipped).
 
+import { isUtf8 } from 'node:buffer'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -820,7 +821,10 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
   const readOne = async (relPath) => {
     try {
       assertRealPathWithinBase(realBase, baseDir, relPath)
-      return [relPath, await readFile(join(baseDir, relPath), 'utf8')]
+      const bytes = await readFile(join(baseDir, relPath))
+      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
+      if (!isUtf8(bytes)) throw new Error(`PHP source is not valid UTF-8: ${relPath}`)
+      return [relPath, bytes.toString('utf8')]
     } catch (err) {
       // ENOENT (no file) / EISDIR (specifier resolved to a directory): not a
       // loadable file -- warn and skip rather than crash (buildPhpTree surfaces

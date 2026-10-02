@@ -395,7 +395,9 @@ These four are **`scope = full`, produce-only artifacts** in the same
 under a language `imports` condition. They are for external static analysis —
 **not** `stasis run --bundle=load`, which executes JavaScript and rejects a non-JS
 `format`. Every reachable file is read from disk (symlinks whose real target
-escapes the bundle root are refused) and bucketized by the nearest `package.json`,
+escapes the bundle root are refused; a source file that isn't UTF-8 text is
+refused, never carried with U+FFFD in place of its bytes) and bucketized by the
+nearest `package.json`,
 except PHP, which buckets by the nearest `composer.json`
 (`vendor/<vendor>/<pkg>`, versions from `vendor/composer/installed.json`), and
 Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
