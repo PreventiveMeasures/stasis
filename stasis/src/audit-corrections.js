@@ -42,16 +42,27 @@ function isCorrectedFile(name, version, rel) {
   return false
 }
 
-// A `package.json` manifest (top-level or nested) is never code: the resolution
-// graph records resolver/metadata reads of them as edges (react-native scans
-// sibling packages' manifests for Haste/asset resolution) and consumers record
-// them alongside bundled files, but no package code ships through one.
-const isManifest = (rel) => rel === 'package.json' || rel.endsWith('/package.json')
+// A manifest (top-level or nested) is never code: the resolution graph records
+// resolver/metadata reads of `package.json` as edges (react-native scans sibling
+// packages' manifests for Haste/asset resolution) and consumers record them
+// alongside bundled files, but no package code ships through one. So too for the
+// manifests the other ecosystems' bundles carry beside a dependency's code
+// (--cargo-manifests, --manifests): its Cargo.toml and the checksums cargo vendored
+// it with, its composer.json, a Solidity dependency's foundry.toml and remappings.
+const MANIFESTS = {
+  npm: new Set(['package.json']),
+  cargo: new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json']),
+  composer: new Set(['composer.json', 'composer.lock']),
+  soldeer: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
+  github: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
+}
+const isManifest = (rel, ecosystem) => MANIFESTS[ecosystem]?.has(rel.slice(rel.lastIndexOf('/') + 1)) ?? false
 
-// Is `rel` evidence that `name@version`'s REAL code is present? This is the one
-// rule every audit surface shares -- package presence, the reason column, and
-// the --why chain graph all count a file (or an edge targeting it) only when it
-// passes. Manifests never do; corrected files don't within their verified range.
-export function isEvidenceFile(name, version, rel) {
-  return !isManifest(rel) && !isCorrectedFile(name, version, rel)
+// Is `rel` evidence that `name@version`'s REAL code is present, of a dependency of
+// `ecosystem` (npm by default)? This is the one rule every audit surface shares --
+// package presence, the reason column, and the --why chain graph all count a file
+// (or an edge targeting it) only when it passes. Manifests never do; corrected
+// files (npm's) don't within their verified range.
+export function isEvidenceFile(name, version, rel, ecosystem = 'npm') {
+  return !isManifest(rel, ecosystem) && (ecosystem !== 'npm' || !isCorrectedFile(name, version, rel))
 }
