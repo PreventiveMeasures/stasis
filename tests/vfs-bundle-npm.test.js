@@ -94,6 +94,23 @@ test('npm: installs a package from the first directory above whose workspaces ta
   await t.assert.rejects(load({ vfs: project(files), cwd: '/packages/a/examples/e' }), /^Error: no package-lock\.json found in \/packages\/a, where \/packages\/a\/examples\/e is installed from$/u)
 })
 
+test('npm: fails, as npm does, past a package declaring workspaces that are no globs, and takes a falsy declaration for none', (t) => {
+  // e is a workspace of the root, which npm 11.21.0's prefix walk reaches past mid -- unless mid's
+  // declaration fails it.
+  const host = (workspaces) => vfsHost(project({
+    'package.json': { name: 'root', version: '1.0.0', private: true, workspaces: ['mid/e'] },
+    'package-lock.json': lockOf({ name: 'root', version: '1.0.0', workspaces: ['mid/e'] }),
+    'mid/package.json': { name: 'mid', version: '1.0.0', workspaces },
+    'mid/e/package.json': { name: 'e', version: '1.0.0' },
+  }))
+  for (const workspaces of [null, false, 0, '', [], { packages: ['x'], nohoist: ['y'] }]) {
+    t.assert.equal(lockfileRoot(host(workspaces), 'npm', '/mid/e'), '/', JSON.stringify(workspaces))
+  }
+  for (const workspaces of ['e', true, {}, { packages: 'e' }, [1]]) {
+    t.assert.throws(() => lockfileRoot(host(workspaces), 'npm', '/mid/e'), (err) => err.message === '/mid/package.json: workspaces: expected a sequence of globs, which npm fails without', JSON.stringify(workspaces))
+  }
+})
+
 test('npm: reads the nearest package-lock.json beside a package.json, as npm finds its prefix', async (t) => {
   // A package-lock.json in a directory holding no package.json is none npm reads: as `npm prefix`
   // says there, it installs from the package above.

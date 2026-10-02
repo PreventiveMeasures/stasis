@@ -142,9 +142,12 @@ function npmRoot(host, cwd, os) {
   const own = nearest(cwd, (dir) => holdsPackage(host, dir))
   for (let dir = own; dir !== null && dirname(dir) !== dir;) {
     dir = dirname(dir)
-    // npm takes yarn's `{ packages: [...] }` too.
+    // npm takes a falsy declaration for none, and fails on any other but a sequence of globs, or
+    // yarn's `{ packages: [...] }` of them.
     const declared = readJson(join(dir, 'package.json'), host)?.workspaces
-    if (!Array.isArray(declared) && !Array.isArray(declared?.packages)) continue
+    if (!declared) continue
+    const globs = Array.isArray(declared.packages) ? declared.packages : declared
+    if (!Array.isArray(globs) || globs.some((glob) => typeof glob !== 'string')) throw new Error(`${join(dir, 'package.json')}: workspaces: expected a sequence of globs, which npm fails without`)
     if (findNpmWorkspaces({ project: projectView(host, dir), os: target({ os }).os }).includes(relative(dir, own))) return dir
   }
   return nearest(cwd, (dir) => holding(host, 'package-lock.json')(dir) && holding(host, 'package.json')(dir))
