@@ -1,6 +1,7 @@
 import { posix } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
+import { posixPathEscapes } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
@@ -17,9 +18,8 @@ const TREE_TYPES = new Set(['file', 'directory', 'symlink'])
 const LOCKFILE_ESCAPE = /(?:link:|file:|directory: )\.\.\//u
 const TSCONFIG = /(?:^|\/)[jt]sconfig[^/]*\.json$/u
 
-const escapes = (path) => path === '..' || path.startsWith('../') || path.startsWith('/')
 // Whether `target`, a path relative to the file `from`, resolves outside the tree.
-const resolvesOutside = (from, target) => target.startsWith('/') || escapes(posix.join(posix.dirname(from), target))
+const resolvesOutside = (from, target) => target.startsWith('/') || posixPathEscapes(posix.join(posix.dirname(from), target))
 
 // A GitHub tarball's entries, its one top directory dropped.
 async function treeEntries(tarball, where) {

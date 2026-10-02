@@ -1,8 +1,8 @@
 import { isUtf8 } from 'node:buffer'
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
@@ -11,10 +11,9 @@ import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
-import { brotliOptions } from '@exodus/stasis-core/brotli'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -35,6 +34,7 @@ import {
   loadComposerAutoload,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
+import { DEFAULT_BUNDLE_FILE, bundledSummary, packagesLabel, writeBundle, writeFile } from './output.js'
 
 const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts'])
 const BASH_EXTS = new Set(['.sh', '.bash'])
@@ -60,7 +60,7 @@ const PHP_FORMAT = 'php'
 // escape cwd (e.g. via remapping), or "." when it is cwd itself.
 export function outermostDir(paths, cwd) {
   if (paths.length === 0) return '.'
-  const cwdAbs = posix.resolve(cwd.replaceAll(/\\/gu, '/'))
+  const cwdAbs = posix.resolve(toPosix(cwd))
   const absDirs = paths.map((p) => posix.dirname(posix.resolve(cwdAbs, p)))
   const partsList = absDirs.map((d) => d.split('/'))
   const common = []
@@ -143,7 +143,7 @@ const fileInBucket = (bucketDir, path) => (bucketDir === '.' ? path : path.slice
 // null when it isn't a regular file there (a manifest the context saw may have gone since; a FIFO
 // would hang a read) or, with `within` a directory, doesn't really lie in it (a vendored crate's
 // manifest linked to a project file).
-function readFileWithinBase(baseDir, realBase, rel, within = '.') {
+function readFileWithinBase(baseDir, realBase, rel, within) {
   try {
     assertRealPathWithinBase(realBase, baseDir, rel)
     if (!withinRealDir(baseDir, rel, within, { who: 'loader.cargo' })) return null
@@ -164,6 +164,21 @@ function executableSources(baseDir, sources, host) {
     if (isExecutableFile(join(baseDir, path), host)) executable.add(path)
   }
   return executable
+}
+
+// Bundles must be self-contained: throw on a missing entry or an unresolved `noun` (import, script,
+// module) of a `lang` bundle -- `missing`'s { spec, from }, with the `reason` it was refused if given.
+function assertSelfContained(lang, noun, entries, sources, missing) {
+  const issues = []
+  for (const entry of entries) {
+    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
+  }
+  for (const { spec, from, reason } of missing) {
+    issues.push(`Unresolved ${noun}: ${spec} from ${from}${reason ? ` (refused: ${reason})` : ''}`)
+  }
+  if (issues.length > 0) {
+    throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
+  }
 }
 
 // Assemble a full-scope code Bundle shared by the non-JS bundlers. Files are bucketed by
@@ -208,6 +223,12 @@ function assembleCodeBundle({
     }
   }
 
+  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host })
+}
+
+// A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
+// (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`.
+function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host }) {
   const formatsMap = new Map()
   for (const path of sources.keys()) formatsMap.set(path, formats?.get(path) ?? format)
 
@@ -340,17 +361,7 @@ export async function buildSolidityBundle({ cwd = process.cwd(), entries, mappin
   const sources = collectSolidityFilesFromDisk(baseDir, expanded, remappings, { libs, ownership, host })
   const { resolutions, missing } = buildSolidityTree(sources, { remappings, baseDir, libs, ownership, host })
 
-  // Bundles must be self-contained: fail on a missing entry or unresolved import.
-  const issues = []
-  for (const entry of expanded) {
-    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
-  }
-  for (const { spec, from, reason } of missing) {
-    issues.push(`Unresolved import: ${spec} from ${from}${reason ? ` (refused: ${reason})` : ''}`)
-  }
-  if (issues.length > 0) {
-    throw new Error(`Solidity bundle has unresolved imports:\n${issues.map((s) => `  ${s}`).join('\n')}`)
-  }
+  assertSelfContained('Solidity', 'import', expanded, sources, missing)
 
   const classifyDep = makeSolidityClassifier(baseDir, ownership, host)
   const packageOf = packageLookup(baseDir, { strict: true, check: ownership.assert, host })
@@ -396,17 +407,8 @@ export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
   const sources = await collectBashFilesFromDisk(baseDir, normalized)
   const { resolutions, missing } = buildBashTree(sources)
 
-  // Self-contained: fail on a missing entry or unresolved in-root script (external refs never reach `missing`).
-  const issues = []
-  for (const entry of normalized) {
-    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
-  }
-  for (const { spec, from } of missing) {
-    issues.push(`Unresolved script: ${spec} from ${from}`)
-  }
-  if (issues.length > 0) {
-    throw new Error(`Bash bundle has unresolved scripts:\n${issues.map((s) => `  ${s}`).join('\n')}`)
-  }
+  // Self-contained (external refs never reach `missing`).
+  assertSelfContained('Bash', 'script', normalized, sources, missing)
 
   return assembleCodeBundle({
     baseDir,
@@ -478,16 +480,7 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
   }
   const { resolutions, missing, unresolvedCrates } = tree
 
-  const issues = []
-  for (const entry of normalized) {
-    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
-  }
-  for (const { spec, from } of missing) {
-    issues.push(`Unresolved module: ${spec} from ${from}`)
-  }
-  if (issues.length > 0) {
-    throw new Error(`Rust bundle has unresolved modules:\n${issues.map((s) => `  ${s}`).join('\n')}`)
-  }
+  assertSelfContained('Rust', 'module', normalized, sources, missing)
 
   // Where the features the cfg decisions rest on come from: cargo's resolver, or -- something it
   // takes missing -- a replay of the manifests, said so (a project without Cargo has neither).
@@ -564,37 +557,19 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload })
   const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
 
-  const issues = []
-  for (const entry of normalized) {
-    if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
-  }
-  for (const { spec, from } of missing) {
-    issues.push(`Unresolved import: ${spec} from ${from}`)
-  }
-  if (issues.length > 0) {
-    throw new Error(`PHP bundle has unresolved imports:\n${issues.map((s) => `  ${s}`).join('\n')}`)
-  }
+  assertSelfContained('PHP', 'import', normalized, sources, missing)
 
-  // Group per Composer package (vendor/<pkg>), not the node_modules bucketizer.
-  const modules = bucketizePhpSources(baseDir, sources, PHP_WORKSPACE_NAME, PHP_WORKSPACE_VERSION)
-
-  const formats = new Map()
-  for (const path of sources.keys()) formats.set(path, PHP_FORMAT)
-
-  // PHP includes don't vary by Node condition; key edges under "php", not the JS wildcard "*".
-  const importsForKey = new Map()
-  for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
-  const imports = new Map([['php', importsForKey]])
-
-  // Attribute to the `bundle` consumer, like the other static builders.
-  return new Bundle({
-    config: { scope: 'full' },
-    entries: new Set(normalized),
-    modules,
-    formats,
-    imports,
-    executable: executableSources(baseDir, sources),
-  }).withReason('bundle')
+  return codeBundle({
+    baseDir,
+    entries: normalized,
+    sources,
+    // Group per Composer package (vendor/<pkg>), not the node_modules bucketizer.
+    modules: bucketizePhpSources(baseDir, sources, PHP_WORKSPACE_NAME, PHP_WORKSPACE_VERSION),
+    resolutions,
+    format: PHP_FORMAT,
+    // PHP includes don't vary by Node condition; key edges under "php", not the JS wildcard "*".
+    conditionKey: 'php',
+  })
 }
 
 // Render a scanned file URL for diagnostics: project-relative when inside `baseDir`, else absolute.
@@ -603,7 +578,6 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
 // bundle itself stores (toRel), rather than leaking the machine's absolute paths into the message.
 function displayPath(url, baseDir) {
   const abs = fileURLToPath(url)
-  if (!baseDir) return abs
   const rel = relative(baseDir, abs)
   return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : abs
 }
@@ -611,7 +585,7 @@ function displayPath(url, baseDir) {
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
 // vs tolerated (a catchable runtime miss). Shared so the plain and --mainFields JS paths
 // gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
-function analyzeScanner(scanner, { baseDir } = {}) {
+function analyzeScanner(scanner, { baseDir }) {
   const show = (url) => displayPath(url, baseDir)
   // Static ESM import/export-from edges load eagerly before user code, so a failure there is
   // uncatchable (fatal); misses below a require()/dynamic-import() boundary are catchable (warn).
@@ -653,31 +627,34 @@ function analyzeScanner(scanner, { baseDir } = {}) {
 
 // Throw on fatal scan issues; warn on tolerated ones. `label` tags the scan pass; `baseDir`
 // relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages.
-function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', baseDir } = {}) {
+function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', baseDir }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
+  // The first 10 of `items` as indented lines (`line` renders one), then how many more there are.
+  const listed = (items, line = (s) => s) => {
+    const more = items.length > 10 ? `\n  ... and ${items.length - 10} more` : ''
+    return items.slice(0, 10).map((x) => `  ${line(x)}`).join('\n') + more
+  }
   if (fatal.length > 0) {
-    const shown = fatal.slice(0, 10).map((s) => `  ${s}`).join('\n')
-    const more = fatal.length > 10 ? `\n  ... and ${fatal.length - 10} more` : ''
-    throw new Error(`JS bundle would be broken at load time${where}:\n${shown}${more}`)
+    throw new Error(`JS bundle would be broken at load time${where}:\n${listed(fatal)}`)
   }
   if (tolerated.length > 0) {
-    const summary = tolerated
-      .slice(0, 10)
-      .map((u) => `  ${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason})`)
-      .join('\n')
-    const more = tolerated.length > 10 ? `\n  ... and ${tolerated.length - 10} more` : ''
-    console.warn(`[stasis] Bundle has ${tolerated.length} unresolved import(s)${where}; they will fall through at load time:\n${summary}${more}`)
+    const summary = listed(tolerated, (u) => `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason})`)
+    console.warn(`[stasis] Bundle has ${tolerated.length} unresolved import(s)${where}; they will fall through at load time:\n${summary}`)
   }
   if (toleratedParse.length > 0) {
-    const summary = toleratedParse
-      .slice(0, 10)
-      .map((p) => `  ${show(p.url)}: ${p.message}`)
-      .join('\n')
-    const more = toleratedParse.length > 10 ? `\n  ... and ${toleratedParse.length - 10} more` : ''
-    console.warn(`[stasis] Bundle has ${toleratedParse.length} file(s) with parse errors${where}; their recorded imports may be incomplete:\n${summary}${more}`)
+    const summary = listed(toleratedParse, (p) => `${show(p.url)}: ${p.message}`)
+    console.warn(`[stasis] Bundle has ${toleratedParse.length} file(s) with parse errors${where}; their recorded imports may be incomplete:\n${summary}`)
   }
 }
+
+// Normalize conditions (trim, drop empties) so a sloppy programmatic caller can't push a bogus
+// token into the resolver.
+const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
+
+// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise the
+// project root's tsconfig.json applies when present (null matcher = no aliases).
+const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript ? loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host) : null)
 
 // Build a JS/TS Bundle (in-memory) by statically scanning the require/import graph; no
 // user code is executed, and TS is stored verbatim (Node strips types at load). Scope comes
@@ -699,15 +676,11 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
 
-  // Normalize conditions (trim, drop empties) so a sloppy programmatic caller can't push a
-  // bogus token into the resolver.
-  const scanConditions = conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
+  const scanConditions = cleanConditions(conditions)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
 
-  // --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise
-  // the project root's tsconfig.json applies when present (null matcher = no aliases).
-  const typescriptPaths = typescript ? loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host) : null
+  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
 
   const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, host })
 
@@ -777,9 +750,10 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 // carried as a real empty CJS file so the edge points at attestable bytes.
 const EMPTY_MODULE_PATH = '.stasis/empty-module.js'
 
-// Recursively collect files under a native ios/android dir, skipping build output and symlinks
-// (cycle/escape hazard). Absolute paths into `out`.
-function walkNativeDir(dirAbs, out, host) {
+// Recursively collect the files under `dirAbs` whose name `keep` takes, skipping build output,
+// symlinks (cycle/escape hazard) and, directly in `dirAbs`, the dirs `skipAtRoot` names. Absolute
+// paths into `out`.
+function walkNative(dirAbs, out, host, keep, skipAtRoot) {
   let entries
   try {
     entries = host.readdir(dirAbs)
@@ -790,45 +764,30 @@ function walkNativeDir(dirAbs, out, host) {
     if (ent.isSymbolicLink()) continue
     const full = join(dirAbs, ent.name)
     if (ent.isDirectory()) {
-      if (!isSkippedNativeWalkDir(ent.name)) walkNativeDir(full, out, host)
-    } else if (ent.isFile() && !isNativeArtifact(ent.name)) {
+      if (!isSkippedNativeWalkDir(ent.name) && !skipAtRoot?.(ent.name)) walkNative(full, out, host, keep)
+    } else if (ent.isFile() && keep(ent.name)) {
       out.push(full)
     }
   }
 }
 
-// Recursively collect podspec-load manifests (isNativeManifest) under `dirAbs`. RN's own
-// podspecs live in scattered subdirs a root-only scan would miss, so recurse fully.
-function collectNativeManifests(dirAbs, out, host, atRoot = false) {
-  let entries
-  try {
-    entries = host.readdir(dirAbs)
-  } catch {
-    return
-  }
-  for (const ent of entries) {
-    if (ent.isSymbolicLink()) continue
-    const full = join(dirAbs, ent.name)
-    if (ent.isDirectory()) {
-      if (!isSkippedNativeWalkDir(ent.name) && !(atRoot && isExcludedNativeDir(ent.name))) collectNativeManifests(full, out, host)
-    } else if (ent.isFile() && isNativeManifest(ent.name)) {
-      out.push(full)
-    }
-  }
-}
+// The files of a native ios/android dir: all but build artifacts.
+const isNativeSource = (name) => !isNativeArtifact(name)
 
 // Native source files a bundled RN dep contributes to the app's native build (podspecs +
 // ios/android sources). Manifests are kept only when the package is actually native (podspec
 // or ios/android dir), else a JS-only dep's package.json would be pulled in. Deduped absolute paths.
 function nativeModuleFiles(pkgAbs, host) {
+  // Podspec-load manifests: RN's own podspecs live in scattered subdirs a root-only scan would miss,
+  // so recurse fully.
   const manifests = []
-  collectNativeManifests(pkgAbs, manifests, host, true)
+  walkNative(pkgAbs, manifests, host, isNativeManifest, isExcludedNativeDir)
   const hasIos = host.stat(join(pkgAbs, 'ios')) !== null
   const hasAndroid = host.stat(join(pkgAbs, 'android')) !== null
   if (!hasIos && !hasAndroid && !manifests.some((f) => isPodspec(f))) return []
   const out = [...manifests]
-  if (hasIos) walkNativeDir(join(pkgAbs, 'ios'), out, host)
-  if (hasAndroid) walkNativeDir(join(pkgAbs, 'android'), out, host)
+  if (hasIos) walkNative(join(pkgAbs, 'ios'), out, host, isNativeSource)
+  if (hasAndroid) walkNative(join(pkgAbs, 'android'), out, host, isNativeSource)
   return [...new Set(out)]
 }
 
@@ -867,20 +826,19 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   const normalized = normalizeEntries(entries, cwd)
 
   const toRel = (abs) => {
-    const rel = relative(baseDir, abs).split(/[\\/]/u).join('/')
+    const rel = toPosix(relative(baseDir, abs))
     if (rel.startsWith('..') || isAbsolute(rel)) {
       throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
     }
     return rel
   }
 
-  // Normalize conditions (drop stray ''/whitespace) so a sloppy caller can't push a bogus token into the resolver.
-  const scanConditions = conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
+  const scanConditions = cleanConditions(conditions)
 
   // Under --jsx the resolver probes .jsx/.tsx too, matching scan's jsx-widened carryable set.
   const sourceExts = jsx ? SOURCE_EXTS_JSX : SOURCE_EXTS
   // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
-  const typescriptPaths = typescript ? loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host) : null
+  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildResolvedJsBundle', resources)
 
@@ -907,8 +865,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     for (const [url, info] of scanner.files) {
-      const rel = toRel(fileURLToPath(url))
-      reached.add(fileURLToPath(url))
+      const abs = fileURLToPath(url)
+      const rel = toRel(abs)
+      reached.add(abs)
       if (info.resource) resourceRels.add(rel)
       formatsByRel.set(rel, info.format)
       for (const e of info.edges) {
@@ -929,6 +888,15 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.
   const sources = new Map()
   const integrities = new Map()
+  // Carry `rel`: `content` in the bundle as `format`, the integrity of its bytes `buf` in the lockfile.
+  const put = (rel, content, format, buf) => {
+    sources.set(rel, content)
+    formatsByRel.set(rel, format)
+    integrities.set(rel, sha512integrity(buf))
+  }
+  // A resource carries bytes, not source: UTF-8 verbatim or base64 when binary, tagged with the
+  // byte-derived format (here and in the --metro native capture below).
+  const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
   const realBase = host.realpath(baseDir)
   for (const abs of reached) {
     const rel = toRel(abs)
@@ -937,25 +905,19 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
     assertRealPathWithinBase(realBase, baseDir, rel, host)
     const buf = host.readFile(abs)
     if (resourceRels.has(rel)) {
-      // A resource carries bytes, not JS source: store UTF-8 verbatim or base64 when binary, and
-      // tag the byte-derived format (same shape as the --metro native capture below).
-      const utf8 = isUtf8(buf)
-      sources.set(rel, utf8 ? buf.toString('utf8') : buf.toString('base64'))
-      formatsByRel.set(rel, utf8 ? 'resource' : 'resource:base64')
+      putResource(rel, buf)
     } else {
       if (!isUtf8(buf)) throw new Error(`JS bundle source is not valid UTF-8: ${rel}`)
-      sources.set(rel, buf.toString('utf8'))
+      // Its format is the scan's.
+      put(rel, buf.toString('utf8'), formatsByRel.get(rel), buf)
     }
-    integrities.set(rel, sha512integrity(buf))
   }
   if (usesEmpty) {
     // Refuse to shadow a real reached file sitting at the reserved empty-module path.
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
-    sources.set(EMPTY_MODULE_PATH, '')
-    formatsByRel.set(EMPTY_MODULE_PATH, 'commonjs')
-    integrities.set(EMPTY_MODULE_PATH, sha512integrity(Buffer.alloc(0)))
+    put(EMPTY_MODULE_PATH, '', 'commonjs', Buffer.alloc(0))
   }
 
   // --metro also carries each bundled dependency's native build-input surface (ios/android
@@ -966,8 +928,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
     for (const abs of reached) {
       // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
       // not a linked native dependency, so it must not drag in its ios/android surface.
-      if (resourceRels.has(toRel(abs))) continue
-      const nm = splitNodeModulesPath(toRel(abs))
+      const rel = toRel(abs)
+      if (resourceRels.has(rel)) continue
+      const nm = splitNodeModulesPath(rel)
       if (nm) pkgDirs.add(nm.dir)
     }
     for (const pkgDir of [...pkgDirs].toSorted()) {
@@ -977,7 +940,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
       // way a native dep's ios/android surface is walked; every other dep gets its ios/android + podspecs.
       const isRnCore = pkgDir.slice(pkgDir.lastIndexOf('node_modules/') + 'node_modules/'.length) === 'react-native'
       const files = isRnCore ? [] : nativeModuleFiles(pkgAbs, host)
-      if (isRnCore) walkNativeDir(pkgAbs, files, host)
+      if (isRnCore) walkNative(pkgAbs, files, host, isNativeSource)
       for (const abs of files) {
         const rel = toRel(abs)
         if (sources.has(rel)) continue
@@ -989,16 +952,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
         // Byte-level rules (prebuilt binaries, binary plists) -- see refineNativeCapture.
         const { action, format } = refineNativeCapture(byName, rel, buf, resourceSet)
         if (action === 'skip') continue
-        const utf8 = isUtf8(buf)
         if (action === 'code') {
-          if (!utf8) throw new Error(`native source is not valid UTF-8: ${rel}`)
-          sources.set(rel, buf.toString('utf8'))
-          formatsByRel.set(rel, format)
+          if (!isUtf8(buf)) throw new Error(`native source is not valid UTF-8: ${rel}`)
+          put(rel, buf.toString('utf8'), format, buf)
         } else {
-          sources.set(rel, utf8 ? buf.toString('utf8') : buf.toString('base64'))
-          formatsByRel.set(rel, utf8 ? 'resource' : 'resource:base64')
+          putResource(rel, buf)
         }
-        integrities.set(rel, sha512integrity(buf))
       }
       // RN core's `.js` build scripts the classify loop skips (Metro-owned by extension, but never in
       // the graph): force-include as code so the podspec/Ruby that invokes them at pod-install resolves.
@@ -1011,9 +970,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
           assertRealPathWithinBase(realBase, baseDir, rel, host)
           const buf = host.readFile(abs)
           if (!isUtf8(buf)) throw new Error(`native source is not valid UTF-8: ${rel}`)
-          sources.set(rel, buf.toString('utf8'))
-          formatsByRel.set(rel, packageType(abs, host) === 'module' ? 'module' : 'commonjs')
-          integrities.set(rel, sha512integrity(buf))
+          put(rel, buf.toString('utf8'), packageType(abs, host) === 'module' ? 'module' : 'commonjs', buf)
         }
       }
     }
@@ -1040,9 +997,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
       if (sources.has(rel)) continue
       const buf = readModuleManifest({ baseDir, realBase, rel, host })
       if (!buf) continue
-      sources.set(rel, buf.toString('utf8'))
-      formatsByRel.set(rel, 'json')
-      integrities.set(rel, sha512integrity(buf))
+      put(rel, buf.toString('utf8'), 'json', buf)
     }
   }
 
@@ -1220,6 +1175,16 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, ...options
   return { bundle: state.sourceBundle.withReason('bundle'), lockfile: () => state.lockfile, stateBuilt: true }
 }
 
+// The bundle of `kind` (classifyEntries') built from buildBundle's options.
+// -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) {
+  if (kind === 'sol') return { bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }
+  if (kind === 'php') return { bundle: await buildPhpBundle({ cwd, entries }) }
+  if (kind === 'bash') return { bundle: await buildBashBundle({ cwd, entries }) }
+  if (kind === 'rust') return { bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }
+  return buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
+}
+
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
 // project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk.
 // -> the kind of bundle its entries make
@@ -1271,16 +1236,9 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
 // writing to disk. Files are attributed to the `bundle` consumer. Option applicability
 // (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|--flow|--typescript/JS) is enforced by classifyEntries.
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
-  const kind = classifyEntries('buildBundle', { cwd, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests })
-  if (kind === 'sol') return buildSolidityBundle({ cwd, env, entries, mappingFile, manifests })
-  if (kind === 'php') return buildPhpBundle({ cwd, entries })
-  if (kind === 'bash') return buildBashBundle({ cwd, entries })
-  if (kind === 'rust') return buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests })
-  return (await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })).bundle
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  return (await buildOfKind(classifyEntries('buildBundle', options), options)).bundle
 }
-
-// Default output: stasis.code.br, the same name `stasis run --bundle=load` discovers, so the two round-trip with no flags.
-const DEFAULT_BUNDLE_FILE = 'stasis.code.br'
 
 // Run `stasis bundle`: build a brotli-compressed bundle and write it to `output`
 // (stasis.code.br by default, `-` for stdout; the summary goes to stderr so it never
@@ -1290,7 +1248,8 @@ const DEFAULT_BUNDLE_FILE = 'stasis.code.br'
 // `--bundle=load` or replay the conditions. `add` unions the fresh build into the bundle
 // already on disk (strict; a conflicting file throws) and can't target stdout.
 export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false } = {}) {
-  const kind = classifyEntries('bundleCommand', { cwd, entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests })
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  const kind = classifyEntries('bundleCommand', { ...options, lockfile })
 
   const target = output ?? DEFAULT_BUNDLE_FILE
   // --add has nothing to merge into on stdout (write-only).
@@ -1298,22 +1257,17 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
 
-  let bundle
-  let lockData
-  let stateBuilt = false
-  if (kind === 'js') {
-    const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
-    ;({ bundle, stateBuilt } = built)
-    if (lockfile) lockData = built.lockfile().serialize()
-  } else {
-    bundle = await buildBundle({ cwd, env, entries, mappingFile, manifests, scope, conditions, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests })
-  }
+  const built = await buildOfKind(kind, options)
+  let { bundle } = built
+  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
+  let lockData = lockfile ? built.lockfile().serialize() : undefined
 
   // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
-  if (!stateBuilt) bundle.repo ??= detectRepo(cwd)
+  if (!built.stateBuilt) bundle.repo ??= detectRepo(cwd)
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
+  const lockAbs = lockData ? resolve(cwd, lockfile) : undefined
   // Files the pre-existing bundle carried; undefined when no merge happened (the summary's merged sentinel).
   let mergedFrom
   if (add && existsSync(outAbs)) {
@@ -1328,8 +1282,7 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
     // With none on disk we can't attest the pre-existing bundle's files (their hashes live
     // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
-    if (lockData && lockfile) {
-      const lockAbs = resolve(cwd, lockfile)
+    if (lockData) {
       if (!existsSync(lockAbs)) {
         throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockfile}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
       }
@@ -1347,28 +1300,14 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
-  const data = brotliCompressSync(serialized, brotliOptions(brotliQuality))
-  if (target === '-') {
-    process.stdout.write(data)
-  } else {
-    mkdirSync(dirname(outAbs), { recursive: true })
-    writeFileSync(outAbs, data)
-  }
-  if (lockData) {
-    const lockAbs = resolve(cwd, lockfile)
-    mkdirSync(dirname(lockAbs), { recursive: true })
-    writeFileSync(lockAbs, lockData)
-  }
+  const dest = writeBundle(cwd, target, serialized, brotliQuality)
+  if (lockData) writeFile(lockAbs, lockData)
   const fromDir = outermostDir(files, resolve(cwd))
-  const dest = target === '-' ? '<stdout>' : target
-  // Count packages: every non-empty bucket (the "." workspace bucket counts as one).
-  const packages = [...modules.values()].filter((m) => Object.keys(m.files).length > 0).length
-  const pkgLabel = `${packages} package${packages === 1 ? '' : 's'}`
   // On a merge, report newly-added files alongside the totals; a fresh write keeps the plain line.
   if (mergedFrom !== undefined) {
     const added = files.length - mergedFrom
-    console.warn(`[stasis] Added ${added} file${added === 1 ? '' : 's'} (${files.length} total in ${pkgLabel}) from ${fromDir} to ${dest}`)
+    console.warn(`[stasis] Added ${added} file${added === 1 ? '' : 's'} (${files.length} total in ${packagesLabel(modules)}) from ${fromDir} to ${dest}`)
   } else {
-    console.warn(`[stasis] Bundled ${files.length} files in ${pkgLabel} from ${fromDir} to ${dest}`)
+    console.warn(bundledSummary(files.length, modules, fromDir, dest))
   }
 }
