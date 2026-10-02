@@ -127,10 +127,12 @@ function yarn1Root(host, cwd) {
 }
 
 // npm installs a workspace from the root that declares it, whatever package-lock.json is nearer,
-// and any other package from the nearest package-lock.json.
-function npmRoot(host, cwd) {
+// and any other package from the nearest package-lock.json; its workspaces as npm's glob finds them
+// on `os`.
+function npmRoot(host, cwd, os) {
   const root = nearest(cwd, (dir) => Array.isArray(readJson(join(dir, 'package.json'), host)?.workspaces))
-  if (root !== null && outsider(host, root, cwd, new Set(findNpmWorkspaces({ project: projectView(host, root) }))) === null) return root
+  const workspaces = () => new Set(findNpmWorkspaces({ project: projectView(host, root), os: target({ os }).os }))
+  if (root !== null && outsider(host, root, cwd, workspaces()) === null) return root
   return nearest(cwd, holding(host, 'package-lock.json'))
 }
 
@@ -143,11 +145,11 @@ const npmHost = (npm, given) => {
 
 // What each package manager reproduced installs from: the kind of bundle it installs for; its
 // lockfile; the name a root package.json's packageManager pins it by, where one does; the version
-// reproduced where nothing pins one; the directory it installs cwd from, which holds the lockfile;
-// whether a directory holding the lockfile is installed from by itself, by the names in it and in
-// each directory above it (`above()`, as listings); the projects it finds in a view of that
-// directory, for the machine given; the directory it installs in each, and any it hides, as
-// another package manager's; and the tree.
+// reproduced where nothing pins one; the directory it installs cwd from, which holds the lockfile
+// (for the os given, where that changes it); whether a directory holding the lockfile is installed
+// from by itself, by the names in it and in each directory above it (`above()`, as listings); the
+// projects it finds in a view of that directory, for the machine given; the directory it installs
+// in each, and any it hides, as another package manager's; and the tree.
 const PACKAGE_MANAGERS = {
   pnpm: {
     kind: 'js',
@@ -227,27 +229,29 @@ export const lockfileOf = (packageManager) => PACKAGE_MANAGERS[packageManager].l
 // the names in it and, from `above()`, the names in each directory above it.
 export const installedAlone = (packageManager, names, above) => PACKAGE_MANAGERS[packageManager].alone(names, above)
 
-// The real path of the directory `host` holds `cwd` (a real path) installed from by `pm`, where it
-// holds the lockfile; else null. That directory is cwd or above it, so none is without a lockfile there.
-function rootOf(host, pm, cwd) {
+// The real path of the directory `host` holds `cwd` (a real path) installed from by `pm`, for `os`,
+// where it holds the lockfile; else null. That directory is cwd or above it, so none is without a
+// lockfile there.
+function rootOf(host, pm, cwd, os) {
   if (nearest(cwd, holding(host, pm.lockfile)) === null) return null
-  const found = pm.root(host, cwd)
+  const found = pm.root(host, cwd, os)
   return found !== null && isFile(join(found, pm.lockfile), host) ? host.realpath(found) : null
 }
 
-// The real path of the directory the project `host` reads holds at `cwd` is installed from, which
-// holds the lockfile and which a bundle's paths are relative to; null without one.
-export const lockfileRoot = (host, packageManager, cwd) => rootOf(host, PACKAGE_MANAGERS[packageManager], host.realpath(cwd))
+// The real path of the directory the project `host` reads holds at `cwd` is installed from, for
+// `os`, which holds the lockfile and which a bundle's paths are relative to; null without one.
+export const lockfileRoot = (host, packageManager, cwd, os) => rootOf(host, PACKAGE_MANAGERS[packageManager], host.realpath(cwd), os)
 
 // The package managers that install node_modules.
 export const NODE_MODULES_MANAGERS = PACKAGE_MANAGER_NAMES.filter((name) => PACKAGE_MANAGERS[name].installs === 'node_modules')
 
 // The one of the package managers `names` that installs `cwd` in the project `host` reads from a
-// directory holding its lockfile, as lockfileRoot finds it: refused where none or more than one does.
-export function detectPackageManager(name, host, cwd, names = PACKAGE_MANAGER_NAMES) {
+// directory holding its lockfile, as lockfileRoot finds it for `os`: refused where none or more than
+// one does.
+export function detectPackageManager(name, host, cwd, { names = PACKAGE_MANAGER_NAMES, os } = {}) {
   const real = host.realpath(cwd)
   const found = names.flatMap((pm) => {
-    const root = rootOf(host, PACKAGE_MANAGERS[pm], real)
+    const root = rootOf(host, PACKAGE_MANAGERS[pm], real, os)
     return root === null ? [] : [[pm, join(root, PACKAGE_MANAGERS[pm].lockfile)]]
   })
   if (found.length === 1) return found[0][0]
@@ -271,10 +275,10 @@ export function checkVersion(name, { packageManager, packageManagerVersion }) {
 }
 
 // The package manager of `names` the project `host` reads is built with at `cwd`: `packageManager`
-// if given, else the one detected.
-export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion }, names = PACKAGE_MANAGER_NAMES) {
+// if given, else the one detected for `os`.
+export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os }, names = PACKAGE_MANAGER_NAMES) {
   checkVersion(name, { packageManager, packageManagerVersion })
-  if (packageManager === undefined) return detectPackageManager(name, host, cwd, names)
+  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os })
   packageManagerOf(name, packageManager, names)
   return packageManager
 }
@@ -312,7 +316,7 @@ export function checkVfs(name, vfs) {
 // view of `project`, which nothing is written through.
 async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc }) {
   const pm = PACKAGE_MANAGERS[packageManager]
-  const found = pm.root(project, cwd)
+  const found = pm.root(project, cwd, os)
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
   const file = join(found, pm.lockfile)
   if (!isFile(file, project)) throw new Error(`no ${pm.lockfile} found in ${found}, where ${cwd} is installed from`)

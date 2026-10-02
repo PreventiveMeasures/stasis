@@ -47,7 +47,7 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
   const project = vfsHost(vfs)
   // A real path, as detection and the layout take it.
   cwd = project.realpath(posix.resolve('/', cwd))
-  packageManager = packageManagerFor('loadNodeModules', project, cwd, { packageManager, packageManagerVersion }, NODE_MODULES_MANAGERS)
+  packageManager = packageManagerFor('loadNodeModules', project, cwd, { packageManager, packageManagerVersion, os }, NODE_MODULES_MANAGERS)
   return loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc })
 }
 

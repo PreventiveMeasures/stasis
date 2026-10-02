@@ -403,6 +403,21 @@ test('buildGitHubBundle builds with npm, told by its package-lock.json, a direct
   t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
 })
 
+test('buildGitHubBundle downloads the whole repo for a lockfile naming the directory above as `..`', async (t) => {
+  // pnpm's `link:..`, which no pnpm-workspace.yaml above makes a workspace's: the directory alone
+  // would lack what it links.
+  const linked = lockfile('.').replace('  .: {}\n', '  .:\n    dependencies:\n      shared:\n        specifier: link:..\n        version: link:..\n')
+  const pnpm = fakeClient({ 'apps/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/index.js': '', 'apps/p/package.json': json({ name: 'p', version: '1.0.0', dependencies: { shared: 'link:..' } }), 'apps/p/pnpm-lock.yaml': linked, 'apps/p/a.js': "require('shared')\n" })
+  const built = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: pnpm, directory: 'apps/p', packageManager: 'pnpm', entries: ['a.js'] })
+  t.assert.deepEqual(methods(pnpm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
+  t.assert.deepEqual([...built.bundle.sources.keys()].toSorted(), ['index.js', 'p/a.js'], 'what it links is there')
+  // npm's `file:..`, as npm 11 writes it: the `..` above holds a package.json, so the directory is
+  // never taken alone.
+  const npm = fakeClient({ 'apps/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/p/package.json': json({ name: 'p', version: '1.0.0', dependencies: { shared: 'file:..' } }), 'apps/p/package-lock.json': npmLock('p', { '..': { name: 'shared', version: '1.0.0' }, 'node_modules/shared': { resolved: '..', link: true } }), 'apps/p/a.js': '' })
+  await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: npm, directory: 'apps/p', packageManager: 'npm', entries: ['a.js'] }))
+  t.assert.deepEqual(methods(npm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+})
+
 const detect = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
 
 test('buildGitHubBundle takes the one package manager whose lockfile installs the directory, told by the listings', async (t) => {

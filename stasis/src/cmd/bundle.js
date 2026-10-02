@@ -1213,7 +1213,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   const project = vfsHost(vfs)
   // A real path, as every file the scan reaches is.
   cwd = project.realpath(posix.resolve('/', cwd))
-  packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion })
+  packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
   checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project

@@ -15,8 +15,9 @@ const MAX_TAR_BYTES = 2 ** 30
 // What a git tree holds (upstream's verification refuses anything else from GitHub).
 const TREE_TYPES = new Set(['file', 'directory', 'symlink'])
 // Lockfile references to a path above the lockfile's directory (conservatively: any importer's):
-// pnpm's and yarn's specs, and package-lock.json's package keys and `resolved` paths.
-const LOCKFILE_ESCAPE = /(?:link:|file:|directory: |")\.\.\//u
+// pnpm's and yarn's specs, and package-lock.json's package keys and `resolved` paths, `..` itself
+// (`link:..`, npm's `".."`) or under it.
+const LOCKFILE_ESCAPE = /(?:link:|file:|directory: |["'])\.\.(?![^/"'\s])/u
 const TSCONFIG = /(?:^|\/)[jt]sconfig[^/]*\.json$/u
 
 // Whether `target`, a path relative to the file `from`, resolves outside the tree.
@@ -155,7 +156,7 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
   const host = vfsHost(vfs)
   const cwd = posix.resolve('/', subtree ? '.' : directory ?? '.')
   if (packageManager === undefined) {
-    const detected = detectPackageManager(where, host, cwd)
+    const detected = detectPackageManager(where, host, cwd, { os: options.os })
     if (detected !== found) checkAhead(name, detected, options)
     found = detected
   }
@@ -172,7 +173,7 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)
-  const root = lockfileRoot(tree.host, tree.packageManager, tree.cwd)
+  const root = lockfileRoot(tree.host, tree.packageManager, tree.cwd, options.os)
   const at = tree.subtree ? posix.join(directory, (root ?? '/').slice(1)) : (root ?? '/').slice(1)
   const location = at === '' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}
   let { entries } = options

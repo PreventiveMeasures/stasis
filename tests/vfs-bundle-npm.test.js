@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import { posix } from 'node:path'
 
 import { Vfs, buildVfsBundle, loadNodeModules } from '../stasis/src/vfs-bundle.js'
+import { lockfileRoot, vfsHost } from '../stasis/src/vfs-bundle/tree.js'
 
 // @exodus/stasis/vfs-bundle with npm, over a project held in a Vfs, which @preventive/deptree reads
 // the package-lock.json, the package.json of the root and of every workspace, and the .npmrc from.
@@ -70,6 +71,30 @@ test('npm: links each workspace, and cwd may be in any of them', async (t) => {
   t.assert.equal((await load({ vfs: project({ ...files, 'packages/b/package-lock.json': lockOf({ name: 'b', version: '1.0.0' }) }), cwd: '/packages/b' })).root, '/')
   const website = await load({ vfs: project({ ...files, 'website/package.json': { name: 'website', version: '1.0.0' }, 'website/package-lock.json': lockOf({ name: 'website', version: '1.0.0' }) }), cwd: '/website' })
   t.assert.deepEqual([website.root, [...website.projects]], ['/website', ['.']])
+})
+
+test('npm: takes a workspace root for the os given, whose glob matches as npm\'s does there', async (t) => {
+  // On macOS npm's glob takes `Packages/*` for packages/b, whatever the case: b is a workspace there,
+  // installed from the root whatever package-lock.json it holds.
+  const files = {
+    'package.json': { name: 'root', version: '1.0.0', private: true, workspaces: ['Packages/*'] },
+    'package-lock.json': lockOf({ name: 'root', version: '1.0.0', workspaces: ['Packages/*'] }, {
+      'node_modules/b': { resolved: 'packages/b', link: true },
+      'packages/b': { version: '1.0.0' },
+    }),
+    'packages/b/package.json': { name: 'b', version: '1.0.0' },
+    'packages/b/package-lock.json': lockOf({ name: 'b', version: '1.0.0' }),
+    'packages/b/index.js': '',
+  }
+  const host = vfsHost(project(files))
+  t.assert.equal(lockfileRoot(host, 'npm', '/packages/b', 'darwin'), '/')
+  // There the root's package-lock.json is read, not b's own -- which deptree's lockfile reader,
+  // matching the root's workspaces by case, refuses.
+  await t.assert.rejects(load({ vfs: project(files), cwd: '/packages/b', os: 'darwin' }), /^Error: \/package-lock\.json: packages\["node_modules\/b"\]: nothing installed leads to it/u)
+  // On Linux the glob takes no workspace: b is installed from its own package-lock.json.
+  t.assert.equal(lockfileRoot(host, 'npm', '/packages/b', 'linux'), '/packages/b')
+  const linux = await load({ vfs: project(files), cwd: '/packages/b', os: 'linux' })
+  t.assert.deepEqual([linux.root, [...linux.projects]], ['/packages/b', ['.']])
 })
 
 test('npm: refuses, naming the file, what it cannot reproduce', async (t) => {
