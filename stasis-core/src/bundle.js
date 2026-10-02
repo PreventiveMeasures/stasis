@@ -111,16 +111,29 @@ const normalizeRepo = (repo) => {
 
 // npm package name as the registry takes a new one (`@scope/` optional): `[a-z0-9._-]`, no part leading with `.` or `_`.
 const NPM_NAME = /^(?!(?:node_modules|favicon\.ico)$)(?:@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9-][a-z0-9._-]*$/u
-// Full semver as the registry records it: no `v` prefix, leading zeros or build metadata.
+// Full semver: no `v` prefix or leading zeros; build metadata only where an ecosystem keeps it.
 const NUMERIC_ID = String.raw`(?:0|[1-9]\d*)`
 const PRERELEASE_ID = String.raw`(?:${NUMERIC_ID}|\d*[A-Za-z-][\dA-Za-z-]*)`
-const NPM_VERSION = new RegExp(String.raw`^${NUMERIC_ID}\.${NUMERIC_ID}\.${NUMERIC_ID}(?:-${PRERELEASE_ID}(?:\.${PRERELEASE_ID})*)?$`, 'u')
-// Ecosystem -> its block's fields (all optional); `name` says which package the block is.
+const SEMVER = String.raw`${NUMERIC_ID}\.${NUMERIC_ID}\.${NUMERIC_ID}(?:-${PRERELEASE_ID}(?:\.${PRERELEASE_ID})*)?`
+const SEMVER_BUILD = String.raw`(?:\+[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?`
+// As the npm registry records it, which drops build metadata.
+const NPM_VERSION = new RegExp(`^${SEMVER}$`, 'u')
+// Composer `vendor/package` as composer.json's schema takes it (its pattern, unambiguous).
+const COMPOSER_NAME = /^[a-z0-9]+(?:[_.-][a-z0-9]+)*\/[a-z0-9]+(?:(?:[_.]|--?)[a-z0-9]+)*$/u
+// A Composer release as published (its tag, `v` kept), as Composer's VersionParser reads one: up to
+// four numbers and a stability suffix; no dev branch or `-dev`, no build metadata.
+const COMPOSER_VERSION = /^v?\d+(?:\.\d+){0,3}(?:[._-]?(?:stable|beta|b|rc|alpha|a|patch|pl|p)(?:[.-]?\d+(?:[.-]\d+)*)?)?$/iu
+// A crates.io name: a letter, then up to 63 of `[A-Za-z0-9_-]`.
+const CARGO_NAME = /^[A-Za-z][\w-]{0,63}$/u
+// Cargo keeps build metadata.
+const CARGO_VERSION = new RegExp(`^${SEMVER}${SEMVER_BUILD}$`, 'u')
+// A string field matching `re`, at most `max` characters.
+const matching = (re, max = Infinity) => (v) => typeof v === 'string' && v.length <= max && re.test(v)
+// Ecosystem (a module `ecosystem`) -> its block's fields (all optional); `name` says which package the block is.
 const PACKAGE_FIELDS = {
-  npm: {
-    name: (v) => typeof v === 'string' && v.length <= 214 && NPM_NAME.test(v),
-    version: (v) => typeof v === 'string' && v.length <= 256 && NPM_VERSION.test(v),
-  },
+  npm: { name: matching(NPM_NAME, 214), version: matching(NPM_VERSION, 256) },
+  composer: { name: matching(COMPOSER_NAME), version: matching(COMPOSER_VERSION) },
+  cargo: { name: matching(CARGO_NAME), version: matching(CARGO_VERSION) },
 }
 
 // Validate `package` (every ecosystem and field optional); canonical key order, empty blocks dropped, undefined if empty.
@@ -167,8 +180,8 @@ export class Bundle {
   set repo(repo) {
     this.#repo = normalizeRepo(repo)
   }
-  // `{ npm: { name, version } }`: the package this bundle is. Informational, not attested, never in a
-  // lockfile, never set by a build; validated on every assignment.
+  // `{ npm | composer | cargo: { name, version } }`: the package this bundle is. Informational, not
+  // attested, never in a lockfile, never set by a build; validated on every assignment.
   #package
   get package() {
     return this.#package

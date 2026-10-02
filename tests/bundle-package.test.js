@@ -37,6 +37,8 @@ test('Bundle round-trips package after config and repo, in canonical key order',
   t.assert.deepEqual(Bundle.parse(JSON.stringify(json)).package, PKG)
   const both = JSON.parse(base(PKG, { github: 'o/n' }).serialize())
   t.assert.deepEqual(Object.keys(both).slice(0, 4), ['version', 'config', 'repo', 'package'])
+  const all = base({ cargo: { name: 'c', version: '1.0.0' }, composer: { name: 'v/p', version: 'v1.0.0' }, npm: PKG.npm })
+  t.assert.deepEqual(Object.keys(JSON.parse(all.serialize()).package), ['npm', 'composer', 'cargo'])
 })
 
 test('Bundle accepts npm names and versions the registry takes', (t) => {
@@ -45,6 +47,27 @@ test('Bundle accepts npm names and versions the registry takes', (t) => {
   }
   for (const version of ['0.0.1', '10.20.30', '1.0.0-beta.4', '1.0.0-0.3.7', '1.0.0-x.7.z.92', '1.0.0-alpha-a.b-c', '1.0.0-0a', '1.0.0--', `1.0.0-${'a'.repeat(250)}`]) {
     t.assert.equal(Bundle.parse(withPackageJSON({ npm: { name: 'pkg', version } })).package.npm.version, version)
+  }
+})
+
+test('Bundle accepts Composer names and versions as published', (t) => {
+  for (const name of ['symfony/console', 'laravel/framework', 'a/b', 'vendor.x_y-z/pkg', 'v/p.q_r-s--t', '0/0']) {
+    t.assert.equal(Bundle.parse(withPackageJSON({ composer: { name, version: '1.0.0' } })).package.composer.name, name)
+  }
+  for (const version of [
+    '1.0.0', 'v6.4.8', 'V1.0', '1', '1.2', '1.2.3.4', '2024.01.01', '1.0.0-beta1', '1.0.0-beta.2', 'v1.0.0-RC1',
+    '2.0.0-alpha', '1.0.0alpha3', '1.0.0-p1', '1.0.0-patch1', '1.0.0-pl2', '1.0.0-stable', '1.0.0.beta-1.2', '1.0.0-b3',
+  ]) {
+    t.assert.equal(Bundle.parse(withPackageJSON({ composer: { name: 'v/p', version } })).package.composer.version, version)
+  }
+})
+
+test('Bundle accepts crates.io names and Cargo versions', (t) => {
+  for (const name of ['serde', 'serde_json', 'tokio-util', 'Inflector', 'a', 'a1', 'a'.repeat(64)]) {
+    t.assert.equal(Bundle.parse(withPackageJSON({ cargo: { name, version: '1.0.0' } })).package.cargo.name, name)
+  }
+  for (const version of ['0.1.0', '1.0.0-alpha.1', '0.1.0+zstd.1.5.5', '1.0.0-rc.1+build.01', '1.0.0+20130313144700']) {
+    t.assert.equal(Bundle.parse(withPackageJSON({ cargo: { name: 'c', version } })).package.cargo.version, version)
   }
 })
 
@@ -65,6 +88,10 @@ test('Bundle rejects an invalid package block on parse and on construction', (t)
     null,
     [],
     { pypi: { name: 'pkg' } },
+    { soldeer: { name: 'pkg' } },
+    { github: { name: 'o/n' } },
+    { Npm: { name: 'pkg' } },
+    { cargo: { name: 'c', version: '1.0.0', checksum: 'x' } },
     { npm: 'pkg@0.0.1' },
     { npm: null },
     { npm: [] },
@@ -78,11 +105,37 @@ test('Bundle rejects an invalid package block on parse and on construction', (t)
       'v1.0.0', '=1.0.0', '1.0', '1', '01.0.0', '1.00.0', '1.0.0-01', '1.0.0+build', '1.0.0-beta+exp.sha.5114f85',
       '1.0.0-', '1.0.0-a..b', '1.0.0-a_b', ' 1.0.0', '', 1, `1.0.0-${'a'.repeat(251)}`,
     ].map((version) => ({ npm: { version } })),
+    ...[
+      'symfony', 'Symfony/console', 'symfony/Console', '/console', 'symfony/', 'a/b/c', 'a//b', '-a/b', 'a-/b', 'a/-b', 'a/b-',
+      'a--b/c', 'a/b---c', 'a/b..c', 'a/b_.c', 'a b/c', 'é/b', '', 42,
+    ].map((name) => ({ composer: { name } })),
+    ...[
+      'dev-main', 'dev-feature/x', '1.x-dev', '1.0.0-dev', '1.0.0+build', '1.0.0.0.0', '1.0.0-foo', '1.0.0-1', 'v', 'vv1.0',
+      '^1.0', '~1.0', '1.0.*', '>=1.0', '1.0 ', '', 1,
+    ].map((version) => ({ composer: { version } })),
+    ...['1serde', '_serde', '-serde', 'serde.json', 'serde json', 'a'.repeat(65), 'é', '', 42].map((name) => ({ cargo: { name } })),
+    ...['v1.0.0', '1.0', '01.0.0', '1.0.0-01', '1.0.0+', '1.0.0+a..b', '1.0.0+a_b', '', 1].map((version) => ({ cargo: { version } })),
   ]
   for (const pkg of bad) {
     t.assert.throws(() => Bundle.parse(withPackageJSON(pkg)), undefined, `parse: ${JSON.stringify(pkg)}`)
     t.assert.throws(() => base(pkg), undefined, `constructor: ${JSON.stringify(pkg)}`)
   }
+})
+
+test('Bundle package validation stays linear on long near-misses', (t) => {
+  const long = '1'.repeat(50_000)
+  const bad = [
+    { npm: { name: `${'a'.repeat(50_000)}!` } },
+    { npm: { version: `1.0.0-${long}.${long}!` } },
+    { composer: { name: `${'a'.repeat(50_000)}!` } },
+    { composer: { name: `a/${'b'.repeat(50_000)}!` } },
+    { composer: { name: `${'a.'.repeat(25_000)}/b!` } },
+    { composer: { name: `a/${'b--'.repeat(25_000)}!` } },
+    { composer: { version: `1.0.0-beta${'1.'.repeat(25_000)}x` } },
+    { composer: { version: `1.0.0-beta${long}x` } },
+    { cargo: { version: `1.0.0+${'a.'.repeat(25_000)}!` } },
+  ]
+  for (const pkg of bad) t.assert.throws(() => base(pkg), /invalid bundle package\./u)
 })
 
 test('Bundle carries package through withReason', (t) => {
@@ -104,6 +157,17 @@ test('Bundle merge keeps only agreeing package fields, and no npm block of anoth
   t.assert.equal(stamped.merge(base({})).package, undefined, 'added from a bundle without package: cleared')
   t.assert.equal(stamped.merge(base({ npm: undefined })).package, undefined, 'added from a bundle without npm: cleared')
   t.assert.equal(base().merge(stamped).package, undefined, 'added into a bundle without package: never set')
+})
+
+test('Bundle merge takes each package ecosystem on its own', (t) => {
+  const composer = { name: 'v/p', version: 'v1.0.0' }
+  const cargo = { name: 'c', version: '0.1.0+build.1' }
+  const all = base({ ...PKG, composer, cargo })
+  t.assert.deepEqual(all.merge(base({ ...PKG, composer, cargo })).package, { ...PKG, composer, cargo }, 'agreeing: kept as is')
+  t.assert.deepEqual(all.merge(base({ ...PKG, composer: { ...composer, version: '1.0.0' }, cargo: { name: 'd', version: cargo.version } })).package,
+    { ...PKG, composer: { name: 'v/p' } }, 'composer: a version spelled otherwise is dropped; cargo: another name clears the block')
+  t.assert.deepEqual(all.merge(base({ cargo })).package, { cargo }, 'only what both sides know')
+  t.assert.deepEqual(all.merge(base({ cargo: { name: 'C', version: cargo.version } })).package, undefined, 'names compare exactly')
 })
 
 test('package never reaches a lockfile', (t) => {

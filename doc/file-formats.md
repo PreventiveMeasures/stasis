@@ -284,23 +284,42 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   records the origin of its own contents: a fresh write gives both the detected
   `repo`, and adding to one half merges only that half's.
 - `package` (optional, right after `repo`) records which package the bundle is:
-  `{ "npm": { "name": "pkg", "version": "0.0.1" } }`. `npm` is the only ecosystem.
-  The ecosystem block and each of its fields are optional, and each is validated only when present:
-  - `name` must be an npm package name the registry accepts for a new package: at
-    most 214 characters of `[a-z0-9._-]`, optionally scoped (`@scope/name`), with
-    neither part starting with `.` or `_`, and not `node_modules` or `favicon.ico`.
-  - `version` must be a full semver version as the registry records it, at most 256
-    characters: no `v` prefix, no leading zeros, and no build metadata (`+…`).
+  `{ "npm": { "name": "pkg", "version": "0.0.1" } }`. It holds one block per
+  ecosystem, named as a module's `ecosystem` is: `npm`, `composer` and `cargo`, in
+  that order. Every block and each of its fields are optional, and each is
+  validated only when present:
+  - `npm`:
+    - `name` must be an npm package name the registry accepts for a new package:
+      at most 214 characters of `[a-z0-9._-]`, optionally scoped (`@scope/name`),
+      with neither part starting with `.` or `_`, and not `node_modules` or
+      `favicon.ico`.
+    - `version` must be a full semver version as the registry records it, at most
+      256 characters: no `v` prefix, no leading zeros, and no build metadata (`+…`).
+  - `composer`:
+    - `name` must be a `vendor/package` name as `composer.json`'s schema takes it:
+      lowercase `[a-z0-9]` runs joined by single `_`, `.` or `-` (in `package`, also
+      `--`).
+    - `version` must be a release as published, its tag kept as is (`v6.4.8`,
+      `1.0.0-RC1`), as Composer's version parser reads it: an optional `v`, one to
+      four dot-separated numbers, and an optional stability suffix (`alpha`, `a`,
+      `beta`, `b`, `RC`, `patch`, `pl`, `p` or `stable`, any case, with an optional
+      number). Dev versions (`dev-main`, `1.x-dev`) and build metadata are rejected.
+  - `cargo`:
+    - `name` must be a crates.io name: a letter, then up to 63 characters of
+      `[A-Za-z0-9_-]`.
+    - `version` must be a full semver version: no `v` prefix and no leading zeros,
+      but build metadata (`+…`) is kept, as Cargo keeps it.
 
   Unknown keys and invalid values are rejected on both serialize and parse, and an
   empty block (`{}`, `{ "npm": {} }`) is not written. Like `repo`, the field is
   **purely informational**: it is never attested, never written to the lockfile,
   and ignored by every verification. No build sets it: bundles written by
   `stasis run`, `stasis bundle` and `stasis add` never carry one. Merging two bundles
-  keeps only the fields that agree. An `npm` block is cleared whole when the two
-  names differ or either side has none, and a block or field that one side lacks
-  is dropped. Since no build carries a `package`, adding to a stamped bundle
-  (`stasis add`, `stasis bundle --add`, `stasis run` with `bundle = add`) clears it.
+  keeps only the fields that agree, each ecosystem on its own. A block is cleared
+  whole when the two names differ (compared exactly) or either side has none, and a
+  block or field that one side lacks is dropped. Since no build carries a `package`,
+  adding to a stamped bundle (`stasis add`, `stasis bundle --add`, `stasis run` with
+  `bundle = add`) clears it.
 
 A legacy `version: 0` shape — flat top-level `sources` keyed by project-relative
 path, with no `entries`/`modules`/`formats`/`imports` — is still accepted by
