@@ -1,0 +1,10 @@
+{
+    "name": "acme/lib",
+    "version": "1.4.2",
+    "description": "A library",
+    "autoload": {
+        "psr-4": {
+            "Acme\\Lib\\": "src/"
+        }
+    }
+}

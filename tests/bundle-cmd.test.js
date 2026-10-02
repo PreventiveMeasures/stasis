@@ -1734,6 +1734,39 @@ test('buildPhpBundle follows auto-discovered Laravel providers and the files the
   t.assert.equal(bundle.modules.get('vendor/spatie/laravel-ignition').name, 'spatie/laravel-ignition')
 })
 
+test('buildPhpBundle takes the Composer packages from composer.lock, with its installed.json or without', withTmp(async (t, tmp) => {
+  // composer-lock is `composer install` of Composer 2.8: its lockfile alone gives the same buckets,
+  // a target-dir package's and the Laravel provider's (found by its extra) among them.
+  cpSync(join(phpFixtures, 'composer-lock'), tmp, { recursive: true })
+  rmSync(join(tmp, 'vendor/composer/installed.json'))
+  const bundles = await Promise.all([join(phpFixtures, 'composer-lock'), tmp].map((cwd) => buildPhpBundle({ cwd, entries: ['index.php'] })))
+  for (const bundle of bundles) {
+    const modules = Object.fromEntries([...bundle.modules].map(([dir, m]) => [dir, [m.name, m.version, m.ecosystem, Object.keys(m.files).toSorted()]]))
+    t.assert.deepStrictEqual(modules, {
+      '.': ['acme/app', '0.0.0', undefined, [
+        'index.php',
+        'src/Service.php',
+        'vendor/autoload.php',
+        'vendor/composer/autoload_namespaces.php',
+        'vendor/composer/autoload_psr4.php',
+        'vendor/composer/autoload_real.php',
+      ]],
+      'vendor/acme/laravel-ext': ['acme/laravel-ext', 'v2.0.1', 'composer', ['config/ext.php', 'src/ExtServiceProvider.php']],
+      'vendor/acme/legacy/Acme/Legacy': ['acme/legacy', '1.0.0', 'composer', ['Thing.php']],
+      'vendor/acme/lib': ['acme/lib', '1.4.2', 'composer', ['src/Client.php']],
+    })
+  }
+}))
+
+test('buildPhpBundle refuses an installed.json that is not the install of composer.lock', withTmp(async (t, tmp) => {
+  cpSync(join(phpFixtures, 'composer-lock'), tmp, { recursive: true })
+  const installed = join(tmp, 'vendor/composer/installed.json')
+  writeFileSync(installed, readFileSync(installed, 'utf8').replace('"version": "1.4.2"', '"version": "1.4.1"'))
+  await t.assert.rejects(() => buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), {
+    message: 'vendor/composer/installed.json is not the install of composer.lock: acme/lib is installed at "1.4.1", and locked at 1.4.2; remove vendor and run `composer install`',
+  })
+}))
+
 test('buildPhpBundle deduplicates files included by multiple entries', async (t) => {
   const cwd = join(phpFixtures, 'shared')
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php', 'src/B.php'] })

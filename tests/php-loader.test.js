@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import {
   extractPhpImports,
   extractPhpPathRefs,
   loadComposerAutoload,
+  loadComposerPackages,
   loadLaravelProviderFiles,
   phpClassDependencies,
   resolveClassFile,
@@ -441,6 +442,155 @@ test('loadLaravelProviderFiles returns no provider classes without an autoload c
   // bootstrap/providers.php is still seeded if present, but vendor providers
   // can't be resolved without the autoload maps.
   t.assert.deepEqual(loadLaravelProviderFiles(join(fixtures, 'basic'), null), [])
+})
+
+// --- Composer packages: composer.lock, and vendor/composer/installed.json ---
+
+// composer-lock is `composer install` of Composer 2.8 (its path repositories mirrored into vendor,
+// then removed; vendor/composer trimmed to installed.json and the autoload maps): a library, a
+// Laravel package, a target-dir one, a metapackage, and a package of require-dev.
+const composerLock = join(fixtures, 'composer-lock')
+const lockedPackages = [
+  ['acme/laravel-ext', 'v2.0.1', 'vendor/acme/laravel-ext'],
+  ['acme/legacy', '1.0.0', 'vendor/acme/legacy/Acme/Legacy'], // under its target-dir
+  ['acme/lib', '1.4.2', 'vendor/acme/lib'],
+  ['acme/meta', '1.0.0', null], // a metapackage installs no files
+  ['acme/testkit', '0.3.0', 'vendor/acme/testkit'], // of packages-dev
+]
+const summary = (packages) => packages.map(({ name, version, dir }) => [name, version, dir])
+
+// `fn(dir)` of a copy of the composer-lock fixture that `edit(dir)` has changed; removed after.
+function withLockFixture(edit, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-php-'))
+  try {
+    cpSync(composerLock, dir, { recursive: true })
+    edit(dir)
+    return fn(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+const withoutInstalledJson = (dir) => rmSync(join(dir, 'vendor/composer/installed.json'))
+const editText = (file, edit) => writeFileSync(file, edit(readFileSync(file, 'utf8')))
+// installed.json, as `edit` returns it of what it is.
+const editInstalled = (edit) => (dir) => editText(join(dir, 'vendor/composer/installed.json'), (text) => JSON.stringify(edit(JSON.parse(text)), null, 4))
+const installedPackage = (json, name) => json.packages.find((p) => p.name === name)
+
+test('loadComposerPackages reads composer.lock, held to the identical installed.json, which says where each package is', (t) => {
+  t.assert.deepStrictEqual(summary(loadComposerPackages(composerLock)), lockedPackages)
+  const ext = loadComposerPackages(composerLock).find((p) => p.name === 'acme/laravel-ext')
+  t.assert.deepStrictEqual(ext.extra.laravel.providers, ['Acme\\LaravelExt\\ExtServiceProvider'])
+})
+
+test('loadComposerPackages works from composer.lock alone, each package where Composer installs it', (t) => {
+  // The same packages, in the same places, as installed.json says of an install.
+  withLockFixture(withoutInstalledJson, (dir) => {
+    t.assert.deepStrictEqual(summary(loadComposerPackages(dir)), lockedPackages)
+  })
+  // Under composer.json's vendor-dir.
+  const elsewhere = (dir) => {
+    withoutInstalledJson(dir)
+    mkdirSync(join(dir, 'lib'))
+    renameSync(join(dir, 'vendor'), join(dir, 'lib/vendor'))
+    editText(join(dir, 'composer.json'), (text) => text.replace('"autoload": {', '"config": {\n        "vendor-dir": "lib/vendor"\n    },\n    "autoload": {'))
+  }
+  withLockFixture(elsewhere, (dir) => {
+    t.assert.deepStrictEqual(summary(loadComposerPackages(dir)), lockedPackages.map(([name, version, at]) => [name, version, at && `lib/${at}`]))
+  })
+})
+
+test('loadComposerPackages takes each package where installed.json says, as an installer plugin may put one', (t) => {
+  const moved = editInstalled((json) => {
+    installedPackage(json, 'acme/lib')['install-path'] = '../../web/lib'
+    return json
+  })
+  withLockFixture(moved, (dir) => {
+    t.assert.deepStrictEqual(summary(loadComposerPackages(dir)), lockedPackages.map((p) => (p[0] === 'acme/lib' ? ['acme/lib', '1.4.2', 'web/lib'] : p)))
+  })
+})
+
+test('loadComposerPackages takes the install of composer.lock without dev, which leaves out packages-dev', (t) => {
+  const withoutDev = editInstalled((json) => ({ ...json, packages: json.packages.filter((p) => p.name !== 'acme/testkit'), dev: false, 'dev-package-names': [] }))
+  withLockFixture(withoutDev, (dir) => {
+    t.assert.deepStrictEqual(summary(loadComposerPackages(dir)), lockedPackages.filter(([name]) => name !== 'acme/testkit'))
+  })
+})
+
+test('loadComposerPackages refuses an installed.json that is not the install of composer.lock', (t) => {
+  const refused = (edit, detail) => withLockFixture(edit, (dir) => t.assert.throws(() => loadComposerPackages(dir), {
+    message: `vendor/composer/installed.json is not the install of composer.lock: ${detail}; remove vendor and run \`composer install\``,
+  }))
+  const lib = (edit) => editInstalled((json) => {
+    edit(installedPackage(json, 'acme/lib'))
+    return json
+  })
+  refused(lib((p) => { p.version = '1.4.1' }), 'acme/lib is installed at "1.4.1", and locked at 1.4.2')
+  refused(lib((p) => { p.dist.reference = 'f'.repeat(40) }), 'acme/lib\'s "dist" is not as locked')
+  // What `composer install` leaves as it is, of a package installed at the version and reference
+  // locked: identical is identical all the same.
+  refused(lib((p) => { p.description = 'A library, edited' }), 'acme/lib\'s "description" is not as locked')
+  refused(lib((p) => { p.license = ['MIT'] }), 'acme/lib\'s "license" is not as locked')
+  refused(lib((p) => { delete p.autoload }), 'acme/lib\'s "autoload" is not as locked')
+  refused(editInstalled((json) => ({ ...json, packages: json.packages.filter((p) => p.name !== 'acme/lib') })), 'acme/lib is locked, and not installed')
+  refused(editInstalled((json) => ({ ...json, packages: [...json.packages, { name: 'acme/other', version: '1.0.0' }] })), '"acme/other" is installed, and not locked')
+  refused(editInstalled((json) => ({ ...json, packages: [...json.packages, installedPackage(json, 'acme/lib')] })), 'acme/lib is installed twice')
+  refused(editInstalled((json) => ({ ...json, dev: false })), 'acme/testkit is installed, and locked in packages-dev, which an install without dev leaves out')
+  refused(editInstalled((json) => ({ ...json, 'dev-package-names': [] })), "its dev-package-names are not the names of the lockfile's packages-dev installed")
+  // Composer 1's, a list of packages.
+  refused(editInstalled((json) => json.packages), 'it is not as Composer 2 writes one, { packages, dev, dev-package-names }')
+  refused(editInstalled((json) => ({ ...json, extra: true })), 'it is not as Composer 2 writes one, { packages, dev, dev-package-names }')
+
+  withLockFixture((dir) => writeFileSync(join(dir, 'vendor/composer/installed.json'), '{ "packages": ['), (dir) => {
+    t.assert.throws(() => loadComposerPackages(dir), { message: 'vendor/composer/installed.json: not JSON' })
+  })
+})
+
+test('loadComposerPackages compares integers as PHP holds them, past 2^53 too', (t) => {
+  // 2^53 + 1, which a JavaScript number reads as 2^53.
+  const big = (installed) => (dir) => {
+    editText(join(dir, 'composer.lock'), (text) => text.replace('"laravel": {', '"n": 9007199254740993,\n                "laravel": {'))
+    editText(join(dir, 'vendor/composer/installed.json'), (text) => text.replace('"laravel": {', `"n": ${installed}, "laravel": {`))
+  }
+  withLockFixture(big('9007199254740993'), (dir) => {
+    t.assert.deepStrictEqual(summary(loadComposerPackages(dir)), lockedPackages)
+  })
+  withLockFixture(big('9007199254740992'), (dir) => {
+    t.assert.throws(() => loadComposerPackages(dir), { message: /acme\/laravel-ext's "extra" is not as locked/u })
+  })
+})
+
+test('loadComposerPackages refuses a composer.lock that @preventive/lockfile refuses, saying so', (t) => {
+  const lockSays = (edit, message) => withLockFixture(edit, (dir) => t.assert.throws(() => loadComposerPackages(dir), { name: 'LockfileError', message }))
+  // Composer 1's.
+  lockSays((dir) => editText(join(dir, 'composer.lock'), (text) => text.replace('"plugin-api-version": "2.6.0"', '"plugin-api-version": "1.1.0"')), /^composer\.lock: plugin-api-version: /u)
+  // Not as `composer install` reads it beside composer.json: a requirement it doesn't meet.
+  const unmet = (dir) => editText(join(dir, 'composer.json'), (text) => text.replace('"acme/meta": "^1.0"', '"acme/meta": "^1.0",\n        "acme/missing": "^1.0"'))
+  lockSays(unmet, /^composer\.lock: composerJson\.require\["acme\/missing"\]: /u)
+  // Refused without an installed.json too.
+  lockSays((dir) => {
+    withoutInstalledJson(dir)
+    unmet(dir)
+  }, /^composer\.lock: composerJson\.require\["acme\/missing"\]: /u)
+})
+
+test('bucketizePhpSources and loadLaravelProviderFiles take the packages from composer.lock alone', (t) => {
+  withLockFixture(withoutInstalledJson, (dir) => {
+    const sources = new Map([
+      ['index.php', '<?php'],
+      ['vendor/acme/laravel-ext/src/ExtServiceProvider.php', '<?php'],
+      ['vendor/acme/legacy/Acme/Legacy/Thing.php', '<?php'],
+    ])
+    const modules = bucketizePhpSources(dir, sources, 'php-bundle', '0.0.0')
+    t.assert.deepStrictEqual(
+      [...modules].map(([at, { name, version, ecosystem }]) => [at, name, version, ecosystem]),
+      [
+        ['.', 'acme/app', '0.0.0', undefined],
+        ['vendor/acme/laravel-ext', 'acme/laravel-ext', 'v2.0.1', 'composer'],
+        ['vendor/acme/legacy/Acme/Legacy', 'acme/legacy', '1.0.0', 'composer'],
+      ],
+    )
+    t.assert.deepStrictEqual(loadLaravelProviderFiles(dir, loadComposerAutoload(dir)), ['vendor/acme/laravel-ext/src/ExtServiceProvider.php'])
+  })
 })
 
 test('loadComposerAutoload merges composer.json and generated maps into baseDir-relative paths', (t) => {
