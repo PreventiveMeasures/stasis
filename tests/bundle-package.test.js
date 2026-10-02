@@ -89,7 +89,7 @@ test('Bundle carries package through withReason', (t) => {
   t.assert.deepEqual(base(PKG).withReason('bundle').package, PKG)
 })
 
-test('Bundle merge keeps only agreeing package fields, and no npm block of another name', (t) => {
+test('Bundle merge keeps only agreeing package fields, and no npm block of another or no name', (t) => {
   const stamped = base(PKG)
   t.assert.deepEqual(stamped.merge(base(PKG)).package, PKG, 'agreeing: kept as is')
   t.assert.deepEqual(stamped.merge(base({ npm: { name: 'pkg', version: '0.0.2' } })).package, { npm: { name: 'pkg' } },
@@ -97,8 +97,10 @@ test('Bundle merge keeps only agreeing package fields, and no npm block of anoth
   t.assert.equal(stamped.merge(base({ npm: { name: 'other', version: '0.0.1' } })).package, undefined,
     'another name: the npm block is cleared, though the version agrees, and the empty package with it')
   t.assert.deepEqual(stamped.merge(base({ npm: { name: 'pkg' } })).package, { npm: { name: 'pkg' } }, 'a field one side lacks is dropped')
-  t.assert.deepEqual(stamped.merge(base({ npm: { version: '0.0.1' } })).package, { npm: { version: '0.0.1' } },
-    'a name one side lacks is dropped, as any field is')
+  t.assert.equal(stamped.merge(base({ npm: { version: '0.0.1' } })).package, undefined,
+    'a name one side lacks: the npm block is cleared, though the version agrees')
+  t.assert.equal(base({ npm: { version: '0.0.1' } }).merge(base({ npm: { version: '0.0.1' } })).package, undefined,
+    'no name on either side: cleared')
   t.assert.equal(stamped.merge(base({})).package, undefined, 'added from a bundle without package: cleared')
   t.assert.equal(stamped.merge(base({ npm: undefined })).package, undefined, 'added from a bundle without npm: cleared')
   t.assert.equal(base().merge(stamped).package, undefined, 'added into a bundle without package: never set')

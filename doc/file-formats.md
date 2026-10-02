@@ -298,9 +298,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   and ignored by every verification. No build sets it: bundles written by
   `stasis run`, `stasis bundle` and `stasis add` never carry one. Merging two bundles
   keeps only the fields that agree. An `npm` block is cleared whole when the two
-  names differ, and a block or field that one side lacks is dropped. Since no build
-  carries a `package`, adding to a stamped bundle (`stasis add`, `stasis bundle --add`,
-  `stasis run` with `bundle = add`) clears it.
+  names differ or either side has none, and a block or field that one side lacks
+  is dropped. Since no build carries a `package`, adding to a stamped bundle
+  (`stasis add`, `stasis bundle --add`, `stasis run` with `bundle = add`) clears it.
 
 A legacy `version: 0` shape — flat top-level `sources` keyed by project-relative
 path, with no `entries`/`modules`/`formats`/`imports` — is still accepted by

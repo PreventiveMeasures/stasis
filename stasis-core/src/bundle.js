@@ -134,13 +134,13 @@ const normalizePackage = (pkg) => {
   return blocks.length === 0 ? undefined : fromEntries(blocks)
 }
 
-// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none if the names differ.
+// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none if `name` differs or is missing.
 const mergePackage = (a, b) => {
   const merged = Object.create(null)
   for (const [ecosystem, fields] of Object.entries(PACKAGE_FIELDS)) {
     const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
-    if (x?.name !== undefined && y?.name !== undefined && x.name !== y.name) continue
-    merged[ecosystem] = fromEntries(Object.keys(fields).filter((key) => x?.[key] !== undefined && x[key] === y?.[key]).map((key) => [key, x[key]]))
+    if (x?.name === undefined || x.name !== y?.name) continue
+    merged[ecosystem] = fromEntries(Object.keys(fields).filter((key) => x[key] !== undefined && x[key] === y[key]).map((key) => [key, x[key]]))
   }
   return normalizePackage(merged)
 }
