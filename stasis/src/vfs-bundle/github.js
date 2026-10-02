@@ -75,9 +75,11 @@ async function repoFiles(client, { github, sha, where }) {
   return files
 }
 
-// Checked as the Bundle checks them, before anything is fetched.
-function checkRepo(name, { github, sha, directory }) {
+// Checked as the Bundle checks them, before anything is fetched; a tag's name is upstream's to check.
+function checkRepo(name, { github, sha, tag, directory }) {
   if (github === undefined) throw new Error(`${name}: github is required`)
+  if (tag !== undefined && (typeof tag !== 'string' || tag === '')) throw new TypeError(`${name}: tag must be a non-empty string`)
+  if (sha !== undefined && tag !== undefined) throw new Error(`${name}: sha and tag both name the commit: give one`)
   for (const [key, value] of Object.entries({ github, commit: sha, directory: directory || undefined })) {
     if (value !== undefined && !isValidRepoField(key, value)) throw new Error(`${name}: invalid ${key}: ${JSON.stringify(value)}`)
   }
@@ -129,16 +131,17 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
-// The repo as buildGitHubBundle downloads it, for `name`: at `sha`, else the default branch's head;
-// `directory` alone where it stands alone for the package manager installing it, else the whole
-// repo. That package manager is `packageManager` if given, else the one the listings tell, before
-// the tree is fetched, else the tree; `options` are checked for it once it is known.
+// The repo as buildGitHubBundle downloads it, for `name`: at `sha`, else the commit `tag` names (an
+// annotated tag followed to it), else the default branch's head; `directory` alone where it stands
+// alone for the package manager installing it, else the whole repo. That package manager is
+// `packageManager` if given, else the one the listings tell, before the tree is fetched, else the
+// tree; `options` are checked for it once it is known.
 // -> { vfs, host, cwd, subtree, sha, where, packageManager, kind }
-async function repoTree(name, { github, sha, directory, client, packageManager }, options) {
+async function repoTree(name, { github, sha, tag, directory, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
-  checkRepo(name, { github, sha, directory })
+  checkRepo(name, { github, sha, tag, directory })
   client ??= createClient({ token: null })
-  sha ??= (await client.getRepoHead({ repo: github })).oid
+  sha ??= tag === undefined ? (await client.getRepoHead({ repo: github })).oid : (await client.getRepoTag({ repo: github, tag })).oid
   const where = `${name}: ${github}@${sha}`
   const list = lister(client, { github, sha })
   let found = packageManager
@@ -158,16 +161,16 @@ async function repoTree(name, { github, sha, directory, client, packageManager }
   return { vfs, host, cwd, subtree, sha, where, packageManager: found, kind: KINDS[packageManagerOf(name, found).kind] }
 }
 
-// A GitHub repo at a full commit, the default branch's head without one, as buildVfsBundle builds
-// it: `directory` downloaded alone where it stands alone, else the whole repo, and without a
-// `packageManager`, the one whose lockfile installs it, where only one's does (repoTree). Without
-// `entries`, they are the ones suggestedEntries suggests. `repo` names the commit and where the
-// lockfile is, which the bundle's paths are relative to. Nothing is read from disk: the tree's bytes
-// come from GitHub, or from the cache setCacheDir names, held to the git tree id either way
-// (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
-export async function buildGitHubBundle({ github, sha, directory, client, packageManager, ...options } = {}) {
+// A GitHub repo at a full commit, or the one `tag` names, the default branch's head without either,
+// as buildVfsBundle builds it: `directory` downloaded alone where it stands alone, else the whole
+// repo, and without a `packageManager`, the one whose lockfile installs it, where only one's does
+// (repoTree). Without `entries`, they are the ones suggestedEntries suggests. `repo` names the
+// commit and where the lockfile is, which the bundle's paths are relative to. Nothing is read from
+// disk: the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree
+// id either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
+export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
-  const tree = await repoTree('buildGitHubBundle', { github, sha, directory, client, packageManager }, options)
+  const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)
   const root = lockfileRoot(tree.host, tree.packageManager, tree.cwd)
   const at = tree.subtree ? posix.join(directory, (root ?? '/').slice(1)) : (root ?? '/').slice(1)
   const location = at === '' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}
@@ -180,7 +183,7 @@ export async function buildGitHubBundle({ github, sha, directory, client, packag
   return buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, repo: { github, commit: tree.sha, ...location } })
 }
 
-// suggestedEntries of a GitHub repo, `{ github, sha, directory, client, packageManager }`, as
+// suggestedEntries of a GitHub repo, `{ github, sha, tag, directory, client, packageManager }`, as
 // buildGitHubBundle downloads it.
 export async function suggestedRepoEntries(repo, resolution) {
   const tree = await repoTree('suggestedEntries', repo, resolution)

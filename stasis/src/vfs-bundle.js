@@ -13,8 +13,8 @@ import { NODE_MODULES_MANAGERS, checkTarget, checkVfs, detectPackageManager, loa
 // there but the tarballs and zips: fetched from registry.npmjs.org and Soldeer's registry, or read
 // from npm's cache or ~/.audit's where one holds them, every copy held to the lockfile's integrity
 // before it is used; cached only where setCacheDir says. buildGitHubBundle builds one from a GitHub
-// repo at a commit (the default branch's head without one), its tree fetched from GitHub and held
-// to its git tree id, cached there the same way.
+// repo at a commit, or the one a tag names (the default branch's head without either), its tree
+// fetched from GitHub and held to its git tree id, cached there the same way.
 
 export { buildVfsBundle } from './cmd/bundle.js'
 export { buildGitHubBundle } from './vfs-bundle/github.js'
@@ -55,7 +55,7 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 // resolved as the build resolves them with the same `conditions`, `mainFields`, `metro`,
 // `platforms`, `jsx` and `typescript` (packageEntries); for Soldeer, its .sol entry points by name
 // and layout (solidityEntries). The options are checked as the build checks them. Of the project
-// held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, directory, client }` as
+// held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, tag, directory, client }` as
 // buildGitHubBundle takes them, downloaded as it downloads them.
 export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, ...repo } = {}) {
   const resolution = { conditions, mainFields, metro, platforms, jsx, typescript }
