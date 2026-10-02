@@ -429,6 +429,22 @@ test('createCargoContext unifies the root\'s dev-dependency features under resol
   t.assert.deepStrictEqual(enabledOf(v2)['vendor/winnowish-0.5.0'], ['default', 'std'])
 })
 
+test('createCargoContext counts the dev-dependencies of an entries\' package only where an entry of it is a test, bench or example', (t) => {
+  withProject({
+    'Cargo.toml': '[workspace]\nmembers = ["a", "b"]\nresolver = "2"\n',
+    'a/Cargo.toml': '[package]\nname = "a"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ndep = "1"\n[dev-dependencies]\ndep = { version = "1", features = ["extra"] }\n',
+    'a/src/main.rs': '', 'a/tests/t.rs': '',
+    'b/Cargo.toml': '[package]\nname = "b"\nversion = "0.1.0"\nedition = "2021"\n',
+    'b/src/lib.rs': '', 'b/tests/t.rs': '',
+    'vendor/dep/Cargo.toml': '[package]\nname = "dep"\nversion = "1.0.0"\n[features]\nextra = []\n',
+    'vendor/dep/src/lib.rs': '',
+  }, (tmp) => {
+    // b's test entry builds b's tests, not a's: a's dev-dependency asks nothing of dep
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['a/src/main.rs', 'b/tests/t.rs'] }))['vendor/dep'], [])
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['a/tests/t.rs', 'b/src/lib.rs'] }))['vendor/dep'], ['extra'])
+  })
+})
+
 test('createCargoContext leaves features unknown when no package owns the entries', (t) => {
   const cargo = createCargoContext(join(fixtures, 'basic'), { entries: ['src/main.rs'] })
   t.assert.equal(cargo.featuresFor('src/main.rs'), null)

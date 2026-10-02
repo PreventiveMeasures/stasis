@@ -861,8 +861,8 @@ test code reaches for. Two kinds of cfg are decided:
     features, and every active dependency gets `default` plus what its
     dependents ask for. A dependency's own dev-dependencies are nobody's build
     and never count (sha2's `[dev-dependencies] digest = { features = ["dev"]
-    }` doesn't turn on digest's `dev`); the entries' packages' count under
-    resolver 1, and in a build of a test, bench or example entry. Resolver 2
+    }` doesn't turn on digest's `dev`); an entries' package's own count under
+    resolver 1, and where an entry is a test, bench or example of it. Resolver 2
     (edition 2021+, or `resolver = "2"`) also resolves what is built for the
     host -- build-dependencies, proc-macro crates and what they depend on --
     apart from what is built for the target: a feature a build-dependency asks

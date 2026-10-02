@@ -1076,13 +1076,17 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // which no build of the entries has. A declaration nothing in-tree answers resolves to a stand-in
   // of its own, which depends on nothing and has every feature its dependent may ask of it: the
   // declaration's, `default`, and what a `name/feature` or `name?/feature` of the package's
-  // features, or of `--cargo-features` for a root, names. The members are the roots, and there is
-  // no root package: `--cargo-features` goes to each that has it. `edges`: each declaration's
-  // resolved key, with its package and request (`m`, `d`, `request`) and whether it is a stand-in.
+  // features, or of `--cargo-features` for a root, names. So does, unresolved (`unbuilt`), a
+  // dev-dependency of a root that no entry is a test, bench or example of, under resolver 2: cargo's
+  // resolver takes the dev targets of every member as built or none, and the entries build only
+  // theirs. The members are the roots, and there is no root package: `--cargo-features` goes to each
+  // that has it. `edges`: each declaration's resolved key, with its package and request (`m`, `d`,
+  // `request`), and whether it is a stand-in.
   const replayGraph = (roots) => {
     const packages = Object.create(null)
     const edges = []
     const rootDirs = new Set(roots.map((m) => m.dir))
+    const unbuiltDev = (m) => resolverVersion() !== 1 && !devRootDirs().has(m.dir)
     const queue = [...roots]
     for (const m of queue) {
       if (m.dir in packages) continue
@@ -1091,10 +1095,11 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         if (d.kind === 'dev' && !rootDirs.has(m.dir)) return { ...d, resolved: undefined, active: false }
         const dep = m.deps.get(normName(d.name))
         const request = dep.kinds.get(d.target === undefined ? d.kind : `${d.kind}@${d.target}`)
-        const t = resolveDep(m, dep, request, { quiet: true })
+        const unbuilt = d.kind === 'dev' && unbuiltDev(m)
+        const t = unbuilt ? null : resolveDep(m, dep, request, { quiet: true })
         if (t !== null) queue.push(t)
         const key = t?.dir ?? `\0${m.dir}\0${index}`
-        edges.push({ key, m, d, request, standIn: t === null })
+        edges.push({ key, m, d, request, standIn: t === null, unbuilt })
         return { ...d, resolved: key, active: true }
       })
       packages[m.dir] = { name: pkg.name, version: pkg.version, source: undefined, checksum: undefined, manifest: pkg, dependencies }
@@ -1123,8 +1128,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const standIns = new Set(edges.filter((e) => e.standIn).map((e) => e.key))
     const resolved = resolveGraph(graph, graph.members, buildWorkspaceRoot()?.file ?? null, (key) => (standIns.has(key) ? undefined : key))
     const lacking = new Map()
-    for (const { key, m, d, request, standIn } of edges) {
-      if (!(key in resolved.result)) continue
+    for (const { key, m, d, request, standIn, unbuilt } of edges) {
+      if (unbuilt || !(key in resolved.result)) continue
       warnDep(m, request)
       if (!standIn) continue
       const id = `${m.dir}\0${normName(d.name)}`
