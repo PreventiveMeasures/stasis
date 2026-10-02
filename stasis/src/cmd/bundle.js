@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { extname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -13,7 +13,7 @@ import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -579,7 +579,7 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
 function displayPath(url, baseDir) {
   const abs = fileURLToPath(url)
   const rel = relative(baseDir, abs)
-  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : abs
+  return rel && !relativeEscapes(rel) ? rel : abs
 }
 
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
@@ -827,7 +827,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
 
   const toRel = (abs) => {
     const rel = toPosix(relative(baseDir, abs))
-    if (rel.startsWith('..') || isAbsolute(rel)) {
+    if (relativeEscapes(rel)) {
       throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
     }
     return rel

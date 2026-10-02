@@ -1,10 +1,10 @@
 import { isUtf8 } from 'node:buffer'
-import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { dirname, join, posix, relative, resolve } from 'node:path'
 
 import { isValidRepoField } from './bundle.js'
 import { posixPathEscapes } from './artifact-util.js'
 import { diskHost } from './host.js'
-import { assertRealPathWithinBase, hasNodeModulesSegment, toPosix } from './util.js'
+import { assertRealPathWithinBase, hasNodeModulesSegment, relativeEscapes, toPosix } from './util.js'
 
 // Text as Node reads a package.json: UTF-8, past a byte order mark.
 const utf8 = new TextDecoder()
@@ -126,9 +126,8 @@ function parseJson(text, rel) {
 export function normalizeEntries(entries, cwd) {
   const baseDir = resolve(cwd)
   return entries.map((e) => {
-    // On Windows path.relative() returns an absolute path across drives (no leading '..'), so reject that form too.
     const rel = toPosix(relative(baseDir, resolve(cwd, e)))
-    if (rel.startsWith('..') || isAbsolute(rel)) throw new Error(`Entry escapes baseDir: ${e}`)
+    if (relativeEscapes(rel)) throw new Error(`Entry escapes baseDir: ${e}`)
     return rel.replace(/^\.\//u, '')
   })
 }

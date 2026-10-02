@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 
 import { readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { canonicalizePath } from '@exodus/stasis-core/state-util'
-import { toPosix } from '@exodus/stasis-core/util'
+import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 
 import { LockfileError, linkCargo, parseCargoConfig, parseCargoLock, parseCargoManifest as readCargoManifest, readCargoVendor, resolveCargoFeatures } from '@preventive/lockfile/cargo.js'
 import { matches, parseVersion, parseVersionReq } from '@preventive/lockfile/rust-semver.js'
@@ -355,7 +355,7 @@ export function resolutionFromMetadata(metadata, baseDir, { locate = null } = {}
     for (const base of new Set([baseDir, realBase])) {
       const rel = toPosix(relative(base, dir))
       if (rel === '') return '.'
-      if (!rel.startsWith('..') && !isAbsolute(rel)) return rel
+      if (!relativeEscapes(rel)) return rel
     }
     return null
   }

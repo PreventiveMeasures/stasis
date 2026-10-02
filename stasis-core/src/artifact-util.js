@@ -195,6 +195,30 @@ export function posixPathEscapes(path) {
   return false
 }
 
+// THE rule an artifact's entry must satisfy, on read (parseEntries) and on write (serializeEntries).
+const assertEntry = (entry, what) =>
+  assert(typeof entry === 'string' && entry !== '' && !posixPathEscapes(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
+
+// An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
+// collapse in the Set and round-trip to different bytes).
+export function parseEntries(list, what) {
+  assert(Array.isArray(list), `${what}: entries must be an array of file paths`)
+  const out = new Set()
+  for (const entry of list) {
+    assertEntry(entry, what)
+    assert(!out.has(entry), `${what}: entry '${entry}' is listed twice`)
+    out.add(entry)
+  }
+  return out
+}
+
+// The `entries` list an artifact writes: the same rule as on read, so an in-memory construct can't
+// serialize what parse would reject; path-sorted.
+export function serializeEntries(entries, what) {
+  for (const entry of entries) assertEntry(entry, what)
+  return fileSetToObject(entries)
+}
+
 // An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
 // artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
 // is rejected at the schema boundary so a tampered artifact fails closed.

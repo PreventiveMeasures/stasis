@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, relativeEscapes } from '@exodus/stasis-core/util'
 import { resolveTypescriptFallback } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 
@@ -420,7 +420,7 @@ export class Scan {
     const rel = (url) => {
       const abs = fileURLToPath(url)
       const r = relative(root, abs)
-      if (r.startsWith('..')) throw new Error(`Path outside root: ${abs}`)
+      if (relativeEscapes(r)) throw new Error(`Path outside root: ${abs}`)
       return r
     }
     const relEdge = (e) => (e.child ? { ...e, child: rel(e.child) } : e)

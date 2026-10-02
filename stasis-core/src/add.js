@@ -13,11 +13,14 @@ import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAuto
 const CONFIG_FILE = 'stasis.config.json'
 const LOCK_FILE = 'stasis.lock.json'
 
-// LIMITATION: a `.js`/`.ts` with no package `type` falls back to commonjs -- use `.mjs`/`.cjs` or set `type` when the module system matters.
+// A `.js`/`.ts` follows its package `type` (LIMITATION: none falls back to commonjs -- use `.mjs`/`.cjs`
+// or set `type` when the module system matters). Any other name is classifyFormat's call: a format,
+// null for a JS-family file (`.jsx`/`.tsx`: source attested with no loader format, as the runtime
+// records one), undefined when unrecognized.
 function sourceFormat(absFile, content) {
   const ext = extname(absFile).toLowerCase()
   if (ext === '.js' || ext === '.ts') return `${packageType(absFile) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
-  return classifyFormat(absFile, { content }) ?? null
+  return classifyFormat(absFile, { content })
 }
 
 // File and non-empty package counts of a bundle or lockfile.
@@ -82,7 +85,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
     } else {
       bucketFiles('.', workspaceName, workspaceVersion)[rel] = content
     }
-    formats.set(rel, format)
+    if (format != null) formats.set(rel, format)
     if (isExec) executable.add(rel)
   }
 
@@ -187,7 +190,8 @@ const listPaths = (rels) => [...rels].toSorted(sortPaths).join(', ')
 // instead of one per re-run. A lone offender keeps its exact standalone message.
 function validationError({ missing, undeclared, nonUtf8 }) {
   const phrase = (items, one, many) => (items.length === 1 ? [one(items[0])] : items.length > 1 ? [many(items)] : [])
-  const named = ({ rel, format }) => `${rel} (format '${format}')`
+  const withFormat = (format) => (format == null ? '' : ` (format '${format}')`)
+  const named = ({ rel, format }) => `${rel}${withFormat(format)}`
   const parts = [
     ...phrase(missing,
       (rel) => `file not found: ${rel}`,
@@ -196,7 +200,7 @@ function validationError({ missing, undeclared, nonUtf8 }) {
       (rel) => `${rel} is neither a recognized source file nor a declared resource; add its extension to "resources" in ${CONFIG_FILE}`,
       (rels) => `${rels.length} files are neither recognized source files nor declared resources; add their extensions to "resources" in ${CONFIG_FILE}: ${listPaths(rels)}`),
     ...phrase(nonUtf8,
-      ({ rel, format }) => `${rel} is not valid UTF-8 (format '${format}')`,
+      ({ rel, format }) => `${rel} is not valid UTF-8${withFormat(format)}`,
       (bad) => `${bad.length} files are not valid UTF-8: ${bad.map(named).join(', ')}`),
   ]
   return new Error(`add: ${parts.join('; ')}`)
@@ -226,7 +230,7 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity }) {
     if (withIntegrity) integrities.set(rel, sha512integrity(buf))
     const format = sourceFormat(abs, buf)
     // A binary plist can't be stored as the UTF-8 string its 'xml' format implies, so it is NOT source: it falls through to the resource branch (opaque base64).
-    if (format !== null && !isBinaryPlist(rel, buf)) {
+    if (format !== undefined && !isBinaryPlist(rel, buf)) {
       // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
       if (isUtf8(buf)) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
       else nonUtf8.push({ rel, format })

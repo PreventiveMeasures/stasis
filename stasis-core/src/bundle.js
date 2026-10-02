@@ -15,9 +15,11 @@ import {
   mergeModuleMaps,
   moduleFileKey,
   normalizeModule,
+  parseEntries,
   parseExecutable,
   parseFormats,
   parseImports,
+  serializeEntries,
   serializeExecutable,
   posixPathEscapes,
   splitNodeModulesPath,
@@ -212,8 +214,7 @@ export class Bundle {
           modules.set(dir, normalizeModule(info))
         }
         // Empty entries are valid (`stasis add` attests files without making them entry points); state.assertEntry fails closed on an empty set.
-        assert(json.entries === undefined || Array.isArray(json.entries))
-        entries = new Set(json.entries)
+        if (json.entries !== undefined) entries = parseEntries(json.entries, 'bundle')
       } else {
         assert(json.entries === undefined)
         assert(json.sources === undefined)
@@ -260,7 +261,7 @@ export class Bundle {
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo
-    if (full) data.entries = fileSetToObject(this.entries)
+    if (full) data.entries = serializeEntries(this.entries, 'bundle')
     data.formats = fileMapToObject(this.formats)
     data.imports = fileMapToObject(this.imports)
     const executable = serializeExecutable(this.executable, {

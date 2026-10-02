@@ -1147,3 +1147,14 @@ test('assertOptionsMatchConfig wraps a bundle/scope/bundleFile/debug mismatch', 
     )
   }
 })
+
+test('Config treats an empty-string path/mode option as unset, so loadConfig sees no phantom override', withEnv({}, (t) => {
+  const c = new Config({ scope: '', bundleFile: '' })
+  t.assert.equal(c.scope, 'full')
+  t.assert.equal(c.bundleFile, undefined)
+  c.loadConfig(json({ scope: 'node_modules', bundleFile: 'dist/code.br' }))
+  t.assert.equal(c.scope, 'node_modules')
+  t.assert.equal(c.bundleFile, 'dist/code.br')
+  // A real option still is an override.
+  t.assert.throws(() => new Config({ scope: 'full' }).loadConfig(json({ scope: 'node_modules' })), /can not override stasis\.config\.json/)
+}))

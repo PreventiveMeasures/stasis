@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
-import { assertRealPathWithinBase, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
 import { applyToDir } from './paths.js'
 
@@ -171,13 +171,16 @@ function matchDirAnchor(code, pos) {
   return { end: PHP_DIR_ANCHOR_RE.lastIndex, up }
 }
 
+// A `./`/`../` specifier, as PHP tells one (a `.`-led NAME like `..cache/a.php` is a bare one).
+const isDotRelative = (spec) => spec === '.' || spec === '..' || spec.startsWith('./') || spec.startsWith('../')
+
 // Normalise an include path to a specifier. Dir-relative paths get a `./` prefix
 // with the leading separator stripped; empty means the file's own dir (`.`).
 function normalizeIncludePath(raw, dirRelative) {
   if (!dirRelative) return raw
   const rel = raw.replace(/^\/+/u, '')
   if (rel === '') return '.'
-  return rel.startsWith('.') ? rel : `./${rel}`
+  return isDotRelative(rel) ? rel : `./${rel}`
 }
 
 // Parse an include/path argument at `start`: an optional directory anchor then a
@@ -305,14 +308,14 @@ const isDirOnDisk = (baseDir, rel) => isDir(join(baseDir, rel))
 // `abs` as a baseDir-relative POSIX path ('' for baseDir itself), or null when it escapes the root.
 function projectRel(baseDir, abs) {
   const rel = toPosix(relative(baseDir, abs))
-  return rel.startsWith('..') || isAbsolute(rel) ? null : rel
+  return relativeEscapes(rel) ? null : rel
 }
 
 // Resolve a directory specifier to an existing baseDir-relative dir, or null.
 // `./`/`../` resolve against the including file; a bare spec tries file- then
 // project-relative.
 export function resolvePhpDir(spec, fromFile, baseDir) {
-  if (spec.startsWith('.')) {
+  if (isDotRelative(spec)) {
     const rel = applyToDir(fromFile, spec.split('/'))
     return rel !== null && isDirOnDisk(baseDir, rel) ? rel : null
   }
@@ -342,7 +345,7 @@ function listPhpFiles(baseDir, dir) {
 // tries a file next to the includer, then project-root-relative. Absolute
 // specifiers are rejected. Returns null when nothing resolves.
 export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
-  if (specifier.startsWith('.')) {
+  if (isDotRelative(specifier)) {
     return applyToDir(fromFile, specifier.split('/'))
   }
 

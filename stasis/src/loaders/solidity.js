@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { assertRealPathWithinBase, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
 import {
   FOUNDRY_TOML,
@@ -245,7 +245,7 @@ const isRelativeImport = (specifier) => {
 function projectFile(baseDir, spec, host) {
   if (isAbsolute(spec)) return null
   const rel = toPosix(relative(baseDir, resolve(baseDir, spec)))
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+  if (rel === '' || relativeEscapes(rel)) return null
   return isFile(join(baseDir, rel), host) ? rel : null
 }
 
