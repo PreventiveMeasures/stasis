@@ -16,8 +16,8 @@ import { Vfs, buildVfsBundle, loadNodeModules, setCacheDir } from '../stasis/src
 // @exodus/stasis/vfs-bundle builds from a lockfile alone: @preventive/deptree fetches the tarballs
 // into a cache, verifies them and lays them out in memory as the package manager would, which is
 // then scanned like any other static bundle. The fixtures are one package set, under pnpm's
-// default (isolated) layout and under yarn 1's hoisted one, so the oracle is simple: a real
-// install + plain `stasis bundle` must produce the byte-identical artifact.
+// default (isolated) layout and under yarn 1's and npm's hoisted ones, so the oracle is simple: a
+// real install + plain `stasis bundle` must produce the byte-identical artifact.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -37,6 +37,7 @@ const MANAGERS = {
     },
     lockfile: 'pnpm-lock.yaml',
     integrity: /(ms@2\.1\.3:\n\s+resolution: \{integrity: )sha512-[^}]+/u,
+    tampered: 'ms@2.1.3',
   },
   yarn1: {
     fixture: join(here, 'fixtures', 'yarn1-bundle'),
@@ -51,6 +52,23 @@ const MANAGERS = {
     },
     lockfile: 'yarn.lock',
     integrity: /(ms@2\.1\.3:\n(?: {2}.*\n)*? {2}integrity )sha512-\S+/u,
+    tampered: 'ms@2.1.3',
+  },
+  npm: {
+    fixture: join(here, 'fixtures', 'npm-bundle'),
+    files: ['package.json', 'package-lock.json', 'src/entry.js'],
+    installed: join('node_modules', '.package-lock.json'),
+    install: ['npx', ['--yes', 'npm@11.21.0', 'ci', '--ignore-scripts', '--no-audit', '--no-fund']],
+    stats: { packages: 92, installed: 92, skipped: 0, tarballs: 86, links: 0 },
+    // An installed lodash, as npm lays it out.
+    tamper: (vfs) => {
+      vfs.mkdir('/node_modules/lodash', { recursive: true })
+      vfs.writeFile('/node_modules/lodash/lodash.js', 'module.exports = "TAMPERED"\n')
+    },
+    lockfile: 'package-lock.json',
+    // npm resolves debug's ms to 2.1.2, which pnpm and yarn take as 2.1.3.
+    integrity: /("node_modules\/ms": \{\n\s+"version": "2\.1\.2",\n\s+"resolved": "[^"]+",\n\s+"integrity": ")sha512-[^"]+/u,
+    tampered: 'ms@2.1.2',
   },
 }
 
@@ -240,7 +258,7 @@ for (const [packageManager, m] of Object.entries(MANAGERS)) {
       const lock = oracles[packageManager].files[m.lockfile]
       const tampered = lock.replace(m.integrity, `$1sha512-${'A'.repeat(86)}==`)
       t.assert.notEqual(tampered, lock)
-      await t.assert.rejects(build(projectVfs(packageManager, { [m.lockfile]: tampered }), { scope: 'full' }), /integrity mismatch for ms@2\.1\.3/u)
+      await t.assert.rejects(build(projectVfs(packageManager, { [m.lockfile]: tampered }), { scope: 'full' }), new RegExp(`integrity mismatch for ${m.tampered.replaceAll('.', '\\.')}`, 'u'))
     })
 
     test('over a project held in a Vfs, nothing is read from disk but the tarball cache', withTmp(async (t, tmp) => {

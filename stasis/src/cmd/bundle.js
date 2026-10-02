@@ -1195,8 +1195,8 @@ export function checkVfsOptions(name, options) {
 }
 
 // A bundle from the lockfile of the project held in `vfs` alone (@exodus/stasis/vfs-bundle), `cwd` a
-// path there: buildBundle's JS options, resolved through the node_modules 'pnpm' or 'yarn1' would
-// install, or its Solidity options, through the dependencies folder 'soldeer' would install; with
+// path there: buildBundle's JS options, resolved through the node_modules 'pnpm', 'yarn1' or 'npm'
+// would install, or its Solidity options, through the dependencies folder 'soldeer' would install; with
 // nothing read from disk but tarballs and zips, nor from the environment: a Solidity bundle is
 // built with foundry.toml's default profile, whatever FOUNDRY_PROFILE or remappings one sets, and no
 // EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory | root, commit }`,

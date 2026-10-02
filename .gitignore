@@ -4,9 +4,11 @@ node_modules
 tests/fixtures/popular-npm-modules/node_modules
 tests/fixtures/cli-run-import-tsx/node_modules
 package-lock.json
+!tests/fixtures/npm-bundle/package-lock.json
 coverage
 playground
 *.tgz
 tests/fixtures/pnpm-bundle/node_modules
 tests/fixtures/yarn1-bundle/node_modules
+tests/fixtures/npm-bundle/node_modules
 tests.dist

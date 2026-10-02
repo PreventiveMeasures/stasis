@@ -158,7 +158,7 @@ test('suggestedEntries suggests the entries buildGitHubBundle takes without any,
   t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(bare) }), [])
   // Of the package manager given, whatever the lockfiles; else of the one detected, as the build detects it.
   t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf({ ...namingEntries, 'pnpm-lock.yaml': undefined }), packageManager: 'yarn1' }), named)
-  await t.assert.rejects(suggestedEntries({ vfs: vfsOf({ 'a.js': '' }) }), /^Error: suggestedEntries: no packageManager given, and none of pnpm-lock\.yaml, yarn\.lock, soldeer\.lock installs \/$/u)
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf({ 'a.js': '' }) }), /^Error: suggestedEntries: no packageManager given, and none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock installs \/$/u)
 })
 
 // A React Native package: its own entry by each main field, with a platform's file, and `exports`
@@ -282,7 +282,7 @@ test('suggestedEntries checks its arguments before anything is fetched', async (
   await t.assert.rejects(suggestedEntries({ vfs: {} }), /suggestedEntries/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, sha: 'abc123', client }), /^Error: suggestedEntries: invalid commit: "abc123"$/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, directory: '../up', client }), /^Error: suggestedEntries: invalid directory: "\.\.\/up"$/u)
-  await t.assert.rejects(suggestedEntries({ github: GITHUB, packageManager: 'npm', client }), /^TypeError: suggestedEntries: packageManager must be one of/u)
+  await t.assert.rejects(suggestedEntries({ github: GITHUB, packageManager: 'bun', client }), /^TypeError: suggestedEntries: packageManager must be one of/u)
   await t.assert.rejects(suggestedEntries({ github: GITHUB, packageManager: 'soldeer', conditions: ['x'], client }), /^Error: suggestedEntries: --conditions is only valid for JS bundles$/u)
   t.assert.deepEqual(client.calls, [])
 })
@@ -386,6 +386,23 @@ test('buildGitHubBundle downloads the whole repo for a lockfile above the direct
   t.assert.deepEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
 })
 
+// The package-lock.json npm writes for a root `name` at 1.0.0, and `packages` beside it.
+const npmLock = (name, packages = {}) => `${JSON.stringify({ name, version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name, version: '1.0.0' }, ...packages } }, null, 2)}\n`
+
+test('buildGitHubBundle builds with npm, told by its package-lock.json, a directory alone unless the lockfile reaches above it', async (t) => {
+  const files = { 'README.md': 'x\n', 'apps/p/package.json': json({ name: 'p', version: '1.0.0', main: 'a.js' }), 'apps/p/package-lock.json': npmLock('p'), 'apps/p/a.js': '' }
+  const client = fakeClient(files)
+  const built = await buildGitHubBundle({ github: GITHUB, sha: SHA, client, directory: 'apps/p' })
+  t.assert.equal(built.packageManager, 'npm')
+  t.assert.deepEqual([...built.bundle.sources.keys()], ['a.js'])
+  t.assert.deepEqual({ ...built.bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA })
+  t.assert.deepEqual(methods(client), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball'])
+  // Its lockfile links a package above it: the whole repo, where deptree refuses the link.
+  const linked = fakeClient({ ...files, 'apps/shared/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/p/package-lock.json': npmLock('p', { 'node_modules/shared': { resolved: '../shared', link: true }, '../shared': { version: '1.0.0' } }) })
+  await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: linked, directory: 'apps/p' }))
+  t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
+})
+
 const detect = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
 
 test('buildGitHubBundle takes the one package manager whose lockfile installs the directory, told by the listings', async (t) => {
@@ -419,7 +436,7 @@ test('buildGitHubBundle takes the one package manager whose lockfile installs th
 test('buildGitHubBundle refuses to choose where no lockfile, or more than one, installs the directory', async (t) => {
   // None listed: refused from the listings alone.
   const none = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'apps/p/a.js': '' })
-  await t.assert.rejects(detect({ client: none, directory: 'apps/p', entries: ['a.js'] }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no packageManager given, and none of pnpm-lock\\.yaml, yarn\\.lock, soldeer\\.lock installs /apps/p$`, 'u'))
+  await t.assert.rejects(detect({ client: none, directory: 'apps/p', entries: ['a.js'] }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no packageManager given, and none of pnpm-lock\\.yaml, yarn\\.lock, package-lock\\.json, soldeer\\.lock installs /apps/p$`, 'u'))
   t.assert.deepEqual(methods(none), ['listRepoDir', 'listRepoDir', 'listRepoDir'])
   // More than one listed: the whole repo tells, here that both install it.
   const both = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'yarn.lock': YARN_LOCK, 'a.js': '' })
@@ -436,7 +453,7 @@ test('buildGitHubBundle refuses to choose where no lockfile, or more than one, i
   t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'getRepoTarball'])
   // Entries of a kind no package manager builds, before anything is fetched.
   const client = fakeClient({})
-  await t.assert.rejects(detect({ client, entries: ['a.rs'] }), /^Error: buildGitHubBundle: only JS bundles \(pnpm, yarn1\) and Solidity bundles \(soldeer\) are built$/u)
+  await t.assert.rejects(detect({ client, entries: ['a.rs'] }), /^Error: buildGitHubBundle: only JS bundles \(pnpm, yarn1, npm\) and Solidity bundles \(soldeer\) are built$/u)
   t.assert.deepEqual(client.calls, [])
 })
 
@@ -472,7 +489,7 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, tag: 'v1.0.0', entries: ['a.js'] }), /^Error: buildGitHubBundle: sha and tag both name the commit: give one$/u)
   await t.assert.rejects(build({ client, sha: undefined, tag: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: tag must be a non-empty string$/u)
   await t.assert.rejects(build({ client, packageManager: 'soldeer', conditions: ['x'] }), /^Error: buildGitHubBundle: --conditions is only valid for JS bundles$/u)
-  await t.assert.rejects(build({ client, packageManager: 'npm', entries: ['a.js'] }), /packageManager must be one of/u)
+  await t.assert.rejects(build({ client, packageManager: 'bun', entries: ['a.js'] }), /packageManager must be one of/u)
   await t.assert.rejects(build({ client, libc: 'bionic', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: libc must be one of/u)
   await t.assert.rejects(build({ client, os: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: os must be a non-empty string/u)
   await t.assert.rejects(build({ client, entries: ['a.sol'] }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm/u)

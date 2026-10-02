@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { NO_ENTRY, packageJSONStat, packageJSONText, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
+import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
 import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.js'
@@ -14,9 +15,9 @@ import { isDir, isFile } from '../resolve-typescript.js'
 
 // A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm
 // install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 9, 10, 11 or 12,
-// `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, or `soldeer install` its
-// dependencies folder with Soldeer 0.12, and the host that reads the project through them. The
-// project is read through a host it is given, and nothing else.
+// `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, `npm ci --ignore-scripts` with
+// npm 10.9 or 11, or `soldeer install` its dependencies folder with Soldeer 0.12, and the host that
+// reads the project through them. The project is read through a host it is given, and nothing else.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 function nearest(cwd, holds) {
@@ -125,13 +126,28 @@ function yarn1Root(host, cwd) {
   return nearest(cwd, holding(host, 'yarn.lock'))
 }
 
+// npm installs a workspace from the root that declares it, whatever package-lock.json is nearer,
+// and any other package from the nearest package-lock.json.
+function npmRoot(host, cwd) {
+  const root = nearest(cwd, (dir) => Array.isArray(readJson(join(dir, 'package.json'), host)?.workspaces))
+  if (root !== null && outsider(host, root, cwd, new Set(findNpmWorkspaces({ project: projectView(host, root) }))) === null) return root
+  return nearest(cwd, holding(host, 'package-lock.json'))
+}
+
+// npm's host: the machine's, but a libc npm finds only as glibc or musl, and none where it finds
+// neither.
+const npmHost = (npm, given) => {
+  const { libc, ...host } = target(given)
+  return { npm, ...host, ...(libc === 'glibc' || libc === 'musl' ? { libc } : {}) }
+}
+
 // What each package manager reproduced installs from: the kind of bundle it installs for; its
 // lockfile; the name a root package.json's packageManager pins it by, where one does; the version
 // reproduced where nothing pins one; the directory it installs cwd from, which holds the lockfile;
 // whether a directory holding the lockfile is installed from by itself, by the names in it and in
 // each directory above it (`above()`, as listings); the projects it finds in a view of that
-// directory; the directory it installs in each, and any it hides, as another package manager's; and
-// the tree.
+// directory, for the machine given; the directory it installs in each, and any it hides, as
+// another package manager's; and the tree.
 const PACKAGE_MANAGERS = {
   pnpm: {
     kind: 'js',
@@ -159,6 +175,18 @@ const PACKAGE_MANAGERS = {
       const { libc: _, ...host } = target({ ...given, libc: 'unknown' }) // yarn 1 matches no libc
       return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host } }))
     },
+  },
+  npm: {
+    kind: 'js',
+    lockfile: 'package-lock.json',
+    // npm reads no packageManager, so nothing pins it.
+    version: '11.21.0',
+    root: npmRoot,
+    // A package.json above may declare it a workspace.
+    alone: async (names, above) => !(await above()).some((dir) => dir.includes('package.json')),
+    projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
+    installs: 'node_modules',
+    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given) })),
   },
   soldeer: {
     kind: 'sol',
@@ -292,7 +320,7 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   // Left out, deptree takes the one packageManager pins, and refuses another package manager.
   const version = packageManagerVersion ?? (pinned === undefined ? pm.version : undefined)
   const view = projectView(project, found)
-  const projects = new Set(pm.projects(view, version))
+  const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
   const { vfs, stats } = await pm.build(view, version, file, { os, cpu, libc })

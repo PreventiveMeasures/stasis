@@ -14,8 +14,9 @@ import { checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfile
 const MAX_TAR_BYTES = 2 ** 30
 // What a git tree holds (upstream's verification refuses anything else from GitHub).
 const TREE_TYPES = new Set(['file', 'directory', 'symlink'])
-// Lockfile references to a path above the lockfile's directory (conservatively: any importer's).
-const LOCKFILE_ESCAPE = /(?:link:|file:|directory: )\.\.\//u
+// Lockfile references to a path above the lockfile's directory (conservatively: any importer's):
+// pnpm's and yarn's specs, and package-lock.json's package keys and `resolved` paths.
+const LOCKFILE_ESCAPE = /(?:link:|file:|directory: |")\.\.\//u
 const TSCONFIG = /(?:^|\/)[jt]sconfig[^/]*\.json$/u
 
 // Whether `target`, a path relative to the file `from`, resolves outside the tree.
