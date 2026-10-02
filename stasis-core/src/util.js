@@ -23,8 +23,13 @@ export function pathExt(filePath) {
   return m ? m[1].toLowerCase() : ''
 }
 
-// A native path as the '/'-joined form every artifact key uses (a no-op off Windows).
-export const toPosix = (path) => path.split(/[\\/]/u).join('/')
+// A native path as the '/'-joined form every artifact key uses. Off Windows `\` is no separator but
+// part of a name, and a name holding one is refused rather than taken for another path.
+export function toPosix(path) {
+  if (sep === '\\') return path.replaceAll('\\', '/')
+  if (path.includes('\\')) throw new Error(`stasis: a path holding '\\' is not supported: ${path}`)
+  return path
+}
 
 // Whether a path.relative() result climbs out of its base: absolute, or beginning with a `..`
 // SEGMENT -- a bare startsWith('..') would also reject a legitimate `..cache` name.

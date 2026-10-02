@@ -4,6 +4,7 @@
 // paths, absolute/escaping paths) is best-effort and dropped. A dynamically
 // sourced path can be pinned by a `# shellcheck source=...` directive.
 
+import { isUtf8 } from 'node:buffer'
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path'
@@ -111,6 +112,13 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
+// A script's text. One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
+async function readScript(baseDir, relPath) {
+  const bytes = await readFile(join(baseDir, relPath))
+  if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
+  return bytes.toString('utf8')
+}
+
 // Walk from `entries` following resolved refs, reading each script once; a ref
 // missing on disk warns and is skipped without aborting the walk.
 export async function collectBashFilesFromDisk(baseDir, entries) {
@@ -124,7 +132,7 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
       toLoad.map(async (relPath) => {
         try {
           assertRealPathWithinBase(realBase, baseDir, relPath)
-          return [relPath, await readFile(join(baseDir, relPath), 'utf8')]
+          return [relPath, await readScript(baseDir, relPath)]
         } catch (err) {
           if (err.code === 'ENOENT') {
             console.warn(`[loader.bash] Missing file: ${relPath}`)
@@ -175,7 +183,7 @@ export async function loadBash(shTxtFile) {
   const reads = await Promise.all(
     lines.map(async (relPath) => {
       assertRealPathWithinBase(realBase, baseDir, relPath)
-      return [relPath, await readFile(join(baseDir, relPath), 'utf8')]
+      return [relPath, await readScript(baseDir, relPath)]
     }),
   )
   return buildBashTree(new Map(reads))

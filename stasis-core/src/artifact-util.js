@@ -75,6 +75,7 @@ export function moduleFileKeys(modules, { scope = 'full' } = {}) {
 // THE rule an artifact's `executable` entry must satisfy; returns the problem, or null when legal.
 // parseExecutable (read), assertExecutable (write) and narrowExecutable share it so they cannot drift.
 function executableEntryProblem(file, { what, files, formats, scope }) {
+  if (file.includes('\\')) return "holds a '\\'"
   if (posixPathEscapes(file)) return 'escapes the root'
   if (scope !== 'full' && !hasNodeModulesSegment(file)) {
     return `is outside node_modules, which a '${scope}'-scope ${what} does not record`
@@ -195,9 +196,18 @@ export function posixPathEscapes(path) {
   return false
 }
 
+// THE rule every path an artifact records must satisfy (a file key's too, see canonicalFileKey): in
+// the root, and free of `\` -- part of a name off Windows, which stasis refuses everywhere rather than
+// take for another path, and on Windows a separator a `..\x` would climb out by.
+export const isRefusedPath = (path) => path.includes('\\') || posixPathEscapes(path)
+
+// Throws unless `path`, one of `what`'s, is a path an artifact may record (see isRefusedPath).
+export const assertArtifactPath = (path, what) =>
+  assert(!isRefusedPath(path), `${what}: path '${path}' escapes the root or holds a '\\'`)
+
 // THE rule an artifact's entry must satisfy, on read (parseEntries) and on write (serializeEntries).
 const assertEntry = (entry, what) =>
-  assert(typeof entry === 'string' && entry !== '' && !posixPathEscapes(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
+  assert(typeof entry === 'string' && entry !== '' && !isRefusedPath(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
 
 // An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
 // collapse in the Set and round-trip to different bytes).
@@ -219,6 +229,13 @@ export function serializeEntries(entries, what) {
   return fileSetToObject(entries)
 }
 
+// THE rule an artifact's `formats` entry must satisfy, on read (parseFormats) and on write
+// (serializeFormats): a path an artifact may record, and a known format.
+function assertFormat(file, format) {
+  assertArtifactPath(file, 'formats')
+  assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
+}
+
 // An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
 // artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
 // is rejected at the schema boundary so a tampered artifact fails closed.
@@ -226,8 +243,7 @@ export function parseFormats(json) {
   assert(isPlainObject(json))
   const formats = new Map()
   for (const [file, format] of Object.entries(json)) {
-    assert(!posixPathEscapes(file))
-    assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
+    assertFormat(file, format)
     const key = file === '' ? '.' : file
     assert(!formats.has(key), `duplicate format key '${key}'`)
     formats.set(key, format)
@@ -235,32 +251,51 @@ export function parseFormats(json) {
   return formats
 }
 
-// An artifact's `imports` object (conditions -> parent -> specifier -> target) as nested Maps. Paths
-// escaping the root are rejected here (incl. mid-path `a/../../x`): getImport resolves against the
-// root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
-export function parseImports(json) {
-  assert(isPlainObject(json))
-  const imports = objectToMaps(json)
+// The `formats` an artifact writes: the same rule as on read, so an in-memory construct can't serialize
+// what parse would reject; path-sorted.
+export function serializeFormats(formats) {
+  for (const [file, format] of formats) assertFormat(file, format)
+  return fileMapToObject(formats)
+}
+
+// THE rules an artifact's `imports` (conditions -> parent -> specifier -> target, as nested Maps)
+// must satisfy, on read (parseImports) and on write (serializeImports). Paths escaping the root (incl.
+// mid-path `a/../../x`) or holding a `\` are rejected: getImport resolves against the root at load. A
+// target is a file, or (--metro) a non-empty { platform: file } map.
+function assertImports(imports) {
   for (const [, byParent] of imports) {
     assert(byParent instanceof Map)
     for (const [parent, specifiers] of byParent) {
-      assert(!posixPathEscapes(parent))
+      assertArtifactPath(parent, 'imports')
       assert(specifiers instanceof Map)
       for (const [, target] of specifiers) {
         if (typeof target === 'string') {
-          assert(!posixPathEscapes(target))
+          assertArtifactPath(target, 'imports')
           continue
         }
         assert(target instanceof Map && target.size > 0, 'import target must be a file or a non-empty {platform: file} map')
         for (const [platform, file] of target) {
           assert(typeof platform === 'string' && platform.length > 0 && !platform.includes('/'), `invalid platform key '${platform}'`)
           assert(typeof file === 'string')
-          assert(!posixPathEscapes(file))
+          assertArtifactPath(file, 'imports')
         }
       }
     }
   }
+}
+
+// An artifact's `imports` object as nested Maps (see assertImports).
+export function parseImports(json) {
+  assert(isPlainObject(json))
+  const imports = objectToMaps(json)
+  assertImports(imports)
   return imports
+}
+
+// The `imports` an artifact writes: the same rules as on read (see assertImports); path-sorted.
+export function serializeImports(imports) {
+  assertImports(imports)
+  return fileMapToObject(imports)
 }
 
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects,
@@ -347,19 +382,23 @@ export function mergeExecutableSets(a, b, bModules, scope) {
 // An empty, '.' or '..' path segment.
 const NON_CANONICAL_SEGMENT = /(?:^|\/)\.{0,2}(?:\/|$)/u
 
-// The flat key of `rel` in bucket `dir`; throws unless canonical ('.' only as the root listing, rel '').
+// The flat key of `rel` in bucket `dir`; throws unless canonical ('.' only as the root listing, rel '')
+// and free of `\`, which no artifact path holds: off Windows it is part of a name, refused everywhere.
 export function canonicalFileKey(dir, rel, what) {
   const key = moduleFileKey(dir, rel)
   // Message built only on failure: this runs for every file.
   if ((key !== '.' || rel !== '') && NON_CANONICAL_SEGMENT.test(key)) assert(false, `${what}: non-canonical file key ${JSON.stringify(key)}`)
+  if (key.includes('\\')) assert(false, `${what}: file key '${key}' holds a '\\', which no path may`)
   return key
 }
 
-// Maps each file's flat key to its bucket; rejects non-canonical keys, reports duplicates to onDuplicate.
+// Maps each file's flat key to its bucket; rejects non-canonical keys and refused bucket dirs (an empty
+// bucket's too, which no file key would reach), reports duplicates to onDuplicate.
 export function flatFileKeys(modules, what, onDuplicate) {
   const owners = new Map()
   for (const [dir, { files }] of modules) {
     if (typeof dir !== 'string') assert(false, `${what}: bucket dir ${String(dir)} is not a string`)
+    assertArtifactPath(dir, what)
     for (const rel of Object.keys(files)) {
       const key = canonicalFileKey(dir, rel, what)
       const owner = owners.get(key)

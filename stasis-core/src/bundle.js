@@ -1,8 +1,8 @@
 import {
   assert,
+  assertArtifactPath,
   canonicalFileKey,
   duplicateKeyError,
-  fileMapToObject,
   fileSetToObject,
   fromEntries,
   flatFileKeys,
@@ -21,6 +21,8 @@ import {
   parseImports,
   serializeEntries,
   serializeExecutable,
+  serializeFormats,
+  serializeImports,
   posixPathEscapes,
   splitNodeModulesPath,
 } from './artifact-util.js'
@@ -227,7 +229,7 @@ export class Bundle {
         assert(typeof json.modules === 'object' && json.modules !== null)
         for (const [dir, info] of Object.entries(json.modules)) {
           assert(hasNodeModulesSegment(dir))
-          assert(!posixPathEscapes(dir))
+          assertArtifactPath(dir, 'bundle')
           assert(info?.name && info.version && info.files)
           modules.set(dir, normalizeModule(info))
         }
@@ -236,7 +238,7 @@ export class Bundle {
         assert(json.sources && typeof json.sources === 'object')
         for (const [dir, info] of Object.entries(json.sources)) {
           assert(!hasNodeModulesSegment(dir))
-          assert(!posixPathEscapes(dir))
+          assertArtifactPath(dir, 'bundle')
           // A workspace bucket may omit version (a private/unpublished package.json can lack one).
           assert(info?.name && info.files)
           modules.set(dir, normalizeModule(info))
@@ -250,7 +252,7 @@ export class Bundle {
     } else {
       assert(json.sources)
       for (const [path, content] of Object.entries(json.sources)) {
-        assert(!posixPathEscapes(path))
+        assertArtifactPath(path, 'bundle')
         const { dir, rel, name } = inferModuleDir(path)
         assert(!posixPathEscapes(dir) && !posixPathEscapes(rel))
         if (!modules.has(dir)) modules.set(dir, { name, version: null, files: Object.create(null) })
@@ -292,8 +294,8 @@ export class Bundle {
     if (this.repo !== undefined) data.repo = this.repo
     if (this.package !== undefined) data.package = this.package
     if (full) data.entries = serializeEntries(this.entries, 'bundle')
-    data.formats = fileMapToObject(this.formats)
-    data.imports = fileMapToObject(this.imports)
+    data.formats = serializeFormats(this.formats)
+    data.imports = serializeImports(this.imports)
     const executable = serializeExecutable(this.executable, {
       what: 'bundle', modules: this.modules, formats: this.formats, scope: this.config.scope,
     })

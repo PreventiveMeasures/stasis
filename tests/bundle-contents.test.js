@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { toPosix } from '@exodus/stasis-core/util'
+import { serializeShard } from '../stasis-core/src/shard.js'
 import { collectComponents } from '../stasis/src/sbom.js'
 
 // Both bucket kinds, a base64 resource, a platform import map, an executable and a reason map.
@@ -129,4 +132,47 @@ test('Bundle.fileKeyAt finds every file in the bundle JSON, keyed as sources key
   t.assert.throws(() => Bundle.fileKeyAt(['sources', '.', 'files', '.']), /non-canonical file key "\."/)
   t.assert.throws(() => Bundle.fileKeyAt(['sources', 'src', 'files', '../x.js']), /non-canonical file key/)
   t.assert.throws(() => Bundle.fileKeyAt(['sources', 'a/node_modules/x/../../../b']), /non-canonical file key/)
+})
+
+test('no artifact path holds a \\: refused when written, read or streamed, never taken for another path', (t) => {
+  const refused = /file key 'src\/a\\b\.js' holds a '\\'/u
+  const modules = new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'x\n' } }]])
+  t.assert.throws(() => new Bundle({ config: { scope: 'full' }, entries: new Set(), modules }).serialize(), refused)
+  t.assert.throws(() => Bundle.parse(JSON.stringify({ version: 1, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'x\n' } } }, modules: {}, formats: {}, imports: {} })), refused)
+  t.assert.throws(() => Bundle.fileKeyAt(['sources', '.', 'files', 'src/a\\b.js']), refused)
+  const lock = { version: 0, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'sha512-x' } } }, modules: {}, imports: {}, formats: {} }
+  t.assert.throws(() => Lockfile.parse(JSON.stringify(lock)), refused)
+  // Nor does any other path an artifact records: an import's parent or target (`./dep` from main.cjs to
+  // `..\\outside.cjs` would climb out of the project on Windows), a formats key, an entry, an executable.
+  const bundleWith = (extra) => JSON.stringify({ version: 1, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'main.cjs': 'x\n' } } }, modules: {}, formats: {}, imports: {}, ...extra })
+  for (const [field, bad, extra] of [
+    ['imports', '..\\outside.cjs', { imports: { '*': { 'main.cjs': { './dep': '..\\outside.cjs' } } } }],
+    ['imports', 'a\\b.cjs', { imports: { '*': { 'main.cjs': { './dep': { ios: 'a\\b.cjs' } } } } }],
+    ['imports', 'src\\main.cjs', { imports: { '*': { 'src\\main.cjs': { './dep': 'main.cjs' } } } }],
+    ['formats', 'a\\b.cjs', { formats: { 'main.cjs': 'commonjs', 'a\\b.cjs': 'commonjs' } }],
+  ]) {
+    t.assert.throws(() => Bundle.parse(bundleWith(extra)), { message: `${field}: path '${bad}' escapes the root or holds a '\\'` }, bad)
+  }
+  t.assert.throws(() => Bundle.parse(bundleWith({ entries: ['a\\b.cjs'] })), /bundle: invalid entry/u)
+  t.assert.throws(() => Bundle.parse(bundleWith({ executable: ['a\\b.cjs'] })), /executable entry 'a\\b\.cjs' holds a '\\'/u)
+  t.assert.throws(() => Lockfile.parse(JSON.stringify({ ...lock, sources: { '.': { name: 'app', version: '1.0.0', files: { 'main.cjs': 'sha512-x' } } }, imports: { '*': { 'main.cjs': { './dep': '..\\outside.cjs' } } } })), /imports: path '\.\.\\outside\.cjs' escapes the root or holds a '\\'/u)
+  // The same rules hold on write: an in-memory construct never serializes what its parser rejects.
+  const files = new Map([['.', { name: 'app', version: '1.0.0', files: { 'main.cjs': 'x\n' } }]])
+  const badImports = new Map([['*', new Map([['main.cjs', new Map([['./dep', '..\\outside.cjs']])]])]])
+  const badFormats = new Map([['main.cjs', 'commonjs'], ['a\\b.cjs', 'commonjs']])
+  const outside = { message: "imports: path '..\\outside.cjs' escapes the root or holds a '\\'" }
+  t.assert.throws(() => new Bundle({ config: { scope: 'full' }, modules: files, imports: badImports }).serialize(), outside)
+  t.assert.throws(() => new Bundle({ config: { scope: 'full' }, modules: files, formats: badFormats }).serialize(), /formats: path 'a\\b\.cjs'/u)
+  t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: files, imports: badImports, formats: new Map() }).serialize(), outside)
+  t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: files, imports: new Map(), formats: badFormats }).serialize(), /formats: path 'a\\b\.cjs'/u)
+  // An empty bucket's dir too: no file key reaches it, and Lockfile.serialize writes empty buckets.
+  for (const dir of ['bad\\bucket', '../outside']) {
+    const empty = new Map([...files, [dir, { name: 'x', version: '1.0.0', files: {} }]])
+    t.assert.throws(() => new Lockfile({ config: { scope: 'full' }, modules: empty, imports: new Map(), formats: new Map() }).serialize(), { message: `lockfile: path '${dir}' escapes the root or holds a '\\'` }, dir)
+  }
+  t.assert.throws(() => serializeShard({ scope: 'full', files: ['a\\b.cjs'], formats: new Map(), imports: new Map() }), /shard file: a\\b\.cjs/u)
+  t.assert.throws(() => serializeShard({ scope: 'full', files: [], formats: new Map(), imports: badImports }), /shard import target from main\.cjs: \.\.\\outside\.cjs/u)
+  // Off Windows `\\` is part of a name, so a path holding one is refused rather than re-keyed.
+  t.assert.throws(() => toPosix('src/a\\b.js'), /a path holding '\\' is not supported: src\/a\\b\.js/u)
+  t.assert.equal(toPosix('src/a/b.js'), 'src/a/b.js')
 })

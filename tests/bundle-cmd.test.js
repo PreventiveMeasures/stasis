@@ -1588,6 +1588,16 @@ test('buildPhpBundle produces a Bundle with sources, formats, imports, entries',
   t.assert.equal(bundle.imports.get('php').get('src/A.php').get('./B.php'), 'src/B.php')
 })
 
+test('buildPhpBundle refuses a source that isn\'t UTF-8, rather than bundle it with U+FFFD in it', withTmp(async (t, tmp) => {
+  writeFileSync(join(tmp, 'index.php'), "<?php\nrequire __DIR__ . '/lib.php';\n")
+  writeFileSync(join(tmp, 'lib.php'), Buffer.from("<?php\necho 'caf\xe9';\n", 'latin1'))
+  await t.assert.rejects(() => buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), { message: 'PHP source is not valid UTF-8: lib.php' })
+  // A byte-order mark is UTF-8: kept, as written.
+  writeFileSync(join(tmp, 'lib.php'), "\uFEFF<?php\necho 'lib';\n")
+  const bundle = await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })
+  t.assert.equal(bundle.sources.get('lib.php'), "\uFEFF<?php\necho 'lib';\n")
+}))
+
 test('buildPhpBundle takes the workspace name+version from the nearest composer.json', async (t) => {
   const cwd = join(phpFixtures, 'with-composer-json')
   const bundle = await buildPhpBundle({ cwd, entries: ['src/A.php'] })
@@ -3670,6 +3680,16 @@ test('buildBashBundle accepts .bash entries', async (t) => {
   t.assert.deepEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['lib.sh', 'main.bash'])
   t.assert.equal(bundle.formats.get('main.bash'), 'shell')
 })
+
+test('buildBashBundle refuses a script that isn\'t UTF-8, rather than bundle it with U+FFFD in it', withTmp(async (t, tmp) => {
+  writeFileSync(join(tmp, 'main.sh'), '. ./lib.sh\n')
+  writeFileSync(join(tmp, 'lib.sh'), Buffer.from('echo caf\xe9\n', 'latin1'))
+  await t.assert.rejects(() => buildBashBundle({ cwd: tmp, entries: ['main.sh'] }), { message: 'Shell script is not valid UTF-8: lib.sh' })
+  // A byte-order mark is UTF-8: kept, as written.
+  writeFileSync(join(tmp, 'lib.sh'), '\uFEFFecho lib\n')
+  const bundle = await buildBashBundle({ cwd: tmp, entries: ['main.sh'] })
+  t.assert.equal(bundle.sources.get('lib.sh'), '\uFEFFecho lib\n')
+}))
 
 test('buildBashBundle rejects an empty entry list', async (t) => {
   await t.assert.rejects(() => buildBashBundle({ cwd: join(bashFixtures, 'basic'), entries: [] }), /at least one entry/)

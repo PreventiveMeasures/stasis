@@ -14,7 +14,10 @@ There is no separate resources bundle: one bundle holds both, distinguished
 
 Every stasis-generated file carries an integer `version`; lockfiles and bundles
 are versioned independently. Paths are POSIX-style, relative to the directory
-holding the lockfile, and may not start with `..`.
+holding the lockfile, and may not start with `..`. No path holds a `\`: off
+Windows it is part of a name rather than a separator, and stasis refuses a file
+so named (when bundling, writing an artifact or reading one) rather than carry
+it, or take it for another path.
 
 ## `stasis.config.json`
 
@@ -395,7 +398,9 @@ These four are **`scope = full`, produce-only artifacts** in the same
 under a language `imports` condition. They are for external static analysis —
 **not** `stasis run --bundle=load`, which executes JavaScript and rejects a non-JS
 `format`. Every reachable file is read from disk (symlinks whose real target
-escapes the bundle root are refused) and bucketized by the nearest `package.json`,
+escapes the bundle root are refused; a source file that isn't UTF-8 text is
+refused, never carried with U+FFFD in place of its bytes) and bucketized by the
+nearest `package.json`,
 except PHP, which buckets by the nearest `composer.json`
 (`vendor/<vendor>/<pkg>`, versions from `vendor/composer/installed.json`), and
 Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
