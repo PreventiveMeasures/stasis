@@ -702,8 +702,8 @@ test('stasis github-bundle names its output after the repo and commit by default
   t.assert.equal(githubBundleFile({ github: 'a-b/.c_d', commit: SHA }), 'a-b-.c_d.aaaaaaa.stasis.code.br')
   t.assert.equal(githubBundleFile({ github: 'o/n a/../\u00E9\u{1F600}', commit: SHA }), 'o-n_a_..___.aaaaaaa.stasis.code.br')
   // A directory's path joins them, its / made -.
-  t.assert.equal(githubBundleFile({ github: GITHUB, directory: 'packages/app', commit: SHA }), 'ExodusOSS-example-packages-app.aaaaaaa.stasis.code.br')
-  t.assert.equal(githubBundleFile({ github: GITHUB, directory: '@scope/p~1+x/..y', commit: SHA }), 'ExodusOSS-example-_scope-p_1_x-..y.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: 'packages/app', commit: SHA }), 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: '@scope/p~1+x/..y', commit: SHA }), 'ExodusOSS-example._scope-p_1_x-..y.aaaaaaa.stasis.code.br')
   t.assert.equal(githubBundleFile({ github: GITHUB, directory: '', commit: SHA }), 'ExodusOSS-example.aaaaaaa.stasis.code.br')
 })
 
@@ -719,10 +719,10 @@ test('stasis github-bundle names the output of a directory after it, not where i
     'packages/app/src/a.js': 'module.exports = 1\n',
   })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory: 'packages/app', packageManager: 'pnpm', client, entries: ['src/a.js'] })
-  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example-packages-app.aaaaaaa.stasis.code.br'])
-  const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example-packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
+  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
+  const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
   t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'the lockfile is at the root')
-  t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example-packages-app\.aaaaaaa\.stasis\.code\.br$/u)
+  t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.packages-app\.aaaaaaa\.stasis\.code\.br$/u)
 })
 
 test('stasis github-bundle requires --github, and takes --sha or --tag', async (t) => {
