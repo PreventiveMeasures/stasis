@@ -845,62 +845,72 @@ test code reaches for. Two kinds of cfg are decided:
     build-dependencies built for the host, `--cargo-features` handed out among
     the packages as cargo hands them out. A lockfile out of date with the
     manifests, a vendored copy whose checksum isn't the lockfile's, a feature
-    asked of a package that hasn't it: each stops the build. A host the loader
-    doesn't know (a target that isn't `host`) is resolved both ways: what the
-    host's target-specific tables turn on is on *maybe*. A vendored copy the
+    asked of a package that hasn't it: each stops the build. A vendored copy the
     lockfile doesn't list needs no `.cargo-checksum.json`: cargo never reads it.
   - **The replay**, otherwise -- no lockfile, no target, a locked package not
     vendored or without its checksums, an entry outside the workspace -- and
     `stasis bundle` says so and why (`[stasis] Rust features from a replay of
-    the manifests, not cargo's resolver: no --cargo-target`): the roots start
-    from their `default` feature (a proc-macro crate is resolved for the host,
-    where cargo builds it, and for the target too, where cargo activates a
-    member it is asked to build), features imply features
-    (`std = ["alloc", "dep:serde", "serde?/std"]`; `serde/derive` turns on the
-    package's feature `serde` too, written or the one an optional dependency
-    gets), enable optional dependencies and request dependency features, and
-    every active dependency gets `default` plus what its dependents ask for, to
-    a fixed point. A dependency's own dev-dependencies are nobody's build and
-    never count (sha2's `[dev-dependencies] digest = { features = ["dev"] }`
-    doesn't turn on digest's `dev`); the entries' packages' dev-dependencies
-    count under resolver 1 only, since resolver 2 (edition 2021+, or `resolver =
-    "2"`) keeps them out of a normal build. Resolver 2 also resolves what is
-    built for the host -- build-dependencies, proc-macro crates and what they
-    depend on -- apart from what is built for the target: a feature a
-    build-dependency asks of a crate isn't on in that crate as a normal
-    dependency. And it decides target-specific dependency tables: one counts
-    when `--cargo-target` says it applies (a build-dependency's table against
-    the host), and not when it says it doesn't; without a target, what only such
-    a table enables -- a dependency, a feature -- is on *maybe*: its gated code
-    is kept, but a missing module behind it is not fatal, and a candidate under
-    it is never taken as certain. Resolver 1 unifies it all, every table
-    included. The resolver is the workspace's: its `resolver`, else its
-    edition. Each dependency table is a dependency of its own, as cargo has it:
-    `rand = "0.7"` under `[dependencies]` beside `rand = "0.8"` under
-    `[build-dependencies]` (or a `[dev-dependencies] fake = { package = "rand",
-    version = "0.8" }`) is two crates, and a file is followed into the one its
-    code uses (see above). The vendored
-    copy a dependency resolves to is from where the dependency says: a git
-    dependency's (or one a git `[patch]` replaces) a git checkout's -- a copy
-    whose `.cargo-checksum.json` has no package checksum -- any other's a
-    registry's; of those, the version `Cargo.lock` lists for the crate from that
-    source that the requirement allows, so two vendored versions of one crate
-    each get their own features and edges; a lock that lists only versions the
-    requirement doesn't allow is out of date, and the loader says so and goes by
-    the requirement, as when there is no lock entry: the one vendored version
-    the requirement allows. Requirements are read by the semver crate's rules
-    (`@preventive/lockfile`'s `rust-semver.js`): `1` takes no prerelease, `=2.0.0-rc.1`
-    takes that one. A `[patch]` -- in the workspace root's manifest (one above
-    the bundle root too), or in the cargo config the build reads (see above:
-    nearest first, ahead of the manifest's, its `path` relative to the
-    directory holding `.cargo`) -- replaces a crate of its table's source only (`[patch.crates-io]`
-    crates.io's, `[patch."https://github.com/…"]` that repository's), and only
-    where its version fits the dependent's requirement, as cargo applies it; one
-    that doesn't is reported and not used.
-    When the locked version isn't vendored, or no vendored version fits, or
-    several do and no lock says which, the loader warns and doesn't follow the
-    dependency rather than guess: cargo would build none of them from what the
-    bundle holds.
+    the manifests, not cargo's resolver: no --cargo-target`): the manifests are
+    laid out as the lockfile's graph would be, each dependency table resolved to
+    the package in-tree the loader picks for it (see below), and handed to the
+    same feature resolver of `@preventive/lockfile`'s, cargo's rules
+    throughout: the roots start from their `default` feature, features imply
+    features (`std = ["alloc", "dep:serde", "serde?/std"]`; `serde/derive`
+    turns on the package's feature `serde` too, written or the one an optional
+    dependency gets), enable optional dependencies and request dependency
+    features, and every active dependency gets `default` plus what its
+    dependents ask for. A dependency's own dev-dependencies are nobody's build
+    and never count (sha2's `[dev-dependencies] digest = { features = ["dev"]
+    }` doesn't turn on digest's `dev`); an entries' package's own count under
+    resolver 1, and where an entry is a test, bench or example of it. Resolver 2
+    (edition 2021+, or `resolver = "2"`) also resolves what is built for the
+    host -- build-dependencies, proc-macro crates and what they depend on --
+    apart from what is built for the target: a feature a build-dependency asks
+    of a crate isn't on in that crate as a normal dependency. A dependency no
+    package in-tree answers stands in for itself: it takes the features asked
+    of it, and the build linking it is a dependency the bundle lacks (see
+    above). The entries' packages are the members, each given the
+    `--cargo-features` it has: one no package has stops the build, as cargo
+    refuses it. Resolver 1 unifies it all, every table included. The resolver
+    is the workspace's: its `resolver`, else its edition.
+
+  Either way, a target-specific dependency table counts when `--cargo-target`
+  says it applies (a build-dependency's table against the host), and not when
+  it says it doesn't; where the loader can't tell -- no target, a host it
+  doesn't know (a target that isn't `host`), a cfg it doesn't decide on the
+  platform (`cfg(loom)`, which rustflags may set; `cfg(debug_assertions)`) --
+  the build is resolved both ways, and what only such a table enables -- a
+  dependency, a feature -- is on *maybe*: its gated code is kept, but a missing
+  module behind it is not fatal, and a candidate under it is never taken as
+  certain.
+
+  In the replay, each dependency table is a dependency of its own, as cargo has
+  it: `rand = "0.7"` under `[dependencies]` beside `rand = "0.8"` under
+  `[build-dependencies]` (or a `[dev-dependencies] fake = { package = "rand",
+  version = "0.6" }`) is two crates, and a file is followed into the one its
+  code uses (see above). The vendored copy a dependency resolves to is from
+  where the dependency says: a git dependency's (or one a git `[patch]`
+  replaces) a git checkout's -- a copy whose `.cargo-checksum.json` has no
+  package checksum -- any other's a registry's; of those, the version
+  `Cargo.lock` lists for the crate from that source that the requirement
+  allows, so two vendored versions of one crate each get their own features
+  and edges; a lock that lists only versions the requirement doesn't allow is
+  out of date, and the loader says so and goes by the requirement, as when
+  there is no lock entry: the one vendored version the requirement allows.
+  Requirements are read by the semver crate's rules (`@preventive/lockfile`'s
+  `rust-semver.js`): `1` takes no prerelease, `=2.0.0-rc.1` takes that one. A
+  `[patch]` -- in the workspace root's manifest (one above the bundle root
+  too), or in the cargo config the build reads (see above: nearest first, ahead
+  of the manifest's, its `path` relative to the directory holding `.cargo`) --
+  replaces a crate of its table's source only (`[patch.crates-io]` crates.io's,
+  `[patch."https://github.com/…"]` that repository's), and only where its
+  version fits the dependent's requirement, as cargo applies it; one that
+  doesn't is reported and not used. When the locked version isn't vendored, or
+  no vendored version fits, or several do and no lock says which, the loader
+  warns and doesn't follow the dependency rather than guess: cargo would build
+  none of them from what the bundle holds. What it warns of is said for the
+  dependencies the build links: not for another platform's table, nor for a
+  dev-dependency where no entry is a test, bench or example.
 
   A package the resolved build doesn't pull in has unknown features, and its
   gated code is kept. A member bundled from its own directory, its workspace's
@@ -1025,7 +1035,7 @@ so is a `[lib] path` outside the package.
 The root packages' features follow the same flags as `cargo build`, in either
 mode: `--cargo-features=a,b` (repeatable; `x/feat` is a feature of the entries'
 package named `x`, else of their dependency `x`, cargo's `dep/feat` form; a name
-that matches neither is reported), `--cargo-no-default-features`,
+that matches neither stops the build, as cargo refuses it), `--cargo-no-default-features`,
 `--cargo-all-features`. Without them, the roots get their `default` feature, as
 `cargo build` does. For a `workspace = true` dependency the workspace entry
 decides `default-features`: a member's `false` is ignored unless the workspace

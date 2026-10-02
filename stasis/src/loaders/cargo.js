@@ -72,8 +72,7 @@ export function normalizeRel(dir, sub) {
 
 // --- Cargo.toml -----------------------------------------------------------------------
 
-// Entries of a `[features]` list beyond a plain feature name: `dep:key` and `key/feat` / `key?/feat`.
-const DEP_IMPLICATION_RE = /^dep:(.+)$/u
+// A `[features]` entry asking a feature of a dependency: `key/feat` or `key?/feat`.
 const DEP_FEATURE_RE = /^([^/?]+)(\?)?\/(.+)$/u
 
 // `--features a,b pkg/c` (cargo's syntax: repeatable, comma- or space-separated) → the list of names.
@@ -148,7 +147,6 @@ function manifestOf(text, doc, file, workspace) {
     resolver: cargo.workspace?.resolver ?? pkg?.resolver ?? null,
     isWorkspace: cargo.workspace !== undefined,
     lib: { name: typeof lib?.name === 'string' ? lib.name : null, path: typeof lib?.path === 'string' ? lib.path : null, procMacro: pkg?.procMacro === true },
-    features: new Map(Object.entries(pkg?.features ?? {})),
     deps,
   }
 }
@@ -521,26 +519,17 @@ const CRATES_IO_INDEXES = new Set(['https://github.com/rust-lang/crates.io-index
 // A `members` pattern's segment as a regex (glob's syntax, as cargo takes it: `*`, `?`, `[…]`).
 const globSegment = (seg) => new RegExp(`^${seg.replaceAll(/[.+^${}()|\\]/gu, '\\$&').replaceAll('[!', '[^').replaceAll('*', '[^/]*').replaceAll('?', '[^/]')}$`, 'u')
 
-// --- An undecided host ----------------------------------------------------------------
-
-// The stand-in platforms an undecided host is resolved against (hostUndecided): the target's cfgs
-// carry a mark of the target and of its name, the host's only a mark of the host.
+// The stand-in platforms cargo's resolver is run against (see resolveGraph): each carries a mark
+// of its own, and the cfgs and a mark of the name of the platform it stands in for, where known.
 const MARK_TARGET = '__stasis_target'
 const MARK_HOST = '__stasis_host'
 const MARK_NAME = '__stasis_target_name'
-// `graph` (linkCargo's) with every target-specific dependency's platform holding on the target as
-// written and on the host as `on` says -- nowhere, for the features on for certain, or everywhere,
-// for all that may be: cargo's resolver takes a host it knows, and the machine that builds need not
-// be the one that bundles.
-function hostUndecided(graph, on) {
+const standInPlatform = (mark, info) => ({ name: mark, cfg: [mark, ...(info === null ? [] : [...info.cfgs, `${MARK_NAME}="${info.triple}"`])] })
+// `graph` with the platform of every target-specific dependency `to(platform)`.
+function retarget(graph, to) {
   const packages = Object.create(null)
   for (const [key, pkg] of Object.entries(graph.packages)) {
-    const dependencies = pkg.dependencies.map((d) => {
-      if (d.target === undefined) return d
-      const onTarget = /^cfg\((.*)\)$/su.exec(d.target)?.[1] ?? `${MARK_NAME} = "${d.target}"`
-      return { ...d, target: `cfg(any(all(${MARK_TARGET}, ${onTarget}), all(${MARK_HOST}, ${on})))` }
-    })
-    packages[key] = { ...pkg, dependencies }
+    packages[key] = { ...pkg, dependencies: pkg.dependencies.map((d) => (d.target === undefined ? d : { ...d, target: to(d.target) })) }
   }
   return { ...graph, packages }
 }
@@ -929,11 +918,21 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // copies don't settle it: the locked version isn't among them, none satisfies the requirement,
   // or several do and no lock chooses. Cargo would build none of those from what the bundle holds,
   // so none is guessed.
-  const resolveDep = (m, dep, request) => {
+  // What it warns of is said once, when it is first asked for unless `quiet`, else when
+  // warnDep asks: the replay lays out every declaration, and warns only of those the build links.
+  const resolveDep = (m, dep, request, { quiet = false } = {}) => {
     const byRequest = cached(depTargets, m.dir, () => new Map())
-    return cached(byRequest, request, () => resolveDepUncached(m, dep, request))
+    const found = cached(byRequest, request, () => {
+      const warnings = []
+      return { t: resolveDepUncached(m, dep, request, (w) => warnings.push(w)), warnings }
+    })
+    if (!quiet) warnDep(m, request)
+    return found.t
   }
-  const resolveDepUncached = (m, dep, request) => {
+  const warnDep = (m, request) => {
+    for (const w of depTargets.get(m.dir)?.get(request)?.warnings.splice(0) ?? []) console.warn(w)
+  }
+  const resolveDepUncached = (m, dep, request, warn) => {
     const asPackage = (dir) => {
       const t = dir === null ? null : readManifest(dir)
       return t?.package ? t : null
@@ -944,8 +943,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const who = `${m.package.name} ${version(m)}`
     if (request.path) {
       const t = asPackage(request.dir)
-      if (request.dir === null) console.warn(`[loader.cargo] ${who}'s dependency ${dep.name} is a path outside the bundle root: ${request.path}`)
-      else if (t === null) console.warn(`[loader.cargo] ${who}'s dependency ${dep.name} names ${request.dir}, which holds no Cargo.toml with a [package]`)
+      if (request.dir === null) warn(`[loader.cargo] ${who}'s dependency ${dep.name} is a path outside the bundle root: ${request.path}`)
+      else if (t === null) warn(`[loader.cargo] ${who}'s dependency ${dep.name} names ${request.dir}, which holds no Cargo.toml with a [package]`)
       return t
     }
     const crate = normName(request.package)
@@ -955,13 +954,13 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const patch = patchFor(crate, request)
     if (patch?.spec.source.type === 'path') {
       if (patch.dir === null) {
-        console.warn(`[loader.cargo] ${patch.from} patches ${crate} with a path outside the bundle root`)
+        warn(`[loader.cargo] ${patch.from} patches ${crate} with a path outside the bundle root`)
         return null
       }
       const t = asPackage(patch.dir)
       // cargo uses a patch only where its version satisfies the requirement ("patch … was not used").
       if (t !== null && fits(version(t))) return t
-      console.warn(t === null
+      warn(t === null
         ? `[loader.cargo] ${patch.from} patches ${crate} with ${patch.dir}, which holds no Cargo.toml with a [package]`
         : `[loader.cargo] ${patch.from}'s patch of ${crate} (${version(t)}) doesn't satisfy ${who}'s requirement ${req}: not used`)
     } else if (patch?.spec.source.type === 'git') {
@@ -981,18 +980,18 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const want = pins.find(fits) ?? null
       // A lock whose pin the requirement no longer allows is out of date: cargo would resolve
       // again, so the requirement decides.
-      if (want === null && pins.length > 0) console.warn(`[loader.cargo] ${lk.file} pins ${who} to ${crate} ${pins.join(', ')}, which ${req} doesn't allow: the lock is out of date`)
+      if (want === null && pins.length > 0) warn(`[loader.cargo] ${lk.file} pins ${who} to ${crate} ${pins.join(', ')}, which ${req} doesn't allow: the lock is out of date`)
       if (want !== null) {
         const hit = candidates.find((c) => c.version === want)
         if (hit) return readManifest(hit.dir)
-        console.warn(`[loader.cargo] ${who} is locked to ${crate} ${want}, which isn't vendored (vendored: ${vendoredList})`)
+        warn(`[loader.cargo] ${who} is locked to ${crate} ${want}, which isn't vendored (vendored: ${vendoredList})`)
         return null
       }
     }
     const fitting = candidates.filter((c) => fits(c.version))
     if (fitting.length === 1) return readManifest(fitting[0].dir)
-    if (fitting.length === 0) console.warn(`[loader.cargo] No vendored version of ${crate} satisfies ${who}'s requirement ${req} (vendored: ${vendoredList})`)
-    else console.warn(`[loader.cargo] Several vendored versions of ${crate} satisfy ${who}'s requirement ${req ?? '*'} (${fitting.map((c) => c.version).join(', ')}) and no Cargo.lock says which`)
+    if (fitting.length === 0) warn(`[loader.cargo] No vendored version of ${crate} satisfies ${who}'s requirement ${req} (vendored: ${vendoredList})`)
+    else warn(`[loader.cargo] Several vendored versions of ${crate} satisfy ${who}'s requirement ${req ?? '*'} (${fitting.map((c) => c.version).join(', ')}) and no Cargo.lock says which`)
     return null
   }
 
@@ -1018,10 +1017,6 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // cfgs when `target` was given; the host's only when the target is the host (`host`), since the
   // machine that builds need not be the one that bundles.
   const platformInfo = (platform) => (platform === 'target' ? targetInfo : hostInfo)
-  // Whether a table applies in a build for `platform`: `yes`, `no`, or `maybe` when the platform's
-  // cfgs aren't known or don't decide it. A build-dependency table is about the host its build
-  // script runs on. Resolver 1 counts every platform's table, as cargo's v1 unification does.
-  const tableApplies = (r, platform) => (resolverVersion() === 1 ? 'yes' : tableOn(r.target, r.kind === 'build' ? 'host' : platform))
   // Whether a table for platform `spec` (a `cfg(…)` or a triple; null or undefined for none) is
   // one for `platform`: `yes`, `no`, or `maybe` when its cfgs aren't known or don't decide it.
   const tableOn = (spec, platform) => {
@@ -1032,163 +1027,118 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const holds = cfg ? evalCfg(cfg[1], { target: info.cfgs }) : spec === info.triple
     return holds === true ? 'yes' : (holds === false ? 'no' : 'maybe')
   }
-  // The context a dependency of a package built in context `c` is built in: the host's for a
-  // build-dependency (its build script's) and for a proc-macro crate, else `c`'s.
-  const depCtx = (c, r, t) => (r.kind === 'build' || isProcMacroPkg(t) ? 'host' : c)
-  const isOptional = (d) => [...d.kinds.values()].some((r) => r.optional)
-  // A feature's list, from cargo's feature map (an optional dependency no `dep:` names has a
-  // feature of its own name, as the manifest spells it: `proc-macro-crate`), or null for none.
-  const featureImplications = (m, f) => m.features.get(f) ?? null
-  // The feature contexts a root package is resolved in: the target's, and for a proc-macro crate
-  // the host's too -- cargo builds it for the host, but a member selected for the build is
-  // activated in both, so what it asks of a package the target build shares reaches that build.
-  const rootCtxs = (m) => (isProcMacroPkg(m) ? ['target', 'host'] : ['target'])
   // A package in a context, as the resolutions key it: resolver 1's one context is `target`'s.
   const nodeKey = (c, dir) => `${featureCtx(c)}\0${dir}`
 
-  // Enabled features per (context, package dir), for every package the root packages' builds pull
-  // in: the roots start from `default` (or the flags), then features imply features, activate
-  // optional deps and request dependency features, and active deps get `default` plus what the
-  // dependent asks for, to a fixed point -- cargo's unification. `includeMaybe`: whether the
-  // tables whose platform the loader can't decide count; resolved both ways, the features on
-  // without them are on for certain, the rest of those on with them only maybe (a feature can turn
-  // code off -- `#[cfg(not(feature = "std"))]` -- so counting a table that may not apply is no
-  // safe over-approximation). Dev-dependencies: a dependency's own are never built by anyone, so
-  // they never count; the root packages' count under resolver 1, and for a test/bench entry.
-  // `lacking`, when given, collects the active dependencies no package in-tree answers, with the
-  // kinds of their tables (see ensureResolved).
-  const resolveFeatures = (includeMaybe, lacking = null) => {
-    const enabled = new Map()
-    // The entries' packages (manifests are memoized per dir, so identity dedupes them).
-    const roots = [...new Set(entries.map(packageFor).filter(Boolean))]
-    if (roots.length === 0) return enabled
-    const resolver = resolverVersion()
-    const active = new Map() // node -> Set<dep key> (activated optional deps)
-    let changed = false
-    const inGraph = (c, m) => {
-      const key = nodeKey(c, m.dir)
-      if (!enabled.has(key)) {
-        enabled.set(key, new Set())
-        changed = true
+  // Both feature resolutions of `graph` (linkCargo's, or the replay's) by cargo's resolver, for the
+  // build of `packages`, members of it, per (context, dir) as nodeKey keys them -- `dirOf(key)` the
+  // dir of a package key, undefined for none -- resolver 1's one set under `target`, the normal one
+  // where there is one: `sure` with the features on for certain, `all` with those that may be, and
+  // `result`, the resolver's own answer for `all`. Cargo's resolver takes the platforms it builds
+  // for as known, and the loader may not know them: it runs against stand-ins (standInPlatform), a
+  // target-specific table the loader can't decide on one -- a platform it doesn't know, a cfg it
+  // can't decide there (`cfg(loom)`, which rustflags may set) -- off for `sure` and on for `all`,
+  // the rest for cargo to decide as written. What cargo's resolver refuses -- a feature asked of a
+  // package that hasn't it -- stops the build, naming `file`.
+  const resolveGraph = (graph, packages, file, dirOf) => {
+    const build = { packages, features, allFeatures, noDefaultFeatures, dev: entries.some((e) => linksDevDeps(e)), host: standInPlatform(MARK_HOST, hostInfo), targets: [standInPlatform(MARK_TARGET, targetInfo)] }
+    let undecided = false
+    const decided = (on) => retarget(graph, (spec) => {
+      const at = (platform) => {
+        if (tableOn(spec, platform) !== 'maybe') return /^cfg\((.*)\)$/su.exec(spec)?.[1] ?? `${MARK_NAME} = "${spec}"`
+        undecided = true
+        return String(on)
       }
-      return enabled.get(key)
-    }
-    const enable = (c, m, f) => {
-      const set = inGraph(c, m)
-      if (featureImplications(m, f) === null || set.has(f)) return // unknown feature: cargo would error
-      set.add(f)
-      changed = true
-    }
-    const activate = (c, m, key) => {
-      const node = nodeKey(c, m.dir)
-      if (!active.has(node)) active.set(node, new Set())
-      if (active.get(node).has(key)) return
-      active.get(node).add(key)
-      changed = true
-    }
-    const rootDirs = new Set(roots.map((r) => r.dir))
-    // Dev-dependencies count for a root package under resolver 1, and for one whose entries include a
-    // test, bench or example target (devRootDirs).
-    const testRootDirs = devRootDirs()
-    const kindApplies = (m, r) => r.kind !== 'dev' || (rootDirs.has(m.dir) && (resolver === 1 || testRootDirs.has(m.dir)))
-    const applies = (r, c) => {
-      const a = tableApplies(r, c)
-      return a === 'yes' || (includeMaybe && a === 'maybe')
-    }
-    // The tables of `d` (entries of `d.kinds`) that take part in `m`'s build in context `c`, an
-    // optional one only once activated.
-    const activeRequests = (c, m, d) => [...d.kinds.values()]
-      .filter((r) => kindApplies(m, r) && applies(r, c) && (!r.optional || active.get(nodeKey(c, m.dir))?.has(d.key) === true))
-    // One entry of a feature's list: `other`, `dep:key`, `key/feat`, `key?/feat`. Returns whether it named anything.
-    const applyImplication = (c, m, imp) => {
-      const explicitDep = DEP_IMPLICATION_RE.exec(imp)
-      if (explicitDep) {
-        activate(c, m, normName(explicitDep[1]))
-        return true
+      return `cfg(any(all(${MARK_TARGET}, ${at('target')}), all(${MARK_HOST}, ${at('host')})))`
+    })
+    const featuresOf = (g) => readNamed(file, () => resolveCargoFeatures(g, build))
+    const sure = featuresOf(decided(false))
+    const all = undecided ? featuresOf(decided(true)) : sure
+    const byNode = (result) => {
+      const out = new Map()
+      for (const [key, { normal, host: onHost }] of Object.entries(result)) {
+        const dir = dirOf(key)
+        if (dir === undefined) continue
+        if (onHost !== undefined) out.set(nodeKey('host', dir), new Set(onHost))
+        if (normal !== undefined) out.set(nodeKey('target', dir), new Set(normal))
       }
-      const depFeature = DEP_FEATURE_RE.exec(imp)
-      if (depFeature) {
-        const d = m.deps.get(normName(depFeature[1]))
-        if (!d) return false
-        // `dep/feat` enables an optional dep, and the package's feature of the dependency's name
-        // where it has one, implicit or written (`serde = ["dep:serde", "extra"]` beside `full =
-        // ["serde/derive"]` turns `serde` and `extra` on); `dep?/feat` only asks if it is already on.
-        if (depFeature[2] !== '?' && isOptional(d)) {
-          activate(c, m, d.key)
-          if (featureImplications(m, d.name) !== null) enable(c, m, d.name)
-        }
-        for (const r of activeRequests(c, m, d)) {
-          const t = resolveDep(m, d, r)
-          if (t) enable(depCtx(c, r, t), t, depFeature[3])
-        }
-        return true
-      }
-      if (featureImplications(m, imp) === null) return false
-      enable(c, m, imp)
-      return true
+      return out
     }
-
-    for (const m of roots) {
-      for (const c of rootCtxs(m)) {
-        inGraph(c, m)
-        if (allFeatures) {
-          for (const f of m.features.keys()) enable(c, m, f)
-        } else if (!noDefaultFeatures) {
-          enable(c, m, 'default')
-        }
-      }
-    }
-    // `--features a,b,pkg/c`: a bare name is a feature of every root package; `x/c` is a feature of
-    // the root package named `x`, else of the dependency `x` of each root (cargo's `dep/feat` form).
-    const rootNames = new Set(roots.map((r) => normName(r.package.name)))
-    const requested = []
-    for (const flag of parseFeatureList(features)) {
-      const slash = flag.indexOf('/')
-      const pkg = slash === -1 ? null : normName(flag.slice(0, slash))
-      const scoped = pkg !== null && rootNames.has(pkg)
-      const targets = scoped ? roots.filter((m) => normName(m.package.name) === pkg) : roots
-      const imp = scoped ? flag.slice(slash + 1) : flag
-      // Whether a name is known doesn't depend on what is active yet, so the check happens once.
-      if (targets.filter((m) => rootCtxs(m).filter((c) => applyImplication(c, m, imp)).length > 0).length === 0 && includeMaybe) {
-        console.warn(`[stasis] --cargo-features: '${flag}' names no feature of the entries' packages, nor a dependency of theirs`)
-      }
-      requested.push({ targets, imp })
-    }
-
-    do {
-      changed = false
-      // The requested features re-apply on every pass like the manifest's entries do: a weak
-      // `dep?/x` asked for on the command line takes effect once `default` has activated `dep`.
-      for (const { targets, imp } of requested) for (const m of targets) for (const c of rootCtxs(m)) applyImplication(c, m, imp)
-      // Map/Set iteration is live: packages and features added mid-pass are visited in this pass.
-      for (const node of enabled.keys()) {
-        const cut = node.indexOf('\0')
-        const c = node.slice(0, cut)
-        const m = readManifest(node.slice(cut + 1))
-        for (const f of enabled.get(node)) {
-          for (const imp of featureImplications(m, f) ?? []) applyImplication(c, m, imp)
-        }
-        for (const d of m.deps.values()) {
-          for (const r of activeRequests(c, m, d)) {
-            const t = resolveDep(m, d, r)
-            if (!t) {
-              if (lacking !== null) {
-                const id = `${m.dir}\0${d.key}`
-                if (!lacking.has(id)) lacking.set(id, { dir: m.dir, key: d.key, name: d.name, kinds: new Set() })
-                lacking.get(id).kinds.add(r.kind)
-              }
-              continue
-            }
-            const dc = depCtx(c, r, t)
-            inGraph(dc, t)
-            if (r.defaultFeatures) enable(dc, t, 'default')
-            for (const f of r.features) enable(dc, t, f)
-          }
-        }
-      }
-    } while (changed)
-    return enabled
+    return { sure: byNode(sure), all: byNode(all), result: all }
   }
+
+  // --- the replay: cargo's feature resolver, by @preventive/lockfile, over the manifests
+
+  // The graph cargo's feature resolver takes, as linkCargo gives one, laid out from the manifests
+  // where the lockfile's can't be: each package in-tree the entries' packages (`roots`) reach, by
+  // its dir, each of its declarations resolved as resolveDep resolves it -- a path, a `[patch]`, the
+  // vendored copy the lockfile or the requirement picks -- but a dependency's own dev-dependencies,
+  // which no build of the entries has. A declaration nothing in-tree answers resolves to a stand-in
+  // of its own, which depends on nothing and has every feature its dependent may ask of it: the
+  // declaration's, `default`, and what a `name/feature` or `name?/feature` of the package's
+  // features, or of `--cargo-features` for a root, names. So does, unresolved (`unbuilt`), a
+  // dev-dependency of a root that no entry is a test, bench or example of, under resolver 2: cargo's
+  // resolver takes the dev targets of every member as built or none, and the entries build only
+  // theirs. The members are the roots, and there is no root package: `--cargo-features` goes to each
+  // that has it. `edges`: each declaration's resolved key, with its package and request (`m`, `d`,
+  // `request`), and whether it is a stand-in.
+  const replayGraph = (roots) => {
+    const packages = Object.create(null)
+    const edges = []
+    const rootDirs = new Set(roots.map((m) => m.dir))
+    const unbuiltDev = (m) => resolverVersion() !== 1 && !devRootDirs().has(m.dir)
+    const queue = [...roots]
+    for (const m of queue) {
+      if (m.dir in packages) continue
+      const pkg = m.cargo.package
+      const dependencies = pkg.dependencies.map((d, index) => {
+        if (d.kind === 'dev' && !rootDirs.has(m.dir)) return { ...d, resolved: undefined, active: false }
+        const dep = m.deps.get(normName(d.name))
+        const request = dep.kinds.get(d.target === undefined ? d.kind : `${d.kind}@${d.target}`)
+        const unbuilt = d.kind === 'dev' && unbuiltDev(m)
+        const t = unbuilt ? null : resolveDep(m, dep, request, { quiet: true })
+        if (t !== null) queue.push(t)
+        const key = t?.dir ?? `\0${m.dir}\0${index}`
+        edges.push({ key, m, d, request, standIn: t === null, unbuilt })
+        return { ...d, resolved: key, active: true }
+      })
+      packages[m.dir] = { name: pkg.name, version: pkg.version, source: undefined, checksum: undefined, manifest: pkg, dependencies }
+    }
+    for (const { key, m, d } of edges.filter((e) => e.standIn)) {
+      const asked = new Set(['default', ...d.features])
+      for (const value of [...Object.values(m.cargo.package.features).flat(), ...(rootDirs.has(m.dir) ? parseFeatureList(features) : [])]) {
+        const named = DEP_FEATURE_RE.exec(value)
+        if (named?.[1] === d.name) asked.add(named[3])
+      }
+      const manifest = { name: d.package, features: Object.fromEntries([...asked].map((f) => [f, []])), dependencies: [], procMacro: false, procMacroTarget: false }
+      Object.setPrototypeOf(manifest.features, null)
+      packages[key] = { name: d.package, version: '0.0.0', source: undefined, checksum: undefined, manifest, dependencies: [] }
+    }
+    return { graph: { resolver: resolverVersion(), root: undefined, members: [...rootDirs], packages }, edges }
+  }
+
+  // The replay's resolution, as resolveGraph gives it, and the dependencies the build links that
+  // nothing in-tree answers -- a stand-in it reaches -- as `dir key` → `{ dir, key, name, kinds }`,
+  // the kinds of their tables (see lackingDependencies). What resolveDep warned of, it says now of
+  // the declarations whose package the build reaches.
+  const replay = () => {
+    const roots = [...new Set(entries.map(packageFor).filter(Boolean))]
+    if (roots.length === 0) return { resolved: { sure: new Map(), all: new Map() }, lacking: new Map() }
+    const { graph, edges } = replayGraph(roots)
+    const standIns = new Set(edges.filter((e) => e.standIn).map((e) => e.key))
+    const resolved = resolveGraph(graph, graph.members, buildWorkspaceRoot()?.file ?? null, (key) => (standIns.has(key) ? undefined : key))
+    const lacking = new Map()
+    for (const { key, m, d, request, standIn, unbuilt } of edges) {
+      if (unbuilt || !(key in resolved.result)) continue
+      warnDep(m, request)
+      if (!standIn) continue
+      const id = `${m.dir}\0${normName(d.name)}`
+      if (!lacking.has(id)) lacking.set(id, { dir: m.dir, key: normName(d.name), name: d.name, kinds: new Set() })
+      lacking.get(id).kinds.add(d.kind)
+    }
+    return { resolved, lacking }
+  }
+
   // --- the exact resolution: cargo's resolver, by @preventive/lockfile
 
   // The directories a workspace `members` pattern names, project-relative (glob's syntax, as cargo
@@ -1258,12 +1208,11 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // root manifest or the cargo config, proc-macros and build-dependencies built for the host, the
   // command line's features handed out as cargo hands them out. What either refuses -- a lockfile
   // out of date with the manifests, a vendored copy whose checksum isn't the lockfile's, a feature
-  // asked of a package that hasn't it -- stops the build. A host the loader doesn't know (a
-  // target that isn't `host`) is resolved both ways: the host's target-specific tables off for the
-  // features on for certain, on for all that may be (hostUndecided). `{ graph, dirOf, keyOf,
-  // resolved }` -- package key ↔ dir, and the features per (context, dir) as resolveFeatures
-  // gives them -- or null when something it takes is missing, for the replay to decide: no
-  // lockfile, no target, a package not vendored, a path outside the bundle root.
+  // asked of a package that hasn't it -- stops the build. A table the loader can't decide on a
+  // platform -- the host's, where the target isn't `host` -- is resolved both ways (resolveGraph).
+  // `{ graph, dirOf, keyOf, resolved }` -- package key ↔ dir, and the features per (context, dir)
+  // as resolveGraph gives them -- or null when something it takes is missing, for the replay to
+  // decide: no lockfile, no target, a package not vendored, a path outside the bundle root.
   let exactMemo
   let exactWhy = null // why there is none, for the replay to say
   const exact = () => {
@@ -1347,32 +1296,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     if (entryKeys.some((k) => !memberKeys.includes(k))) return notExact('an entry\'s package isn\'t a member of the workspace')
     const config = readNamed(configs[0]?.file ?? null, () => parseCargoConfig(configs.map((c) => c.text)))
     const graph = readNamed(lk.file, () => linkCargo(lk.lock, manifestsByKey, { workspace: root.cargo, members: memberKeys, config }))
-    const build = { packages: entryKeys, features, allFeatures, noDefaultFeatures, dev: entries.some((e) => linksDevDeps(e)) }
-    const platform = (info, marks = []) => ({ name: info.triple, cfg: [...info.cfgs, ...marks] })
-    const featuresOf = (g, platforms) => readNamed(root.file, () => resolveCargoFeatures(g, { ...build, ...platforms }))
-    let sure
-    let all
-    if (hostInfo === null) {
-      const platforms = { host: { name: MARK_HOST, cfg: [MARK_HOST] }, targets: [platform(targetInfo, [MARK_TARGET, `${MARK_NAME}="${targetInfo.triple}"`])] }
-      sure = featuresOf(hostUndecided(graph, false), platforms)
-      all = featuresOf(hostUndecided(graph, true), platforms)
-    } else {
-      sure = featuresOf(graph, { host: platform(hostInfo), targets: [platform(targetInfo)] })
-      all = sure
-    }
-    // Per (context, dir), as resolveFeatures keys them: resolver 1's one set under `target`, the
-    // normal one where there is one.
-    const byNode = (result) => {
-      const out = new Map()
-      for (const [key, { normal, host: onHost }] of Object.entries(result)) {
-        const dir = dirOf.get(key)
-        if (dir === undefined) continue
-        if (onHost !== undefined) out.set(nodeKey('host', dir), new Set(onHost))
-        if (normal !== undefined) out.set(nodeKey('target', dir), new Set(normal))
-      }
-      return out
-    }
-    return { graph, dirOf, keyOf, resolved: { sure: byNode(sure), all: byNode(all) } }
+    return { graph, dirOf, keyOf, resolved: resolveGraph(graph, entryKeys, root.file, (key) => dirOf.get(key)) }
   }
 
   // Both resolutions, per (context, package dir): `sure` without the undecided tables, `all` with
@@ -1392,10 +1316,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       resolved = { sure: new Map(), all: byNode }
     } else {
       resolved = exact()?.resolved ?? null
-      if (resolved === null) {
-        lacking = new Map()
-        resolved = { sure: resolveFeatures(false), all: resolveFeatures(true, lacking) }
-      }
+      if (resolved === null) ({ resolved, lacking } = replay())
     }
     return resolved
   }

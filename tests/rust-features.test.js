@@ -100,7 +100,7 @@ test('parseCargoManifest reads multi-line arrays, feature tables, dependency kin
   t.assert.deepStrictEqual(m.package, { name: 'app', version: '0.1.0', edition: '2021', build: null })
   t.assert.equal(m.resolver, 2)
   // cargo's feature map: as written, and a feature for the optional dependency no `dep:` names
-  t.assert.deepStrictEqual([...m.features], [['default', ['std']], ['std', []], ['full', ['std', 'dep:opt', 'sub/two', 'opt?/extra']], ['pm-crate', ['dep:pm-crate']]])
+  t.assert.deepStrictEqual(Object.entries(m.cargo.package.features), [['default', ['std']], ['std', []], ['full', ['std', 'dep:opt', 'sub/two', 'opt?/extra']], ['pm-crate', ['dep:pm-crate']]])
   const dep = (k) => Object.fromEntries([...m.deps.get(k).kinds].toSorted())
   const ask = (pkg, version, more) => ({ kind: 'normal', target: null, version, path: null, source: 'registry', origin: null, package: pkg, renamed: false, inherited: false, optional: false, defaultFeatures: true, features: [], ...more })
   // Each dependency table is its own request, for the crate it names: a dev-dependency's features
@@ -321,15 +321,15 @@ test('createCargoContext keeps a target-specific dependency table apart from the
 test('createCargoContext picks the feature resolver from a workspace-inherited edition', (t) => {
   const files = (edition) => ({
     'Cargo.toml': ['[workspace]', '[workspace.package]', `edition = "${edition}"`, '[package]', 'name = "app"', 'version = "0.1.0"', 'edition.workspace = true',
-      '[dev-dependencies]', 'devdep = "1"'].join('\n'),
+      '[dependencies]', 'dep = "1"', '[dev-dependencies]', 'dep = { version = "1", features = ["dev"] }'].join('\n'),
     'src/main.rs': '',
-    'vendor/devdep/Cargo.toml': '[package]\nname = "devdep"\nversion = "1.0.0"\n',
-    'vendor/devdep/src/lib.rs': '',
+    'vendor/dep/Cargo.toml': '[package]\nname = "dep"\nversion = "1.0.0"\n[features]\ndev = []\n',
+    'vendor/dep/src/lib.rs': '',
   })
-  // edition 2021 → resolver 2: the root's dev-dependencies stay out of a normal build
-  withProject(files('2021'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [] }))
-  // edition 2018 → resolver 1: they join
-  withProject(files('2018'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/devdep': [] }))
+  // edition 2021 → resolver 2: what the root's dev-dependencies ask stays out of a normal build
+  withProject(files('2021'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/dep': [] }))
+  // edition 2018 → resolver 1: it joins
+  withProject(files('2018'), (tmp) => t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['src/main.rs'] })), { '.': [], 'vendor/dep': ['dev'] }))
 })
 
 test('createCargoContext takes the feature resolver from the build\'s workspace, never from a vendored crate an entry is in', (t) => {
@@ -407,19 +407,9 @@ test('createCargoContext honours the root feature flags: --features (incl. pkg/f
   t.assert.deepStrictEqual(enabledOf(depFeat)['crates/lib-a'], ['default', 'extra', 'extra-dep', 'serde', 'std'])
   t.assert.deepStrictEqual(enabledOf(depFeat)['vendor/serde'], ['default', 'std'])
   t.assert.deepStrictEqual(enabledOf(depFeat)['.'], ['default', 'fast'])
-  // an unknown name is reported, not silently dropped
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    createCargoContext(featuresFixture, { entries: ['src/main.rs'], features: ['nope/x', 'bogus'] }).resolvedFeatures()
-  } finally {
-    console.warn = original
-  }
-  t.assert.deepStrictEqual(warnings, [
-    "[stasis] --cargo-features: 'nope/x' names no feature of the entries' packages, nor a dependency of theirs",
-    "[stasis] --cargo-features: 'bogus' names no feature of the entries' packages, nor a dependency of theirs",
-  ])
+  // an unknown name stops the build, as cargo refuses it, not silently dropped
+  t.assert.throws(() => createCargoContext(featuresFixture, { entries: ['src/main.rs'], features: ['nope/x', 'bogus'] }).resolvedFeatures(),
+    /^LockfileError: Cargo\.toml: features: no package selected has "nope\/x", "bogus"$/u)
 
   const noDefault = createCargoContext(featuresFixture, { entries: ['src/main.rs'], noDefaultFeatures: true })
   t.assert.deepStrictEqual(enabledOf(noDefault)['.'], [])
@@ -437,6 +427,22 @@ test('createCargoContext unifies the root\'s dev-dependency features under resol
   // features (resolver 2): lib-a's `[dev-dependencies] winnowish = { features = ["debug"] }` doesn't reach winnowish 0.5.0
   const v2 = createCargoContext(featuresFixture, { entries: ['src/main.rs'] })
   t.assert.deepStrictEqual(enabledOf(v2)['vendor/winnowish-0.5.0'], ['default', 'std'])
+})
+
+test('createCargoContext counts the dev-dependencies of an entries\' package only where an entry of it is a test, bench or example', (t) => {
+  withProject({
+    'Cargo.toml': '[workspace]\nmembers = ["a", "b"]\nresolver = "2"\n',
+    'a/Cargo.toml': '[package]\nname = "a"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ndep = "1"\n[dev-dependencies]\ndep = { version = "1", features = ["extra"] }\n',
+    'a/src/main.rs': '', 'a/tests/t.rs': '',
+    'b/Cargo.toml': '[package]\nname = "b"\nversion = "0.1.0"\nedition = "2021"\n',
+    'b/src/lib.rs': '', 'b/tests/t.rs': '',
+    'vendor/dep/Cargo.toml': '[package]\nname = "dep"\nversion = "1.0.0"\n[features]\nextra = []\n',
+    'vendor/dep/src/lib.rs': '',
+  }, (tmp) => {
+    // b's test entry builds b's tests, not a's: a's dev-dependency asks nothing of dep
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['a/src/main.rs', 'b/tests/t.rs'] }))['vendor/dep'], [])
+    t.assert.deepStrictEqual(enabledOf(createCargoContext(tmp, { entries: ['a/tests/t.rs', 'b/src/lib.rs'] }))['vendor/dep'], ['extra'])
+  })
 })
 
 test('createCargoContext leaves features unknown when no package owns the entries', (t) => {
@@ -1293,15 +1299,16 @@ test('buildRustBundle declares a template\'s mod in each module of its package i
 
 test('createCargoContext resolves each dependency table on its own: one version per table, the asking file\'s table', (t) => {
   withProject({
-    'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\nrand = "0.7"\n[build-dependencies]\nrand = "0.8"\n[dev-dependencies]\nfake = { package = "rand", version = "0.8" }\n',
+    // `fake` is a third version: cargo refuses a package depending on one package by two names.
+    'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\nrand = "0.7"\n[build-dependencies]\nrand = "0.8"\n[dev-dependencies]\nfake = { package = "rand", version = "0.6" }\n',
     'src/main.rs': '', 'build.rs': '', 'tests/it.rs': '',
-    ...vendoredPackage('rand', '0.7.3'), ...vendoredPackage('rand', '0.8.5'),
+    ...vendoredPackage('rand', '0.6.5'), ...vendoredPackage('rand', '0.7.3'), ...vendoredPackage('rand', '0.8.5'),
   }, (tmp) => {
     const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
     const { result, warnings } = captureWarningsSync(() => [
       cargo.resolveCrate('rand', 'src/main.rs'), cargo.resolveCrate('rand', 'build.rs'), cargo.resolveCrate('rand', 'tests/it.rs'), cargo.resolveCrate('fake', 'tests/it.rs'),
     ])
-    t.assert.deepStrictEqual(result, ['vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs', 'vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs'])
+    t.assert.deepStrictEqual(result, ['vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.8.5/src/lib.rs', 'vendor/rand-0.7.3/src/lib.rs', 'vendor/rand-0.6.5/src/lib.rs'])
     t.assert.deepStrictEqual(warnings, [])
     // both are in the build: the normal one for the target, the build-dependency for the host
     t.assert.deepStrictEqual([...cargo.featureResolution('target').keys(), ...cargo.featureResolution('host').keys()].toSorted(), ['.', 'vendor/rand-0.7.3', 'vendor/rand-0.8.5'])
@@ -1752,6 +1759,27 @@ test('createCargoContext says why the features come from a replay, and a vendore
     t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'foo 1.0.0 is locked but not vendored' })
     rmSync(join(tmp, 'Cargo.lock'))
     t.assert.deepStrictEqual(createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX }).resolution(), { mode: 'replay', why: 'no Cargo.lock' })
+  })
+})
+
+test('createCargoContext keeps a dependency table whose cfg it can\'t decide on the platform only maybe, under cargo\'s resolver too', (t) => {
+  const lockOf = (name, c) => `\n[[package]]\nname = "${name}"\nversion = "1.0.0"\nsource = "${REGISTRY}"\nchecksum = "${sha(c)}"\n`
+  const files = {
+    'Cargo.toml': ['[package]', 'name = "app"', 'version = "0.1.0"', 'edition = "2021"',
+      "[target.'cfg(unix)'.dependencies]", 'nix = "1"', "[target.'cfg(windows)'.dependencies]", 'win = "1"',
+      "[target.'cfg(loom)'.dependencies]", 'loom = "1"'].join('\n'),
+    'Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["loom", "nix", "win"]\n${lockOf('loom', 'a')}${lockOf('nix', 'b')}${lockOf('win', 'c')}`,
+    'src/main.rs': '',
+    ...vendoredCopy('loom', '[package]\nname = "loom"\nversion = "1.0.0"\n', sha('a')),
+    ...vendoredCopy('nix', '[package]\nname = "nix"\nversion = "1.0.0"\n', sha('b')),
+    ...vendoredCopy('win', '[package]\nname = "win"\nversion = "1.0.0"\n', sha('c')),
+  }
+  withProject(files, (tmp) => {
+    // The platform is known, but not whether rustflags set `--cfg loom`.
+    const cargo = createCargoContext(tmp, { entries: ['src/main.rs'], target: LINUX, host: LINUX })
+    t.assert.deepStrictEqual(cargo.resolution(), { mode: 'cargo', why: null })
+    t.assert.deepStrictEqual(Object.keys(enabledOf(cargo)), ['.', 'vendor/nix'])
+    t.assert.deepStrictEqual(Object.keys(maybeOf(cargo)), ['vendor/loom'])
   })
 })
 
