@@ -126,13 +126,25 @@ function yarn1Root(host, cwd) {
   return nearest(cwd, holding(host, 'yarn.lock'))
 }
 
-// npm installs a workspace from the root that declares it, whatever package-lock.json is nearer,
-// and any other package from the nearest package-lock.json; its workspaces as npm's glob finds them
-// on `os`.
+// Whether `dir` holds a package: a package.json naming one, or unreadable, which is one all the same;
+// one with no name is a `type` marker, its files the package's above.
+function holdsPackage(host, dir) {
+  if (!isFile(join(dir, 'package.json'), host)) return false
+  const json = readJson(join(dir, 'package.json'), host)
+  return json === null || json.name !== undefined
+}
+
+// npm installs the package cwd is in from the first directory above it whose workspaces, as npm's
+// glob finds them on `os`, take it -- whatever package-lock.json is nearer, and past a workspace
+// declaring workspaces of its own, as npm finds its local prefix -- and any other package from the
+// nearest package-lock.json.
 function npmRoot(host, cwd, os) {
-  const root = nearest(cwd, (dir) => Array.isArray(readJson(join(dir, 'package.json'), host)?.workspaces))
-  const workspaces = () => new Set(findNpmWorkspaces({ project: projectView(host, root), os: target({ os }).os }))
-  if (root !== null && outsider(host, root, cwd, workspaces()) === null) return root
+  const own = nearest(cwd, (dir) => holdsPackage(host, dir))
+  for (let dir = own; dir !== null && dirname(dir) !== dir;) {
+    dir = dirname(dir)
+    if (!Array.isArray(readJson(join(dir, 'package.json'), host)?.workspaces)) continue
+    if (findNpmWorkspaces({ project: projectView(host, dir), os: target({ os }).os }).includes(relative(dir, own))) return dir
+  }
   return nearest(cwd, holding(host, 'package-lock.json'))
 }
 

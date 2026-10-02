@@ -73,6 +73,27 @@ test('npm: links each workspace, and cwd may be in any of them', async (t) => {
   t.assert.deepEqual([website.root, [...website.projects]], ['/website', ['.']])
 })
 
+test('npm: installs a package from the first directory above whose workspaces take it, as npm finds its prefix', async (t) => {
+  // packages/a is a workspace of the root and declares workspaces of its own, as npm 11.21.0 locks it.
+  const files = {
+    'package.json': { name: 'root', version: '1.0.0', private: true, workspaces: ['packages/*'] },
+    'package-lock.json': lockOf({ name: 'root', version: '1.0.0', workspaces: ['packages/*'] }, {
+      'node_modules/a': { resolved: 'packages/a', link: true },
+      'packages/a': { version: '1.0.0', workspaces: ['examples/*'] },
+    }),
+    'packages/a/package.json': { name: 'a', version: '1.0.0', workspaces: ['examples/*'] },
+    'packages/a/src/index.js': '',
+    'packages/a/examples/e/package.json': { name: 'e', version: '1.0.0' },
+  }
+  // From a's code: the root, whose workspaces take a, not a for declaring some.
+  const tree = await load({ vfs: project(files), cwd: '/packages/a/src' })
+  t.assert.deepEqual([tree.root, [...tree.projects]], ['/', ['.', 'packages/a']])
+  t.assert.equal(tree.vfs.readlink('/node_modules/a'), '../packages/a')
+  // From e: a, the first above whose workspaces take e, as `npm prefix` says there.
+  t.assert.equal(lockfileRoot(vfsHost(project(files)), 'npm', '/packages/a/examples/e'), null, 'a holds no package-lock.json')
+  await t.assert.rejects(load({ vfs: project(files), cwd: '/packages/a/examples/e' }), /^Error: no package-lock\.json found in \/packages\/a, where \/packages\/a\/examples\/e is installed from$/u)
+})
+
 test('npm: takes a workspace root for the os given, whose glob matches as npm\'s does there', async (t) => {
   // On macOS npm's glob takes `Packages/*` for packages/b, whatever the case: b is a workspace there,
   // installed from the root whatever package-lock.json it holds.
