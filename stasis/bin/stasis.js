@@ -62,22 +62,22 @@ function usage(prefix = '') {
    not with --metro-resolver;
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
- stasis github-bundle --github=owner/name [--sha=commit] [--directory=path] [--package-manager=(pnpm|yarn1|soldeer)] [--package-manager-version=version] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
- (bundles a GitHub repo at a commit, its default branch's head without --sha, as "stasis bundle"
-  bundles a clone of it once installed: the tree is fetched (with GITHUB_TOKEN where set) and held
-  to its git tree id, and the dependencies are laid out in memory from the lockfile alone, as
-  "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 9, 10, 11 or 12), "yarn install
-  --frozen-lockfile --ignore-scripts" (yarn 1.22) or "soldeer install" (0.12, for .sol entries)
-  would: nothing is installed, no package script runs, and every tarball and zip is held to the
-  lockfile, all cached where "stasis audit" caches. Without --package-manager, the one whose
-  lockfile installs --directory (or the repo's root), if only one's does; at
+ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|soldeer)] [--package-manager-version=version] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
+ (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
+  either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
+  GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory
+  from the lockfile alone, as "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 9, 10, 11 or
+  12), "yarn install --frozen-lockfile --ignore-scripts" (yarn 1.22) or "soldeer install" (0.12,
+  for .sol entries) would: nothing is installed, no package script runs, and every tarball and zip
+  is held to the lockfile, all cached where "stasis audit" caches. Without --package-manager, the
+  one whose lockfile installs --directory (or the repo's root), if only one's does; at
   --package-manager-version, else at the root package.json's packageManager pin, else pnpm
   10.33.4, yarn 1.22.22 or Soldeer 0.12.0. The entries are paths in --directory, or in the repo;
   without them, the JS files its package.json names as main, exports and bin, resolved as the
   build resolves them (--conditions, --mainFields, --metro --platforms, --typescript), or for
   Soldeer its .sol files directly in it, under contracts/, and under its source directory
-  (foundry.toml's src, else src/), but tests, scripts, mocks and dependency or build
-  directories; not with --metro-resolver, --cargo* or --add)
+  (foundry.toml's src, else src/), but tests, scripts, mocks and dependency or build directories;
+  not with --metro-resolver, --cargo* or --add)
  stasis add path/to/(file|dir) ...
  (adds the listed files to the project's bundle(s) with no dependency resolution;
   a directory expands to its files. Requires a stasis.config.json (all fields optional).)
@@ -442,6 +442,7 @@ if (command === '-v' || command === '--version') {
   const values = parseLeadingOptions(argv, {
     github: { type: 'string' },
     sha: { type: 'string' },
+    tag: { type: 'string' },
     directory: { type: 'string' },
     'package-manager': { type: 'string' },
     'package-manager-version': { type: 'string' },
@@ -462,10 +463,11 @@ if (command === '-v' || command === '--version') {
     'package-json': { type: 'boolean' },
     'brotli-quality': { type: 'string' },
   }, {
-    valueFlags: ['--github', '--sha', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '-o'],
+    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '-o'],
     onError: usage,
   })
   if (values.github === undefined) usage('Error: github-bundle requires --github=owner/name, the repo to bundle')
+  if (values.sha !== undefined && values.tag !== undefined) usage('Error: github-bundle takes --sha or --tag, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
   let brotliQuality
@@ -483,6 +485,7 @@ if (command === '-v' || command === '--version') {
   await githubBundleCommand({
     github: values.github,
     sha: values.sha,
+    tag: values.tag,
     directory: values.directory,
     packageManager: values['package-manager'],
     packageManagerVersion: values['package-manager-version'],

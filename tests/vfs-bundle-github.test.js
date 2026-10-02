@@ -21,6 +21,7 @@ import { HEAD, fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
 
 const GITHUB = 'ExodusOSS/example'
 const SHA = 'a'.repeat(40)
+const TAGGED = 'c'.repeat(40)
 const here = dirname(fileURLToPath(import.meta.url))
 
 const build = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, packageManager: 'pnpm', ...options })
@@ -57,6 +58,18 @@ test('buildGitHubBundle builds the repo in the modes a checkout has', async (t) 
   })
   const { bundle } = await build({ client, entries: ['src/a.js'] })
   t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js', 'node_modules/.pnpm/q@file+q/node_modules/q/index.js'])
+})
+
+test('buildGitHubBundle builds the commit a tag names', async (t) => {
+  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
+  const client = fakeClient(files, { tags: { 'v1.0.0': TAGGED } })
+  const { bundle } = await build({ client, sha: undefined, tag: 'v1.0.0', entries: ['src/a.js'] })
+  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: TAGGED })
+  t.assert.deepEqual(client.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['getRepoTarball', GITHUB, TAGGED]])
+  // A tag GitHub has no commit for is refused there, before the tree is fetched.
+  const none = fakeClient(files)
+  await t.assert.rejects(build({ client: none, sha: undefined, tag: 'v9.9.9', entries: ['src/a.js'] }), /^Error: getRepoTag: ExodusOSS\/example has no tag v9\.9\.9$/u)
+  t.assert.deepEqual(methods(none), ['getRepoTag'])
 })
 
 // A package whose package.json names entry points in every way it can, and some it can't be built from.
@@ -135,6 +148,10 @@ test('suggestedEntries suggests the entries buildGitHubBundle takes without any,
   const head = fakeClient(namingEntries)
   t.assert.deepEqual(await suggestedEntries({ github: GITHUB, client: head }), named)
   t.assert.deepEqual(head.calls, [['getRepoHead', GITHUB, undefined], ['listRepoDir', GITHUB, HEAD, undefined], ['getRepoTarball', GITHUB, HEAD]])
+  // At the commit a tag names.
+  const tagged = fakeClient(namingEntries, { tags: { 'v1.0.0': TAGGED } })
+  t.assert.deepEqual(await suggestedEntries({ github: GITHUB, tag: 'v1.0.0', client: tagged }), named)
+  t.assert.deepEqual(tagged.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['listRepoDir', GITHUB, TAGGED, undefined], ['getRepoTarball', GITHUB, TAGGED]])
   // None without a package.json.
   const bare = { 'pnpm-lock.yaml': lockfile('.'), 'a.js': '' }
   t.assert.deepEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(bare) }), [])
@@ -452,6 +469,8 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, directory: 'a b', entries: ['a.js'] }), /invalid directory: "a b"/u)
   await t.assert.rejects(build({ client, directory: '../up', entries: ['a.js'] }), /invalid directory: "\.\.\/up"/u)
   await t.assert.rejects(build({ client, github: undefined, entries: ['a.js'] }), /github is required/u)
+  await t.assert.rejects(build({ client, tag: 'v1.0.0', entries: ['a.js'] }), /^Error: buildGitHubBundle: sha and tag both name the commit: give one$/u)
+  await t.assert.rejects(build({ client, sha: undefined, tag: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: tag must be a non-empty string$/u)
   await t.assert.rejects(build({ client, packageManager: 'soldeer', conditions: ['x'] }), /^Error: buildGitHubBundle: --conditions is only valid for JS bundles$/u)
   await t.assert.rejects(build({ client, packageManager: 'npm', entries: ['a.js'] }), /packageManager must be one of/u)
   await t.assert.rejects(build({ client, libc: 'bionic', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: libc must be one of/u)
@@ -668,7 +687,7 @@ test('stasis github-bundle writes the bundle and lockfile of the repo at the com
   }
 })
 
-test('stasis github-bundle requires --github', async (t) => {
+test('stasis github-bundle requires --github, and takes --sha or --tag', async (t) => {
   const usage = async (args) => {
     const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', ...args, 'a.js'])
     const stderr = []
@@ -679,6 +698,7 @@ test('stasis github-bundle requires --github', async (t) => {
   const cases = [
     [[`--sha=${SHA}`, '--package-manager=pnpm'], 'Error: github-bundle requires --github=owner/name, the repo to bundle'],
     [[`--sha=${SHA}`], 'Error: github-bundle requires --github=owner/name, the repo to bundle'],
+    [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0'], 'Error: github-bundle takes --sha or --tag, not both'],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
   t.assert.deepEqual(results, cases.map(([, error]) => ({ status: 1, error })))

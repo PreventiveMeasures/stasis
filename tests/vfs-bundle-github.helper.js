@@ -27,13 +27,19 @@ export const tarballOf = (files, dir = '') => {
   return compress(pack(entries), 'gzip')
 }
 
-export const fakeClient = (files) => {
+// `tags` maps each tag to the commit it names.
+export const fakeClient = (files, { tags = {} } = {}) => {
   const calls = []
   return {
     calls,
     async getRepoHead({ repo, branch }) {
       calls.push(['getRepoHead', repo, branch])
       return { branch: branch ?? 'main', oid: HEAD }
+    },
+    async getRepoTag({ repo, tag }) {
+      calls.push(['getRepoTag', repo, tag])
+      if (!Object.hasOwn(tags, tag)) throw new Error(`getRepoTag: ${repo} has no tag ${tag}`)
+      return { tag, oid: tags[tag] }
     },
     async listRepoDir({ repo, sha, directory }) {
       calls.push(['listRepoDir', repo, sha, directory])
