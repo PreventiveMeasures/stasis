@@ -5,7 +5,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey } from './util.js'
+import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleInfo } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
 
@@ -25,14 +25,9 @@ export function lockfileFromBundle(bundle) {
     for (const [rel, content] of Object.entries(files)) {
       // Hash the raw on-disk bytes, so decode 'resource:base64' back first.
       const file = moduleFileKey(dir, rel)
-      const bytes = bundle.formats.get(file) === 'resource:base64'
-        ? assertCanonicalBase64(content, file)
-        : content
-      hashed[rel] = sha512integrity(bytes)
+      hashed[rel] = sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content)
     }
-    modules.set(dir, ecosystem === undefined
-      ? { name, version, files: hashed }
-      : { name, version, ecosystem, files: hashed })
+    modules.set(dir, moduleInfo({ name, version, ecosystem, files: hashed }))
   }
   // Carry imports+formats across, else the derived lockfile is bytes-only and a later frozen run skips those cross-checks.
   return new Lockfile({
@@ -73,11 +68,11 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
   let executables = 0
   for (const [dir, { files }] of bundle.modules) {
     for (const [rel, content] of Object.entries(files)) {
-      // `key` is the per-file map key (moduleFileKey handles rel === ''); `file` below is the WRITE path and keeps
-      // the plain join, so a non-`directory` rel === '' fails the canonical-path check instead of writing at the bucket root.
+      // A `directory` capture is a listing at the dir's own path, not a file to write (its children recreate the dir).
       const key = moduleFileKey(dir, rel)
-      // Skip a `directory` capture: it's a listing at the dir's own path, not a file to write (its children recreate the dir).
       if (bundle.formats.get(key) === 'directory') continue
+      // The WRITE path keeps the plain join, so a non-`directory` rel === '' fails the canonical-path
+      // check instead of writing at the bucket root.
       const file = dir === '.' ? rel : `${dir}/${rel}`
       if (typeof content !== 'string') throw new Error(`extract: bundle file content is not a string: ${file}`)
       const abs = resolve(outDir, file)
@@ -96,10 +91,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
       // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
       if (exec) executables += 1
-      const data = bundle.formats.get(key) === 'resource:base64'
-        ? assertCanonicalBase64(content, file)
-        : content
-      writes.push([abs, data, exec])
+      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec])
     }
   }
   // A planned file must not also be a parent directory of another, else the writes throw halfway through.

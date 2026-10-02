@@ -1,9 +1,7 @@
 // The pure half of the util split: the artifact data model shared by bundle.js, lockfile.js and
-// shard.js -- the format universe, flat file keys, strict merges, the executable-set rules and the
-// JSON<->Map converters. Everything here is pure computation over caller-supplied values with no
-// Node builtin imports at all, so the data-model entry points (`./bundle`, `./lockfile`) load in
-// any JS runtime. Byte/name classification, fs observation and CLI parsing live in util.js, which
-// re-exports this module so `@exodus/stasis-core/util` keeps serving the full set.
+// shard.js (the format universe, flat file keys, strict merges, the executable-set rules and the
+// JSON<->Map converters). No Node builtin imports, so `./bundle` and `./lockfile` load in any JS
+// runtime. util.js re-exports this module, so `@exodus/stasis-core/util` serves the full set.
 
 // KNOWN_FORMATS is the closed universe of `format` strings; parsers reject anything outside it.
 export const NODE_FORMATS = new Set(['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript'])
@@ -33,15 +31,13 @@ export const isStatFormat = (format) => STAT_FORMATS.has(format)
 export const erasedTypeScriptFormat = (format) =>
   format === 'module-typescript' ? 'module' : format === 'commonjs-typescript' ? 'commonjs' : undefined
 
-// Gates reconcileFormat: a stat record only reconciles with a real format of the SAME kind.
 const formatKind = (format) => (format === 'directory' || format === 'stat:directory' ? 'directory' : 'file')
 
 // A weak 'stat:*' yields to a real format of the SAME kind and never displaces one; anything else throws.
 export function reconcileFormat(format, currentFormat, name) {
   if (format === currentFormat) return format
   const stat = isStatFormat(format)
-  const currentStat = isStatFormat(currentFormat)
-  if (stat !== currentStat && formatKind(format) === formatKind(currentFormat)) {
+  if (stat !== isStatFormat(currentFormat) && formatKind(format) === formatKind(currentFormat)) {
     return stat ? currentFormat : format
   }
   throw new Error(`format conflict for '${name}' ('${currentFormat}' vs '${format}')`)
@@ -52,6 +48,17 @@ export function reconcileFormat(format, currentFormat, name) {
 export function moduleFileKey(dir, rel) {
   if (rel === '') return dir
   return dir === '.' ? rel : `${dir}/${rel}`
+}
+
+// A module bucket record in canonical key order; `ecosystem` is omitted (not undefined) when absent.
+export const moduleInfo = ({ name, version, ecosystem, files }) =>
+  ({ name, version, ...(ecosystem === undefined ? {} : { ecosystem }), files })
+
+// A parsed bucket: an absent version has one spelling (a literal null folds into undefined so
+// identity comparisons and JSON round-trips can't split on it), and `files` is null-prototype.
+export function normalizeModule({ name, version, ecosystem, files }) {
+  assert(ecosystem === undefined || typeof ecosystem === 'string')
+  return moduleInfo({ name, version: version ?? undefined, ecosystem, files: fromEntries(Object.entries(files)) })
 }
 
 // The keys a module map records -- the set an artifact's `executable` must be a subset of. `scope` MUST
@@ -149,25 +156,22 @@ export function sortPaths(a, b) {
   throw new Error('Unreachable')
 }
 
+const byPath = (a, b) => sortPaths(a[0], b[0])
+
 export const isPlainObject = (x) => x && [null, Object.prototype].includes(Object.getPrototypeOf(x))
 
 export const fromEntries = (entries) => Object.setPrototypeOf(Object.fromEntries(entries), null)
 
-export const fileSetToObject = (set) => [...set].toSorted((a, b) => sortPaths(a, b))
+export const fileSetToObject = (set) => [...set].toSorted(sortPaths)
 
 // `sorted: false` only for a machine-only payload whose reader does not care about ordering (shard.js).
 export const fileMapToObject = (map, { sorted = true } = {}) => {
-  if (!sorted) {
-    const out = Object.create(null)
-    for (const [k, v] of map) out[k] = v instanceof Map ? fileMapToObject(v, { sorted }) : v
-    return out
-  }
-  return fromEntries(
-    [...map]
-      .toSorted((a, b) => sortPaths(a[0], b[0]))
-      .map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v])
-  )
+  const entries = sorted ? [...map].toSorted(byPath) : [...map]
+  return fromEntries(entries.map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v]))
 }
+
+// The Map at `map.get(key)`, created on first use.
+export const nestedMap = (map, key) => map.get(key) ?? map.set(key, new Map()).get(key)
 
 export const objectToMaps = (obj) => new Map(
   Object.entries(obj).map(([k, v]) => [k, isPlainObject(v) ? objectToMaps(v) : v])
@@ -180,8 +184,7 @@ export const objectToMaps = (obj) => new Map(
 // a `..` with nothing left to pop is an escape -- normalize would keep it as a leading `..` forever.
 export function posixPathEscapes(path) {
   if (path.startsWith('/')) return true
-  // Exact prefilter: the walk below can only return true via a literal '..' segment, which needs
-  // this substring -- so the ordinary keys (the vast majority) skip the split('/') allocation.
+  // The walk can only return true via a literal '..' segment, so the ordinary keys skip the split.
   if (!path.includes('..')) return false
   let depth = 0
   for (const segment of path.split('/')) {
@@ -190,6 +193,64 @@ export function posixPathEscapes(path) {
     else if (--depth < 0) return true
   }
   return false
+}
+
+// An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
+// artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
+// is rejected at the schema boundary so a tampered artifact fails closed.
+export function parseFormats(json) {
+  assert(isPlainObject(json))
+  const formats = new Map()
+  for (const [file, format] of Object.entries(json)) {
+    assert(!posixPathEscapes(file))
+    assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
+    const key = file === '' ? '.' : file
+    assert(!formats.has(key), `duplicate format key '${key}'`)
+    formats.set(key, format)
+  }
+  return formats
+}
+
+// An artifact's `imports` object (conditions -> parent -> specifier -> target) as nested Maps. Paths
+// escaping the root are rejected here (incl. mid-path `a/../../x`): getImport resolves against the
+// root at load. A target is a file, or (--metro) a non-empty { platform: file } map.
+export function parseImports(json) {
+  assert(isPlainObject(json))
+  const imports = objectToMaps(json)
+  for (const [, byParent] of imports) {
+    assert(byParent instanceof Map)
+    for (const [parent, specifiers] of byParent) {
+      assert(!posixPathEscapes(parent))
+      assert(specifiers instanceof Map)
+      for (const [, target] of specifiers) {
+        if (typeof target === 'string') {
+          assert(!posixPathEscapes(target))
+          continue
+        }
+        assert(target instanceof Map && target.size > 0, 'import target must be a file or a non-empty {platform: file} map')
+        for (const [platform, file] of target) {
+          assert(typeof platform === 'string' && platform.length > 0 && !platform.includes('/'), `invalid platform key '${platform}'`)
+          assert(typeof file === 'string')
+          assert(!posixPathEscapes(file))
+        }
+      }
+    }
+  }
+  return imports
+}
+
+// A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects,
+// buckets and files path-sorted so the bytes are canonical.
+export function groupModules(modules, { skipEmpty = false } = {}) {
+  const grouped = { modules: [], sources: [] }
+  for (const [dir, info] of modules) {
+    if (skipEmpty && Object.keys(info.files).length === 0) continue
+    const inNodeModules = hasNodeModulesSegment(dir)
+    if (inNodeModules) assert(info.name && info.version && info.files)
+    const files = fromEntries(Object.entries(info.files).toSorted(byPath))
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, files })])
+  }
+  return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
 }
 
 // A target is a resolved-file string, or a { platform: file } Map under --metro.
@@ -209,11 +270,9 @@ export function mergeImportMaps(a, b, label) {
   const out = new Map()
   const absorb = (imports) => {
     for (const [conditions, byParent] of imports) {
-      let outByParent = out.get(conditions)
-      if (outByParent === undefined) out.set(conditions, (outByParent = new Map()))
+      const outByParent = nestedMap(out, conditions)
       for (const [parent, specs] of byParent) {
-        let outSpecs = outByParent.get(parent)
-        if (outSpecs === undefined) outByParent.set(parent, (outSpecs = new Map()))
+        const outSpecs = nestedMap(outByParent, parent)
         for (const [spec, target] of specs) {
           if (outSpecs.has(spec)) {
             assert(importTargetsEqual(outSpecs.get(spec), target),
@@ -287,6 +346,12 @@ export function flatFileKeys(modules, what, onDuplicate) {
   return owners
 }
 
+// The flatFileKeys duplicate handler for an artifact's parse/serialize: two bucket splits flattening
+// to one path means module bucketing changed between writes.
+export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
+  `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
+  `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`)
+
 // Result `files` objects are null-prototype, so a `__proto__` file name is a plain own key.
 export function mergeModuleMaps(a, b, label) {
   const out = new Map()
@@ -294,12 +359,7 @@ export function mergeModuleMaps(a, b, label) {
     for (const [dir, info] of modules) {
       const existing = out.get(dir)
       if (existing === undefined) {
-        out.set(dir, {
-          name: info.name,
-          version: info.version,
-          ...(info.ecosystem === undefined ? {} : { ecosystem: info.ecosystem }),
-          files: Object.assign(Object.create(null), info.files),
-        })
+        out.set(dir, moduleInfo({ ...info, files: Object.assign(Object.create(null), info.files) }))
         continue
       }
       assert(existing.name === info.name,

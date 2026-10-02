@@ -8,64 +8,34 @@ import assert from 'node:assert/strict'
 
 import { State } from './state.js'
 import { installFsHooks } from './fs.js'
-import {
-  NATIVE_BUILD_FORMATS as NATIVE_SOURCE_FORMATS,
-  NODE_FORMATS as NODEJS_FORMATS,
-  RESOURCE_FORMATS,
-  SOURCE_LANGUAGE_FORMATS as NON_NODE_SOURCE_LANGUAGES,
-  STAT_FORMATS,
-  erasedTypeScriptFormat,
-} from './util.js'
+import { NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
 const { mkdtempSync, opendirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = fs
 
 const CJS_FORMATS = new Set(['commonjs', 'commonjs-typescript'])
 
+// The trust gate's refusal for a bundle-served file whose attested format Node can't execute, by kind.
 function refuseNonNodeFormat(format, url) {
-  if (NON_NODE_SOURCE_LANGUAGES.has(format)) {
-    throw new Error(
-      `[stasis] cannot execute a '${format}' bundle: ${format} bundles are ` +
-      `produced for external analysis, not for 'stasis run --bundle=load' (${url})`
-    )
+  if (SOURCE_LANGUAGE_FORMATS.has(format)) {
+    throw new Error(`[stasis] cannot execute a '${format}' bundle: ${format} bundles are produced for external analysis, not for 'stasis run --bundle=load' (${url})`)
   }
-  if (NATIVE_SOURCE_FORMATS.has(format)) {
-    throw new Error(
-      `[stasis] cannot execute a '${format}' file: native build inputs ` +
-      `(podspec/gradle/Java/Kotlin/ObjC++/...) are attested for the CocoaPods/Gradle ` +
-      `toolchain, not executable by Node (${url})`
-    )
+  if (NATIVE_BUILD_FORMATS.has(format)) {
+    throw new Error(`[stasis] cannot execute a '${format}' file: native build inputs (podspec/gradle/Java/Kotlin/ObjC++/...) are attested for the CocoaPods/Gradle toolchain, not executable by Node (${url})`)
   }
   if (RESOURCE_FORMATS.has(format)) {
-    throw new Error(
-      `[stasis] cannot import a resource file ('${format}'): asset content is not ` +
-      `executable JavaScript. Read it with fs (or your bundler's asset loader) instead (${url})`
-    )
+    throw new Error(`[stasis] cannot import a resource file ('${format}'): asset content is not executable JavaScript. Read it with fs (or your bundler's asset loader) instead (${url})`)
   }
   if (format === 'patch') {
-    throw new Error(
-      `[stasis] cannot execute a 'patch' file: a unified diff is applied by a patch step ` +
-      `(pnpm patchedDependencies, patch-package, a build script), not run by Node (${url})`
-    )
+    throw new Error(`[stasis] cannot execute a 'patch' file: a unified diff is applied by a patch step (pnpm patchedDependencies, patch-package, a build script), not run by Node (${url})`)
   }
   if (format === 'directory') {
-    throw new Error(
-      `[stasis] cannot import a directory listing ('directory'): a captured ` +
-      `fs.readdirSync result is not executable JavaScript. Read it with fs.readdirSync instead (${url})`
-    )
+    throw new Error(`[stasis] cannot import a directory listing ('directory'): a captured fs.readdirSync result is not executable JavaScript. Read it with fs.readdirSync instead (${url})`)
   }
   if (STAT_FORMATS.has(format)) {
-    throw new Error(
-      `[stasis] cannot import '${url}': the bundle carries only a payload-free stat record ` +
-      `('${format}', an fs.lstatSync/statSync capture attesting existence and kind) -- ` +
-      `not the file's content. Capture a run that reads or imports it to bundle its bytes.`
-    )
+    throw new Error(`[stasis] cannot import '${url}': the bundle carries only a payload-free stat record ('${format}', an fs.lstatSync/statSync capture attesting existence and kind) -- not the file's content. Capture a run that reads or imports it to bundle its bytes.`)
   }
-  throw new Error(
-    `[stasis] cannot execute '${url}': attested format '${format}' is not a Node loader ` +
-    `format. The bundle may be tampered, produced by a newer stasis, or built for a ` +
-    `non-Node consumer.`
-  )
+  throw new Error(`[stasis] cannot execute '${url}': attested format '${format}' is not a Node loader format. The bundle may be tampered, produced by a newer stasis, or built for a non-Node consumer.`)
 }
 
 // node:59666: restores require.cache/require.extensions the ESM->CJS translator's require omits.
@@ -183,12 +153,44 @@ const PRELOAD_ROOT = (() => {
   }
 })()
 
+// A capture step whose rejection must never be written, even if user code swallows the throw.
+function recording(fn) {
+  try {
+    return fn()
+  } catch (err) {
+    aborted = true
+    throw err
+  }
+}
+
+// nextLoad with `loadingModule` held, so the --fs hook skips the loader's own read of the source.
+function loadCounted(nextLoad, url, context) {
+  loadingModule++
+  try {
+    return nextLoad(url, context)
+  } finally {
+    loadingModule--
+  }
+}
+
+const toBuffer = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
+
 // Child-process capture forwarding (shards), opt-in via --child-process: a capturing child writes a
 // signed per-pid shard the root verifies against its own public key before merging. Trust rests on
 // that signature, not the dir being secret; shards carry NO bytes (the root re-reads from disk).
 
 function shardForwardingEnabled() {
   return Boolean(state) && state.config.childProcess && (state.config.writeLockfile || state.config.writeBundle)
+}
+
+function clearShardEnv() {
+  delete process.env.EXODUS_STASIS_SHARD_DIR
+  delete process.env.EXODUS_STASIS_SHARD_KEY
+}
+
+function removeShardDir() {
+  if (!createdShardDir) return
+  try { rmSync(createdShardDir, { recursive: true, force: true }) } catch { /* best-effort */ }
 }
 
 function writeChildShard() {
@@ -283,17 +285,13 @@ function initState(root) {
     } catch {
       // Best-effort: clear any inherited (possibly attacker-set) dir/key so descendants don't fall
       // back to a channel we never minted.
-      if (createdShardDir) { try { rmSync(createdShardDir, { recursive: true, force: true }) } catch { /* best-effort */ } }
-      createdShardDir = undefined
-      createdShardPub = undefined
-      createdShardPubId = undefined
-      delete process.env.EXODUS_STASIS_SHARD_DIR
-      delete process.env.EXODUS_STASIS_SHARD_KEY
+      removeShardDir()
+      createdShardDir = createdShardPub = createdShardPubId = undefined
+      clearShardEnv()
     }
   } else if (!isChildProcess) {
     // Non-capturing root: shed any inherited (possibly attacker-set) shard env.
-    delete process.env.EXODUS_STASIS_SHARD_DIR
-    delete process.env.EXODUS_STASIS_SHARD_KEY
+    clearShardEnv()
   }
 
   // Persist on exit unless `aborted` -- deliberately NOT gated on exit code, so a clean capture
@@ -315,9 +313,7 @@ function initState(root) {
       // require() from another exit handler) is still attested and must not trip the load hook.
       if (writing) saved = true
     } finally {
-      if (createdShardDir) {
-        try { rmSync(createdShardDir, { recursive: true, force: true }) } catch { /* best-effort */ }
-      }
+      removeShardDir()
     }
   }
 
@@ -335,12 +331,17 @@ function initState(root) {
       try {
         save()
       } finally {
-        if (!userOwnedSigterm && process.listenerCount('SIGTERM') === 0) {
-          process.kill(process.pid, 'SIGTERM')
-        }
+        if (!userOwnedSigterm && process.listenerCount('SIGTERM') === 0) process.kill(process.pid, 'SIGTERM')
       }
     })
   }
+}
+
+// Init from the package root of `url` (the entry), exactly as its live load would.
+function initStateFromPackage(url) {
+  const pkg = findPackageJSON(url)
+  assert.equal(basename(pkg), 'package.json')
+  initState(dirname(pkg))
 }
 
 function load(url, context, nextLoad) {
@@ -351,13 +352,7 @@ function load(url, context, nextLoad) {
   // app-graph edge can promote the module with the exact bytes that executed.
   if ((entryUnresolved || infraUrls.has(url)) && !url.startsWith('node:')) {
     infraUrls.add(url)
-    loadingModule++
-    let result
-    try {
-      result = nextLoad(url, context)
-    } finally {
-      loadingModule--
-    }
+    const result = loadCounted(nextLoad, url, context)
     if (!infraSources.has(url)) infraSources.set(url, { source: result.source, format: result.format })
     return result
   }
@@ -368,11 +363,9 @@ function load(url, context, nextLoad) {
     return result
   }
 
-  if (state && state.config.loadBundle) {
+  if (state?.config.loadBundle) {
     // node_modules scope serves only nm deps; gate on inNodeModules(), not a raw substring (symlinks).
-    if (!state.config.full && !state.inNodeModules(url)) {
-      return nextLoad(url, context)
-    }
+    if (!state.config.full && !state.inNodeModules(url)) return nextLoad(url, context)
     const { source, format } = state.getFile(url)
     // Cross-check format only when the resolve chain set it; the formats map is itself attested
     // against the lockfile at construction. A transforming preload (`stasis run --import tsx`)
@@ -384,22 +377,13 @@ function load(url, context, nextLoad) {
       else assert.equal(format, context.format)
     }
     // Trust gate: only serve a file whose attested format Node can execute; everything else fails closed.
-    if (!NODEJS_FORMATS.has(format)) refuseNonNodeFormat(format, url)
+    if (!NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
     servedFromBundle.add(url)
     // node:59666: a load-hook-supplied CJS source gets a re-invented require() missing .cache/.extensions.
-    if (CJS_FORMATS.has(format)) {
-      return { source: repairCjsRequire(source), format: serveFormat, shortCircuit: true }
-    }
-    return { source, format: serveFormat, shortCircuit: true }
+    return { source: CJS_FORMATS.has(format) ? repairCjsRequire(source) : source, format: serveFormat, shortCircuit: true }
   }
 
-  loadingModule++
-  let result
-  try {
-    result = nextLoad(url, context)
-  } finally {
-    loadingModule--
-  }
+  const result = loadCounted(nextLoad, url, context)
   let { source } = result
   const { format } = result
   assert.notEqual(format, 'builtin')
@@ -409,20 +393,10 @@ function load(url, context, nextLoad) {
 
   const isEntry = entryUnseen
   entryUnseen = false
-  if (!state) {
-    const pkg = findPackageJSON(url)
-    assert.equal(basename(pkg), 'package.json')
-    initState(dirname(pkg))
-  }
+  if (!state) initStateFromPackage(url)
 
   assert.equal(saved, false)
-  // A rejected capture must never be written, even if user code swallows the throw.
-  try {
-    state.addFile(url, { source, format, isEntry })
-  } catch (err) {
-    aborted = true
-    throw err
-  }
+  recording(() => state.addFile(url, { source, format, isEntry }))
 
   return result
 }
@@ -436,24 +410,13 @@ function promoteInfraUrl(url, { isEntry = false } = {}) {
   if (!infraUrls.delete(url)) return
   const stashed = infraSources.get(url)
   infraSources.delete(url)
-  let source = stashed?.source
   // Same disk fallback as the live load path: Node's CJS loader may return source=null.
-  if (source == null) source = readFileSync(fileURLToPath(url))
-  try {
-    state.addFile(url, { source, format: stashed?.format ?? undefined, isEntry })
-  } catch (err) {
-    aborted = true
-    throw err
-  }
+  const source = stashed?.source ?? readFileSync(fileURLToPath(url))
+  recording(() => state.addFile(url, { source, format: stashed?.format ?? undefined, isEntry }))
   const edges = infraEdges.get(url)
   infraEdges.delete(url)
   for (const [specifier, edge] of edges ?? []) {
-    try {
-      state.addImport(url, specifier, edge.url, edge.context)
-    } catch (err) {
-      aborted = true
-      throw err
-    }
+    recording(() => state.addImport(url, specifier, edge.url, edge.context))
     if (infraSources.has(edge.url)) promoteInfraUrl(edge.url)
     else infraUrls.delete(edge.url) // resolved but never loaded: a live load would capture it
   }
@@ -466,11 +429,8 @@ function assertInfraMatchesBundle(url) {
   if (!infraUrls.has(url)) return
   const stashed = infraSources.get(url)
   if (stashed === undefined) { infraUrls.delete(url); return } // resolved but never loaded: the hooks will serve it
-  let executed = stashed.source
-  if (executed == null) executed = readFileSync(fileURLToPath(url))
-  const executedBuf = Buffer.isBuffer(executed) ? executed : Buffer.from(executed)
-  const { source } = state.getFile(url)
-  if (!executedBuf.equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
+  const executed = toBuffer(stashed.source ?? readFileSync(fileURLToPath(url)))
+  if (!executed.equals(toBuffer(state.getFile(url).source))) {
     throw new Error(
       `[stasis] cannot serve '${url}' from the bundle: a preload already executed it from disk ` +
       `before the entry, and those bytes differ from the attested ones -- refusing the divergent ` +
@@ -494,11 +454,9 @@ function resolve(specifier, context, nextResolve) {
     if (!res.url.startsWith('node:')) {
       infraUrls.add(res.url)
       if (infraUrls.has(context.parentURL)) {
-        let edges = infraEdges.get(context.parentURL)
-        if (edges === undefined) infraEdges.set(context.parentURL, (edges = new Map()))
         // Last-write-wins per specifier, like observeResolution: only the final target can be the
         // one a cached instance pins.
-        edges.set(specifier, { url: res.url, context: { conditions: context.conditions, format: res.format, importAttributes: context.importAttributes } })
+        nestedMap(infraEdges, context.parentURL).set(specifier, { url: res.url, context: { conditions: context.conditions, format: res.format, importAttributes: context.importAttributes } })
       }
     }
     return res
@@ -525,28 +483,24 @@ function resolve(specifier, context, nextResolve) {
     initState(process.cwd())
   }
 
-  if (state && state.config.loadBundle) {
+  if (state?.config.loadBundle) {
     // nm scope defers non-nm parents to Node's resolver; gate on inNodeModules() to cover symlinks.
-    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) {
-      return nextResolve(specifier)
-    }
+    if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) return nextResolve(specifier)
     // A bare specifier with a parent resolves from the recorded import map; otherwise skip
     // nextResolve so the entry needn't be on disk.
     if (parentURL && !specifier.startsWith('file:')) {
       const { url, format } = state.getImport(parentURL, specifier, { conditions, importAttributes })
       // Friendlier error at resolve time; the load gate is the load-bearing one.
-      if (format != null && !NODEJS_FORMATS.has(format)) refuseNonNodeFormat(format, url)
+      if (format != null && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
       assertInfraMatchesBundle(url)
       return { url, format, importAttributes: undefined, shortCircuit: true }
     }
-    const url = specifier.startsWith('file:')
-      ? specifier
-      : pathToFileURL(resolvePath(process.cwd(), specifier)).toString()
+    const url = specifier.startsWith('file:') ? specifier : pathToFileURL(resolvePath(process.cwd(), specifier)).toString()
     // A forked child's main module isn't a declared CLI entry, so skip assertEntry (getFile still
     // fails closed on anything unattested).
     if (!parentURL && state.config.full && !forkedChild) state.assertEntry(url)
     const format = state.getFormat(url)
-    if (format != null && !NODEJS_FORMATS.has(format)) refuseNonNodeFormat(format, url)
+    if (format != null && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
     assertInfraMatchesBundle(url)
     return { url, format, importAttributes: undefined, shortCircuit: true }
   }
@@ -560,13 +514,8 @@ function resolve(specifier, context, nextResolve) {
   // its own graph) into the capture, since its load hook can never re-fire.
   if (infraUrls.has(url)) {
     if (infraSources.has(url)) {
-      if (!state) {
-        // The ENTRY itself was preloaded (a wrapper importing the app): init from its package
-        // root exactly as its live load would have.
-        const pkg = findPackageJSON(url)
-        assert.equal(basename(pkg), 'package.json')
-        initState(dirname(pkg))
-      }
+      // The ENTRY itself was preloaded (a wrapper importing the app): init from its package root.
+      if (!state) initStateFromPackage(url)
       const isEntry = !parentURL && entryUnseen
       if (isEntry) entryUnseen = false
       promoteInfraUrl(url, { isEntry })
@@ -577,14 +526,7 @@ function resolve(specifier, context, nextResolve) {
   }
   // Parent-less = the entry: recorded via addFile/promotion above, never as an edge (addImport
   // requires a parent, and state can exist here after an entry promotion).
-  if (state && parentURL) {
-    try {
-      state.addImport(parentURL, specifier, url, { conditions, format, importAttributes })
-    } catch (err) {
-      aborted = true
-      throw err
-    }
-  }
+  if (state && parentURL) recording(() => state.addImport(parentURL, specifier, url, { conditions, format, importAttributes }))
   return res
 }
 
@@ -640,8 +582,7 @@ function patchCjsResolution() {
     }
     const resolved = original.call(this, request, parent, ...rest)
     // Capture: require.resolve() and some CJS require()s never fire the resolve hook.
-    if (state && !loadMode && typeof request === 'string'
-        && !isBuiltin(request) && typeof parent?.filename === 'string') {
+    if (state && !loadMode && typeof request === 'string' && !isBuiltin(request) && typeof parent?.filename === 'string') {
       state.observeResolution(pathToFileURL(parent.filename).toString(), request, pathToFileURL(resolved).toString())
     }
     return resolved

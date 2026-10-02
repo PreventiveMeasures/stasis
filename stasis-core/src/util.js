@@ -6,9 +6,8 @@ import { NODE_FORMATS } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
-// observation and CLI parsing. The pure artifact data model (formats universe, keys, merges,
-// executable-set rules, converters) lives in artifact-util.js; re-exported here so
-// `@exodus/stasis-core/util` keeps serving the full set.
+// observation and CLI parsing. The pure artifact data model lives in artifact-util.js, re-exported
+// here so `@exodus/stasis-core/util` keeps serving the full set.
 export * from './artifact-util.js'
 
 // JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
@@ -26,6 +25,12 @@ export function pathExt(filePath) {
 
 // A native path as the '/'-joined form every artifact key uses (a no-op off Windows).
 export const toPosix = (path) => path.split(/[\\/]/u).join('/')
+
+// True when `path` is `base` or lies beneath it. Lexical: resolve real paths first where symlinks matter.
+export function isPathWithin(base, path) {
+  const rel = relative(base, path)
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}
 
 // Both rules are needed: pathExt('.env.local') is 'local', and the extension rule alone misses `.env.*`.
 export function isDotEnvFile(name) {
@@ -131,8 +136,7 @@ const CODE_EXT_FORMATS = new Map([
   ['rs', 'rust'],
   ['patch', 'patch'],
   ['java', 'java'],
-  ['kt', 'kotlin'],
-  ['kts', 'kotlin'],
+  ['kt', 'kotlin'], ['kts', 'kotlin'],
   ['gradle', 'gradle'],
   ['m', 'objc'],
   ['mm', 'objcpp'],
@@ -145,15 +149,10 @@ const CODE_EXT_FORMATS = new Map([
   ['cmake', 'cmake'],
   ['podspec', 'podspec'],
   ['template', 'template'],
-  ['xml', 'xml'],
-  ['plist', 'xml'],
-  ['xcprivacy', 'xml'],
-  ['xcscheme', 'xml'],
-  ['storyboard', 'xml'],
-  ['entitlements', 'xml'],
+  ['xml', 'xml'], ['plist', 'xml'], ['xcprivacy', 'xml'], ['xcscheme', 'xml'],
+  ['storyboard', 'xml'], ['entitlements', 'xml'], ['xcworkspacedata', 'xml'],
   ['env', 'env'],
   ['pbxproj', 'pbxproj'],
-  ['xcworkspacedata', 'xml'],
 ])
 
 // Code formats by exact (lowercased) basename, for names whose extension is too generic to key
@@ -189,11 +188,9 @@ const NATIVE_EXCLUDE_NAMES = new Set([
   'gradle-wrapper.properties', // the APP's wrapper drives the build, not a module's own
 ])
 export function isExcludedNativeFile(name, { win32 = process.platform === 'win32' } = {}) {
-  const base = basename(name).toLowerCase()
-  if (NATIVE_EXCLUDE_NAMES.has(base)) return true
+  if (NATIVE_EXCLUDE_NAMES.has(basename(name).toLowerCase())) return true
   const ext = pathExt(name)
-  if (NATIVE_EXCLUDE_EXTS.has(ext)) return true
-  return !win32 && ext === 'bat'
+  return NATIVE_EXCLUDE_EXTS.has(ext) || (!win32 && ext === 'bat')
 }
 
 export function isExcludedNativeDir(name, { win32 = process.platform === 'win32' } = {}) {
@@ -283,9 +280,8 @@ export function classifyFormat(name, { content } = {}) {
 // The Metro native capture's policy view. Returns { action, format }: 'code' (a native build input),
 // 'skip' (excluded noise, or a JS-family file matched BY EXTENSION -- Metro owns those), else 'resource'.
 export function classifyNativeCapture(name, { win32 = process.platform === 'win32', content } = {}) {
-  if (isExcludedNativeFile(name, { win32 })) return { action: 'skip' }
   // `.env` files carry secrets: an automated capture must never sweep them in.
-  if (isDotEnvFile(name)) return { action: 'skip' }
+  if (isExcludedNativeFile(name, { win32 }) || isDotEnvFile(name)) return { action: 'skip' }
   const base = basename(name).toLowerCase()
   // Name-matched code is always a native build input, even when its tag is a Node format the JS
   // graph would otherwise own.
@@ -294,8 +290,7 @@ export function classifyNativeCapture(name, { win32 = process.platform === 'win3
   if (byName !== undefined) return { action: 'code', format: byName }
   if (CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
   const format = classifyFormat(name, { content })
-  if (format !== undefined) return { action: 'code', format }
-  return { action: 'resource' }
+  return format === undefined ? { action: 'resource' } : { action: 'code', format }
 }
 
 // The byte-level half of the native classification, refining what classifyNativeCapture derived from the
@@ -316,11 +311,7 @@ export function isNativeManifest(name) {
 // podspecs invoke them at pod-install). Project-relative, so react-native's `exports` can't hide them.
 export const RN_CORE_INCLUDE_FILES = ['sdks/hermes-engine/utils/replace_hermes_version.js']
 
-export function extSetsEqual(a, b) {
-  if (a.size !== b.size) return false
-  for (const ext of a) if (!b.has(ext)) return false
-  return true
-}
+export const extSetsEqual = (a, b) => a.size === b.size && [...a].every((ext) => b.has(ext))
 
 export const EXECUTE_BITS = 0o111
 
@@ -344,8 +335,7 @@ export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } =
 // external file into an attestable bundle. realpath surfaces ENOENT, which loaders treat as "missing".
 export function assertRealPathWithinBase(realBase, baseDir, relPath, host = diskHost) {
   const real = host.realpath(join(baseDir, relPath))
-  const rel = toPosix(relative(realBase, real))
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  if (!isPathWithin(realBase, real)) {
     throw new Error(`Refusing to follow symlink escaping bundle root: ${relPath} -> ${real}`)
   }
 }

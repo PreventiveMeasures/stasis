@@ -1,11 +1,12 @@
 import {
-  KNOWN_FORMATS,
   assert,
   canonicalFileKey,
+  duplicateKeyError,
   fileMapToObject,
   fileSetToObject,
   fromEntries,
   flatFileKeys,
+  groupModules,
   hasNodeModulesSegment,
   isPlainObject,
   mergeFormatMaps,
@@ -13,27 +14,19 @@ import {
   mergeExecutableSets,
   mergeModuleMaps,
   moduleFileKey,
-  objectToMaps,
+  normalizeModule,
   parseExecutable,
+  parseFormats,
+  parseImports,
   serializeExecutable,
   posixPathEscapes,
-  sortPaths,
   splitNodeModulesPath,
 } from './artifact-util.js'
 
 const VERSION = 1
 const LEGACY_VERSION = 0
 
-const normalize = ({ name, version, ecosystem, files }) => {
-  assert(ecosystem === undefined || typeof ecosystem === 'string')
-  // An absent version has one spelling: null (hand-edited or legacy JSON) folds into undefined so
-  // identity comparisons and JSON round-trips can't split on it.
-  return { name, version: version ?? undefined, ...(ecosystem === undefined ? {} : { ecosystem }), files: fromEntries(Object.entries(files)) }
-}
-
-const duplicateKey = (key) => assert(false, `duplicate file key '${key}' across bundle buckets -- module bucketing ` +
-  `changed between writes (a workspace package without a version now owns its own ` +
-  `bucket); regenerate the artifact (bundle=replace)`)
+const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
 
 // A v0 path's bucket split; '' and '.' both spell the root listing (rel '').
 const inferModuleDir = (path) =>
@@ -149,9 +142,7 @@ export class Bundle {
   get sources() {
     const m = new Map()
     for (const [dir, { files }] of this.modules) {
-      for (const [rel, content] of Object.entries(files)) {
-        m.set(moduleFileKey(dir, rel), content)
-      }
+      for (const [rel, content] of Object.entries(files)) m.set(moduleFileKey(dir, rel), content)
     }
     return m
   }
@@ -194,19 +185,8 @@ export class Bundle {
   static fromJSON(json, { contents = true } = {}) {
     assert(json.version === VERSION || json.version === LEGACY_VERSION)
     assert(['node_modules', 'full'].includes(json.config?.scope))
-    assert(isPlainObject(json.formats))
-    assert(isPlainObject(json.imports))
-
-    // Validate formats into a typed Map early: a raw-object lookup like `__proto__` would hit the prototype.
-    const formats = new Map()
-    for (const [file, format] of Object.entries(json.formats)) {
-      assert(!posixPathEscapes(file))
-      assert(KNOWN_FORMATS.has(format), `unknown format '${format}' for ${file}`)
-      // '' and '.' alias to the same key (older bundles keyed the root listing ''); normalize, fail closed on dupes.
-      const key = file === '' ? '.' : file
-      assert(!formats.has(key), `duplicate format key '${key}'`)
-      formats.set(key, format)
-    }
+    // Validated into a typed Map early: a raw-object lookup like `__proto__` would hit the prototype.
+    const formats = parseFormats(json.formats)
 
     const modules = new Map()
     let entries = new Set()
@@ -219,7 +199,7 @@ export class Bundle {
           assert(hasNodeModulesSegment(dir))
           assert(!posixPathEscapes(dir))
           assert(info?.name && info.version && info.files)
-          modules.set(dir, normalize(info))
+          modules.set(dir, normalizeModule(info))
         }
       }
       if (full) {
@@ -229,7 +209,7 @@ export class Bundle {
           assert(!posixPathEscapes(dir))
           // A workspace bucket may omit version (a private/unpublished package.json can lack one).
           assert(info?.name && info.files)
-          modules.set(dir, normalize(info))
+          modules.set(dir, normalizeModule(info))
         }
         // Empty entries are valid (`stasis add` attests files without making them entry points); state.assertEntry fails closed on an empty set.
         assert(json.entries === undefined || Array.isArray(json.entries))
@@ -253,29 +233,7 @@ export class Bundle {
 
     // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and the `sources` getter would serve either payload.
     const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
-
-    // Reject paths escaping the root here (incl. mid-path `a/../../x`): getImport resolves against the root at load.
-    const imports = objectToMaps(json.imports)
-    const assertTarget = (target) => {
-      if (typeof target === 'string') {
-        assert(!posixPathEscapes(target))
-        return
-      }
-      assert(target instanceof Map && target.size > 0, 'import target must be a file or a non-empty {platform: file} map')
-      for (const [platform, file] of target) {
-        assert(typeof platform === 'string' && platform.length > 0 && !platform.includes('/'), `invalid platform key '${platform}'`)
-        assert(typeof file === 'string')
-        assert(!posixPathEscapes(file))
-      }
-    }
-    for (const [, byParent] of imports) {
-      assert(byParent instanceof Map)
-      for (const [parent, specifiers] of byParent) {
-        assert(!posixPathEscapes(parent))
-        assert(specifiers instanceof Map)
-        for (const [, target] of specifiers) assertTarget(target)
-      }
-    }
+    const imports = parseImports(json.imports)
 
     if (!contents) for (const [dir, info] of modules) modules.set(dir, lockModule(dir, info))
 
@@ -295,34 +253,16 @@ export class Bundle {
     })
   }
 
-  #groupedFromModules() {
-    const moduleEntries = []
-    const sourceEntries = []
-    for (const [dir, { name, version, ecosystem, files }] of this.modules) {
-      if (Object.keys(files).length === 0) continue
-      const inNodeModules = hasNodeModulesSegment(dir)
-      if (inNodeModules) assert(name && version && files)
-      const sorted = fromEntries(Object.entries(files).toSorted((a, b) => sortPaths(a[0], b[0])))
-      const target = inNodeModules ? moduleEntries : sourceEntries
-      target.push([dir, { name, version, ...(ecosystem === undefined ? {} : { ecosystem }), files: sorted }])
-    }
-    moduleEntries.sort((a, b) => sortPaths(a[0], b[0]))
-    sourceEntries.sort((a, b) => sortPaths(a[0], b[0]))
-    return { modules: fromEntries(moduleEntries), sources: fromEntries(sourceEntries) }
-  }
-
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'bundle', duplicateKey)
-    const entries = fileSetToObject(this.entries)
-    const { modules, sources } = this.#groupedFromModules()
-    const formats = fileMapToObject(this.formats)
-    const imports = fileMapToObject(this.imports)
+    const { modules, sources } = groupModules(this.modules, { skipEmpty: true })
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo
-    if (full) data.entries = entries
-    Object.assign(data, { formats, imports })
+    if (full) data.entries = fileSetToObject(this.entries)
+    data.formats = fileMapToObject(this.formats)
+    data.imports = fileMapToObject(this.imports)
     const executable = serializeExecutable(this.executable, {
       what: 'bundle', modules: this.modules, formats: this.formats, scope: this.config.scope,
     })
