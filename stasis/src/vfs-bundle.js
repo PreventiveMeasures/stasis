@@ -6,7 +6,7 @@ import { suggestedRepoEntries } from './vfs-bundle/github.js'
 import { NODE_MODULES_MANAGERS, checkTarget, checkVfs, detectPackageManager, loadTree, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
 
 // @exodus/stasis/vfs-bundle: static bundles from a project's lockfile alone, through the
-// dependencies its package manager would install (`packageManager`: 'pnpm', pnpm 10, 11 or 12;
+// dependencies its package manager would install (`packageManager`: 'pnpm', pnpm 9, 10, 11 or 12;
 // 'yarn1', yarn 1.22; or 'soldeer', Soldeer 0.12; without one, the one whose lockfile installs the
 // project, where only one's does), over the project held in a Vfs, which is only read. The tree is
 // laid out by @preventive/deptree into a Vfs of its own, and nothing is read from disk or written

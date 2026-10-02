@@ -45,8 +45,13 @@ test('pnpm: lays out, into a Vfs of its own, the lockfile of cwd or the nearest 
   t.assert.equal((await load({ vfs: project(files), packageManagerVersion: '11.28.2' })).packageManagerVersion, '11.28.2')
   // A pnpm other than the one it pins is what deptree refuses, as pnpm would switch to that one.
   await t.assert.rejects(load({ vfs: project(files), packageManagerVersion: '10.33.4' }), /packageManager: the project is installed by pnpm 11\.28\.2/u)
+  // pnpm 9 from 9.15.0 on; nothing older.
   files['package.json'] = { name: 'p', version: '1.0.0', packageManager: 'pnpm@9.15.0' }
-  await t.assert.rejects(load({ vfs: project(files) }), /host\.pnpm: pnpm "9\.15\.0" is not supported: only pnpm 10, 11 and 12 are/u)
+  t.assert.equal((await load({ vfs: project(files) })).packageManagerVersion, '9.15.0')
+  files['package.json'] = { name: 'p', version: '1.0.0', packageManager: 'pnpm@9.14.4' }
+  await t.assert.rejects(load({ vfs: project(files) }), /host\.pnpm: pnpm "9\.14\.4" is not supported: pnpm 9 is from 9\.15\.0 on/u)
+  files['package.json'] = { name: 'p', version: '1.0.0', packageManager: 'pnpm@8.15.9' }
+  await t.assert.rejects(load({ vfs: project(files) }), /host\.pnpm: pnpm "8\.15\.9" is not supported: only pnpm 9, 10, 11 and 12 are/u)
   // pnpm 12 from 12.8.1 on, the one installed where the project pins none.
   files['package.json'] = { name: 'p', version: '1.0.0' }
   t.assert.equal((await load({ vfs: project(files), packageManagerVersion: '12.8.1' })).packageManagerVersion, '12.8.1')

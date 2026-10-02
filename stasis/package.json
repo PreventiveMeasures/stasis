@@ -93,10 +93,10 @@
     "@exodus/stasis-core": "1.0.0-beta.4",
     "@exodus/stasis-plugins": "1.0.0-beta.4",
     "@preventive/archive": "1.0.0-beta.3",
-    "@preventive/deptree": "1.0.0-alpha.5",
-    "@preventive/lockfile": "1.0.0-alpha.4",
-    "@preventive/upstream": "1.0.0-alpha.3",
-    "@preventive/vfs": "1.0.0-beta.2",
+    "@preventive/deptree": "1.0.0-alpha.6",
+    "@preventive/lockfile": "1.0.0-alpha.5",
+    "@preventive/upstream": "1.0.0-alpha.4",
+    "@preventive/vfs": "1.0.0-beta.3",
     "oxc-parser": "^0.94.0"
   },
   "peerDependencies": {

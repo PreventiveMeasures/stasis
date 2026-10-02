@@ -1312,7 +1312,7 @@ test('createCargoContext takes a Cargo.lock pin only when the requirement allows
   withProject({
     'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nrand = "0.8"\n',
     // out of date: the manifest moved on to 0.8, the lock still says 0.7.3
-    'Cargo.lock': 'version = 3\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["rand"]\n\n[[package]]\nname = "rand"\nversion = "0.7.3"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n',
+    'Cargo.lock': `version = 3\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["rand"]\n\n[[package]]\nname = "rand"\nversion = "0.7.3"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${'a'.repeat(64)}"\n`,
     'src/main.rs': '',
     ...vendoredPackage('rand', '0.7.3'), ...vendoredPackage('rand', '0.8.5'),
   }, (tmp) => {
@@ -1588,7 +1588,7 @@ test('createCargoContext reads the lockfile of the entries\' workspace, below th
     'proj/Cargo.toml': '[workspace]\nmembers = ["app"]\n',
     'proj/app/Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nserde = "1"\n',
     'proj/app/src/lib.rs': '',
-    'proj/Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["serde"]\n\n[[package]]\nname = "serde"\nversion = "1.0.100"\nsource = "${REGISTRY}"\n`,
+    'proj/Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["serde"]\n\n[[package]]\nname = "serde"\nversion = "1.0.100"\nsource = "${REGISTRY}"\nchecksum = "${sha('a')}"\n`,
     ...vendoredPackage('serde', '1.0.100'), ...vendoredPackage('serde', '1.0.200'),
   }, (tmp) => {
     const { result, warnings } = captureWarningsSync(() => createCargoContext(tmp, { entries: ['proj/app/src/lib.rs'] }).resolveCrate('serde', 'proj/app/src/lib.rs'))

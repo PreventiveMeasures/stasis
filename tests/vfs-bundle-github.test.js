@@ -457,7 +457,7 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
 test("buildGitHubBundle reports the root listing's failure rather than taking it for a symlink's", async (t) => {
   const client = fakeClient({ 'pnpm-lock.yaml': lockfile('.'), 'apps/p/a.js': '' })
   const listRepoDir = client.listRepoDir
-  client.listRepoDir = async (options) => (options.path === undefined ? Promise.reject(new Error('GitHub: rate limited')) : listRepoDir(options))
+  client.listRepoDir = async (options) => (options.directory === undefined ? Promise.reject(new Error('GitHub: rate limited')) : listRepoDir(options))
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client, directory: 'apps/p', entries: ['a.js'] }), /^Error: GitHub: rate limited$/u)
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client, entries: ['apps/p/a.js'] }), /^Error: GitHub: rate limited$/u)
   t.assert.ok(!methods(client).includes('getRepoTarball'), 'nothing is downloaded')

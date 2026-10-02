@@ -82,7 +82,7 @@ function checkRepo(name, { github, sha, directory }) {
 function lister(client, { github, sha }) {
   const listings = new Map()
   return (path) => {
-    if (!listings.has(path)) listings.set(path, client.listRepoDir({ repo: github, sha, path }))
+    if (!listings.has(path)) listings.set(path, client.listRepoDir({ repo: github, sha, directory: path }))
     return listings.get(path)
   }
 }

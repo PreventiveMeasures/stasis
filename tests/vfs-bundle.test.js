@@ -337,9 +337,12 @@ describe('buildVfsBundle with pnpm, its cache and its lockfile', { concurrency: 
     t.assert.equal((await build(projectVfs('pnpm', { ...workspace, 'pnpm-lock.yaml': withUrls }))).bundle.serialize(), oracles.pnpm.bundle)
     // One URL off the registry, or naming another version's tarball: the build fails before
     // anything is fetched.
-    await Promise.all(['https://evil.example/ms/-/ms-2.1.3.tgz', 'https://registry.npmjs.org/ms/-/ms-2.1.2.tgz'].map((url) => {
+    await Promise.all([
+      ['https://evil.example/ms/-/ms-2.1.3.tgz', /"ms@2\.1\.3": only packages from https:\/\/registry\.npmjs\.org\/ are supported/u],
+      ['https://registry.npmjs.org/ms/-/ms-2.1.2.tgz', /packages\["ms@2\.1\.3"\]\.resolution\.tarball: "https:\/\/registry\.npmjs\.org\/ms\/-\/ms-2\.1\.2\.tgz" is not the registry's tarball of ms@2\.1\.3/u],
+    ].map(([url, refused]) => {
       const vfs = projectVfs('pnpm', { ...workspace, 'pnpm-lock.yaml': withUrls.replace('https://registry.npmjs.org/ms/-/ms-2.1.3.tgz', url) })
-      return t.assert.rejects(build(vfs), /"ms@2\.1\.3": only packages from https:\/\/registry\.npmjs\.org\/ are supported/u)
+      return t.assert.rejects(build(vfs), refused)
     }))
   })
 })
