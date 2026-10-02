@@ -1,4 +1,4 @@
-import { moduleFileKey } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -21,7 +21,7 @@ import { collectWhy, invertReason } from './why.js'
 export function collectPackagesFromFile(file) {
   const out = []
   for (const [dir, { name, version, files }] of parseFile(file).modules) {
-    if (!dir.includes('node_modules')) continue
+    if (!hasNodeModulesSegment(dir)) continue
     if (!name || !version) continue
     if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel))) continue
     out.push({ name, version })
@@ -57,7 +57,7 @@ export function collectReasons(files) {
     if (!fileReasons) continue
     const fileToPkg = new Map()
     for (const [dir, { name, version, files: modFiles }] of artifact.modules) {
-      if (!dir.includes('node_modules') || !name || !version) continue
+      if (!hasNodeModulesSegment(dir) || !name || !version) continue
       for (const rel of Object.keys(modFiles)) {
         if (!isEvidenceFile(name, version, rel)) continue
         fileToPkg.set(moduleFileKey(dir, rel), `${name}@${version}`)

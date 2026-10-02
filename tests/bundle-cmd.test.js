@@ -1161,6 +1161,19 @@ test('buildBashBundle and buildRustBundle walk past a malformed package.json, as
   t.assert.deepEqual([...(await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })).sources.keys()].toSorted(), ['src/a.rs', 'src/main.rs'])
 }))
 
+test('buildBashBundle tags only node_modules buckets npm, node_modules a path segment as stasis add has it', withTmp(async (t, tmp) => {
+  writeProject(tmp, {
+    'package.json': '{ "name": "app", "version": "1.0.0" }\n',
+    'run.sh': '#!/bin/sh\n. ./tools/foo_node_modules/lib.sh\n. ./node_modules/dep/d.sh\n',
+    'tools/foo_node_modules/package.json': '{ "name": "internal-tool", "version": "1.0.0" }\n',
+    'tools/foo_node_modules/lib.sh': 'echo hi\n',
+    'node_modules/dep/package.json': '{ "name": "dep", "version": "2.0.0" }\n',
+    'node_modules/dep/d.sh': 'echo dep\n',
+  })
+  const { modules } = await buildBashBundle({ cwd: tmp, entries: ['run.sh'] })
+  t.assert.deepEqual(Object.fromEntries([...modules].map(([dir, m]) => [dir, m.ecosystem])), { '.': undefined, 'tools/foo_node_modules': undefined, 'node_modules/dep': 'npm' })
+}))
+
 test('buildSolidityBundle with --mapping bundles when forge would reject the root foundry.toml', withTmp(async (t, tmp) => {
   writeProject(tmp, {
     'foundry.toml': '[profile.default]\nextends = "missing.toml"\n',

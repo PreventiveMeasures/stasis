@@ -171,6 +171,25 @@ test('collectWhy shows a single-node chain for a directly-imported dependency', 
   t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: c', 'webpack: c'])
 }))
 
+test('collectWhy takes node_modules as a path segment: a workspace package named so is no dependency', withTmp((t, tmp) => {
+  // src/e.js -> tools/foo_node_modules/index.js (first-party) -> node_modules/c/index.js
+  const path = join(tmp, 'stasis.code.br')
+  const toolFile = 'tools/foo_node_modules/index.js'
+  writeFileSync(path, brotliCompressSync(Buffer.from(JSON.stringify({
+    version: 1,
+    config: { scope: 'full' },
+    entries: ['src/e.js'],
+    sources: { '.': { name: 'top', version: '1.0.0', files: { 'src/e.js': '' } }, 'tools/foo_node_modules': { name: 'tool', version: '1.0.0', files: { 'index.js': '' } } },
+    modules: { 'node_modules/c': { name: 'c', version: '1.0.0', files: { 'index.js': '' } } },
+    formats: {},
+    imports: { '*': { 'src/e.js': { tool: toolFile }, [toolFile]: { c: 'node_modules/c/index.js' } } },
+    reason: { run: ['src/e.js', toolFile, 'node_modules/c/index.js'] },
+  }))))
+  const why = collectWhy([path], new Set(['c@1.0.0', 'tool@1.0.0']))
+  t.assert.deepEqual(linesFor(why, 'c@1.0.0'), ['run: c'], 'imported by first-party code')
+  t.assert.equal(why.has('tool@1.0.0'), false)
+}))
+
 test('collectWhy attributes a chain per reason at the file-edge level', withTmp((t, tmp) => {
   // e -> A -> B -> C -> D. run recorded every file, so its chain is the full
   // A -> B -> C -> D. metro recorded e,A,C,D but NOT B: the B -> C edge (B's file)

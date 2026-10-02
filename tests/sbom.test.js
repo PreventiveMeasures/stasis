@@ -114,6 +114,11 @@ test('collectComponents skips buckets without name+version (legacy v0 bundle)', 
   t.assert.deepEqual(collectComponents([codeOf(v0)]), [])
 })
 
+test('collectComponents takes a legacy artifact\'s node_modules as a path segment, not a substring', (t) => {
+  const lock = lockOf({ ...LOCK, sources: { ...LOCK.sources, 'tools/foo_node_modules': { name: 'internal-tool', version: '0.1.0', files: { 'index.js': 'sha512-w' } } } })
+  t.assert.equal(collectComponents([lock]).find((c) => c.name === 'internal-tool').scope, 'workspace')
+})
+
 test('collectComponents dedupes by ecosystem+name+version across artifacts', (t) => {
   t.assert.equal(collectComponents([lockOf(LOCK), lockOf(LOCK)]).length, 3)
 })

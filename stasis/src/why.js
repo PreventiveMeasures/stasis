@@ -1,4 +1,4 @@
-import { moduleFileKey } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
@@ -60,7 +60,7 @@ function moduleIndex(artifact) {
   const dirInfo = new Map()
   const dirFiles = new Map()
   for (const [dir, { name, version, files }] of artifact.modules) {
-    dirInfo.set(dir, { name: name ?? null, version: version ?? null, dep: dir.includes('node_modules') })
+    dirInfo.set(dir, { name: name ?? null, version: version ?? null, dep: hasNodeModulesSegment(dir) })
     const list = []
     for (const rel of Object.keys(files)) {
       const f = moduleFileKey(dir, rel)

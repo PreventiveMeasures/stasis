@@ -14,7 +14,7 @@ import { State } from '@exodus/stasis-core/state'
 import { brotliOptions } from '@exodus/stasis-core/brotli'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -197,10 +197,10 @@ function assembleCodeBundle({
     const meta = packageOf(path)
     const inNodeModules = splitNodeModulesPath(path) !== null
     if (meta) {
-      if (inNodeModules && !meta.pkgDir.includes('node_modules')) {
+      if (inNodeModules && !hasNodeModulesSegment(meta.pkgDir)) {
         throw new Error(`No package.json with name+version found for ${path}`)
       }
-      const bucketEcosystem = meta.pkgDir.includes('node_modules') ? 'npm' : undefined
+      const bucketEcosystem = hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined
       ensureBucket(meta.pkgDir, meta.name, meta.version, bucketEcosystem).files[fileInBucket(meta.pkgDir, path)] = content
     } else {
       if (inNodeModules) throw new Error(`No package.json with name+version found for ${path}`)

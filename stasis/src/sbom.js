@@ -27,11 +27,12 @@ function detectEcosystem(artifact) {
 }
 
 // Legacy scope classification (pre-`ecosystem` artifacts): non-`node_modules` dirs are first-party,
-// except in a Composer bundle where vendor packages live outside `node_modules`.
+// except in a Composer bundle where vendor packages live outside `node_modules`. `node_modules` is
+// a path segment, as stasis-core's hasNodeModulesSegment has it: `foo_node_modules/x` is first-party.
 function classifyScope(ecosystem, dir) {
   if (dir === '.') return 'workspace'
   if (ecosystem === 'composer') return 'dependency'
-  return dir.includes('node_modules') ? 'dependency' : 'workspace'
+  return dir.split('/').includes('node_modules') ? 'dependency' : 'workspace'
 }
 
 // Split a package name into purl/CycloneDX namespace (group) + bare name: npm scopes, Composer

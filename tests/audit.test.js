@@ -94,6 +94,20 @@ test('collectPackages skips workspace (first-party) modules', withTmp((t, tmp) =
   t.assert.ok(!pkgs.some((p) => p.name === 'top-pkg'), 'workspace package must not be audited')
 }))
 
+test('collectPackages and collectReasons take node_modules as a path segment, not a substring', withTmp((t, tmp) => {
+  // tools/foo_node_modules is a workspace package: its name must not go to the registry.
+  const tool = { name: 'internal-tool', version: '1.0.0' }
+  const lock = writeLock(tmp, 'stasis.lock.json', {
+    sources: { '.': { name: 'top-pkg', version: '1.0.0', files: { 'src/entry.js': 'sha512-x' } }, 'tools/foo_node_modules': { ...tool, files: { 'index.js': 'sha512-w' } } },
+  })
+  const bundle = writeBundle(tmp, 'snapshot.br', {
+    sources: { '.': { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': 'export const x = 1\n' } }, 'tools/foo_node_modules': { ...tool, files: { 'index.js': 'export const t = 1\n' } } },
+    reason: { run: ['src/entry.js', 'tools/foo_node_modules/index.js', 'node_modules/foo/index.js'] },
+  })
+  t.assert.deepEqual(collectPackages([lock, bundle]).map((p) => `${p.name}@${p.version}`), ['bar@4.5.6', 'baz@0.0.1', 'foo@1.2.3', 'foo@2.0.0'])
+  t.assert.deepEqual([...collectReasons([bundle]).keys()], ['foo@2.0.0'])
+}))
+
 test('collectPackages skips bundle modules without name/version (v0 legacy)', withTmp((t, tmp) => {
   const path = join(tmp, 'legacy.br')
   const legacy = {
