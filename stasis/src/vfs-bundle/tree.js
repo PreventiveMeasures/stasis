@@ -134,21 +134,34 @@ function holdsPackage(host, dir) {
   return json === null || json.name !== undefined
 }
 
-// npm installs the package cwd is in from the first directory above it whose workspaces, as npm's
-// glob finds them on `os`, take it -- whatever package-lock.json is nearer, and past a workspace
-// declaring workspaces of its own, as npm finds its local prefix -- and any other package from the
-// nearest package-lock.json beside a package.json, npm's prefix being no directory without one.
-function npmRoot(host, cwd, os) {
-  const own = nearest(cwd, (dir) => holdsPackage(host, dir))
-  for (let dir = own; dir !== null && dirname(dir) !== dir;) {
-    dir = dirname(dir)
-    // npm takes a falsy declaration for none, and fails on any other but a sequence of globs, or
-    // yarn's `{ packages: [...] }` of them.
-    const declared = readJson(join(dir, 'package.json'), host)?.workspaces
+// The first directory above `dir` whose workspaces, as npm's glob finds them on `os`, take it, as npm
+// finds its local prefix; else null. npm takes a falsy declaration for none, and fails on any other
+// but a sequence of globs, or yarn's `{ packages: [...] }` of them.
+function npmWorkspaceRoot(host, dir, os) {
+  for (let above = dir; dirname(above) !== above;) {
+    above = dirname(above)
+    const declared = readJson(join(above, 'package.json'), host)?.workspaces
     if (!declared) continue
     const globs = Array.isArray(declared.packages) ? declared.packages : declared
-    if (!Array.isArray(globs) || globs.some((glob) => typeof glob !== 'string')) throw new Error(`${join(dir, 'package.json')}: workspaces: expected a sequence of globs, which npm fails without`)
-    if (findNpmWorkspaces({ project: projectView(host, dir), os: target({ os }).os }).includes(relative(dir, own))) return dir
+    if (!Array.isArray(globs) || globs.some((glob) => typeof glob !== 'string')) throw new Error(`${join(above, 'package.json')}: workspaces: expected a sequence of globs, which npm fails without`)
+    if (findNpmWorkspaces({ project: projectView(host, above), os: target({ os }).os }).includes(relative(above, dir))) return above
+  }
+  return null
+}
+
+// npm installs the package cwd is in from npmWorkspaceRoot's, whatever package-lock.json is nearer,
+// and past a workspace declaring workspaces of its own -- and any other package from the nearest
+// package-lock.json beside a package.json, npm's prefix being no directory without one. A
+// package.json with no name is a package where a workspace root takes it, which npm names by its
+// directory, and else a `type` marker, its files the package's above.
+function npmRoot(host, cwd, os) {
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    if (isFile(join(dir, 'package.json'), host)) {
+      const root = npmWorkspaceRoot(host, dir, os)
+      if (root !== null) return root
+      if (holdsPackage(host, dir)) break
+    }
+    if (dirname(dir) === dir) break
   }
   return nearest(cwd, (dir) => holding(host, 'package-lock.json')(dir) && holding(host, 'package.json')(dir))
 }
