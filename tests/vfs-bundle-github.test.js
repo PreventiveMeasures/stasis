@@ -455,6 +455,10 @@ test('buildGitHubBundle roots a JS bundle at the innermost package around the di
   t.assert.deepStrictEqual([...inner.bundle.sources.keys()], ['src/a.js', 'src/b.js'])
   t.assert.deepStrictEqual([...inner.bundle.entries], ['src/a.js'])
   t.assert.deepStrictEqual({ ...inner.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
+  // Nor is one whose package.json only marks its type, which the State takes to be the package's above.
+  const marked = await build({ client: fakeClient({ ...files, 'packages/p/src/package.json': json({ type: 'module' }), 'packages/p/src/m.js': "import './n.js'\n", 'packages/p/src/n.js': 'export default 1\n' }), directory: 'packages/p/src', entries: ['m.js'] })
+  t.assert.deepStrictEqual([...marked.bundle.sources.keys()], ['src/m.js', 'src/n.js'])
+  t.assert.deepStrictEqual({ ...marked.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
   // Files outside it, a sibling package's and the root's, root it at the project's root.
   const out = await build({ client: fakeClient(files), directory: 'packages/p', entries: ['src/out.js'] })
   t.assert.deepStrictEqual([...out.bundle.sources.keys()].toSorted(), ['packages/p/src/out.js', 'packages/q/index.js', 'shared.js'])

@@ -12,7 +12,7 @@ import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescrip
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
+import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
@@ -678,9 +678,9 @@ const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript 
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
 // `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
-// settings from `env`. With `innermostRoot`, the State is rooted at the innermost directory at or
-// above cwd that holds a package.json and every file the scan reaches (innermostRootOf), rather
-// than at the project's root above it, where that holds no stasis file of its own.
+// settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
+// above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
+// root above it, where that holds no stasis file of its own.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost, innermostRoot = false } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts file is required')
@@ -762,11 +762,13 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
 // The files that root a State in the directory holding one (state.js's discovery).
 const STASIS_ROOT_FILES = ['stasis.config.json', 'stasis.lock.json', DEFAULT_BUNDLE_FILE]
 
-// The innermost directory at or above `baseDir`, up to `root`, that holds a package.json and every
-// one of `files` (real paths), which a State can be rooted at; `root` where none below it does.
+// The innermost directory at or above `baseDir`, up to `root`, holding every one of `files` (real
+// paths) and a package.json with a name, which a State can be rooted at; `root` where none below it
+// does. One without a name, such as a `{"type":"module"}` marker, is no root: the State takes such a
+// file's package to be the named one above it, which it then must hold.
 function innermostRootOf(baseDir, files, root, host) {
   for (let dir = baseDir; dir !== root && dirname(dir) !== dir; dir = dirname(dir)) {
-    if (files.every((file) => isPathWithin(dir, file)) && packageJSONStat(host, join(dir, 'package.json')) !== null) return dir
+    if (files.every((file) => isPathWithin(dir, file)) && readPackageJson(dir, 'package.json', { host })?.name !== undefined) return dir
   }
   return root
 }
