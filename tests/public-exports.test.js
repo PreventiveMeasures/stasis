@@ -147,6 +147,27 @@ test('Lockfile round-trip preserves formats', (t) => {
   t.assert.deepEqual(JSON.parse(first).formats, { 'src/a.js': 'module' })
 })
 
+test('Lockfile.parse rejects a source bucket without a name or files, as Bundle.parse does', (t) => {
+  const base = { version: 0, config: { scope: 'full' }, entries: [], modules: {}, imports: {}, formats: {} }
+  t.assert.throws(() => Lockfile.parse(JSON.stringify({ ...base, sources: { '.': { files: { 'a.js': 'sha512-aaa' } } } })))
+  t.assert.throws(() => Lockfile.parse(JSON.stringify({ ...base, sources: { '.': { name: 'x' } } })))
+  // A workspace bucket may still omit its version.
+  const lockfile = Lockfile.parse(JSON.stringify({ ...base, sources: { '.': { name: 'x', files: { 'a.js': 'sha512-aaa' } } } }))
+  t.assert.equal(lockfile.modules.get('.').version, undefined)
+})
+
+test('Lockfile.parse and Bundle.parse validate entries: in-root non-empty strings, each listed once', (t) => {
+  const lock = (entries) => JSON.stringify({ version: 0, config: { scope: 'full' }, entries, sources: { '.': { name: 'x', version: '1.0.0', files: { 'src/a.js': 'sha512-aaa' } } }, modules: {}, imports: {}, formats: {} })
+  const bundle = (entries) => JSON.stringify({ version: 1, config: { scope: 'full' }, entries, sources: { '.': { name: 'x', version: '1.0.0', files: { 'src/a.js': 'A' } } }, modules: {}, imports: {}, formats: {} })
+  for (const bad of [[1], [''], ['../x'], ['/etc/passwd'], ['src/a.js', 'src/a.js'], 'src/a.js']) {
+    t.assert.throws(() => Lockfile.parse(lock(bad)), /entr/, `lockfile ${JSON.stringify(bad)}`)
+    t.assert.throws(() => Bundle.parse(bundle(bad)), /entr/, `bundle ${JSON.stringify(bad)}`)
+  }
+  t.assert.deepEqual([...Lockfile.parse(lock(['src/a.js'])).entries], ['src/a.js'])
+  t.assert.deepEqual([...Bundle.parse(bundle(['src/a.js'])).entries], ['src/a.js'])
+  t.assert.deepEqual([...Bundle.parse(bundle([])).entries], [])
+})
+
 test('Lockfile.parse requires both imports and formats', (t) => {
   // Every stasis writer emits both facets; a file missing either is not a stasis lockfile.
   const base = {

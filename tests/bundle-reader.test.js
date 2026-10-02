@@ -236,6 +236,8 @@ test('readBundle rejects what Bundle.parse rejects, with the same error', async 
     'escaping file path': minimal({ '../evil.js': 'x' }),
     'escaping bucket dir': minimal({}, { sources: { '..': { name: 'app', version: '1', files: { 'a.js': 'A' } } } }),
     'bad version': { ...minimal({ 'a.js': 'A' }), version: 7 },
+    'non-string entry': { ...minimal({ 'a.js': 'A' }), entries: [1] },
+    'escaping entry': { ...minimal({ 'a.js': 'A' }), entries: ['../a.js'] },
     'duplicate flat key across buckets': minimal({}, {
       sources: {
         '.': { name: 'app', version: '1', files: { 'pkg/a.js': 'one' } },

@@ -77,10 +77,10 @@ function encodeRealpath(abs, options) {
   return encoding === 'buffer' ? Buffer.from(abs) : abs
 }
 
-// NON-EXISTENT under --fs (faithful ENOENT in both modes): source-map sidecars (`*.map`, so a captured
-// build replays byte-identically; opt out via `map` in resources) and `.env`/`.env.*` (an automated
-// capture can never bake a secret in; no opt-in). The ONE way either serves at load is bundle
-// membership (an explicit `stasis add .env`).
+// NON-EXISTENT under --fs (a faithful ENOENT from every reader, listings included, in both modes):
+// source-map sidecars (`*.map`, so a captured build replays byte-identically; opt out via `map` in
+// resources) and `.env`/`.env.*` (an automated capture can never bake a secret in; no opt-in). The
+// ONE way either serves at load is bundle membership (an explicit `stasis add .env`).
 function isSkippedFsPath(state, abs) {
   const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
   return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
@@ -137,14 +137,13 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
 
   // Classify a path for every hook: null passes through to the real fs; else { mode, abs, url, state }
   // with mode 'absent' (a skipped path: ENOENT), 'serve' (bundle=load; an uncaptured path still falls
-  // through to disk) or 'capture' (bundle=add|replace, outside a loader read). `skipped: false`
-  // leaves a skipped name to serve/capture (readdirSync, where only the async form treats it as absent).
-  const classify = (path, { skipped = true } = {}) => {
+  // through to disk) or 'capture' (bundle=add|replace, outside a loader read).
+  const classify = (path) => {
     const state = getState()
     if (!state) return null
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
-    if (skipped && isSkippedFsPath(state, abs)) return { mode: 'absent', abs }
+    if (isSkippedFsPath(state, abs)) return { mode: 'absent', abs }
     const url = pathToFileURL(abs).toString()
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }
@@ -186,12 +185,13 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   }
 
   fs.readdirSync = function readdirSync(path, options) {
-    // Single-argument form only; any options pass straight through.
-    const t = options == null ? classify(path, { skipped: false }) : null
-    if (t?.mode === 'serve') {
+    const t = classify(path)
+    if (t?.mode === 'absent') throw enoent('scandir', path)
+    // Served/captured in the single-argument form only; any options pass straight through.
+    if (options == null && t?.mode === 'serve') {
       const names = t.state.getFsDirFamily(t.url)
       if (names !== undefined) return names // sorted at capture time
-    } else if (t?.mode === 'capture') {
+    } else if (options == null && t?.mode === 'capture') {
       const names = realReaddirSync(path)
       captureDir(t, names)
       return names
@@ -294,13 +294,14 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
 
     fs.readdir = function readdir(path, options, callback) {
       const [opts, cb] = cbArgs(options, callback)
-      // Single-arg form only, and a null options must count as "no options" (graceful-fs normalises to
-      // that), else its reads never hit the bundle.
-      const t = opts == null && typeof cb === 'function' ? classify(path) : null
-      if (t?.mode === 'serve') {
+      const t = typeof cb === 'function' ? classify(path) : null
+      if (t?.mode === 'absent') return later(cb, enoent('scandir', path))
+      // Served/captured in the single-arg form only, where a null options must count as "no options"
+      // (graceful-fs normalises to that), else its reads never hit the bundle.
+      if (opts == null && t?.mode === 'serve') {
         const names = t.state.getFsDirFamily(t.url)
         if (names !== undefined) return later(cb, null, names)
-      } else if (t?.mode === 'capture') {
+      } else if (opts == null && t?.mode === 'capture') {
         return realReaddir(path, (err, names) => {
           if (err) return cb(err)
           captureDir(t, names)
@@ -311,11 +312,12 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     }
 
     fs.promises.readdir = async function readdir(path, options) {
-      const t = options == null ? classify(path) : null
-      if (t?.mode === 'serve') {
+      const t = classify(path)
+      if (t?.mode === 'absent') throw enoent('scandir', path)
+      if (options == null && t?.mode === 'serve') {
         const names = t.state.getFsDirFamily(t.url)
         if (names !== undefined) return names
-      } else if (t?.mode === 'capture') {
+      } else if (options == null && t?.mode === 'capture') {
         const names = await realReaddirP(path)
         captureDir(t, names)
         return names

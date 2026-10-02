@@ -195,6 +195,19 @@ export function posixPathEscapes(path) {
   return false
 }
 
+// An artifact's `entries` list as a Set: each a non-empty in-root path, listed once (a dupe would
+// collapse in the Set and round-trip to different bytes).
+export function parseEntries(list, what) {
+  assert(Array.isArray(list), `${what}: entries must be an array of file paths`)
+  const out = new Set()
+  for (const entry of list) {
+    assert(typeof entry === 'string' && entry !== '' && !posixPathEscapes(entry), `${what}: invalid entry ${JSON.stringify(entry)}`)
+    assert(!out.has(entry), `${what}: entry '${entry}' is listed twice`)
+    out.add(entry)
+  }
+  return out
+}
+
 // An artifact's `formats` object as a validated Map. '' and '.' alias to the same key (older
 // artifacts keyed the root listing ''); normalized, failing closed on dupes, and an unknown format
 // is rejected at the schema boundary so a tampered artifact fails closed.

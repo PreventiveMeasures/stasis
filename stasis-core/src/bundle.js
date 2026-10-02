@@ -15,6 +15,7 @@ import {
   mergeModuleMaps,
   moduleFileKey,
   normalizeModule,
+  parseEntries,
   parseExecutable,
   parseFormats,
   parseImports,
@@ -212,8 +213,7 @@ export class Bundle {
           modules.set(dir, normalizeModule(info))
         }
         // Empty entries are valid (`stasis add` attests files without making them entry points); state.assertEntry fails closed on an empty set.
-        assert(json.entries === undefined || Array.isArray(json.entries))
-        entries = new Set(json.entries)
+        if (json.entries !== undefined) entries = parseEntries(json.entries, 'bundle')
       } else {
         assert(json.entries === undefined)
         assert(json.sources === undefined)

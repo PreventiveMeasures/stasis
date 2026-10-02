@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, isAbsolute, join, relative } from 'node:path'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS } from './artifact-util.js'
@@ -26,11 +26,12 @@ export function pathExt(filePath) {
 // A native path as the '/'-joined form every artifact key uses (a no-op off Windows).
 export const toPosix = (path) => path.split(/[\\/]/u).join('/')
 
+// Whether a path.relative() result climbs out of its base: absolute, or beginning with a `..`
+// SEGMENT -- a bare startsWith('..') would also reject a legitimate `..cache` name.
+export const relativeEscapes = (rel) => rel === '..' || rel.startsWith('../') || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+
 // True when `path` is `base` or lies beneath it. Lexical: resolve real paths first where symlinks matter.
-export function isPathWithin(base, path) {
-  const rel = relative(base, path)
-  return !rel.startsWith('..') && !isAbsolute(rel)
-}
+export const isPathWithin = (base, path) => !relativeEscapes(relative(base, path))
 
 // Both rules are needed: pathExt('.env.local') is 'local', and the extension rule alone misses `.env.*`.
 export function isDotEnvFile(name) {
