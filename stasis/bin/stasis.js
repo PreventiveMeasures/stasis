@@ -78,8 +78,10 @@ function usage(prefix = '') {
   main, exports and bin, resolved as the build resolves them (--conditions, --mainFields, --metro
   --platforms, --typescript), or for Soldeer its .sol files directly in it, under contracts/, and
   under its source directory (foundry.toml's src, else src/), but tests, scripts, mocks and
-  dependency or build directories; not with --metro-resolver, --cargo* or --add; writes to
-  owner-name.<commit's first 7>.stasis.code.br by default,
+  dependency or build directories; its paths, and the directory its repo names, are
+  --directory's, or of a JS bundle, the innermost package's at or above it holding every file it
+  bundles, the project root's where one is outside; not with --metro-resolver, --cargo* or --add;
+  writes to owner-name.<commit's first 7>.stasis.code.br by default,
   owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with --directory, each
   character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in 255 characters cut,
   with a hash of it; --output=- streams to stdout)

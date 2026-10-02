@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { extname, join, posix, relative, resolve } from 'node:path'
+import { dirname, extname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -12,8 +12,8 @@ import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescrip
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
+import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -678,8 +678,10 @@ const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript 
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
 // `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
-// settings from `env`.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost } = {}) {
+// settings from `env`. With `innermostRoot`, the State is rooted at the innermost directory at or
+// above cwd that holds a package.json and every file the scan reaches (innermostRootOf), rather
+// than at the project's root above it, where that holds no stasis file of its own.
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost, innermostRoot = false } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts file is required')
   }
@@ -706,7 +708,14 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // bundle:'replace' skips reading any on-disk stasis.code.br (bundle:'add' would leak stale
   // entries); lock:'ignore' tolerates a pre-existing lockfile without consuming it; and it is never
   // written, so it claims no write target.
-  const state = new State(baseDir, { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, env, claim: false })
+  const stateOptions = { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, claim: false }
+  let state = new State(baseDir, { ...stateOptions, env })
+  // A root holding a stasis file is the project's own choice, whose config the build takes.
+  if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {
+    const root = innermostRootOf(baseDir, [...scanner.files.keys()].map((url) => host.realpath(fileURLToPath(url))), state.root, host)
+    // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
+    if (root !== state.root) state = new State(baseDir, { ...stateOptions, env: { ...env, PROJECT_CWD: root } })
+  }
   for (const [url, info] of scanner.files) {
     // A resource carries bytes only: addFile derives resource vs resource:base64 from the content
     // and stores it under `resources` (a resource can't be an entry, so no isEntry).
@@ -748,6 +757,18 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // no-ops any manifest the scan already reached). State's bundle=replace makes writeBundle true, so addFile accepts them.
   if (packageJSON) state.includePackageJson()
   return state
+}
+
+// The files that root a State in the directory holding one (state.js's discovery).
+const STASIS_ROOT_FILES = ['stasis.config.json', 'stasis.lock.json', DEFAULT_BUNDLE_FILE]
+
+// The innermost directory at or above `baseDir`, up to `root`, that holds a package.json and every
+// one of `files` (real paths), which a State can be rooted at; `root` where none below it does.
+function innermostRootOf(baseDir, files, root, host) {
+  for (let dir = baseDir; dir !== root && dirname(dir) !== dir; dir = dirname(dir)) {
+    if (files.every((file) => isPathWithin(dir, file)) && packageJSONStat(host, join(dir, 'package.json')) !== null) return dir
+  }
+  return root
 }
 
 // Extensions probed when a resolved target names none. Limited to what a source bundle can
@@ -1178,15 +1199,17 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
 
 // A JS bundle as `stasis bundle` builds it: by the legacy-field resolver with `mainFields` or
 // `metro`, whose per-platform edges and synthetic empty module a State can't hold, else through a
-// State, which detects the bundle's repo itself. -> { bundle, lockfile: () => Lockfile, stateBuilt }
-async function buildJs({ mainFields, platforms, metro, metroResolver, ...options }) {
+// State, which detects the bundle's repo itself. `root` is the directory the bundle's paths are
+// relative to: cwd for the resolver's, the State's root for the State's.
+// -> { bundle, lockfile: () => Lockfile, stateBuilt, root }
+async function buildJs({ mainFields, platforms, metro, metroResolver, innermostRoot, ...options }) {
   if (metro || mainFields !== undefined) {
     const built = await buildResolvedJsBundle({ ...options, mainFields: metro ? METRO_MAIN_FIELDS : mainFields, platforms: metro ? platforms : [null], metro: Boolean(metro), metroResolver: Boolean(metroResolver) })
-    return { bundle: built.bundle, lockfile: () => built.lockfile, stateBuilt: false }
+    return { bundle: built.bundle, lockfile: () => built.lockfile, stateBuilt: false, root: resolve(options.cwd) }
   }
-  const state = await buildJsBundle(options)
+  const state = await buildJsBundle({ ...options, innermostRoot })
   // Stamp the `bundle` consumer (the static build carries none).
-  return { bundle: state.sourceBundle.withReason('bundle'), lockfile: () => state.lockfile, stateBuilt: true }
+  return { bundle: state.sourceBundle.withReason('bundle'), lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options.
@@ -1216,9 +1239,11 @@ export function checkVfsOptions(name, options) {
 // EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory | root, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
-// installs cwd, where only one's does.
-// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager }
-export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, ...options } = {}) {
+// installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
+// through a State. `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or
+// for a JS bundle built through a State, the State's root, which is at or above it.
+// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
+export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, ...options } = {}) {
   const { checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
@@ -1239,11 +1264,11 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   }
   const { host, stats } = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc })
   const args = { ...options, cwd, host, env: {} }
-  const { bundle, lockfile, stateBuilt } = pm.kind === 'sol' ? { bundle: await buildSolidityBundle(args) } : await buildJs(args)
+  const { bundle, lockfile, stateBuilt, root } = pm.kind === 'sol' ? { bundle: await buildSolidityBundle(args), root: cwd } : await buildJs({ ...args, innermostRoot })
   if (repo !== undefined) bundle.repo = repo
   // Rooted at cwd, where `stasis bundle` detects its repo.
   else if (!stateBuilt) bundle.repo ??= detectRepo(cwd, host)
-  return { bundle, lockfile: lockfile?.(), stats, packageManager }
+  return { bundle, lockfile: lockfile?.(), stats, packageManager, root }
 }
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without

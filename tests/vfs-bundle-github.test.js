@@ -121,7 +121,8 @@ test("buildGitHubBundle takes the entry points of the directory's package.json, 
     'packages/p/cli.js': '',
   })
   const { bundle } = await build({ client, directory: 'packages/p' })
-  t.assert.deepStrictEqual([...bundle.entries], ['packages/p/cli.js'])
+  t.assert.deepStrictEqual([...bundle.entries], ['cli.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
 })
 
 // A Vfs holding `files` as fakeClient serves them.
@@ -367,8 +368,8 @@ test('buildGitHubBundle builds a workspace member from the workspace, whatever l
     'packages/p/src/a.js': 'module.exports = 1\n',
   })
   const { bundle } = await build({ client, directory: 'packages/p', entries: ['src/a.js'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
   t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
 })
 
@@ -381,8 +382,8 @@ test('buildGitHubBundle downloads the whole repo for a lockfile above the direct
     'packages/p/src/a.js': 'module.exports = 1\n',
   })
   const { bundle } = await build({ client, directory: 'packages/p', entries: ['src/a.js'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()], ['packages/p/src/a.js'])
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'where the lockfile is, which the paths are relative to')
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA }, 'the directory, which holds every file it bundles')
   t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
 })
 
@@ -434,6 +435,54 @@ test('buildGitHubBundle downloads the whole repo for a lockfile naming the direc
   const npm = fakeClient({ 'apps/package.json': json({ name: 'shared', version: '1.0.0' }), 'apps/p/package.json': json({ name: 'p', version: '1.0.0', dependencies: { shared: 'file:..' } }), 'apps/p/package-lock.json': npmLock('p', { '..': { name: 'shared', version: '1.0.0' }, 'node_modules/shared': { resolved: '..', link: true } }), 'apps/p/a.js': '' })
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: npm, directory: 'apps/p', packageManager: 'npm', entries: ['a.js'] }))
   t.assert.deepStrictEqual(methods(npm), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
+})
+
+test('buildGitHubBundle roots a JS bundle at the innermost package around the directory holding every file it bundles', async (t) => {
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': lockfile('.', 'packages/p', 'packages/q'),
+    'shared.js': 'module.exports = 0\n',
+    'packages/p/package.json': json({ name: 'p', version: '1.0.0' }),
+    'packages/p/src/a.js': "module.exports = require('./b.js')\n",
+    'packages/p/src/b.js': 'module.exports = 1\n',
+    'packages/p/src/out.js': "module.exports = require('../../q/index.js') + require('../../../shared.js')\n",
+    'packages/q/package.json': json({ name: 'q', version: '1.0.0' }),
+    'packages/q/index.js': 'module.exports = 2\n',
+  }
+  // A directory that is no package is rooted at the package around it.
+  const inner = await build({ client: fakeClient(files), directory: 'packages/p/src', entries: ['a.js'] })
+  t.assert.deepStrictEqual([...inner.bundle.sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual([...inner.bundle.entries], ['src/a.js'])
+  t.assert.deepStrictEqual({ ...inner.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
+  // Files outside it, a sibling package's and the root's, root it at the project's root.
+  const out = await build({ client: fakeClient(files), directory: 'packages/p', entries: ['src/out.js'] })
+  t.assert.deepStrictEqual([...out.bundle.sources.keys()].toSorted(), ['packages/p/src/out.js', 'packages/q/index.js', 'shared.js'])
+  t.assert.deepStrictEqual({ ...out.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  // A stasis file at the project's root is its own choice of root, which the build keeps.
+  const configured = await build({ client: fakeClient({ ...files, 'stasis.config.json': '{}\n' }), directory: 'packages/p', entries: ['src/a.js'] })
+  t.assert.deepStrictEqual([...configured.bundle.sources.keys()], ['packages/p/src/a.js', 'packages/p/src/b.js'])
+  t.assert.deepStrictEqual({ ...configured.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  // An npm workspace's member likewise, which reaches a sibling package through its link.
+  const npm = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true, workspaces: ['packages/*'] }),
+    'package-lock.json': `${JSON.stringify({ name: 'root', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'root', version: '1.0.0', workspaces: ['packages/*'] }, 'node_modules/p': { resolved: 'packages/p', link: true }, 'node_modules/q': { resolved: 'packages/q', link: true }, 'packages/p': { version: '1.0.0' }, 'packages/q': { version: '1.0.0' } } }, null, 2)}\n`,
+    ...Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith('packages/'))),
+    'packages/p/src/sibling.js': "module.exports = require('q')\n",
+  }
+  const alone = await build({ client: fakeClient(npm), packageManager: 'npm', directory: 'packages/p', entries: ['src/a.js'] })
+  t.assert.deepStrictEqual([...alone.bundle.sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual({ ...alone.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
+  const sibling = await build({ client: fakeClient(npm), packageManager: 'npm', directory: 'packages/p', entries: ['src/sibling.js'] })
+  t.assert.deepStrictEqual([...sibling.bundle.sources.keys()], ['packages/p/src/sibling.js', 'packages/q/index.js'])
+  t.assert.deepStrictEqual({ ...sibling.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  // The field resolver's and the Solidity bundles are of the directory, which `repo` names.
+  const resolved = await build({ client: fakeClient(files), directory: 'packages/p', entries: ['src/a.js'], mainFields: ['main'] })
+  t.assert.deepStrictEqual([...resolved.bundle.sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual({ ...resolved.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
+  const sol = await build({ client: fakeClient({ ...SOLDEER, 'src/sub/A.sol': 'pragma solidity ^0.8.0;\nimport "./B.sol";\n', 'src/sub/B.sol': 'pragma solidity ^0.8.0;\n' }), packageManager: 'soldeer', directory: 'src/sub', entries: ['A.sol'] })
+  t.assert.deepStrictEqual([...sol.bundle.sources.keys()], ['A.sol', 'B.sol'])
+  t.assert.deepStrictEqual({ ...sol.bundle.repo }, { github: GITHUB, directory: 'src/sub', commit: SHA }, 'not foundry.toml\'s directory above it')
 })
 
 const detect = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
@@ -707,8 +756,10 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, root: true, commit: SHA })
   t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/node_modules/p/index.js', 'packages/app/node_modules/p/package.json', 'packages/app/package.json', 'packages/app/src/main.js'], 'the tree is read in place')
   t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, root: true, commit: SHA })
-  t.assert.deepStrictEqual(built.defaults.sources, ['packages/p/index.js'], "the entries the package.json names")
+  t.assert.deepStrictEqual(built.defaults.sources, ['index.js'], "the entries the package.json names, in the directory")
+  t.assert.deepStrictEqual(built.defaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
   t.assert.deepStrictEqual(built.metroDefaults.sources, ['index.js'], 'as the field resolver resolves them, from the directory')
+  t.assert.deepStrictEqual(built.metroDefaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
   for (const entry of otherLanguages) t.assert.match(refused[entry] ?? '', /only JS bundles are built with pnpm$/u, entry)
 })
 
@@ -769,7 +820,7 @@ test('stasis github-bundle names its output after the repo and commit by default
   t.assert.notEqual(deep('a'), deep('b'), 'directories alike in what fits of them are told apart')
 })
 
-test('stasis github-bundle names the output of a directory after it, not where its lockfile is', async (t) => {
+test('stasis github-bundle names the output of a directory after it, wherever the bundle is rooted', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-directory-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))
   const warn = t.mock.method(console, 'warn', () => {})
@@ -778,12 +829,13 @@ test('stasis github-bundle names the output of a directory after it, not where i
     'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
     'pnpm-lock.yaml': lockfile('.', 'packages/app'),
     'packages/app/package.json': json({ name: 'app', version: '1.0.0' }),
-    'packages/app/src/a.js': 'module.exports = 1\n',
+    'packages/app/src/a.js': "module.exports = require('../../../shared.js')\n",
+    'shared.js': 'module.exports = 1\n',
   })
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory: 'packages/app', packageManager: 'pnpm', client, entries: ['src/a.js'] })
   t.assert.deepStrictEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'the lockfile is at the root')
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'of a file outside the directory')
   t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.packages-app\.aaaaaaa\.stasis\.code\.br$/u)
 })
 
