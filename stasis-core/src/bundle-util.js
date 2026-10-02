@@ -193,8 +193,10 @@ export function githubHomepageDirectory(homepage, github) {
 }
 
 // `base` joined with `rel` as `{ root: true }`, `{ directory }`, or `{}` if not a valid `directory`.
+// `base` is a package.json's `repository.directory`, which Windows users write with `\`: metadata, not
+// a name on disk, so its `\` is taken for a separator.
 const repoLocation = (base, rel) => {
-  const directory = posix.join(typeof base === 'string' ? toPosix(base) : '', rel).replace(/^\/+|\/+$/gu, '')
+  const directory = posix.join(typeof base === 'string' ? base.replaceAll('\\', '/') : '', rel).replace(/^\/+|\/+$/gu, '')
   if (directory === '' || directory === '.') return { root: true } // `./`, `a/../`, trailing slashes
   return isValidRepoField('directory', directory) ? { directory } : {}
 }

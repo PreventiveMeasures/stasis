@@ -72,6 +72,7 @@ anything, so a malformed bundle fails before the first write. It refuses bundles
 
 - paths that escape the output directory (checked as not-`..`-relative to it and as lexically under `<dir>/`),
 - non-canonical paths (mid-path `..` or `.`, empty segments or file names),
+- paths holding a `\` (no stasis path does: see [file formats](file-formats.md)),
 - duplicate paths, or a path used as both a file and a directory,
 - non-string file contents,
 - a bundled file named `stasis.lock.json` (collides with the derived lockfile).

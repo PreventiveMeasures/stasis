@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { toPosix } from '@exodus/stasis-core/util'
 import { collectComponents } from '../stasis/src/sbom.js'
 
 // Both bucket kinds, a base64 resource, a platform import map, an executable and a reason map.
@@ -129,4 +131,17 @@ test('Bundle.fileKeyAt finds every file in the bundle JSON, keyed as sources key
   t.assert.throws(() => Bundle.fileKeyAt(['sources', '.', 'files', '.']), /non-canonical file key "\."/)
   t.assert.throws(() => Bundle.fileKeyAt(['sources', 'src', 'files', '../x.js']), /non-canonical file key/)
   t.assert.throws(() => Bundle.fileKeyAt(['sources', 'a/node_modules/x/../../../b']), /non-canonical file key/)
+})
+
+test('no artifact path holds a \\: refused when written, read or streamed, never taken for another path', (t) => {
+  const refused = /file key 'src\/a\\b\.js' holds a '\\'/u
+  const modules = new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'x\n' } }]])
+  t.assert.throws(() => new Bundle({ config: { scope: 'full' }, entries: new Set(), modules }).serialize(), refused)
+  t.assert.throws(() => Bundle.parse(JSON.stringify({ version: 1, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'x\n' } } }, modules: {}, formats: {}, imports: {} })), refused)
+  t.assert.throws(() => Bundle.fileKeyAt(['sources', '.', 'files', 'src/a\\b.js']), refused)
+  const lock = { version: 0, config: { scope: 'full' }, entries: [], sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/a\\b.js': 'sha512-x' } } }, modules: {}, imports: {}, formats: {} }
+  t.assert.throws(() => Lockfile.parse(JSON.stringify(lock)), refused)
+  // Off Windows `\\` is part of a name, so a path holding one is refused rather than re-keyed.
+  t.assert.throws(() => toPosix('src/a\\b.js'), /a path holding '\\' is not supported: src\/a\\b\.js/u)
+  t.assert.equal(toPosix('src/a/b.js'), 'src/a/b.js')
 })

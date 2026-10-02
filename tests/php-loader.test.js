@@ -1,5 +1,6 @@
 import { test } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -257,6 +258,40 @@ test('resolvePhpImport rejects bare specifiers that escape baseDir via ..', (t) 
   const baseDir = join(fixtures, 'basic')
   t.assert.equal(resolvePhpImport('foo/../../etc/passwd', 'src/A.php', { baseDir }), null)
 })
+
+// <tmp>/secret.php outside the project <tmp>/proj, which holds lib/B.php and src/A.php.
+const withEscapeTree = (fn) => async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'stasis-php-'))
+  try {
+    const baseDir = join(tmp, 'proj')
+    mkdirSync(join(baseDir, 'lib'), { recursive: true })
+    mkdirSync(join(baseDir, 'src'))
+    writeFileSync(join(tmp, 'secret.php'), '<?php\n')
+    writeFileSync(join(baseDir, 'lib', 'B.php'), '<?php\n')
+    return await fn(t, baseDir)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+test('resolvePhpImport and resolvePhpDir refuse a specifier holding \\, rather than take it for another path', withEscapeTree((t, baseDir) => {
+  const refused = { message: /\[loader\.php\] path holds a '\\', which stasis refuses: .* \(from src\/A\.php\)$/u }
+  // Not a separator off Windows, and no name stasis bundles holds one: an escape through it, an
+  // in-project path through it, and a literal name alike.
+  for (const spec of ['a\\..\\..\\secret.php', 'lib\\x\\..\\B.php', '.\\..\\..\\secret.php', '..\\lib\\B.php', 'foo\\bar.php']) {
+    t.assert.throws(() => resolvePhpImport(spec, 'src/A.php', { baseDir }), refused, spec)
+  }
+  for (const spec of ['a\\..\\..', 'lib\\x\\..', '..\\lib']) t.assert.throws(() => resolvePhpDir(spec, 'src/A.php', baseDir), refused, spec)
+}))
+
+test('collectPhpFilesFromDisk refuses an include holding \\, even one that names an existing file', withEscapeTree(async (t, baseDir) => {
+  writeFileSync(join(baseDir, 'lib', 'B\\C.php'), '<?php\n') // a name with a literal backslash
+  const includes = ['"a\\\\..\\\\..\\\\secret.php"', '__DIR__ . "\\\\..\\\\lib\\\\B.php"', "'../lib/B\\C.php'"]
+  await Promise.all(includes.map((include, i) => {
+    writeFileSync(join(baseDir, 'src', `A${i}.php`), `<?php\nrequire ${include};\n`)
+    return t.assert.rejects(() => collectPhpFilesFromDisk(baseDir, [`src/A${i}.php`]), { message: /path holds a '\\'/u }, include)
+  }))
+}))
 
 test('resolvePhpImport returns null for bare specifiers without baseDir', (t) => {
   // Pure-function callers (no fs context) can only resolve relative specifiers.

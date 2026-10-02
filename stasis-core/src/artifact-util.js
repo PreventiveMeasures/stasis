@@ -347,11 +347,13 @@ export function mergeExecutableSets(a, b, bModules, scope) {
 // An empty, '.' or '..' path segment.
 const NON_CANONICAL_SEGMENT = /(?:^|\/)\.{0,2}(?:\/|$)/u
 
-// The flat key of `rel` in bucket `dir`; throws unless canonical ('.' only as the root listing, rel '').
+// The flat key of `rel` in bucket `dir`; throws unless canonical ('.' only as the root listing, rel '')
+// and free of `\`, which no artifact path holds: off Windows it is part of a name, refused everywhere.
 export function canonicalFileKey(dir, rel, what) {
   const key = moduleFileKey(dir, rel)
   // Message built only on failure: this runs for every file.
   if ((key !== '.' || rel !== '') && NON_CANONICAL_SEGMENT.test(key)) assert(false, `${what}: non-canonical file key ${JSON.stringify(key)}`)
+  if (key.includes('\\')) assert(false, `${what}: file key '${key}' holds a '\\', which no path may`)
   return key
 }
 

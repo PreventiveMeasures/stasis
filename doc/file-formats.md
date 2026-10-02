@@ -14,7 +14,10 @@ There is no separate resources bundle: one bundle holds both, distinguished
 
 Every stasis-generated file carries an integer `version`; lockfiles and bundles
 are versioned independently. Paths are POSIX-style, relative to the directory
-holding the lockfile, and may not start with `..`.
+holding the lockfile, and may not start with `..`. No path holds a `\`: off
+Windows it is part of a name rather than a separator, and stasis refuses a file
+so named (when bundling, writing an artifact or reading one) rather than carry
+it, or take it for another path.
 
 ## `stasis.config.json`
 

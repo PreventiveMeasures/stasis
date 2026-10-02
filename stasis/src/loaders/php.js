@@ -306,6 +306,12 @@ export function extractPhpPathRefs(content) {
 const isFileOnDisk = (baseDir, rel) => isFile(join(baseDir, rel))
 const isDirOnDisk = (baseDir, rel) => isDir(join(baseDir, rel))
 
+// Throws on a path holding `\`: no separator to PHP off Windows but part of a name, and stasis
+// refuses such a name rather than resolve it, or take it for another path. `from`: the includer.
+function refuseBackslash(path, from) {
+  if (path.includes('\\')) throw new Error(`[loader.php] path holds a '\\', which stasis refuses: ${path}${from ? ` (from ${from})` : ''}`)
+}
+
 // `abs` as a baseDir-relative POSIX path ('' for baseDir itself), or null when it escapes the root.
 function projectRel(baseDir, abs) {
   const rel = toPosix(relative(baseDir, abs))
@@ -316,6 +322,7 @@ function projectRel(baseDir, abs) {
 // `./`/`../` resolve against the including file; a bare spec tries file- then
 // project-relative.
 export function resolvePhpDir(spec, fromFile, baseDir) {
+  refuseBackslash(spec, fromFile)
   if (isDotRelative(spec)) {
     const rel = applyToDir(fromFile, spec.split('/'))
     return rel !== null && isDirOnDisk(baseDir, rel) ? rel : null
@@ -344,8 +351,10 @@ function listPhpFiles(baseDir, dir) {
 // Resolve a PHP include specifier to a baseDir-relative POSIX path. `./`/`../`
 // resolve against the including file (escaping the root -> null); a bare specifier
 // tries a file next to the includer, then project-root-relative. Absolute
-// specifiers are rejected. Returns null when nothing resolves.
+// specifiers are rejected. Returns null when nothing resolves. One holding `\` throws
+// (see refuseBackslash).
 export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
+  refuseBackslash(specifier, fromFile)
   if (isDotRelative(specifier)) {
     return applyToDir(fromFile, specifier.split('/'))
   }
@@ -364,9 +373,11 @@ export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
 // Normalise a project-root-relative autoload path to POSIX baseDir-relative, or
 // null when it escapes root. Re-derives via resolve() so interior `..` escapes
 // (`src/foo/../../../secret.php`) are caught -- a leading-`..`/absolute check
-// alone would let files outside the project into the bundle.
+// alone would let files outside the project into the bundle. One holding `\`
+// throws (see refuseBackslash).
 function normalizeProjectRel(baseDir, p) {
-  return projectRel(baseDir, resolve(baseDir, p.replace(/\\/gu, '/')))
+  refuseBackslash(p)
+  return projectRel(baseDir, resolve(baseDir, p))
 }
 
 // Evaluate a generated-autoload path expr (`$baseDir . '/src'`, a bare quoted
