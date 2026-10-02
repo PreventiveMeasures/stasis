@@ -142,7 +142,9 @@ function npmRoot(host, cwd, os) {
   const own = nearest(cwd, (dir) => holdsPackage(host, dir))
   for (let dir = own; dir !== null && dirname(dir) !== dir;) {
     dir = dirname(dir)
-    if (!Array.isArray(readJson(join(dir, 'package.json'), host)?.workspaces)) continue
+    // npm takes yarn's `{ packages: [...] }` too.
+    const declared = readJson(join(dir, 'package.json'), host)?.workspaces
+    if (!Array.isArray(declared) && !Array.isArray(declared?.packages)) continue
     if (findNpmWorkspaces({ project: projectView(host, dir), os: target({ os }).os }).includes(relative(dir, own))) return dir
   }
   return nearest(cwd, holding(host, 'package-lock.json'))

@@ -403,6 +403,24 @@ test('buildGitHubBundle builds with npm, told by its package-lock.json, a direct
   t.assert.deepEqual(methods(linked), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTreeTarball', 'getRepoTarball'])
 })
 
+test('suggestedEntries detects the package manager for the os given, as the build does', async (t) => {
+  // On macOS npm's glob takes `Packages/*` for packages/b: b is installed from the root, which holds
+  // no package-lock.json. Elsewhere, from its own.
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true, workspaces: ['Packages/*'] }),
+    'packages/b/package.json': json({ name: 'b', version: '1.0.0', main: 'index.js' }),
+    'packages/b/package-lock.json': npmLock('b'),
+    'packages/b/index.js': '',
+  }
+  const none = /no packageManager given, and none of pnpm-lock\.yaml, yarn\.lock, package-lock\.json, soldeer\.lock installs \/packages\/b$/u
+  t.assert.deepEqual(await suggestedEntries({ vfs: vfsOf(files), cwd: '/packages/b', os: 'linux' }), ['index.js'])
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(files), cwd: '/packages/b', os: 'darwin' }), none)
+  const repo = { github: GITHUB, sha: SHA, directory: 'packages/b' }
+  t.assert.deepEqual(await suggestedEntries({ ...repo, client: fakeClient(files), os: 'linux' }), ['index.js'])
+  await t.assert.rejects(suggestedEntries({ ...repo, client: fakeClient(files), os: 'darwin' }), none)
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(files), os: '' }), /^TypeError: suggestedEntries: os must be a non-empty string$/u)
+})
+
 test('buildGitHubBundle downloads the whole repo for a lockfile naming the directory above as `..`', async (t) => {
   // pnpm's `link:..`, which no pnpm-workspace.yaml above makes a workspace's: the directory alone
   // would lack what it links.

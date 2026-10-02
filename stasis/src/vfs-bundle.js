@@ -56,17 +56,19 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 // detected as the build detects it. For pnpm and yarn 1, the entry points its package.json names,
 // resolved as the build resolves them with the same `conditions`, `mainFields`, `metro`,
 // `platforms`, `jsx` and `typescript` (packageEntries); for Soldeer, its .sol entry points by name
-// and layout (solidityEntries). The options are checked as the build checks them. Of the project
-// held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, tag, directory, client }` as
-// buildGitHubBundle takes them, downloaded as it downloads them.
-export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, ...repo } = {}) {
+// and layout (solidityEntries). The options are checked as the build checks them, and `os`, the
+// one the build is for, detects the package manager as there. Of the project held in `vfs`, from
+// `cwd`; or of a GitHub repo, `{ github, sha, tag, directory, client }` as buildGitHubBundle takes
+// them, downloaded as it downloads them.
+export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, os, ...repo } = {}) {
+  checkTarget('suggestedEntries', { os })
   const resolution = { conditions, mainFields, metro, platforms, jsx, typescript }
   if (vfs === undefined && repo.github === undefined) throw new Error('suggestedEntries: a vfs or a github repo is required')
   if (vfs !== undefined && repo.github !== undefined) throw new Error('suggestedEntries: takes a vfs or a github repo, not both')
-  if (vfs === undefined) return suggestedRepoEntries({ ...repo, packageManager }, resolution)
+  if (vfs === undefined) return suggestedRepoEntries({ ...repo, packageManager }, { ...resolution, os })
   checkVfs('suggestedEntries', vfs)
   const host = vfsHost(vfs)
   const at = posix.resolve('/', cwd)
-  const pm = checkAhead('suggestedEntries', packageManager ?? detectPackageManager('suggestedEntries', host, at), resolution)
+  const pm = checkAhead('suggestedEntries', packageManager ?? detectPackageManager('suggestedEntries', host, at, { os }), resolution)
   return KINDS[pm.kind].entries(host, at, resolution)
 }

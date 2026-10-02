@@ -94,6 +94,19 @@ test('npm: installs a package from the first directory above whose workspaces ta
   await t.assert.rejects(load({ vfs: project(files), cwd: '/packages/a/examples/e' }), /^Error: no package-lock\.json found in \/packages\/a, where \/packages\/a\/examples\/e is installed from$/u)
 })
 
+test('npm: takes a root declaring its workspaces as yarn does, `{ packages: [...] }`, as npm does', async (t) => {
+  const files = {
+    'package.json': { name: 'root', version: '1.0.0', private: true, workspaces: { packages: ['packages/*'] } },
+    'package-lock.json': lockOf({ name: 'root', version: '1.0.0', workspaces: ['packages/*'] }, {
+      'node_modules/b': { resolved: 'packages/b', link: true },
+      'packages/b': { version: '1.0.0' },
+    }),
+    'packages/b/package.json': { name: 'b', version: '1.0.0' },
+    'packages/b/package-lock.json': lockOf({ name: 'b', version: '1.0.0' }),
+  }
+  t.assert.equal(lockfileRoot(vfsHost(project(files)), 'npm', '/packages/b'), '/', 'not the package-lock.json b holds')
+})
+
 test('npm: takes a workspace root for the os given, whose glob matches as npm\'s does there', async (t) => {
   // On macOS npm's glob takes `Packages/*` for packages/b, whatever the case: b is a workspace there,
   // installed from the root whatever package-lock.json it holds.
