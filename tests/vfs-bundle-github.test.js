@@ -12,7 +12,7 @@ import { pack } from '@preventive/archive/tar.js'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
+import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { HEAD, fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
 
@@ -685,6 +685,75 @@ test('stasis github-bundle writes the bundle and lockfile of the repo at the com
   } finally {
     await rm(tmp, { recursive: true, force: true })
   }
+})
+
+test('stasis github-bundle names its output after the repo and commit by default', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const warn = t.mock.method(console, 'warn', () => {})
+  const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
+  await githubBundleCommand({ cwd: tmp, github: GITHUB, packageManager: 'pnpm', client, entries: ['src/a.js'] })
+  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example.bbbbbbb.stasis.code.br'], 'of the commit built: the head, where none is asked for')
+  const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.bbbbbbb.stasis.code.br'))).toString('utf8'))
+  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
+  t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.bbbbbbb\.stasis\.code\.br$/u)
+  // Whatever the repo is called, the name is of [A-Za-z0-9._-] alone.
+  t.assert.equal(githubBundleFile({ github: GITHUB, commit: SHA }), 'ExodusOSS-example.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: 'a-b/.c_d', commit: SHA }), 'a-b-.c_d.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: 'o/n a/../\u00E9\u{1F600}', commit: SHA }), 'o-n_a_..___.aaaaaaa.stasis.code.br')
+  // A directory's path joins them, its / made -.
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: 'packages/app', commit: SHA }), 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: '@scope/p~1+x/..y', commit: SHA }), 'ExodusOSS-example._scope-p_1_x-..y.aaaaaaa.stasis.code.br')
+  t.assert.equal(githubBundleFile({ github: GITHUB, directory: '', commit: SHA }), 'ExodusOSS-example.aaaaaaa.stasis.code.br')
+  // Whatever the directory, the name fits in 255: the longest repo leaves 91 for it, past which it
+  // keeps what fits of its start, and `_` and the first 8 of its sha256.
+  const longest = `${'o'.repeat(39)}/${'n'.repeat(100)}`
+  const fits = `${'d'.repeat(45)}/${'d'.repeat(45)}`
+  t.assert.equal(githubBundleFile({ github: longest, directory: fits, commit: SHA }), `${'o'.repeat(39)}-${'n'.repeat(100)}.${'d'.repeat(45)}-${'d'.repeat(45)}.aaaaaaa.stasis.code.br`)
+  t.assert.equal(githubBundleFile({ github: longest, directory: fits, commit: SHA }).length, 255)
+  const cut = githubBundleFile({ github: longest, directory: `${fits}d`, commit: SHA })
+  t.assert.equal(cut.length, 255)
+  t.assert.match(cut, new RegExp(`^o{39}-n{100}\\.${'d'.repeat(45)}-d{36}_[0-9a-f]{8}\\.aaaaaaa\\.stasis\\.code\\.br$`, 'u'))
+  const deep = (leaf) => githubBundleFile({ github: longest, directory: `${'segment/'.repeat(120)}${leaf}`, commit: SHA })
+  t.assert.equal(deep('a').length, 255)
+  t.assert.notEqual(deep('a'), deep('b'), 'directories alike in what fits of them are told apart')
+})
+
+test('stasis github-bundle names the output of a directory after it, not where its lockfile is', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-directory-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const warn = t.mock.method(console, 'warn', () => {})
+  const client = fakeClient({
+    'package.json': json({ name: 'root', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': lockfile('.', 'packages/app'),
+    'packages/app/package.json': json({ name: 'app', version: '1.0.0' }),
+    'packages/app/src/a.js': 'module.exports = 1\n',
+  })
+  await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory: 'packages/app', packageManager: 'pnpm', client, entries: ['src/a.js'] })
+  t.assert.deepEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
+  const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
+  t.assert.deepEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'the lockfile is at the root')
+  t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.packages-app\.aaaaaaa\.stasis\.code\.br$/u)
+})
+
+test('stasis github-bundle writes the bundle of a directory too deep to name in full', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-deep-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  t.mock.method(console, 'warn', () => {})
+  const directory = `${'segment/'.repeat(120)}app`
+  const client = fakeClient({
+    [`${directory}/package.json`]: json({ name: 'app', version: '1.0.0' }),
+    [`${directory}/pnpm-lock.yaml`]: lockfile('.'),
+    [`${directory}/src/a.js`]: 'module.exports = 1\n',
+  })
+  await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory, packageManager: 'pnpm', client, entries: ['src/a.js'] })
+  const [name, ...rest] = await readdir(tmp)
+  t.assert.deepEqual(rest, [])
+  t.assert.equal(name, githubBundleFile({ github: GITHUB, directory, commit: SHA }))
+  t.assert.equal(name.length, 255)
+  const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, name))).toString('utf8'))
+  t.assert.deepEqual([...bundle.sources.keys()], ['src/a.js'])
 })
 
 test('stasis github-bundle requires --github, and takes --sha or --tag', async (t) => {
