@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle } from '../cmd/bundle.js'
 import { KINDS, checkAhead } from './entries.js'
-import { checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfileRoot, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
@@ -166,23 +166,27 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 // A GitHub repo at a full commit, or the one `tag` names, the default branch's head without either,
 // as buildVfsBundle builds it: `directory` downloaded alone where it stands alone, else the whole
 // repo, and without a `packageManager`, the one whose lockfile installs it, where only one's does
-// (repoTree). Without `entries`, they are the ones suggestedEntries suggests. `repo` names the
-// commit and where the lockfile is, which the bundle's paths are relative to. Nothing is read from
-// disk: the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree
-// id either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
+// (repoTree). Without `entries`, they are the ones suggestedEntries suggests. The bundle's paths are
+// relative to `directory`, or for a JS bundle, to the innermost package directory at or above it
+// holding every file it bundles (buildJsBundle's innermostRoot), which is the project's root where
+// one is outside the others; `repo` names that directory and the commit. Nothing is read from disk:
+// the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree id
+// either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
 export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)
-  const root = lockfileRoot(tree.host, tree.packageManager, tree.cwd, options.os)
-  const at = tree.subtree ? posix.join(directory, (root ?? '/').slice(1)) : (root ?? '/').slice(1)
-  const location = at === '' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}
   let { entries } = options
   if (entries === undefined) {
     // As suggestedEntries suggests them, from the tree at hand.
     entries = tree.kind.entries(tree.host, tree.cwd, options)
     if (entries.length === 0) throw new Error(`${tree.where}: no entries given, and ${directory || 'the repo root'} ${tree.kind.none}`)
   }
-  return buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, repo: { github, commit: tree.sha, ...location } })
+  const repo = { github, commit: tree.sha }
+  const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo })
+  // The Vfs is the repo's tree, or the subtree at `directory`.
+  const at = posix.join(tree.subtree ? directory : '.', posix.relative('/', built.root))
+  built.bundle.repo = { ...repo, ...(at === '.' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}) }
+  return built
 }
 
 // suggestedEntries of a GitHub repo, `{ github, sha, tag, directory, client, packageManager }`, as
