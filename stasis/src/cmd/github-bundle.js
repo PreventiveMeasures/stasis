@@ -4,11 +4,11 @@ import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { bundledSummary, writeBundle, writeFile } from './output.js'
 
-// The default output of `stasis github-bundle`: `owner-name-<commit's first 7>.stasis.code.br` of
-// the repo, or `owner-name-<directory, its / made ->-<commit's first 7>.stasis.code.br` of a
+// The default output of `stasis github-bundle`: `owner-name.<commit's first 7>.stasis.code.br` of
+// the repo, or `owner-name-<directory, its / made ->.<commit's first 7>.stasis.code.br` of a
 // directory in it, each character outside the portable filename set [A-Za-z0-9._-] made `_`.
 export function githubBundleFile({ github, directory, commit }) {
-  const name = [github.replace('/', '-'), ...(directory ? [directory.replaceAll('/', '-')] : []), commit.slice(0, 7)].join('-')
+  const name = `${[github.replace('/', '-'), ...(directory ? [directory.replaceAll('/', '-')] : [])].join('-')}.${commit.slice(0, 7)}`
   return `${name.replaceAll(/[^\w.-]/gu, '_')}.stasis.code.br`
 }
 

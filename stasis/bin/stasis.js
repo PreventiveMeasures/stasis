@@ -77,8 +77,8 @@ function usage(prefix = '') {
   build resolves them (--conditions, --mainFields, --metro --platforms, --typescript), or for
   Soldeer its .sol files directly in it, under contracts/, and under its source directory
   (foundry.toml's src, else src/), but tests, scripts, mocks and dependency or build directories;
-  not with --metro-resolver, --cargo* or --add; writes to owner-name-<commit's first 7>.stasis.code.br
-  by default, owner-name-<--directory, its / made ->-<commit's first 7>.stasis.code.br with
+  not with --metro-resolver, --cargo* or --add; writes to owner-name.<commit's first 7>.stasis.code.br
+  by default, owner-name-<--directory, its / made ->.<commit's first 7>.stasis.code.br with
   --directory, each character outside [A-Za-z0-9._-] made _; --output=- streams to stdout)
  stasis add path/to/(file|dir) ...
  (adds the listed files to the project's bundle(s) with no dependency resolution;
