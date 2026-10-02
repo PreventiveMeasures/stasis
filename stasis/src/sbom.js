@@ -10,7 +10,9 @@ const DEFAULT_TOOL = { name: '@exodus/stasis', version: pkg.version, vendor: 'Ex
 // Web Crypto (global) instead of node:crypto, keeping this module dependency-light.
 const newUuid = () => globalThis.crypto.randomUUID()
 
-// purl types we can mint; an ecosystem with no registered type (`soldeer`) gets no purl rather than a fabricated one.
+// purl types we can mint; an ecosystem with no registered type (`soldeer`) gets no purl rather than a fabricated one,
+// and so does a crate vendored from git or from a source not known (`cargo-git`, `cargo-unknown`): `pkg:cargo` names
+// crates.io's crate of that name, which it may not be.
 const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 
 // Infer an artifact's ecosystem from its loader formats: PHP bundles map to Composer, everything

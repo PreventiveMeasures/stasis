@@ -91,6 +91,7 @@ test('collectComponents uses the per-dependency ecosystem field for purls and sc
       'dependencies/solmate-6.8.0': { name: 'solmate', version: '6.8.0', ecosystem: 'soldeer', files: { 'T.sol': 'sha512-c' } },
       'lib/solady': { name: 'vectorized/solady', version: '0.1.0', ecosystem: 'github', files: { 'S.sol': 'sha512-d' } },
       'vendor/cool-lib': { name: 'cool-lib', version: '0.2.0', ecosystem: 'cargo', files: { 'lib.rs': 'sha512-e' } },
+      'vendor/private-lib': { name: 'private-lib', version: '0.1.0', ecosystem: 'cargo-git', files: { 'lib.rs': 'sha512-g' } },
     },
     modules: {
       'node_modules/npmdep': { name: 'npmdep', version: '2.0.0', ecosystem: 'npm', files: { 'i.js': 'sha512-f' } },
@@ -107,6 +108,8 @@ test('collectComponents uses the per-dependency ecosystem field for purls and sc
   // soldeer has no purl type → no purl, but still classified as a dependency
   t.assert.equal(byName.solmate.purl, null)
   t.assert.equal(byName.solmate.scope, 'dependency')
+  // nor has a crate vendored from git: pkg:cargo would name crates.io's crate of that name
+  t.assert.deepStrictEqual(byName['private-lib'], { name: 'private-lib', version: '0.1.0', scope: 'dependency', ecosystem: 'cargo-git', purl: null })
 })
 
 test('collectComponents skips buckets without name+version (legacy v0 bundle)', (t) => {

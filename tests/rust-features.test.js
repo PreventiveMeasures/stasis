@@ -727,6 +727,7 @@ test('buildRustBundle --cargo-manifests carries manifests, the lockfile and carg
     'app/gen.rs': 'pub fn run() {}\n',
     'app/src/main.rs': 'fn main() { dep::f(); }\n',
     'vendor/dep/Cargo.toml': '[package]\nname = "dep"\nversion = "1.0.0"\n[build-dependencies]\nautocfg = "1"\n',
+    'vendor/dep/.cargo-checksum.json': '{"files":{},"package":"0"}',
     'vendor/dep/build.rs': 'fn main() { autocfg::new(); }\n',
     'vendor/dep/src/lib.rs': 'pub fn f() {}\n',
     'vendor/cc/Cargo.toml': '[package]\nname = "cc"\nversion = "1.0.0"\n',
@@ -744,7 +745,7 @@ test('buildRustBundle --cargo-manifests carries manifests, the lockfile and carg
       'app/Cargo.toml', 'app/build.rs', 'app/gen.rs', 'app/src/main.rs',
       'vendor/autocfg/Cargo.toml', 'vendor/autocfg/src/lib.rs', // dep's build-dependency, through dep's build script
       'vendor/cc/Cargo.toml', 'vendor/cc/src/lib.rs', // app's build-dependency, through app's build script
-      'vendor/dep/Cargo.toml', 'vendor/dep/build.rs', 'vendor/dep/src/lib.rs',
+      'vendor/dep/.cargo-checksum.json', 'vendor/dep/Cargo.toml', 'vendor/dep/build.rs', 'vendor/dep/src/lib.rs',
     ])
     t.assert.equal(bundle.formats.get('app/Cargo.toml'), 'resource')
     t.assert.equal(bundle.formats.get('Cargo.lock'), 'resource')
@@ -755,7 +756,7 @@ test('buildRustBundle --cargo-manifests carries manifests, the lockfile and carg
     t.assert.deepStrictEqual(Object.fromEntries(edges.get('app/build.rs')), { 'mod gen': 'app/gen.rs', 'gen::run': 'app/gen.rs', 'use cc': 'vendor/cc/src/lib.rs' })
     t.assert.deepStrictEqual(Object.fromEntries(edges.get('vendor/dep/build.rs')), { 'use autocfg': 'vendor/autocfg/src/lib.rs' })
     // Buckets: each manifest sits with its package; the root-level files in the workspace bucket.
-    t.assert.deepStrictEqual(Object.keys(bundle.modules.get('vendor/dep').files).toSorted(), ['Cargo.toml', 'build.rs', 'src/lib.rs'])
+    t.assert.deepStrictEqual(Object.keys(bundle.modules.get('vendor/dep').files).toSorted(), ['.cargo-checksum.json', 'Cargo.toml', 'build.rs', 'src/lib.rs'])
     t.assert.equal(bundle.modules.get('vendor/dep').ecosystem, 'cargo')
     t.assert.deepStrictEqual(Object.keys(bundle.modules.get('app').files).toSorted(), ['Cargo.toml', 'build.rs', 'gen.rs', 'src/main.rs'])
     t.assert.deepStrictEqual(Object.keys(bundle.modules.get('.').files).toSorted(), ['.cargo/config.toml', 'Cargo.lock', 'Cargo.toml'])
@@ -1547,6 +1548,30 @@ test('createCargoContext takes a git dependency\'s copy from a git checkout, a r
     ...files,
     'Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = [\n "itoa 1.0.0",\n "itoa 1.0.18",\n]\n\n[[package]]\nname = "itoa"\nversion = "1.0.0"\nsource = "${git}"\n\n[[package]]\nname = "itoa"\nversion = "1.0.18"\nsource = "${REGISTRY}"\nchecksum = "${sha('a')}"\n`,
   }, check)
+})
+
+test('buildRustBundle tags a vendored crate by where it was copied from: a registry\'s `cargo`, a git checkout\'s `cargo-git`, one with no .cargo-checksum.json `cargo-unknown`', async (t) => {
+  await withProjectAsync({
+    'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nitoa = "1"\nprivate-lib = { git = "https://git.example.com/private-lib" }\nloose = "1"\n',
+    'src/main.rs': 'use itoa::Buffer;\nuse private_lib::secret;\nuse loose::thing;\nfn main() {}\n',
+    ...vendoredCopy('itoa', '[package]\nname = "itoa"\nversion = "1.0.18"\n', sha('a')),
+    ...vendoredCopy('private-lib', '[package]\nname = "private-lib"\nversion = "0.1.0"\n', null),
+    'vendor/loose/Cargo.toml': '[package]\nname = "loose"\nversion = "1.0.0"\n', 'vendor/loose/src/lib.rs': '',
+  }, async (tmp) => {
+    const cargo = createCargoContext(tmp, { entries: ['src/main.rs'] })
+    t.assert.equal(cargo.vendoredFrom('vendor/itoa/src/lib.rs'), 'registry')
+    t.assert.equal(cargo.vendoredFrom('vendor/private-lib/src/lib.rs'), 'git')
+    t.assert.equal(cargo.vendoredFrom('vendor/loose/src/lib.rs'), null) // either could be
+    t.assert.equal(cargo.vendoredFrom('src/main.rs'), null) // not vendored
+    // Only the registry's copy is `cargo`, the crates.io crate `stasis audit` asks OSV about.
+    const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })
+    t.assert.deepStrictEqual([...bundle.modules].map(([dir, m]) => [dir, m.name, m.version, m.ecosystem]).toSorted(), [
+      ['.', 'app', '0.1.0', undefined],
+      ['vendor/itoa', 'itoa', '1.0.18', 'cargo'],
+      ['vendor/loose', 'loose', '1.0.0', 'cargo-unknown'],
+      ['vendor/private-lib', 'private-lib', '0.1.0', 'cargo-git'],
+    ])
+  })
 })
 
 test('createCargoContext turns a package\'s feature of a dependency\'s name on with `dep/feature`, written or implicit', (t) => {

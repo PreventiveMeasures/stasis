@@ -48,10 +48,14 @@ function isCorrectedFile(name, version, rel) {
 // alongside bundled files, but no package code ships through one. So too for the
 // manifests the other ecosystems' bundles carry beside a dependency's code
 // (--cargo-manifests, --manifests): its Cargo.toml and the checksums cargo vendored
-// it with, its composer.json, a Solidity dependency's foundry.toml and remappings.
+// it with (a registry's copy, a git checkout's, or one whose source isn't known),
+// its composer.json, a Solidity dependency's foundry.toml and remappings.
+const CARGO_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json'])
 const MANIFESTS = {
   npm: new Set(['package.json']),
-  cargo: new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json']),
+  cargo: CARGO_MANIFESTS,
+  'cargo-git': CARGO_MANIFESTS,
+  'cargo-unknown': CARGO_MANIFESTS,
   composer: new Set(['composer.json', 'composer.lock']),
   soldeer: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
   github: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
