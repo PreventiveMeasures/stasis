@@ -48,13 +48,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ExodusOSS/stasis.git",
+    "url": "git+https://github.com/PreventiveMeasures/stasis.git",
     "directory": "stasis-core"
   },
   "author": "Exodus Movement, Inc.",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/ExodusOSS/stasis/issues"
+    "url": "https://github.com/PreventiveMeasures/stasis/issues"
   },
-  "homepage": "https://github.com/ExodusOSS/stasis#readme"
+  "homepage": "https://github.com/PreventiveMeasures/stasis#readme"
 }
