@@ -69,8 +69,8 @@ test('collectPackages reads name/version from a lockfile (node_modules only)', w
   t.assert.deepEqual(
     pkgs.toSorted((a, b) => (a.name < b.name ? -1 : 1)),
     [
-      { name: 'bar', version: '4.5.6' },
-      { name: 'foo', version: '1.2.3' },
+      { ecosystem: 'npm', name: 'bar', version: '4.5.6' },
+      { ecosystem: 'npm', name: 'foo', version: '1.2.3' },
     ]
   )
 }))
@@ -81,8 +81,8 @@ test('collectPackages reads name/version from a brotli bundle (node_modules only
   t.assert.deepEqual(
     pkgs.toSorted((a, b) => (a.name < b.name ? -1 : 1)),
     [
-      { name: 'baz', version: '0.0.1' },
-      { name: 'foo', version: '2.0.0' },
+      { ecosystem: 'npm', name: 'baz', version: '0.0.1' },
+      { ecosystem: 'npm', name: 'foo', version: '2.0.0' },
     ]
   )
 }))
@@ -108,6 +108,44 @@ test('collectPackages and collectReasons take node_modules as a path segment, no
   t.assert.deepEqual([...collectReasons([bundle]).keys()], ['foo@2.0.0'])
 }))
 
+// A bundle of every ecosystem a dependency is tagged with: an npm package, a vendored crate, a
+// Composer package, a Soldeer package and a GitHub repo (Foundry's lib/), beside first-party code.
+const ECOSYSTEMS_BUNDLE = {
+  sources: {
+    '.': { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': '' } },
+    'vendor/serde': { name: 'serde', version: '1.0.100', ecosystem: 'cargo', files: { 'src/lib.rs': '', 'Cargo.toml': '' } },
+    // Only what cargo vendored beside the code: no code of it ships.
+    'vendor/unused': { name: 'unused', version: '1.0.0', ecosystem: 'cargo', files: { 'Cargo.toml': '', '.cargo-checksum.json': '{}' } },
+    'crates/own': { name: 'own', version: '0.1.0', files: { 'src/lib.rs': '' } },
+    'vendor/monolog/monolog': { name: 'monolog/monolog', version: '2.9.1', ecosystem: 'composer', files: { 'src/Logger.php': '' } },
+    'vendor/acme/tools': { name: 'acme/tools', version: 'dev-main', ecosystem: 'composer', files: { 'src/Tool.php': '' } },
+    'dependencies/forge-std-1.9.2': { name: 'forge-std', version: '1.9.2', ecosystem: 'soldeer', files: { 'src/Test.sol': '', 'foundry.toml': '' } },
+    'lib/openzeppelin-contracts': { name: 'OpenZeppelin/openzeppelin-contracts', version: '4.9.0', ecosystem: 'github', files: { 'contracts/token/ERC20.sol': '', 'package.json': '{}' } },
+  },
+  modules: {
+    'node_modules/foo': { name: 'foo', version: '2.0.0', ecosystem: 'npm', files: { 'index.js': '' } },
+    // An untagged node_modules bucket, as artifacts from before the tag hold: npm's.
+    'node_modules/serde': { name: 'serde', version: '1.0.100', files: { 'index.js': '' } },
+  },
+  formats: {},
+}
+
+test('collectPackages takes every ecosystem a dependency is tagged with, and no first-party package', withTmp((t, tmp) => {
+  const bundle = writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)
+  t.assert.deepEqual(collectPackages([bundle]), [
+    { ecosystem: 'cargo', name: 'serde', version: '1.0.100' },
+    { ecosystem: 'composer', name: 'acme/tools', version: 'dev-main' },
+    { ecosystem: 'composer', name: 'monolog/monolog', version: '2.9.1' },
+    { ecosystem: 'github', name: 'OpenZeppelin/openzeppelin-contracts', version: '4.9.0' },
+    { ecosystem: 'npm', name: 'foo', version: '2.0.0' },
+    { ecosystem: 'npm', name: 'serde', version: '1.0.100' },
+    { ecosystem: 'soldeer', name: 'forge-std', version: '1.9.2' },
+  ])
+  // One crate and one npm package of a name and version are two packages, each with its reasons.
+  const reasoned = writeBundle(tmp, 'reasoned.br', { ...ECOSYSTEMS_BUNDLE, reason: { run: ['node_modules/serde/index.js'], webpack: ['vendor/serde/src/lib.rs', 'vendor/serde/Cargo.toml'] } })
+  t.assert.deepEqual(Object.fromEntries([...collectReasons([reasoned])].map(([key, set]) => [key, [...set]])), { 'serde@1.0.100': ['run'], 'cargo:serde@1.0.100': ['webpack'] })
+}))
+
 test('collectPackages skips bundle modules without name/version (v0 legacy)', withTmp((t, tmp) => {
   const path = join(tmp, 'legacy.br')
   const legacy = {
@@ -127,10 +165,10 @@ test('collectPackages deduplicates across files', withTmp((t, tmp) => {
   const pkgs = collectPackages([lock, bundle])
   // foo appears in both at different versions, both should remain
   t.assert.deepEqual(pkgs, [
-    { name: 'bar', version: '4.5.6' },
-    { name: 'baz', version: '0.0.1' },
-    { name: 'foo', version: '1.2.3' },
-    { name: 'foo', version: '2.0.0' },
+    { ecosystem: 'npm', name: 'bar', version: '4.5.6' },
+    { ecosystem: 'npm', name: 'baz', version: '0.0.1' },
+    { ecosystem: 'npm', name: 'foo', version: '1.2.3' },
+    { ecosystem: 'npm', name: 'foo', version: '2.0.0' },
   ])
 }))
 
@@ -153,7 +191,7 @@ test('collectPackages skips ws recorded only as its noop browser.js (+ manifest)
       'node_modules/foo': { name: 'foo', version: '2.0.0', files: { 'index.js': '// f\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ name: 'foo', version: '2.0.0' }])
+  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'foo', version: '2.0.0' }])
 }))
 
 test('collectPackages keeps ws when any real file of it is recorded', withTmp((t, tmp) => {
@@ -162,7 +200,7 @@ test('collectPackages keeps ws when any real file of it is recorded', withTmp((t
       'node_modules/ws': { name: 'ws', version: '7.5.9', files: { 'browser.js': '// noop\n', 'lib.js': '// real\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ name: 'ws', version: '7.5.9' }])
+  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '7.5.9' }])
 }))
 
 test('collectPackages flags recorded code even when no import edge targets it', withTmp((t, tmp) => {
@@ -177,8 +215,8 @@ test('collectPackages flags recorded code even when no import edge targets it', 
     imports: { '*': { 'src/entry.js': { foo: 'node_modules/foo/index.js' } } },
   })
   t.assert.deepEqual(collectPackages([bundle]), [
-    { name: 'added', version: '1.0.0' },
-    { name: 'foo', version: '2.0.0' },
+    { ecosystem: 'npm', name: 'added', version: '1.0.0' },
+    { ecosystem: 'npm', name: 'foo', version: '2.0.0' },
   ])
 }))
 
@@ -190,7 +228,7 @@ test('collectPackages does not correct ws versions outside the verified range', 
       'node_modules/ws': { name: 'ws', version: '9.0.0', files: { 'browser.js': '// ?\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ name: 'ws', version: '9.0.0' }])
+  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '9.0.0' }])
 }))
 
 test('collectPackages skips node-fetch recorded only as browser.js (<= 2.7.0)', withTmp((t, tmp) => {
@@ -210,7 +248,7 @@ test('collectPackages keeps node-fetch 3.x (no browser.js correction)', withTmp(
       'node_modules/node-fetch': { name: 'node-fetch', version: '3.3.2', files: { 'src.js': '// impl\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ name: 'node-fetch', version: '3.3.2' }])
+  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'node-fetch', version: '3.3.2' }])
 }))
 
 test('collectPackages corrections are package-specific', withTmp((t, tmp) => {
@@ -220,7 +258,7 @@ test('collectPackages corrections are package-specific', withTmp((t, tmp) => {
       'node_modules/other': { name: 'other', version: '1.0.0', files: { 'browser.js': '// b\n' } },
     },
   })
-  t.assert.deepEqual(collectPackages([bundle]), [{ name: 'other', version: '1.0.0' }])
+  t.assert.deepEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'other', version: '1.0.0' }])
 }))
 
 test('collectPackages never counts a package.json manifest as presence', withTmp((t, tmp) => {
@@ -243,7 +281,7 @@ test('collectPackages applies the same evidence rule to lockfiles', withTmp((t, 
       'node_modules/foo': { name: 'foo', version: '1.2.3', files: { 'index.js': 'sha512-y', 'package.json': 'sha512-p' } },
     },
   })
-  t.assert.deepEqual(collectPackages([lock]), [{ name: 'foo', version: '1.2.3' }])
+  t.assert.deepEqual(collectPackages([lock]), [{ ecosystem: 'npm', name: 'foo', version: '1.2.3' }])
 }))
 
 test('collectReasons excludes a consumer that recorded only corrected files', withTmp((t, tmp) => {
@@ -301,7 +339,7 @@ test('collectPackagesFromFile accepts a bundle carrying only resources', withTmp
     imports: {},
   }
   writeFileSync(file, brotliCompressSync(Buffer.from(JSON.stringify(json))))
-  t.assert.deepEqual(collectPackagesFromFile(file), [{ name: 'lib', version: '3.2.1' }])
+  t.assert.deepEqual(collectPackagesFromFile(file), [{ ecosystem: 'npm', name: 'lib', version: '3.2.1' }])
 }))
 
 test('collectPackages does not collapse different packages at the same version', withTmp((t, tmp) => {
@@ -317,8 +355,8 @@ test('collectPackages does not collapse different packages at the same version',
     formats: {},
   }))
   t.assert.deepEqual(collectPackages([file]), [
-    { name: 'a', version: '1.0.0' },
-    { name: 'b', version: '1.0.0' },
+    { ecosystem: 'npm', name: 'a', version: '1.0.0' },
+    { ecosystem: 'npm', name: 'b', version: '1.0.0' },
   ])
 }))
 
@@ -371,7 +409,7 @@ test('flattenAdvisories sorts by severity then package', (t) => {
 
 test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
-  t.assert.deepEqual(rows, [{ package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
+  t.assert.deepEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
 })
 
 test('flattenAdvisories joins the reasons of the affected versions, sorted', (t) => {
@@ -535,7 +573,27 @@ test('printAuditReport hints when nothing was scanned', (t) => {
   const lines = []
   const err = { write: (s) => lines.push(s) }
   printAuditReport({ packages: [], rows: [] }, { out: { write: () => {} }, err })
-  t.assert.equal(lines.join(''), 'Scanned 0 packages\nNo node_modules entries found in the input files\n')
+  t.assert.equal(lines.join(''), 'Scanned 0 packages\nNo dependencies found in the input files\n')
+})
+
+test('printAuditReport shows the ecosystem column where a row is not npm, and lists what was not audited', (t) => {
+  const row = (ecosystem, pkg) => ({ ecosystem, package: pkg, installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 't', id: 'GHSA-aaaa-bbbb-cccc', reason: '' })
+  const print = (report) => {
+    const out = []
+    const err = []
+    printAuditReport(report, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } })
+    return { out: out.join(''), err: err.join('') }
+  }
+  const npmOnly = print({ packages: [{}], rows: [row('npm', 'foo')] })
+  t.assert.match(npmOnly.out.split('\n')[1], /^│ severity +│ package +│/u)
+  const mixed = print({
+    packages: [{}, {}, {}],
+    skipped: [{ ecosystem: 'composer', name: 'acme/tools', version: 'dev-main', because: 'a Composer dev version, which no advisory database lists' }],
+    rows: [row('npm', 'foo'), row('cargo', 'serde')],
+  })
+  t.assert.match(mixed.out.split('\n')[1], /^│ severity +│ ecosystem +│ package +│/u)
+  t.assert.match(mixed.out, /│ cargo +│ serde +│/u)
+  t.assert.equal(mixed.err, 'Scanned 3 packages: 2 alerts, 2 high\nNot audited: composer acme/tools@dev-main, a Composer dev version, which no advisory database lists\n')
 })
 
 test('formatTable produces a boxed table with header and separator', (t) => {
@@ -596,6 +654,17 @@ test('audit --why with no files prints usage', (t) => {
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Nothing to audit/)
 })
+
+test('audit lists a Composer dev version as not audited, asking nothing for it', withTmp((t, tmp) => {
+  const file = writeBundle(tmp, 'php.br', {
+    sources: { '.': { name: 'app', version: '1.0.0', files: { 'index.php': '' } }, 'vendor/acme/tools': { name: 'acme/tools', version: '1.x-dev', ecosystem: 'composer', files: { 'src/Tool.php': '' } } },
+    modules: {},
+    formats: {},
+  })
+  const r = runCli(['audit', file])
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.equal(r.stderr, 'Scanned 1 package: 0 alerts\nNot audited: composer acme/tools@1.x-dev, a Composer dev version, which no advisory database lists\n')
+}))
 
 test('audit --reason consumes its value (space form) then reports no files', (t) => {
   // `--reason run` must swallow `run` as the value, leaving no positional file.
@@ -816,6 +885,117 @@ test('audit() lists only the installed versions a range covers, and drops ranges
         ['bar', '4.5.6', '*', 'any', 'npm:3'],
         ['foo', '1.2.3', '>=1.2.0 <2', 'current', 'GHSA-5555-6666-7777'],
       ])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+
+// npm's, OSV's and Soldeer's answers for ECOSYSTEMS_BUNDLE: an advisory on the crate serde alone.
+const ecosystemsFetch = ({ url, opts }) => {
+  if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+  if (url === 'https://api.osv.dev/v1/querybatch') {
+    return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'serde' ? { vulns: [{ id: 'RUSTSEC-2099-0001' }] } : {})) })
+  }
+  if (url === 'https://api.osv.dev/v1/vulns/RUSTSEC-2099-0001') {
+    return json({ id: 'RUSTSEC-2099-0001', summary: 'serde bug', affected: [{ package: { ecosystem: 'crates.io', name: 'serde' } }] })
+  }
+  if (url === 'https://api.soldeer.xyz/api/v1/project?project_name=forge-std') {
+    return json({ data: [{ name: 'forge-std', github_url: 'https://github.com/foundry-rs/forge-std' }] })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+
+test('audit() asks npm for npm packages, OSV for crates and Composer packages, and GitHub for Soldeer packages and GitHub repos', withFetch(
+  ecosystemsFetch,
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const asked = []
+      const github = {
+        async listRepoAdvisories({ repo }) {
+          asked.push(repo)
+          if (repo !== 'OpenZeppelin/openzeppelin-contracts') return []
+          return [{ ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'oz bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 5.0.0', package: { ecosystem: 'npm', name: '@openzeppelin/contracts' } }] }]
+        },
+      }
+      const report = await audit([writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)], { github })
+      const body = (url) => JSON.parse(calls.find((call) => call.url === url).opts.body)
+      t.assert.deepEqual(body('https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'), { foo: ['2.0.0'], serde: ['1.0.100'] })
+      // A batch for each ecosystem OSV is asked about.
+      const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepEqual(queries.toSorted((a, b) => a.package.name.localeCompare(b.package.name)), [
+        { package: { name: 'monolog/monolog', ecosystem: 'Packagist' }, version: '2.9.1' },
+        { package: { name: 'serde', ecosystem: 'crates.io' }, version: '1.0.100' },
+      ], 'the Composer dev version is not asked about')
+      t.assert.deepEqual(asked.toSorted(), ['OpenZeppelin/openzeppelin-contracts', 'foundry-rs/forge-std'])
+      t.assert.deepEqual(report.skipped, [{ ecosystem: 'composer', name: 'acme/tools', version: 'dev-main', because: 'a Composer dev version, which no advisory database lists' }])
+      t.assert.deepEqual(report.rows.map(({ ecosystem, package: pkg, installed, id }) => ({ ecosystem, package: pkg, installed, id })), [
+        { ecosystem: 'github', package: 'OpenZeppelin/openzeppelin-contracts', installed: '4.9.0', id: 'GHSA-9999-8888-7777' },
+        { ecosystem: 'cargo', package: 'serde', installed: '1.0.100', id: 'RUSTSEC-2099-0001' },
+      ])
+      // Soldeer packages and GitHub repos have their repository's advisories alone: no client, no audit.
+      await t.assert.rejects(audit([writeBundle(tmp, 'again.br', ECOSYSTEMS_BUNDLE)]), /soldeer packages need a github client|github packages need a github client/u)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit() names the sources it asked when a request fails', withFetch(
+  () => new Response('down', { status: 503 }),
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const { 'dependencies/forge-std-1.9.2': _soldeer, 'lib/openzeppelin-contracts': _github, ...sources } = ECOSYSTEMS_BUNDLE.sources
+      const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources })
+      await t.assert.rejects(audit([bundle]), /^Error: OSV\/npm advisories request failed: /u)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit(--why --reason) keeps the advisories of other ecosystems by the consumers that recorded them', withFetch(
+  ecosystemsFetch,
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // webpack recorded the crate, run the npm packages: collectWhy follows npm's import graph alone.
+      const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, reason: { webpack: ['vendor/serde/src/lib.rs'], run: ['node_modules/foo/index.js'] } })
+      const github = { listRepoAdvisories: async () => [] }
+      const kept = await audit([bundle], { github, why: true, reason: 'webpack' })
+      t.assert.deepEqual(kept.rows.map(({ ecosystem, package: pkg, reason }) => ({ ecosystem, package: pkg, reason })), [{ ecosystem: 'cargo', package: 'serde', reason: 'webpack' }])
+      t.assert.deepEqual((await audit([bundle], { github, why: true, reason: 'run' })).rows, [], 'run recorded none of it')
+      t.assert.deepEqual((await audit([bundle], { github, why: true })).rows.map((row) => row.reason), ['webpack'])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
+  ({ url }) => {
+    if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+    throw new Error(`unexpected request: ${url}`)
+  },
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // `.` is git's for the superproject's own branch, which the bundle does not know: no version of
+      // its own, as 0.0.0 is, and no name advisories() takes. A branch it does take, every range covers.
+      const sources = {
+        '.': { name: 'top-pkg', version: '9.9.9', files: { 'src/entry.js': '' } },
+        'lib/a': { name: 'acme/a', version: '.', ecosystem: 'github', files: { 'src/A.sol': '' } },
+        'lib/b': { name: 'acme/b', version: 'main', ecosystem: 'github', files: { 'src/B.sol': '' } },
+      }
+      const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources, modules: {} })
+      t.assert.deepEqual(collectPackages([bundle]).map(({ name, version }) => `${name}@${version}`), ['acme/a@0.0.0', 'acme/b@main'])
+      const advisory = { ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 2.0.0' }] }
+      const report = await audit([bundle], { github: { listRepoAdvisories: async () => [advisory] } })
+      t.assert.deepEqual(report.rows.map(({ package: pkg, installed }) => `${pkg}@${installed}`), ['acme/a@0.0.0', 'acme/b@main'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

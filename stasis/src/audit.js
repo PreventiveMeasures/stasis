@@ -1,54 +1,90 @@
 import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
-import { compareVersions } from '@preventive/upstream/semver.js'
+import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 import { collectWhy, invertReason } from './why.js'
 
-// Only audit installed dependencies; first-party packages live under non-`node_modules` keys and
-// must not be sent to the public registry (leaks names, adds noise).
+// Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates and
+// Composer packages; for Soldeer packages and GitHub repos (Foundry's lib/ submodules), the
+// advisories their GitHub repository publishes, a Soldeer package's as Soldeer names it.
+const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV'], soldeer: ['Soldeer', 'GitHub'], github: ['GitHub'] }
+
+// A bundle's dependency's ecosystem: its bucket's `ecosystem` tag, or npm for an untagged bucket
+// under node_modules (an artifact from before the tag); undefined for first-party code, which must
+// not be sent to a public registry (leaks names, adds noise).
+const ecosystemOf = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
+
+// A dependency's version as it is audited: a GitHub repo's `.gitmodules` branch `.`, git's for the
+// superproject's own branch, which the bundle does not know and advisories() takes for no branch, is
+// the 0.0.0 stasis versions a repo with no version of its own by. Every advisory range covers both,
+// as it does a branch name.
+const versionOf = (ecosystem, version) => (ecosystem === 'github' && version === '.' ? '0.0.0' : version)
+
+// A package's key across the audit: `name@version` for npm, as collectWhy keys its chains, and
+// prefixed by the ecosystem for the others, whose names may be npm's too.
+const keyOf = (ecosystem, name, version) => `${ecosystem === 'npm' ? '' : `${ecosystem}:`}${name}@${version}`
+
+// Composer's dev versions (`dev-main`, `1.x-dev`), as Composer tells them, a `#ref` dropped: no
+// advisory database lists those, and advisories() takes releases alone.
+const isComposerDev = (version) => /^dev-|-dev$/iu.test(version.replace(/#.*$/su, ''))
+
+// Why `pkg` cannot be audited, or undefined where it can.
+function unaudited({ ecosystem, version }) {
+  if (!Object.hasOwn(SOURCES, ecosystem)) return `no advisories are looked up for ${ecosystem}`
+  if (ecosystem === 'composer' && isComposerDev(version)) return 'a Composer dev version, which no advisory database lists'
+  return undefined
+}
+
+// Only audit installed dependencies, `{ ecosystem, name, version }`: an npm package, a vendored
+// crate, a Composer package, a Soldeer package or a GitHub repo, as the bundle tags it.
 //
 // A package counts as present only when its REAL code is, and recorded = present:
 // an artifact records exactly the files it ships or attested -- imported, entry,
 // or `add`-ed (the last two have no in-edge in the resolution graph, so presence
 // must NOT be derived from edges). The package is audited only if some recorded
 // file is code evidence (see audit-corrections.js) -- not a corrected file (ws's
-// noop browser.js stub), not a package.json manifest (recorded for resolver /
-// metadata reads). So a ws shipped only as browser.js (+ manifest) is skipped,
-// while one whose real code was bundled stays. Which consumers and import EDGES
-// reach that code is the reason column's concern -- collectReasons and why.js
-// apply the same evidence rule per file/edge there.
+// noop browser.js stub), not a manifest (package.json, recorded for resolver /
+// metadata reads; Cargo.toml). So a ws shipped only as browser.js (+ manifest) is
+// skipped, while one whose real code was bundled stays. Which consumers and import
+// EDGES reach that code is the reason column's concern -- collectReasons and
+// why.js apply the same evidence rule per file/edge there.
 export function collectPackagesFromFile(file) {
   const out = []
-  for (const [dir, { name, version, files }] of parseFile(file).modules) {
-    if (!hasNodeModulesSegment(dir)) continue
+  for (const [dir, { name, version, ecosystem: tagged, files }] of parseFile(file).modules) {
+    const ecosystem = ecosystemOf(dir, tagged)
+    if (ecosystem === undefined) continue
     if (!name || !version) continue
-    if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel))) continue
-    out.push({ name, version })
+    if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
+    out.push({ ecosystem, name, version: versionOf(ecosystem, version) })
   }
   return out
 }
+
+// Versions in semver's order where both are semver's, else as numbers in text compare.
+const byNumbers = new Intl.Collator('en', { numeric: true }).compare
+const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
 export function collectPackages(files) {
   const seen = new Set()
   const out = []
   for (const file of files) {
-    for (const { name, version } of collectPackagesFromFile(file)) {
-      const key = `${name}@${version}`
+    for (const pkg of collectPackagesFromFile(file)) {
+      const key = keyOf(pkg.ecosystem, pkg.name, pkg.version)
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ name, version })
+      out.push(pkg)
     }
   }
-  return out.toSorted((a, b) => a.name.localeCompare(b.name) || compareVersions(a.version, b.version))
+  return out.toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
 
-// Map each audited node_modules package (`name@version`) to the bundle consumers ("reasons") that
-// recorded its files. Only bundles carry a reason map ({ consumer: [file, ...] }); lockfiles omit
-// it. Each file is resolved back to its owning package via the module file listing. Only evidence
-// files attribute (see audit-corrections.js): a consumer that recorded nothing of a package but a
-// corrected file or its package.json manifest carries none of its real code and is NOT a reason --
-// e.g. webpack shipping only ws's noop browser.js stub, while `run` bundles the real ws.
+// Map each audited package (keyOf it) to the bundle consumers ("reasons") that recorded its files.
+// Only bundles carry a reason map ({ consumer: [file, ...] }); lockfiles omit it. Each file is
+// resolved back to its owning package via the module file listing. Only evidence files attribute
+// (see audit-corrections.js): a consumer that recorded nothing of a package but a corrected file or
+// its manifest carries none of its real code and is NOT a reason -- e.g. webpack shipping only ws's
+// noop browser.js stub, while `run` bundles the real ws.
 export function collectReasons(files) {
   const byPkg = new Map()
   for (const file of files) {
@@ -56,11 +92,12 @@ export function collectReasons(files) {
     const fileReasons = invertReason(artifact.reason)
     if (!fileReasons) continue
     const fileToPkg = new Map()
-    for (const [dir, { name, version, files: modFiles }] of artifact.modules) {
-      if (!hasNodeModulesSegment(dir) || !name || !version) continue
+    for (const [dir, { name, version, ecosystem: tagged, files: modFiles }] of artifact.modules) {
+      const ecosystem = ecosystemOf(dir, tagged)
+      if (ecosystem === undefined || !name || !version) continue
       for (const rel of Object.keys(modFiles)) {
-        if (!isEvidenceFile(name, version, rel)) continue
-        fileToPkg.set(moduleFileKey(dir, rel), `${name}@${version}`)
+        if (!isEvidenceFile(name, version, rel, ecosystem)) continue
+        fileToPkg.set(moduleFileKey(dir, rel), keyOf(ecosystem, name, versionOf(ecosystem, version)))
       }
     }
     for (const [f, consumers] of fileReasons) {
@@ -88,18 +125,20 @@ const byConsumerOrder = (a, b) => consumerRank(a) - consumerRank(b) || a.localeC
 // (which REPLACE the consumer list). Consumers are ordered plugins -> run -> add.
 // `reasonFilter`, when set, narrows the cell to a single consumer: the `--why`
 // chains are already filtered upstream (see collectWhy), so only the consumer
-// list needs pruning here.
-function reasonCell(pkg, affected, reasonsByPkg, whyByPkg, reasonFilter) {
+// list needs pruning here. collectWhy follows npm's import graph alone, so an
+// advisory of another ecosystem keeps its consumer list under `--why` too.
+function reasonCell({ ecosystem, name, versions: affected }, reasonsByPkg, whyByPkg, reasonFilter) {
+  const chains = whyByPkg !== null && ecosystem === 'npm'
   const parts = new Set()
-  const source = whyByPkg ?? reasonsByPkg
+  const source = chains ? whyByPkg : reasonsByPkg
   for (const v of affected) {
-    for (const p of source.get(`${pkg}@${v}`) ?? []) parts.add(p)
+    for (const p of source.get(keyOf(ecosystem, name, v)) ?? []) parts.add(p)
   }
   // --why: group `consumer: path` lines by consumer and order the groups
   // plugins -> run -> add (this also re-unites a consumer's lines when they were
   // split across affected versions); within a group collectWhy's compressed order
   // is preserved. Otherwise: the `, `-joined consumer set in the same order.
-  if (whyByPkg) {
+  if (chains) {
     const byConsumer = Map.groupBy(parts, (line) => {
       const i = line.indexOf(': ')
       return i === -1 ? '' : line.slice(0, i)
@@ -116,11 +155,12 @@ function reasonCell(pkg, affected, reasonsByPkg, whyByPkg, reasonFilter) {
 export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = null, reasonFilter = null) {
   const rows = []
   for (const adv of found) {
-    const reason = reasonCell(adv.name, adv.versions, reasonsByPkg, whyByPkg, reasonFilter)
+    const reason = reasonCell(adv, reasonsByPkg, whyByPkg, reasonFilter)
     // --reason keeps only advisories tied to that consumer: once the cell is
     // narrowed to it, an empty cell means this package isn't related to it.
     if (reasonFilter && reason === '') continue
     rows.push({
+      ecosystem: adv.ecosystem,
       package: adv.name,
       installed: adv.versions.join(', '),
       vulnerable: adv.range ?? '',
@@ -135,6 +175,7 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
     const sb = SEVERITY_ORDER[b.severity] ?? 99
     if (sa !== sb) return sa - sb
     if (a.package !== b.package) return a.package < b.package ? -1 : 1
+    if (a.ecosystem !== b.ecosystem) return a.ecosystem < b.ecosystem ? -1 : 1
     return a.title < b.title ? -1 : 1
   })
   return rows
@@ -180,38 +221,50 @@ export function formatTable(rows, columns, { multiline = [] } = {}) {
   ].join('\n')
 }
 
-// `repoAdvisories` and `github` (a @preventive/upstream/github.js client) go to advisories() as they are.
+// `repoAdvisories` and `github` (a @preventive/upstream/github.js client) go to advisories() as they
+// are; a Soldeer package or a GitHub repo needs the client, their repository being their only source.
+// A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
   why = why || whyDeep || whyFull
   const packages = collectPackages(files)
-  if (packages.length === 0) {
-    return { packages, advisories: [], rows: [], why }
+  const skipped = packages.flatMap((pkg) => {
+    const because = unaudited(pkg)
+    return because === undefined ? [] : [{ ...pkg, because }]
+  })
+  const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
+  if (asked.length === 0) {
+    return { packages, skipped, advisories: [], rows: [], why }
   }
   let result
   try {
-    result = await advisories(packages.map(({ name, version }) => ({ ecosystem: 'npm', name, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(asked.map(({ ecosystem, name, version }) => ({ ecosystem, name, versions: [version] })), { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
     if (cause?.code === 'ERR_ASSERTION') throw cause
-    throw new Error(`${repoAdvisories ? 'npm/GitHub' : 'npm'} advisories request failed: ${cause.message}`, { cause })
+    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(repoAdvisories ? ['GitHub'] : [])])
+    throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   // `--why` REPLACES the consumer list with per-consumer import paths, so only
-  // one of the two is computed. Restrict the (potentially expensive) path search
-  // to the packages that actually carry an advisory. `reason` (--reason) narrows
-  // both the paths (in collectWhy) and the consumer list (in flattenAdvisories)
-  // to a single consumer, dropping advisories unrelated to it.
+  // one of the two is computed for npm's advisories, the only ones collectWhy has
+  // paths for: another ecosystem's keep their consumers. Restrict the (potentially
+  // expensive) path search to the packages that actually carry an advisory.
+  // `reason` (--reason) narrows both the paths (in collectWhy) and the consumer
+  // list (in flattenAdvisories) to a single consumer, dropping advisories
+  // unrelated to it.
   let rows
   if (why) {
-    const targetKeys = new Set(result.flatMap((adv) => adv.versions.map((v) => `${adv.name}@${v}`)))
-    rows = flattenAdvisories(result, undefined, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason)
+    const npm = result.filter((adv) => adv.ecosystem === 'npm')
+    const targetKeys = new Set(npm.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
+    const reasons = npm.length < result.length ? collectReasons(files) : undefined
+    rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason)
   } else {
     rows = flattenAdvisories(result, collectReasons(files), null, reason)
   }
-  return { packages, advisories: result, rows, why, whyDeep, whyFull, reason }
+  return { packages, skipped, advisories: result, rows, why, whyDeep, whyFull, reason }
 }
 
 // `10 alerts, 1 critical, 5 high, 3 moderate, 1 low`: the rows, then each severity present, in the
@@ -221,20 +274,22 @@ function alertStats(rows) {
   return [`${rows.length} alert${rows.length === 1 ? '' : 's'}`, ...[...bySeverity].map(([severity, list]) => `${list.length} ${severity}`)].join(', ')
 }
 
-export function printAuditReport({ packages, rows, why = false, reason = null }, { out = process.stdout, err = process.stderr } = {}) {
+export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr } = {}) {
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}`
   if (packages.length === 0) {
-    err.write(`${scanned}\nNo node_modules entries found in the input files\n`)
+    err.write(`${scanned}\nNo dependencies found in the input files\n`)
     return
   }
   err.write(`${scanned}: ${alertStats(rows)}\n`)
+  for (const pkg of skipped) err.write(`Not audited: ${pkg.ecosystem} ${pkg.name}@${pkg.version}, ${pkg.because}\n`)
   if (rows.length === 0) return
-  const columns = ['severity', 'package', 'installed', 'vulnerable', 'title', 'id']
+  // The ecosystem column only where one is not npm's, which the others were all once.
+  const columns = ['severity', ...(rows.some((r) => r.ecosystem !== 'npm') ? ['ecosystem'] : []), 'package', 'installed', 'vulnerable', 'title', 'id']
   // Surface the reason column only when some advisory has provenance -- bundle
   // consumers, or (with --why) import paths. Under --reason WITHOUT --why every
   // cell is just the filter value repeated, so drop the column then; --why still
   // earns it (the import chains differ per row).
-  if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(3, 0, 'reason')
+  if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
   // Under --why the reason cell is a list of `consumer: path` lines; let it span
   // multiple physical rows instead of collapsing to one.
   out.write(formatTable(rows, columns, { multiline: why ? ['reason'] : [] }) + '\n')
