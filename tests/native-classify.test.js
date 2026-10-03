@@ -208,10 +208,13 @@ test('classifyNativeCapture: Python source is python code, by extension or by sh
     '#!/usr/bin/env --unset PYTHONPATH python3', '#!/usr/bin/env -C /opt/app python3',
     '#!/usr/bin/env --chdir /opt/app python3', '#!/usr/bin/env -P /usr/local/bin python3',
     '#!/usr/bin/env -uPYTHONPATH --unset=PYTHONHOME python3',
-    // `env -S` quoting and escapes: a quoted or escaped space joins a word, quotes come off, `#` comments.
-    '#!/usr/bin/env -S FOO="a b" python3', "#!/usr/bin/env -S FOO='a b' python3", '#!/usr/bin/env -S FOO=a\\ b python3',
+    // `env -S` splits as GNU env does: quotes join and come off, `\_` breaks words, `\c` and `#` end it.
+    '#!/usr/bin/env -S FOO="a b" python3', "#!/usr/bin/env -S FOO='a b' python3", '#!/usr/bin/env -S FOO=x\\_python3 -u',
     '#!/usr/bin/env -S FOO="say \\"hi there\\"" python3 -u', '#!/usr/bin/env -S "python3" -u',
-    '#!/usr/bin/env -S py"thon"3', '#!/usr/bin/env -S python3 # run unbuffered',
+    '#!/usr/bin/env -S py"thon"3', '#!/usr/bin/env -S python3 # run unbuffered', '#!/usr/bin/env -S python3\\c junk',
+    '#!/usr/bin/env -Spython3 -u', '#!/usr/bin/env --split-string=python3 -u',
+    // Without -S, macOS splits at whitespace (Linux hands env one word): these run python there.
+    '#!/usr/bin/env python3 -u', '#!/usr/bin/env FOO=x python3',
     // A virtualenv's interpreter, whose path holds an `sh` segment: still python, not shell.
     '#!/home/me/sh/.venv/bin/python3', '#!/opt/sh-tools/venv/bin/python',
   ]) {
@@ -227,10 +230,16 @@ test('classifyNativeCapture: Python source is python code, by extension or by sh
   t.assert.deepStrictEqual(classify('#!/usr/bin/env python3-config\n'), { action: 'resource' })
   t.assert.deepStrictEqual(classify('#!/usr/bin/env pythonista\n'), { action: 'resource' })
   t.assert.deepStrictEqual(classify('\n#!/usr/bin/python3\n'), { action: 'resource' })
-  // A line env refuses (an unterminated quote, a trailing `\`) or comments out runs no python.
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env -S FOO="a b python3\n'), { action: 'resource' })
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env -S python3 \\\n'), { action: 'resource' })
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env -S # python3\n'), { action: 'resource' })
+  // A line env refuses (an unterminated quote, a trailing or unknown `\`, `\c` inside "…") or comments out
+  // runs no python, nor does one whose command only the environment knows.
+  for (const shebang of [
+    '#!/usr/bin/env -S FOO="a b python3', '#!/usr/bin/env -S python3 \\', '#!/usr/bin/env -S FOO=a\\ b python3',
+    '#!/usr/bin/env -S "python3\\c"', '#!/usr/bin/env -S # python3', '#!/usr/bin/env -S ${PYTHON} -u',
+  ]) {
+    t.assert.deepStrictEqual(classify(`${shebang}\n`), { action: 'resource' }, shebang)
+  }
+  // Quotes are env's to take off only under -S: without it, macOS runs `b"` and Linux sets FOO.
+  t.assert.deepStrictEqual(classify('#!/usr/bin/env FOO="a b" python3\n'), { action: 'resource' })
   const latin1 = Buffer.concat([Buffer.from('#!/usr/bin/python3\n# caf'), Buffer.from([0xe9]), Buffer.from('\n')])
   t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content: latin1 }), { action: 'resource' })
 })

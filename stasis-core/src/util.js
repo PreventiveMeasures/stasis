@@ -192,39 +192,63 @@ function shebangFormat(content) {
 // `-P PATH`, or GNU's `--unset NAME`/`--chdir DIR`.
 const ENV_VALUE_OPTION = /^(?:-[^-]*[uCP]|--unset|--chdir)$/u
 
-// One piece of an `env -S` word: a '…' string (only `\\` and `\'` escape), a "…" string (`\` escapes),
-// an escaped character, or a bare run.
-const ENV_WORD_PART = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|\\(.)|([^\s'"\\]+)/suy
+// The escapes `env -S` takes outside '…' (where only `\\` and `\'` escape). `\_` is a space inside "…"
+// but a word break outside it, `\c` outside "…" ends the string, and any other escape is env's error.
+const ENV_ESCAPES = { '"': '"', "'": "'", '\\': '\\', '#': '#', $: '$', _: ' ', n: '\n', t: '\t', r: '\r', f: '\f', v: '\v' }
 
-// env's arguments as `env -S` splits them: whitespace separates words, quotes and `\` join and unquote,
-// and a word opening with `#` comments out the rest. An unterminated quote or trailing `\` is env's
-// error, so no words.
-function splitEnvWords(text) {
+// The words an `env -S` string splits into, as GNU env splits it: whitespace breaks words outside
+// quotes, quotes and escapes join and unquote, and a word opening with `#` comments out the rest.
+// null for a string env refuses: an unterminated quote, or an unknown or trailing `\`.
+function splitEnvString(text) {
   const words = []
-  let i = 0
-  for (;;) {
-    while (i < text.length && /\s/u.test(text[i])) i++
-    if (i === text.length || text[i] === '#') return words
-    let word = ''
-    while (i < text.length && !/\s/u.test(text[i])) {
-      ENV_WORD_PART.lastIndex = i
-      const m = ENV_WORD_PART.exec(text)
-      if (m === null) return []
-      const [, single, double, escaped, bare] = m
-      word += single?.replaceAll(/\\([\\'])/gu, '$1') ?? double?.replaceAll(/\\(.)/gsu, '$1') ?? escaped ?? bare
-      i = ENV_WORD_PART.lastIndex
+  let word = null
+  let quote = null
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (quote === "'") {
+      if (c === "'") quote = null
+      else word += c === '\\' && (text[i + 1] === '\\' || text[i + 1] === "'") ? text[++i] : c
+    } else if (c === '\\') {
+      const escape = text[++i]
+      if (quote === null && escape === 'c') break
+      if (quote === null && escape === '_') {
+        if (word !== null) words.push(word)
+        word = null
+      } else if (Object.hasOwn(ENV_ESCAPES, escape)) {
+        word = (word ?? '') + ENV_ESCAPES[escape]
+      } else {
+        return null
+      }
+    } else if (quote === '"') {
+      if (c === '"') quote = null
+      else word += c
+    } else if (/\s/u.test(c)) {
+      if (word !== null) words.push(word)
+      word = null
+    } else if (c === '#' && word === null) {
+      break
+    } else if (c === "'" || c === '"') {
+      quote = c
+      word ??= ''
+    } else {
+      word = (word ?? '') + c
     }
-    words.push(word)
   }
+  if (quote !== null) return null
+  if (word !== null) words.push(word)
+  return words
 }
 
 // The program a `#!` line runs: its basename, or `env`'s first operand past options, their values and
-// assignments (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`).
+// assignments (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`). Only `-S` has env
+// split the rest itself; without it, Linux hands env the rest as one word and macOS splits it at
+// whitespace, so this splits as macOS does, the kernel where more than one word runs.
 function shebangInterpreter(line) {
   const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
   const name = program.slice(program.lastIndexOf('/') + 1)
   if (name !== 'env') return name
-  const args = splitEnvWords(rest)
+  const split = /^(?:-S|--split-string=)(.*)$/su.exec(rest)
+  const args = split === null ? rest.split(/\s+/u) : (splitEnvString(split[1]) ?? [])
   for (let i = 0; i < args.length; i++) {
     if (ENV_VALUE_OPTION.test(args[i])) i++
     else if (!args[i].startsWith('-') && !args[i].includes('=')) return args[i]
