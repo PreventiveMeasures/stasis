@@ -577,6 +577,22 @@ test('diff --stat reads two resource-carrying bundles off disk', withTmp((t, tmp
   t.assert.match(r.stdout, /\* node_modules\/foo\/a\.bin/)
 }))
 
+test('normalizeArtifact hashes a php:isomorphic file as its bytes, and refuses a code point past U+00FF', (t) => {
+  // Byte 0xNN is stored as U+00NN: hashed as the bytes, it matches a lockfile's digest of the file.
+  const bytes = Buffer.from([...Buffer.from('<?php\nclass '), 0xa9, ...Buffer.from(' {}\n')])
+  const code = (content) => codeOf({
+    version: 1, config: { scope: 'full' }, entries: ['lib.php'],
+    sources: { '.': { name: 'app', version: '0.0.0', files: { 'lib.php': content } } },
+    formats: { 'lib.php': 'php:isomorphic' }, imports: { php: { 'lib.php': {} } },
+  })
+  const normalized = normalizeArtifact(code(bytes.toString('latin1')), { hash: sha512integrity })
+  t.assert.equal(normalized.modules.get('.').files.get('lib.php'), sha512integrity(bytes))
+  t.assert.throws(
+    () => normalizeArtifact(code('<?php\nclass \u0100 {}\n'), { hash: sha512integrity }),
+    { message: 'diff: a code point past U+00FF in php:isomorphic content for lib.php' },
+  )
+})
+
 test('diff --stat --imports reports redirected edges and exits 1 on an import-only change', withTmp((t, tmp) => {
   // Identical file hashes; only a resolution target moves. Without --imports this
   // is "No differences"; with it, the redirect is caught.

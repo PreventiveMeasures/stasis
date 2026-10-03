@@ -568,8 +568,10 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
   // them as extra roots so their config/route/view files get bundled.
   const providerRoots = loadLaravelProviderFiles(baseDir, autoload, packages)
 
-  const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload })
-  const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload })
+  // A source that isn't UTF-8 is carried byte for byte as 'php:isomorphic' (the rest are PHP_FORMAT).
+  const formats = new Map()
+  const sources = await collectPhpFilesFromDisk(baseDir, [...normalized, ...providerRoots], { autoload, formats })
+  const { resolutions, missing } = buildPhpTree(sources, { baseDir, autoload, formats })
 
   assertSelfContained('PHP', 'import', normalized, sources, missing)
 
@@ -581,6 +583,7 @@ export async function buildPhpBundle({ cwd = process.cwd(), entries } = {}) {
     modules: bucketizePhpSources(baseDir, sources, PHP_WORKSPACE_NAME, PHP_WORKSPACE_VERSION, packages),
     resolutions,
     format: PHP_FORMAT,
+    formats,
     // PHP includes don't vary by Node condition; key edges under "php", not the JS wildcard "*".
     conditionKey: 'php',
   })

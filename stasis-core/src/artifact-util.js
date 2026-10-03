@@ -5,7 +5,9 @@
 
 // KNOWN_FORMATS is the closed universe of `format` strings; parsers reject anything outside it.
 export const NODE_FORMATS = new Set(['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript'])
-export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'shell', 'rust'])
+// `php:isomorphic` is PHP source that isn't UTF-8 (PHP reads source as bytes), stored isomorphically
+// decoded: byte 0xNN as U+00NN (see isomorphicEncode).
+export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'php:isomorphic', 'shell', 'rust'])
 export const NATIVE_BUILD_FORMATS = new Set([
   'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c', 'cpp', 'c-header', 'cpp-header',
   'ruby', 'cmake', 'podspec', 'podfile', 'podfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj',
@@ -24,6 +26,19 @@ export const KNOWN_FORMATS = new Set([
 
 // Payload-free stat records: attest a path's KIND, no content, and yield to a real format.
 export const isStatFormat = (format) => STAT_FORMATS.has(format)
+
+// The bytes a `php:isomorphic` file's stored string stands for (WHATWG isomorphic encode: U+00NN is
+// byte 0xNN), or null where it holds a code point past U+00FF, which no byte stands for -- Buffer's
+// latin1 would keep only its low byte, so a tampered string could hash and write as other bytes.
+export function isomorphicEncode(content) {
+  const bytes = new Uint8Array(content.length)
+  for (let i = 0; i < content.length; i++) {
+    const code = content.charCodeAt(i)
+    if (code > 0xff) return null
+    bytes[i] = code
+  }
+  return bytes
+}
 
 // The post-erasure family of a '-typescript' loader format ('module-typescript' -> 'module'): a
 // transforming preload (`stasis run --import tsx`) resolves/serves a TypeScript file as the JS

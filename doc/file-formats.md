@@ -153,7 +153,9 @@ attested.
   and fails closed on a per-platform edge (`ERR_STASIS_PLATFORM_SPECIFIC`).
 - `formats` records each file's format. Values:
   Node loader (`module`, `commonjs`, `json`, `module-typescript`,
-  `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`);
+  `commonjs-typescript`); source-language (`solidity`, `php`, `php:isomorphic`,
+  `shell`, `rust`; `php:isomorphic` is a PHP source that isn't UTF-8, see
+  "Source-language bundles");
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
   `cpp`, `c-header`, `cpp-header`, `ruby`, `cmake`, `podspec`, `podfile`,
   `podfile-lock`, `template`, `xml`, `env`, `fastlane`, `pbxproj`); `patch` (a
@@ -216,7 +218,10 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
 
 - `entries`/`sources`/`modules` mirror the lockfile shape, but `files` records the
   file's bytes instead of SRI digests. Code and `resource` files store raw UTF-8;
-  `resource:base64` files store base64. `entries`/`sources` are present only when
+  `resource:base64` files store base64; `php:isomorphic` files store each byte
+  0xNN as the code point U+00NN (the isomorphic decode), which the bundle's UTF-8
+  JSON holds as any other text (0xA9 as `C2 A9`), and a code point past U+00FF in
+  one, which stands for no byte, is refused where its bytes are read back. `entries`/`sources` are present only when
   `scope = full`; `modules` may be omitted (treated as empty). A bundle carrying
   code in `scope = full` must declare at least one entry; a resources-only bundle
   may have none.
@@ -405,7 +410,8 @@ under a language `imports` condition. They are for external static analysis —
 **not** `stasis run --bundle=load`, which executes JavaScript and rejects a non-JS
 `format`. Every reachable file is read from disk (symlinks whose real target
 escapes the bundle root are refused; a source file that isn't UTF-8 text is
-refused, never carried with U+FFFD in place of its bytes) and bucketized by the
+refused, never carried with U+FFFD in place of its bytes -- but PHP's, see below)
+and bucketized by the
 nearest `package.json`,
 except PHP, which buckets by the nearest `composer.json`
 (`vendor/<vendor>/<pkg>`, versions from `composer.lock`, read strictly with
@@ -416,6 +422,14 @@ Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
 is its own bucket; `version.workspace = true` resolves through the workspace
 root). With no manifest above a file, the workspace bucket gets a placeholder
 identity (`solidity-bundle`/`php-bundle`/`bash-bundle`/`rust-bundle` at `0.0.0`).
+
+PHP reads source as bytes, whatever they encode, so a PHP source that isn't UTF-8
+is carried byte for byte rather than refused: tagged `php:isomorphic`, its bytes
+stored as U+0000-U+00FF (`symfony/cache`'s `Traits/ValueWrapper.php` declares
+`class \xA9`, and Composer's `vendor/composer/autoload_static.php` then holds that
+byte as a classmap key). It is scanned as any other source; a path it names (an
+include, a path literal) is its bytes read as UTF-8, and one whose bytes aren't
+names no file stasis can carry: an include so named is unresolved.
 
 Solidity entries are `.sol` files or directories: a directory stands for every
 `.sol` file under it, imported or not — `stasis bundle src test script` is what

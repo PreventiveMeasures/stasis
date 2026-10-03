@@ -24,7 +24,7 @@ exits non-zero), so it composes in CI.
 
 A lockfile records each file as an SRI digest (`sha512-<base64>`); a bundle
 records the bytes. `stasis diff` re-hashes each bundle file into that same digest
-(`resource:base64` decoded first), so both sides land in one digest space and a
+(`resource:base64` and `php:isomorphic` decoded first), so both sides land in one digest space and a
 byte-identical file never shows as a difference.
 
 ## What it reports

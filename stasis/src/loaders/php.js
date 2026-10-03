@@ -284,6 +284,21 @@ function scanPathLiterals(content) {
 
 const includeSpecs = (includes, kind) => includes.filter((e) => e.kind === kind).map((e) => e.spec)
 
+// The format of a PHP source that isn't UTF-8, read byte for byte as U+0000-U+00FF.
+const ISOMORPHIC = 'php:isomorphic'
+
+// A path `spec` scanned out of a source as stasis names files: as it is in a UTF-8 source; in a
+// `php:isomorphic` one, its bytes (PHP's path) read as UTF-8, or null where they aren't UTF-8, a name
+// stasis can't give a file.
+function pathSpec(spec, isomorphic) {
+  if (!isomorphic || !/[\x80-\xFF]/u.test(spec)) return spec
+  const bytes = Buffer.from(spec, 'latin1')
+  return isUtf8(bytes) ? bytes.toString('utf8') : null
+}
+
+// A `php:isomorphic` source's path, for a message: each byte past ASCII as PHP writes it (`\xE9`).
+const showBytes = (spec) => spec.replace(/[\x80-\xFF]/gu, (c) => `\\x${c.charCodeAt(0).toString(16).toUpperCase()}`)
+
 // Statically-resolvable include specifiers (concrete files). See scanIncludes.
 export function extractPhpImports(content) {
   return includeSpecs(scanIncludes(content), 'file')
@@ -899,12 +914,20 @@ function autoloadEdges(content, autoload, baseDir, sources) {
 // Explicit includes are strict (unresolvable -> `missing`); Composer-autoloaded
 // class refs (when `autoload` is given) are best-effort and never added to
 // `missing`. Fallback: a specifier matching a stored key verbatim is accepted.
-export function buildPhpTree(sources, { baseDir, autoload = null } = {}) {
+// `formats`: collectPhpFilesFromDisk's, naming the `php:isomorphic` sources.
+export function buildPhpTree(sources, { baseDir, autoload = null, formats } = {}) {
   const resolutions = new Map()
   const missing = []
   for (const [path, content] of sources) {
     const specMap = new Map()
-    for (const spec of extractPhpImports(content)) {
+    const isomorphic = formats?.get(path) === ISOMORPHIC
+    for (const raw of extractPhpImports(content)) {
+      const spec = pathSpec(raw, isomorphic)
+      if (spec === null) {
+        console.warn(`[loader.php] Missing import: ${showBytes(raw)} (not UTF-8) from ${path}`)
+        missing.push({ spec: showBytes(raw), from: path, reason: 'its path is not UTF-8' })
+        continue
+      }
       let resolved = resolvePhpImport(spec, path, { baseDir })
       if (resolved && !sources.has(resolved)) resolved = null
       if (!resolved && sources.has(spec)) resolved = spec
@@ -926,7 +949,10 @@ export function buildPhpTree(sources, { baseDir, autoload = null } = {}) {
 // Walk the filesystem from `entries` (plus Composer `files` autoload entries),
 // following resolved includes and autoloaded class refs, reading each file once.
 // Same-wave files are read in parallel; the next wave depends on the previous.
-export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = null } = {}) {
+// A source that isn't UTF-8 -- PHP reads source as bytes -- is read byte for byte
+// as U+0000-U+00FF and tagged `php:isomorphic` in `formats` where it is given;
+// without `formats`, it is refused rather than carried with U+FFFD in it.
+export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = null, formats } = {}) {
   const sources = new Map()
   const realBase = realpathSync(baseDir)
 
@@ -934,9 +960,11 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
     try {
       assertRealPathWithinBase(realBase, baseDir, relPath)
       const bytes = await readFile(join(baseDir, relPath))
-      // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
-      if (!isUtf8(bytes)) throw new Error(`PHP source is not valid UTF-8: ${relPath}`)
-      return [relPath, bytes.toString('utf8')]
+      if (isUtf8(bytes)) return [relPath, bytes.toString('utf8')]
+      if (!formats) throw new Error(`PHP source is not valid UTF-8: ${relPath}`)
+      // Node's latin1 is the isomorphic decode: byte 0xNN as U+00NN.
+      formats.set(relPath, ISOMORPHIC)
+      return [relPath, bytes.toString('latin1')]
     } catch (err) {
       // ENOENT (no file) / EISDIR (specifier resolved to a directory): not a
       // loadable file -- warn and skip rather than crash (buildPhpTree surfaces
@@ -964,19 +992,22 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       if (!entry) continue
       const [relPath, content] = entry
       sources.set(relPath, content)
+      const isomorphic = formats?.get(relPath) === ISOMORPHIC
       const includes = scanIncludes(content)
-      for (const spec of includeSpecs(includes, 'file')) {
-        const resolved = resolvePhpImport(spec, relPath, { baseDir })
+      for (const raw of includeSpecs(includes, 'file')) {
+        const spec = pathSpec(raw, isomorphic)
+        const resolved = spec === null ? null : resolvePhpImport(spec, relPath, { baseDir })
         if (resolved) {
           if (!sources.has(resolved)) next.push(resolved)
         } else {
-          console.warn(`[loader.php] Missing import: ${spec} from ${relPath}`)
+          console.warn(`[loader.php] Missing import: ${spec === null ? `${showBytes(raw)} (not UTF-8)` : spec} from ${relPath}`)
         }
       }
       // Dynamic includes with a static dir prefix: the exact file is known only
       // at runtime, so bundle every `.php` file in that directory as a candidate.
-      for (const dirSpec of includeSpecs(includes, 'dir')) {
-        const dir = resolvePhpDir(dirSpec, relPath, baseDir)
+      for (const raw of includeSpecs(includes, 'dir')) {
+        const dirSpec = pathSpec(raw, isomorphic)
+        const dir = dirSpec === null ? null : resolvePhpDir(dirSpec, relPath, baseDir)
         if (!dir) continue
         for (const file of listPhpFiles(baseDir, dir)) {
           if (!sources.has(file)) next.push(file)
@@ -984,7 +1015,9 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       }
       // `.php` path literals outside a require (route/config files passed to a
       // framework). Best-effort: bundle only if they resolve to an existing file.
-      for (const { spec, anchor } of extractPhpPathRefs(content)) {
+      for (const { spec: raw, anchor } of extractPhpPathRefs(content)) {
+        const spec = pathSpec(raw, isomorphic)
+        if (spec === null) continue
         const resolved = anchor === 'root'
           ? normalizeProjectRel(baseDir, spec)
           : resolvePhpImport(spec, relPath, { baseDir })

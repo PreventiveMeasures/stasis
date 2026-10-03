@@ -310,6 +310,25 @@ test('resolvePhpDir resolves an existing directory and rejects a missing one', (
   t.assert.equal(resolvePhpDir('./src/Service.php', 'index.php', baseDir), null)
 })
 
+test('collectPhpFilesFromDisk reads a source that isn\'t UTF-8 byte for byte where given `formats`, else refuses it', async (t) => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'stasis-php-isomorphic-'))
+  try {
+    writeFileSync(join(baseDir, 'index.php'), "<?php\nrequire __DIR__ . '/lib.php';\n")
+    writeFileSync(join(baseDir, 'lib.php'), Buffer.from("<?php\nrequire __DIR__ . '/next.php';\necho 'caf\xe9';\n", 'latin1'))
+    writeFileSync(join(baseDir, 'next.php'), '<?php\n')
+    await t.assert.rejects(() => collectPhpFilesFromDisk(baseDir, ['index.php']), { message: 'PHP source is not valid UTF-8: lib.php' })
+
+    const formats = new Map()
+    const sources = await collectPhpFilesFromDisk(baseDir, ['index.php'], { formats })
+    t.assert.deepStrictEqual([...formats], [['lib.php', 'php:isomorphic']])
+    t.assert.equal(sources.get('lib.php'), "<?php\nrequire __DIR__ . '/next.php';\necho 'caf\u00e9';\n")
+    // Scanned as any source: its include is followed.
+    t.assert.ok(sources.has('next.php'))
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true })
+  }
+})
+
 test('collectPhpFilesFromDisk walks __DIR__ includes starting from entries', async (t) => {
   const baseDir = join(fixtures, 'basic')
   const sources = await collectPhpFilesFromDisk(baseDir, ['src/A.php'])

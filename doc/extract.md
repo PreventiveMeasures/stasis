@@ -23,8 +23,9 @@ A `scope = full` bundle writes workspace sources under their relative paths
 `scope = node_modules` bundle writes only the `node_modules` tree. Either way a
 `stasis.lock.json` lands in the output directory.
 
-The lockfile is derived from the bundle: each file's recorded UTF-8 bytes are
-hashed (sha512) into the same SRI digest `stasis run` would record, and the
+The lockfile is derived from the bundle: each file's recorded bytes (as for the
+files written, see below) are hashed (sha512) into the same SRI digest `stasis run`
+would record, and the
 bundle's `entries`, package dirs, `name`/`version`, and `imports` are carried
 across verbatim. The extracted tree validates out of the box — `stasis prune`
 works directly against it; `stasis run --lock=frozen` additionally needs the
@@ -84,4 +85,6 @@ pnpm-managed `node_modules`). Extract untrusted bundles into a fresh, empty dire
 > [!NOTE]
 > Code files are written as their source text; resource files are decoded back to
 > their original bytes (`resource:base64` from base64, `resource` from raw UTF-8)
-> per their `formats` entry.
+> per their `formats` entry, and so is a `php:isomorphic` source (each code point
+> U+00NN as the byte 0xNN; one past U+00FF, which stands for no byte, is refused
+> before anything is written).

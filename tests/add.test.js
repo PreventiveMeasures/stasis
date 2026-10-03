@@ -180,6 +180,18 @@ test('addCommand rejects a BINARY plist that is not declared in resources, with 
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['Binary.plist'] }), /neither a recognized source file nor a declared resource/u)
 }))
 
+test('addCommand records a .php source that isn\'t UTF-8 as php:isomorphic, byte for byte', withTmp(async (t, tmp) => {
+  // PHP reads source as bytes (symfony/cache's `class \xA9`): stored as U+00NN per byte 0xNN, not refused.
+  seed(tmp, { bundleFile: 'dist/code.br' })
+  const bytes = Buffer.from([...Buffer.from('<?php\nclass '), 0xa9, ...Buffer.from(' {}\n')])
+  writeFileSync(join(tmp, 'src', 'ValueWrapper.php'), bytes)
+  addCommand({ cwd: tmp, entries: ['src/ValueWrapper.php'] })
+
+  const code = decode(join(tmp, 'dist/code.br'))
+  t.assert.equal(code.formats.get('src/ValueWrapper.php'), 'php:isomorphic')
+  t.assert.equal(code.modules.get('.').files['src/ValueWrapper.php'], '<?php\nclass \u00a9 {}\n')
+}))
+
 test('addCommand records a .patch unified diff as `patch` code, stored raw as UTF-8', withTmp(async (t, tmp) => {
   // A unified diff (pnpm patchedDependencies, patch-package) is a text build input in its own right,
   // so it is CODE tagged 'patch' -- stored raw, no `resources` entry needed.

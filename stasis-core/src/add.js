@@ -231,8 +231,10 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity }) {
     const format = sourceFormat(abs, buf)
     // A binary plist can't be stored as the UTF-8 string its 'xml' format implies, so it is NOT source: it falls through to the resource branch (opaque base64).
     if (format !== undefined && !isBinaryPlist(rel, buf)) {
-      // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
+      // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk --
+      // but PHP's, which PHP reads as bytes: stored isomorphically decoded (Node's latin1, byte 0xNN as U+00NN).
       if (isUtf8(buf)) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
+      else if (format === 'php') codeFiles.set(rel, { content: buf.toString('latin1'), format: 'php:isomorphic', executable })
       else nonUtf8.push({ rel, format })
     } else if (resources.has(pathExt(rel) || basename(rel).toLowerCase())) {
       const utf8 = isUtf8(buf)

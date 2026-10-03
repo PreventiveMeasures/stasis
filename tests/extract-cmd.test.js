@@ -576,6 +576,34 @@ test('lockfileFromBundle accepts canonical base64 and produces a hash matching t
   t.assert.equal(lock.modules.get('node_modules/foo').files['asset.bin'], sha512integrity(raw))
 })
 
+test('extractCommand writes a php:isomorphic source back as its bytes, and refuses a code point past U+00FF', withTmp((t, tmp) => {
+  // Byte 0xNN is stored as U+00NN (the bundle's UTF-8 JSON holds 0xA9 as C2 A9); extract writes 0xA9.
+  const php = (content) => ({
+    version: 1,
+    config: { scope: 'full' },
+    entries: ['lib.php'],
+    sources: { '.': { name: 'app', version: '0.0.0', files: { 'lib.php': content } } },
+    modules: {},
+    formats: { 'lib.php': 'php:isomorphic' },
+    imports: { php: { 'lib.php': {} } },
+  })
+  const bytes = Buffer.from([...Buffer.from('<?php\nclass '), 0xa9, ...Buffer.from(' {}\n')])
+  const bundlePath = join(tmp, 'php.br')
+  writeRawBundle(bundlePath, php(bytes.toString('latin1')))
+  extractCommand({ bundleFile: bundlePath, output: join(tmp, 'out') })
+  t.assert.deepStrictEqual(readFileSync(join(tmp, 'out', 'lib.php')), bytes)
+  const lock = Lockfile.parse(readFileSync(join(tmp, 'out', 'stasis.lock.json'), 'utf8'))
+  t.assert.equal(lock.modules.get('.').files['lib.php'], sha512integrity(bytes))
+
+  // U+0100 stands for no byte (Buffer's latin1 would write its low byte, 0x00): refused, nothing written.
+  writeRawBundle(bundlePath, php('<?php\nclass \u0100 {}\n'))
+  t.assert.throws(
+    () => extractCommand({ bundleFile: bundlePath, output: join(tmp, 'tampered') }),
+    { message: 'extract: a code point past U+00FF in php:isomorphic content for lib.php' },
+  )
+  t.assert.ok(!existsSync(join(tmp, 'tampered', 'lib.php')))
+}))
+
 // --- `stasis run --fs` directory captures (the `directory` format) ---
 
 test('extractCommand skips a directory-listing entry on disk but keeps it in the lockfile', withTmp((t, tmp) => {

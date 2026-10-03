@@ -19,6 +19,8 @@ import {
   outermostDir,
 } from '../stasis/src/cmd/bundle.js'
 import { diffCommand } from '../stasis/src/cmd/diff.js'
+import { extractCommand } from '@exodus/stasis-core/extract'
+import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { rustFixture } from './rust-fixtures.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1588,14 +1590,43 @@ test('buildPhpBundle produces a Bundle with sources, formats, imports, entries',
   t.assert.equal(bundle.imports.get('php').get('src/A.php').get('./B.php'), 'src/B.php')
 })
 
-test('buildPhpBundle refuses a source that isn\'t UTF-8, rather than bundle it with U+FFFD in it', withTmp(async (t, tmp) => {
+test('buildPhpBundle carries a source that isn\'t UTF-8 byte for byte, as php:isomorphic', withTmp(async (t, tmp) => {
+  // PHP reads source as bytes: symfony/cache's Traits/ValueWrapper.php declares `class \xA9`, and
+  // Composer's autoload_static.php then holds that byte as a classmap key. Here a Latin-1 byte, and
+  // an include whose path is UTF-8 bytes (`café`), in one file.
+  const lib = Buffer.from("<?php\nrequire __DIR__ . '/caf\xc3\xa9.php';\nclass \xa9 {}\n", 'latin1')
   writeFileSync(join(tmp, 'index.php'), "<?php\nrequire __DIR__ . '/lib.php';\n")
-  writeFileSync(join(tmp, 'lib.php'), Buffer.from("<?php\necho 'caf\xe9';\n", 'latin1'))
-  await t.assert.rejects(() => buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), { message: 'PHP source is not valid UTF-8: lib.php' })
+  writeFileSync(join(tmp, 'lib.php'), lib)
+  writeFileSync(join(tmp, 'café.php'), "<?php\necho 'caf\u00e9';\n")
+  const bundle = await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })
+  t.assert.equal(bundle.formats.get('lib.php'), 'php:isomorphic')
+  t.assert.equal(bundle.formats.get('index.php'), 'php')
+  t.assert.equal(bundle.formats.get('café.php'), 'php')
+  // Each byte as its code point: 0xA9 is U+00A9, which the bundle's UTF-8 JSON holds as C2 A9.
+  t.assert.equal(bundle.sources.get('lib.php'), "<?php\nrequire __DIR__ . '/caf\u00c3\u00a9.php';\nclass \u00a9 {}\n")
+  t.assert.ok(bundle.serialize().includes('class \u00a9 {}'))
+  // The include's path is its bytes read as UTF-8, the file PHP opens.
+  t.assert.equal(bundle.imports.get('php').get('lib.php').get('./café.php'), 'café.php')
+
+  // extract writes the bytes back, and its lockfile attests them.
+  const bundleFile = join(tmp, 'stasis.code.br')
+  writeFileSync(bundleFile, brotliCompressSync(bundle.serialize()))
+  await captureStderr(() => extractCommand({ bundleFile, output: join(tmp, 'out') }))
+  t.assert.deepStrictEqual(readFileSync(join(tmp, 'out', 'lib.php')), lib)
+  const lock = Lockfile.parse(readFileSync(join(tmp, 'out', 'stasis.lock.json'), 'utf8'))
+  t.assert.equal(lock.modules.get('.').files['lib.php'], sha512integrity(lib))
+  t.assert.equal(lock.formats.get('lib.php'), 'php:isomorphic')
+
+  // A path whose bytes aren't UTF-8 names no file stasis can carry: the include is unresolved, not
+  // taken for caf\u00e9.php (U+00E9 is that byte's code point, but not the file PHP opens).
+  writeFileSync(join(tmp, 'lib.php'), Buffer.from("<?php\nrequire __DIR__ . '/caf\xe9.php';\n", 'latin1'))
+  await captureStderr(() => t.assert.rejects(() => buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), { message: 'PHP bundle has unresolved imports:\n  Unresolved import: ./caf\\xE9.php from lib.php (refused: its path is not UTF-8)' }))
+
   // A byte-order mark is UTF-8: kept, as written.
   writeFileSync(join(tmp, 'lib.php'), "\uFEFF<?php\necho 'lib';\n")
-  const bundle = await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })
-  t.assert.equal(bundle.sources.get('lib.php'), "\uFEFF<?php\necho 'lib';\n")
+  const bom = await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })
+  t.assert.equal(bom.sources.get('lib.php'), "\uFEFF<?php\necho 'lib';\n")
+  t.assert.equal(bom.formats.get('lib.php'), 'php')
 }))
 
 test('buildPhpBundle takes the workspace name+version from the nearest composer.json', async (t) => {

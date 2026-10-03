@@ -5,7 +5,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleInfo } from './util.js'
+import { EXECUTE_BITS, canObserveExecuteBits, isomorphicEncode, moduleFileKey, moduleInfo } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
 
@@ -18,14 +18,24 @@ function assertCanonicalBase64(content, file) {
   return buf
 }
 
+// A file's bytes from its stored contents: `resource:base64` base64-decoded, `php:isomorphic`
+// isomorphically encoded (refused past U+00FF, which no byte stands for), else the UTF-8 string.
+function storedBytes(content, format, file) {
+  if (format === 'resource:base64') return assertCanonicalBase64(content, file)
+  if (format !== 'php:isomorphic') return content
+  const bytes = isomorphicEncode(content)
+  if (bytes === null) throw new Error(`extract: a code point past U+00FF in php:isomorphic content for ${file}`)
+  return bytes
+}
+
 export function lockfileFromBundle(bundle) {
   const modules = new Map()
   for (const [dir, { name, version, ecosystem, files }] of bundle.modules) {
     const hashed = Object.create(null)
     for (const [rel, content] of Object.entries(files)) {
-      // Hash the raw on-disk bytes, so decode 'resource:base64' back first.
+      // Hash the raw on-disk bytes, so decode 'resource:base64' and 'php:isomorphic' back first.
       const file = moduleFileKey(dir, rel)
-      hashed[rel] = sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content)
+      hashed[rel] = sha512integrity(storedBytes(content, bundle.formats.get(file), file))
     }
     modules.set(dir, moduleInfo({ name, version, ecosystem, files: hashed }))
   }
@@ -91,7 +101,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
       // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
       if (exec) executables += 1
-      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec])
+      writes.push([abs, storedBytes(content, bundle.formats.get(key), file), exec])
     }
   }
   // A planned file must not also be a parent directory of another, else the writes throw halfway through.

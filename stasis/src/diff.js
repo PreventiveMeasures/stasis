@@ -1,21 +1,27 @@
-import { sortPaths } from '@exodus/stasis-core/util'
+import { isomorphicEncode, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
 // file level. Never reads disk. Comparing across kinds works by reducing every file to the same
 // digest space: a lockfile already holds SRI digests; a bundle holds bytes, re-hashed via the
 // injected `hash` — so a `hash` function is required whenever a bundle is an operand. Per-file
-// encoding (resource:base64 vs text) is read from the bundle's `formats` map.
+// encoding (resource:base64, php:isomorphic or text) is read from the bundle's `formats` map.
 
 const KINDS = new Set(['lockfile', 'bundle'])
 
 // Reduce one file's recorded value to an SRI digest: lockfile values already are digests; a
-// bundle's are re-hashed, with a `resource:base64` file decoded to bytes first (others hash as text).
-function digestOf(kind, format, value, hash) {
+// bundle's are re-hashed, with a `resource:base64` or `php:isomorphic` file decoded to bytes first
+// (others hash as text). `file` names it in an error.
+function digestOf(kind, format, value, hash, file) {
   if (kind === 'lockfile') return value
   if (typeof hash !== 'function') {
     throw new Error('diff: a `hash` function is required to compare a bundle (its bytes are re-hashed into a lockfile-style digest)')
   }
   if (format === 'resource:base64') return hash(Buffer.from(value, 'base64'))
+  if (format === 'php:isomorphic') {
+    const bytes = isomorphicEncode(value)
+    if (bytes === null) throw new Error(`diff: a code point past U+00FF in php:isomorphic content for ${file}`)
+    return hash(bytes)
+  }
   return hash(value)
 }
 
@@ -33,7 +39,8 @@ export function normalizeArtifact(input, { hash } = {}) {
   for (const [dir, { name, version, ecosystem, files }] of artifact.modules) {
     const digests = new Map()
     for (const [rel, value] of Object.entries(files)) {
-      digests.set(rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash))
+      const file = projectPath(dir, rel)
+      digests.set(rel, digestOf(kind, formats.get(file), value, hash, file))
     }
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
     modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, files: digests })

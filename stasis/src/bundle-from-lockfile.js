@@ -32,11 +32,14 @@ export function bundleFromLockfile(lockfile, { root }) {
       if (actual !== integrity) {
         throw new Error(`stasis: ${file} does not match the lockfile (expected ${integrity}, got ${actual})`)
       }
-      // Store content as a Bundle does: 'resource:base64' as base64, everything else as a UTF-8 string.
-      // A non-UTF-8 byte in a non-base64 entry would transcode lossily (U+FFFD), diverging served
-      // content from the verified bytes -- mirror the capture side's isUtf8 guard and fail closed.
+      // Store content as a Bundle does: 'resource:base64' as base64, 'php:isomorphic' isomorphically
+      // decoded (Node's latin1: byte 0xNN as U+00NN), everything else as a UTF-8 string. A non-UTF-8
+      // byte in any other entry would transcode lossily (U+FFFD), diverging served content from the
+      // verified bytes -- mirror the capture side's isUtf8 guard and fail closed.
       if (format === 'resource:base64') {
         out[rel] = bytes.toString('base64')
+      } else if (format === 'php:isomorphic') {
+        out[rel] = bytes.toString('latin1')
       } else {
         if (!isUtf8(bytes)) throw new Error(`stasis: ${file} is recorded as '${format ?? 'code'}' but is not valid UTF-8`)
         out[rel] = bytes.toString('utf8')

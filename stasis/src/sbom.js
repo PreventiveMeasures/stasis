@@ -22,7 +22,7 @@ function detectEcosystem(artifact) {
   const formats = artifact.formats
   if (formats && typeof formats.values === 'function') {
     for (const format of formats.values()) {
-      if (format === 'php') return 'composer'
+      if (format === 'php' || format === 'php:isomorphic') return 'composer'
     }
   }
   return 'npm'
