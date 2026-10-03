@@ -163,8 +163,9 @@ attested.
   `directory`, `stat:file`, `stat:directory` (see "Filesystem captures"). Native
   tags come from the Metro native capture and aren't runnable by Node; `pbxproj`
   is an Xcode project file added via `stasis add`. An extensionless script is
-  `shell` or `python` by the program its `#!` line runs, directly or through
-  `/usr/bin/env` (read as Linux's GNU env and macOS's BSD env each read it). The loader picks
+  `shell` or `python` by the program its `#!` line runs, directly or as
+  `/usr/bin/env [-S] [--] [NAME=value...] program`; any other env option, or an
+  `-S` string with quotes, escapes, `$` or `#`, leaves it a resource. The loader picks
   module-vs-commonjs and (for `*-typescript`) type-stripping purely from this
   value. Checked like `imports`: a mismatch is fatal, and on disk only the attested
   zone is enforced (`node_modules` files in `node_modules` scope, everything in
