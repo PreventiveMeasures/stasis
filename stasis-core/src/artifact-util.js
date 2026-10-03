@@ -64,9 +64,14 @@ export const REPO_FIELDS = {
   commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
 }
 
-// Whether two `repo`s name the same place: every field alike, `github` in any case, as GitHub's names are.
-export const sameRepo = (a, b) =>
-  Object.keys(REPO_FIELDS).every((key) => (key === 'github' ? a.github?.toLowerCase() === b.github?.toLowerCase() : a[key] === b[key]))
+// Whether two GitHub `owner/name`s are one: GitHub's names are case-insensitive.
+export const sameGithub = (a, b) => a?.toLowerCase() === b?.toLowerCase()
+
+// Whether two `repo`s name the same place: every field alike, `github` in any case.
+export const sameRepo = (a, b) => Object.keys(REPO_FIELDS).every((key) => (key === 'github' ? sameGithub(a.github, b.github) : a[key] === b[key]))
+
+// Whether two records of one dependency agree on its `repo`: an artifact from before the field records none.
+export const reposAgree = (a, b) => a === undefined || b === undefined || sameRepo(a, b)
 
 // Validate a block against its `fields` (each optional: a check, or a nested block's fields), `what`
 // naming it in errors; canonical, frozen, undefined if empty.
@@ -468,7 +473,7 @@ export function mergeModuleMaps(a, b, label) {
   const out = new Map()
   const absorb = (modules) => {
     for (const [dir, info] of modules) {
-      let existing = out.get(dir)
+      const existing = out.get(dir)
       if (existing === undefined) {
         out.set(dir, moduleInfo({ ...info, files: Object.assign(Object.create(null), info.files) }))
         continue
@@ -484,12 +489,9 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // One side without a repo is an artifact from before the field: the other's is taken.
-      if (info.repo !== undefined) {
-        assert(existing.repo === undefined || sameRepo(existing.repo, info.repo),
-          `${label}: module '${dir}' repo mismatch (${JSON.stringify(existing.repo)} vs ${JSON.stringify(info.repo)})`)
-        if (existing.repo === undefined) out.set(dir, (existing = moduleInfo({ ...existing, repo: info.repo })))
-      }
+      assert(reposAgree(existing.repo, info.repo),
+        `${label}: module '${dir}' repo mismatch (${JSON.stringify(existing.repo)} vs ${JSON.stringify(info.repo)})`)
+      if (existing.repo === undefined && info.repo !== undefined) out.set(dir, moduleInfo({ ...existing, repo: info.repo }))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

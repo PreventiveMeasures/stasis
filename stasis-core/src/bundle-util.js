@@ -239,8 +239,7 @@ function repositoryUrl(json) {
 // own): `github` from its GitHub URL or shorthand, and `directory` (or `root: true`) from
 // `repository.directory` joined with `rel`; undefined where it names no GitHub repository.
 export function packageRepo(json, rel = '') {
-  const url = repositoryUrl(json)
-  const github = url === undefined ? null : parseGithubRepository(url)
+  const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
   // Often unset; fall back to a GitHub tree `homepage`.
   const base = typeof json.repository.directory === 'string' ? json.repository.directory : githubHomepageDirectory(json.homepage, github)

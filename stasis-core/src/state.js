@@ -11,7 +11,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sameRepo, sortPaths, splitNodeModulesPath } from './util.js'
+import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, reposAgree, sameRepo, sortPaths, splitNodeModulesPath } from './util.js'
 import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -439,9 +439,7 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // A repo both record must agree; an artifact from an older stasis records none.
-        assert.ok(info.repo === undefined || lockModule.repo === undefined || sameRepo(info.repo, lockModule.repo),
-          `bundle module ${dir} repo mismatch with lockfile`)
+        assert.ok(reposAgree(info.repo, lockModule.repo), `bundle module ${dir} repo mismatch with lockfile`)
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -489,10 +487,8 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          if (info.repo !== undefined) {
-            assert.ok(existing.repo === undefined || sameRepo(info.repo, existing.repo), `bundle ${dir} repo mismatch`)
-            if (existing.repo === undefined) this.modules.set(dir, moduleInfo({ ...existing, repo: info.repo }))
-          }
+          assert.ok(reposAgree(info.repo, existing.repo), `bundle ${dir} repo mismatch`)
+          if (existing.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...existing, repo: info.repo }))
         }
       }
     }
@@ -770,7 +766,7 @@ export class State {
       // Tag node_modules buckets `npm`; workspace/top-level buckets carry no ecosystem.
       this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, repo, files: Object.create(null) }))
     }
-    let module = this.modules.get(dir)
+    const module = this.modules.get(dir)
     if (module.name !== name || module.version !== version) {
       // Message built only on failure: addFile is hot, and the mismatch is a migration/drift event.
       const hint = (module.version == null) === (version == null) ? '' :
@@ -782,7 +778,7 @@ export class State {
     // A dependency's repo is its package.json's, held to the artifact's record as its identity is; an
     // artifact from an older stasis records none, and gets it.
     if (module.repo === undefined) {
-      if (repo !== undefined) this.modules.set(dir, (module = moduleInfo({ ...module, repo })))
+      if (repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
     } else if (repo === undefined || !sameRepo(module.repo, repo)) {
       assert.fail(`module repo mismatch for '${dir}': artifact records ${JSON.stringify(module.repo)}, ` +
         `package.json names ${repo === undefined ? 'no GitHub repository' : JSON.stringify(repo)}`)

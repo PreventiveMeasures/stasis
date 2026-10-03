@@ -14,7 +14,7 @@ export function bundleFromLockfile(lockfile, { root }) {
   if (!lockfile.imports) throw new Error('stasis: lockfile has no recorded import graph')
   const formats = lockfile.formats ?? new Map()
   const modules = new Map()
-  for (const [dir, { name, version, ecosystem, repo, files }] of lockfile.modules) {
+  for (const [dir, { files, ...info }] of lockfile.modules) {
     const out = Object.create(null)
     for (const [rel, integrity] of Object.entries(files)) {
       const file = moduleFileKey(dir, rel)
@@ -42,7 +42,7 @@ export function bundleFromLockfile(lockfile, { root }) {
         out[rel] = bytes.toString('utf8')
       }
     }
-    modules.set(dir, moduleInfo({ name, version, ecosystem, repo, files: out }))
+    modules.set(dir, moduleInfo({ ...info, files: out }))
   }
   return new Bundle({
     config: lockfile.config,

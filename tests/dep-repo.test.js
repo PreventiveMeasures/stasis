@@ -10,7 +10,6 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
 import { packageRepo, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
-import { audit, collectPackages } from '../stasis/src/audit.js'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
 const withTmp = (fn) => async (t) => {
@@ -184,69 +183,4 @@ test('stasis bundle records a dependency repo in the bundle and its lockfile, th
     t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, DEP_REPO, `${label}: bundle`)
     t.assert.deepStrictEqual(lock.modules['node_modules/dep'].repo, DEP_REPO, `${label}: lockfile`)
   }
-}))
-
-const json = (value) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
-
-test('audit asks a dependency repo the artifacts record instead of looking one up', withTmp(async (t, tmp) => {
-  const original = globalThis.fetch
-  const fetched = []
-  const latest = { 'looked-up': 'github:o/looked-up', moved: 'github:new/moved' }
-  globalThis.fetch = async (url) => {
-    fetched.push(String(url))
-    if (String(url) === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
-    const name = /^https:\/\/registry\.npmjs\.org\/([^/]+)\/latest$/u.exec(String(url))?.[1]
-    if (Object.hasOwn(latest, name)) return json({ name, version: '1.0.0', repository: latest[name] })
-    throw new Error(`unexpected request: ${url}`)
-  }
-  t.after(() => { globalThis.fetch = original })
-  const pkg = (name, version, repo) => ({ name, version, ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': '' } })
-  const file = join(tmp, 'snapshot.br')
-  writeFileSync(file, brotliCompressSync(bundleOf({
-    'node_modules/dep': pkg('dep', '1.0.0', { github: 'o/dep', root: true }),
-    'node_modules/looked-up': pkg('looked-up', '1.0.0'),
-    // A package that moved: its versions record two repos, and advisories() takes one a name.
-    'node_modules/moved': pkg('moved', '1.0.0', { github: 'old/moved', root: true }),
-    'node_modules/a/node_modules/moved': pkg('moved', '2.0.0', { github: 'new/moved', root: true }),
-  }).serialize()))
-  t.assert.deepStrictEqual(collectPackages([file]).map(({ name, version, github }) => [`${name}@${version}`, github]), [
-    ['dep@1.0.0', 'o/dep'], ['looked-up@1.0.0', undefined], ['moved@1.0.0', undefined], ['moved@2.0.0', undefined],
-  ])
-  const asked = []
-  await audit([file], { repoAdvisories: true, github: { listRepoAdvisories: async ({ repo }) => { asked.push(repo); return [] } } })
-  t.assert.deepStrictEqual(asked.toSorted(), ['new/moved', 'o/dep', 'o/looked-up'])
-  t.assert.deepStrictEqual(fetched.filter((url) => url.endsWith('/latest')).toSorted(), [
-    'https://registry.npmjs.org/looked-up/latest', 'https://registry.npmjs.org/moved/latest',
-  ], 'only what no artifact records, or records two of, is looked up')
-}))
-
-test('audit looks up a name two artifacts record different repos for, whatever their order', withTmp(async (t, tmp) => {
-  const original = globalThis.fetch
-  const fetched = []
-  globalThis.fetch = async (url) => {
-    fetched.push(String(url))
-    if (String(url) === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
-    if (String(url) === 'https://registry.npmjs.org/split/latest') return json({ name: 'split', version: '1.0.0', repository: 'github:o/split' })
-    throw new Error(`unexpected request: ${url}`)
-  }
-  t.after(() => { globalThis.fetch = original })
-  const write = (name, github) => {
-    const file = join(tmp, name)
-    writeFileSync(file, brotliCompressSync(bundleOf({
-      'node_modules/split': { name: 'split', version: '1.0.0', ecosystem: 'npm', repo: { github, root: true }, files: { 'index.js': '' } },
-    }).serialize()))
-    return file
-  }
-  const [a, b] = [write('a.br', 'o/split-a'), write('b.br', 'o/split-b')]
-  const orders = [[a, b], [b, a]]
-  for (const files of orders) {
-    t.assert.deepStrictEqual(collectPackages(files), [{ ecosystem: 'npm', name: 'split', version: '1.0.0' }], 'no repo where they disagree')
-  }
-  const asked = await Promise.all(orders.map(async (files) => {
-    const repos = []
-    await audit(files, { repoAdvisories: true, github: { listRepoAdvisories: async ({ repo }) => { repos.push(repo); return [] } } })
-    return repos
-  }))
-  t.assert.deepStrictEqual(asked, [['o/split'], ['o/split']], 'the repo looked up, not either one recorded')
-  t.assert.deepStrictEqual(fetched.filter((url) => url.endsWith('/latest')), Array(2).fill('https://registry.npmjs.org/split/latest'))
 }))

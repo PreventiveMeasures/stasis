@@ -1,4 +1,4 @@
-import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, moduleFileKey, sameGithub } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -94,9 +94,9 @@ export function collectPackages(files) {
       if (github === undefined) continue
       const name = `${pkg.ecosystem}:${pkg.name}`
       const known = repos.get(name)
-      // GitHub's names are case-insensitive: the first spelling stands.
+      // The first spelling stands.
       if (known === undefined) repos.set(name, github)
-      else if (known !== null && known.toLowerCase() !== github.toLowerCase()) repos.set(name, null)
+      else if (known !== null && !sameGithub(known, github)) repos.set(name, null)
     }
   }
   return [...byKey.values()]
@@ -268,8 +268,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    const queries = asked.map(({ ecosystem, name, version, github: repo }) => ({ ecosystem, name, versions: [version], ...(repo === undefined ? {} : { github: repo }) }))
-    result = await advisories(queries, { repoAdvisories, github })
+    result = await advisories(asked.map(({ version, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
