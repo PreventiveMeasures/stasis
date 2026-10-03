@@ -179,30 +179,33 @@ const CODE_NAME_FORMATS = new Map([
 const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
 const PYTHON_INTERPRETER = /^python(?:\d+(?:\.\d+)*)?$/u
 function shebangFormat(content) {
-  if (!Buffer.isBuffer(content) || !isUtf8(content)) return undefined
-  const head = content.subarray(0, 256).toString('utf8')
-  const nl = head.indexOf('\n')
-  const line = nl === -1 ? head : head.slice(0, nl)
-  if (!line.startsWith('#!')) return undefined
+  if (!Buffer.isBuffer(content)) return undefined
+  const line = content.subarray(0, 256).toString('utf8').split('\n', 1)[0]
+  // `#!` first: a file without one never pays for the whole-buffer UTF-8 scan.
+  if (!line.startsWith('#!') || !isUtf8(content)) return undefined
   if (PYTHON_INTERPRETER.test(shebangInterpreter(line))) return 'python'
   return SHELL_SHEBANG.test(line) ? 'shell' : undefined
 }
 
 // env options whose value is the next word: a short cluster ending in GNU `-u NAME`/`-C DIR` or BSD
-// `-P PATH`, or GNU's `--unset NAME`/`--chdir DIR`.
-const ENV_VALUE_OPTION = /^(?:-[^-]*[uCP]|--unset|--chdir)$/u
+// `-P PATH` (not one holding its value, `-uNAME`), or GNU's `--unset NAME`/`--chdir DIR`.
+const ENV_VALUE_OPTION = /^(?:-[^-uCP]*[uCP]|--unset|--chdir)$/u
 
-// The escapes `env -S` takes outside '…' (where only `\\` and `\'` escape). `\_` is a space inside "…"
-// but a word break outside it, `\c` outside "…" ends the string, and any other escape is env's error.
+// The escapes `env -S` takes outside '…' (where only `\\` and `\'` escape).
 const ENV_ESCAPES = { '"': '"', "'": "'", '\\': '\\', '#': '#', $: '$', _: ' ', n: '\n', t: '\t', r: '\r', f: '\f', v: '\v' }
 
-// The words an `env -S` string splits into, as GNU env splits it: whitespace breaks words outside
-// quotes, quotes and escapes join and unquote, and a word opening with `#` comments out the rest.
-// null for a string env refuses: an unterminated quote, or an unknown or trailing `\`.
+// The words an `env -S` string splits into, as GNU env splits it: whitespace (and `\_` outside "…")
+// breaks words outside quotes, quotes and escapes join and unquote, and `\c` outside "…" or a word
+// opening with `#` ends it. null for a string env refuses: an unterminated quote, or an unknown or
+// trailing `\`.
 function splitEnvString(text) {
   const words = []
   let word = null
   let quote = null
+  const flush = () => {
+    if (word !== null) words.push(word)
+    word = null
+  }
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
     if (quote === "'") {
@@ -211,20 +214,14 @@ function splitEnvString(text) {
     } else if (c === '\\') {
       const escape = text[++i]
       if (quote === null && escape === 'c') break
-      if (quote === null && escape === '_') {
-        if (word !== null) words.push(word)
-        word = null
-      } else if (Object.hasOwn(ENV_ESCAPES, escape)) {
-        word = (word ?? '') + ENV_ESCAPES[escape]
-      } else {
-        return null
-      }
+      if (quote === null && escape === '_') flush()
+      else if (Object.hasOwn(ENV_ESCAPES, escape)) word = (word ?? '') + ENV_ESCAPES[escape]
+      else return null
     } else if (quote === '"') {
       if (c === '"') quote = null
       else word += c
     } else if (/\s/u.test(c)) {
-      if (word !== null) words.push(word)
-      word = null
+      flush()
     } else if (c === '#' && word === null) {
       break
     } else if (c === "'" || c === '"') {
@@ -235,7 +232,7 @@ function splitEnvString(text) {
     }
   }
   if (quote !== null) return null
-  if (word !== null) words.push(word)
+  flush()
   return words
 }
 

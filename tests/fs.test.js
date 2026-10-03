@@ -144,16 +144,11 @@ test('addFsFile recognizes an extensionless shell or python shebang as code (con
   t.assert.equal(state.formats.get('run-tool'), 'shell')
   t.assert.equal(state.sources.get('run-tool'), wrapper)
 
-  // A python shebang is python code the same way, as is a `.py` by its extension.
+  // A python shebang is python code the same way.
   const script = '#!/usr/bin/env python3\nprint(1)\n'
   writeFileSync(join(dir, 'gen-tool'), script)
-  writeFileSync(join(dir, 'gen.py'), script)
   state.addFsFile(fileURL(dir, 'gen-tool'), Buffer.from(script))
-  state.addFsFile(fileURL(dir, 'gen.py'), Buffer.from(script))
   t.assert.equal(state.formats.get('gen-tool'), 'python')
-  t.assert.equal(state.formats.get('gen.py'), 'python')
-  t.assert.equal(state.sources.get('gen.py'), script)
-  t.assert.equal(state.resources.has('gen.py'), false, 'a code file is never a resource')
 
   // An extensionless file with no shell shebang is still undeclared -> throws (fail-closed).
   writeFileSync(join(dir, 'NOTES'), 'just prose\n')

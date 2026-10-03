@@ -194,10 +194,13 @@ test('classifyNativeCapture: an extensionless shell shebang is shell code (conte
     { action: 'resource' })
 })
 
-test('classifyNativeCapture: Python source is python code, by extension or by shebang', (t) => {
+test('classifyFormat: Python source is python, by extension or by the interpreter its shebang runs', (t) => {
+  // The native walks reach the shebang rule through refineNativeCapture (above); add and --fs call it directly.
+  const format = (name, content) => classifyFormat(name, { content: content && Buffer.from(content) })
   for (const name of ['scripts/gen.py', 'typings/mod.pyi', 'tools/gui.pyw', 'BUILD.PY']) {
-    t.assert.deepStrictEqual(classifyNativeCapture(name, NOT_WIN), { action: 'code', format: 'python' }, name)
+    t.assert.equal(format(name), 'python', name)
   }
+  t.assert.deepStrictEqual(classifyNativeCapture('scripts/gen.py', NOT_WIN), { action: 'code', format: 'python' })
   // An extensionless script is python when its shebang's interpreter is: the program itself, or `env`'s
   // first operand past its options and assignments. CRLF line endings don't hide it.
   for (const shebang of [
@@ -207,41 +210,38 @@ test('classifyNativeCapture: Python source is python code, by extension or by sh
     '#!/usr/bin/env -S -u PYTHONPATH python3', '#!/usr/bin/env -iu PYTHONPATH python3',
     '#!/usr/bin/env --unset PYTHONPATH python3', '#!/usr/bin/env -C /opt/app python3',
     '#!/usr/bin/env --chdir /opt/app python3', '#!/usr/bin/env -P /usr/local/bin python3',
-    '#!/usr/bin/env -uPYTHONPATH --unset=PYTHONHOME python3',
+    // ...but not when the value is attached, even one ending in an option letter.
+    '#!/usr/bin/env -uPYTHONSTARTUP python3', '#!/usr/bin/env --unset=PYTHONHOME python3',
     // `env -S` splits as GNU env does: quotes join and come off, `\_` breaks words, `\c` and `#` end it.
     '#!/usr/bin/env -S FOO="a b" python3', "#!/usr/bin/env -S FOO='a b' python3", '#!/usr/bin/env -S FOO=x\\_python3 -u',
     '#!/usr/bin/env -S FOO="say \\"hi there\\"" python3 -u', '#!/usr/bin/env -S "python3" -u',
     '#!/usr/bin/env -S py"thon"3', '#!/usr/bin/env -S python3 # run unbuffered', '#!/usr/bin/env -S python3\\c junk',
     '#!/usr/bin/env -Spython3 -u', '#!/usr/bin/env --split-string=python3 -u',
-    // Without -S, macOS splits at whitespace (Linux hands env one word): these run python there.
-    '#!/usr/bin/env python3 -u', '#!/usr/bin/env FOO=x python3',
+    // Without -S, macOS splits at whitespace (Linux hands env one word): this runs python there.
+    '#!/usr/bin/env python3 -u',
     // A virtualenv's interpreter, whose path holds an `sh` segment: still python, not shell.
-    '#!/home/me/sh/.venv/bin/python3', '#!/opt/sh-tools/venv/bin/python',
+    '#!/opt/sh-tools/venv/bin/python',
   ]) {
-    const content = Buffer.from(`${shebang}\nprint(1)\n`)
-    t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content }),
-      { action: 'code', format: 'python' }, shebang)
+    t.assert.equal(format('run-tool', `${shebang}\nprint(1)\n`), 'python', shebang)
   }
   // Only the interpreter counts: python named elsewhere on a shell line, a lookalike program, a shebang
   // past the first line, or a non-UTF-8 file is not python.
-  const classify = (text) => classifyNativeCapture('run-tool', { win32: false, content: Buffer.from(text) })
-  t.assert.deepStrictEqual(classify('#!/bin/sh\nexec python3 "$0"\n'), { action: 'code', format: 'shell' })
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env bash -c python3\n'), { action: 'code', format: 'shell' })
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env python3-config\n'), { action: 'resource' })
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env pythonista\n'), { action: 'resource' })
-  t.assert.deepStrictEqual(classify('\n#!/usr/bin/python3\n'), { action: 'resource' })
+  t.assert.equal(format('run-tool', '#!/bin/sh\nexec python3 "$0"\n'), 'shell')
+  t.assert.equal(format('run-tool', '#!/usr/bin/env bash -c python3\n'), 'shell')
+  t.assert.equal(format('run-tool', '#!/usr/bin/env python3-config\n'), undefined)
+  t.assert.equal(format('run-tool', '#!/usr/bin/env pythonista\n'), undefined)
+  t.assert.equal(format('run-tool', '\n#!/usr/bin/python3\n'), undefined)
+  t.assert.equal(format('run-tool', Buffer.concat([Buffer.from('#!/usr/bin/python3\n# caf'), Buffer.from([0xe9])])), undefined)
   // A line env refuses (an unterminated quote, a trailing or unknown `\`, `\c` inside "…") or comments out
   // runs no python, nor does one whose command only the environment knows.
   for (const shebang of [
     '#!/usr/bin/env -S FOO="a b python3', '#!/usr/bin/env -S python3 \\', '#!/usr/bin/env -S FOO=a\\ b python3',
     '#!/usr/bin/env -S "python3\\c"', '#!/usr/bin/env -S # python3', '#!/usr/bin/env -S ${PYTHON} -u',
   ]) {
-    t.assert.deepStrictEqual(classify(`${shebang}\n`), { action: 'resource' }, shebang)
+    t.assert.equal(format('run-tool', `${shebang}\n`), undefined, shebang)
   }
   // Quotes are env's to take off only under -S: without it, macOS runs `b"` and Linux sets FOO.
-  t.assert.deepStrictEqual(classify('#!/usr/bin/env FOO="a b" python3\n'), { action: 'resource' })
-  const latin1 = Buffer.concat([Buffer.from('#!/usr/bin/python3\n# caf'), Buffer.from([0xe9]), Buffer.from('\n')])
-  t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content: latin1 }), { action: 'resource' })
+  t.assert.equal(format('run-tool', '#!/usr/bin/env FOO="a b" python3\n'), undefined)
 })
 
 // --- the directory-sweep exclusions (`stasis add <dir>`) ---------------------

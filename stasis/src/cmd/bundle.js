@@ -986,7 +986,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
         const byName = classifyNativeCapture(rel)
         if (byName.action === 'skip') continue
         const buf = host.readFile(abs)
-        // Byte-level rules (prebuilt binaries, binary plists) -- see refineNativeCapture.
+        // Byte-level rules (prebuilt binaries, binary plists, shebangs) -- see refineNativeCapture.
         const { action, format } = refineNativeCapture(byName, rel, buf, resourceSet)
         if (action === 'skip') continue
         if (action === 'code') {
