@@ -130,11 +130,12 @@ test('addCommand classifies the native build-input vocabulary as code (shared wi
   writeFileSync(join(tmp, 'android', 'build.gradle'), 'apply plugin: "x"\n')
   writeFileSync(join(tmp, 'android', 'AndroidManifest.xml'), '<manifest/>\n')
   writeFileSync(join(tmp, 'gradlew'), '#!/usr/bin/env sh\nexec gradle "$@"\n')
+  writeFileSync(join(tmp, 'ios', 'gen_headers.py'), 'print(1)\n')
   writeFileSync(join(tmp, '.env'), 'API_URL=x\n')
   writeFileSync(join(tmp, 'apple-app-site-association'), '{ "applinks": {} }\n')
 
   const entries = ['ios/RNThing.podspec', 'ios/RNThing.swift', 'ios/RNThing.mm', 'ios/Podfile',
-    'android/build.gradle', 'android/AndroidManifest.xml', 'gradlew', '.env', 'apple-app-site-association']
+    'android/build.gradle', 'android/AndroidManifest.xml', 'gradlew', 'ios/gen_headers.py', '.env', 'apple-app-site-association']
   addCommand({ cwd: tmp, entries })
 
   const code = decode(join(tmp, 'dist/code.br'))
@@ -146,6 +147,7 @@ test('addCommand classifies the native build-input vocabulary as code (shared wi
   t.assert.equal(fmt('android/build.gradle'), 'gradle')
   t.assert.equal(fmt('android/AndroidManifest.xml'), 'xml')
   t.assert.equal(fmt('gradlew'), 'shell')
+  t.assert.equal(fmt('ios/gen_headers.py'), 'python')
   t.assert.equal(fmt('.env'), 'env')
   t.assert.equal(fmt('apple-app-site-association'), 'json')
   // All are code -> all entries, none in a resources bundle.

@@ -155,7 +155,7 @@ attested.
   Node loader (`module`, `commonjs`, `json`, `module-typescript`,
   `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`);
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
-  `cpp`, `c-header`, `cpp-header`, `ruby`, `cmake`, `podspec`, `podfile`,
+  `cpp`, `c-header`, `cpp-header`, `ruby`, `python`, `cmake`, `podspec`, `podfile`,
   `podfile-lock`, `template`, `xml`, `env`, `fastlane`, `pbxproj`); `patch` (a
   `.patch` unified diff — e.g. pnpm `patchedDependencies`, patch-package — a
   UTF-8 text build input applied by a patch step, not runnable by Node); `resource`

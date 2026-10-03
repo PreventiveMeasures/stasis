@@ -247,7 +247,7 @@ test('Bundle.parse and Lockfile.parse accept every documented KNOWN_FORMAT', (t)
   // and the recognized-format documentation stay in lockstep.
   const all = ['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript',
     'solidity', 'php', 'shell', 'rust', 'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c',
-    'cpp', 'c-header', 'cpp-header', 'ruby', 'cmake', 'podspec', 'podfile', 'podfile-lock',
+    'cpp', 'c-header', 'cpp-header', 'ruby', 'python', 'cmake', 'podspec', 'podfile', 'podfile-lock',
     'template', 'xml', 'env', 'fastlane', 'pbxproj', 'patch', 'resource', 'resource:base64']
   for (const format of all) {
     const lockBase = {
