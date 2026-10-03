@@ -861,9 +861,10 @@ export function phpClassDependencies(content) {
     if (impl) for (const nm of impl[1].split(',')) add(nm)
   }
 
-  // catch (A | B $e): capture the type list up to `$var`. The lazy `[^)]*?` (no
-  // second whitespace quantifier) keeps matching linear on adversarial input.
-  for (const m of stripped.matchAll(/\bcatch\s*\(([^)]*?)\$\w+/giu)) {
+  // catch (A | B $e), or PHP 8's catch (A | B) with no variable: capture the type
+  // list up to `$var` or `)`. One quantifier with nothing after it keeps matching
+  // linear on adversarial input.
+  for (const m of stripped.matchAll(/\bcatch\s*\(([^)$]*)/giu)) {
     for (const nm of m[1].split('|')) add(nm)
   }
 

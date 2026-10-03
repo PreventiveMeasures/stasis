@@ -668,6 +668,26 @@ test('phpClassDependencies captures every member of a union/intersection type', 
   t.assert.ok(t4.has('App\\Foo')) // nullable marker stripped
 })
 
+test('phpClassDependencies captures catch types with and without a variable (PHP 8)', (t) => {
+  // Symfony's PropertyAccessor references AccessException only in `catch (AccessException|UnexpectedTypeException)`.
+  const deps = phpClassDependencies([
+    '<?php',
+    'namespace App;',
+    'use App\\Exception\\AccessException;',
+    'class X {',
+    '  function f() {',
+    '    try {} catch (AccessException|\\RuntimeException) {}',
+    '    try {} catch (One $e) {}',
+    '    try {} catch (Two | Three $e) {}',
+    '    try {} catch (Four) {}',
+    '  }',
+    '}',
+  ].join('\n'))
+  for (const fqcn of ['App\\Exception\\AccessException', 'RuntimeException', 'App\\One', 'App\\Two', 'App\\Three', 'App\\Four']) {
+    t.assert.ok(deps.has(fqcn), fqcn)
+  }
+})
+
 test('phpClassDependencies does not emit bogus refs for keywords before a $var or after new', (t) => {
   const deps = phpClassDependencies('<?php namespace App; class X { function f($xs) { foreach ($xs as $x) {} return new class extends Base {}; } }')
   t.assert.ok(deps.has('App\\Base'))
