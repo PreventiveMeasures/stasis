@@ -60,14 +60,18 @@ function unaudited({ ecosystem, version }) {
 // skipped, while one whose real code was bundled stays. Which consumers and import
 // EDGES reach that code is the reason column's concern -- collectReasons and
 // why.js apply the same evidence rule per file/edge there.
+//
+// A package's `github` is the repository its artifact records for it (its package.json's), where
+// one does; a GitHub repo is its own, and has none.
 export function collectPackagesFromFile(file) {
   const out = []
-  for (const [dir, { name, version, ecosystem: tagged, files }] of parseFile(file).modules) {
+  for (const [dir, { name, version, ecosystem: tagged, repo, files }] of parseFile(file).modules) {
     const ecosystem = ecosystemOf(dir, tagged)
     if (ecosystem === undefined) continue
     if (!name || !version) continue
     if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
-    out.push({ ecosystem, name, version: versionOf(ecosystem, version) })
+    const github = ecosystem === 'github' ? undefined : repo?.github
+    out.push({ ecosystem, name, version: versionOf(ecosystem, version), ...(github === undefined ? {} : { github }) })
   }
   return out
 }
@@ -76,18 +80,38 @@ export function collectPackagesFromFile(file) {
 const byNumbers = new Intl.Collator('en', { numeric: true }).compare
 const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
+// Each package once, with the `github` any of `files` records for it (one from before the field
+// records none).
 export function collectPackages(files) {
-  const seen = new Set()
-  const out = []
+  const byKey = new Map()
   for (const file of files) {
     for (const pkg of collectPackagesFromFile(file)) {
       const key = keyOf(pkg.ecosystem, pkg.name, pkg.version)
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push(pkg)
+      const seen = byKey.get(key)
+      if (seen === undefined) byKey.set(key, pkg)
+      else if (seen.github === undefined && pkg.github !== undefined) byKey.set(key, { ...seen, github: pkg.github })
     }
   }
-  return out.toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
+  return [...byKey.values()].toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
+}
+
+// `packages` as advisories() takes them, each name with the GitHub repository its versions record,
+// which advisories() asks instead of looking one up. It takes one repository a name, so a name whose
+// versions record different ones (a package that moved) is given none, and looked up as before.
+function advisoryQueries(packages) {
+  const repos = new Map()
+  const nameKey = ({ ecosystem, name }) => `${ecosystem}:${name}`
+  for (const pkg of packages) {
+    if (pkg.github === undefined) continue
+    const known = repos.get(nameKey(pkg))
+    // GitHub's names are case-insensitive: the first spelling stands.
+    if (known === undefined) repos.set(nameKey(pkg), pkg.github)
+    else if (known !== null && known.toLowerCase() !== pkg.github.toLowerCase()) repos.set(nameKey(pkg), null)
+  }
+  return packages.map((pkg) => {
+    const github = repos.get(nameKey(pkg)) ?? undefined
+    return { ecosystem: pkg.ecosystem, name: pkg.name, versions: [pkg.version], ...(github === undefined ? {} : { github }) }
+  })
 }
 
 // Map each audited package (keyOf it) to the bundle consumers ("reasons") that recorded its files.
@@ -251,7 +275,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(asked.map(({ ecosystem, name, version }) => ({ ecosystem, name, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(advisoryQueries(asked), { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.

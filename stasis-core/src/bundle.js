@@ -14,7 +14,9 @@ import {
   mergeExecutableSets,
   mergeModuleMaps,
   moduleFileKey,
+  normalizeBlock,
   normalizeModule,
+  normalizeRepo,
   parseEntries,
   parseExecutable,
   parseFormats,
@@ -24,6 +26,7 @@ import {
   serializeFormats,
   serializeImports,
   posixPathEscapes,
+  REPO_FIELDS,
   splitNodeModulesPath,
 } from './artifact-util.js'
 
@@ -69,19 +72,6 @@ const mergeReason = (a, b) => {
   return fromEntries([...merged.keys()].toSorted().map((c) => [c, fileSetToObject(merged.get(c))]))
 }
 
-// GitHub `owner/name` (owner 1-39, name 1-100 chars).
-const GITHUB_REPO = /^(?=[A-Za-z0-9-]{1,39}\/)[A-Za-z0-9](?:-?[A-Za-z0-9])*\/(?!\.\.?$)[\w.-]{1,100}$/u
-// Non-empty normalized repo-relative path of URL-safe segments (the repo root is `root: true`).
-const REPO_DIRECTORY = /^(?!\.\.?(?:\/|$))[\w.~@+-]+(?:\/(?!\.\.?(?:\/|$))[\w.~@+-]+)*$/u
-// Full lowercase SHA-1 or SHA-256.
-const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
-const REPO_FIELDS = {
-  github: (v) => typeof v === 'string' && GITHUB_REPO.test(v),
-  directory: (v) => typeof v === 'string' && v.length <= 1024 && REPO_DIRECTORY.test(v),
-  root: (v) => v === true,
-  commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
-}
-
 // Validate one `repo` field without throwing.
 export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) && REPO_FIELDS[key](value)
 
@@ -90,26 +80,6 @@ export const mergeRepo = (a, b) => {
   if (a?.github === undefined || a.github.toLowerCase() !== b?.github?.toLowerCase()) return undefined // GitHub names are case-insensitive
   const kept = Object.keys(REPO_FIELDS).filter((key) => a[key] !== undefined && (key === 'github' || a[key] === b[key]))
   return fromEntries(kept.map((key) => [key, a[key]]))
-}
-
-// Validate a block against its `fields` (each optional: a check, or a nested block's fields); canonical, frozen, undefined if empty.
-const normalizeBlock = (block, fields, what) => {
-  if (block === undefined) return undefined
-  assert(isPlainObject(block), `bundle ${what} must be an object`)
-  for (const key of Object.keys(block)) assert(Object.hasOwn(fields, key), `unknown bundle ${what} key '${key}'`)
-  const entries = Object.entries(fields).map(([key, check]) => {
-    if (typeof check === 'object') return [key, normalizeBlock(block[key], check, `${what}.${key}`)]
-    assert(block[key] === undefined || check(block[key]), `invalid bundle ${what}.${key}: ${JSON.stringify(block[key])}`)
-    return [key, block[key]]
-  }).filter(([, value]) => value !== undefined)
-  return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
-}
-
-// Validate `repo` (all fields optional); canonical key order, undefined if empty.
-const normalizeRepo = (repo) => {
-  const normalized = normalizeBlock(repo, REPO_FIELDS, 'repo')
-  assert(normalized?.directory === undefined || normalized.root === undefined, 'bundle repo has both directory and root')
-  return normalized
 }
 
 // A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
@@ -152,7 +122,7 @@ export class Bundle {
     return this.#package
   }
   set package(pkg) {
-    this.#package = normalizeBlock(pkg, PACKAGE_FIELDS, 'package')
+    this.#package = normalizeBlock(pkg, PACKAGE_FIELDS, 'bundle package')
   }
 
   constructor({ config = { scope: 'full' }, entries, modules, formats, imports, executable, reason, repo, package: pkg, version = VERSION } = {}) {
@@ -231,7 +201,7 @@ export class Bundle {
           assert(hasNodeModulesSegment(dir))
           assertArtifactPath(dir, 'bundle')
           assert(info?.name && info.version && info.files)
-          modules.set(dir, normalizeModule(info))
+          modules.set(dir, normalizeModule(info, dir, 'bundle'))
         }
       }
       if (full) {
@@ -241,7 +211,7 @@ export class Bundle {
           assertArtifactPath(dir, 'bundle')
           // A workspace bucket may omit version (a private/unpublished package.json can lack one).
           assert(info?.name && info.files)
-          modules.set(dir, normalizeModule(info))
+          modules.set(dir, normalizeModule(info, dir, 'bundle'))
         }
         // Empty entries are valid (`stasis add` attests files without making them entry points); state.assertEntry fails closed on an empty set.
         if (json.entries !== undefined) entries = parseEntries(json.entries, 'bundle')
@@ -288,7 +258,7 @@ export class Bundle {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'bundle', duplicateKey)
-    const { modules, sources } = groupModules(this.modules, { skipEmpty: true })
+    const { modules, sources } = groupModules(this.modules, { skipEmpty: true, what: 'bundle' })
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }
     if (this.repo !== undefined) data.repo = this.repo

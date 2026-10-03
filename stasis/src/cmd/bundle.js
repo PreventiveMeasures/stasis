@@ -13,7 +13,7 @@ import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -205,12 +205,8 @@ function assembleCodeBundle({
   packageOf = packageLookup(baseDir, { host }),
 }) {
   const modules = new Map()
-  const ensureBucket = (dir, name, version, bucketEcosystem) => {
-    if (!modules.has(dir)) {
-      modules.set(dir, bucketEcosystem === undefined
-        ? { name, version, files: Object.create(null) }
-        : { name, version, ecosystem: bucketEcosystem, files: Object.create(null) })
-    }
+  const ensureBucket = (dir, name, version, bucketEcosystem, repo) => {
+    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem: bucketEcosystem, repo, files: Object.create(null) }))
     return modules.get(dir)
   }
 
@@ -227,7 +223,7 @@ function assembleCodeBundle({
         throw new Error(`No package.json with name+version found for ${path}`)
       }
       const bucketEcosystem = hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined
-      ensureBucket(meta.pkgDir, meta.name, meta.version, bucketEcosystem).files[fileInBucket(meta.pkgDir, path)] = content
+      ensureBucket(meta.pkgDir, meta.name, meta.version, bucketEcosystem, meta.repo).files[fileInBucket(meta.pkgDir, path)] = content
     } else {
       if (inNodeModules) throw new Error(`No package.json with name+version found for ${path}`)
       ensureBucket('.', workspaceName, workspaceVersion).files[path] = content
@@ -1072,7 +1068,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   for (const [dir, m] of bundle.modules) {
     const files = Object.create(null)
     for (const rel of Object.keys(m.files)) files[rel] = integrities.get(moduleFileKey(dir, rel))
-    lockModules.set(dir, { name: m.name, version: m.version, ...(m.ecosystem === undefined ? {} : { ecosystem: m.ecosystem }), files })
+    lockModules.set(dir, moduleInfo({ ...m, files }))
   }
   const lockfile = new Lockfile({
     config: bundle.config,
