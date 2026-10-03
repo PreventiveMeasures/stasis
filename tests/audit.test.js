@@ -1052,3 +1052,68 @@ test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` a
     }
   }
 ))
+
+// A dependency record, recording `github` as its repo where given.
+const depRecord = (name, version, github) => ({ name, version, ecosystem: 'npm', ...(github && { repo: { github, root: true } }), files: { 'index.js': '' } })
+// npm's registry answering the bulk advisories request with none, and `latest` (name -> repository) for each package's latest.
+const registry = (latest) => ({ url }) => {
+  if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+  const name = /^https:\/\/registry\.npmjs\.org\/([^/]+)\/latest$/u.exec(url)?.[1]
+  if (Object.hasOwn(latest, name)) return json({ name, version: '1.0.0', repository: latest[name] })
+  throw new Error(`unexpected request: ${url}`)
+}
+const listing = (asked) => ({ listRepoAdvisories: async ({ repo }) => { asked.push(repo); return [] } })
+const lookedUp = (calls) => calls.map((call) => call.url).filter((url) => url.endsWith('/latest')).toSorted()
+
+test('audit() asks the repo an artifact records for a dependency instead of looking one up', withFetch(
+  registry({ 'looked-up': 'github:o/looked-up', moved: 'github:new/moved' }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const bundle = writeBundle(tmp, 'snapshot.br', {
+        formats: {},
+        modules: {
+          'node_modules/dep': depRecord('dep', '1.0.0', 'o/dep'),
+          'node_modules/looked-up': depRecord('looked-up', '1.0.0'),
+          // A package that moved: its versions record two repos, and advisories() takes one a name.
+          'node_modules/moved': depRecord('moved', '1.0.0', 'old/moved'),
+          'node_modules/a/node_modules/moved': depRecord('moved', '2.0.0', 'new/moved'),
+        },
+      })
+      t.assert.deepStrictEqual(collectPackages([bundle]).map(({ name, version, github }) => [`${name}@${version}`, github]), [
+        ['dep@1.0.0', 'o/dep'], ['looked-up@1.0.0', undefined], ['moved@1.0.0', undefined], ['moved@2.0.0', undefined],
+      ])
+      const asked = []
+      await audit([bundle], { repoAdvisories: true, github: listing(asked) })
+      t.assert.deepStrictEqual(asked.toSorted(), ['new/moved', 'o/dep', 'o/looked-up'])
+      t.assert.deepStrictEqual(lookedUp(calls), ['https://registry.npmjs.org/looked-up/latest', 'https://registry.npmjs.org/moved/latest'],
+        'only what no artifact records, or records two of, is looked up')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit() looks up a name two artifacts record different repos for, whatever their order', withFetch(
+  registry({ split: 'github:o/split' }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const [a, b] = ['o/split-a', 'o/split-b'].map((github, i) =>
+        writeBundle(tmp, `${i}.br`, { formats: {}, modules: { 'node_modules/split': depRecord('split', '1.0.0', github) } }))
+      const orders = [[a, b], [b, a]]
+      for (const files of orders) {
+        t.assert.deepStrictEqual(collectPackages(files), [{ ecosystem: 'npm', name: 'split', version: '1.0.0' }], 'no repo where they disagree')
+      }
+      const asked = await Promise.all(orders.map(async (files) => {
+        const repos = []
+        await audit(files, { repoAdvisories: true, github: listing(repos) })
+        return repos
+      }))
+      t.assert.deepStrictEqual(asked, [['o/split'], ['o/split']], 'the repo looked up, not either one recorded')
+      t.assert.deepStrictEqual(lookedUp(calls), Array(2).fill('https://registry.npmjs.org/split/latest'))
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))

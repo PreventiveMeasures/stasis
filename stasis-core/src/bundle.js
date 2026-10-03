@@ -27,6 +27,7 @@ import {
   serializeImports,
   posixPathEscapes,
   REPO_FIELDS,
+  sameGithub,
   splitNodeModulesPath,
 } from './artifact-util.js'
 
@@ -77,7 +78,7 @@ export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) 
 
 // `repo` of a bundle plus one added to it: only agreeing fields survive, and none if `github` differs.
 export const mergeRepo = (a, b) => {
-  if (a?.github === undefined || a.github.toLowerCase() !== b?.github?.toLowerCase()) return undefined // GitHub names are case-insensitive
+  if (a?.github === undefined || !sameGithub(a.github, b?.github)) return undefined
   const kept = Object.keys(REPO_FIELDS).filter((key) => a[key] !== undefined && (key === 'github' || a[key] === b[key]))
   return fromEntries(kept.map((key) => [key, a[key]]))
 }

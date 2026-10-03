@@ -205,15 +205,16 @@ function assembleCodeBundle({
   packageOf = packageLookup(baseDir, { host }),
 }) {
   const modules = new Map()
-  const ensureBucket = (dir, name, version, bucketEcosystem, repo) => {
-    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem: bucketEcosystem, repo, files: Object.create(null) }))
+  // `identity`'s name, version, ecosystem and repo (moduleInfo takes those alone).
+  const ensureBucket = (dir, identity) => {
+    if (!modules.has(dir)) modules.set(dir, moduleInfo({ ...identity, files: Object.create(null) }))
     return modules.get(dir)
   }
 
   for (const [path, content] of sources) {
     const dep = classifyDep?.(path)
     if (dep) {
-      ensureBucket(dep.bucketDir, dep.name, dep.version, dep.ecosystem).files[fileInBucket(dep.bucketDir, path)] = content
+      ensureBucket(dep.bucketDir, dep).files[fileInBucket(dep.bucketDir, path)] = content
       continue
     }
     const meta = packageOf(path)
@@ -223,10 +224,10 @@ function assembleCodeBundle({
         throw new Error(`No package.json with name+version found for ${path}`)
       }
       const bucketEcosystem = hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined
-      ensureBucket(meta.pkgDir, meta.name, meta.version, bucketEcosystem, meta.repo).files[fileInBucket(meta.pkgDir, path)] = content
+      ensureBucket(meta.pkgDir, { ...meta, ecosystem: bucketEcosystem }).files[fileInBucket(meta.pkgDir, path)] = content
     } else {
       if (inNodeModules) throw new Error(`No package.json with name+version found for ${path}`)
-      ensureBucket('.', workspaceName, workspaceVersion).files[path] = content
+      ensureBucket('.', { name: workspaceName, version: workspaceVersion }).files[path] = content
     }
   }
 
