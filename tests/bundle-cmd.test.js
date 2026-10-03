@@ -2664,6 +2664,7 @@ const writeRnFixture = (root) => {
   writeFileSync(join(dep, 'ios', 'Main.storyboard'), '<?xml version="1.0"?>\n<document/>\n')
   writeFileSync(join(dep, 'ios', 'config.env'), 'API_URL=https://example.com\n')
   writeFileSync(join(dep, 'ios', 'util.c'), 'int rn_util(void) { return 0; }\n')
+  writeFileSync(join(dep, 'ios', 'gen_headers.py'), 'print(1)\n')
   writeFileSync(join(dep, 'ios', 'Podfile'), "pod 'RNThing', :path => '.'\n")
   writeFileSync(join(dep, 'ios', 'Podfile.lock'), 'PODS:\n  - RNThing (3.1.0)\n')
   writeFileSync(join(dep, 'ios', 'logo.png'), PNG_BYTES) // a binary asset under ios/
@@ -2776,6 +2777,7 @@ test('buildBundle --metro carries a bundled native dep\'s ios/android sources + 
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Main.storyboard'), 'xml')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/config.env'), undefined, 'env-family: never auto-captured')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/util.c'), 'c')
+  t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/gen_headers.py'), 'python')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Podfile'), 'podfile') // matched by basename
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Podfile.lock'), 'podfile-lock')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/android/build.gradle'), 'gradle')

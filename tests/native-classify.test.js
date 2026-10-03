@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 
-import { classifyNativeCapture, isAppleSliceDir, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isDotEnvFile, isExcludedNativeDir, isExcludedNativeFile, isStasisArtifactName, isTypeDeclaration, refineNativeCapture, stripTypeDeclaration } from '@exodus/stasis-core/util'
+import { classifyFormat, classifyNativeCapture, isAppleSliceDir, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isDotEnvFile, isExcludedNativeDir, isExcludedNativeFile, isStasisArtifactName, isTypeDeclaration, refineNativeCapture, stripTypeDeclaration } from '@exodus/stasis-core/util'
 
 const NOT_WIN = { win32: false }
 const WIN = { win32: true }
@@ -185,6 +185,13 @@ test('classifyNativeCapture: an extensionless shell shebang is shell code (conte
   const nodeScript = Buffer.from('#!/usr/bin/env node\nconsole.log(1)\n')
   t.assert.deepStrictEqual(classifyNativeCapture('run-node', { win32: false, content: nodeScript }),
     { action: 'resource' })
+})
+
+test('classifyFormat: `.py`/`.pyi`/`.pyw` are python, code to the native capture', (t) => {
+  for (const name of ['scripts/gen.py', 'typings/mod.pyi', 'tools/gui.pyw', 'BUILD.PY']) {
+    t.assert.equal(classifyFormat(name), 'python', name)
+  }
+  t.assert.deepStrictEqual(classifyNativeCapture('scripts/gen.py', NOT_WIN), { action: 'code', format: 'python' })
 })
 
 // --- the directory-sweep exclusions (`stasis add <dir>`) ---------------------

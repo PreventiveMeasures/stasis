@@ -152,6 +152,7 @@ const CODE_EXT_FORMATS = new Map([
   ['h', 'c-header'],
   ['hh', 'cpp-header'], ['hxx', 'cpp-header'], ['hpp', 'cpp-header'], ['h++', 'cpp-header'],
   ['rb', 'ruby'],
+  ['py', 'python'], ['pyi', 'python'], ['pyw', 'python'],
   ['cmake', 'cmake'],
   ['podspec', 'podspec'],
   ['template', 'template'],

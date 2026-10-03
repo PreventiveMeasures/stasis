@@ -117,6 +117,9 @@ test('addFsFile follows the full classifyFormat vocabulary: a native/source file
   t.assert.equal(state.formats.get('Native.swift'), 'swift')
   t.assert.equal(state.formats.get('Token.sol'), 'solidity')
   t.assert.equal(state.formats.get('AndroidManifest.xml'), 'xml')
+  writeFileSync(join(dir, 'gen.py'), 'print(1)\n')
+  state.addFsFile(fileURL(dir, 'gen.py'), Buffer.from('print(1)\n'))
+  t.assert.equal(state.formats.get('gen.py'), 'python')
   t.assert.equal(state.sources.get('Native.swift'), 'import Foundation\n')
   t.assert.equal(state.resources.has('Native.swift'), false, 'a code file is never a resource')
 

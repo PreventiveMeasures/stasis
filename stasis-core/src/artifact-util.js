@@ -8,7 +8,7 @@ export const NODE_FORMATS = new Set(['module', 'commonjs', 'json', 'module-types
 export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'shell', 'rust'])
 export const NATIVE_BUILD_FORMATS = new Set([
   'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c', 'cpp', 'c-header', 'cpp-header',
-  'ruby', 'cmake', 'podspec', 'podfile', 'podfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj',
+  'ruby', 'python', 'cmake', 'podspec', 'podfile', 'podfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj',
 ])
 export const RESOURCE_FORMATS = new Set(['resource', 'resource:base64'])
 export const STAT_FORMATS = new Set(['stat:file', 'stat:directory'])
