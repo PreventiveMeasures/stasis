@@ -98,6 +98,16 @@ test('a dependency repo is validated as a bundle repo is, on parse and on serial
   t.assert.throws(() => Bundle.parse(JSON.stringify(json)), /'\.' is no dependency's bucket/u, "first-party code's repo is the bundle's own")
 })
 
+test("a dependency of any ecosystem may carry a repo, beside first-party code's buckets", (t) => {
+  const crate = { name: 'serde', version: '1.0.100', ecosystem: 'cargo', repo: { github: 'serde-rs/serde', directory: 'serde' }, files: { 'src/lib.rs': '' } }
+  const modules = new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.rs': '' } }], ['vendor/serde', crate]])
+  const bundle = new Bundle({ config: { scope: 'full' }, entries: new Set(['src/main.rs']), modules })
+  const lock = new Lockfile({ config: { scope: 'full' }, entries: new Set(['src/main.rs']), modules, imports: new Map(), formats: new Map() })
+  for (const [artifact, parse] of [[bundle, Bundle.parse], [lock, Lockfile.parse]]) {
+    t.assert.deepStrictEqual({ ...parse(artifact.serialize()).modules.get('vendor/serde').repo }, crate.repo)
+  }
+})
+
 test('merging takes a dependency repo one side lacks and refuses two that differ', (t) => {
   for (const [of, what] of [[bundleOf, 'bundle'], [lockOf, 'lockfile']]) {
     const merged = (a, b) => of({ 'node_modules/dep': dep(a) }).merge(of({ 'node_modules/dep': dep(b) })).modules.get('node_modules/dep').repo

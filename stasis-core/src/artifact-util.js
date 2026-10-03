@@ -89,10 +89,11 @@ export const normalizeRepo = (repo, what = 'bundle repo') => {
   return normalized
 }
 
-// A dependency's `repo`, the one its package.json names: only a node_modules bucket carries one.
-const normalizeModuleRepo = (dir, repo, what) => {
+// A dependency's `repo`, the one its own manifest names: any dependency's record may carry one (one
+// tagged with an ecosystem, or under node_modules, as one from before the tag is), first-party code's none.
+const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   if (repo === undefined) return undefined
-  assert(hasNodeModulesSegment(dir), `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
+  assert(ecosystem !== undefined || hasNodeModulesSegment(dir), `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
   return normalizeRepo(repo, `${what} module '${dir}' repo`)
 }
 
@@ -105,7 +106,7 @@ export const moduleInfo = ({ name, version, ecosystem, repo, files }) =>
 // and `files` is null-prototype.
 export function normalizeModule({ name, version, ecosystem, repo, files }, dir, what) {
   assert(ecosystem === undefined || typeof ecosystem === 'string')
-  return moduleInfo({ name, version: version ?? undefined, ecosystem, repo: normalizeModuleRepo(dir, repo, what), files: fromEntries(Object.entries(files)) })
+  return moduleInfo({ name, version: version ?? undefined, ecosystem, repo: normalizeModuleRepo(dir, { ecosystem, repo }, what), files: fromEntries(Object.entries(files)) })
 }
 
 // The keys a module map records -- the set an artifact's `executable` must be a subset of. `scope` MUST
@@ -354,7 +355,7 @@ export function groupModules(modules, { skipEmpty = false, what } = {}) {
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
     const files = fromEntries(Object.entries(info.files).toSorted(byPath))
-    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: normalizeModuleRepo(dir, info.repo, what), files })])
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: normalizeModuleRepo(dir, info, what), files })])
   }
   return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
 }
