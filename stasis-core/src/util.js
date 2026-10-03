@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS } from './artifact-util.js'
 import { diskHost } from './host.js'
+import { shebangFormat } from './shebang.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
 // observation and CLI parsing. The pure artifact data model lives in artifact-util.js, re-exported
@@ -173,122 +174,6 @@ const CODE_NAME_FORMATS = new Map([
   ['fastfile', 'fastlane'],
   ['apple-app-site-association', 'json'],
 ])
-
-// An extensionless script's format from its `#!` line, else undefined. Python is keyed on the interpreter
-// itself: its path is often a virtualenv's, whose `sh`-named segment the looser shell match would take.
-const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
-const PYTHON_INTERPRETER = /^python(?:\d+(?:\.\d+)*)?$/u
-function shebangFormat(content) {
-  if (!Buffer.isBuffer(content)) return undefined
-  const line = content.subarray(0, 256).toString('utf8').split('\n', 1)[0]
-  // `#!` first: a file without one never pays for the whole-buffer UTF-8 scan.
-  if (!line.startsWith('#!') || !isUtf8(content)) return undefined
-  if (shebangInterpreters(line).some((program) => PYTHON_INTERPRETER.test(program))) return 'python'
-  return SHELL_SHEBANG.test(line) ? 'shell' : undefined
-}
-
-// The env a shebang reaches on each kernel: GNU's on Linux, handed the rest of the line as one word,
-// and BSD's on macOS, handed it split at whitespace. Each reads its flags and its value options (the
-// value attached, or the next word) as getopt does; GNU's long names may be cut to an unambiguous prefix.
-const GNU_ENV = {
-  flags: '0iv',
-  values: 'uCS',
-  long: ['ignore-environment', 'null', 'debug', 'unset', 'chdir', 'split-string', 'block-signal', 'default-signal', 'ignore-signal', 'list-signal-handling'],
-}
-const BSD_ENV = { flags: '0iv', values: 'uCPSLU', long: [] }
-const ENV_LONG_VALUES = { unset: 'u', chdir: 'C', 'split-string': 'S' }
-
-// The escapes `env -S` takes outside '…' (where only `\\` and `\'` escape).
-const ENV_ESCAPES = { '"': '"', "'": "'", '\\': '\\', '#': '#', $: '$', _: ' ', n: '\n', t: '\t', r: '\r', f: '\f', v: '\v' }
-
-// The words an `env -S` string splits into, as GNU env splits it: whitespace (and `\_` outside "…")
-// breaks words outside quotes, quotes and escapes join and unquote, and `\c` outside "…" or a word
-// opening with `#` ends it. null for a string env refuses: an unterminated quote, or an unknown or
-// trailing `\`.
-function splitEnvString(text) {
-  const words = []
-  let word = null
-  let quote = null
-  const flush = () => {
-    if (word !== null) words.push(word)
-    word = null
-  }
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]
-    if (quote === "'") {
-      if (c === "'") quote = null
-      else word += c === '\\' && (text[i + 1] === '\\' || text[i + 1] === "'") ? text[++i] : c
-    } else if (c === '\\') {
-      const escape = text[++i]
-      if (quote === null && escape === 'c') break
-      if (quote === null && escape === '_') flush()
-      else if (Object.hasOwn(ENV_ESCAPES, escape)) word = (word ?? '') + ENV_ESCAPES[escape]
-      else return null
-    } else if (quote === '"') {
-      if (c === '"') quote = null
-      else word += c
-    } else if (/\s/u.test(c)) {
-      flush()
-    } else if (c === '#' && word === null) {
-      break
-    } else if (c === "'" || c === '"') {
-      quote = c
-      word ??= ''
-    } else {
-      word = (word ?? '') + c
-    }
-  }
-  if (quote !== null) return null
-  flush()
-  return words
-}
-
-// The command an env runs for these arguments: past its options, up to `--`, `-` or the first other
-// word (an `-S` string split into words in its place), then past its assignments. '' when env refuses.
-function envCommand(words, { flags, values, long }) {
-  const args = [...words]
-  let i = 0
-  for (; i < args.length && args[i].startsWith('-') && args[i] !== '-'; i++) {
-    if (args[i] === '--') {
-      i++
-      break
-    }
-    let letter
-    let value
-    const longOption = /^--([^=]*)(?:=(.*))?$/su.exec(args[i])
-    if (longOption === null) {
-      let at = 1
-      while (at < args[i].length && flags.includes(args[i][at])) at++
-      if (at === args[i].length) continue
-      letter = args[i][at]
-      if (!values.includes(letter)) return ''
-      value = args[i].slice(at + 1) || undefined
-    } else {
-      const names = long.filter((option) => option.startsWith(longOption[1]))
-      if (names.length !== 1) return ''
-      letter = ENV_LONG_VALUES[names[0]]
-      if (letter === undefined) continue
-      value = longOption[2]
-    }
-    value ??= args[++i]
-    if (value === undefined) return ''
-    if (letter !== 'S') continue
-    const split = splitEnvString(value)
-    if (split === null) return ''
-    args.splice(i + 1, 0, ...split)
-  }
-  if (args[i] === '-') i++
-  while (i < args.length && args[i].includes('=')) i++
-  return args[i] ?? ''
-}
-
-// The programs a `#!` line runs: its own (basename), or the command its env runs on Linux and on macOS
-// (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3` on both).
-function shebangInterpreters(line) {
-  const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
-  const name = program.slice(program.lastIndexOf('/') + 1)
-  return name === 'env' ? [envCommand([rest], GNU_ENV), envCommand(rest.split(/\s+/u), BSD_ENV)] : [name]
-}
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
 // sidecars), excluded from the Metro native capture. `flow` covers the `*.js.flow` sidecars.
