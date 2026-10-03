@@ -1,6 +1,6 @@
-import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
-import { isTypeDeclaration } from '@exodus/stasis-core/util'
+import { isPathWithin, isTypeDeclaration } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 
 // tsc-style module resolution (`--typescript`), shared by BOTH JS resolvers -- scan.js's built-in
@@ -15,6 +15,9 @@ import { diskHost } from '@exodus/stasis-core/host'
 //     `./dir` -> `./dir/index.ts`), incl. through a directory's package.json `main`;
 //   - the same substitution applied to manifest-declared targets: a package `main`, an `exports`
 //     target, a `#name` `imports` target naming a compiled file whose only on-disk form is TS;
+//   - an `exports`/`imports` target under tsconfig `outDir` mapped back to its source under
+//     `rootDir` (see loadTsconfigOutputs), and a package's own name resolved through its `exports`
+//     (self-reference) -- together, how tsc resolves a package's self-names when it emits elsewhere;
 //   - tsconfig `compilerOptions.paths` aliases (see loadTsconfigPaths), consulted for bare
 //     specifiers nothing else resolved.
 // This module also homes the generic manifest helpers (readJson/locatePackage/nearestPackage)
@@ -227,10 +230,17 @@ function manifestTargets(map, subpathKey, conditions) {
 
 // tsc's mapping of `key` ('.' or './sub') through the `exports` of the package in `pkgDir` (or of
 // a '#name' key through its `imports`): the targets `conditions` select, substitution only (Node
-// requires exports/imports targets to name exact files), the first on disk; or null.
-export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), tsx = false, host = diskHost } = {}) {
+// requires exports/imports targets to name exact files), the first on disk; or null. Each target is
+// first taken as `outputs` (a loadTsconfigOutputs mapping) places it, as compiled from a source
+// under the project root, which tsc tries before the target itself.
+export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), tsx = false, outputs = null, host = diskHost } = {}) {
   for (const target of manifestTargets(exports, key, conditions)) {
-    const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { tsx, completion: false, dir: false, host })
+    const abs = resolvePath(pkgDir, target)
+    for (const source of outputs?.sourcesOf(abs, pkgDir, { tsx }) ?? []) {
+      const hit = probe(source, host)
+      if (hit) return hit
+    }
+    const hit = probeTypescriptTarget(abs, { tsx, completion: false, dir: false, host })
     if (hit) return hit
   }
   return null
@@ -283,8 +293,10 @@ function parseJsonc(text, file) {
 
 // Resolve an `extends` target like tsc: relative/absolute against the extending file (with the
 // implied .json), bare through node_modules (the spelled path, its .json twin, or the package's
-// tsconfig.json). A named base that cannot be found fails closed -- its options are load-bearing.
-function resolveExtendsTarget(fromFile, target, host) {
+// tsconfig.json). A named base that cannot be found fails closed -- its options are load-bearing --
+// but with `uninstalled`, of a tree whose dependencies are not installed yet, a bare one in a
+// package no node_modules holds is null.
+function resolveExtendsTarget(fromFile, target, host, { uninstalled = false } = {}) {
   if (target.startsWith('./') || target.startsWith('../') || isAbsolute(target)) {
     const p = resolvePath(dirname(fromFile), target)
     if (isFile(p, host)) return p
@@ -295,23 +307,28 @@ function resolveExtendsTarget(fromFile, target, host) {
         return host.resolve(fromFile, cand)
       } catch { /* not this spelling -- try the next */ }
     }
+    if (uninstalled && locatePackage(dirname(fromFile), target, host) === null) return null
   }
   throw new Error(`tsconfig extends target not found: '${target}' (from ${fromFile})`)
 }
 
-// Effective { paths, pathsDir, baseUrl } across the `extends` chain: bases apply in order, the
-// extending file overrides them; `paths` replaces wholesale (tsc never deep-merges it) and
-// remembers its declaring dir; `baseUrl` is resolved against its declaring file.
-function loadConfigChain(file, seen, host) {
+// Effective { paths, pathsDir, baseUrl, rootDir, outDir } across the `extends` chain: bases apply
+// in order, the extending file overrides them; `paths` replaces wholesale (tsc never deep-merges it)
+// and remembers its declaring dir; `baseUrl`, `rootDir` and `outDir` are resolved against their
+// declaring file. A base resolveExtendsTarget takes as null with `options` adds nothing.
+function loadConfigChain(file, seen, host, options) {
   if (seen.has(file)) throw new Error(`tsconfig extends cycle at ${file}`)
   seen.add(file)
   const raw = parseJsonc(host.readFile(file).toString('utf8'), file)
   const acc = {}
   for (const base of [].concat(raw?.extends ?? [])) {
-    Object.assign(acc, loadConfigChain(resolveExtendsTarget(file, base, host), seen, host))
+    const target = resolveExtendsTarget(file, base, host, options)
+    if (target !== null) Object.assign(acc, loadConfigChain(target, seen, host, options))
   }
   const co = raw?.compilerOptions ?? {}
-  if (typeof co.baseUrl === 'string') acc.baseUrl = resolvePath(dirname(file), co.baseUrl)
+  for (const key of ['baseUrl', 'rootDir', 'outDir']) {
+    if (typeof co[key] === 'string') acc[key] = resolvePath(dirname(file), co[key])
+  }
   if (co.paths != null) {
     acc.paths = co.paths
     acc.pathsDir = dirname(file)
@@ -365,6 +382,34 @@ export function loadTsconfigPaths(file, host = diskHost) {
   }
 }
 
+// --- tsconfig `outDir` -> `rootDir` ---
+
+// Load a tsconfig's emit layout, following `extends`, into tsc's mapping of a package's compiled
+// targets back to their sources (moduleNameResolver's tryLoadInputFileForPath): an `exports` or
+// `imports` target under `outDir` is the output of the source at its path from there, under the
+// project root -- `rootDir`, else the config's own directory (tsc 6+ never infers it from the
+// inputs; 5.x guessed it from the importing file) -- with a TS extension in place of its JS one.
+// Returns null when `file` is null or the effective config sets no `outDir` (a `declarationDir`
+// only places .d.ts files, never a target here). sourcesOf(target, pkgDir) -> those candidates for
+// `target`, an absolute path in the package in `pkgDir`, or [] where tsc never maps it: a package
+// whose directory does not hold the config, or a target in node_modules -- so the project's layout
+// never rewrites a dependency's targets, nor another workspace package's. With `uninstalled`, of a
+// tree whose dependencies are not installed yet, a base config in a package not installed adds
+// nothing (resolveExtendsTarget).
+export function loadTsconfigOutputs(file, host = diskHost, { uninstalled = false } = {}) {
+  if (file == null) return null
+  // A real path, as are the scan's parents and the packages found from them.
+  const config = host.realpath(file)
+  const { rootDir = dirname(config), outDir } = loadConfigChain(config, new Set(), host, { uninstalled })
+  if (outDir === undefined) return null
+  return {
+    sourcesOf(target, pkgDir, { tsx = false } = {}) {
+      if (IN_NODE_MODULES.test(target) || !isPathWithin(pkgDir, config) || !isPathWithin(outDir, target)) return []
+      return typescriptSiblings(join(rootDir, relative(outDir, target)), { tsx })
+    },
+  }
+}
+
 // The tsconfig `--typescript` reads: an explicit `--tsconfig` path must exist (fail closed on a
 // typo); with none given, the project root's tsconfig.json applies when present, like tsc's own
 // discovery from a directory.
@@ -391,16 +436,18 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
 // Resolve `spec` from `parentFile` the way tsc would complete a resolution BOTH Node and the
 // legacy-field resolver missed. Returns the absolute path of the on-disk source, or null.
 // `conditions` gates exports/imports maps (same set the failed resolution used); `tsx` widens the
-// substitutions to .tsx; `paths` is a loadTsconfigPaths matcher (or null). Dispatch by shape:
+// substitutions to .tsx; `paths` is a loadTsconfigPaths matcher (or null); `outputs` a
+// loadTsconfigOutputs mapping (or null) for the parent package's own targets. Dispatch by shape:
 //   '#name'        -> the parent package's `imports` targets, substitution only;
 //   relative/abs   -> path substitution/completion (+ directory main/index);
 //   bare           -> tsconfig paths aliases first (tsc consults them before node_modules), then
+//                     the parent package's own name through its `exports` (self-reference), then
 //                     the named package: its `exports` targets (substitution only) when it has
 //                     them, else its `main`/index (bare root) or subpath (substitution/completion).
-export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), tsx = false, paths = null, host = diskHost } = {}) {
+export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), tsx = false, paths = null, outputs = null, host = diskHost } = {}) {
   if (spec.startsWith('#')) {
     const scope = nearestPackage(parentFile, host)
-    return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, tsx, host }) : null
+    return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, tsx, outputs, host }) : null
   }
   if (spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..' || isAbsolute(spec)) {
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
@@ -411,6 +458,14 @@ export function resolveTypescriptFallback(parentFile, spec, { conditions = new S
       const hit = probeTypescriptTarget(target, { tsx, dirOnly: target.endsWith('/'), host })
       if (hit) return hit
     }
+  }
+  // A package importing itself by its name, which only its `exports` resolve (as Node and tsc
+  // resolve it before node_modules); a miss there falls through to node_modules, as in tsc.
+  const scope = nearestPackage(parentFile, host)
+  const name = scope?.pkg.name
+  if (scope?.pkg.exports != null && typeof name === 'string' && name !== '' && (spec === name || spec.startsWith(`${name}/`))) {
+    const hit = typescriptExportsTarget(scope.pkgDir, scope.pkg.exports, `.${spec.slice(name.length)}`, { conditions, tsx, outputs, host })
+    if (hit) return hit
   }
   const loc = locatePackage(dirname(parentFile), spec, host)
   if (!loc) return null

@@ -5,7 +5,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
-import { loadTsconfigPaths, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigOutputs, loadTsconfigPaths, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fx = join(here, 'fixtures', 'resolve-fields')
@@ -336,6 +336,17 @@ test("typescript: a '#' imports target naming a missing .js lands on its .ts sou
     JSON.stringify({ name: 'ts-fields', version: '0.0.0', imports: { '#only': './only-ts.js' } }))
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), '#only')), 'only-ts.ts')
+}))
+
+test('typescript: a self-name under tsconfig outDir resolves to its rootDir source through typescriptOutputs', withTsTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'),
+    JSON.stringify({ name: 'ts-fields', version: '0.0.0', exports: { './lib.js': './lib/only-ts.js' } }))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { outDir: './lib' } }))
+  const typescriptOutputs = loadTsconfigOutputs(join(tmp, 'tsconfig.json'))
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true, typescriptOutputs })
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'ts-fields/lib.js')), 'only-ts.ts')
+  const bare = createFieldResolver({ mainFields: ['main'], typescript: true })
+  t.assert.equal(relTo(tmp, bare(join(tmp, 'entry.ts'), 'ts-fields/lib.js')), null)
 }))
 
 test('typescript: tsconfig paths aliases resolve through typescriptPaths', withTsTmp((t, tmp) => {

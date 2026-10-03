@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Scan, scan } from '../stasis/src/scan.js'
-import { loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigOutputs, loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -674,6 +674,65 @@ test('scan typescriptPaths never applies to node_modules parents and never beats
   t.assert.equal(byParent.get('entry.ts').get('dep'), 'shim/dep.ts')
   // The dependency's own bare import stays unresolved rather than mapping through the app alias.
   t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['inner'])
+}))
+
+// --- tsconfig `outDir` -> `rootDir` (typescriptOutputs): tsc's self-names emitted elsewhere. ---
+
+test('scan typescriptOutputs maps self-names and #imports through outDir to their sources under rootDir', withTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({
+    name: 'self',
+    version: '0.0.0',
+    type: 'module',
+    exports: { '.': './dist/index.js', './util.js': './dist/util.js', './m.mjs': './dist/m.mjs', './deep/*': './dist/deep/*', './built.js': './dist/built.js' },
+    imports: { '#internal/*': './dist/internal/*' },
+  }))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { rootDir: './src', outDir: './dist' } }))
+  mkdirSync(join(tmp, 'src', 'internal'), { recursive: true })
+  mkdirSync(join(tmp, 'src', 'deep'), { recursive: true })
+  mkdirSync(join(tmp, 'dist'), { recursive: true })
+  writeFileSync(join(tmp, 'src', 'index.ts'),
+    'import { u } from "self/util.js"\nimport { m } from "self/m.mjs"\nimport { y } from "self/deep/y.js"\n' +
+    'import { x } from "#internal/x.js"\nimport { b } from "self/built.js"\nexport const v: number = u + m + y + x + b\n')
+  writeFileSync(join(tmp, 'src', 'util.ts'), 'export const u: number = 1\n')
+  writeFileSync(join(tmp, 'src', 'm.mts'), 'export const m: number = 2\n')
+  writeFileSync(join(tmp, 'src', 'deep', 'y.ts'), 'export const y: number = 3\n')
+  writeFileSync(join(tmp, 'src', 'internal', 'x.ts'), 'export const x: number = 4\n')
+  // A compiled output on disk is what Node resolves, so it wins over its source.
+  writeFileSync(join(tmp, 'src', 'built.ts'), 'export const b: number = 5\n')
+  writeFileSync(join(tmp, 'dist', 'built.js'), 'export const b = 5\n')
+  const typescriptOutputs = loadTsconfigOutputs(join(tmp, 'tsconfig.json'))
+  const result = scan([join(tmp, 'src', 'index.ts')], { typescript: true, typescriptOutputs }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.unresolved, [])
+  const byParent = flattenImports(result.imports)
+  t.assert.equal(byParent.get('src/index.ts').get('self/util.js'), 'src/util.ts')
+  t.assert.equal(byParent.get('src/index.ts').get('self/m.mjs'), 'src/m.mts')
+  t.assert.equal(byParent.get('src/index.ts').get('self/deep/y.js'), 'src/deep/y.ts')
+  t.assert.equal(byParent.get('src/index.ts').get('#internal/x.js'), 'src/internal/x.ts')
+  t.assert.equal(byParent.get('src/index.ts').get('self/built.js'), 'dist/built.js')
+  // Without the layout, the outputs named are nowhere on disk, nor is a TS sibling of them.
+  const unmapped = scan([join(tmp, 'src', 'index.ts')], { typescript: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(unmapped.unresolved.map((u) => u.spec).toSorted(), ['#internal/x.js', 'self/deep/y.js', 'self/m.mjs', 'self/util.js'])
+}))
+
+test("scan typescriptOutputs maps only the targets of the package holding the config, rootDir defaulting to the config's directory", withTmp((t, tmp) => {
+  // tsc 6+ takes the config's own directory for a rootDir the config does not set.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'root', version: '0.0.0', type: 'module', exports: { './a.js': './out/a.js' } }))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { outDir: './out' } }))
+  writeFileSync(join(tmp, 'a.ts'), 'export const a: number = 1\n')
+  // A workspace package beside it, whose targets the root's layout says nothing of.
+  mkdirSync(join(tmp, 'packages', 'p', 'out'), { recursive: true })
+  writeFileSync(join(tmp, 'packages', 'p', 'package.json'), JSON.stringify({ name: 'p', version: '0.0.0', type: 'module', exports: { './b.js': './out/b.js' } }))
+  writeFileSync(join(tmp, 'packages', 'p', 'b.ts'), 'export const b: number = 2\n')
+  writeFileSync(join(tmp, 'packages', 'p', 'entry.ts'), 'import { b } from "p/b.js"\nexport const v: number = b\n')
+  writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "root/a.js"\nexport const v: number = a\n')
+  const typescriptOutputs = loadTsconfigOutputs(join(tmp, 'tsconfig.json'))
+  const result = scan([join(tmp, 'entry.ts'), join(tmp, 'packages', 'p', 'entry.ts')], { typescript: true, typescriptOutputs }).toRelative(tmp)
+  const byParent = flattenImports(result.imports)
+  t.assert.equal(byParent.get('entry.ts').get('root/a.js'), 'a.ts')
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['p/b.js'])
+  // A config emitting nowhere else maps nothing.
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { rootDir: '.' } }))
+  t.assert.equal(loadTsconfigOutputs(join(tmp, 'tsconfig.json')), null)
 }))
 
 test('scan typescript:true never lands on a type declaration (./x.d + .ts spells one)', withTmp((t, tmp) => {

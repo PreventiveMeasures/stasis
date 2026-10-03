@@ -6,7 +6,7 @@ import { isAutoExcludedDir, isPlainObject, posixPathEscapes, relativeEscapes } f
 import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
-import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
+import { discoverTsconfig, loadTsconfigOutputs, resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
 import { checkKind, checkVersion, packageManagerOf, vfsHost } from './tree.js'
 
 const JS = /\.[cm]?[jt]s$/u
@@ -16,16 +16,19 @@ const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['im
 // The entry points the package.json in `dir` names, as paths from `dir`, resolved as the JS build
 // with the given options resolves: as Node does, `conditions` added, or with `mainFields` or
 // `metro` through the build's field resolver, once per platform of `platforms` under `metro`; what
-// that misses mapped as tsc maps it under `typescript`, as the build's fallback maps it. In
+// that misses mapped as tsc maps it under `typescript`, as the build's fallback maps it, with the
+// `outDir` -> `rootDir` layout of `tsconfig` (the project's tsconfig.json without one). In
 // that order: its own entry, as the build resolves `./` there (`main`, or the first of the main
 // fields, else index); each subpath `exports` holds (but a pattern), as the package's name resolves
 // for require() and for import, with the conditions the build adds (the RN ones under `metro`); and
 // each `bin`. Only JS files in `dir` that are there, named from within it; none without a package.json.
-function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], jsx = false, typescript = false } = {}) {
+function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], jsx = false, typescript = false, tsconfig } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
   const pkg = readJson(manifest, host)
   if (!isPlainObject(pkg)) return []
+  // Read before the dependencies are installed: a base config in a package adds nothing yet.
+  const outputs = typescript ? loadTsconfigOutputs(discoverTsconfig(real, tsconfig, host), host, { uninstalled: true }) : null
   const found = new Set()
   const add = (file) => {
     const rel = file === undefined ? '' : relative(real, file)
@@ -63,7 +66,7 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
     if (!subpath.startsWith('.') || subpath.includes('*') || subpath.endsWith('/')) continue
     const specifier = subpath === '.' ? name : `${name}${subpath.slice(1)}`
     for (const { extras } of passes) {
-      for (const names of NODE_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, tsx: jsx, host })))
+      for (const names of NODE_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, tsx: jsx, outputs, host })))
     }
   }
   const bins = typeof pkg.bin === 'string' ? [pkg.bin] : pkg.bin !== null && typeof pkg.bin === 'object' ? Object.values(pkg.bin) : []
