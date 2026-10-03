@@ -80,38 +80,31 @@ export function collectPackagesFromFile(file) {
 const byNumbers = new Intl.Collator('en', { numeric: true }).compare
 const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
-// Each package once, with the `github` any of `files` records for it (one from before the field
-// records none).
+// Each package once, with the GitHub repository its artifacts record for its name, which
+// advisories() asks instead of looking one up. It takes one repository a name, so a name recorded
+// with two, by two of its versions (a package that moved) or by two artifacts, has none, and is
+// looked up as before.
 export function collectPackages(files) {
   const byKey = new Map()
+  const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
   for (const file of files) {
-    for (const pkg of collectPackagesFromFile(file)) {
+    for (const { github, ...pkg } of collectPackagesFromFile(file)) {
       const key = keyOf(pkg.ecosystem, pkg.name, pkg.version)
-      const seen = byKey.get(key)
-      if (seen === undefined) byKey.set(key, pkg)
-      else if (seen.github === undefined && pkg.github !== undefined) byKey.set(key, { ...seen, github: pkg.github })
+      if (!byKey.has(key)) byKey.set(key, pkg)
+      if (github === undefined) continue
+      const name = `${pkg.ecosystem}:${pkg.name}`
+      const known = repos.get(name)
+      // GitHub's names are case-insensitive: the first spelling stands.
+      if (known === undefined) repos.set(name, github)
+      else if (known !== null && known.toLowerCase() !== github.toLowerCase()) repos.set(name, null)
     }
   }
-  return [...byKey.values()].toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
-}
-
-// `packages` as advisories() takes them, each name with the GitHub repository its versions record,
-// which advisories() asks instead of looking one up. It takes one repository a name, so a name whose
-// versions record different ones (a package that moved) is given none, and looked up as before.
-function advisoryQueries(packages) {
-  const repos = new Map()
-  const nameKey = ({ ecosystem, name }) => `${ecosystem}:${name}`
-  for (const pkg of packages) {
-    if (pkg.github === undefined) continue
-    const known = repos.get(nameKey(pkg))
-    // GitHub's names are case-insensitive: the first spelling stands.
-    if (known === undefined) repos.set(nameKey(pkg), pkg.github)
-    else if (known !== null && known.toLowerCase() !== pkg.github.toLowerCase()) repos.set(nameKey(pkg), null)
-  }
-  return packages.map((pkg) => {
-    const github = repos.get(nameKey(pkg)) ?? undefined
-    return { ecosystem: pkg.ecosystem, name: pkg.name, versions: [pkg.version], ...(github === undefined ? {} : { github }) }
-  })
+  return [...byKey.values()]
+    .map((pkg) => {
+      const github = repos.get(`${pkg.ecosystem}:${pkg.name}`) ?? undefined
+      return github === undefined ? pkg : { ...pkg, github }
+    })
+    .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
 
 // Map each audited package (keyOf it) to the bundle consumers ("reasons") that recorded its files.
@@ -275,7 +268,8 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(advisoryQueries(asked), { repoAdvisories, github })
+    const queries = asked.map(({ ecosystem, name, version, github: repo }) => ({ ecosystem, name, versions: [version], ...(repo === undefined ? {} : { github: repo }) }))
+    result = await advisories(queries, { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
