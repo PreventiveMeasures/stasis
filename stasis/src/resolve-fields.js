@@ -220,7 +220,8 @@ function resolveFileOrDir(base, opts) {
 // resolveEntryThroughMap and resolveSourceFile); leave it off for the esbuild-parity
 // `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
 // its `x.ts` sibling; see resolveSourceFile) plus the shared miss fallback (see below), and
-// `typescriptPaths` (a loadTsconfigPaths matcher) its tsconfig alias mapping.
+// `typescriptPaths` (a loadTsconfigPaths matcher) its tsconfig alias mapping, and
+// `typescriptOutputs` (a loadTsconfigOutputs mapping) its outDir -> rootDir layout.
 // `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
 // (METRO_KEEP_ENTRY_ON_BROWSER_FALSE) per resolver -- primarily so tests can cover both branches.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default.
@@ -233,6 +234,7 @@ export function createFieldResolver({
   metro = false,
   typescript = false,
   typescriptPaths = null,
+  typescriptOutputs = null,
   metroKeepEntryOnBrowserFalse = METRO_KEEP_ENTRY_ON_BROWSER_FALSE,
   host = diskHost,
 } = {}) {
@@ -300,8 +302,9 @@ export function createFieldResolver({
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping
   // the same shot the scanner's fallback gets, via the shared dispatcher. On this path it covers
   // the layers the field resolver delegates to Node -- `exports`-bearing packages and `#` subpath
-  // imports, whose targets may name compiled files existing only as TS source -- plus tsconfig
-  // `paths` aliases; misses only, so no field/redirect/suffix resolution is ever overridden.
+  // imports, whose targets may name compiled files existing only as TS source (under tsconfig
+  // `outDir` too), and a package's self-name -- plus tsconfig `paths` aliases; misses only, so no
+  // field/redirect/suffix resolution is ever overridden.
   // (Relative paths re-probe tsc-style too -- redundant after resolveSourceFile, but harmless.)
   return function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
     const resolved = resolve(parentFile, specifier, callConditions)
@@ -310,6 +313,7 @@ export function createFieldResolver({
       conditions: new Set(callConditions ?? conditions),
       tsx: sourceExts.includes('tsx'),
       paths: typescriptPaths,
+      outputs: typescriptOutputs,
       host,
     })
     return hit == null ? null : fileResolution(hit)

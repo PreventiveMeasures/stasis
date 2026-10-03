@@ -129,19 +129,21 @@ export class Scan {
   // off by default because oxc, like tsc, only auto-enables JSX for .jsx/.tsx by extension.
   // `flow`: strip Flow type syntax from JS-family sources before parsing (see #scanFile).
   // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
-  // `typescriptPaths` (a loadTsconfigPaths matcher) adding tsconfig alias support; only consulted
+  // `typescriptPaths` (a loadTsconfigPaths matcher) adding tsconfig alias support and
+  // `typescriptOutputs` (a loadTsconfigOutputs mapping) its outDir -> rootDir layout; only consulted
   // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling.
   // `resources` (a `parseResourcesOption` Set of extensions/filenames): reached files matching it
   // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
   // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
   // `host`: the filesystem the walk reads and resolves through (@exodus/stasis-core/host).
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, resources = new Set(), host = diskHost } = {}) {
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptOutputs = null, resources = new Set(), host = diskHost } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.jsx = jsx
     this.flow = flow
     this.typescript = typescript
     this.typescriptPaths = typescriptPaths
+    this.typescriptOutputs = typescriptOutputs
     this.resources = resources
     this.host = host
     // --jsx widens the script/resolvable extension sets to include .jsx/.tsx, so those files are
@@ -203,6 +205,7 @@ export class Scan {
       conditions,
       tsx: this.jsx,
       paths: this.typescriptPaths,
+      outputs: this.typescriptOutputs,
       host: this.host,
     })
     if (hit == null) return null

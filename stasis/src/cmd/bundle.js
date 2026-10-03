@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigOutputs, loadTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
@@ -666,9 +666,14 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
 // token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
-// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise the
-// project root's tsconfig.json applies when present (null matcher = no aliases).
-const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript ? loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host) : null)
+// --typescript honours tsconfig `paths` aliases and its `outDir` -> `rootDir` layout: an explicit
+// --tsconfig must exist, otherwise the project root's tsconfig.json applies when present (null
+// matcher/mapping = no aliases/none). -> { typescriptPaths, typescriptOutputs }
+function typescriptConfigFor(typescript, baseDir, tsconfig, host) {
+  if (!typescript) return { typescriptPaths: null, typescriptOutputs: null }
+  const file = discoverTsconfig(baseDir, tsconfig, host)
+  return { typescriptPaths: loadTsconfigPaths(file, host), typescriptOutputs: loadTsconfigOutputs(file, host) }
+}
 
 // Build a JS/TS Bundle (in-memory) by statically scanning the require/import graph; no
 // user code is executed, and TS is stored verbatim (Node strips types at load). Scope comes
@@ -676,7 +681,8 @@ const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript 
 // extra `exports`/`imports` conditions; on their own they don't honour legacy mainFields or
 // platform suffixes (see `--mainFields` / buildResolvedJsBundle). `typescript` maps a failed
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
-// `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json).
+// `paths` aliases and `outDir` -> `rootDir` layout of `tsconfig` (an explicit config path, default
+// the project's tsconfig.json).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
 // above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
@@ -696,9 +702,9 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
 
-  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
+  const { typescriptPaths, typescriptOutputs } = typescriptConfigFor(typescript, baseDir, tsconfig, host)
 
-  const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, host })
+  const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, typescriptOutputs, resources: resourceSet, host })
 
   // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
   reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir })
@@ -832,7 +838,7 @@ function nativeModuleFiles(pkgAbs, host) {
 // `platform` (null for --mainFields), its `mainFields` (Metro's under --metro), and the conditions
 // it adds to Node's: --metro asserts the RN conditions (+ browser on web); --mainFields carries the
 // user's --conditions.
-export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], jsx = false, typescript = false, typescriptPaths = null, host = diskHost }) {
+export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], jsx = false, typescript = false, typescriptPaths = null, typescriptOutputs = null, host = diskHost }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : conditions
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
@@ -849,6 +855,7 @@ export function fieldResolverFor(platform, { mainFields, metro = false, conditio
     // (classifyEntries rejects the combination -- metro-resolver can't substitute).
     typescript,
     typescriptPaths,
+    typescriptOutputs,
     host,
   })
   return { extras, mainFields: fields, resolver }
@@ -874,8 +881,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
 
   // Under --jsx the resolver probes .jsx/.tsx too, matching scan's jsx-widened carryable set.
   const sourceExts = jsx ? SOURCE_EXTS_JSX : SOURCE_EXTS
-  // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
-  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
+  // --typescript's tsconfig `paths` matcher and outDir mapping, shared by every per-platform resolver below.
+  const { typescriptPaths, typescriptOutputs } = typescriptConfigFor(typescript, baseDir, tsconfig, host)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildResolvedJsBundle', resources)
 
@@ -888,7 +895,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   let usesEmpty = false
 
   for (const platform of platforms) {
-    const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, jsx, typescript, typescriptPaths, host })
+    const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, jsx, typescript, typescriptPaths, typescriptOutputs, host })
     const { extras } = field
     // --metro --metro-resolver delegates to the project's own metro-resolver for byte-for-byte Metro
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives

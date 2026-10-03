@@ -235,6 +235,36 @@ test('suggestedEntries maps what resolution misses to its TS source under typesc
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'], typescript: true }), ['lib/index.ts'])
 })
 
+test("suggestedEntries and the build map a target under tsconfig's outDir to its source under rootDir, as tsc does", async (t) => {
+  // noble-curves' layout: its sources in src/, compiled into the package's own directory, which its
+  // exports and imports name; its base config is a dependency's, not installed while entries are
+  // suggested, which adds nothing to the layout then.
+  const curves = {
+    'package.json': json({ name: 'curves', version: '1.0.0', type: 'module', main: 'index.js', exports: { '.': './index.js', './a.js': './a.js', './sub/b.js': './sub/b.js' }, imports: { '#a': './a.js' }, devDependencies: { base: 'link:base' } }),
+    'pnpm-lock.yaml': lockfile('.').replace('  .: {}\n', '  .:\n    devDependencies:\n      base:\n        specifier: link:base\n        version: link:base\n'),
+    'tsconfig.json': json({ extends: 'base/tsconfig.json', compilerOptions: { rootDir: 'src', outDir: '.' } }),
+    'base/package.json': json({ name: 'base', version: '1.0.0' }),
+    'base/tsconfig.json': json({ compilerOptions: { strict: true } }),
+    'src/index.ts': "import { b } from 'curves/sub/b.js'\nexport const c: number = b\n",
+    'src/a.ts': 'export const a: number = 1\n',
+    'src/sub/b.ts': "import { a } from '#a'\nexport const b: number = a + 1\n",
+    // A TS sibling of a target, which no source under rootDir compiles to: tsc takes the source.
+    'a.ts': 'export const stray: number = 0\n',
+  }
+  const mapped = ['src/index.ts', 'src/a.ts', 'src/sub/b.ts']
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(curves) }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(curves), typescript: true }), mapped)
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(curves), typescript: true }), mapped)
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf({ ...curves, 'tsconfig.json': json({}) }), typescript: true }), ['a.ts'], 'without the layout, only the sibling')
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf({ ...curves, 'build.json': json({ compilerOptions: { rootDir: 'src', outDir: '.' } }), 'tsconfig.json': json({}) }), typescript: true, tsconfig: 'build.json' }), mapped, 'the layout --tsconfig names')
+  // The build reads the base config from the tree once installed, and maps the self-name and #a too.
+  const { bundle } = await build({ client: fakeClient(curves), typescript: true })
+  t.assert.deepStrictEqual([...bundle.entries], mapped, "buildGitHubBundle's default")
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), mapped.toSorted())
+  // A relative base config missing fails closed, installed or not.
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf({ ...curves, 'tsconfig.json': json({ extends: './missing.json' }) }), typescript: true }), /^Error: tsconfig extends target not found: '\.\/missing\.json'/u)
+})
+
 test("suggestedEntries downloads a directory as buildGitHubBundle does, and names nothing out of it", async (t) => {
   const files = {
     'README.md': 'x\n',

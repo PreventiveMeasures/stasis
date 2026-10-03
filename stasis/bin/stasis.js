@@ -58,7 +58,8 @@ function usage(prefix = '') {
   --flow strips Flow types from .js/.cjs/.mjs sources oxc can't parse (needs the optional flow-remove-types dep);
   --typescript resolves TS the way tsc does: an import of ./x.js lands on ./x.ts when no .js is on disk
    (likewise .mjs/.cjs -> .mts/.cts, extensionless ./x -> ./x.ts, incl. exports/imports/main targets),
-   honouring tsconfig compilerOptions.paths aliases (from ./tsconfig.json, or --tsconfig=path);
+   honouring tsconfig compilerOptions.paths aliases (from ./tsconfig.json, or --tsconfig=path),
+   and its outDir -> rootDir layout for the package's own exports/imports targets and self-name;
    not with --metro-resolver;
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
