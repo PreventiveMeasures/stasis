@@ -236,21 +236,27 @@ function splitEnvString(text) {
   return words
 }
 
-// The program a `#!` line runs: its basename, or `env`'s first operand past options, their values and
-// assignments (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`). Only `-S` has env
-// split the rest itself; without it, Linux hands env the rest as one word and macOS splits it at
-// whitespace, so this splits as macOS does, the kernel where more than one word runs.
+// The program a `#!` line runs: its basename, or the command `env` runs past its options (with their
+// values, up to `--` or the first other word, as getopt reads them) and then its assignments
+// (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`). Only `-S` has env split the
+// rest itself; without it, Linux hands env the rest as one word and macOS splits it at whitespace, so
+// this splits as macOS does, the kernel where more than one word runs.
 function shebangInterpreter(line) {
   const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
   const name = program.slice(program.lastIndexOf('/') + 1)
   if (name !== 'env') return name
   const split = /^(?:-S|--split-string=)(.*)$/su.exec(rest)
   const args = split === null ? rest.split(/\s+/u) : (splitEnvString(split[1]) ?? [])
-  for (let i = 0; i < args.length; i++) {
+  let i = 0
+  for (; i < args.length && args[i].startsWith('-'); i++) {
+    if (args[i] === '--') {
+      i++
+      break
+    }
     if (ENV_VALUE_OPTION.test(args[i])) i++
-    else if (!args[i].startsWith('-') && !args[i].includes('=')) return args[i]
   }
-  return ''
+  while (i < args.length && args[i].includes('=')) i++
+  return args[i] ?? ''
 }
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,

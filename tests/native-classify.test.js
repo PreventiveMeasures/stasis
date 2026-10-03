@@ -212,6 +212,8 @@ test('classifyFormat: Python source is python, by extension or by the interprete
     '#!/usr/bin/env --chdir /opt/app python3', '#!/usr/bin/env -P /usr/local/bin python3',
     // ...but not when the value is attached, even one ending in an option letter.
     '#!/usr/bin/env -uPYTHONSTARTUP python3', '#!/usr/bin/env --unset=PYTHONHOME python3',
+    // Options, then assignments, then the command; `--` ends the options.
+    '#!/usr/bin/env -u X FOO=x python3', '#!/usr/bin/env -- python3', '#!/usr/bin/env -u X -- FOO=x python3',
     // `env -S` splits as GNU env does: quotes join and come off, `\_` breaks words, `\c` and `#` end it.
     '#!/usr/bin/env -S FOO="a b" python3', "#!/usr/bin/env -S FOO='a b' python3", '#!/usr/bin/env -S FOO=x\\_python3 -u',
     '#!/usr/bin/env -S FOO="say \\"hi there\\"" python3 -u', '#!/usr/bin/env -S "python3" -u',
@@ -237,6 +239,8 @@ test('classifyFormat: Python source is python, by extension or by the interprete
   for (const shebang of [
     '#!/usr/bin/env -S FOO="a b python3', '#!/usr/bin/env -S python3 \\', '#!/usr/bin/env -S FOO=a\\ b python3',
     '#!/usr/bin/env -S "python3\\c"', '#!/usr/bin/env -S # python3', '#!/usr/bin/env -S ${PYTHON} -u',
+    // Past an assignment or `--`, an option-like word is the command: env runs `-u` and `--` here.
+    '#!/usr/bin/env -S FOO=x -u X python3', '#!/usr/bin/env -- -u X python3', '#!/usr/bin/env FOO=x -- python3',
   ]) {
     t.assert.equal(format('run-tool', `${shebang}\n`), undefined, shebang)
   }
