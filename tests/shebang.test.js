@@ -40,14 +40,19 @@ test('shebang: through env, the command env runs past its options and assignment
     '#!/usr/bin/env -S --unset PYTHONPATH python3', '#!/usr/bin/env -S --unset=PYTHONHOME python3', '#!/usr/bin/env -S --chdir /opt/app python3',
     // Options, then assignments, then the command; `--` ends the options.
     '#!/usr/bin/env -u X FOO=x python3', '#!/usr/bin/env -- python3', '#!/usr/bin/env -u X -- FOO=x python3',
+    // GNU's other options: `-a`/`--argv0` and `--env0-from` take a value, the signal ones an optional one.
+    '#!/usr/bin/env -S -a worker python3', '#!/usr/bin/env -S --argv0=worker python3', '#!/usr/bin/env -S --env0-from /dev/null python3',
+    '#!/usr/bin/env -S --block-signal=PIPE python3', '#!/usr/bin/env -S --default-signal python3',
   ])
   assertFormat(t, 'shell', ['#!/usr/bin/env bash', '#!/usr/bin/env sh', '#!/usr/bin/env -S bash -e', '#!/usr/bin/env bash -c python3'])
   assertFormat(t, undefined, [
     '#!/usr/bin/env node', '#!/usr/bin/env node --require ./sh/hook', '#!/usr/bin/env python3-config',
     // Past an assignment or `--`, an option-like word is the command: env runs `-u` and `--` here.
     '#!/usr/bin/env -S FOO=x -u X python3', '#!/usr/bin/env -- -u X python3', '#!/usr/bin/env FOO=x -- python3',
-    // An option env doesn't know, or an ambiguous long one.
-    '#!/usr/bin/env -x python3', '#!/usr/bin/env -S --d python3',
+    // An option env doesn't know, an ambiguous long one, or a flag given a value.
+    '#!/usr/bin/env -x python3', '#!/usr/bin/env -S --d python3', '#!/usr/bin/env -S --ignore-environment=x python3',
+    // `-0` lists the environment, so env refuses it a command.
+    '#!/usr/bin/env -0 python3', '#!/usr/bin/env -S -i0 python3', '#!/usr/bin/env -S --null python3',
   ])
 })
 
