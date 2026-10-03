@@ -183,13 +183,20 @@ function shebangFormat(content) {
   const line = content.subarray(0, 256).toString('utf8').split('\n', 1)[0]
   // `#!` first: a file without one never pays for the whole-buffer UTF-8 scan.
   if (!line.startsWith('#!') || !isUtf8(content)) return undefined
-  if (PYTHON_INTERPRETER.test(shebangInterpreter(line))) return 'python'
+  if (shebangInterpreters(line).some((program) => PYTHON_INTERPRETER.test(program))) return 'python'
   return SHELL_SHEBANG.test(line) ? 'shell' : undefined
 }
 
-// env options whose value is the next word: a short cluster ending in GNU `-u NAME`/`-C DIR` or BSD
-// `-P PATH` (not one holding its value, `-uNAME`), or GNU's `--unset NAME`/`--chdir DIR`.
-const ENV_VALUE_OPTION = /^(?:-[^-uCP]*[uCP]|--unset|--chdir)$/u
+// The env a shebang reaches on each kernel: GNU's on Linux, handed the rest of the line as one word,
+// and BSD's on macOS, handed it split at whitespace. Each reads its flags and its value options (the
+// value attached, or the next word) as getopt does; GNU's long names may be cut to an unambiguous prefix.
+const GNU_ENV = {
+  flags: '0iv',
+  values: 'uCS',
+  long: ['ignore-environment', 'null', 'debug', 'unset', 'chdir', 'split-string', 'block-signal', 'default-signal', 'ignore-signal', 'list-signal-handling'],
+}
+const BSD_ENV = { flags: '0iv', values: 'uCPSLU', long: [] }
+const ENV_LONG_VALUES = { unset: 'u', chdir: 'C', 'split-string': 'S' }
 
 // The escapes `env -S` takes outside '…' (where only `\\` and `\'` escape).
 const ENV_ESCAPES = { '"': '"', "'": "'", '\\': '\\', '#': '#', $: '$', _: ' ', n: '\n', t: '\t', r: '\r', f: '\f', v: '\v' }
@@ -236,27 +243,51 @@ function splitEnvString(text) {
   return words
 }
 
-// The program a `#!` line runs: its basename, or the command `env` runs past its options (with their
-// values, up to `--` or the first other word, as getopt reads them) and then its assignments
-// (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`). Only `-S` has env split the
-// rest itself; without it, Linux hands env the rest as one word and macOS splits it at whitespace, so
-// this splits as macOS does, the kernel where more than one word runs.
-function shebangInterpreter(line) {
-  const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
-  const name = program.slice(program.lastIndexOf('/') + 1)
-  if (name !== 'env') return name
-  const split = /^(?:-S|--split-string=)(.*)$/su.exec(rest)
-  const args = split === null ? rest.split(/\s+/u) : (splitEnvString(split[1]) ?? [])
+// The command an env runs for these arguments: past its options, up to `--`, `-` or the first other
+// word (an `-S` string split into words in its place), then past its assignments. '' when env refuses.
+function envCommand(words, { flags, values, long }) {
+  const args = [...words]
   let i = 0
-  for (; i < args.length && args[i].startsWith('-'); i++) {
+  for (; i < args.length && args[i].startsWith('-') && args[i] !== '-'; i++) {
     if (args[i] === '--') {
       i++
       break
     }
-    if (ENV_VALUE_OPTION.test(args[i])) i++
+    let letter
+    let value
+    const longOption = /^--([^=]*)(?:=(.*))?$/su.exec(args[i])
+    if (longOption === null) {
+      let at = 1
+      while (at < args[i].length && flags.includes(args[i][at])) at++
+      if (at === args[i].length) continue
+      letter = args[i][at]
+      if (!values.includes(letter)) return ''
+      value = args[i].slice(at + 1) || undefined
+    } else {
+      const names = long.filter((option) => option.startsWith(longOption[1]))
+      if (names.length !== 1) return ''
+      letter = ENV_LONG_VALUES[names[0]]
+      if (letter === undefined) continue
+      value = longOption[2]
+    }
+    value ??= args[++i]
+    if (value === undefined) return ''
+    if (letter !== 'S') continue
+    const split = splitEnvString(value)
+    if (split === null) return ''
+    args.splice(i + 1, 0, ...split)
   }
+  if (args[i] === '-') i++
   while (i < args.length && args[i].includes('=')) i++
   return args[i] ?? ''
+}
+
+// The programs a `#!` line runs: its own (basename), or the command its env runs on Linux and on macOS
+// (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3` on both).
+function shebangInterpreters(line) {
+  const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
+  const name = program.slice(program.lastIndexOf('/') + 1)
+  return name === 'env' ? [envCommand([rest], GNU_ENV), envCommand(rest.split(/\s+/u), BSD_ENV)] : [name]
 }
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
