@@ -188,13 +188,21 @@ function shebangFormat(content) {
   return SHELL_SHEBANG.test(line) ? 'shell' : undefined
 }
 
-// The program a `#!` line runs: its basename, or `env`'s first operand past options and assignments
-// (`#!/usr/bin/env -S PYTHONUTF8=1 python3 -u` -> `python3`).
+// env options whose value is the next word: a short cluster ending in GNU `-u NAME`/`-C DIR` or BSD
+// `-P PATH`, or GNU's `--unset NAME`/`--chdir DIR`.
+const ENV_VALUE_OPTION = /^(?:-[^-]*[uCP]|--unset|--chdir)$/u
+
+// The program a `#!` line runs: its basename, or `env`'s first operand past options, their values and
+// assignments (`#!/usr/bin/env -S -u PYTHONPATH PYTHONUTF8=1 python3 -u` -> `python3`).
 function shebangInterpreter(line) {
   const [program, ...args] = line.slice(2).trim().split(/\s+/u)
   const name = program.slice(program.lastIndexOf('/') + 1)
   if (name !== 'env') return name
-  return args.find((arg) => !arg.startsWith('-') && !arg.includes('=')) ?? ''
+  for (let i = 0; i < args.length; i++) {
+    if (ENV_VALUE_OPTION.test(args[i])) i++
+    else if (!args[i].startsWith('-') && !args[i].includes('=')) return args[i]
+  }
+  return ''
 }
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
@@ -316,10 +324,16 @@ export function classifyNativeCapture(name, { win32 = process.platform === 'win3
 }
 
 // The byte-level half of the native classification, refining what classifyNativeCapture derived from the
-// NAME. Both rules only ever demote. A 'resource' carries no format: storage derives base64 from bytes.
+// NAME: the binary rules demote, and a resource whose bytes name a format (an extensionless script's
+// shebang) is promoted to code, as classifyFormat tags it. A 'resource' carries no format: storage
+// derives base64 from bytes.
 export function refineNativeCapture(classified, name, content, resources = new Set()) {
   if (isExtensionlessBinary(name, content)) return { action: 'skip' }
   if (isBinaryPlist(name, content)) return { action: resources.has('plist') ? 'resource' : 'skip' }
+  if (classified.action === 'resource') {
+    const format = classifyFormat(name, { content })
+    if (format != null) return { action: 'code', format }
+  }
   return classified
 }
 
