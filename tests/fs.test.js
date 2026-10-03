@@ -133,16 +133,22 @@ test('addFsFile follows the full classifyFormat vocabulary: a native/source file
   t.assert.equal(state.resources.has('fix.patch'), false)
 }))
 
-test('addFsFile recognizes an extensionless shell shebang as shell code (content-based)', withProject((t, dir) => {
-  // The "content for no-extension bash" arm of classifyFormat: an extensionless file whose first
-  // line is a POSIX shell shebang is 'shell' code, not an undeclared resource. A non-shell
-  // interpreter (or no shebang) still falls through to the resources allowlist / throw.
+test('addFsFile recognizes an extensionless shell or python shebang as code (content-based)', withProject((t, dir) => {
+  // The "content for no-extension scripts" arm of classifyFormat: an extensionless file whose first
+  // line is a POSIX shell (or python) shebang is 'shell' (or 'python') code, not an undeclared
+  // resource. Any other interpreter (or no shebang) still falls through to the resources allowlist / throw.
   const state = new State(dir, { scope: 'full', lock: 'add', bundle: 'add', bundleFile: join(dir, 'b.br') })
   const wrapper = '#!/usr/bin/env bash\nexec gradle "$@"\n'
   writeFileSync(join(dir, 'run-tool'), wrapper)
   state.addFsFile(fileURL(dir, 'run-tool'), Buffer.from(wrapper))
   t.assert.equal(state.formats.get('run-tool'), 'shell')
   t.assert.equal(state.sources.get('run-tool'), wrapper)
+
+  // A python shebang is python code the same way.
+  const script = '#!/usr/bin/env python3\nprint(1)\n'
+  writeFileSync(join(dir, 'gen-tool'), script)
+  state.addFsFile(fileURL(dir, 'gen-tool'), Buffer.from(script))
+  t.assert.equal(state.formats.get('gen-tool'), 'python')
 
   // An extensionless file with no shell shebang is still undeclared -> throws (fail-closed).
   writeFileSync(join(dir, 'NOTES'), 'just prose\n')

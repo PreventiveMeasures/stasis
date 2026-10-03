@@ -2665,6 +2665,8 @@ const writeRnFixture = (root) => {
   writeFileSync(join(dep, 'ios', 'config.env'), 'API_URL=https://example.com\n')
   writeFileSync(join(dep, 'ios', 'util.c'), 'int rn_util(void) { return 0; }\n')
   writeFileSync(join(dep, 'ios', 'gen_headers.py'), 'print(1)\n')
+  writeFileSync(join(dep, 'ios', 'gen-headers'), '#!/usr/bin/env python3\nprint(1)\n') // extensionless: by its shebang
+  writeFileSync(join(dep, 'ios', 'build-phase'), '#!/bin/sh\nexit 0\n') // extensionless: by its shebang
   writeFileSync(join(dep, 'ios', 'Podfile'), "pod 'RNThing', :path => '.'\n")
   writeFileSync(join(dep, 'ios', 'Podfile.lock'), 'PODS:\n  - RNThing (3.1.0)\n')
   writeFileSync(join(dep, 'ios', 'logo.png'), PNG_BYTES) // a binary asset under ios/
@@ -2778,6 +2780,9 @@ test('buildBundle --metro carries a bundled native dep\'s ios/android sources + 
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/config.env'), undefined, 'env-family: never auto-captured')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/util.c'), 'c')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/gen_headers.py'), 'python')
+  // An extensionless script is classified by its shebang once the walk has read it.
+  t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/gen-headers'), 'python')
+  t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/build-phase'), 'shell')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Podfile'), 'podfile') // matched by basename
   t.assert.equal(bundle.formats.get('node_modules/rn-native/ios/Podfile.lock'), 'podfile-lock')
   t.assert.equal(bundle.formats.get('node_modules/rn-native/android/build.gradle'), 'gradle')
