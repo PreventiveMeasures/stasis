@@ -43,7 +43,7 @@ export class Lockfile {
     for (const [dir, info] of Object.entries(json.modules)) {
       assert(hasNodeModulesSegment(dir))
       assert(info?.name && info.version && info.files)
-      modules.set(dir, normalizeModule(info))
+      modules.set(dir, normalizeModule(info, dir, 'lockfile'))
     }
 
     let entries = new Set()
@@ -53,7 +53,7 @@ export class Lockfile {
         assert(!hasNodeModulesSegment(dir))
         // A workspace bucket may omit version (a private/unpublished package.json can lack one).
         assert(info?.name && info.files)
-        modules.set(dir, normalizeModule(info))
+        modules.set(dir, normalizeModule(info, dir, 'lockfile'))
       }
     }
 
@@ -78,7 +78,7 @@ export class Lockfile {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { modules, sources } = groupModules(this.modules)
+    const { modules, sources } = groupModules(this.modules, { what: 'lockfile' })
     const store = { version: this.version, config: this.config }
     if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules
