@@ -61,8 +61,8 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
-  const bucketFiles = (dir, name, version, ecosystem) => {
-    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem, files: Object.create(null) }))
+  const bucketFiles = (dir, name, version, ecosystem, depRepo) => {
+    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem, repo: depRepo, files: Object.create(null) }))
     return modules.get(dir).files
   }
   // findPackageMetadata's result depends only on the file's directory.
@@ -81,7 +81,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
     }
     if (meta) {
       const relInBucket = meta.pkgDir === '.' ? rel : rel.slice(meta.pkgDir.length + 1)
-      bucketFiles(meta.pkgDir, meta.name, meta.version, hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined)[relInBucket] = content
+      bucketFiles(meta.pkgDir, meta.name, meta.version, hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined, meta.repo)[relInBucket] = content
     } else {
       bucketFiles('.', workspaceName, workspaceVersion)[rel] = content
     }

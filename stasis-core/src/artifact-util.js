@@ -50,15 +50,62 @@ export function moduleFileKey(dir, rel) {
   return dir === '.' ? rel : `${dir}/${rel}`
 }
 
-// A module bucket record in canonical key order; `ecosystem` is omitted (not undefined) when absent.
-export const moduleInfo = ({ name, version, ecosystem, files }) =>
-  ({ name, version, ...(ecosystem === undefined ? {} : { ecosystem }), files })
+// GitHub `owner/name` (owner 1-39, name 1-100 chars).
+const GITHUB_REPO = /^(?=[A-Za-z0-9-]{1,39}\/)[A-Za-z0-9](?:-?[A-Za-z0-9])*\/(?!\.\.?$)[\w.-]{1,100}$/u
+// Non-empty normalized repo-relative path of URL-safe segments (the repo root is `root: true`).
+const REPO_DIRECTORY = /^(?!\.\.?(?:\/|$))[\w.~@+-]+(?:\/(?!\.\.?(?:\/|$))[\w.~@+-]+)*$/u
+// Full lowercase SHA-1 or SHA-256.
+const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
+// The fields of a `repo`, the bundle's own or a dependency's, and their checks.
+export const REPO_FIELDS = {
+  github: (v) => typeof v === 'string' && GITHUB_REPO.test(v),
+  directory: (v) => typeof v === 'string' && v.length <= 1024 && REPO_DIRECTORY.test(v),
+  root: (v) => v === true,
+  commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
+}
 
-// A parsed bucket: an absent version has one spelling (a literal null folds into undefined so
-// identity comparisons and JSON round-trips can't split on it), and `files` is null-prototype.
-export function normalizeModule({ name, version, ecosystem, files }) {
+// Whether two `repo`s name the same place: every field alike, `github` in any case, as GitHub's names are.
+export const sameRepo = (a, b) =>
+  Object.keys(REPO_FIELDS).every((key) => (key === 'github' ? a.github?.toLowerCase() === b.github?.toLowerCase() : a[key] === b[key]))
+
+// Validate a block against its `fields` (each optional: a check, or a nested block's fields), `what`
+// naming it in errors; canonical, frozen, undefined if empty.
+export const normalizeBlock = (block, fields, what) => {
+  if (block === undefined) return undefined
+  assert(isPlainObject(block), `${what} must be an object`)
+  for (const key of Object.keys(block)) assert(Object.hasOwn(fields, key), `unknown ${what} key '${key}'`)
+  const entries = Object.entries(fields).map(([key, check]) => {
+    if (typeof check === 'object') return [key, normalizeBlock(block[key], check, `${what}.${key}`)]
+    assert(block[key] === undefined || check(block[key]), `invalid ${what}.${key}: ${JSON.stringify(block[key])}`)
+    return [key, block[key]]
+  }).filter(([, value]) => value !== undefined)
+  return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
+}
+
+// Validate a `repo` (all fields optional); canonical key order, undefined if empty.
+export const normalizeRepo = (repo, what = 'bundle repo') => {
+  const normalized = normalizeBlock(repo, REPO_FIELDS, what)
+  assert(normalized?.directory === undefined || normalized.root === undefined, `${what} has both directory and root`)
+  return normalized
+}
+
+// A dependency's `repo`, the one its package.json names: only a node_modules bucket carries one.
+const normalizeModuleRepo = (dir, repo, what) => {
+  if (repo === undefined) return undefined
+  assert(hasNodeModulesSegment(dir), `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
+  return normalizeRepo(repo, `${what} module '${dir}' repo`)
+}
+
+// A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.
+export const moduleInfo = ({ name, version, ecosystem, repo, files }) =>
+  ({ name, version, ...(ecosystem === undefined ? {} : { ecosystem }), ...(repo === undefined ? {} : { repo }), files })
+
+// A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
+// into undefined so identity comparisons and JSON round-trips can't split on it), `repo` is validated,
+// and `files` is null-prototype.
+export function normalizeModule({ name, version, ecosystem, repo, files }, dir, what) {
   assert(ecosystem === undefined || typeof ecosystem === 'string')
-  return moduleInfo({ name, version: version ?? undefined, ecosystem, files: fromEntries(Object.entries(files)) })
+  return moduleInfo({ name, version: version ?? undefined, ecosystem, repo: normalizeModuleRepo(dir, repo, what), files: fromEntries(Object.entries(files)) })
 }
 
 // The keys a module map records -- the set an artifact's `executable` must be a subset of. `scope` MUST
@@ -298,16 +345,16 @@ export function serializeImports(imports) {
   return fileMapToObject(imports)
 }
 
-// A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects,
-// buckets and files path-sorted so the bytes are canonical.
-export function groupModules(modules, { skipEmpty = false } = {}) {
+// A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects
+// of a `what` artifact, buckets and files path-sorted so the bytes are canonical.
+export function groupModules(modules, { skipEmpty = false, what } = {}) {
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
     const files = fromEntries(Object.entries(info.files).toSorted(byPath))
-    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, files })])
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: normalizeModuleRepo(dir, info.repo, what), files })])
   }
   return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
 }
@@ -420,7 +467,7 @@ export function mergeModuleMaps(a, b, label) {
   const out = new Map()
   const absorb = (modules) => {
     for (const [dir, info] of modules) {
-      const existing = out.get(dir)
+      let existing = out.get(dir)
       if (existing === undefined) {
         out.set(dir, moduleInfo({ ...info, files: Object.assign(Object.create(null), info.files) }))
         continue
@@ -436,6 +483,12 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
+      // One side without a repo is an artifact from before the field: the other's is taken.
+      if (info.repo !== undefined) {
+        assert(existing.repo === undefined || sameRepo(existing.repo, info.repo),
+          `${label}: module '${dir}' repo mismatch (${JSON.stringify(existing.repo)} vs ${JSON.stringify(info.repo)})`)
+        if (existing.repo === undefined) out.set(dir, (existing = moduleInfo({ ...existing, repo: info.repo })))
+      }
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)
