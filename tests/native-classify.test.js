@@ -187,11 +187,32 @@ test('classifyNativeCapture: an extensionless shell shebang is shell code (conte
     { action: 'resource' })
 })
 
-test('classifyFormat: `.py`/`.pyi`/`.pyw` are python, code to the native capture', (t) => {
+test('classifyNativeCapture: Python source is python code, by extension or by shebang', (t) => {
   for (const name of ['scripts/gen.py', 'typings/mod.pyi', 'tools/gui.pyw', 'BUILD.PY']) {
-    t.assert.equal(classifyFormat(name), 'python', name)
+    t.assert.deepStrictEqual(classifyNativeCapture(name, NOT_WIN), { action: 'code', format: 'python' }, name)
   }
-  t.assert.deepStrictEqual(classifyNativeCapture('scripts/gen.py', NOT_WIN), { action: 'code', format: 'python' })
+  // An extensionless script is python when its shebang's interpreter is: the program itself, or `env`'s
+  // first operand past its options and assignments. CRLF line endings don't hide it.
+  for (const shebang of [
+    '#!/usr/bin/python', '#!/usr/bin/python3', '#!/usr/bin/env python3.12', '#! /usr/bin/env python2.7',
+    '#!/usr/bin/env -S python3 -u', '#!/usr/bin/env PYTHONUTF8=1 python3', '#!/usr/bin/python3\r',
+    // A virtualenv's interpreter, whose path holds an `sh` segment: still python, not shell.
+    '#!/home/me/sh/.venv/bin/python3', '#!/opt/sh-tools/venv/bin/python',
+  ]) {
+    const content = Buffer.from(`${shebang}\nprint(1)\n`)
+    t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content }),
+      { action: 'code', format: 'python' }, shebang)
+  }
+  // Only the interpreter counts: python named elsewhere on a shell line, a lookalike program, a shebang
+  // past the first line, or a non-UTF-8 file is not python.
+  const classify = (text) => classifyNativeCapture('run-tool', { win32: false, content: Buffer.from(text) })
+  t.assert.deepStrictEqual(classify('#!/bin/sh\nexec python3 "$0"\n'), { action: 'code', format: 'shell' })
+  t.assert.deepStrictEqual(classify('#!/usr/bin/env bash -c python3\n'), { action: 'code', format: 'shell' })
+  t.assert.deepStrictEqual(classify('#!/usr/bin/env python3-config\n'), { action: 'resource' })
+  t.assert.deepStrictEqual(classify('#!/usr/bin/env pythonista\n'), { action: 'resource' })
+  t.assert.deepStrictEqual(classify('\n#!/usr/bin/python3\n'), { action: 'resource' })
+  const latin1 = Buffer.concat([Buffer.from('#!/usr/bin/python3\n# caf'), Buffer.from([0xe9]), Buffer.from('\n')])
+  t.assert.deepStrictEqual(classifyNativeCapture('run-tool', { win32: false, content: latin1 }), { action: 'resource' })
 })
 
 // --- the directory-sweep exclusions (`stasis add <dir>`) ---------------------

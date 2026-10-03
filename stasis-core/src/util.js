@@ -174,12 +174,27 @@ const CODE_NAME_FORMATS = new Map([
   ['apple-app-site-association', 'json'],
 ])
 
+// An extensionless script's format from its `#!` line, else undefined. Python is keyed on the interpreter
+// itself: its path is often a virtualenv's, whose `sh`-named segment the looser shell match would take.
 const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
-function isShellShebang(content) {
-  if (!Buffer.isBuffer(content) || !isUtf8(content)) return false
+const PYTHON_INTERPRETER = /^python(?:\d+(?:\.\d+)*)?$/u
+function shebangFormat(content) {
+  if (!Buffer.isBuffer(content) || !isUtf8(content)) return undefined
   const head = content.subarray(0, 256).toString('utf8')
   const nl = head.indexOf('\n')
-  return SHELL_SHEBANG.test(nl === -1 ? head : head.slice(0, nl))
+  const line = nl === -1 ? head : head.slice(0, nl)
+  if (!line.startsWith('#!')) return undefined
+  if (PYTHON_INTERPRETER.test(shebangInterpreter(line))) return 'python'
+  return SHELL_SHEBANG.test(line) ? 'shell' : undefined
+}
+
+// The program a `#!` line runs: its basename, or `env`'s first operand past options and assignments
+// (`#!/usr/bin/env -S PYTHONUTF8=1 python3 -u` -> `python3`).
+function shebangInterpreter(line) {
+  const [program, ...args] = line.slice(2).trim().split(/\s+/u)
+  const name = program.slice(program.lastIndexOf('/') + 1)
+  if (name !== 'env') return name
+  return args.find((arg) => !arg.startsWith('-') && !arg.includes('=')) ?? ''
 }
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
@@ -280,7 +295,7 @@ export function classifyFormat(name, { content } = {}) {
   if (JS_UNRESOLVED_EXTS.has(ext)) return null
   const byExt = NODE_EXT_FORMATS.get(ext) ?? CODE_EXT_FORMATS.get(ext)
   if (byExt !== undefined) return byExt
-  if (ext === '' && isShellShebang(content)) return 'shell'
+  if (ext === '') return shebangFormat(content)
   return undefined
 }
 
