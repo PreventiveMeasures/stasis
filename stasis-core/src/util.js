@@ -192,12 +192,39 @@ function shebangFormat(content) {
 // `-P PATH`, or GNU's `--unset NAME`/`--chdir DIR`.
 const ENV_VALUE_OPTION = /^(?:-[^-]*[uCP]|--unset|--chdir)$/u
 
+// One piece of an `env -S` word: a '…' string (only `\\` and `\'` escape), a "…" string (`\` escapes),
+// an escaped character, or a bare run.
+const ENV_WORD_PART = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|\\(.)|([^\s'"\\]+)/suy
+
+// env's arguments as `env -S` splits them: whitespace separates words, quotes and `\` join and unquote,
+// and a word opening with `#` comments out the rest. An unterminated quote or trailing `\` is env's
+// error, so no words.
+function splitEnvWords(text) {
+  const words = []
+  let i = 0
+  for (;;) {
+    while (i < text.length && /\s/u.test(text[i])) i++
+    if (i === text.length || text[i] === '#') return words
+    let word = ''
+    while (i < text.length && !/\s/u.test(text[i])) {
+      ENV_WORD_PART.lastIndex = i
+      const m = ENV_WORD_PART.exec(text)
+      if (m === null) return []
+      const [, single, double, escaped, bare] = m
+      word += single?.replaceAll(/\\([\\'])/gu, '$1') ?? double?.replaceAll(/\\(.)/gsu, '$1') ?? escaped ?? bare
+      i = ENV_WORD_PART.lastIndex
+    }
+    words.push(word)
+  }
+}
+
 // The program a `#!` line runs: its basename, or `env`'s first operand past options, their values and
-// assignments (`#!/usr/bin/env -S -u PYTHONPATH PYTHONUTF8=1 python3 -u` -> `python3`).
+// assignments (`#!/usr/bin/env -S -u PYTHONPATH FOO="a b" python3 -u` -> `python3`).
 function shebangInterpreter(line) {
-  const [program, ...args] = line.slice(2).trim().split(/\s+/u)
+  const [, program, rest] = /^(\S*)\s*(.*)$/su.exec(line.slice(2).trim())
   const name = program.slice(program.lastIndexOf('/') + 1)
   if (name !== 'env') return name
+  const args = splitEnvWords(rest)
   for (let i = 0; i < args.length; i++) {
     if (ENV_VALUE_OPTION.test(args[i])) i++
     else if (!args[i].startsWith('-') && !args[i].includes('=')) return args[i]
