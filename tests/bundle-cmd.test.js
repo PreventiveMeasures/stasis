@@ -2465,6 +2465,28 @@ test('CLI: bundle --typescript --tsconfig=path uses the named config (and must e
   t.assert.match(missing.stderr, /tsconfig not found/)
 }))
 
+test('CLI: bundle --typescript names --jsx when an alias misses only for want of .tsx', withTmp((t, tmp) => {
+  // The alias target exists only as .tsx, which --typescript maps to only under --jsx (.tsx stays
+  // out of a bundle unless opted in): the miss must say so instead of a bare MODULE_NOT_FOUND.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }))
+  mkdirSync(join(tmp, 'src', 'x', 'y'), { recursive: true })
+  mkdirSync(join(tmp, 'src', 'a'))
+  writeFileSync(join(tmp, 'src', 'x', 'y', 'z.ts'), 'import { B } from "@/a/b"\nexport const v: unknown = B\n')
+  writeFileSync(join(tmp, 'src', 'a', 'b.tsx'), 'export const B = (): unknown => <b>x</b>\n')
+  const outPath = join(tmp, 'out.br')
+
+  const noJsx = runCli(['bundle', '--typescript', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
+  t.assert.notEqual(noJsx.status, 0)
+  t.assert.match(noJsx.stderr, /unresolved import @\/a\/b from src\/x\/y\/z\.ts \(MODULE_NOT_FOUND; resolves to src\/a\/b\.tsx under --jsx\)/u)
+  t.assert.ok(!existsSync(outPath))
+
+  const r = runCli(['bundle', '--typescript', '--jsx', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a/b.tsx', 'src/x/y/z.ts'])
+}))
+
 test('CLI: bundle rejects --tsconfig without --typescript', (t) => {
   const r = runCli(['bundle', '--tsconfig=tsconfig.json', 'entry.ts'])
   t.assert.notEqual(r.status, 0)
@@ -3360,7 +3382,7 @@ test('CLI: bundle --metro carries a .tsx dependency only under --jsx (else fails
   t.assert.notEqual(noJsx.status, 0, 'a reached .tsx dependency must fail closed without --jsx')
   t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
   // Relativized message: project-relative parent + target, never the machine's absolute path.
-  t.assert.match(noJsx.stderr, /tsx-dep from index\.js resolves to node_modules\/tsx-dep\/src\/index\.tsx, which a source bundle can't carry/)
+  t.assert.match(noJsx.stderr, /tsx-dep from index\.js resolves to node_modules\/tsx-dep\/src\/index\.tsx, which a source bundle can't carry without --jsx/)
   // The absolute project path must not leak into the message (the stack trace names stasis' own
   // source, but the scan-issue paths themselves must be project-relative).
   t.assert.doesNotMatch(noJsx.stderr, new RegExp(tmp.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'), 'scan-issue paths must be project-relative, not absolute')
@@ -3388,7 +3410,8 @@ test('CLI: bundle --metro --jsx probes .tsx for an extensionless import (sourceE
   const noJsx = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(noJsx.status, 0, 'without --jsx the resolver does not probe .tsx, so ./Widget is unresolved')
   t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
-  t.assert.match(noJsx.stderr, /unresolved import \.\/Widget from index\.js/)
+  // ...and names the .tsx file --jsx would resolve it to (the field resolver's --jsx twin).
+  t.assert.match(noJsx.stderr, /unresolved import \.\/Widget from index\.js \(MODULE_NOT_FOUND; resolves to Widget\.tsx under --jsx\)/)
 
   const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)

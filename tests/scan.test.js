@@ -577,6 +577,9 @@ test('scan typescript:true probes .tsx only under jsx (off, a .tsx twin stays un
   writeFileSync(join(tmp, 'App.tsx'), 'export function App(): unknown { return <span>x</span> }\n')
   const off = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
   t.assert.equal(off.unresolved.length, 1, 'without jsx the scanner cannot carry .tsx, so it must not resolve to one')
+  t.assert.equal(off.unresolved[0].jsx, 'App.tsx', 'the miss names the .tsx file jsx would resolve it to')
+  // Node never completes to .tsx, so without typescript there is no jsx-only target to name.
+  t.assert.equal(scan([join(tmp, 'entry.ts')]).toRelative(tmp).unresolved[0].jsx, undefined)
   const on = scan([join(tmp, 'entry.ts')], { typescript: true, jsx: true }).toRelative(tmp)
   t.assert.deepStrictEqual(on.unresolved, [])
   t.assert.equal(flattenImports(on.imports).get('entry.ts').get('./App.js'), 'App.tsx')
