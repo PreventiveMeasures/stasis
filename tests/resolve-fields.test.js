@@ -345,6 +345,9 @@ test('typescript: tsconfig paths aliases resolve through typescriptPaths', withT
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true, typescriptPaths })
   const from = join(tmp, 'entry.ts')
   t.assert.equal(relTo(tmp, resolver(from, '@app/only-ts.js')), 'only-ts.ts')
+  // An alias target completes to .js too: Node never probed it (shared dispatcher, as in scan).
+  writeFileSync(join(tmp, 'only-js.js'), 'exports.x = 1\n')
+  t.assert.equal(relTo(tmp, resolver(from, '@app/only-js')), 'only-js.js')
   // An alias never hijacks a resolution that succeeded (both.js exists; tspkg has a real main).
   t.assert.equal(relTo(tmp, resolver(from, './both.js')), 'both.js')
   // Without the matcher the alias stays unresolved.

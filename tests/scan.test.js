@@ -759,6 +759,41 @@ test('a tsconfig\'s paths take the baseUrl tsc takes: `${configDir}`, and none w
   t.assert.equal(loadTsconfigPaths(join(tmp, 'unset-paths.json')), null)
 }))
 
+test('scan typescriptPaths completes an alias target to .js/.jsx after the TS extensions, as tsc does', withTmp((t, tmp) => {
+  // Node never probed an alias target (it saw a bare `@/...` package), so the fallback owns the
+  // whole completion: tsc's .ts, .tsx, then .js, .jsx -- never .mjs/.cjs, which tsc never appends.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }))
+  mkdirSync(join(tmp, 'src', 'dir'), { recursive: true })
+  mkdirSync(join(tmp, 'src', 'file'))
+  writeFileSync(join(tmp, 'entry.ts'),
+    'import { j } from "@/js"\nimport { i } from "@/dir"\nimport { b } from "@/both"\nimport { d } from "@/typed"\n' +
+    'import { f } from "@/file"\nimport { m } from "@/mod"\nimport { c } from "@/comp"\nexport const v = [j, i, b, d, f, m, c]\n')
+  writeFileSync(join(tmp, 'src', 'js.js'), 'export const j = 1\n')
+  writeFileSync(join(tmp, 'src', 'dir', 'index.js'), 'export const i = 1\n')
+  writeFileSync(join(tmp, 'src', 'both.js'), 'export const b = 1\n')
+  writeFileSync(join(tmp, 'src', 'both.ts'), 'export const b: number = 1\n')
+  writeFileSync(join(tmp, 'src', 'typed.d.ts'), 'export declare const d: number\n')
+  writeFileSync(join(tmp, 'src', 'typed.js'), 'export const d = 1\n')
+  writeFileSync(join(tmp, 'src', 'file.js'), 'export const f = 1\n')
+  writeFileSync(join(tmp, 'src', 'file', 'index.ts'), 'export const f: number = 1\n')
+  writeFileSync(join(tmp, 'src', 'mod.mjs'), 'export const m = 1\n')
+  writeFileSync(join(tmp, 'src', 'comp.jsx'), 'export const c = <b>x</b>\n')
+  const typescriptPaths = loadTsconfigPaths(join(tmp, 'tsconfig.json'))
+  const off = scan([join(tmp, 'entry.ts')], { typescript: true, typescriptPaths }).toRelative(tmp)
+  const byParent = flattenImports(off.imports)
+  t.assert.equal(byParent.get('entry.ts').get('@/js'), 'src/js.js')
+  t.assert.equal(byParent.get('entry.ts').get('@/dir'), 'src/dir/index.js')
+  t.assert.equal(byParent.get('entry.ts').get('@/both'), 'src/both.ts', 'the TS extensions come first')
+  t.assert.equal(byParent.get('entry.ts').get('@/typed'), 'src/typed.js', 'a declaration is never a target')
+  t.assert.equal(byParent.get('entry.ts').get('@/file'), 'src/file.js', 'the file comes before the directory')
+  // .jsx is carryable (so probed) only under jsx; without it the miss names it.
+  t.assert.deepStrictEqual(off.unresolved.map((u) => [u.spec, u.jsx]), [['@/mod', undefined], ['@/comp', 'src/comp.jsx']])
+  const on = scan([join(tmp, 'entry.ts')], { typescript: true, typescriptPaths, jsx: true }).toRelative(tmp)
+  t.assert.equal(flattenImports(on.imports).get('entry.ts').get('@/comp'), 'src/comp.jsx')
+  t.assert.deepStrictEqual(on.unresolved.map((u) => u.spec), ['@/mod'])
+}))
+
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({
