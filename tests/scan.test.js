@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -139,13 +139,13 @@ test('scan records module files that fail to parse in parseErrors with no edges'
   t.assert.equal(rel.parseErrors[0].file, 'broken.mjs')
 }))
 
-test('scan salvages edges from a script (CJS) file with a parse error (top-level return)', withTmp((t, tmp) => {
-  // Node's CJS module wrapper accepts a top-level `return`; oxc reports it as
-  // an error but error-recovers a complete AST. The require() edge must
-  // survive, with the parse error recorded alongside it.
+test('scan salvages edges from a script (CJS) file with a parse error (import.meta in CJS)', withTmp((t, tmp) => {
+  // `import.meta` is a SyntaxError in CJS; oxc reports it as an error but
+  // error-recovers a complete AST. The require() edge must survive, with the
+  // parse error recorded alongside it.
   const entry = join(tmp, 'entry.cjs')
   writeFileSync(entry, "require('./guard.cjs')\n")
-  writeFileSync(join(tmp, 'guard.cjs'), "if (!process.env.NEVER) return\nmodule.exports = require('./extra.cjs')\n")
+  writeFileSync(join(tmp, 'guard.cjs'), "const dir = import.meta.dirname\nmodule.exports = require('./extra.cjs')\n")
   writeFileSync(join(tmp, 'extra.cjs'), 'module.exports = 1\n')
   const result = scan([entry])
   t.assert.equal(result.parseErrors.length, 1)
@@ -156,6 +156,38 @@ test('scan salvages edges from a script (CJS) file with a parse error (top-level
   t.assert.ok(info.parseError, 'files entry must carry the parseError flag')
   t.assert.equal(info.edges.length, 1, 'the require edge must be salvaged from the recovered AST')
   t.assert.ok([...result.files.keys()].some((u) => u.endsWith('/extra.cjs')), 'salvaged edges must be walked')
+}))
+
+test('scan parses a top-level return or new.target in CJS cleanly, as Node\'s module wrapper allows', withTmp((t, tmp) => {
+  // Node runs CJS inside a wrapper function, so both are legal at the top level. Every way a file
+  // is CJS must parse clean: .cjs, .js under "type": "commonjs", and a typeless .js Node detects
+  // as CJS (parsed `unambiguous`, i.e. as a script, then re-parsed as `commonjs`).
+  const guard = "if (!process.env.NEVER) return\nconsole.log(new.target)\nmodule.exports = require('./extra.cjs')\n"
+  writeFileSync(join(tmp, 'extra.cjs'), 'module.exports = 1\n')
+  const check = (entry, format) => {
+    const result = scan([entry])
+    t.assert.deepStrictEqual(result.parseErrors, [], `${entry} must parse clean`)
+    const info = [...result.files].find(([url]) => url.endsWith(`/${basename(entry)}`))[1]
+    t.assert.equal(info.format, format)
+    t.assert.equal(info.parseError, undefined)
+    t.assert.equal(info.edges.length, 1)
+    t.assert.ok([...result.files.keys()].some((u) => u.endsWith('/extra.cjs')), 'the require edge must be walked')
+  }
+
+  writeFileSync(join(tmp, 'guard.cjs'), guard)
+  check(join(tmp, 'guard.cjs'), 'commonjs')
+
+  mkdirSync(join(tmp, 'typed'))
+  writeFileSync(join(tmp, 'typed', 'package.json'), JSON.stringify({ name: 'typed', version: '0.0.0', type: 'commonjs' }))
+  writeFileSync(join(tmp, 'typed', 'guard.js'), guard.replace('./extra.cjs', '../extra.cjs'))
+  check(join(tmp, 'typed', 'guard.js'), 'commonjs')
+
+  mkdirSync(join(tmp, 'typeless'))
+  writeFileSync(join(tmp, 'typeless', 'package.json'), JSON.stringify({ name: 'typeless', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'typeless', 'guard.js'), guard.replace('./extra.cjs', '../extra.cjs'))
+  check(join(tmp, 'typeless', 'guard.js'), 'commonjs')
+  writeFileSync(join(tmp, 'typeless', 'guard.ts'), guard.replace('./extra.cjs', '../extra.cjs'))
+  check(join(tmp, 'typeless', 'guard.ts'), 'commonjs-typescript')
 }))
 
 test('scan applies Node module-syntax detection to ambiguous .js (no "type" in scope)', withTmp((t, tmp) => {
@@ -177,14 +209,23 @@ test('scan applies Node module-syntax detection to ambiguous .js (no "type" in s
   writeFileSync(plain, "import('./leaf.js').catch(() => {})\nmodule.exports = 1\n")
   const r2 = scan([plain])
   t.assert.equal([...r2.files].find(([url]) => url.endsWith('/plain.js'))[1].format, 'commonjs')
-  // Top-level await alone MUST flip (Node counts TLA as module syntax, oxc's
-  // hasModuleSyntax does not -- scan retries the failed script parse as a
-  // module and adopts it when clean). Not a parse error.
+  // Top-level await alone MUST flip (Node counts TLA as module syntax, and so does oxc's
+  // `unambiguous` mode since 0.109; before that, scan's retry-as-module caught it). Not a parse error.
   const tla = join(tmp, 'tla.js')
   writeFileSync(tla, 'const one = await Promise.resolve(1)\n')
   const r3 = scan([tla])
   t.assert.equal([...r3.files].find(([url]) => url.endsWith('/tla.js'))[1].format, 'module')
   t.assert.deepStrictEqual(r3.parseErrors, [])
+  // Static imports AND top-level await: oxc < 0.109 flagged the await as an error even though it
+  // saw the module syntax, and a module-family parse error is fatal -- plain node ran the file
+  // while `stasis bundle` refused it. It must be a clean module with its edges.
+  const mixed = join(tmp, 'mixed.js')
+  writeFileSync(mixed, "import { y } from './leaf.js'\nconst one = await Promise.resolve(y)\n")
+  const r4 = scan([mixed])
+  const mixedInfo = [...r4.files].find(([url]) => url.endsWith('/mixed.js'))[1]
+  t.assert.equal(mixedInfo.format, 'module')
+  t.assert.equal(mixedInfo.edges.length, 1)
+  t.assert.deepStrictEqual(r4.parseErrors, [])
 }))
 
 test('scan records a parse error for JSX in a .js file, and js:true parses past it', withTmp((t, tmp) => {

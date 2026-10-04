@@ -99,7 +99,7 @@
     "@preventive/lockfile": "1.0.0-alpha.5",
     "@preventive/upstream": "1.0.0-alpha.4",
     "@preventive/vfs": "1.0.0-beta.3",
-    "oxc-parser": "^0.94.0"
+    "oxc-parser": "^0.152.0"
   },
   "peerDependencies": {
     "esbuild": "*",

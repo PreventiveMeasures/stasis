@@ -3083,14 +3083,14 @@ test('CLI: bundle (JS) fails closed when a statically-imported module file does 
   t.assert.ok(!existsSync(outPath))
 }))
 
-test('CLI: bundle (JS) salvages edges from a CJS file with a top-level return (valid in Node, parse error in oxc)', withTmp((t, tmp) => {
-  // Node's module wrapper makes a top-level `return` legal in CJS; oxc reports
-  // it as an error but its recovered AST keeps the require() calls. The bundle
-  // must include the whole chain and only warn -- a hard failure here would
-  // reject code that runs (and previously bundled) fine.
+test('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc recovers from (import.meta in CJS)', withTmp((t, tmp) => {
+  // oxc reports `import.meta` in CJS as an error but its recovered AST keeps
+  // the require() calls. A recovered CJS parse error is warn-only (see
+  // analyzeScanner's fatalParse): the bundle must include the whole chain and
+  // only warn.
   jsProject(tmp, {
     'entry.cjs': "require('./guard.cjs')\n",
-    'guard.cjs': "if (!process.env.NEVER) return\nmodule.exports = require('./extra.cjs')\n",
+    'guard.cjs': "const dir = import.meta.dirname\nmodule.exports = require('./extra.cjs')\n",
     'extra.cjs': 'module.exports = 1\n',
   })
   const outPath = join(tmp, 'out.br')
@@ -3101,6 +3101,33 @@ test('CLI: bundle (JS) salvages edges from a CJS file with a top-level return (v
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.cjs', 'extra.cjs', 'guard.cjs'],
     'the require edge inside the parse-error file must be salvaged and walked')
+}))
+
+test('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s module wrapper does', withTmp((t, tmp) => {
+  // oxc parses CJS as `commonjs`, which accepts a top-level `return` (and `new.target`) like
+  // Node's wrapper: no parse-error warning, every require() edge walked, and the bundle loads.
+  // guard.js sits in a typeless package (re-parsed as `commonjs` after detection); early.cjs is
+  // CJS by its extension.
+  jsProject(tmp, {
+    'entry.js': "require('./guard.js')\nrequire('./early.cjs')\nconsole.log('ok')\n",
+    'guard.js': "if (!process.env.NEVER) return\nmodule.exports = require('./extra.js')\n",
+    'early.cjs': "if (new.target === undefined) return\nrequire('./extra.js')\n",
+    'extra.js': 'module.exports = 1\n',
+  }, { name: 'cjs-return', version: '0.0.0' })
+  const outPath = join(tmp, 'out.br')
+  const r = runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.doesNotMatch(r.stderr, /parse error/)
+  const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
+  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['early.cjs', 'entry.js', 'extra.js', 'guard.js'])
+  t.assert.equal(decoded.formats['guard.js'], 'commonjs')
+
+  const load = runCli(
+    ['run', '--lock=none', '--bundle=load', `--bundle-file=${outPath}`, 'entry.js'],
+    { cwd: tmp },
+  )
+  t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
+  t.assert.equal(load.stdout, 'ok\n')
 }))
 
 test('CLI: bundle (JS) tolerates a missing static import behind a dynamic import() boundary', withTmp((t, tmp) => {
@@ -3578,7 +3605,7 @@ test('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and
 
 test('CLI: bundle (JS) detects module via top-level await in ambiguous .js and the bundle loads', withTmp((t, tmp) => {
   // Node's detector counts top-level await as module syntax; oxc's
-  // hasModuleSyntax does not. This lazy-load entry runs as ESM in plain node
+  // hasModuleSyntax did not before 0.109. This lazy-load entry runs as ESM in plain node
   // but used to be bundled as format=commonjs -- a parse-error warning, exit
   // 0, then SyntaxError at load: the exact fail-open this branch removes.
   jsProject(tmp, {

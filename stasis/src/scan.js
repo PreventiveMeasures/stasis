@@ -259,8 +259,10 @@ export class Scan {
     // force the JSX variant when opted in (`--jsx`) to parse React Native's JSX-in-.js source.
     const lang = this.jsx && JSX_EXTS.has(ext) ? 'jsx' : undefined
     const parseOptions = (sourceType) => (lang ? { sourceType, lang } : { sourceType })
+    // `commonjs`, not `script`: Node runs CJS inside its module wrapper function, where a top-level
+    // `return` or `new.target` is legal; oxc's `commonjs` accepts both and is otherwise `script`.
     const baseSourceType = declared === null ? 'unambiguous'
-      : declared.startsWith('module') ? 'module' : 'script'
+      : declared.startsWith('module') ? 'module' : 'commonjs'
     let parsed
     try {
       parsed = parser.parseSync(file, src, parseOptions(baseSourceType))
@@ -283,14 +285,28 @@ export class Scan {
     const nonWarning = (p) => (p.errors ?? []).filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
     let errors = nonWarning(parsed)
 
-    // oxc's hasModuleSyntax misses top-level await, so a TLA-only ESM file parses here as a
-    // broken script; mirror Node by retrying as module and preferring a clean module parse.
+    // oxc's `unambiguous` mode counts top-level await as module syntax (since 0.109; before, a
+    // TLA-only ESM file parsed here as a broken script). Keep mirroring Node for any script parse
+    // that still fails: retry as module and prefer a clean module parse.
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
       try {
         const asModule = parser.parseSync(file, src, parseOptions('module'))
         if (nonWarning(asModule).length === 0) {
           parsed = asModule
           format = `module${tsSuffix}`
+          errors = []
+        }
+      } catch { /* keep the script parse and its recorded errors */ }
+    }
+
+    // A typeless file Node detects as CJS runs inside the module wrapper too, but `unambiguous`
+    // parses it as a plain script, so a top-level `return` still fails there: retry as `commonjs`
+    // and prefer a clean parse (the detected commonjs format stands).
+    if (errors.length > 0 && declared === null && !format.startsWith('module')) {
+      try {
+        const asCommonjs = parser.parseSync(file, src, parseOptions('commonjs'))
+        if (nonWarning(asCommonjs).length === 0) {
+          parsed = asCommonjs
           errors = []
         }
       } catch { /* keep the script parse and its recorded errors */ }
