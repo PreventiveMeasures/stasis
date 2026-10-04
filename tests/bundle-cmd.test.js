@@ -3578,7 +3578,7 @@ test('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and
 
 test('CLI: bundle (JS) detects module via top-level await in ambiguous .js and the bundle loads', withTmp((t, tmp) => {
   // Node's detector counts top-level await as module syntax; oxc's
-  // hasModuleSyntax does not. This lazy-load entry runs as ESM in plain node
+  // hasModuleSyntax did not before 0.109. This lazy-load entry runs as ESM in plain node
   // but used to be bundled as format=commonjs -- a parse-error warning, exit
   // 0, then SyntaxError at load: the exact fail-open this branch removes.
   jsProject(tmp, {

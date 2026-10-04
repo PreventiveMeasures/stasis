@@ -177,14 +177,23 @@ test('scan applies Node module-syntax detection to ambiguous .js (no "type" in s
   writeFileSync(plain, "import('./leaf.js').catch(() => {})\nmodule.exports = 1\n")
   const r2 = scan([plain])
   t.assert.equal([...r2.files].find(([url]) => url.endsWith('/plain.js'))[1].format, 'commonjs')
-  // Top-level await alone MUST flip (Node counts TLA as module syntax, oxc's
-  // hasModuleSyntax does not -- scan retries the failed script parse as a
-  // module and adopts it when clean). Not a parse error.
+  // Top-level await alone MUST flip (Node counts TLA as module syntax, and so does oxc's
+  // `unambiguous` mode since 0.109; before that, scan's retry-as-module caught it). Not a parse error.
   const tla = join(tmp, 'tla.js')
   writeFileSync(tla, 'const one = await Promise.resolve(1)\n')
   const r3 = scan([tla])
   t.assert.equal([...r3.files].find(([url]) => url.endsWith('/tla.js'))[1].format, 'module')
   t.assert.deepStrictEqual(r3.parseErrors, [])
+  // Static imports AND top-level await: oxc < 0.109 flagged the await as an error even though it
+  // saw the module syntax, and a module-family parse error is fatal -- plain node ran the file
+  // while `stasis bundle` refused it. It must be a clean module with its edges.
+  const mixed = join(tmp, 'mixed.js')
+  writeFileSync(mixed, "import { y } from './leaf.js'\nconst one = await Promise.resolve(y)\n")
+  const r4 = scan([mixed])
+  const mixedInfo = [...r4.files].find(([url]) => url.endsWith('/mixed.js'))[1]
+  t.assert.equal(mixedInfo.format, 'module')
+  t.assert.equal(mixedInfo.edges.length, 1)
+  t.assert.deepStrictEqual(r4.parseErrors, [])
 }))
 
 test('scan records a parse error for JSX in a .js file, and js:true parses past it', withTmp((t, tmp) => {

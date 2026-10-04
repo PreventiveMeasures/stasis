@@ -283,8 +283,9 @@ export class Scan {
     const nonWarning = (p) => (p.errors ?? []).filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
     let errors = nonWarning(parsed)
 
-    // oxc's hasModuleSyntax misses top-level await, so a TLA-only ESM file parses here as a
-    // broken script; mirror Node by retrying as module and preferring a clean module parse.
+    // oxc's `unambiguous` mode counts top-level await as module syntax (since 0.109; before, a
+    // TLA-only ESM file parsed here as a broken script). Keep mirroring Node for any script parse
+    // that still fails: retry as module and prefer a clean module parse.
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
       try {
         const asModule = parser.parseSync(file, src, parseOptions('module'))
