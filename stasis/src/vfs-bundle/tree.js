@@ -242,14 +242,19 @@ const PACKAGE_MANAGERS = {
 // Their names.
 const PACKAGE_MANAGER_NAMES = Object.keys(PACKAGE_MANAGERS)
 
-// layOutTree's tree, with the host reading `project` through it: the tree serves what the package
-// manager installs, and any file it writes beside it at the root.
+// layOutTree's tree, with the host reading `project` through it (treeHost).
 export async function loadTree(options) {
   const tree = await layOutTree(options)
-  const pm = PACKAGE_MANAGERS[options.packageManager]
+  return { ...tree, host: treeHost(tree, options.project) }
+}
+
+// The host reading `project`, a host of the project's Vfs, through `tree` (layOutTree's): the tree
+// serves what the package manager installs, and any file it writes beside it at the root.
+export function treeHost(tree, project) {
+  const pm = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
   const installs = [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
-  return { ...tree, host: vfsHost(tree.vfs, { root: tree.root, outside: options.project, installs, hides: pm.hides }) }
+  return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
 }
 
 // The lockfile `packageManager` installs from, e.g. 'pnpm-lock.yaml'.

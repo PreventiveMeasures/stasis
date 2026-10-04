@@ -68,6 +68,7 @@
     "src/vfs-bundle.js",
     "src/vfs-bundle/entries.js",
     "src/vfs-bundle/github.js",
+    "src/vfs-bundle/prisma.js",
     "src/vfs-bundle/soldeer.js",
     "src/vfs-bundle/tree.js",
     "src/webpack.js",

@@ -63,7 +63,7 @@ function usage(prefix = '') {
    not with --metro-resolver;
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
- stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
+ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
  (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
   either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
   GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory
@@ -82,6 +82,10 @@ function usage(prefix = '') {
   dependency or build directories; its paths, and the directory its repo names, are
   --directory's, or of a JS bundle, the innermost package's at or above it holding every file it
   bundles, the project root's where one is outside; not with --metro-resolver, --cargo* or --add;
+  --generate=prisma first writes, for each project with a "prisma-client" generator, the Prisma
+  Client its "prisma generate" would (Prisma 7.4.0 to 7.10.0), with the optional
+  @prisma/client-generator-ts 7.10.0 dependency: nothing of the repo runs, its schema and config
+  are read as data, and its prisma for its version alone;
   writes to owner-name.<commit's first 7>.stasis.code.br by default,
   owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with --directory, each
   character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in 255 characters cut,
@@ -475,8 +479,9 @@ if (command === '-v' || command === '--version') {
     resources: { type: 'string' },
     'package-json': { type: 'boolean' },
     'brotli-quality': { type: 'string' },
+    generate: { type: 'string', multiple: true },
   }, {
-    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '-o'],
+    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '--generate', '-o'],
     onError: usage,
   })
   if (values.github === undefined) usage('Error: github-bundle requires --github=owner/name, the repo to bundle')
@@ -518,6 +523,7 @@ if (command === '-v' || command === '--version') {
     tsconfig: values.tsconfig,
     resources: list(values.resources),
     packageJSON: Boolean(values['package-json']),
+    generate: list(values.generate),
     brotliQuality,
   })
 } else if (command === 'add') {
