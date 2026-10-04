@@ -716,6 +716,15 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
     if (root !== state.root) state = new State(baseDir, { ...stateOptions, env: { ...env, PROJECT_CWD: root } })
   }
+  // Named here rather than as the State's bare assertion: a stasis file in a directory below the
+  // project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
+  for (const url of scanner.files.keys()) {
+    const file = fileURLToPath(url)
+    if (!relativeEscapes(relative(state.root, file))) continue
+    const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
+    const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
+    throw new Error(`buildJsBundle: ${relative(baseDir, file)} is outside the project root at ${relative(baseDir, state.root) || '.'}${rootedBy}`)
+  }
   for (const [url, info] of scanner.files) {
     // A resource carries bytes only: addFile derives resource vs resource:base64 from the content
     // and stores it under `resources` (a resource can't be an entry, so no isEntry).
@@ -1292,14 +1301,20 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   const kind = classifyEntries('bundleCommand', { ...options, lockfile })
 
-  const target = output ?? DEFAULT_BUNDLE_FILE
   // --add has nothing to merge into on stdout (write-only).
-  if (add && target === '-') {
+  if (add && output === '-') {
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
 
   const built = await buildOfKind(kind, options)
   let { bundle } = built
+  // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
+  // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
+  const root = built.root ?? resolve(cwd)
+  // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
+  // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
+  // files above it.
+  const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
   // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
   let lockData = lockfile ? built.lockfile().serialize() : undefined
 
@@ -1343,7 +1358,8 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
 
   const dest = writeBundle(cwd, target, serialized, brotliQuality)
   if (lockData) writeFile(lockAbs, lockData)
-  const fromDir = outermostDir(files, resolve(cwd))
+  // The bundle's paths are relative to its root; shown relative to cwd, as `dest` is.
+  const fromDir = posix.join(toPosix(relative(resolve(cwd), root)), outermostDir(files, root))
   // On a merge, report newly-added files alongside the totals; a fresh write keeps the plain line.
   if (mergedFrom !== undefined) {
     const added = files.length - mergedFrom
