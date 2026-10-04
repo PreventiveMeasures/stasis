@@ -259,8 +259,10 @@ export class Scan {
     // force the JSX variant when opted in (`--jsx`) to parse React Native's JSX-in-.js source.
     const lang = this.jsx && JSX_EXTS.has(ext) ? 'jsx' : undefined
     const parseOptions = (sourceType) => (lang ? { sourceType, lang } : { sourceType })
+    // `commonjs`, not `script`: Node runs CJS inside its module wrapper function, where a top-level
+    // `return` or `new.target` is legal; oxc's `commonjs` accepts both and is otherwise `script`.
     const baseSourceType = declared === null ? 'unambiguous'
-      : declared.startsWith('module') ? 'module' : 'script'
+      : declared.startsWith('module') ? 'module' : 'commonjs'
     let parsed
     try {
       parsed = parser.parseSync(file, src, parseOptions(baseSourceType))
@@ -292,6 +294,19 @@ export class Scan {
         if (nonWarning(asModule).length === 0) {
           parsed = asModule
           format = `module${tsSuffix}`
+          errors = []
+        }
+      } catch { /* keep the script parse and its recorded errors */ }
+    }
+
+    // A typeless file Node detects as CJS runs inside the module wrapper too, but `unambiguous`
+    // parses it as a plain script, so a top-level `return` still fails there: retry as `commonjs`
+    // and prefer a clean parse (the detected commonjs format stands).
+    if (errors.length > 0 && declared === null && !format.startsWith('module')) {
+      try {
+        const asCommonjs = parser.parseSync(file, src, parseOptions('commonjs'))
+        if (nonWarning(asCommonjs).length === 0) {
+          parsed = asCommonjs
           errors = []
         }
       } catch { /* keep the script parse and its recorded errors */ }
