@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, posix } from 'node:path'
+import { posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
@@ -96,10 +96,10 @@ const REQUIRES = new Set(['@prisma/client-common', '@prisma/dmmf', '@prisma/inte
 // The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
 // generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
 // the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
-// with. Its bundle exports neither function, so it is run as Node runs it, with the two exported in
-// place of its own exports, and readQueryCompiler in place of its readSourceFile; best effort,
-// without what it holds that buildClient doesn't reach (UNREACHED, UNREACHED_LINES), and refused
-// if it then requires more than REQUIRES.
+// with. Its bundle exports neither function, so it is run as a function of its `require` returning
+// the two (what it then runs reads no module, exports, __filename or __dirname), readQueryCompiler
+// in place of its readSourceFile; best effort, without what it holds that buildClient doesn't reach
+// (UNREACHED, UNREACHED_LINES), and refused if it then requires more than REQUIRES.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -116,11 +116,9 @@ function loadGenerator() {
   // Each `require` there, a call with a module name or not, is to be one of REQUIRES.
   const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
   if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
-  const peer = { exports: {} }
-  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname', 'readQueryCompiler', 'debug'], { filename: main })
-  run.call(peer.exports, peer.exports, own, peer, main, dirname(main), readQueryCompiler, () => {})
+  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nreturn { buildClient, validateDmmfAgainstDenylists }\n`, ['require', 'readQueryCompiler', 'debug'], { filename: main })
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
-  loaded = { ...peer.exports, internals: own('@prisma/internals'), schemaFiles }
+  loaded = { ...run(own, readQueryCompiler, () => {}), internals: own('@prisma/internals'), schemaFiles }
   return loaded
 }
 
@@ -147,13 +145,10 @@ function installedPrisma(host, dir) {
   return PRISMA_VERSIONS.includes(beside?.version) ? beside : prisma
 }
 
-// Where @prisma/config looks for a project's config, in order: 7.10.0 tries `prisma7.config.*`
-// first, which no Prisma before it reads.
-const CONFIG_EXTENSIONS = ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts']
-const withExtensions = (bases) => bases.flatMap((base) => CONFIG_EXTENSIONS.map((ext) => `${base}${ext}`))
-const PRISMA7_CONFIGS = withExtensions(['prisma7.config', '.config/prisma7'])
-const LEGACY_CONFIGS = withExtensions(['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`]))
-const configsOf = (version) => (newerThan(version, '7.9.1') ? [...PRISMA7_CONFIGS, ...LEGACY_CONFIGS] : LEGACY_CONFIGS)
+// Where @prisma/config looks for a project's config, in order, each base with each extension:
+// 7.10.0 tries `prisma7.config.*` first (the first two), which no Prisma before it reads.
+const CONFIG_BASES = ['prisma7.config', '.config/prisma7', ...['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`])]
+const configsOf = (version) => CONFIG_BASES.slice(newerThan(version, '7.9.1') ? 0 : 2).flatMap((base) => ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].map((ext) => `${base}${ext}`))
 
 // What a config's imports and requires may bind a name to, by module and by what is imported (`*`
 // for the module itself): Node's path module or its join, or Prisma's defineConfig.
@@ -179,10 +174,7 @@ function configSchema(file, text) {
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
   const consts = new Map()
   const bound = new Map()
-  const bind = (from, name, local) => {
-    const as = BINDINGS[from]?.[name]
-    if (as) bound.set(local, as)
-  }
+  const bind = (from, name, local) => bound.set(local, BINDINGS[from]?.[name])
   // The module a `require('...')` names, or null.
   const required = (node) => (node?.type === 'CallExpression' && node.callee.name === 'require' && node.arguments.length === 1 ? literalSpec(node.arguments[0]) : null)
   let config
@@ -193,13 +185,9 @@ function configSchema(file, text) {
     } else if (node.type === 'VariableDeclaration' && node.kind === 'const') {
       for (const { id, init } of node.declarations) {
         const from = required(init)
-        if (from === null) {
-          if (id.type === 'Identifier' && init) consts.set(id.name, init)
-        } else if (id.type === 'Identifier') {
-          bind(from, '*', id.name)
-        } else if (id.type === 'ObjectPattern') {
-          for (const { type, computed, key, value } of id.properties) if (type === 'Property' && !computed && value.type === 'Identifier') bind(from, key.name, value.name)
-        }
+        if (id.type === 'Identifier' && init) consts.set(id.name, init)
+        if (from !== null && id.type === 'Identifier') bind(from, '*', id.name)
+        if (from !== null && id.type === 'ObjectPattern') for (const { type, computed, key, value } of id.properties) if (type === 'Property' && !computed && value.type === 'Identifier') bind(from, key.name, value.name)
       }
     } else if (node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression') {
       const { left, right } = node.expression
@@ -229,7 +217,7 @@ function configSchema(file, text) {
   for (const property of config.properties) {
     // A spread or a computed key may name a schema stasis can't see.
     if (property.type !== 'Property' || property.computed) throw refuse('its config spreads or computes a key')
-    if ((property.key.type === 'Identifier' ? property.key.name : property.key.value) === 'schema') schema = spelled(property.value)
+    if ((property.key.name ?? property.key.value) === 'schema') schema = spelled(property.value)
   }
   return schema
 }
@@ -251,58 +239,37 @@ function schemaFilesAt(host, path) {
   })
 }
 
-// The schema `prisma generate` reads for the project at `dir` with Prisma `version`, as schema files
-// and the path it was given, or null where there is none: the one its config names, relative to the
-// config, else ./schema.prisma or ./prisma/schema.prisma.
-async function projectSchema(host, dir, version) {
-  const config = configsOf(version).map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
-  const named = config === undefined ? undefined : configSchema(config, host.readFile(config).toString('utf8'))
-  let path
-  if (named === undefined) {
-    path = ['schema.prisma', 'prisma/schema.prisma'].map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
-    if (path === undefined) return null
-  } else {
-    path = posix.resolve(posix.dirname(config), named)
-    if (!isFile(path, host) && !isDir(path, host)) throw new Error(`${config}: its schema ${named} is no file or directory`)
-  }
-  return { path, files: await schemaFilesAt(host, path) }
+// The schema `prisma generate` reads for the project at `dir` with Prisma `version`, as the path it
+// is given, or null where there is none: the one its config names, relative to the config, else
+// ./schema.prisma or ./prisma/schema.prisma.
+function projectSchema(host, dir, version) {
+  const first = (names) => names.map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
+  const config = first(configsOf(version))
+  const named = config && configSchema(config, host.readFile(config).toString('utf8'))
+  const path = named === undefined ? first(['schema.prisma', 'prisma/schema.prisma']) : posix.resolve(posix.dirname(config), named)
+  if (path === undefined) return null
+  if (!isFile(path, host) && !isDir(path, host)) throw new Error(`${config}: its schema ${named} is no file or directory`)
+  return path
 }
 
-// get-tsconfig 4.10's normalizeCompilerOptions as far as the generator reads its result: each of
-// target, module and moduleResolution lowercased (es2015 as es6, node as node10), and the module and
-// moduleResolution a target or module implies where none is given, the target's first.
-const CLASSIC_TARGETS = new Set(['es6', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
-const CLASSIC_MODULES = new Set(['es6', 'es2020', 'es2022', 'esnext', 'none', 'system', 'umd', 'amd'])
-const IMPLIED_RESOLUTION = { node16: 'node16', nodenext: 'nodenext', preserve: 'bundler' }
-const lower = (value, alias) => (value.toLowerCase() === alias[0] ? alias[1] : value.toLowerCase())
-function normalizeCompilerOptions(options) {
-  const o = { ...options }
-  if (o.target) {
-    o.target = lower(o.target, ['es2015', 'es6'])
-    if (CLASSIC_TARGETS.has(o.target)) {
-      o.module ??= 'es6'
-      o.moduleResolution ??= 'classic'
-    }
-  }
-  if (o.module) {
-    o.module = lower(o.module, ['es2015', 'es6'])
-    o.moduleResolution ??= CLASSIC_MODULES.has(o.module) ? 'classic' : IMPLIED_RESOLUTION[o.module]
-  }
-  if (o.moduleResolution) o.moduleResolution = lower(o.moduleResolution, ['node', 'node10'])
-  return o
-}
-
-// The compilerOptions of the tsconfig.json nearest `dir` (get-tsconfig's getTsconfig), or undefined.
+// The compilerOptions of the tsconfig.json nearest `dir` (get-tsconfig's getTsconfig), or undefined,
+// as far as the generator reads get-tsconfig 4.10's normalizeCompilerOptions of them (it tells
+// bundler resolution from any other alone): module and moduleResolution lowercased; where none is
+// given, an ES target's (es2015 on) es6 module and classic resolution, else a preserve module's
+// bundler resolution.
+const ES_TARGETS = new Set(['es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
 function tsconfigOptions(host, dir) {
   const file = nearestFile(host, dir, 'tsconfig.json')
-  return file === null ? undefined : normalizeCompilerOptions(loadTsconfigCompilerOptions(file, host))
-}
-
-// The module format the `type` of the package.json nearest `dir` (package-up's) says: cjs without
-// one, or where it can't be read.
-function nearestPackageFormat(host, dir) {
-  const file = nearestFile(host, dir, 'package.json')
-  return file !== null && readJson(file, host)?.type === 'module' ? 'esm' : 'cjs'
+  if (file === null) return undefined
+  const o = loadTsconfigCompilerOptions(file, host)
+  if (o.target && ES_TARGETS.has(o.target.toLowerCase())) {
+    o.module ??= 'es6'
+    o.moduleResolution ??= 'classic'
+  }
+  if (o.module) o.module = o.module.toLowerCase()
+  if (o.module === 'preserve') o.moduleResolution ??= 'bundler'
+  if (o.moduleResolution) o.moduleResolution = o.moduleResolution.toLowerCase()
+  return o
 }
 
 // --- the generator's options, as its generate() takes them from the schema and infers the rest ---
@@ -329,17 +296,20 @@ function parseExtension(value, kind, expected) {
 }
 
 function inferImportFileExtension(tsconfig, generatedFileExtension, target) {
-  if (target === 'deno' || tsconfig === undefined) return generatedFileExtension
-  if (tsconfig.allowImportingTsExtensions || tsconfig.rewriteRelativeImportExtensions) return generatedFileExtension
+  if (target === 'deno' || tsconfig === undefined || tsconfig.allowImportingTsExtensions || tsconfig.rewriteRelativeImportExtensions) return generatedFileExtension
   if (tsconfig.module === 'commonjs' || tsconfig.moduleResolution === 'bundler') return ''
   return JS_EXTENSIONS[generatedFileExtension] ?? generatedFileExtension
 }
 
-// From 7.10.0 on, a node16 or nodenext module takes the nearest package.json's type; before, ESM.
+// From 7.10.0 on, a node16 or nodenext module takes the `type` of the package.json nearest the
+// output (package-up's), cjs without one or where it can't be read; before, ESM.
 function inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) {
   if (tsconfig?.module) {
     if (tsconfig.module === 'commonjs') return 'cjs'
-    if (newerThan(version, '7.9.1') && (tsconfig.module === 'node16' || tsconfig.module === 'nodenext')) return nearestPackageFormat(host, outputDir)
+    if (newerThan(version, '7.9.1') && (tsconfig.module === 'node16' || tsconfig.module === 'nodenext')) {
+      const file = nearestFile(host, outputDir, 'package.json')
+      return file !== null && readJson(file, host)?.type === 'module' ? 'esm' : 'cjs'
+    }
     return 'esm'
   }
   return generatedFileExtension === 'cts' || importFileExtension === 'cjs' ? 'cjs' : 'esm'
@@ -449,20 +419,16 @@ const STAMPS = [
   [NAMESPACE, (version) => `  client: "${version}",\n  engine: "${ENGINES[version]}"\n`],
 ]
 
-// `files` (path -> text, or bytes left as they are) of the 7.10.0 client as `version`'s, whose files
-// are named with `extension`: each older version's rewrites in turn, down to it, and its stamps.
-function asVersion(files, version, extension) {
-  const steps = PRISMA_VERSIONS.slice(1, PRISMA_VERSIONS.indexOf(version) + 1).map((each) => DOWN[each]).filter(Boolean)
-  for (const [path, text] of files) {
-    if (typeof text !== 'string') continue
-    const stem = path.slice(0, -extension.length - 1)
-    const key = stem.startsWith('models/') ? MODELS : stem
-    let out = text
-    for (const step of steps) out = step[key]?.(out, path) ?? out
-    for (const [where, stamp] of STAMPS) if (stem === where) out = swap(out, stamp(GENERATOR_VERSION), stamp(version), { path })
-    files.set(path, out)
-  }
-  return files
+// `text` (bytes left as they are), the file at `path` of the 7.10.0 client whose files are named
+// with `extension`, as `version`'s: each older version's rewrites in turn, down to it, and its
+// stamps.
+function asVersion(text, path, version, extension) {
+  if (typeof text !== 'string') return text
+  const stem = path.slice(0, -extension.length - 1)
+  const key = stem.startsWith('models/') ? MODELS : stem
+  for (const each of PRISMA_VERSIONS.slice(1, PRISMA_VERSIONS.indexOf(version) + 1)) text = DOWN[each]?.[key]?.(text, path) ?? text
+  for (const [where, stamp] of STAMPS) if (stem === where) text = swap(text, stamp(GENERATOR_VERSION), stamp(version), { path })
+  return text
 }
 
 // --- generating ---
@@ -497,16 +463,9 @@ function generateClientFor({ schema, datamodel, generator, dmmf, datasources, ou
   }
   const denied = validateDmmfAgainstDenylists(built.prismaClientDmmf)
   if (denied) throw new Error(`prisma: ${schema.path} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
-  // Its file map, whose directories are maps of their own.
-  const files = new Map()
-  const add = (map, at) => {
-    for (const [name, content] of Object.entries(map)) {
-      if (typeof content === 'string' || Buffer.isBuffer(content)) files.set(at + name, content)
-      else add(content, `${at}${name}/`)
-    }
-  }
-  add(built.fileMap, '')
-  return asVersion(files, version, options.generatedFileExtension)
+  // Its file map, whose directories are maps of their own, flattened.
+  const flat = (map, at) => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flat(content, `${at}${name}/`)))
+  return new Map(flat(built.fileMap, '').map(([path, content]) => [path, asVersion(content, path, version, options.generatedFileExtension)]))
 }
 
 // What() as Prisma reads the schema at `path`, its refusal naming it.
@@ -528,20 +487,15 @@ export async function generatePrismaClients({ host, root, projects }) {
     const prisma = installedPrisma(host, dir)
     const supported = PRISMA_VERSIONS.includes(prisma?.version)
     const version = supported ? prisma.version : GENERATOR_VERSION
-    let schema
-    try {
-      schema = await projectSchema(host, dir, version)
-    } catch (error) {
-      console.warn(`[stasis] prisma: not generating for ${dir}: ${error.message}`)
-      continue
-    }
-    if (schema === null) continue
+    const path = await Promise.try(projectSchema, host, dir, version).catch((error) => { console.warn(`[stasis] prisma: not generating for ${dir}: ${error.message}`) })
+    if (!path) continue
     // Read by Prisma 7.10.0, which another Prisma's schema needn't satisfy.
     if (!supported) {
       const installed = prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`
-      console.warn(`[stasis] prisma: not generating for ${schema.path}: stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${installed}`)
+      console.warn(`[stasis] prisma: not generating for ${path}: stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${installed}`)
       continue
     }
+    const schema = { path, files: await readingSchema(path, () => schemaFilesAt(host, path)) }
     const { internals } = loadGenerator()
     const config = await readingSchema(schema.path, () => internals.getConfig({ datamodel: schema.files }))
     const generators = config.generators.filter((generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null)
