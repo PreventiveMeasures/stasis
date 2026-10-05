@@ -7,7 +7,7 @@ import { readJson } from '@exodus/stasis-core/bundle-util'
 import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
-import { literalSpec, syntaxErrors } from '../scan.js'
+import { getParser, literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest, projectView } from './tree.js'
 
 // buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write
@@ -72,7 +72,7 @@ const packageFormat = ({ host, version }) => (dir) => {
 // refused where it then requires anything but `requires`, or by no literal name.
 function compiled(main, roots, given, requires) {
   const source = readFileSync(main, 'utf8')
-  const { body } = require('oxc-parser').parseSync(main, source, { sourceType: 'script' }).program
+  const { body } = getParser().parseSync(main, source, { sourceType: 'script' }).program
   const declaring = new Map(body.flatMap((node) => (node.declarations ?? [node]).flatMap(({ id }) => (id?.name ? [[id.name, node]] : []))))
   const kept = new Set()
   const keep = (name) => {
@@ -199,7 +199,7 @@ const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'Parenthesi
 // anything built from it. A string literal or path.join of them is taken, through defineConfig,
 // `as`, `satisfies`, parentheses and top-level consts; anything else is refused.
 function configSchema(file, text) {
-  const parsed = require('oxc-parser').parseSync(file, text, { sourceType: 'unambiguous' })
+  const parsed = getParser().parseSync(file, text, { sourceType: 'unambiguous' })
   const [error] = syntaxErrors(parsed)
   if (error) throw new Error(`${file}: ${error.message}`)
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
