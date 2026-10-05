@@ -157,7 +157,9 @@ before(async () => {
   setCacheDir(join(cacheRoot, 'stasis'))
   await Promise.all(Object.entries(MANAGERS).map(async ([packageManager, m]) => {
     if (!existsSync(join(m.fixture, m.installed))) {
-      const child = spawn(m.install[0], m.install[1], { cwd: m.fixture })
+      // Through an npm cache of its own: the tarballs an install leaves in the one the builds
+      // consult would be read from there, and never fetched into the tarball cache.
+      const child = spawn(m.install[0], m.install[1], { cwd: m.fixture, env: { ...process.env, npm_config_cache: join(cacheRoot, 'install-cache') } })
       const stderrChunks = []
       child.stderr.on('data', (d) => stderrChunks.push(d))
       const [status] = await once(child, 'close')
