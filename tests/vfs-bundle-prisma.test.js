@@ -188,6 +188,8 @@ test('the generator is held to what `prisma generate` takes', async (t) => {
   await t.assert.rejects(clients({ 'prisma/schema.prisma': schema({ output: '../node_modules/.prisma/client' }) }), /output \/node_modules\/\.prisma\/client is in node_modules, which is laid out from the lockfile alone$/u)
   await t.assert.rejects(clients({ 'prisma/schema.prisma': schema().replace('"postgresql"', '"nope"') }), /^Error: prisma: \/prisma\/schema\.prisma: /u)
   await t.assert.rejects(clients({ 'prisma/schema.prisma': schema({ extra: '\n  runtime = "browser"' }) }), /Unknown target runtime: "browser"/u)
+  // Names the engine takes and the generator refuses.
+  await t.assert.rejects(clients({ 'prisma/schema.prisma': `${schema()}\nmodel AND {\n  id Int @id\n}\n\nenum NOT {\n  A\n}\n` }), /^Error: prisma: \/prisma\/schema\.prisma contains reserved keywords, to rename: "enum NOT", "model AND"$/u)
   const said = warnings(t)
   t.assert.deepStrictEqual(await clients({ 'prisma/schema.prisma': schema().replace('"../src/generated/prisma"', 'env("OUT")') }), [])
   t.assert.match(said().at(-1), /its output is env\("OUT"\), which stasis doesn't read$/u)

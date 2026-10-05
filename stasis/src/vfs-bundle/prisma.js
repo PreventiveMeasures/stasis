@@ -1,8 +1,7 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
-import { dirname, join, posix, relative } from 'node:path'
+import { basename, dirname, posix } from 'node:path'
+import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
 import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
@@ -18,10 +17,9 @@ import { holding, nearest } from './tree.js'
 // tree as data, its installed `prisma` only for its version. What runs is the optional peer
 // @prisma/client-generator-ts at 7.10.0 (GENERATOR_VERSION), on the host; another version's client
 // is 7.10.0's rewritten as that version writes it (DOWN), each byte of every client tested against
-// that version's own `prisma generate`. The generator writes its client to a temporary directory,
-// the only thing written to disk, from which it is read back into memory. A client for an edge
-// runtime carries the query compiler's .wasm and its .mjs bindings as the repo's `prisma` ships them,
-// copied from the tree as `prisma generate` copies them from its own build.
+// that version's own `prisma generate`. The client is built in memory, nothing written to disk. A
+// client for an edge runtime carries the query compiler's .wasm and its .mjs bindings as the repo's
+// `prisma` ships them, copied from the tree as `prisma generate` copies them from its own build.
 
 const GENERATOR = '@prisma/client-generator-ts'
 const GENERATOR_VERSION = '7.10.0'
@@ -52,8 +50,28 @@ const require = createRequire(import.meta.url)
 
 let loaded
 
-// The optional peer, loaded once: its generateClient, and the @prisma/internals (with its
-// @prisma/schema-files-loader) and @prisma/engines-version it was built with, resolved from it.
+// Where buildClient reads the query compiler from for the client it builds now (generateClientFor
+// sets it about that one call, which runs to its end before another starts).
+let compilerSource = null
+
+// The `node:fs` of the peer's bundle, through which buildClient reads nothing but the query compiler
+// an edge runtime's client carries, from beside the bundle, as `prisma generate` reads it from its
+// own build: here, from the tree's `prisma`'s build (compilerSource).
+const peerFs = {
+  existsSync: () => true,
+  readFileSync(path) {
+    const { host, build, target } = compilerSource
+    const file = posix.join(build, basename(path))
+    if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
+    return Buffer.from(host.readFile(file))
+  },
+}
+
+// The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
+// generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
+// the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
+// with. Its bundle exports neither function, so it is run as Node runs it, with the two exported in
+// place of its own exports, and peerFs as the `node:fs` it requires.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -65,33 +83,13 @@ function loadGenerator() {
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
+  const peer = { exports: {} }
+  const source = `${readFileSync(main, 'utf8')}\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`
+  const run = compileFunction(source, ['exports', 'require', 'module', '__filename', '__dirname'], { filename: main })
+  run.call(peer.exports, peer.exports, (id) => (id === 'node:fs' ? peerFs : own(id)), peer, main, dirname(main))
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
-  loaded = { generateClient: require(GENERATOR).generateClient, internals: own('@prisma/internals'), schemaFiles, enginesVersion: own('@prisma/engines-version').enginesVersion, dist: dirname(main) }
+  loaded = { ...peer.exports, internals: own('@prisma/internals'), schemaFiles }
   return loaded
-}
-
-// The servingFiles calls, one after another: each serves its own files through the shared `fs`.
-let serving = Promise.resolve()
-
-// `generate()` with each of `files` (absolute path -> bytes) read as if on disk, through the `fs`
-// the generator requires: where it reads the query compiler it copies into an edge runtime's client,
-// a file of its own `prisma generate` holds and the peer doesn't. Nothing else is served.
-function servingFiles(files, generate) {
-  if (files.size === 0) return generate()
-  const served = serving.then(async () => {
-    const fs = require('node:fs')
-    const { existsSync: exists, readFileSync: read } = fs
-    fs.existsSync = (path, ...rest) => files.has(path) || exists(path, ...rest)
-    fs.readFileSync = (path, ...rest) => (files.has(path) ? Buffer.from(files.get(path)) : read(path, ...rest))
-    try {
-      return await generate()
-    } finally {
-      fs.existsSync = exists
-      fs.readFileSync = read
-    }
-  })
-  serving = served.catch(() => {})
-  return served
 }
 
 // --- what `prisma generate` reads ---
@@ -555,55 +553,46 @@ function asVersion(files, version, extension) {
 
 // --- generating ---
 
-// Every file under the directory `dir` on disk, as a path from it.
-const filesUnder = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative(dir, join(entry.parentPath, entry.name)))
-
-// The query compiler an edge runtime's client carries, as the generator names its sources (in the
-// directory of `dist`) and the `prisma` at `prismaDir` in the tree ships them: path -> bytes.
-function queryCompiler(host, { prismaDir, dist, target, compilerBuild, activeProvider }) {
-  if (target !== 'workerd' && target !== 'vercel-edge') return new Map()
-  const files = new Map()
-  for (const ext of ['wasm', 'mjs']) {
-    const name = `query_compiler_${compilerBuild}_bg.${activeProvider}.${ext}`
-    const file = posix.join(prismaDir, 'build', name)
-    if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
-    files.set(join(dist, name), host.readFile(file))
-  }
-  return files
-}
-
 // The client `generator` (a `prisma-client` one of `schema`) writes for Prisma `version`, installed
-// at `prismaDir`, as a Map of its paths, from its output directory, to their text.
-async function generateClientFor({ schema, datamodel, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
-  const { generateClient, enginesVersion, dist } = loadGenerator()
+// at `prismaDir`, as a Map of its paths, from its output directory, to their text (bytes for the
+// query compiler's .wasm): built as the peer's generateClient builds it before writing it to disk,
+// with the options generatorOptions infers as it does.
+function generateClientFor({ schema, datamodel, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
+  const { buildClient, validateDmmfAgainstDenylists } = loadGenerator()
   const options = generatorOptions(generator.config, { outputDir, version, host })
-  const activeProvider = datasources[0]?.activeProvider
-  const compiler = queryCompiler(host, { prismaDir, dist, target: options.target, compilerBuild: options.compilerBuild, activeProvider })
-  const scratch = await mkdtemp(join(tmpdir(), 'stasis-prisma-'))
-  const client = join(scratch, 'client')
+  compilerSource = { host, build: posix.join(prismaDir, 'build'), target: options.target }
+  let built
   try {
-    await servingFiles(compiler, () => generateClient({
+    built = buildClient({
       datamodel,
       schemaPath: schema.path,
       runtimeBase: '@prisma/client/runtime',
-      outputDir: client,
-      generator: { ...generator, output: { value: outputDir, fromEnvVar: null }, isCustomOutput: true },
+      outputDir,
+      generator,
       dmmf,
       datasources,
       binaryPaths: {},
-      engineVersion: enginesVersion,
+      engineVersion: ENGINES[GENERATOR_VERSION],
       clientVersion: GENERATOR_VERSION,
-      activeProvider,
+      activeProvider: datasources[0]?.activeProvider,
       tsNoCheckPreamble: true,
       ...options,
-    }))
-    const files = new Map()
-    // The query compiler as it is, the rest as text to rewrite.
-    for (const path of filesUnder(client)) files.set(path, readFileSync(join(client, path), path.endsWith('.wasm') ? undefined : 'utf8'))
-    return asVersion(files, version, options.generatedFileExtension)
+    })
   } finally {
-    await rm(scratch, { recursive: true, force: true })
+    compilerSource = null
   }
+  const denied = validateDmmfAgainstDenylists(built.prismaClientDmmf)
+  if (denied) throw new Error(`prisma: ${schema.path} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
+  // Its file map, whose directories are maps of their own.
+  const files = new Map()
+  const add = (map, at) => {
+    for (const [name, content] of Object.entries(map)) {
+      if (typeof content === 'string' || Buffer.isBuffer(content)) files.set(at + name, content)
+      else add(content, `${at}${name}/`)
+    }
+  }
+  add(built.fileMap, '')
+  return asVersion(files, version, options.generatedFileExtension)
 }
 
 // What() as Prisma reads the schema at `path`, its refusal naming it.
@@ -666,8 +655,7 @@ export async function generatePrismaClients({ host, root, projects }) {
       const outputDir = posix.resolve(posix.dirname(generator.sourceFilePath ?? schema.path), generator.output.value)
       if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${schema.path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
       if (outputs.some((output) => output.dir === outputDir)) throw new Error(`prisma: ${outputDir} is the output of more than one generator`)
-      // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
-      outputs.push({ dir: outputDir, files: await generateClientFor({ schema, datamodel, generator, dmmf, datasources: config.datasources, outputDir, version, prismaDir: posix.dirname(prisma.file), host }) })
+      outputs.push({ dir: outputDir, files: generateClientFor({ schema, datamodel, generator, dmmf, datasources: config.datasources, outputDir, version, prismaDir: posix.dirname(prisma.file), host }) })
     }
   }
   return outputs
