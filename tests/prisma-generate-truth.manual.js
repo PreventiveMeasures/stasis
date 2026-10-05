@@ -1,20 +1,19 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 
 import { PRISMA_VERSIONS } from '../stasis/src/vfs-bundle/prisma.js'
-import { cases, clientHash } from './prisma-generate.helper.js'
+import { cases, clientHash, readHashes, writeHashes } from './prisma-generate.helper.js'
 
-// Writes fixtures/prisma-generate.json, the hashes of what each Prisma's own `prisma generate`
+// Writes fixtures/prisma-generate.json.br, the hashes of what each Prisma's own `prisma generate`
 // writes for each case of prisma-generate.helper.js, which prisma-generate.test.js holds stasis's
 // clients to: each version's `prisma` and `@prisma/client` installed from the registry (scripts
 // ignored; the CLI fetches its engines itself), each case written out and generated in turn. Run by
 // hand, with the network, after a change to the corpus or to the versions stasis generates as:
 //   node tests/prisma-generate-truth.manual.js [version ...]
 
-const fixture = join(import.meta.dirname, 'fixtures/prisma-generate.json')
-const hashes = existsSync(fixture) ? JSON.parse(readFileSync(fixture, 'utf8')) : {}
+const hashes = readHashes()
 const versions = process.argv.length > 2 ? process.argv.slice(2) : PRISMA_VERSIONS
 
 const filesUnder = (dir, at = '') => readdirSync(join(dir, at), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(dir, posix.join(at, entry.name)) : [posix.join(at, entry.name)]))
@@ -43,5 +42,4 @@ for (const version of versions) {
   }
 }
 
-const ordered = Object.fromEntries(PRISMA_VERSIONS.filter((version) => hashes[version]).map((version) => [version, hashes[version]]))
-writeFileSync(fixture, `${JSON.stringify(ordered, null, 2)}\n`)
+writeHashes(Object.fromEntries(PRISMA_VERSIONS.filter((version) => hashes[version]).map((version) => [version, hashes[version]])))

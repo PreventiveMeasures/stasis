@@ -1,10 +1,9 @@
 import { test } from 'node:test'
-import { readFileSync } from 'node:fs'
-import { join, posix } from 'node:path'
+import { posix } from 'node:path'
 
 import { createVfsHost } from '../stasis/src/vfs-bundle.js'
 import { PRISMA_VERSIONS, generatePrismaClients } from '../stasis/src/vfs-bundle/prisma.js'
-import { caseVfs, cases, clientHash, isQueryCompiler } from './prisma-generate.helper.js'
+import { caseVfs, cases, clientHash, isQueryCompiler, readHashes } from './prisma-generate.helper.js'
 
 /* eslint-disable no-await-in-loop -- the cases are generated one at a time, each against its own hash */
 
@@ -12,7 +11,7 @@ import { caseVfs, cases, clientHash, isQueryCompiler } from './prisma-generate.h
 // each older Prisma writes them, against the hashes of what each Prisma's own `prisma generate`
 // writes for the corpus (prisma-generate.helper.js): byte for byte, every case at every version.
 
-const hashes = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures/prisma-generate.json'), 'utf8'))
+const hashes = readHashes()
 
 test('the fixture holds every case, at every version stasis generates as', (t) => {
   t.assert.deepStrictEqual(Object.keys(hashes), PRISMA_VERSIONS)

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
-import { posix } from 'node:path'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, posix } from 'node:path'
+import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 import { Vfs } from '../stasis/src/vfs-bundle.js'
 
 // The corpus prisma-generate.test.js holds the Prisma clients stasis generates (vfs-bundle/prisma.js)
 // to, byte for byte: projects whose `prisma generate` output, as each Prisma from 7.4.0 to 7.10.0
-// writes it with its own CLI, fixtures/prisma-generate.json holds the hashes of
+// writes it with its own CLI, fixtures/prisma-generate.json.br holds the hashes of
 // (prisma-generate-truth.manual.js writes it). Each case: { files, cwd, args, output } -- the
 // project's files, the directory `prisma generate` runs in, its arguments, and the directory its
 // client lands in, `generated` unless named.
@@ -379,6 +381,12 @@ export function caseVfs(c, version) {
   }
   return vfs
 }
+
+// fixtures/prisma-generate.json.br: brotli-compressed JSON of version -> case -> clientHash of what
+// that version's `prisma generate` writes for it; {} before it is first written.
+const fixture = join(import.meta.dirname, 'fixtures/prisma-generate.json.br')
+export const readHashes = () => (existsSync(fixture) ? JSON.parse(brotliDecompressSync(readFileSync(fixture)).toString('utf8')) : {})
+export const writeHashes = (hashes) => writeFileSync(fixture, brotliCompressSync(`${JSON.stringify(hashes, null, 1)}\n`, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT } }))
 
 // A hash of a client's files (path -> text or bytes) but the query compiler's: of each path, in
 // order, and the sha256 of its bytes.
