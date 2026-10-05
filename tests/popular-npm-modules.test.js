@@ -142,17 +142,24 @@ let lockText
 let bundleBuf
 
 // The fixture pulls real packages from npm via its own pnpm-lock.yaml.
-// node_modules is gitignored, so install on demand.
-before(async () => {
-  if (!existsSync(join(fixture, 'node_modules', 'lodash', 'package.json'))) {
-    const child = spawn('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], { cwd: fixture })
-    const stderrChunks = []
-    child.stderr.on('data', (d) => stderrChunks.push(d))
-    const [status] = await once(child, 'close')
-    if (status !== 0) {
-      throw new Error(`Failed to install fixture deps in ${fixture}: ${Buffer.concat(stderrChunks).toString('utf-8')}`)
-    }
+// node_modules is gitignored, so install on demand (CI pre-installs it; this
+// is the local-dev fallback). Both root-level before() hooks below copy the
+// fixture, and node:test starts root-level hooks concurrently rather than one
+// after another, so each awaits this single shared install before copying.
+let installing
+const installFixture = () => installing ??= (async () => {
+  if (existsSync(join(fixture, 'node_modules', 'lodash', 'package.json'))) return
+  const child = spawn('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], { cwd: fixture })
+  const stderrChunks = []
+  child.stderr.on('data', (d) => stderrChunks.push(d))
+  const [status] = await once(child, 'close')
+  if (status !== 0) {
+    throw new Error(`Failed to install fixture deps in ${fixture}: ${Buffer.concat(stderrChunks).toString('utf-8')}`)
   }
+})()
+
+before(async () => {
+  await installFixture()
 
   // Generate the shared lockfile + bundle that the matrix and the lockfile
   // cross-check tests reuse, so we pay the bundle write exactly once.
@@ -392,6 +399,7 @@ let staticBundleBuf
 let staticLockText
 
 before(async () => {
+  await installFixture()
   const gen = await mkdtemp(join(tmpdir(), 'stasis-popular-static-'))
   try {
     await hardlinkCopy(fixture, gen)
