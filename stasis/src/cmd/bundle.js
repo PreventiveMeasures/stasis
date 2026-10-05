@@ -1233,10 +1233,6 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   return buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
 }
 
-// The steps buildVfsBundle's `generate` can name, each run on the laid-out tree before the scan:
-// 'prisma', the Prisma Client a project's `prisma generate` writes (vfs-bundle/prisma.js).
-const GENERATE_STEPS = ['prisma']
-
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
 // project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk, and
 // only known `generate` steps, for a JS bundle.
@@ -1244,11 +1240,9 @@ const GENERATE_STEPS = ['prisma']
 export function checkVfsOptions(name, options) {
   const kind = classifyEntries(name, options)
   if (options.metroResolver) throw new Error(`${name}: metroResolver is not supported`)
-  const { generate } = options
-  if (generate !== undefined && (!Array.isArray(generate) || !generate.every((step) => GENERATE_STEPS.includes(step)))) {
-    throw new TypeError(`${name}: generate must be an array of ${GENERATE_STEPS.map((step) => `'${step}'`).join(', ')}`)
-  }
-  if (generate?.length > 0 && kind !== 'js') throw new Error(`${name}: --generate is only valid for JS bundles`)
+  const { generate = [] } = options
+  if (!Array.isArray(generate) || generate.some((step) => step !== 'prisma')) throw new TypeError(`${name}: generate must be an array of 'prisma'`)
+  if (generate.length > 0 && kind !== 'js') throw new Error(`${name}: --generate is only valid for JS bundles`)
   return kind
 }
 
@@ -1262,7 +1256,8 @@ export function checkVfsOptions(name, options) {
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
 // through a State. `generate` names steps run on the laid-out tree before the scan, whose files the
-// scan then reads in place of the project's (see GENERATE_STEPS), the project's Vfs left as it is.
+// scan then reads in place of the project's, the project's Vfs left as it is: 'prisma', the Prisma
+// Client a project's `prisma generate` writes (vfs-bundle/prisma.js).
 // `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a JS bundle
 // built through a State, the State's root, which is at or above it.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }

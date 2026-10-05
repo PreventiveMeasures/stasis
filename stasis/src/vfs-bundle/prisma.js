@@ -141,8 +141,7 @@ const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'Parenthesi
 // built from it: its syntax tree is read, and a join is posix.join over the strings it spells.
 // Anything else is code stasis won't run, refused.
 function configSchema(file, text) {
-  const lang = /\.[cm]?ts$/u.test(file) ? 'ts' : 'js'
-  const parsed = require('oxc-parser').parseSync(file, text, { lang, sourceType: 'unambiguous' })
+  const parsed = require('oxc-parser').parseSync(file, text, { sourceType: 'unambiguous' })
   const [error] = syntaxErrors(parsed)
   if (error) throw new Error(`${file}: ${error.message}`)
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
@@ -282,23 +281,19 @@ const GENERATED_EXTENSIONS = ['ts', 'mts', 'cts']
 const IMPORT_EXTENSIONS = ['', 'ts', 'mts', 'cts', 'js', 'mjs', 'cjs']
 const JS_EXTENSIONS = { ts: 'js', mts: 'mjs', cts: 'cjs' }
 
-function parseRuntime(value) {
-  if (typeof value !== 'string') throw new Error(`Invalid target runtime: ${JSON.stringify(value)}. Expected a string.`)
-  const runtime = RUNTIMES[value.toLowerCase()]
-  if (runtime === undefined) throw new Error(`Unknown target runtime: "${value}". The available options are: "nodejs", "deno", "bun", "workerd", "cloudflare", "vercel-edge", "edge-light"`)
-  return runtime
+const MODULE_FORMATS = { cjs: 'cjs', commonjs: 'cjs', esm: 'esm' }
+
+// What `names` (lowercase -> value) says of a string option of the generator, case aside, or a refusal.
+function oneOf(value, names, what) {
+  const name = typeof value === 'string' ? value.toLowerCase() : undefined
+  if (!Object.hasOwn(names, name)) throw new Error(`Unknown ${what}: ${JSON.stringify(value)}, expected one of: ${Object.keys(names).map((key) => JSON.stringify(key)).join(', ')}`)
+  return names[name]
 }
 
 function parseExtension(value, kind, expected) {
   if (typeof value !== 'string') throw new Error(`Invalid ${kind} file extension: ${JSON.stringify(value)}, expected a string`)
   if (!expected.includes(value)) console.warn(`[stasis] prisma: ${kind[0].toUpperCase()}${kind.slice(1)} file extension ${JSON.stringify(value)} is unexpected and may be a mistake. Expected one of: ${expected.map((ext) => JSON.stringify(ext)).join(', ')}`)
   return value
-}
-
-function parseModuleFormat(value) {
-  const format = typeof value === 'string' ? { cjs: 'cjs', commonjs: 'cjs', esm: 'esm' }[value.toLowerCase()] : undefined
-  if (format === undefined) throw new Error(`Invalid module format: ${typeof value === 'string' ? `"${value}"` : JSON.stringify(value)}, expected "esm" or "cjs"`)
-  return format
 }
 
 function inferImportFileExtension(tsconfig, generatedFileExtension, target) {
@@ -320,10 +315,10 @@ function inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtensi
 
 function generatorOptions(config, { outputDir, version, host }) {
   const tsconfig = tsconfigOptions(host, outputDir)
-  const target = config.runtime === undefined ? 'nodejs' : parseRuntime(config.runtime)
+  const target = config.runtime === undefined ? 'nodejs' : oneOf(config.runtime, RUNTIMES, 'target runtime')
   const generatedFileExtension = config.generatedFileExtension === undefined ? 'ts' : parseExtension(config.generatedFileExtension, 'generated', GENERATED_EXTENSIONS)
   const importFileExtension = config.importFileExtension === undefined ? inferImportFileExtension(tsconfig, generatedFileExtension, target) : parseExtension(config.importFileExtension, 'import', IMPORT_EXTENSIONS)
-  const moduleFormat = config.moduleFormat === undefined ? inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) : parseModuleFormat(config.moduleFormat)
+  const moduleFormat = config.moduleFormat === undefined ? inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) : oneOf(config.moduleFormat, MODULE_FORMATS, 'module format')
   const compilerBuild = config.compilerBuild ?? (target === 'vercel-edge' ? 'small' : 'fast')
   if (compilerBuild !== 'small' && compilerBuild !== 'fast') throw new Error(`Invalid compiler build: ${JSON.stringify(compilerBuild)}, expected one of: "fast", "small"`)
   return { target, generatedFileExtension, importFileExtension, moduleFormat, compilerBuild }
@@ -331,17 +326,16 @@ function generatorOptions(config, { outputDir, version, host }) {
 
 // --- 7.10.0's client as each older version writes it ---
 
-// `text` with `from` replaced by `to`, each time if `all`, where it is there at all; else `null`
-// where `optional`, or a refusal: 7.10.0's client is not the one these steps were written against.
+// `text` with `from` (a string, or a RegExp spanning 7.10.0's text between two of its own) replaced
+// by `to`, each time if `all`, where it is there at all; else `null` where `optional`, or a refusal:
+// 7.10.0's client is not the one these steps were written against.
 function swap(text, from, to, { path, all = false, optional = false }) {
-  if (!text.includes(from)) {
+  if (typeof from === 'string' ? !text.includes(from) : !from.test(text)) {
     if (optional) return null
-    throw new Error(`prisma: ${path} of the ${GENERATOR_VERSION} client holds no ${JSON.stringify(from.slice(0, 80))}`)
+    throw new Error(`prisma: ${path} of the ${GENERATOR_VERSION} client holds no ${JSON.stringify(String(from).slice(0, 80))}`)
   }
   return all ? text.replaceAll(from, () => to) : text.replace(from, () => to)
 }
-
-const lines = (...rows) => rows.join('\n')
 
 // Where a client's files are, by their names without the generated extension.
 const CLIENT = 'client'
@@ -359,134 +353,20 @@ function dropModelSchemas(text, path) {
   return text.replace(match[0], () => `config.runtimeDataModel = JSON.parse(${JSON.stringify(JSON.stringify(model))})`)
 }
 
-// 7.9.0's constructor argument type, its PrismaClientOptions split into interfaces, and its XOR.
-const CONSTRUCTOR_ARGS = lines(
-  '/**',
-  ' * Resolved type of the argument passed to the `PrismaClient` constructor.',
-  ' *',
-  ' * When called without a narrower options type (the common case), this resolves',
-  ' * to `PrismaClientOptions` directly, which produces a clear TypeScript error',
-  ' * message (`not assignable to parameter of type \'PrismaClientOptions\'`) when',
-  ' * the argument is missing or incomplete. When the user supplies a narrower',
-  ' * options type (e.g. via a literal), it falls back to `Subset` to keep',
-  ' * filtering out unknown properties.',
-  ' */',
-  'export type PrismaClientConstructorArgs<Options extends PrismaClientOptions> =',
-  '  [PrismaClientOptions] extends [Options] ? PrismaClientOptions : Subset<Options, PrismaClientOptions>;',
-  '',
-  '',
-)
-const BASE_OPTIONS = lines(
-  '/**',
-  ' * Options common to all variants of `PrismaClientOptions`, regardless of whether you connect to your database through a driver adapter or through Prisma Accelerate.',
-  ' */',
-  'export interface PrismaClientBaseOptions {',
-)
-const UNION_OPTIONS = lines(
-  'export type PrismaClientOptions = ({',
-  '  /**',
-  '   * Instance of a Driver Adapter, e.g., like one provided by `@prisma/adapter-pg`.',
-  '   */',
-  '  adapter: runtime.SqlDriverAdapterFactory',
-  '  accelerateUrl?: never',
-  '} | {',
-  '  /**',
-  '   * Prisma Accelerate URL allowing the client to connect through Accelerate instead of a direct database.',
-  '   */',
-  '  accelerateUrl: string',
-  '  adapter?: never',
-  '}) & {',
-)
-const OPTION_VARIANTS = lines(
-  '',
-  '',
-  '/**',
-  ' * `PrismaClient` options for connecting to your database through Prisma Accelerate instead of a driver adapter.',
-  ' * ',
-  ' * Learn more: https://pris.ly/d/accelerate',
-  ' */',
-  'export interface PrismaClientOptionsWithAccelerateUrl extends PrismaClientBaseOptions {',
-  '  /**',
-  '   * The Prisma Accelerate connection URL. Use this option to connect to your database through Prisma Accelerate instead of using a driver adapter to connect directly.',
-  '   * ',
-  '   * Learn more: https://pris.ly/d/accelerate',
-  '   */',
-  '  accelerateUrl: string',
-  '  adapter?: never',
-  '}',
-  '',
-  '/**',
-  ' * `PrismaClient` options for connecting to your database through a driver adapter. This is the common case in Prisma 7.',
-  ' * ',
-  ' * Learn more: https://pris.ly/d/driver-adapters',
-  ' */',
-  'export interface PrismaClientOptionsWithAdapter extends PrismaClientBaseOptions {',
-  '  /**',
-  '   * A driver adapter that PrismaClient uses to connect to your database, such as the ones provided by `@prisma/adapter-pg`, `@prisma/adapter-libsql`, `@prisma/adapter-planetscale`, etc.',
-  '   * ',
-  '   * A driver adapter is **required** unless you connect to your database through Prisma Accelerate (in which case use `accelerateUrl` instead).',
-  '   * ',
-  '   * Learn more: https://pris.ly/d/driver-adapters',
-  '   * ',
-  '   * @example',
-  '   * ```ts',
-  '   * import { PrismaPg } from \'@prisma/adapter-pg\'',
-  '   * import { PrismaClient } from \'./generated/prisma/client\'',
-  '   * ',
-  '   * const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })',
-  '   * const prisma = new PrismaClient({ adapter })',
-  '   * ```',
-  '   */',
-  '  adapter: runtime.SqlDriverAdapterFactory',
-  '  accelerateUrl?: never',
-  '}',
-  '',
-  '/**',
-  ' * Options passed to the `PrismaClient` constructor.',
-  ' * ',
-  ' * A driver adapter (or, alternatively, a Prisma Accelerate URL) is **required**. See {@link PrismaClientOptionsWithAdapter} and {@link PrismaClientOptionsWithAccelerateUrl} for the two variants. All other properties live in {@link PrismaClientBaseOptions} and are optional.',
-  ' * ',
-  ' * Learn more about driver adapters: https://pris.ly/d/driver-adapters',
-  ' */',
-  'export type PrismaClientOptions = PrismaClientOptionsWithAccelerateUrl | PrismaClientOptionsWithAdapter',
-)
-
-// 7.8.0's query plan cache option, which 7.7.0 doesn't have.
-const QUERY_PLAN_CACHE = lines(
-  '  /**',
-  '   * Optional maximum size for the query plan cache. If not provided, a default size will be used.',
-  '   * A value of `0` can be used to disable the cache entirely. A higher cache size can improve',
-  '   * performance for applications that execute a large number of unique queries, while a smaller',
-  '   * cache size can reduce memory usage.',
-  '   * ',
-  '   * @example',
-  '   * ```',
-  '   * const prisma = new PrismaClient({',
-  '   *   adapter,',
-  '   *   queryPlanCacheMaxSize: 100,',
-  '   * })',
-  '   * ```',
-  '   */',
-  '  queryPlanCacheMaxSize?: number',
-  '',
-)
-const TRANSACTION = '  $transaction<P extends Prisma.PrismaPromise<any>[]>(arg: [...P]'
-
-// 7.5.0's distinct doc on each model's FindManyArgs, which 7.4.2 has on FindFirst(OrThrow)Args alone.
-function dropFindManyDistinctDocs(text) {
-  const rows = text.split('\n')
-  const out = []
-  let inFindMany = false
-  for (let i = 0; i < rows.length; i++) {
-    if (/^export type \w+FindManyArgs<.* = \{$/u.test(rows[i])) inFindMany = true
-    else if (rows[i] === '}') inFindMany = false
-    const doc = inFindMany && rows[i] === '  /**' && rows[i + 1] === '   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}'
-      && rows[i + 2] === '   * ' && rows[i + 3]?.startsWith('   * Filter by unique combinations of ') && rows[i + 4] === '   */' && rows[i + 5]?.startsWith('  distinct?: ')
-    if (doc) i += 4
-    else out.push(rows[i])
-  }
-  return out.join('\n')
-}
+// 7.8.0's PrismaClientOptions, where 7.9.0 has PrismaClientBaseOptions and two interfaces over it.
+const UNION_OPTIONS = `export type PrismaClientOptions = ({
+  /**
+   * Instance of a Driver Adapter, e.g., like one provided by \`@prisma/adapter-pg\`.
+   */
+  adapter: runtime.SqlDriverAdapterFactory
+  accelerateUrl?: never
+} | {
+  /**
+   * Prisma Accelerate URL allowing the client to connect through Accelerate instead of a direct database.
+   */
+  accelerateUrl: string
+  adapter?: never
+}) & {`
 
 // Each version's client from the next newer one's, for each version whose client differs from it
 // but in the version stamps (asVersion's): by the name of each file it rewrites without the generated
@@ -500,22 +380,25 @@ const DOWN = {
       text = swap(text, '>(options: Prisma.PrismaClientConstructorArgs<Options>): PrismaClient<', '>(options: Prisma.Subset<Options, Prisma.PrismaClientOptions> ): PrismaClient<', { path })
       return swap(text, "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = Prisma.PrismaClientOptions['omit'],", "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = undefined,", { path })
     },
+    // 7.9.0's constructor argument type, its PrismaClientOptions split into interfaces, and its XOR.
     [NAMESPACE]: (text, path) => {
-      text = swap(text, CONSTRUCTOR_ARGS, '', { path })
+      text = swap(text, /\/\*\*\n \* Resolved type of the argument passed to the `PrismaClient` constructor\.\n[^]*?, PrismaClientOptions>;\n\n/u, '', { path })
       text = swap(text, '    ((Without<T, U> & U) | (Without<U, T> & T)) & object\n', '    (Without<T, U> & U) | (Without<U, T> & T)\n', { path })
-      text = swap(text, BASE_OPTIONS, UNION_OPTIONS, { path })
-      return swap(text, OPTION_VARIANTS, '', { path })
+      text = swap(text, /\/\*\*\n \* Options common to all variants of `PrismaClientOptions`[^]*?\nexport interface PrismaClientBaseOptions \{/u, UNION_OPTIONS, { path })
+      return swap(text, /\n\n\/\*\*\n \* `PrismaClient` options for connecting [^]*?\nexport type PrismaClientOptions = PrismaClientOptionsWithAccelerateUrl \| PrismaClientOptionsWithAdapter/u, '', { path })
     },
   },
   '7.7.0': {
     // MongoDB's transactions take no isolation level.
-    [CLASS]: (text, path) => swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number, isolationLevel?: Prisma.TransactionIsolationLevel })`, `${TRANSACTION}, options?: { isolationLevel?: Prisma.TransactionIsolationLevel })`, { path, optional: true })
-      ?? swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number })`, `${TRANSACTION})`, { path }),
-    [NAMESPACE]: (text, path) => swap(text, QUERY_PLAN_CACHE, '', { path }),
+    [CLASS]: (text, path) => swap(text, '[...P], options?: { maxWait?: number, timeout?: number, ', '[...P], options?: { ', { path, optional: true })
+      ?? swap(text, '[...P], options?: { maxWait?: number, timeout?: number })', '[...P])', { path }),
+    // 7.8.0's query plan cache option.
+    [NAMESPACE]: (text, path) => swap(text, /  \/\*\*\n   \* Optional maximum size for the query plan cache\.[^]*?\n  queryPlanCacheMaxSize\?: number\n/u, '', { path }),
   },
   '7.5.0': { [MODELS]: (text) => text.replace(/^export (type Get(\w+)GroupByPayload<T extends \2GroupByArgs> = )/mu, '$1') },
   '7.4.2': {
-    [MODELS]: dropFindManyDistinctDocs,
+    // 7.5.0's distinct doc on each model's FindManyArgs, which 7.4.2 has on FindFirst(OrThrow)Args alone.
+    [MODELS]: (text) => text.replace(/^(export type \w+FindManyArgs<.* = \{\n(?:(?!\}\n).*\n)*?)  \/\*\*\n   \* \{@link https:\/\/www\.prisma\.io\/docs\/concepts\/components\/prisma-client\/distinct Distinct Docs\}\n   \* \n   \* Filter by unique combinations of .*\n   \*\/\n(?=  distinct\?: )/gmu, '$1'),
     // From 7.5.0, MongoDB's interactive transactions take no nested $transaction.
     [CLASS]: (text, path) => swap(text, 'Omit<PrismaClient, runtime.ITXClientDenyList | "$transaction">', 'Omit<PrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text,
     [NAMESPACE]: (text, path) => swap(text, "Omit<DefaultPrismaClient, runtime.ITXClientDenyList | '$transaction'>", 'Omit<DefaultPrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text,
@@ -537,7 +420,6 @@ const STAMPS = [
 // `files` (path -> text, or bytes left as they are) of the 7.10.0 client as `version`'s, whose files
 // are named with `extension`: each older version's rewrites in turn, down to it, and its stamps.
 function asVersion(files, version, extension) {
-  if (version === GENERATOR_VERSION) return files
   const steps = PRISMA_VERSIONS.slice(1, PRISMA_VERSIONS.indexOf(version) + 1).map((each) => DOWN[each]).filter(Boolean)
   for (const [path, text] of files) {
     if (typeof text !== 'string') continue
@@ -596,13 +478,9 @@ function generateClientFor({ schema, datamodel, generator, dmmf, datasources, ou
 }
 
 // What() as Prisma reads the schema at `path`, its refusal naming it.
-async function readingSchema(path, what) {
-  try {
-    return await what()
-  } catch (cause) {
-    throw new Error(`prisma: ${path}: ${cause.message}`, { cause })
-  }
-}
+const readingSchema = (path, what) => Promise.try(what).catch((cause) => {
+  throw new Error(`prisma: ${path}: ${cause.message}`, { cause })
+})
 
 // The Prisma clients of the projects at `projects` (paths from `root`), read through `host`, each a
 // `{ dir, files }` of its output directory and its files there (Map of path from it to text, or bytes
@@ -610,6 +488,7 @@ async function readingSchema(path, what) {
 // Projects with no schema, or none with a `prisma-client` generator, are skipped quietly; one stasis
 // can't generate for (no or another Prisma installed, a config it can't read, another generator, an
 // output from the environment) is skipped with a warning, the scan then saying what it misses.
+/* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects }) {
   const outputs = []
   for (const project of [...projects].toSorted()) {
@@ -619,7 +498,6 @@ export async function generatePrismaClients({ host, root, projects }) {
     const version = supported ? prisma.version : GENERATOR_VERSION
     let schema
     try {
-      // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
       schema = await projectSchema(host, dir, version)
     } catch (error) {
       console.warn(`[stasis] prisma: not generating for ${dir}: ${error.message}`)
@@ -633,8 +511,6 @@ export async function generatePrismaClients({ host, root, projects }) {
       continue
     }
     const { internals } = loadGenerator()
-    // One project at a time, in the order its warnings read.
-    // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
     const config = await readingSchema(schema.path, () => internals.getConfig({ datamodel: schema.files }))
     const generators = config.generators.filter((generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null)
     for (const other of config.generators.filter((generator) => !generators.includes(generator))) {
@@ -643,7 +519,6 @@ export async function generatePrismaClients({ host, root, projects }) {
     if (generators.length === 0) continue
     for (const warning of config.warnings) console.warn(`[stasis] prisma: ${warning}`)
     if (config.datasources.length === 0) throw new Error(`prisma: ${schema.path} defines no datasource`)
-    // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
     const dmmf = await readingSchema(schema.path, () => internals.getDMMF({ datamodel: schema.files }))
     const datamodel = internals.mergeSchemas({ schemas: schema.files })
     for (const generator of generators) {
