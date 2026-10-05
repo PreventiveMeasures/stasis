@@ -299,63 +299,45 @@ function resolveExtendsTarget(fromFile, target, host) {
   throw new Error(`tsconfig extends target not found: '${target}' (from ${fromFile})`)
 }
 
-// The configs a tsconfig's `extends` chain reads, as [{ file, raw }]: each base (in the order
+// The configs a tsconfig's `extends` chain reads, as { file, raw }: each base (in the order
 // `extends` names them) before the config extending it, and `file` last. A base two configs share
 // is listed under each, so folding the list in order, later over earlier, is tsc's nested merge,
 // where the second extender's resolved options carry the shared base's again. Like tsc's, the
-// cycle check is per branch: only a config that extends itself, directly or not, throws.
-function tsconfigChain(file, host) {
-  const chain = []
-  const extending = new Set() // the configs on the branch being walked, each extending the next
-  const walk = (at) => {
-    if (extending.has(at)) throw new Error(`tsconfig extends cycle at ${at}`)
-    const raw = parseJsonc(host.readFile(at).toString('utf8'), at)
-    extending.add(at)
-    for (const base of [].concat(raw?.extends ?? [])) walk(resolveExtendsTarget(at, base, host))
-    extending.delete(at)
-    chain.push({ file: at, raw })
-  }
-  walk(file)
-  return chain
+// cycle check is per branch: `extending` holds the configs extending `file`, and only a config that
+// extends itself, directly or not, throws.
+function* tsconfigChain(file, host, extending = new Set()) {
+  if (extending.has(file)) throw new Error(`tsconfig extends cycle at ${file}`)
+  const raw = parseJsonc(host.readFile(file).toString('utf8'), file)
+  extending.add(file)
+  for (const base of [].concat(raw?.extends ?? [])) yield* tsconfigChain(resolveExtendsTarget(file, base, host), host, extending)
+  extending.delete(file)
+  yield { file, raw }
 }
 
-// Effective { paths, pathsDir, baseUrl } across the `extends` chain: bases apply in order, the
-// extending file overrides them; `paths` replaces wholesale (tsc never deep-merges it) and
-// remembers its declaring dir; `baseUrl` is resolved against its declaring file.
-function loadConfigChain(file, host) {
-  const acc = {}
-  for (const { file: at, raw } of tsconfigChain(file, host)) {
-    const co = raw?.compilerOptions ?? {}
-    if (typeof co.baseUrl === 'string') acc.baseUrl = resolvePath(dirname(at), co.baseUrl)
-    if (co.paths != null) {
-      acc.paths = co.paths
-      acc.pathsDir = dirname(at)
-    }
-  }
-  return acc
-}
-
-// tsc's path-valued compilerOptions (a list's element by element), which it resolves against the
-// config declaring them, or, when one starts with `${configDir}`, against the config it loads.
+// tsc's path-valued compilerOptions (a list's element by element), each made absolute against the
+// dir of the config declaring it, or, when it starts with `${configDir}`, against the loaded one's.
 const TSCONFIG_PATH_OPTIONS = new Set(['baseUrl', 'declarationDir', 'generateCpuProfile', 'generateTrace', 'outDir', 'outFile', 'rootDir', 'tsBuildInfoFile'])
 const TSCONFIG_PATH_LIST_OPTIONS = new Set(['rootDirs', 'typeRoots'])
 const CONFIG_DIR = '${configDir}'
+const tsconfigPath = (value, dir, configDir) => {
+  if (typeof value !== 'string') return value
+  return value.startsWith(CONFIG_DIR) ? resolvePath(configDir, value.replace(CONFIG_DIR, './')) : resolvePath(dir, value)
+}
 
 // The `compilerOptions` a tsconfig resolves to across its `extends` chain, merged one level deep
-// as tsc merges them: each base in order, the extending file's own over them, with each path-valued
-// option absolute, as tsc makes it (`paths` as declared, its targets the declaring config's).
+// as tsc merges them: each base in order, the extending file's own over them (`null` unsetting an
+// option), each path-valued option absolute, and `paths` as declared, with tsc's `pathsBasePath`,
+// the dir of the config declaring it.
 export function loadTsconfigCompilerOptions(file, host = diskHost) {
   let options = {}
   for (const { file: at, raw } of tsconfigChain(file, host)) {
-    const absolute = (value) => {
-      if (typeof value !== 'string') return value
-      return value.startsWith(CONFIG_DIR) ? resolvePath(dirname(file), value.replace(CONFIG_DIR, './')) : resolvePath(dirname(at), value)
-    }
     const own = { ...raw?.compilerOptions }
     for (const [name, value] of Object.entries(own)) {
-      if (TSCONFIG_PATH_OPTIONS.has(name)) own[name] = absolute(value)
-      else if (TSCONFIG_PATH_LIST_OPTIONS.has(name) && Array.isArray(value)) own[name] = value.map(absolute)
+      if (TSCONFIG_PATH_OPTIONS.has(name)) own[name] = tsconfigPath(value, dirname(at), dirname(file))
+      else if (TSCONFIG_PATH_LIST_OPTIONS.has(name) && Array.isArray(value)) own[name] = value.map((p) => tsconfigPath(p, dirname(at), dirname(file)))
     }
+    delete own.pathsBasePath // tsc's own, never a config's
+    if (own.paths != null) own.pathsBasePath = dirname(at)
     options = { ...options, ...own }
   }
   return options
@@ -366,11 +348,12 @@ export function loadTsconfigCompilerOptions(file, host = diskHost) {
 // substituted targets of the BEST-matching key -- exact match first, else the '*' pattern with the
 // longest matched prefix, exactly one key, its targets in order (tsc tries no other key when they
 // all miss) -- resolved against `baseUrl`, or against the declaring config's dir without one
-// (TS 4.1 paths-without-baseUrl). Only `extends`/`baseUrl`/`paths` are read; malformed shapes
-// (a non-array value, more than one '*' in a key or target) fail closed like tsc's config errors.
+// (TS 4.1 paths-without-baseUrl), or, starting with `${configDir}`, against `file`'s. Only
+// `baseUrl`/`paths` are used; malformed shapes (a non-array value, more than one '*' in a key or
+// target) fail closed like tsc's config errors.
 export function loadTsconfigPaths(file, host = diskHost) {
   if (file == null) return null
-  const { paths, pathsDir, baseUrl } = loadConfigChain(file, host)
+  const { paths, pathsBasePath, baseUrl } = loadTsconfigCompilerOptions(file, host)
   if (paths == null || typeof paths !== 'object' || Object.keys(paths).length === 0) return null
   const starCount = (s) => s.split('*').length - 1
   for (const [key, targets] of Object.entries(paths)) {
@@ -381,7 +364,7 @@ export function loadTsconfigPaths(file, host = diskHost) {
       if (starCount(t) > 1) throw new Error(`tsconfig paths pattern '${t}' has more than one '*' (${file})`)
     }
   }
-  const base = baseUrl ?? pathsDir
+  const base = typeof baseUrl === 'string' ? baseUrl : pathsBasePath
   return {
     matchPaths(spec) {
       let targets = null
@@ -402,7 +385,7 @@ export function loadTsconfigPaths(file, host = diskHost) {
         targets = paths[best.key].map((t) => ({ target: t, wildcard }))
       }
       return targets.map(({ target, wildcard }) =>
-        resolvePath(base, wildcard == null ? target : target.replace('*', wildcard)))
+        tsconfigPath(wildcard == null ? target : target.replace('*', wildcard), base, dirname(file)))
     },
   }
 }

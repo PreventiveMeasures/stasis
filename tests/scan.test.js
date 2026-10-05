@@ -693,45 +693,67 @@ test('scan typescriptPaths maps aliases: exact keys, longest-prefix patterns, JS
   t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['dropped/one.js'])
 }))
 
-test('a tsconfig extending two bases that share one is no cycle, and merges as tsc does', withTmp((t, tmp) => {
-  const write = (file, config) => {
+// Write each of `configs` (tmp-relative path -> JSON value) under tmp.
+const writeJson = (tmp, configs) => {
+  for (const [file, config] of Object.entries(configs)) {
     mkdirSync(dirname(join(tmp, file)), { recursive: true })
     writeFileSync(join(tmp, file), JSON.stringify(config))
   }
-  write('tsconfig.json', { extends: ['./b/tsconfig.json', './c/tsconfig.json'], compilerOptions: { strict: true } })
-  write('b/tsconfig.json', { extends: '../d/tsconfig.json', compilerOptions: { paths: { '@/*': ['./b/*'] }, target: 'es2020' } })
-  write('c/tsconfig.json', { extends: '../d/tsconfig.json', compilerOptions: { module: 'esnext' } })
-  write('d/tsconfig.json', { compilerOptions: { paths: { '@/*': ['./d/*'] }, target: 'es2022' } })
+}
+
+test('a tsconfig extending two bases that share one is no cycle, and merges as tsc does', withTmp((t, tmp) => {
+  writeJson(tmp, {
+    'tsconfig.json': { extends: ['./b/tsconfig.json', './c/tsconfig.json'], compilerOptions: { strict: true } },
+    'b/tsconfig.json': { extends: '../d/tsconfig.json', compilerOptions: { paths: { '@/*': ['./b/*'] }, target: 'es2020' } },
+    'c/tsconfig.json': { extends: '../d/tsconfig.json', compilerOptions: { module: 'esnext' } },
+    'd/tsconfig.json': { compilerOptions: { paths: { '@/*': ['./d/*'] }, target: 'es2022' } },
+  })
   // c's options, as it resolves them, carry d's over b's: tsc's `paths` (based at d/) and target.
   t.assert.deepStrictEqual(loadTsconfigPaths(join(tmp, 'tsconfig.json')).matchPaths('@/x'), [join(tmp, 'd', 'd', 'x')])
   t.assert.deepStrictEqual(loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), {
-    paths: { '@/*': ['./d/*'] }, target: 'es2022', module: 'esnext', strict: true,
+    paths: { '@/*': ['./d/*'] }, pathsBasePath: join(tmp, 'd'), target: 'es2022', module: 'esnext', strict: true,
   })
 }))
 
 test('a tsconfig that extends itself through another is a cycle', withTmp((t, tmp) => {
-  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ extends: './a.json' }))
-  writeFileSync(join(tmp, 'a.json'), JSON.stringify({ extends: './tsconfig.json', compilerOptions: { paths: { '@/*': ['./*'] } } }))
+  writeJson(tmp, { 'tsconfig.json': { extends: './a.json' }, 'a.json': { extends: './tsconfig.json', compilerOptions: { paths: { '@/*': ['./*'] } } } })
   const cycle = { message: `tsconfig extends cycle at ${join(tmp, 'tsconfig.json')}` }
   t.assert.throws(() => loadTsconfigPaths(join(tmp, 'tsconfig.json')), cycle)
   t.assert.throws(() => loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), cycle)
 }))
 
 test('a tsconfig\'s compilerOptions hold each path a base declares as tsc resolves it', withTmp((t, tmp) => {
-  mkdirSync(join(tmp, 'base'))
-  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ extends: './base/tsconfig.json', compilerOptions: { rootDirs: ['./a'] } }))
-  writeFileSync(join(tmp, 'base', 'tsconfig.json'), JSON.stringify({ compilerOptions: {
-    outDir: './dist', typeRoots: ['./types', '${configDir}/types'], declarationDir: '${configDir}/decl', paths: { '@/*': ['./*'] }, target: 'es2022',
-  } }))
+  writeJson(tmp, {
+    'tsconfig.json': { extends: './base/tsconfig.json', compilerOptions: { rootDirs: ['./a'] } },
+    'base/tsconfig.json': { compilerOptions: {
+      outDir: './dist', typeRoots: ['./types', '${configDir}/types'], declarationDir: '${configDir}/decl', paths: { '@/*': ['./*'] }, target: 'es2022',
+    } },
+  })
   // Against the base's dir, but `${configDir}` against the config loaded, and `paths` as declared.
   t.assert.deepStrictEqual(loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), {
     outDir: join(tmp, 'base', 'dist'),
     typeRoots: [join(tmp, 'base', 'types'), join(tmp, 'types')],
     declarationDir: join(tmp, 'decl'),
     paths: { '@/*': ['./*'] },
+    pathsBasePath: join(tmp, 'base'),
     target: 'es2022',
     rootDirs: [join(tmp, 'a')],
   })
+}))
+
+test('a tsconfig\'s paths take the baseUrl tsc takes: `${configDir}`, and none where an extender unsets it', withTmp((t, tmp) => {
+  writeJson(tmp, {
+    'base/tsconfig.json': { compilerOptions: { baseUrl: '${configDir}/src', paths: { '@/*': ['./*'], '#/*': ['${configDir}/lib/*'] } } },
+    'tsconfig.json': { extends: './base/tsconfig.json' },
+    'unset-base.json': { extends: './base/tsconfig.json', compilerOptions: { baseUrl: null } },
+    'unset-paths.json': { extends: './base/tsconfig.json', compilerOptions: { paths: null } },
+  })
+  const paths = loadTsconfigPaths(join(tmp, 'tsconfig.json'))
+  t.assert.deepStrictEqual(paths.matchPaths('@/x'), [join(tmp, 'src', 'x')])
+  t.assert.deepStrictEqual(paths.matchPaths('#/x'), [join(tmp, 'lib', 'x')])
+  // Without the baseUrl, against the dir of the config declaring `paths`; without `paths`, none.
+  t.assert.deepStrictEqual(loadTsconfigPaths(join(tmp, 'unset-base.json')).matchPaths('@/x'), [join(tmp, 'base', 'x')])
+  t.assert.equal(loadTsconfigPaths(join(tmp, 'unset-paths.json')), null)
 }))
 
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
