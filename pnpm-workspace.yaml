@@ -5,6 +5,9 @@ packages:
   - stasis-plugins
 
 allowBuilds:
+  # Its postinstall downloads Prisma's native engines; @prisma/client-generator-ts reads schemas
+  # through the WASM ones alone.
+  '@prisma/engines': false
   esbuild: false
 
 enableGlobalVirtualStore: false

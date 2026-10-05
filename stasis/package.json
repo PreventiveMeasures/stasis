@@ -102,10 +102,14 @@
     "oxc-parser": "^0.152.0"
   },
   "peerDependencies": {
+    "@prisma/client-generator-ts": "7.10.0",
     "esbuild": "*",
     "flow-remove-types": "*"
   },
   "peerDependenciesMeta": {
+    "@prisma/client-generator-ts": {
+      "optional": true
+    },
     "esbuild": {
       "optional": true
     },
