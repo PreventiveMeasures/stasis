@@ -45,24 +45,37 @@ const require = createRequire(import.meta.url)
 
 let loaded
 
-// Set by generateClientFor around its buildClient call, which is synchronous, so never shared.
-let compilerSource = null
+// Set by generateClientFor around its use of the bundle, which is synchronous, so never shared.
+let building = null
 
 // Replaces the bundle's readSourceFile: an edge runtime's client copies the query compiler from
 // `prisma generate`'s own build, which here is the tree's `prisma`.
 function readQueryCompiler(name) {
-  const { host, build, target } = compilerSource
-  const file = posix.join(build, name)
+  const { host, prismaDir, target } = building
+  const file = posix.join(prismaDir, 'build', name)
   if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
   return Buffer.from(host.readFile(file))
 }
 
-// The bundle's esbuild blocks (each starts with a `// path` line) buildClient never reaches:
-// generateClient's fs-extra and kleur, typedSql (never passed), the exports, and the generator class
-// with its option inference (done here instead).
+// Replaces the bundle's inferModuleFormatFromNearestPackageJson, which reads the disk, for a node16
+// or nodenext module; before 7.10.0, those gave ESM.
+function packageFormat(dir) {
+  const { host, version } = building
+  if (!newerThan(version, '7.9.1')) return 'esm'
+  const file = nearestFile(host, dir, 'package.json')
+  if (file === null) return 'cjs'
+  try {
+    return JSON.parse(host.readFile(file).toString('utf8')).type === 'module' ? 'esm' : 'cjs'
+  } catch {
+    return 'cjs'
+  }
+}
+
+// The bundle's esbuild blocks (each starts with a `// path` line) stasis never reaches:
+// generateClient's fs-extra and kleur, typedSql (never passed), the exports, and the generator class.
 const UNREACHED = [
   ...['universalify', 'graceful-fs', 'fs-extra', 'jsonfile', 'kleur'].map((name) => `// ../../node_modules/.pnpm/${name}@`),
-  ...['index', 'generator', 'module-format', 'runtime-targets'].map((name) => `// src/${name}.ts\n`),
+  ...['index', 'generator'].map((name) => `// src/${name}.ts\n`),
   '// src/typedSql/',
   '// package.json\n',
   '// src/generateClient.ts\nvar import_package_up ',
@@ -78,14 +91,17 @@ const UNREACHED_LINES = [
   'var import_node_path = __toESM(require("node:path"));\n',
   'var import_debug = require("@prisma/debug");\n',
   'var debug = (0, import_debug.Debug)("prisma:client-generator-ts:wasm");\n',
+  'var import_node_fs2 = __toESM(require("node:fs"));\n',
+  'var import_package_up2 = require("package-up");\n',
 ]
 
 // All the stripped bundle may require; nothing that reaches the disk.
 const REQUIRES = new Set(['@prisma/client-common', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'pluralize', 'ts-pattern'])
 
-// The peer exports neither buildClient (generateClient's in-memory half) nor the reserved-names check
-// generateClient runs, so its bundle is compiled as a function returning them, stripped of what
-// they never reach. Stripping is cleanup, not a sandbox.
+// The peer exports neither buildClient (generateClient's in-memory half), the reserved-names check
+// generateClient runs, nor the option parsing and inference of its generate(), so its bundle is
+// compiled as a function returning them, stripped of what they never reach. Stripping is cleanup,
+// not a sandbox.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -102,9 +118,13 @@ function loadGenerator() {
   // A `require` without a literal name is refused too.
   const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
   if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
-  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nreturn { buildClient, validateDmmfAgainstDenylists }\n`, ['require', 'readQueryCompiler', 'debug'], { filename: main })
+  const run = compileFunction(`${source}
+readSourceFile = readQueryCompiler
+inferModuleFormatFromNearestPackageJson = packageFormat
+return { buildClient, validateDmmfAgainstDenylists, parseRuntimeTargetFromUnknown, parseGeneratedFileExtension, parseImportFileExtension, inferImportFileExtension, parseModuleFormatFromUnknown, inferModuleFormat }
+`, ['require', 'readQueryCompiler', 'packageFormat', 'debug'], { filename: main })
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
-  loaded = { ...run(own, readQueryCompiler, () => {}), internals: own('@prisma/internals'), schemaFiles }
+  loaded = { ...run(own, readQueryCompiler, packageFormat, () => {}), internals: own('@prisma/internals'), schemaFiles }
   return loaded
 }
 
@@ -226,8 +246,8 @@ function projectSchema(host, dir, version) {
   return path
 }
 
-// The nearest tsconfig.json's compilerOptions, defaulted as get-tsconfig 4.10 does, as far as the
-// inference below reads them.
+// The nearest tsconfig.json as get-tsconfig 4.10 gives it, its compilerOptions defaulted as far as
+// the generator's inference reads them.
 const ES_TARGETS = new Set(['es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
 function tsconfigOptions(host, dir) {
   const file = nearestFile(host, dir, 'tsconfig.json')
@@ -240,56 +260,19 @@ function tsconfigOptions(host, dir) {
   if (o.module) o.module = o.module.toLowerCase()
   if (o.module === 'preserve') o.moduleResolution ??= 'bundler'
   if (o.moduleResolution) o.moduleResolution = o.moduleResolution.toLowerCase()
-  return o
+  return { compilerOptions: o }
 }
 
-// --- the generator's options, as its generate() parses and infers them (alike in each version but
-// for inferModuleFormat) ---
+// --- the generator's options, as its generate() parses and infers them, with its own functions ---
 
-const RUNTIMES = { workerd: 'workerd', cloudflare: 'workerd', 'edge-light': 'vercel-edge', 'vercel-edge': 'vercel-edge', nodejs: 'nodejs', bun: 'nodejs', deno: 'deno' }
-const GENERATED_EXTENSIONS = ['ts', 'mts', 'cts']
-const IMPORT_EXTENSIONS = ['', 'ts', 'mts', 'cts', 'js', 'mjs', 'cjs']
-const JS_EXTENSIONS = { ts: 'js', mts: 'mjs', cts: 'cjs' }
-
-const MODULE_FORMATS = { cjs: 'cjs', commonjs: 'cjs', esm: 'esm' }
-
-function oneOf(value, names, what) {
-  const name = typeof value === 'string' ? value.toLowerCase() : undefined
-  if (!Object.hasOwn(names, name)) throw new Error(`Unknown ${what}: ${JSON.stringify(value)}, expected one of: ${Object.keys(names).map((key) => JSON.stringify(key)).join(', ')}`)
-  return names[name]
-}
-
-function parseExtension(value, kind, expected) {
-  if (typeof value !== 'string') throw new Error(`Invalid ${kind} file extension: ${JSON.stringify(value)}, expected a string`)
-  if (!expected.includes(value)) console.warn(`[stasis] prisma: ${kind[0].toUpperCase()}${kind.slice(1)} file extension ${JSON.stringify(value)} is unexpected and may be a mistake. Expected one of: ${expected.map((ext) => JSON.stringify(ext)).join(', ')}`)
-  return value
-}
-
-function inferImportFileExtension(tsconfig, generatedFileExtension, target) {
-  if (target === 'deno' || tsconfig === undefined || tsconfig.allowImportingTsExtensions || tsconfig.rewriteRelativeImportExtensions) return generatedFileExtension
-  if (tsconfig.module === 'commonjs' || tsconfig.moduleResolution === 'bundler') return ''
-  return JS_EXTENSIONS[generatedFileExtension] ?? generatedFileExtension
-}
-
-// Before 7.10.0, node16 and nodenext gave ESM; since, the nearest package.json's `type` (else cjs).
-function inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) {
-  if (tsconfig?.module) {
-    if (tsconfig.module === 'commonjs') return 'cjs'
-    if (newerThan(version, '7.9.1') && (tsconfig.module === 'node16' || tsconfig.module === 'nodenext')) {
-      const file = nearestFile(host, outputDir, 'package.json')
-      return file !== null && readJson(file, host)?.type === 'module' ? 'esm' : 'cjs'
-    }
-    return 'esm'
-  }
-  return generatedFileExtension === 'cts' || importFileExtension === 'cjs' ? 'cjs' : 'esm'
-}
-
-function generatorOptions(config, { outputDir, version, host }) {
-  const tsconfig = tsconfigOptions(host, outputDir)
-  const target = config.runtime === undefined ? 'nodejs' : oneOf(config.runtime, RUNTIMES, 'target runtime')
-  const generatedFileExtension = config.generatedFileExtension === undefined ? 'ts' : parseExtension(config.generatedFileExtension, 'generated', GENERATED_EXTENSIONS)
-  const importFileExtension = config.importFileExtension === undefined ? inferImportFileExtension(tsconfig, generatedFileExtension, target) : parseExtension(config.importFileExtension, 'import', IMPORT_EXTENSIONS)
-  const moduleFormat = config.moduleFormat === undefined ? inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) : oneOf(config.moduleFormat, MODULE_FORMATS, 'module format')
+function generatorOptions(config, outputDir) {
+  const peer = loadGenerator()
+  const tsconfig = tsconfigOptions(building.host, outputDir)
+  const target = config.runtime === undefined ? 'nodejs' : peer.parseRuntimeTargetFromUnknown(config.runtime)
+  const generatedFileExtension = config.generatedFileExtension === undefined ? 'ts' : peer.parseGeneratedFileExtension(config.generatedFileExtension)
+  const importFileExtension = config.importFileExtension === undefined ? peer.inferImportFileExtension({ tsconfig, generatedFileExtension, target }) : peer.parseImportFileExtension(config.importFileExtension)
+  const moduleFormat = config.moduleFormat === undefined ? peer.inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir }) : peer.parseModuleFormatFromUnknown(config.moduleFormat)
+  // parseCompilerBuildFromUnknown is the generator class's, left out of the bundle.
   const compilerBuild = config.compilerBuild ?? (target === 'vercel-edge' ? 'small' : 'fast')
   if (compilerBuild !== 'small' && compilerBuild !== 'fast') throw new Error(`Invalid compiler build: ${JSON.stringify(compilerBuild)}, expected one of: "fast", "small"`)
   return { target, generatedFileExtension, importFileExtension, moduleFormat, compilerBuild }
@@ -402,10 +385,11 @@ function asVersion(text, path, version, extension) {
 // One generator's client: path in the output -> text (bytes for the query compiler's .wasm).
 function generateClientFor({ schema, datamodel, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
   const { buildClient, validateDmmfAgainstDenylists } = loadGenerator()
-  const options = generatorOptions(generator.config, { outputDir, version, host })
-  compilerSource = { host, build: posix.join(prismaDir, 'build'), target: options.target }
-  let built
+  building = { host, version, prismaDir }
+  let options, built
   try {
+    options = generatorOptions(generator.config, outputDir)
+    building.target = options.target
     built = buildClient({
       datamodel,
       schemaPath: schema.path,
@@ -422,7 +406,7 @@ function generateClientFor({ schema, datamodel, generator, dmmf, datasources, ou
       ...options,
     })
   } finally {
-    compilerSource = null
+    building = null
   }
   const denied = validateDmmfAgainstDenylists(built.prismaClientDmmf)
   if (denied) throw new Error(`prisma: ${schema.path} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
