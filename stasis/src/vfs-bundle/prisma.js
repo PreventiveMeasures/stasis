@@ -113,20 +113,40 @@ const PRISMA7_CONFIGS = [...CONFIG_EXTENSIONS.map((ext) => `prisma7.config${ext}
 const LEGACY_CONFIGS = ['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [...CONFIG_EXTENSIONS.map((ext) => `${base}${ext}`), ...CONFIG_EXTENSIONS.map((ext) => `${base}/index${ext}`)])
 const configsOf = (version) => (newerThan(version, '7.9.1') ? [...PRISMA7_CONFIGS, ...LEGACY_CONFIGS] : LEGACY_CONFIGS)
 
+// Node's path module, as a config imports or requires it.
+const PATH_MODULES = new Set(['path', 'node:path'])
+const requiresPath = (node) => node?.type === 'CallExpression' && node.callee.name === 'require' && node.arguments.length === 1 && PATH_MODULES.has(node.arguments[0].value)
+
 // The `schema` a Prisma config names, read without running it: the object its default export (or
 // module.exports) is, through defineConfig(), `as`/`satisfies` and a top-level const, whose `schema`
-// is a string; undefined where it names none. Anything else is code stasis won't run, refused.
+// is a string it spells out: a literal, or Node's path.join of them (`path` and `join` as the config
+// imports or requires them from it); undefined where it names none. Nothing of the config is run,
+// nor any code built from it: its syntax tree is read, and a join is posix.join over the strings it
+// spells. Anything else is code stasis won't run, refused.
 function configSchema(file, text) {
   const lang = /\.[cm]?ts$/u.test(file) ? 'ts' : 'js'
   const { program, errors } = require('oxc-parser').parseSync(file, text, { lang, sourceType: 'unambiguous' })
   if (errors.length > 0) throw new Error(`${file}: ${errors[0].message}`)
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
   const consts = new Map()
+  // The names the path module, and its join, are bound to.
+  const paths = new Set()
+  const joins = new Set()
   let config
   for (const node of program.body) {
     if (node.type === 'ExportDefaultDeclaration') config = node.declaration
-    else if (node.type === 'VariableDeclaration' && node.kind === 'const') {
-      for (const { id, init } of node.declarations) if (id.type === 'Identifier' && init) consts.set(id.name, init)
+    else if (node.type === 'ImportDeclaration' && PATH_MODULES.has(node.source.value)) {
+      for (const { type, imported, local } of node.specifiers) {
+        if (type === 'ImportDefaultSpecifier' || type === 'ImportNamespaceSpecifier') paths.add(local.name)
+        else if ((imported.name ?? imported.value) === 'join') joins.add(local.name)
+      }
+    } else if (node.type === 'VariableDeclaration' && node.kind === 'const') {
+      for (const { id, init } of node.declarations) {
+        if (id.type === 'Identifier' && requiresPath(init)) paths.add(id.name)
+        else if (id.type === 'ObjectPattern' && requiresPath(init)) {
+          for (const property of id.properties) if (property.type === 'Property' && !property.computed && property.key.name === 'join' && property.value.type === 'Identifier') joins.add(property.value.name)
+        } else if (id.type === 'Identifier' && init) consts.set(id.name, init)
+      }
     } else if (node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression') {
       const { left, right } = node.expression
       if (left.type === 'MemberExpression' && left.object.name === 'module' && left.property.name === 'exports') config = right
@@ -142,16 +162,23 @@ function configSchema(file, text) {
     } else break
   }
   if (config.type !== 'ObjectExpression') throw refuse('its default export is no object literal')
+  const isJoin = (callee) => (callee.type === 'Identifier' && joins.has(callee.name))
+    || (callee.type === 'MemberExpression' && !callee.computed && paths.has(callee.object.name) && callee.property.name === 'join')
+  const spelled = (node) => {
+    if (node.type === 'Literal' && typeof node.value === 'string') return node.value
+    if (node.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked
+    if (node.type !== 'CallExpression' || !isJoin(node.callee)) return undefined
+    const parts = node.arguments.map(spelled)
+    return parts.includes(undefined) ? undefined : posix.join(...parts)
+  }
   let schema
   for (const property of config.properties) {
     // A spread or a computed key may name a schema stasis can't see.
     if (property.type !== 'Property' || property.computed) throw refuse('its config spreads or computes a key')
     const key = property.key.type === 'Identifier' ? property.key.name : property.key.value
     if (key !== 'schema') continue
-    const { value } = property
-    if (value.type === 'Literal' && typeof value.value === 'string') schema = value.value
-    else if (value.type === 'TemplateLiteral' && value.expressions.length === 0) schema = value.quasis[0].value.cooked
-    else throw refuse('its `schema` is no string literal')
+    schema = spelled(property.value)
+    if (schema === undefined) throw refuse('its `schema` is no string literal, nor path.join of them')
   }
   return schema
 }

@@ -125,6 +125,11 @@ test("the schema is the Prisma config's, read without running it, else prisma/sc
     "import { defineConfig } from 'prisma/config'\nexport default defineConfig({ schema: 'db/schema.prisma' })\n",
     "export default { schema: `db/schema.prisma`, migrations: { path: 'db/migrations' } } satisfies Config\n",
     "const config = defineConfig({ 'schema': 'db/schema.prisma' } as const)\nexport default config\n",
+    // Node's path.join of literals, however the config imports or requires it.
+    "import path from 'node:path'\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n",
+    "import * as nodePath from 'path'\nexport default defineConfig({ schema: nodePath.join('db', `prisma`, '..', 'schema.prisma') })\n",
+    "import { join as j } from 'node:path'\nexport default { schema: j('./db', j('schema.prisma')) }\n",
+    "const { join } = require('path')\nmodule.exports = { schema: join('db', 'schema.prisma') }\n",
   ]) {
     t.assert.deepStrictEqual(await outputDirs({ 'prisma.config.ts': config, ...db }), ['/db-client'], config)
   }
@@ -137,7 +142,9 @@ test("the schema is the Prisma config's, read without running it, else prisma/sc
   t.assert.deepStrictEqual(await outputDirs(both, '7.9.1'), ['/default-client'])
   // A schema the config computes is one stasis would have to run it to know.
   for (const [config, why] of [
-    ["import path from 'node:path'\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n", 'its `schema` is no string literal'],
+    ["import path from 'node:path'\nexport default defineConfig({ schema: path.join(__dirname, 'db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
+    ["import path from 'node:path'\nexport default defineConfig({ schema: path.resolve('db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
+    ["const path = { join: () => 'elsewhere.prisma' }\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
     ["export default { ...base, schema: 'db/schema.prisma' }\n", 'its config spreads or computes a key'],
     ['export default makeConfig()\n', 'its default export is no object literal'],
     ['export const config = {}\n', 'no default export'],
