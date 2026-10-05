@@ -7,7 +7,7 @@ import { readJson } from '@exodus/stasis-core/bundle-util'
 import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
-import { literalSpec, syntaxErrors } from '../scan.js'
+import { getParser, literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest, projectView } from './tree.js'
 
 // buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write
@@ -67,35 +67,72 @@ const packageFormat = ({ host, version }) => (dir) => {
   }
 }
 
-// The bundle's top-level statements `roots` reach by name, but those `given` it as parameters, and
-// its directives. A name is any word of a statement's text, so more is kept than is used, never less.
-function reached(source, roots, given) {
-  const { body } = require('oxc-parser').parseSync(GENERATOR, source, { sourceType: 'script' }).program
+// The esbuild bundle at `main` as a function of `parameters` returning `roots`, kept to the top-level
+// statements they reach by name (any word of a statement: more is kept than used, never less), and
+// refused where it then requires anything `given` doesn't hold, or by no literal name.
+function compiled(main, roots, parameters, given) {
+  const source = readFileSync(main, 'utf8')
+  const { body } = getParser().parseSync(main, source, { sourceType: 'script' }).program
   const declaring = new Map(body.flatMap((node) => (node.declarations ?? [node]).flatMap(({ id }) => (id?.name ? [[id.name, node]] : []))))
   const kept = new Set()
   const keep = (name) => {
     const node = declaring.get(name)
-    if (node === undefined || given.includes(name) || kept.has(node)) return
+    if (node === undefined || parameters.includes(name) || kept.has(node)) return
     kept.add(node)
     for (const [word] of source.slice(node.start, node.end).matchAll(/[\w$]+/gu)) keep(word)
   }
   roots.forEach(keep)
-  return body.filter((node) => node.directive || kept.has(node)).map((node) => source.slice(node.start, node.end)).join('\n')
+  const reached = body.filter((node) => node.directive || kept.has(node)).map((node) => source.slice(node.start, node.end)).join('\n')
+  const denied = [...reached.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !Object.hasOwn(given, id)).map(([call]) => call)
+  if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what stasis lets it require`)
+  return compileFunction(`${reached}\nreturn { ${roots.join(', ')} }`, ['require', ...parameters], { filename: main }).bind(null, (id) => given[id])
 }
 
-// What the compiled bundle returns, and is given: readSourceFile and
+// CommonJS files from `main` on, compiled requiring nothing outside their package but what `given`
+// holds (none reads __filename or __dirname).
+function commonjs(main, given) {
+  const modules = new Map()
+  const load = (file) => {
+    if (modules.has(file)) return modules.get(file).exports
+    const module = { exports: {} }
+    modules.set(file, module)
+    const { resolve } = createRequire(file)
+    const requiring = (id) => {
+      if (id.startsWith('.')) return load(resolve(id))
+      if (!Object.hasOwn(given, id)) throw new Error(`--generate=prisma: ${file} requires ${id}, which stasis doesn't let it`)
+      return given[id]
+    }
+    compileFunction(readFileSync(file, 'utf8'), ['exports', 'require', 'module'], { filename: file })(module.exports, requiring, module)
+    return module.exports
+  }
+  return load(main)
+}
+
+// The schema engine's refusals are JSON with a `message`; its panics aren't.
+const engineMessage = (message) => {
+  try {
+    return JSON.parse(message).message ?? message
+  } catch {
+    return message
+  }
+}
+
+// What the compiled generator returns, and is given: readSourceFile and
 // inferModuleFormatFromNearestPackageJson read the disk, `debug` would require @prisma/debug, and
 // buildTypedSql is left undefined, as stasis passes no typedSql.
 const EXPORTS = ['buildClient', 'validateDmmfAgainstDenylists', 'parseRuntimeTargetFromUnknown', 'parseGeneratedFileExtension', 'parseImportFileExtension', 'inferImportFileExtension', 'parseModuleFormatFromUnknown', 'inferModuleFormat', 'parseCompilerBuildFromUnknown']
-const PARAMETERS = ['require', 'readSourceFile', 'inferModuleFormatFromNearestPackageJson', 'debug', 'buildTypedSql']
+const PARAMETERS = ['readSourceFile', 'inferModuleFormatFromNearestPackageJson', 'debug', 'buildTypedSql']
 
-// All the stripped bundle may require; nothing that reaches the disk.
-const REQUIRES = new Set(['@prisma/client-common', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'pluralize', 'ts-pattern'])
+// What the compiled generator requires as Node loads it, none of it the disk's.
+const REQUIRES = ['@prisma/client-common', '@prisma/dmmf', '@prisma/param-graph-builder', 'indent-string', 'klona', 'pluralize', 'ts-pattern']
 
 // The peer exports neither buildClient (generateClient's in-memory half), the reserved-names check
 // generateClient runs, nor the option parsing and inference of its generate(), so its bundle is
 // compiled as a function returning them, stripped of what they never reach. Stripping is cleanup,
-// not a sandbox.
+// not a sandbox. @prisma/internals is never loaded: loading it reads the host's npm and yarn config
+// and platform, and patches fs and process.cwd. The generator, @prisma/ts-builders and stasis get a
+// stand-in of the functions of it they use: its parsing the schema engine's and @prisma/get-dmmf's,
+// which it wraps, and its isValidJsIdentifier its own file's, whose Unicode tables aren't Node's.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -107,14 +144,37 @@ function loadGenerator() {
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
-  const source = reached(readFileSync(main, 'utf8'), EXPORTS, PARAMETERS)
-  // A `require` without a literal name is refused too.
-  const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
-  if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
-  const run = compileFunction(`${source}\nreturn { ${EXPORTS.join(', ')} }`, PARAMETERS, { filename: main })
-  const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
-  // Evaluated for each client (a millisecond), its functions given what they read.
-  loaded = { peer: (at) => run(own, readQueryCompiler(at), packageFormat(at), () => {}), internals: own('@prisma/internals'), schemaFiles }
+  // Prisma's packages beside the @prisma/internals the peer was built with.
+  const near = createRequire(own.resolve('@prisma/internals'))
+  const engine = near('@prisma/prisma-schema-wasm')
+  const getDmmf = near('@prisma/get-dmmf')
+  const internals = {
+    externalToInternalDmmf: getDmmf.externalToInternalDmmf,
+    hasOwnProperty: Object.hasOwn,
+    assertNever: (value, message) => { throw new Error(message) },
+    isValidJsIdentifier: commonjs(own.resolve('@prisma/internals/dist/utils/isValidJsIdentifier.js'), {}).isValidJsIdentifier,
+    // But for resolving binaryTargets, which the generator never reads.
+    getConfig: ({ datamodel }) => {
+      const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: datamodel })))
+      if (errors.length > 0) throw new Error(errors.map((error) => error.message).join('\n'))
+      return config
+    },
+    getDMMF: (options) => {
+      const result = getDmmf.getDMMF(options)
+      if ('error' in result) throw new Error(engineMessage(result.error.message), { cause: result.error })
+      return result
+    },
+    mergeSchemas: ({ schemas }) => engine.merge_schemas(JSON.stringify({ schema: schemas })),
+  }
+  const given = { ...Object.fromEntries(REQUIRES.map((id) => [id, own(id)])), '@prisma/internals': internals, '@prisma/ts-builders': commonjs(own.resolve('@prisma/ts-builders'), { '@prisma/internals': internals }) }
+  const run = compiled(main, EXPORTS, PARAMETERS, given)
+  const { loadSchemaFiles } = compiled(near.resolve('@prisma/schema-files-loader'), ['loadSchemaFiles'], ['realFsResolver'], { 'node:path': posix })()
+  loaded = {
+    // Evaluated for each client (a millisecond), its functions given what they read.
+    peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}),
+    internals,
+    loadSchemaFiles,
+  }
   return loaded
 }
 
@@ -156,7 +216,7 @@ const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'Parenthesi
 // anything built from it. A string literal or path.join of them is taken, through defineConfig,
 // `as`, `satisfies`, parentheses and top-level consts; anything else is refused.
 function configSchema(file, text) {
-  const parsed = require('oxc-parser').parseSync(file, text, { sourceType: 'unambiguous' })
+  const parsed = getParser().parseSync(file, text, { sourceType: 'unambiguous' })
   const [error] = syntaxErrors(parsed)
   if (error) throw new Error(`${file}: ${error.message}`)
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
@@ -213,7 +273,7 @@ function configSchema(file, text) {
 function schemaFilesAt(host, path) {
   if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
   const view = projectView(host, '/')
-  return loadGenerator().schemaFiles.loadSchemaFiles(path, {
+  return loadGenerator().loadSchemaFiles(path, {
     listDirContents: async (dir) => view.readdir(dir),
     getEntryType: async (at) => ({ kind: view.lstat(at).type, realPath: host.realpath(at) }),
     getFileContents: async (file) => host.readFile(file).toString('utf8'),

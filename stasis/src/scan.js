@@ -30,7 +30,7 @@ const FLOW_EXTS = new Set(['.js', '.cjs', '.mjs', '.jsx'])
 
 // Required lazily so non-JS bundlers don't load the native oxc parser.
 let _parser
-function getParser() {
+export function getParser() {
   _parser ??= createRequire(import.meta.url)('oxc-parser')
   return _parser
 }
