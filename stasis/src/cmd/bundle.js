@@ -6,7 +6,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { scan } from '../scan.js'
+import { JSX_FILE_EXTS, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
@@ -596,6 +596,13 @@ function displayPath(url, baseDir) {
   return rel && !relativeEscapes(rel) ? rel : abs
 }
 
+// One unresolved scan edge for diagnostics, naming the .jsx/.tsx file --jsx would resolve it to
+// when the scan found one (Scan#jsxCandidate) -- --jsx stays opt-in, so the hint names the flag.
+function describeUnresolved(u, show) {
+  const jsx = u.jsxURL ? `; resolves to ${show(u.jsxURL)} under --jsx` : ''
+  return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason}${jsx})`
+}
+
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
 // vs tolerated (a catchable runtime miss). Shared so the plain and --mainFields JS paths
 // gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
@@ -617,7 +624,7 @@ function analyzeScanner(scanner, { baseDir }) {
   const fatalUnresolved = (u) => staticKinds.has(u.kind) && staticReachable.has(u.parentURL)
   const fatal = scanner.unresolved
     .filter((u) => fatalUnresolved(u))
-    .map((u) => `unresolved ${u.kind} ${u.spec} from ${show(u.parentURL)} (${u.reason})`)
+    .map((u) => `unresolved ${describeUnresolved(u, show)}`)
   // Fatal parse: an eagerly-linked module-family file, or any file the parser couldn't process.
   const fatalParse = (p) => staticReachable.has(p.url) && (p.format?.startsWith('module') === true || !p.recovered)
   for (const p of scanner.parseErrors) {
@@ -629,7 +636,9 @@ function analyzeScanner(scanner, { baseDir }) {
     for (const [parentURL, specMap] of byParent) {
       for (const [spec, childURL] of specMap) {
         if (!scanner.files.has(childURL)) {
-          fatal.push(`${spec} from ${show(parentURL)} resolves to ${show(childURL)}, which a source bundle can't carry`)
+          // A reached .jsx/.tsx is carryable once --jsx opts it in (see scan.js JSX_FILE_EXTS).
+          const jsx = !scanner.jsx && JSX_FILE_EXTS.has(extname(fileURLToPath(childURL))) ? ' without --jsx' : ''
+          fatal.push(`${spec} from ${show(parentURL)} resolves to ${show(childURL)}, which a source bundle can't carry${jsx}`)
         }
       }
     }
@@ -653,7 +662,7 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
     throw new Error(`JS bundle would be broken at load time${where}:\n${listed(fatal)}`)
   }
   if (tolerated.length > 0) {
-    const summary = listed(tolerated, (u) => `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason})`)
+    const summary = listed(tolerated, (u) => describeUnresolved(u, show))
     console.warn(`[stasis] Bundle has ${tolerated.length} unresolved import(s)${where}; they will fall through at load time:\n${summary}`)
   }
   if (toleratedParse.length > 0) {
@@ -903,10 +912,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives
     // default/require|import/platform conditions itself, so it takes only the extra `react-native`
     // condition (browser comes from its per-platform map, keyed on `web`).
-    const resolver = metroResolver
-      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts, mainFields, conditionNames: ['react-native'], host })
-      : field.resolver
-    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, jsx, flow, resources: resourceSet, host })
+    const metroResolverFor = (exts) => createMetroResolver({ projectDir: baseDir, platform, sourceExts: exts, mainFields, conditionNames: ['react-native'], host })
+    const resolver = metroResolver ? metroResolverFor(sourceExts) : field.resolver
+    // Without --jsx, the resolver --jsx would build names the .jsx/.tsx file a miss would land on:
+    // a hint in the unresolved report, never an edge (see Scan#jsxCandidate).
+    let jsxResolve = null
+    if (!jsx) {
+      jsxResolve = metroResolver
+        ? metroResolverFor(SOURCE_EXTS_JSX)
+        : fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, jsx: true, typescript, typescriptPaths, host }).resolver
+    }
+    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, jsxResolve, jsx, flow, resources: resourceSet, host })
     reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens

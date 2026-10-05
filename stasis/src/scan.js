@@ -20,7 +20,7 @@ const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 // so a bundle whose toolchain can't build JSX never silently ships .jsx/.tsx source. Under `--jsx`
 // they join SCRIPT_EXTS/RESOLVABLE_EXTS (see the constructor) so a reached .jsx/.tsx dependency
 // — e.g. a package whose React Native entry is src/index.tsx — is parsed and carried like any .ts.
-const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
+export const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
 
 // Flow type syntax lives in the JS (non-TS) family; oxc parses TS natively, and running
 // flow-remove-types over a .ts/.tsx file would corrupt TS-only constructs, so --flow only strips
@@ -134,13 +134,16 @@ export class Scan {
   // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
   // `typescriptPaths` (a loadTsconfigPaths matcher) adding tsconfig alias support; only consulted
   // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling.
+  // `jsxResolve`: the custom `resolve`'s --jsx twin (same shape, probing .jsx/.tsx too), consulted
+  // only to hint a miss (see #jsxCandidate); null when there is no custom resolver or `jsx` is on.
   // `resources` (a `parseResourcesOption` Set of extensions/filenames): reached files matching it
   // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
   // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
   // `host`: the filesystem the walk reads and resolves through (@exodus/stasis-core/host).
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, resources = new Set(), host = diskHost } = {}) {
+  constructor({ conditions = [], resolve = null, jsxResolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, resources = new Set(), host = diskHost } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
+    this.jsxResolve = jsxResolve
     this.jsx = jsx
     this.flow = flow
     this.typescript = typescript
@@ -214,6 +217,22 @@ export class Scan {
     } catch {
       return null
     }
+  }
+
+  // The .jsx/.tsx file a miss would resolve to under --jsx, or null: a hint for the unresolved
+  // report only, never an edge -- .jsx/.tsx stay out of a bundle unless --jsx opts them in (see
+  // JSX_FILE_EXTS). A custom resolver asks its --jsx twin; the built-in resolver's only jsx-gated
+  // rule is --typescript's .tsx mapping (Node itself never completes to .jsx/.tsx).
+  #jsxCandidate(parentFile, spec, conditions) {
+    if (this.jsx) return null
+    let hit = null
+    if (this.customResolve) {
+      const r = this.jsxResolve?.(parentFile, spec, conditions)
+      if (r?.url) hit = fileURLToPath(r.url)
+    } else if (this.typescript) {
+      hit = resolveTypescriptFallback(parentFile, spec, { conditions, tsx: true, paths: this.typescriptPaths, host: this.host })
+    }
+    return hit != null && JSX_FILE_EXTS.has(extname(hit)) ? pathToFileURL(hit).toString() : null
   }
 
   // Strip Flow type syntax to plain JS via the optional flow-remove-types dep (resolved lazily; a
@@ -379,9 +398,11 @@ export class Scan {
       specMaps.get(key).set(s.spec, childURL)
       if (this.resolvableExts.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
-    const addUnresolved = (s, reason) => {
+    // Records the .jsx/.tsx file --jsx would land the miss on too (jsxURL), resolved as the miss was.
+    const addUnresolved = (s, reason, conditions) => {
       edges.push({ ...s, error: reason })
-      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+      const jsxURL = this.#jsxCandidate(file, s.spec, conditions)
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...(jsxURL ? { jsxURL } : {}) })
     }
 
     for (const s of specs) {
@@ -404,7 +425,7 @@ export class Scan {
         } else if (r?.url) {
           addChild(s, key, r.url, fileURLToPath(r.url))
         } else {
-          addUnresolved(s, 'MODULE_NOT_FOUND')
+          addUnresolved(s, 'MODULE_NOT_FOUND', conditions)
         }
         continue
       }
@@ -420,7 +441,7 @@ export class Scan {
         // stays keyed by the ORIGINAL specifier -- only the target is the mapped file.
         if (this.typescript) childPath = this.#typescriptResolve(file, s.spec, conditions)
         if (childPath == null) {
-          addUnresolved(s, cause.code ?? cause.message)
+          addUnresolved(s, cause.code ?? cause.message, conditions)
           continue
         }
       }
@@ -458,7 +479,7 @@ export class Scan {
           ),
         ])
       ),
-      unresolved: this.unresolved.map(({ parentURL, ...rest }) => ({ parent: rel(parentURL), ...rest })),
+      unresolved: this.unresolved.map(({ parentURL, jsxURL, ...rest }) => ({ parent: rel(parentURL), ...rest, ...(jsxURL ? { jsx: rel(jsxURL) } : {}) })),
       parseErrors: this.parseErrors.map(({ url, ...rest }) => ({ file: rel(url), ...rest })),
     }
   }

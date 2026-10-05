@@ -16,7 +16,8 @@ import { diskHost } from '@exodus/stasis-core/host'
 //   - the same substitution applied to manifest-declared targets: a package `main`, an `exports`
 //     target, a `#name` `imports` target naming a compiled file whose only on-disk form is TS;
 //   - tsconfig `compilerOptions.paths` aliases (see loadTsconfigPaths), consulted for bare
-//     specifiers nothing else resolved.
+//     specifiers nothing else resolved. Node never probed an alias target, so its completion also
+//     tries the JS extensions after the TS ones (`@/x` -> x.ts, then x.js), as tsc does.
 // This module also homes the generic manifest helpers (readJson/locatePackage/nearestPackage)
 // both resolvers share -- it is the dependency-free lower layer, importing from neither.
 
@@ -113,8 +114,18 @@ export function nearestPackage(file, host = diskHost) {
 // (a `.d.ts` is types-only, erased at runtime -- tsc records it for types, never for emit).
 const probe = (p, host) => (!isTypeDeclaration(p) && isFile(p, host) ? p : null)
 
-// LOAD_INDEX with TS completions: dir/index.ts (+ index.tsx under tsx). Node/tsc already probed
-// the .js/.json indexes before the fallback ever runs.
+// The extensions tsc's completion appends, in its order (tryAddingExtensions): .ts, .tsx, then --
+// with `js`, for a path Node never probed (a tsconfig paths target) -- .js, .jsx. A path Node
+// already completed needs only the TS ones. .tsx/.jsx only under `tsx` (carryable under --jsx);
+// .d.ts (tsc's third) is never a target (see probe).
+const JSX_COMPLETION_EXTS = new Set(['.tsx', '.jsx'])
+function completionExts({ tsx, js }) {
+  const exts = js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx']
+  return tsx ? exts : exts.filter((e) => !JSX_COMPLETION_EXTS.has(e))
+}
+
+// LOAD_INDEX with tsc's completions: dir/index.ts (+ index.tsx under tsx, + index.js/index.jsx with
+// `js`). Without `js`, Node already probed the .js/.json indexes before the fallback ever runs.
 function probeIndex(dir, exts, host) {
   for (const ext of exts) {
     const hit = probe(join(dir, `index${ext}`), host)
@@ -130,9 +141,10 @@ function probeIndex(dir, exts, host) {
 // LOAD_AS_DIRECTORY) then its index. `dirOnly` skips the file rules for specs Node treats as
 // directory-only ('.', '..', a trailing '/'), so './' never probes the pathological '.ts' dotfile.
 // `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
-// so only substitution applies (matching tsc's node16 rules).
-function probeTypescriptTarget(base, { tsx = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
-  const exts = tsx ? ['.ts', '.tsx'] : ['.ts']
+// so only substitution applies (matching tsc's node16 rules). `js` completes JS extensions too, for
+// a base Node never probed (see completionExts).
+function probeTypescriptTarget(base, { tsx = false, js = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
+  const exts = completionExts({ tsx, js })
   if (!dirOnly) {
     const literal = probe(base, host)
     if (literal) return literal
@@ -154,7 +166,7 @@ function probeTypescriptTarget(base, { tsx = false, dirOnly = false, completion 
       // LOAD_AS_FILE(main) with substitution/completion, then LOAD_INDEX(main); a broken main
       // falls through to the package index, like Node.
       const entry = resolvePath(base, main)
-      const hit = probeTypescriptTarget(entry, { tsx, dir: false, host }) ?? probeIndex(entry, exts, host)
+      const hit = probeTypescriptTarget(entry, { tsx, js, dir: false, host }) ?? probeIndex(entry, exts, host)
       if (hit) return hit
     }
     return probeIndex(base, exts, host)
@@ -419,7 +431,8 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
 // substitutions to .tsx; `paths` is a loadTsconfigPaths matcher (or null). Dispatch by shape:
 //   '#name'        -> the parent package's `imports` targets, substitution only;
 //   relative/abs   -> path substitution/completion (+ directory main/index);
-//   bare           -> tsconfig paths aliases first (tsc consults them before node_modules), then
+//   bare           -> tsconfig paths aliases first (tsc consults them before node_modules; JS
+//                     completion too, as Node never probed the target), then
 //                     the named package: its `exports` targets (substitution only) when it has
 //                     them, else its `main`/index (bare root) or subpath (substitution/completion).
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), tsx = false, paths = null, host = diskHost } = {}) {
@@ -433,7 +446,7 @@ export function resolveTypescriptFallback(parentFile, spec, { conditions = new S
   }
   if (paths && !IN_NODE_MODULES.test(parentFile)) {
     for (const target of paths.matchPaths(spec)) {
-      const hit = probeTypescriptTarget(target, { tsx, dirOnly: target.endsWith('/'), host })
+      const hit = probeTypescriptTarget(target, { tsx, js: true, dirOnly: target.endsWith('/'), host })
       if (hit) return hit
     }
   }
