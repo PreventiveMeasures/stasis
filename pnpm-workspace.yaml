@@ -37,6 +37,8 @@ linkWorkspacePackages: true
 
 lockfileIncludeTarballUrl: true
 
+modulesCacheMaxAge: 0
+
 # exodus-test preloads a module.registerHooks resolve hook (loader/remap.cjs, for tape/@jest/globals
 # imports this suite doesn't use) into every node:test process. On Node 26 any such hook makes
 # require.resolve(spec, { conditions }) ignore the conditions the scanner/resolver pass, so skip it.
