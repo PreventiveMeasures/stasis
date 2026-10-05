@@ -58,6 +58,17 @@ const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs'
 // With no `type`, Node decides .js/.ts by syntax detection: either variant is possible, the first is the default.
 const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts': ['commonjs-typescript', 'module-typescript'] }
 
+// Nested package.json files known to disagree with their package root's name/version because of
+// upstream packaging, exempt from #locateModule's consistency check. Matched as a segment-aligned
+// suffix of the project-relative path, so hoisted, nested and .pnpm-store copies all match.
+// Maintained list: add only a confirmed upstream false positive, with its reason.
+const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
+  // Ships a stale build-time copy of its package.json in dist/ (1.6.0 publishes dist/ at 1.5.17).
+  'node_modules/@redis/client/dist/package.json',
+]
+const isInconsistentPackageJsonException = (file) =>
+  INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
+
 // On globalThis via `Symbol.for` so the registry is shared across duplicate stasis-core copies.
 const STATES_KEY = Symbol.for('@exodus/stasis-core/states')
 const liveStates = () => (globalThis[STATES_KEY] ??= new Set())
@@ -730,7 +741,7 @@ export class State {
       ;({ name, version } = rootPkg)
       assert.ok(name, `Missing name in ${this.relative(pkgAbsolute)}`)
       assert.ok(version, `Missing version in ${this.relative(pkgAbsolute)}`)
-      if (closestPkgAbsolute !== pkgAbsolute) {
+      if (closestPkgAbsolute !== pkgAbsolute && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {
         const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
         // Allow fake module-name subpaths: the real module owns the prefix (npm wouldn't publish this).
         if (closestPkg.name !== undefined && closestPkg.name !== name) assert.ok(closestPkg.name.startsWith(`${name}/`), message)
