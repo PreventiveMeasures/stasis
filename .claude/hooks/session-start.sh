@@ -12,7 +12,23 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
+# SessionStart stdout becomes context Claude sees, so the setup logs go to
+# stderr and only the closing summary line reaches stdout.
+exec 3>&1 1>&2
+
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
+# CLAUDE_PROJECT_DIR stays at the checkout the session started in, while the
+# input's cwd follows Claude into a worktree: set that worktree up instead
+# when it belongs to the same repository.
+if [ ! -t 0 ]; then
+  HOOK_CWD="$(node -e 'try { process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).cwd ?? "") } catch {}' || true)"
+  git_common_dir() { git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
+  if [ -n "$HOOK_CWD" ] && WORKTREE="$(git -C "$HOOK_CWD" rev-parse --show-toplevel 2>/dev/null)" &&
+    [ "$(git_common_dir "$WORKTREE")" = "$(git_common_dir "$PROJECT_DIR")" ]; then
+    PROJECT_DIR="$WORKTREE"
+  fi
+fi
 cd "$PROJECT_DIR"
 
 export NVM_DIR="${NVM_DIR:-/opt/nvm}"
@@ -58,4 +74,4 @@ fi
 
 pnpm install --frozen-lockfile
 
-echo "Node $(node --version) from $NODE_BIN, pnpm $(pnpm --version)"
+echo "Node $(node --version) from $NODE_BIN, pnpm $(pnpm --version)" >&3
