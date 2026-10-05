@@ -63,7 +63,7 @@ const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts'
 // suffix of the project-relative path, so hoisted, nested and .pnpm-store copies all match.
 // Maintained list: add only a confirmed upstream false positive, with its reason.
 const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
-  // Ships a stale build-time copy of its package.json in dist/ (1.6.0 publishes dist/ at 1.5.17).
+  // Many releases ship a stale build-time copy of package.json in dist/; any version matches.
   'node_modules/@redis/client/dist/package.json',
 ]
 const isInconsistentPackageJsonException = (file) =>
