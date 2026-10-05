@@ -16,19 +16,26 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." &
 cd "$PROJECT_DIR"
 
 export NVM_DIR="${NVM_DIR:-/opt/nvm}"
-if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-  echo "nvm not found at $NVM_DIR; staying on $(node --version)" >&2
-  exit 0
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  # nvm.sh is not clean under `set -u`.
+  set +u
+  # shellcheck disable=SC1091
+  . "$NVM_DIR/nvm.sh" --no-use
+  # Reads .nvmrc. Idempotent: a no-op when that version is already installed.
+  nvm install --no-progress
+  nvm use --silent
+  set -u
+else
+  echo "nvm not found at $NVM_DIR; trying $(node --version) from PATH" >&2
+  # .nvmrc pins the engines floor, which pnpm only warns about.
+  if ! node -e '
+    const [have, want] = [process.version, process.argv[1]].map((v) => v.replace(/^v/, "").split(".").map(Number))
+    process.exitCode = have.reduce((d, n, i) => d || n - want[i], 0) < 0 ? 1 : 0
+  ' "$(cat .nvmrc)"; then
+    echo "Node $(node --version) is older than $(cat .nvmrc) from .nvmrc" >&2
+    exit 1
+  fi
 fi
-
-# nvm.sh is not clean under `set -u`.
-set +u
-# shellcheck disable=SC1091
-. "$NVM_DIR/nvm.sh" --no-use
-# Reads .nvmrc. Idempotent: a no-op when that version is already installed.
-nvm install --no-progress
-nvm use --silent
-set -u
 
 NODE_BIN="$(dirname "$(command -v node)")"
 
@@ -41,12 +48,12 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
 fi
 
 # pnpm: the version is pinned by "packageManager" in package.json, so let
-# corepack provide it. Fall back to a global npm install if corepack is
-# unavailable in this Node build.
+# corepack provide it. Fall back to a global npm install of that same
+# version if corepack is unavailable in this Node build.
 if command -v corepack >/dev/null 2>&1; then
   corepack enable --install-directory "$NODE_BIN"
 else
-  npm install -g pnpm
+  npm install -g "$(node -p 'require("./package.json").packageManager.split("+")[0]')"
 fi
 
 pnpm install --frozen-lockfile
