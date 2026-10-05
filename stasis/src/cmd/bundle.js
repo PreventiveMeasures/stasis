@@ -1234,8 +1234,8 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 }
 
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
-// project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk, and
-// only known `generate` steps, for a JS bundle.
+// project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk;
+// `generate` only for JS.
 // -> the kind of bundle its entries make
 export function checkVfsOptions(name, options) {
   const kind = classifyEntries(name, options)
@@ -1255,9 +1255,8 @@ export function checkVfsOptions(name, options) {
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
-// through a State. `generate` names steps run on the laid-out tree before the scan, whose files the
-// scan then reads in place of the project's, the project's Vfs left as it is: 'prisma', the Prisma
-// Client a project's `prisma generate` writes (vfs-bundle/prisma.js).
+// through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
+// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js).
 // `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a JS bundle
 // built through a State, the State's root, which is at or above it.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }

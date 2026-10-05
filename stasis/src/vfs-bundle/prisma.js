@@ -10,22 +10,17 @@ import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescrip
 import { literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest } from './tree.js'
 
-// buildVfsBundle's `generate: ['prisma']`: the Prisma Client each project's `prisma generate` would
-// write, as the `prisma-client` generator of the Prisma it installs (7.4.0 to 7.10.0) writes it. The
-// repo's own Prisma is never run, nor anything else of it: its schema, the `schema` path its Prisma
-// config names, and the tsconfig.json and package.json the generator infers from are read from the
-// tree as data, its installed `prisma` only for its version. What runs is the optional peer
-// @prisma/client-generator-ts at 7.10.0 (GENERATOR_VERSION), on the host; another version's client
-// is 7.10.0's rewritten as that version writes it (DOWN), each byte of every client tested against
-// that version's own `prisma generate`. The client is built in memory, nothing written to disk. A
-// client for an edge runtime carries the query compiler's .wasm and its .mjs bindings as the repo's
-// `prisma` ships them, copied from the tree as `prisma generate` copies them from its own build.
+// buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write
+// with its installed Prisma (7.4.0 to 7.10.0), without running anything of the repo: schema, config,
+// tsconfig.json and package.json are read from the tree as data. The optional peer
+// @prisma/client-generator-ts@7.10.0 builds the client in memory; an older version's is 7.10.0's
+// rewritten (DOWN), tested byte for byte against that version's own `prisma generate`.
 
 const GENERATOR = '@prisma/client-generator-ts'
 const GENERATOR_VERSION = '7.10.0'
 const PROVIDER = 'prisma-client'
 
-// The Query Engine version each Prisma stamps its client with.
+// The engine hash each Prisma stamps its client with.
 const ENGINES = {
   '7.10.0': '0edf323efd1d98336f3f0a68684b56f689b900d3',
   '7.9.1': 'e922089b7d7502aff4249d5da3420f6fa55fc6ad',
@@ -39,7 +34,7 @@ const ENGINES = {
   '7.4.0': 'ab56fe763f921d033a6c195e7ddeb3e255bdbb57',
 }
 
-// The Prisma versions generated for, newest first.
+// Newest first.
 export const PRISMA_VERSIONS = Object.keys(ENGINES)
 
 const newerThan = (version, than) => PRISMA_VERSIONS.indexOf(version) < PRISMA_VERSIONS.indexOf(than)
@@ -50,13 +45,11 @@ const require = createRequire(import.meta.url)
 
 let loaded
 
-// Where readQueryCompiler reads the query compiler from for the client buildClient builds now
-// (generateClientFor sets it about that one call, which runs to its end before another starts).
+// Set by generateClientFor around its buildClient call, which is synchronous, so never shared.
 let compilerSource = null
 
-// What buildClient reads the query compiler an edge runtime's client carries with, in place of the
-// bundle's readSourceFile, which reads it from beside the bundle, as `prisma generate` reads it from
-// its own build: here, from the tree's `prisma`'s build (compilerSource).
+// Replaces the bundle's readSourceFile: an edge runtime's client copies the query compiler from
+// `prisma generate`'s own build, which here is the tree's `prisma`.
 function readQueryCompiler(name) {
   const { host, build, target } = compilerSource
   const file = posix.join(build, name)
@@ -64,10 +57,9 @@ function readQueryCompiler(name) {
   return Buffer.from(host.readFile(file))
 }
 
-// The blocks of the peer's bundle (esbuild's, a module it bundles each, from a `// path` line) that
-// buildClient doesn't reach, by how they start: the fs-extra and kleur it vendors for generateClient,
-// the typedSql stasis passes none of, its exports, and its generator class, with the option
-// inference stasis does itself.
+// The bundle's esbuild blocks (each starts with a `// path` line) buildClient never reaches:
+// generateClient's fs-extra and kleur, typedSql (never passed), the exports, and the generator class
+// with its option inference (done here instead).
 const UNREACHED = [
   ...['universalify', 'graceful-fs', 'fs-extra', 'jsonfile', 'kleur'].map((name) => `// ../../node_modules/.pnpm/${name}@`),
   ...['index', 'generator', 'module-format', 'runtime-targets'].map((name) => `// src/${name}.ts\n`),
@@ -76,9 +68,7 @@ const UNREACHED = [
   '// src/generateClient.ts\nvar import_package_up ',
 ]
 
-// The lines of the blocks buildClient reaches that set up what it doesn't need: what generateClient
-// writes with, the node:fs and node:path readSourceFile reads with, and @prisma/debug's logger,
-// `debug`, which does nothing here.
+// Lines of kept blocks that only serve unreached code; `debug` is passed in as a no-op instead.
 const UNREACHED_LINES = [
   'var import_promises = __toESM(require("node:fs/promises"));\n',
   'var import_node_path2 = __toESM(require("node:path"));\n',
@@ -90,16 +80,12 @@ const UNREACHED_LINES = [
   'var debug = (0, import_debug.Debug)("prisma:client-generator-ts:wasm");\n',
 ]
 
-// All the bundle may require once stripped: what buildClient does, none of it the disk's.
+// All the stripped bundle may require; nothing that reaches the disk.
 const REQUIRES = new Set(['@prisma/client-common', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'pluralize', 'ts-pattern'])
 
-// The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
-// generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
-// the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
-// with. Its bundle exports neither function, so it is run as a function of its `require` returning
-// the two (what it then runs reads no module, exports, __filename or __dirname), readQueryCompiler
-// in place of its readSourceFile; best effort, without what it holds that buildClient doesn't reach
-// (UNREACHED, UNREACHED_LINES), and refused if it then requires more than REQUIRES.
+// The peer exports neither buildClient (generateClient's in-memory half) nor the reserved-names check
+// generateClient runs, so its bundle is compiled as a function returning them, stripped of what
+// they never reach. Stripping is cleanup, not a sandbox.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -113,7 +99,7 @@ function loadGenerator() {
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
   let source = readFileSync(main, 'utf8').split(/\n\n(?=\/\/ )/u).filter((block) => !UNREACHED.some((start) => block.startsWith(start))).join('\n\n')
   for (const line of UNREACHED_LINES) source = source.replace(line, '')
-  // Each `require` there, a call with a module name or not, is to be one of REQUIRES.
+  // A `require` without a literal name is refused too.
   const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
   if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
   const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nreturn { buildClient, validateDmmfAgainstDenylists }\n`, ['require', 'readQueryCompiler', 'debug'], { filename: main })
@@ -124,15 +110,13 @@ function loadGenerator() {
 
 // --- what `prisma generate` reads ---
 
-// The file at `name` in `dir` or the nearest of its ancestors holding one, or null.
 const nearestFile = (host, dir, name) => {
   const at = nearest(dir, holding(host, name))
   return at === null ? null : posix.join(at, name)
 }
 
-// The Prisma whose `prisma generate` the project at `dir` runs, as Node finds it from there, and its
-// version; or null where none is installed: its `prisma`, or where that is no version generated for
-// (Prisma 8, say), the `prisma` of its `@prisma/prisma7`, which runs that one as `prisma7` beside it.
+// The `prisma` Node resolves from `dir`, or where that is unsupported (Prisma 8, say), the one
+// `@prisma/prisma7` runs as `prisma7` beside it.
 function installedPrisma(host, dir) {
   const installed = (from) => {
     const file = nearestFile(host, from, 'node_modules/prisma/package.json')
@@ -145,13 +129,11 @@ function installedPrisma(host, dir) {
   return PRISMA_VERSIONS.includes(beside?.version) ? beside : prisma
 }
 
-// Where @prisma/config looks for a project's config, in order, each base with each extension:
-// 7.10.0 tries `prisma7.config.*` first (the first two), which no Prisma before it reads.
+// @prisma/config's search order; only 7.10.0 reads the first two (prisma7.config.*).
 const CONFIG_BASES = ['prisma7.config', '.config/prisma7', ...['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`])]
 const configsOf = (version) => CONFIG_BASES.slice(newerThan(version, '7.9.1') ? 0 : 2).flatMap((base) => ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].map((ext) => `${base}${ext}`))
 
-// What a config's imports and requires may bind a name to, by module and by what is imported (`*`
-// for the module itself): Node's path module or its join, or Prisma's defineConfig.
+// What a config's top-level imports and requires may bind, by module (`*`: the module itself).
 const BINDINGS = {
   path: { '*': 'path', join: 'join' },
   'node:path': { '*': 'path', join: 'join' },
@@ -160,13 +142,9 @@ const BINDINGS = {
 }
 const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'ParenthesizedExpression'])
 
-// The `schema` a Prisma config names, read without running it: the object its default export (or
-// module.exports) is, through Prisma's defineConfig(), whose `schema` is a string it spells out: a
-// literal, or Node's path.join of them; each through `as`, `satisfies`, parentheses and top-level
-// consts; undefined where it names none. Only names the config binds by its top-level imports and
-// requires are taken for path, join or defineConfig. Nothing of the config is run, nor any code
-// built from it: its syntax tree is read, and a join is posix.join over the strings it spells.
-// Anything else is code stasis won't run, refused.
+// The `schema` a Prisma config names, read from its syntax tree: the config is never run, nor
+// anything built from it. A string literal or path.join of them is taken, through defineConfig,
+// `as`, `satisfies`, parentheses and top-level consts; anything else is refused.
 function configSchema(file, text) {
   const parsed = require('oxc-parser').parseSync(file, text, { sourceType: 'unambiguous' })
   const [error] = syntaxErrors(parsed)
@@ -175,7 +153,6 @@ function configSchema(file, text) {
   const consts = new Map()
   const bound = new Map()
   const bind = (from, name, local) => bound.set(local, BINDINGS[from]?.[name])
-  // The module a `require('...')` names, or null.
   const required = (node) => (node?.type === 'CallExpression' && node.callee.name === 'require' && node.arguments.length === 1 ? literalSpec(node.arguments[0]) : null)
   let config
   for (const node of parsed.program.body) {
@@ -195,7 +172,7 @@ function configSchema(file, text) {
     }
   }
   if (config === undefined) throw refuse('no default export')
-  // `node` through what doesn't change its value, each const once.
+  // Each const once, against cycles.
   const peel = (node, seen = new Set()) => {
     if (WRAPPERS.has(node.type)) return peel(node.expression, seen)
     if (node.type === 'Identifier' && consts.has(node.name) && !seen.has(node.name)) return peel(consts.get(node.name), seen.add(node.name))
@@ -222,9 +199,7 @@ function configSchema(file, text) {
   return schema
 }
 
-// The schema files `path` holds, as [path, text], as `prisma generate` reads them: the file itself,
-// or the .prisma files @prisma/schema-files-loader (the peer's own) loads from the directory, read
-// from the tree through `host`.
+// A schema directory is read by Prisma's own loader, over the tree.
 function schemaFilesAt(host, path) {
   if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
   return loadGenerator().schemaFiles.loadSchemaFiles(path, {
@@ -239,9 +214,8 @@ function schemaFilesAt(host, path) {
   })
 }
 
-// The schema `prisma generate` reads for the project at `dir` with Prisma `version`, as the path it
-// is given, or null where there is none: the one its config names, relative to the config, else
-// ./schema.prisma or ./prisma/schema.prisma.
+// The schema path `prisma generate` takes at `dir`: the config's `schema` (relative to the config),
+// else ./schema.prisma or ./prisma/schema.prisma; null if none.
 function projectSchema(host, dir, version) {
   const first = (names) => names.map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
   const config = first(configsOf(version))
@@ -252,11 +226,8 @@ function projectSchema(host, dir, version) {
   return path
 }
 
-// The compilerOptions of the tsconfig.json nearest `dir` (get-tsconfig's getTsconfig), or undefined,
-// as far as the generator reads get-tsconfig 4.10's normalizeCompilerOptions of them (it tells
-// bundler resolution from any other alone): module and moduleResolution lowercased; where none is
-// given, an ES target's (es2015 on) es6 module and classic resolution, else a preserve module's
-// bundler resolution.
+// The nearest tsconfig.json's compilerOptions, defaulted as get-tsconfig 4.10 does, as far as the
+// inference below reads them.
 const ES_TARGETS = new Set(['es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
 function tsconfigOptions(host, dir) {
   const file = nearestFile(host, dir, 'tsconfig.json')
@@ -272,8 +243,8 @@ function tsconfigOptions(host, dir) {
   return o
 }
 
-// --- the generator's options, as its generate() takes them from the schema and infers the rest ---
-// (the same in each version but for one change, in inferModuleFormat)
+// --- the generator's options, as its generate() parses and infers them (alike in each version but
+// for inferModuleFormat) ---
 
 const RUNTIMES = { workerd: 'workerd', cloudflare: 'workerd', 'edge-light': 'vercel-edge', 'vercel-edge': 'vercel-edge', nodejs: 'nodejs', bun: 'nodejs', deno: 'deno' }
 const GENERATED_EXTENSIONS = ['ts', 'mts', 'cts']
@@ -282,7 +253,6 @@ const JS_EXTENSIONS = { ts: 'js', mts: 'mjs', cts: 'cjs' }
 
 const MODULE_FORMATS = { cjs: 'cjs', commonjs: 'cjs', esm: 'esm' }
 
-// What `names` (lowercase -> value) says of a string option of the generator, case aside, or a refusal.
 function oneOf(value, names, what) {
   const name = typeof value === 'string' ? value.toLowerCase() : undefined
   if (!Object.hasOwn(names, name)) throw new Error(`Unknown ${what}: ${JSON.stringify(value)}, expected one of: ${Object.keys(names).map((key) => JSON.stringify(key)).join(', ')}`)
@@ -301,8 +271,7 @@ function inferImportFileExtension(tsconfig, generatedFileExtension, target) {
   return JS_EXTENSIONS[generatedFileExtension] ?? generatedFileExtension
 }
 
-// From 7.10.0 on, a node16 or nodenext module takes the `type` of the package.json nearest the
-// output (package-up's), cjs without one or where it can't be read; before, ESM.
+// Before 7.10.0, node16 and nodenext gave ESM; since, the nearest package.json's `type` (else cjs).
 function inferModuleFormat({ tsconfig, generatedFileExtension, importFileExtension, outputDir, version, host }) {
   if (tsconfig?.module) {
     if (tsconfig.module === 'commonjs') return 'cjs'
@@ -328,9 +297,8 @@ function generatorOptions(config, { outputDir, version, host }) {
 
 // --- 7.10.0's client as each older version writes it ---
 
-// `text` with `from` (a string, or a RegExp spanning 7.10.0's text between two of its own) replaced
-// by `to`, each time if `all`, where it is there at all; else `null` where `optional`, or a refusal:
-// 7.10.0's client is not the one these steps were written against.
+// A missing `from` means the client isn't the one these rewrites were written against: refused,
+// unless `optional` (null).
 function swap(text, from, to, { path, all = false, optional = false }) {
   if (typeof from === 'string' ? !text.includes(from) : !from.test(text)) {
     if (optional) return null
@@ -339,7 +307,7 @@ function swap(text, from, to, { path, all = false, optional = false }) {
   return all ? text.replaceAll(from, () => to) : text.replace(from, () => to)
 }
 
-// Where a client's files are, by their names without the generated extension.
+// File stems, without the generated extension.
 const CLIENT = 'client'
 const CLASS = 'internal/class'
 const NAMESPACE = 'internal/prismaNamespace'
@@ -349,13 +317,13 @@ function dropModelSchemas(text, path) {
   const match = /^config\.runtimeDataModel = JSON\.parse\((".*")\)$/mu.exec(text)
   if (match === null) throw new Error(`prisma: ${path} of the ${GENERATOR_VERSION} client holds no runtimeDataModel`)
   const model = JSON.parse(JSON.parse(match[1]))
-  // Written back as it was read, or this rewrite is not the generator's own serialization.
+  // Must round-trip, or the rewrite wouldn't match the generator's own serialization.
   if (JSON.stringify(JSON.stringify(model)) !== match[1]) throw new Error(`prisma: ${path}: the runtimeDataModel does not serialize back as written`)
   for (const each of Object.values(model.models)) delete each.schema
   return text.replace(match[0], () => `config.runtimeDataModel = JSON.parse(${JSON.stringify(JSON.stringify(model))})`)
 }
 
-// 7.8.0's PrismaClientOptions, where 7.9.0 has PrismaClientBaseOptions and two interfaces over it.
+// 7.8.0's PrismaClientOptions, which 7.9.0 splits into interfaces.
 const UNION_OPTIONS = `export type PrismaClientOptions = ({
   /**
    * Instance of a Driver Adapter, e.g., like one provided by \`@prisma/adapter-pg\`.
@@ -370,10 +338,10 @@ const UNION_OPTIONS = `export type PrismaClientOptions = ({
   adapter?: never
 }) & {`
 
-// Each version's client from the next newer one's, for each version whose client differs from it
-// but in the version stamps (asVersion's): by the name of each file it rewrites without the generated
-// extension, or MODELS for each of models/, `(text, path) => text`.
+// Each version's rewrites of the next newer one's client, by file stem (MODELS: each of models/).
+// Versions differing only in the stamps (STAMPS) have none.
 const MODELS = 'models/*'
+// The constructor example in the docs: with an adapter from 7.4.2, without before.
 const example = (indent) => [`${indent}* const prisma = new PrismaClient({\n${indent}*   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL })\n${indent}* })\n`, `${indent}* const prisma = new PrismaClient()\n`]
 const DOWN = {
   '7.9.1': { [CLASS]: dropModelSchemas },
@@ -412,16 +380,14 @@ const DOWN = {
   '7.4.0': { [CLASS]: (text, path) => swap(text, 'https://www.prisma.io/docs/orm/prisma-client/queries/transactions', 'https://www.prisma.io/docs/concepts/components/prisma-client/transactions', { path }) },
 }
 
-// The lines each client stamps its version and engine into, by the file they are in.
+// Where each client stamps its version and engine.
 const STAMPS = [
   [CLASS, (version) => `"clientVersion": "${version}",\n  "engineVersion": "${ENGINES[version]}",`],
   [NAMESPACE, (version) => ` * Prisma Client JS version: ${version}\n * Query Engine version: ${ENGINES[version]}\n`],
   [NAMESPACE, (version) => `  client: "${version}",\n  engine: "${ENGINES[version]}"\n`],
 ]
 
-// `text` (bytes left as they are), the file at `path` of the 7.10.0 client whose files are named
-// with `extension`, as `version`'s: each older version's rewrites in turn, down to it, and its
-// stamps.
+// A 7.10.0 client file as `version` writes it.
 function asVersion(text, path, version, extension) {
   if (typeof text !== 'string') return text
   const stem = path.slice(0, -extension.length - 1)
@@ -433,10 +399,7 @@ function asVersion(text, path, version, extension) {
 
 // --- generating ---
 
-// The client `generator` (a `prisma-client` one of `schema`) writes for Prisma `version`, installed
-// at `prismaDir`, as a Map of its paths, from its output directory, to their text (bytes for the
-// query compiler's .wasm): built as the peer's generateClient builds it before writing it to disk,
-// with the options generatorOptions infers as it does.
+// One generator's client: path in the output -> text (bytes for the query compiler's .wasm).
 function generateClientFor({ schema, datamodel, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
   const { buildClient, validateDmmfAgainstDenylists } = loadGenerator()
   const options = generatorOptions(generator.config, { outputDir, version, host })
@@ -463,22 +426,18 @@ function generateClientFor({ schema, datamodel, generator, dmmf, datasources, ou
   }
   const denied = validateDmmfAgainstDenylists(built.prismaClientDmmf)
   if (denied) throw new Error(`prisma: ${schema.path} contains reserved keywords, to rename: ${denied.map((error) => error.message).join(', ')}`)
-  // Its file map, whose directories are maps of their own, flattened.
+  // fileMap nests directories as objects.
   const flat = (map, at) => Object.entries(map).flatMap(([name, content]) => (typeof content === 'string' || Buffer.isBuffer(content) ? [[at + name, content]] : flat(content, `${at}${name}/`)))
   return new Map(flat(built.fileMap, '').map(([path, content]) => [path, asVersion(content, path, version, options.generatedFileExtension)]))
 }
 
-// What() as Prisma reads the schema at `path`, its refusal naming it.
 const readingSchema = (path, what) => Promise.try(what).catch((cause) => {
   throw new Error(`prisma: ${path}: ${cause.message}`, { cause })
 })
 
-// The Prisma clients of the projects at `projects` (paths from `root`), read through `host`, each a
-// `{ dir, files }` of its output directory and its files there (Map of path from it to text, or bytes
-// for the query compiler's .wasm).
-// Projects with no schema, or none with a `prisma-client` generator, are skipped quietly; one stasis
-// can't generate for (no or another Prisma installed, a config it can't read, another generator, an
-// output from the environment) is skipped with a warning, the scan then saying what it misses.
+// Each `{ dir, files }` output. Projects without a schema or a `prisma-client` generator are skipped
+// quietly; ones stasis can't generate for (unsupported Prisma, unreadable config, other generators,
+// env outputs) with a warning, the scan then reporting what is missing.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects }) {
   const outputs = []
@@ -489,7 +448,7 @@ export async function generatePrismaClients({ host, root, projects }) {
     const version = supported ? prisma.version : GENERATOR_VERSION
     const path = await Promise.try(projectSchema, host, dir, version).catch((error) => { console.warn(`[stasis] prisma: not generating for ${dir}: ${error.message}`) })
     if (!path) continue
-    // Read by Prisma 7.10.0, which another Prisma's schema needn't satisfy.
+    // Checked before parsing: another Prisma's schema needn't satisfy 7.10.0.
     if (!supported) {
       const installed = prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`
       console.warn(`[stasis] prisma: not generating for ${path}: stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${installed}`)
@@ -522,15 +481,13 @@ export async function generatePrismaClients({ host, root, projects }) {
   return outputs
 }
 
-// What the generator removes from an output directory before it writes there, which must then hold
-// a generated client already: its deleteOutputDir's globs, which match regular files alone, and no
-// dot file or directory.
+// What deleteOutputDir clears before writing (its globs skip dot paths), in an output that must
+// already look like a client.
 const STALE = /(?:\.(?:js|ts|mts|cts|wasm|prisma)$|^package\.json$|^[^/]*\.node$|^(?:query|schema)-engine-[^/]*$)/u
 const isStale = (path) => STALE.test(path) && !path.split('/').some((name) => name.startsWith('.'))
 const CLIENT_FILES = ['client.ts', 'client.mts', 'client.cts', 'client.d.ts']
 
-// A copy of `vfs` with the clients of `outputs` (generatePrismaClients') written where `prisma
-// generate` writes them, over what an earlier client left there.
+// A copy of `vfs` with the outputs written over any earlier client, as `prisma generate` does.
 export function withPrismaClients(vfs, outputs) {
   const out = createVfs()
   out.mount(vfs, '/')

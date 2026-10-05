@@ -6,11 +6,9 @@ import { dirname, join, relative } from 'node:path'
 import { PRISMA_VERSIONS } from '../stasis/src/vfs-bundle/prisma.js'
 import { cases, clientHash, readHashes, writeHashes } from './prisma-generate.helper.js'
 
-// Writes fixtures/prisma-generate.json.br, the hashes of what each Prisma's own `prisma generate`
-// writes for each case of prisma-generate.helper.js, which prisma-generate.test.js holds stasis's
-// clients to: each version's `prisma` and `@prisma/client` installed from the registry (scripts
-// ignored; the CLI fetches its engines itself), each case written out and generated in turn. Run by
-// hand, with the network, after a change to the corpus or to the versions stasis generates as:
+// Writes fixtures/prisma-generate.json.br from each version's real `prisma generate` over the corpus,
+// installed from the registry (scripts ignored; the CLI fetches its own engines). Run by hand, with
+// the network, after changing the corpus or PRISMA_VERSIONS:
 //   node tests/prisma-generate-truth.manual.js [version ...]
 
 const hashes = readHashes()

@@ -5,12 +5,9 @@ import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 import { Vfs } from '../stasis/src/vfs-bundle.js'
 
-// The corpus prisma-generate.test.js holds the Prisma clients stasis generates (vfs-bundle/prisma.js)
-// to, byte for byte: projects whose `prisma generate` output, as each Prisma from 7.4.0 to 7.10.0
-// writes it with its own CLI, fixtures/prisma-generate.json.br holds the hashes of
-// (prisma-generate-truth.manual.js writes it). Each case: { files, cwd, args, output } -- the
-// project's files, the directory `prisma generate` runs in, its arguments, and the directory its
-// client lands in, `generated` unless named.
+// The corpus stasis's clients are checked against, byte for byte, by the hashes of each Prisma's own
+// `prisma generate` output (fixtures/prisma-generate.json.br, from prisma-generate-truth.manual.js).
+// A case: { files, cwd (where `prisma generate` runs), args, output = 'generated' }.
 
 const gen = (extra = '', output = '../generated') => `generator client {\n  provider = "prisma-client"\n  output   = "${output}"${extra ? `\n${extra}` : ''}\n}\n`
 const ds = (provider, extra = '') => `\ndatasource db {\n  provider = "${provider}"${extra ? `\n${extra}` : ''}\n}\n`
@@ -357,8 +354,8 @@ cases['inf-output-in-src'] = {
   output: 'src/generated/prisma',
 }
 
-// A query compiler's files as each case's `prisma` ships them in its build, which a client for an
-// edge runtime carries: stand-ins here, their bytes left out of the hash and checked on their own.
+// Stand-ins for the query compiler an edge client copies from `prisma`'s build; their bytes are
+// checked on their own, outside the hash.
 export const isQueryCompiler = (path) => /^internal\/query_compiler_\w+_bg\.(?:js|wasm)$/u.test(path)
 const PROVIDERS = ['postgresql', 'mysql', 'sqlite', 'sqlserver', 'cockroachdb']
 const queryCompilerFiles = () => Object.fromEntries(['fast', 'small'].flatMap((build) => PROVIDERS.flatMap((provider) => ['wasm', 'mjs'].map((ext) => {
@@ -366,8 +363,7 @@ const queryCompilerFiles = () => Object.fromEntries(['fast', 'small'].flatMap((b
   return [`node_modules/prisma/build/${name}`, `stand-in ${name}\n`]
 }))))
 
-// The project of case `c` as `prisma generate` of Prisma `version` reads it, in a Vfs: with the
-// `prisma` it installs, and the schema the CLI was given with --schema named by a Prisma config.
+// Case `c` with Prisma `version` installed; a --schema argument becomes a config naming it.
 export function caseVfs(c, version) {
   const files = { ...c.files, ...queryCompilerFiles(), 'node_modules/prisma/package.json': JSON.stringify({ name: 'prisma', version }) }
   const schema = c.args.indexOf('--schema')
@@ -380,14 +376,12 @@ export function caseVfs(c, version) {
   return vfs
 }
 
-// fixtures/prisma-generate.json.br: brotli-compressed JSON of version -> case -> clientHash of what
-// that version's `prisma generate` writes for it; {} before it is first written.
+// version -> case -> clientHash.
 const fixture = join(import.meta.dirname, 'fixtures/prisma-generate.json.br')
 export const readHashes = () => (existsSync(fixture) ? JSON.parse(brotliDecompressSync(readFileSync(fixture)).toString('utf8')) : {})
 export const writeHashes = (hashes) => writeFileSync(fixture, brotliCompressSync(`${JSON.stringify(hashes, null, 1)}\n`, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT } }))
 
-// A hash of a client's files (path -> text or bytes) but the query compiler's: of each path, in
-// order, and the sha256 of its bytes.
+// Leaves out the query compiler, whose stand-ins are checked on their own.
 export function clientHash(files) {
   const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
   const rows = [...files].filter(([path]) => !isQueryCompiler(path)).toSorted(([a], [b]) => (a < b ? -1 : 1)).map(([path, bytes]) => `${path}\0${sha(bytes)}\n`)

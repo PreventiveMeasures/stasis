@@ -12,10 +12,8 @@ import { fakeClient, json } from './vfs-bundle-github.helper.js'
 
 /* eslint-disable no-await-in-loop -- each case waits on its own build, in order, its warnings read after it */
 
-// buildVfsBundle's `generate: ['prisma']` (github-bundle's --generate=prisma) over a pnpm workspace
-// held in a Vfs, whose `prisma` and `@prisma/client` are stand-ins linked from vendor/: nothing is
-// fetched, and nothing of the project runs. That each client is the one its Prisma writes, byte for
-// byte, is prisma-generate.test.js's to say.
+// `generate: ['prisma']` over a pnpm workspace in a Vfs, with stand-in `prisma` and `@prisma/client`
+// linked from vendor/: nothing is fetched or run. Byte-exactness is prisma-generate.test.js's.
 
 const write = (vfs, files) => {
   for (const [rel, text] of Object.entries(files)) {
@@ -59,7 +57,7 @@ const text = (bundle, path) => {
   const bytes = bundle.sources.get(path)
   return typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes)
 }
-// What console.warn says from here on, as a function of the warnings so far.
+// Mocks console.warn; returns a function reading its messages so far.
 const warnings = (t) => {
   const warn = t.mock.method(console, 'warn', () => {})
   return () => warn.mock.calls.map((call) => call.arguments[0])
@@ -126,7 +124,7 @@ test('beside Prisma 8, the Prisma generated as is the one @prisma/prisma7 runs a
   t.assert.match(said().at(-1), /, and \/node_modules\/prisma\/package\.json is 8\.0\.0$/u)
 })
 
-// generatePrismaClients over a project read through `host` alone, Prisma `version` installed.
+// generatePrismaClients over one project, with Prisma `version` installed.
 const clients = (files, version = '7.10.0') => generatePrismaClients({
   host: createVfsHost(project({ 'node_modules/prisma/package.json': json({ name: 'prisma', version }), ...files })),
   root: '/',
