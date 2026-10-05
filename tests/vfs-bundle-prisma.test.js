@@ -206,6 +206,12 @@ test("generating never loads @prisma/internals, which reads the host's npm confi
   t.assert.equal(fs.close, close)
 })
 
+test("a property name is quoted where Prisma's bundled identifier tables, not Node's, say so", async (t) => {
+  // U+A7CE continues an identifier in Node 24's Unicode, not in the older tables Prisma bundles.
+  const [{ files }] = await clients({ 'prisma/schema.prisma': schema().replace('  email String @unique\n', '  email String @unique\n  a\uA7CEb Int\n') })
+  t.assert.match(files.get('models/User.ts'), /\["a\uA7CEb"\]/u)
+})
+
 test("an edge runtime's client carries the query compiler of the tree's prisma", async (t) => {
   const files = workspace({ files: { 'packages/b/prisma/schema.prisma': schema({ extra: '\n  runtime  = "workerd"' }) } })
   await t.assert.rejects(build(project(files), { generate: ['prisma'] }), /^Error: prisma: \/packages\/b\/node_modules\/prisma\/build\/query_compiler_fast_bg\.postgresql\.wasm, which a workerd client carries, is not in the tree$/u)
