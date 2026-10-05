@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { basename, dirname, posix } from 'node:path'
+import { dirname, posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
@@ -50,34 +50,51 @@ const require = createRequire(import.meta.url)
 
 let loaded
 
-// Where buildClient reads the query compiler from for the client it builds now (generateClientFor
-// sets it about that one call, which runs to its end before another starts).
+// Where readQueryCompiler reads the query compiler from for the client buildClient builds now
+// (generateClientFor sets it about that one call, which runs to its end before another starts).
 let compilerSource = null
 
-// What the peer's bundle requires in place of the modules it reaches the disk through: its `node:fs`,
-// through which buildClient reads nothing but the query compiler an edge runtime's client carries,
-// from beside the bundle, as `prisma generate` reads it from its own build: here, from the tree's
-// `prisma`'s build (compilerSource); and nothing for those generateClient and the generator's own
-// option inference write and read with, which stasis doesn't call.
-const STAND_INS = new Map([
-  ['node:fs', {
-    existsSync: () => true,
-    readFileSync(path) {
-      const { host, build, target } = compilerSource
-      const file = posix.join(build, basename(path))
-      if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
-      return Buffer.from(host.readFile(file))
-    },
-  }],
-  ...['node:fs/promises', 'fast-glob', 'get-tsconfig', 'package-up'].map((id) => [id, {}]),
-])
+// What buildClient reads the query compiler an edge runtime's client carries with, in place of the
+// bundle's readSourceFile, which reads it from beside the bundle, as `prisma generate` reads it from
+// its own build: here, from the tree's `prisma`'s build (compilerSource).
+function readQueryCompiler(name) {
+  const { host, build, target } = compilerSource
+  const file = posix.join(build, name)
+  if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
+  return Buffer.from(host.readFile(file))
+}
+
+// The blocks of the peer's bundle (esbuild's, a module it bundles each, from a `// path` line) that
+// buildClient doesn't reach, by how they start: the fs-extra and kleur it vendors for generateClient,
+// the typedSql stasis passes none of, its exports, and its generator class, with the option
+// inference stasis does itself.
+const UNREACHED = [
+  ...['universalify', 'graceful-fs', 'fs-extra', 'jsonfile', 'kleur'].map((name) => `// ../../node_modules/.pnpm/${name}@`),
+  ...['index', 'generator', 'module-format', 'runtime-targets'].map((name) => `// src/${name}.ts\n`),
+  '// src/typedSql/',
+  '// package.json\n',
+  '// src/generateClient.ts\nvar import_package_up ',
+]
+
+// The lines of the blocks buildClient reaches that import what it doesn't: what generateClient
+// writes with, and the node:fs readSourceFile reads with.
+const UNREACHED_IMPORTS = [
+  'var import_promises = __toESM(require("node:fs/promises"));\n',
+  'var import_fast_glob = require("fast-glob");\n',
+  'var import_fs_extra = __toESM(require_lib());\n',
+  'var import_node_fs = __toESM(require("node:fs"));\n',
+]
+
+// All the bundle may require once stripped: what buildClient does, none of it the disk's.
+const REQUIRES = new Set(['@prisma/client-common', '@prisma/debug', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'node:path', 'pluralize', 'ts-pattern'])
 
 // The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
 // generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
 // the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
 // with. Its bundle exports neither function, so it is run as Node runs it, with the two exported in
-// place of its own exports, requiring STAND_INS in place of its own; and, best effort, without the
-// fs-extra it vendors for generateClient alone, which it would set up as it loads.
+// place of its own exports, and readQueryCompiler in place of its readSourceFile; best effort,
+// without what it holds that buildClient doesn't reach (UNREACHED, UNREACHED_IMPORTS), and refused
+// if it then requires more than REQUIRES.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -89,12 +106,14 @@ function loadGenerator() {
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
+  let source = readFileSync(main, 'utf8').split(/\n\n(?=\/\/ )/u).filter((block) => !UNREACHED.some((start) => block.startsWith(start))).join('\n\n')
+  for (const line of UNREACHED_IMPORTS) source = source.replace(line, '')
+  // Each `require` there, a call with a module name or not, is to be one of REQUIRES.
+  const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
+  if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
   const peer = { exports: {} }
-  const source = readFileSync(main, 'utf8')
-    .replace(/\n\/\/ \.\.\/\.\.\/node_modules\/\.pnpm\/universalify@[^]*?\n(?=\/\/ src\/index\.ts\n)/u, '\n')
-    .replace('var import_fs_extra = __toESM(require_lib());\n', '')
-  const run = compileFunction(`${source}\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname'], { filename: main })
-  run.call(peer.exports, peer.exports, (id) => STAND_INS.get(id) ?? own(id), peer, main, dirname(main))
+  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname', 'readQueryCompiler'], { filename: main })
+  run.call(peer.exports, peer.exports, own, peer, main, dirname(main), readQueryCompiler)
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
   loaded = { ...peer.exports, internals: own('@prisma/internals'), schemaFiles }
   return loaded
