@@ -54,24 +54,30 @@ let loaded
 // sets it about that one call, which runs to its end before another starts).
 let compilerSource = null
 
-// The `node:fs` of the peer's bundle, through which buildClient reads nothing but the query compiler
-// an edge runtime's client carries, from beside the bundle, as `prisma generate` reads it from its
-// own build: here, from the tree's `prisma`'s build (compilerSource).
-const peerFs = {
-  existsSync: () => true,
-  readFileSync(path) {
-    const { host, build, target } = compilerSource
-    const file = posix.join(build, basename(path))
-    if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
-    return Buffer.from(host.readFile(file))
-  },
-}
+// What the peer's bundle requires in place of the modules it reaches the disk through: its `node:fs`,
+// through which buildClient reads nothing but the query compiler an edge runtime's client carries,
+// from beside the bundle, as `prisma generate` reads it from its own build: here, from the tree's
+// `prisma`'s build (compilerSource); and nothing for those generateClient and the generator's own
+// option inference write and read with, which stasis doesn't call.
+const STAND_INS = new Map([
+  ['node:fs', {
+    existsSync: () => true,
+    readFileSync(path) {
+      const { host, build, target } = compilerSource
+      const file = posix.join(build, basename(path))
+      if (!isFile(file, host)) throw new Error(`prisma: ${file}, which a ${target} client carries, is not in the tree`)
+      return Buffer.from(host.readFile(file))
+    },
+  }],
+  ...['node:fs/promises', 'fast-glob', 'get-tsconfig', 'package-up'].map((id) => [id, {}]),
+])
 
 // The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
 // generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
 // the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
 // with. Its bundle exports neither function, so it is run as Node runs it, with the two exported in
-// place of its own exports, and peerFs as the `node:fs` it requires.
+// place of its own exports, requiring STAND_INS in place of its own; and, best effort, without the
+// fs-extra it vendors for generateClient alone, which it would set up as it loads.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -84,9 +90,11 @@ function loadGenerator() {
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
   const peer = { exports: {} }
-  const source = `${readFileSync(main, 'utf8')}\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`
-  const run = compileFunction(source, ['exports', 'require', 'module', '__filename', '__dirname'], { filename: main })
-  run.call(peer.exports, peer.exports, (id) => (id === 'node:fs' ? peerFs : own(id)), peer, main, dirname(main))
+  const source = readFileSync(main, 'utf8')
+    .replace(/\n\/\/ \.\.\/\.\.\/node_modules\/\.pnpm\/universalify@[^]*?\n(?=\/\/ src\/index\.ts\n)/u, '\n')
+    .replace('var import_fs_extra = __toESM(require_lib());\n', '')
+  const run = compileFunction(`${source}\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname'], { filename: main })
+  run.call(peer.exports, peer.exports, (id) => STAND_INS.get(id) ?? own(id), peer, main, dirname(main))
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
   loaded = { ...peer.exports, internals: own('@prisma/internals'), schemaFiles }
   return loaded
