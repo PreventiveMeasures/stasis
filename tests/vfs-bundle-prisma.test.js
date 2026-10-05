@@ -108,6 +108,24 @@ test('--generate=prisma skips, with a warning, a project it cannot generate for'
   t.assert.equal(said().length, quiet)
 })
 
+test('beside Prisma 8, the Prisma generated as is the one @prisma/prisma7 runs as `prisma7`', async (t) => {
+  const prisma = (version) => json({ name: 'prisma', version })
+  const base = { 'prisma/schema.prisma': schema({ output: '../client' }), 'node_modules/prisma/package.json': prisma('8.0.0') }
+  const namespace = async (vfs) => (await generatePrismaClients({ host: createVfsHost(vfs), root: '/', projects: new Set(['.']) }))[0]?.files.get('internal/prismaNamespace.ts')
+  // npm nests the Prisma it runs under it; pnpm lays it out beside it, linked from the project.
+  const nested = project({ ...base, 'node_modules/@prisma/prisma7/package.json': json({ name: '@prisma/prisma7', version: '7.9.1' }), 'node_modules/@prisma/prisma7/node_modules/prisma/package.json': prisma('7.9.1') })
+  t.assert.match(await namespace(nested), / \* Prisma Client JS version: 7\.9\.1\n/u)
+  const store = 'node_modules/.pnpm/@prisma+prisma7@7.10.0/node_modules'
+  const linked = project({ ...base, [`${store}/@prisma/prisma7/package.json`]: json({ name: '@prisma/prisma7', version: '7.10.0' }), [`${store}/prisma/package.json`]: prisma('7.10.0') })
+  linked.mkdir('/node_modules/@prisma', { recursive: true })
+  linked.symlink('../.pnpm/@prisma+prisma7@7.10.0/node_modules/@prisma/prisma7', '/node_modules/@prisma/prisma7')
+  t.assert.match(await namespace(linked), / \* Prisma Client JS version: 7\.10\.0\n/u)
+  // Prisma 8 alone is none generated as.
+  const said = warnings(t)
+  t.assert.equal(await namespace(project(base)), undefined)
+  t.assert.match(said().at(-1), /, and \/node_modules\/prisma\/package\.json is 8\.0\.0$/u)
+})
+
 // generatePrismaClients over a project read through `host` alone, Prisma `version` installed.
 const clients = (files, version = '7.10.0') => generatePrismaClients({
   host: createVfsHost(project({ 'node_modules/prisma/package.json': json({ name: 'prisma', version }), ...files })),

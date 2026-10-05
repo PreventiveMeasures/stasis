@@ -102,10 +102,19 @@ const nearestFile = (host, dir, name) => {
   return at === null ? null : posix.join(at, name)
 }
 
-// The `prisma` installed for `dir`, as Node finds it from there, and its version; or null.
+// The Prisma whose `prisma generate` the project at `dir` runs, as Node finds it from there, and its
+// version; or null where none is installed: its `prisma`, or where that is no version generated for
+// (Prisma 8, say), the `prisma` of its `@prisma/prisma7`, which runs that one as `prisma7` beside it.
 function installedPrisma(host, dir) {
-  const file = nearestFile(host, dir, 'node_modules/prisma/package.json')
-  return file === null ? null : { file, version: readJson(file, host)?.version }
+  const installed = (from) => {
+    const file = nearestFile(host, from, 'node_modules/prisma/package.json')
+    return file === null ? null : { file, version: readJson(file, host)?.version }
+  }
+  const prisma = installed(dir)
+  if (PRISMA_VERSIONS.includes(prisma?.version)) return prisma
+  const prisma7 = nearestFile(host, dir, 'node_modules/@prisma/prisma7/package.json')
+  const beside = prisma7 === null ? null : installed(host.realpath(posix.dirname(prisma7)))
+  return PRISMA_VERSIONS.includes(beside?.version) ? beside : prisma
 }
 
 // Where @prisma/config looks for a project's config, in order: 7.10.0 tries `prisma7.config.*`
