@@ -76,24 +76,29 @@ const UNREACHED = [
   '// src/generateClient.ts\nvar import_package_up ',
 ]
 
-// The lines of the blocks buildClient reaches that import what it doesn't: what generateClient
-// writes with, and the node:fs readSourceFile reads with.
-const UNREACHED_IMPORTS = [
+// The lines of the blocks buildClient reaches that set up what it doesn't need: what generateClient
+// writes with, the node:fs and node:path readSourceFile reads with, and @prisma/debug's logger,
+// `debug`, which does nothing here.
+const UNREACHED_LINES = [
   'var import_promises = __toESM(require("node:fs/promises"));\n',
+  'var import_node_path2 = __toESM(require("node:path"));\n',
   'var import_fast_glob = require("fast-glob");\n',
   'var import_fs_extra = __toESM(require_lib());\n',
   'var import_node_fs = __toESM(require("node:fs"));\n',
+  'var import_node_path = __toESM(require("node:path"));\n',
+  'var import_debug = require("@prisma/debug");\n',
+  'var debug = (0, import_debug.Debug)("prisma:client-generator-ts:wasm");\n',
 ]
 
 // All the bundle may require once stripped: what buildClient does, none of it the disk's.
-const REQUIRES = new Set(['@prisma/client-common', '@prisma/debug', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'node:path', 'pluralize', 'ts-pattern'])
+const REQUIRES = new Set(['@prisma/client-common', '@prisma/dmmf', '@prisma/internals', '@prisma/param-graph-builder', '@prisma/ts-builders', 'indent-string', 'klona', 'pluralize', 'ts-pattern'])
 
 // The optional peer, loaded once: buildClient, which builds a client's files in memory (where its
 // generateClient writes them to disk), and validateDmmfAgainstDenylists, which generateClient checks
 // the schema with; and the @prisma/internals (with its @prisma/schema-files-loader) it was built
 // with. Its bundle exports neither function, so it is run as Node runs it, with the two exported in
 // place of its own exports, and readQueryCompiler in place of its readSourceFile; best effort,
-// without what it holds that buildClient doesn't reach (UNREACHED, UNREACHED_IMPORTS), and refused
+// without what it holds that buildClient doesn't reach (UNREACHED, UNREACHED_LINES), and refused
 // if it then requires more than REQUIRES.
 function loadGenerator() {
   if (loaded) return loaded
@@ -107,13 +112,13 @@ function loadGenerator() {
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
   let source = readFileSync(main, 'utf8').split(/\n\n(?=\/\/ )/u).filter((block) => !UNREACHED.some((start) => block.startsWith(start))).join('\n\n')
-  for (const line of UNREACHED_IMPORTS) source = source.replace(line, '')
+  for (const line of UNREACHED_LINES) source = source.replace(line, '')
   // Each `require` there, a call with a module name or not, is to be one of REQUIRES.
   const denied = [...source.matchAll(/\brequire\b(?:\("([^"]*)"\))?/gu)].filter(([, id]) => !REQUIRES.has(id)).map(([call]) => call)
   if (denied.length > 0) throw new Error(`--generate=prisma: ${main}, stripped, holds ${[...new Set(denied)].join(', ')}, beyond what buildClient requires`)
   const peer = { exports: {} }
-  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname', 'readQueryCompiler'], { filename: main })
-  run.call(peer.exports, peer.exports, own, peer, main, dirname(main), readQueryCompiler)
+  const run = compileFunction(`${source}\nreadSourceFile = readQueryCompiler\nmodule.exports = { buildClient, validateDmmfAgainstDenylists }\n`, ['exports', 'require', 'module', '__filename', '__dirname', 'readQueryCompiler', 'debug'], { filename: main })
+  run.call(peer.exports, peer.exports, own, peer, main, dirname(main), readQueryCompiler, () => {})
   const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
   loaded = { ...peer.exports, internals: own('@prisma/internals'), schemaFiles }
   return loaded
