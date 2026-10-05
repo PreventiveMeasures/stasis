@@ -52,7 +52,7 @@ const naming = (file, promise) => promise.catch((cause) => {
 })
 
 // The directory `root` as `host` holds it, by paths from `/`, as deptree reads a project.
-function projectView(host, root) {
+export function projectView(host, root) {
   const at = (p) => (p === '/' ? root : join(root, p))
   const typeOf = (st) => (st.isDirectory() ? 'directory' : st.isFile() ? 'file' : 'other')
   const stat = (p) => {
