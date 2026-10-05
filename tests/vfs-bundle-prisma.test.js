@@ -116,46 +116,52 @@ const clients = (files, version = '7.10.0') => generatePrismaClients({
 })
 const outputDirs = async (...args) => (await clients(...args)).map((output) => output.dir)
 
-test("the schema is the Prisma config's, read without running it, else prisma/schema.prisma or schema.prisma", async (t) => {
+const DEFINE = "import { defineConfig } from 'prisma/config'\n"
+const NOT_SPELLED = 'its `schema` is no string literal, nor path.join of them'
+
+test("the schema is the Prisma config's, read without running it, else schema.prisma or prisma/schema.prisma", async (t) => {
   const said = warnings(t)
   const db = { 'db/schema.prisma': schema({ output: '../db-client' }), 'prisma/schema.prisma': schema({ output: '../default-client' }) }
   t.assert.deepStrictEqual(await outputDirs(db), ['/default-client'])
   t.assert.deepStrictEqual(await outputDirs({ 'schema.prisma': schema({ output: 'root-client' }), ...db }), ['/root-client'])
   for (const config of [
-    "import { defineConfig } from 'prisma/config'\nexport default defineConfig({ schema: 'db/schema.prisma' })\n",
+    `${DEFINE}export default defineConfig({ schema: 'db/schema.prisma' })\n`,
     "export default { schema: `db/schema.prisma`, migrations: { path: 'db/migrations' } } satisfies Config\n",
-    "const config = defineConfig({ 'schema': 'db/schema.prisma' } as const)\nexport default config\n",
+    `${DEFINE}const config = defineConfig({ 'schema': 'db/schema.prisma' } as const)\nexport default config\n`,
+    "const SCHEMA = 'db/schema.prisma'\nexport default { schema: (SCHEMA as string) }\n",
     // Node's path.join of literals, however the config imports or requires it.
-    "import path from 'node:path'\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n",
-    "import * as nodePath from 'path'\nexport default defineConfig({ schema: nodePath.join('db', `prisma`, '..', 'schema.prisma') })\n",
-    "import { join as j } from 'node:path'\nexport default { schema: j('./db', j('schema.prisma')) }\n",
-    "const { join } = require('path')\nmodule.exports = { schema: join('db', 'schema.prisma') }\n",
+    `${DEFINE}import path from 'node:path'\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n`,
+    "import * as nodePath from 'path'\nexport default { schema: nodePath.join('db', `prisma`, '..', 'schema.prisma') }\n",
+    "import { join as j } from 'node:path'\nconst DIR = './db'\nexport default { schema: j(DIR, j('schema.prisma')) }\n",
+    "const { join } = require('path')\nconst { defineConfig } = require('prisma/config')\nmodule.exports = defineConfig({ schema: join('db', 'schema.prisma') })\n",
   ]) {
     t.assert.deepStrictEqual(await outputDirs({ 'prisma.config.ts': config, ...db }), ['/db-client'], config)
   }
   t.assert.deepStrictEqual(await outputDirs({ '.config/prisma.cjs': "module.exports = { schema: '../db/schema.prisma' }\n", ...db }), ['/db-client'])
   // A config naming no schema leaves the default.
-  t.assert.deepStrictEqual(await outputDirs({ 'prisma.config.ts': 'export default defineConfig({ migrations: {} })\n', ...db }), ['/default-client'])
+  t.assert.deepStrictEqual(await outputDirs({ 'prisma.config.ts': `${DEFINE}export default defineConfig({ migrations: {} })\n`, ...db }), ['/default-client'])
   // prisma7.config.* is 7.10.0's alone, and comes first.
   const both = { 'prisma7.config.ts': "export default { schema: 'db/schema.prisma' }\n", 'prisma.config.ts': 'export default {}\n', ...db }
   t.assert.deepStrictEqual(await outputDirs(both), ['/db-client'])
   t.assert.deepStrictEqual(await outputDirs(both, '7.9.1'), ['/default-client'])
-  // A schema the config computes is one stasis would have to run it to know.
+  // A schema the config computes is one stasis would have to run it to know, and so is the config
+  // a defineConfig other than Prisma's makes.
   for (const [config, why] of [
-    ["import path from 'node:path'\nexport default defineConfig({ schema: path.join(__dirname, 'db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
-    ["import path from 'node:path'\nexport default defineConfig({ schema: path.resolve('db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
-    ["const path = { join: () => 'elsewhere.prisma' }\nexport default defineConfig({ schema: path.join('db', 'schema.prisma') })\n", 'its `schema` is no string literal, nor path.join of them'],
+    [`${DEFINE}import path from 'node:path'\nexport default defineConfig({ schema: path.join(__dirname, 'db', 'schema.prisma') })\n`, NOT_SPELLED],
+    ["import path from 'node:path'\nexport default { schema: path.resolve('db', 'schema.prisma') }\n", NOT_SPELLED],
+    ["const path = { join: () => 'elsewhere.prisma' }\nexport default { schema: path.join('db', 'schema.prisma') }\n", NOT_SPELLED],
     ["export default { ...base, schema: 'db/schema.prisma' }\n", 'its config spreads or computes a key'],
+    ["import { defineConfig } from './define'\nexport default defineConfig({ schema: 'db/schema.prisma' })\n", 'its default export is no object literal'],
     ['export default makeConfig()\n', 'its default export is no object literal'],
     ['export const config = {}\n', 'no default export'],
   ]) {
     t.assert.deepStrictEqual(await outputDirs({ 'prisma.config.ts': config, ...db }), [], config)
     t.assert.equal(said().at(-1), `[stasis] prisma: not generating for /: /prisma.config.ts: ${why}, which stasis reads without running the config`)
   }
-  // A directory is every .prisma file under it, in name order.
+  // A directory is every .prisma file under it, as Prisma's own loader reads them.
   const folder = { 'prisma.config.ts': "export default { schema: './models' }\n", 'models/main.prisma': schema({ output: '../client' }).replace(/model User[^]*/u, ''), 'models/user.prisma': 'model User {\n  id Int @id\n}\n', 'models/nested/post.prisma': 'model Post {\n  id Int @id\n}\n', 'models/notes.md': '' }
   const [{ files }] = await clients(folder)
-  t.assert.deepStrictEqual(['Post', 'User'].map((model) => [...files.keys()].includes(`models/${model}.ts`)), [true, true])
+  t.assert.ok(files.has('models/Post.ts') && files.has('models/User.ts'))
 })
 
 test('the generator is held to what `prisma generate` takes', async (t) => {

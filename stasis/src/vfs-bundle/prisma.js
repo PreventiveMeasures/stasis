@@ -8,6 +8,7 @@ import { readJson } from '@exodus/stasis-core/bundle-util'
 import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
+import { literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest } from './tree.js'
 
 // buildVfsBundle's `generate: ['prisma']`: the Prisma Client each project's `prisma generate` would
@@ -51,8 +52,8 @@ const require = createRequire(import.meta.url)
 
 let loaded
 
-// The optional peer, loaded once: its generateClient, and the @prisma/internals and
-// @prisma/engines-version it was built with, resolved from it.
+// The optional peer, loaded once: its generateClient, and the @prisma/internals (with its
+// @prisma/schema-files-loader) and @prisma/engines-version it was built with, resolved from it.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -64,7 +65,8 @@ function loadGenerator() {
   const own = createRequire(main)
   const { version } = own('../package.json')
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
-  loaded = { generateClient: require(GENERATOR).generateClient, internals: own('@prisma/internals'), enginesVersion: own('@prisma/engines-version').enginesVersion, dist: dirname(main) }
+  const schemaFiles = createRequire(own.resolve('@prisma/internals'))('@prisma/schema-files-loader')
+  loaded = { generateClient: require(GENERATOR).generateClient, internals: own('@prisma/internals'), schemaFiles, enginesVersion: own('@prisma/engines-version').enginesVersion, dist: dirname(main) }
   return loaded
 }
 
@@ -109,43 +111,57 @@ function installedPrisma(host, dir) {
 // Where @prisma/config looks for a project's config, in order: 7.10.0 tries `prisma7.config.*`
 // first, which no Prisma before it reads.
 const CONFIG_EXTENSIONS = ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts']
-const PRISMA7_CONFIGS = [...CONFIG_EXTENSIONS.map((ext) => `prisma7.config${ext}`), ...CONFIG_EXTENSIONS.map((ext) => `.config/prisma7${ext}`)]
-const LEGACY_CONFIGS = ['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [...CONFIG_EXTENSIONS.map((ext) => `${base}${ext}`), ...CONFIG_EXTENSIONS.map((ext) => `${base}/index${ext}`)])
+const withExtensions = (bases) => bases.flatMap((base) => CONFIG_EXTENSIONS.map((ext) => `${base}${ext}`))
+const PRISMA7_CONFIGS = withExtensions(['prisma7.config', '.config/prisma7'])
+const LEGACY_CONFIGS = withExtensions(['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`]))
 const configsOf = (version) => (newerThan(version, '7.9.1') ? [...PRISMA7_CONFIGS, ...LEGACY_CONFIGS] : LEGACY_CONFIGS)
 
-// Node's path module, as a config imports or requires it.
-const PATH_MODULES = new Set(['path', 'node:path'])
-const requiresPath = (node) => node?.type === 'CallExpression' && node.callee.name === 'require' && node.arguments.length === 1 && PATH_MODULES.has(node.arguments[0].value)
+// What a config's imports and requires may bind a name to, by module and by what is imported (`*`
+// for the module itself): Node's path module or its join, or Prisma's defineConfig.
+const BINDINGS = {
+  path: { '*': 'path', join: 'join' },
+  'node:path': { '*': 'path', join: 'join' },
+  'prisma/config': { defineConfig: 'defineConfig' },
+  '@prisma/config': { defineConfig: 'defineConfig' },
+}
+const WRAPPERS = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'ParenthesizedExpression'])
 
 // The `schema` a Prisma config names, read without running it: the object its default export (or
-// module.exports) is, through defineConfig(), `as`/`satisfies` and a top-level const, whose `schema`
-// is a string it spells out: a literal, or Node's path.join of them (`path` and `join` as the config
-// imports or requires them from it); undefined where it names none. Nothing of the config is run,
-// nor any code built from it: its syntax tree is read, and a join is posix.join over the strings it
-// spells. Anything else is code stasis won't run, refused.
+// module.exports) is, through Prisma's defineConfig(), whose `schema` is a string it spells out: a
+// literal, or Node's path.join of them; each through `as`, `satisfies`, parentheses and top-level
+// consts; undefined where it names none. Only names the config binds by its top-level imports and
+// requires are taken for path, join or defineConfig. Nothing of the config is run, nor any code
+// built from it: its syntax tree is read, and a join is posix.join over the strings it spells.
+// Anything else is code stasis won't run, refused.
 function configSchema(file, text) {
   const lang = /\.[cm]?ts$/u.test(file) ? 'ts' : 'js'
-  const { program, errors } = require('oxc-parser').parseSync(file, text, { lang, sourceType: 'unambiguous' })
-  if (errors.length > 0) throw new Error(`${file}: ${errors[0].message}`)
+  const parsed = require('oxc-parser').parseSync(file, text, { lang, sourceType: 'unambiguous' })
+  const [error] = syntaxErrors(parsed)
+  if (error) throw new Error(`${file}: ${error.message}`)
   const refuse = (what) => new Error(`${file}: ${what}, which stasis reads without running the config`)
   const consts = new Map()
-  // The names the path module, and its join, are bound to.
-  const paths = new Set()
-  const joins = new Set()
+  const bound = new Map()
+  const bind = (from, name, local) => {
+    const as = BINDINGS[from]?.[name]
+    if (as) bound.set(local, as)
+  }
+  // The module a `require('...')` names, or null.
+  const required = (node) => (node?.type === 'CallExpression' && node.callee.name === 'require' && node.arguments.length === 1 ? literalSpec(node.arguments[0]) : null)
   let config
-  for (const node of program.body) {
+  for (const node of parsed.program.body) {
     if (node.type === 'ExportDefaultDeclaration') config = node.declaration
-    else if (node.type === 'ImportDeclaration' && PATH_MODULES.has(node.source.value)) {
-      for (const { type, imported, local } of node.specifiers) {
-        if (type === 'ImportDefaultSpecifier' || type === 'ImportNamespaceSpecifier') paths.add(local.name)
-        else if ((imported.name ?? imported.value) === 'join') joins.add(local.name)
-      }
+    else if (node.type === 'ImportDeclaration') {
+      for (const { type, imported, local } of node.specifiers) bind(node.source.value, type === 'ImportSpecifier' ? imported.name ?? imported.value : '*', local.name)
     } else if (node.type === 'VariableDeclaration' && node.kind === 'const') {
       for (const { id, init } of node.declarations) {
-        if (id.type === 'Identifier' && requiresPath(init)) paths.add(id.name)
-        else if (id.type === 'ObjectPattern' && requiresPath(init)) {
-          for (const property of id.properties) if (property.type === 'Property' && !property.computed && property.key.name === 'join' && property.value.type === 'Identifier') joins.add(property.value.name)
-        } else if (id.type === 'Identifier' && init) consts.set(id.name, init)
+        const from = required(init)
+        if (from === null) {
+          if (id.type === 'Identifier' && init) consts.set(id.name, init)
+        } else if (id.type === 'Identifier') {
+          bind(from, '*', id.name)
+        } else if (id.type === 'ObjectPattern') {
+          for (const { type, computed, key, value } of id.properties) if (type === 'Property' && !computed && value.type === 'Identifier') bind(from, key.name, value.name)
+        }
       }
     } else if (node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression') {
       const { left, right } = node.expression
@@ -153,62 +169,54 @@ function configSchema(file, text) {
     }
   }
   if (config === undefined) throw refuse('no default export')
-  for (const seen = new Set(); ;) {
-    if (['TSAsExpression', 'TSSatisfiesExpression', 'ParenthesizedExpression'].includes(config.type)) config = config.expression
-    else if (config.type === 'CallExpression' && config.callee.name === 'defineConfig' && config.arguments.length === 1) config = config.arguments[0]
-    else if (config.type === 'Identifier' && consts.has(config.name) && !seen.has(config.name)) {
-      seen.add(config.name)
-      config = consts.get(config.name)
-    } else break
+  // `node` through what doesn't change its value, each const once.
+  const peel = (node, seen = new Set()) => {
+    if (WRAPPERS.has(node.type)) return peel(node.expression, seen)
+    if (node.type === 'Identifier' && consts.has(node.name) && !seen.has(node.name)) return peel(consts.get(node.name), seen.add(node.name))
+    return node
   }
+  config = peel(config)
+  if (config.type === 'CallExpression' && bound.get(config.callee.name) === 'defineConfig' && config.arguments.length === 1) config = peel(config.arguments[0])
   if (config.type !== 'ObjectExpression') throw refuse('its default export is no object literal')
-  const isJoin = (callee) => (callee.type === 'Identifier' && joins.has(callee.name))
-    || (callee.type === 'MemberExpression' && !callee.computed && paths.has(callee.object.name) && callee.property.name === 'join')
   const spelled = (node) => {
-    if (node.type === 'Literal' && typeof node.value === 'string') return node.value
-    if (node.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked
-    if (node.type !== 'CallExpression' || !isJoin(node.callee)) return undefined
-    const parts = node.arguments.map(spelled)
-    return parts.includes(undefined) ? undefined : posix.join(...parts)
+    node = peel(node)
+    const literal = literalSpec(node)
+    if (literal !== null) return literal
+    const { type, callee } = node
+    const isJoin = type === 'CallExpression' && (bound.get(callee.name) === 'join' || (callee.type === 'MemberExpression' && !callee.computed && bound.get(callee.object.name) === 'path' && callee.property.name === 'join'))
+    if (isJoin) return posix.join(...node.arguments.map(spelled))
+    throw refuse('its `schema` is no string literal, nor path.join of them')
   }
   let schema
   for (const property of config.properties) {
     // A spread or a computed key may name a schema stasis can't see.
     if (property.type !== 'Property' || property.computed) throw refuse('its config spreads or computes a key')
-    const key = property.key.type === 'Identifier' ? property.key.name : property.key.value
-    if (key !== 'schema') continue
-    schema = spelled(property.value)
-    if (schema === undefined) throw refuse('its `schema` is no string literal, nor path.join of them')
+    if ((property.key.type === 'Identifier' ? property.key.name : property.key.value) === 'schema') schema = spelled(property.value)
   }
   return schema
 }
 
-// The schema files `path` holds, as [path, text], as @prisma/schema-files-loader reads them: the
-// file itself, or every .prisma file under the directory, links followed to their real paths, each
-// directory once; in name order, as Node's readdir (libuv's scandir) gives them to the loader, the
-// order the merged schema and so the client depend on.
+// The schema files `path` holds, as [path, text], as `prisma generate` reads them: the file itself,
+// or the .prisma files @prisma/schema-files-loader (the peer's own) loads from the directory, read
+// from the tree through `host`.
 function schemaFilesAt(host, path) {
   if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
-  const files = []
-  const seen = new Set()
-  const walk = (dir) => {
-    const real = host.realpath(dir)
-    if (seen.has(real)) return
-    seen.add(real)
-    for (const entry of host.readdir(dir)) {
-      const at = entry.isSymbolicLink() ? host.realpath(posix.join(dir, entry.name)) : posix.join(dir, entry.name)
-      if (isDir(at, host)) walk(at)
-      else if (isFile(at, host) && posix.extname(at) === '.prisma') files.push([at, host.readFile(at).toString('utf8')])
-    }
-  }
-  walk(path)
-  return files
+  return loadGenerator().schemaFiles.loadSchemaFiles(path, {
+    listDirContents: async (dir) => host.readdir(dir).map((entry) => entry.name),
+    async getEntryType(at) {
+      if (host.readlink(at) !== null) return { kind: 'symlink', realPath: host.realpath(at) }
+      const stat = host.stat(at)
+      if (stat?.isDirectory()) return { kind: 'directory', realPath: host.realpath(at) }
+      return stat?.isFile() ? { kind: 'file' } : { kind: 'other' }
+    },
+    getFileContents: async (file) => host.readFile(file).toString('utf8'),
+  })
 }
 
 // The schema `prisma generate` reads for the project at `dir` with Prisma `version`, as schema files
 // and the path it was given, or null where there is none: the one its config names, relative to the
 // config, else ./schema.prisma or ./prisma/schema.prisma.
-function projectSchema(host, dir, version) {
+async function projectSchema(host, dir, version) {
   const config = configsOf(version).map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
   const named = config === undefined ? undefined : configSchema(config, host.readFile(config).toString('utf8'))
   let path
@@ -219,7 +227,7 @@ function projectSchema(host, dir, version) {
     path = posix.resolve(posix.dirname(config), named)
     if (!isFile(path, host) && !isDir(path, host)) throw new Error(`${config}: its schema ${named} is no file or directory`)
   }
-  return { path, files: schemaFilesAt(host, path) }
+  return { path, files: await schemaFilesAt(host, path) }
 }
 
 // get-tsconfig 4.10's normalizeCompilerOptions as far as the generator reads its result: each of
@@ -477,7 +485,6 @@ function dropFindManyDistinctDocs(text) {
 // but in the version stamps (asVersion's): by the name of each file it rewrites without the generated
 // extension, or MODELS for each of models/, `(text, path) => text`.
 const MODELS = 'models/*'
-const ruleKey = (stem) => (stem.startsWith('models/') ? MODELS : stem)
 const example = (indent) => [`${indent}* const prisma = new PrismaClient({\n${indent}*   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL })\n${indent}* })\n`, `${indent}* const prisma = new PrismaClient()\n`]
 const DOWN = {
   '7.9.1': { [CLASS]: dropModelSchemas },
@@ -528,8 +535,9 @@ function asVersion(files, version, extension) {
   for (const [path, text] of files) {
     if (typeof text !== 'string') continue
     const stem = path.slice(0, -extension.length - 1)
+    const key = stem.startsWith('models/') ? MODELS : stem
     let out = text
-    for (const step of steps) out = step[ruleKey(stem)]?.(out, path) ?? out
+    for (const step of steps) out = step[key]?.(out, path) ?? out
     for (const [where, stamp] of STAMPS) if (stem === where) out = swap(out, stamp(GENERATOR_VERSION), stamp(version), { path })
     files.set(path, out)
   }
@@ -557,8 +565,8 @@ function queryCompiler(host, { prismaDir, dist, target, compilerBuild, activePro
 
 // The client `generator` (a `prisma-client` one of `schema`) writes for Prisma `version`, installed
 // at `prismaDir`, as a Map of its paths, from its output directory, to their text.
-async function generateClientFor({ schema, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
-  const { generateClient, internals, enginesVersion, dist } = loadGenerator()
+async function generateClientFor({ schema, datamodel, generator, dmmf, datasources, outputDir, version, prismaDir, host }) {
+  const { generateClient, enginesVersion, dist } = loadGenerator()
   const options = generatorOptions(generator.config, { outputDir, version, host })
   const activeProvider = datasources[0]?.activeProvider
   const compiler = queryCompiler(host, { prismaDir, dist, target: options.target, compilerBuild: options.compilerBuild, activeProvider })
@@ -566,7 +574,7 @@ async function generateClientFor({ schema, generator, dmmf, datasources, outputD
   const client = join(scratch, 'client')
   try {
     await servingFiles(compiler, () => generateClient({
-      datamodel: internals.mergeSchemas({ schemas: schema.files }),
+      datamodel,
       schemaPath: schema.path,
       runtimeBase: '@prisma/client/runtime',
       outputDir: client,
@@ -613,7 +621,8 @@ export async function generatePrismaClients({ host, root, projects }) {
     const version = supported ? prisma.version : GENERATOR_VERSION
     let schema
     try {
-      schema = projectSchema(host, dir, version)
+      // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
+      schema = await projectSchema(host, dir, version)
     } catch (error) {
       console.warn(`[stasis] prisma: not generating for ${dir}: ${error.message}`)
       continue
@@ -638,6 +647,7 @@ export async function generatePrismaClients({ host, root, projects }) {
     if (config.datasources.length === 0) throw new Error(`prisma: ${schema.path} defines no datasource`)
     // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
     const dmmf = await readingSchema(schema.path, () => internals.getDMMF({ datamodel: schema.files }))
+    const datamodel = internals.mergeSchemas({ schemas: schema.files })
     for (const generator of generators) {
       if (generator.output === null) throw new Error(`prisma: ${schema.path}: generator ${generator.name} names no output`)
       if (generator.output.fromEnvVar !== null) {
@@ -648,7 +658,7 @@ export async function generatePrismaClients({ host, root, projects }) {
       if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${schema.path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
       if (outputs.some((output) => output.dir === outputDir)) throw new Error(`prisma: ${outputDir} is the output of more than one generator`)
       // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
-      outputs.push({ dir: outputDir, files: await generateClientFor({ schema, generator, dmmf, datasources: config.datasources, outputDir, version, prismaDir: posix.dirname(prisma.file), host }) })
+      outputs.push({ dir: outputDir, files: await generateClientFor({ schema, datamodel, generator, dmmf, datasources: config.datasources, outputDir, version, prismaDir: posix.dirname(prisma.file), host }) })
     }
   }
   return outputs
