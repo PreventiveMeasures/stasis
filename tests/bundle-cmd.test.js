@@ -2355,6 +2355,46 @@ test('CLI: bundle --typescript bundles a nodenext-style TS project and the bundl
   t.assert.match(run.stdout, /ts-loaded 2/)
 }))
 
+// A workspace package a/b importing a sibling: the bundle's paths are the workspace root's.
+const writeWorkspaceSubdir = (tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ws-root', private: true }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), 'packages:\n  - a/b\n  - shared\n')
+  mkdirSync(join(tmp, 'shared'))
+  writeFileSync(join(tmp, 'shared', 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'shared', 'index.js'), 'export const x = 1\n')
+  mkdirSync(join(tmp, 'a', 'b', 'src'), { recursive: true })
+  writeFileSync(join(tmp, 'a', 'b', 'package.json'), JSON.stringify({ name: 'b', version: '1.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'a', 'b', 'src', 'index.ts'), 'import { x } from "../../../shared/index.js"\nconsole.log("ws-loaded", (x as number) + 1)\n')
+  return join(tmp, 'a', 'b')
+}
+
+test('CLI: bundle from a workspace subdir writes to the workspace root, so it re-bundles and loads there', withTmp((t, tmp) => {
+  const cwd = writeWorkspaceSubdir(tmp)
+  // Twice: one written into a/b would root the second build there, out of shared/.
+  for (let i = 0; i < 2; i++) {
+    const r = runCli(['bundle', '--typescript', '--jsx', 'src/index.ts'], { cwd })
+    t.assert.equal(r.status, 0, `bundle #${i + 1} stderr: ${r.stderr}`)
+    t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 2 packages from \.\.\/\.\. to \.\.\/\.\.\/stasis\.code\.br/)
+  }
+  t.assert.ok(!existsSync(join(cwd, 'stasis.code.br')))
+  const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
+  t.assert.deepStrictEqual([...parsed.entries], ['a/b/src/index.ts'])
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['a/b/src/index.ts', 'shared/index.js'])
+  const run = runCli(['run', '--lock=none', '--bundle=load', 'src/index.ts'], { cwd })
+  t.assert.equal(run.status, 0, `run stderr: ${run.stderr}`)
+  t.assert.match(run.stdout, /ws-loaded 2/)
+}))
+
+test('CLI: bundle names a stasis file below the root that roots the build out of the files it reaches', withTmp((t, tmp) => {
+  const cwd = writeWorkspaceSubdir(tmp)
+  // As an older stasis left it: a/b/stasis.code.br roots the State at a/b.
+  t.assert.equal(runCli(['bundle', '--typescript', 'src/index.ts'], { cwd }).status, 0)
+  cpSync(join(tmp, 'stasis.code.br'), join(cwd, 'stasis.code.br'))
+  const r = runCli(['bundle', '--typescript', 'src/index.ts'], { cwd })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /\.\.\/\.\.\/shared\/index\.js is outside the project root at \. \(rooted there by its stasis\.code\.br, which can be removed if stale\)/)
+}))
+
 test('CLI: bundle without --typescript reports the .js -> .ts miss as broken at load time', withTmp((t, tmp) => {
   writeTsProject(tmp)
   const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
