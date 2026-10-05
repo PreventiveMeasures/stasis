@@ -37,7 +37,6 @@ linkWorkspacePackages: true
 
 lockfileIncludeTarballUrl: true
 
-# Remove orphaned packages from node_modules on every install rather than keeping them for 7 days.
 modulesCacheMaxAge: 0
 
 # exodus-test preloads a module.registerHooks resolve hook (loader/remap.cjs, for tape/@jest/globals
