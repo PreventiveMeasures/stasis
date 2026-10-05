@@ -27,6 +27,32 @@ test('addFile rejects a nested package.json that disagrees on name/version', (t)
   t.assert.throws(() => state.addFile(url, { format: 'module' }))
 })
 
+test('addFile rejects a nested package.json that disagrees on version alone', (t) => {
+  const state = new State(root)
+  const url = pathToFileURL(join(root, 'node_modules', 'stale', 'dist', 'index.js')).toString()
+  t.assert.throws(() => state.addFile(url, { format: 'commonjs' }), /Inconsistent data between node_modules\/stale\/dist\/package\.json/)
+})
+
+test('addFile tolerates the listed upstream mismatch: @redis/client dist/package.json', (t) => {
+  // Many @redis/client releases publish a stale build-time copy of package.json in dist/ (1.6.0
+  // ships dist/ at 1.5.17, 5.8.0 at 5.7.0): the exemption pins no version, and the bucket keeps
+  // the package root's identity.
+  const cases = [
+    { dir: ['node_modules'], version: '1.6.0' },
+    { dir: ['node_modules', 'host', 'node_modules'], version: '5.8.0' },
+  ]
+  for (const { dir, version } of cases) {
+    const state = new State(root)
+    const url = pathToFileURL(join(root, ...dir, '@redis', 'client', 'dist', 'index.js')).toString()
+    state.addFile(url, { format: 'commonjs' })
+    const module = state.modules.get([...dir, '@redis', 'client'].join('/'))
+    t.assert.ok(module)
+    t.assert.equal(module.name, '@redis/client')
+    t.assert.equal(module.version, version)
+    t.assert.ok(module.files['dist/index.js'])
+  }
+})
+
 test('addFile walks past a workspace type-only marker to find the project package.json', (t) => {
   const state = new State(root)
   const url = pathToFileURL(join(root, 'sub', 'foo.cjs')).toString()
