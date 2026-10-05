@@ -20,7 +20,7 @@ import { isDir, isFile } from '../resolve-typescript.js'
 // reads the project through them. The project is read through a host it is given, and nothing else.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
-function nearest(cwd, holds) {
+export function nearest(cwd, holds) {
   for (let dir = cwd; ; dir = dirname(dir)) {
     if (holds(dir)) return dir
     if (dirname(dir) === dir) return null
@@ -28,7 +28,7 @@ function nearest(cwd, holds) {
 }
 
 // Whether a directory holds a file of one of `names`.
-const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
+export const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
 
 // The directory of the package cwd is in that is none of `projects` (their directories from
 // `root`), or null: the nearest package.json with a name between cwd and `root`, one without being a
@@ -52,7 +52,7 @@ const naming = (file, promise) => promise.catch((cause) => {
 })
 
 // The directory `root` as `host` holds it, by paths from `/`, as deptree reads a project.
-function projectView(host, root) {
+export function projectView(host, root) {
   const at = (p) => (p === '/' ? root : join(root, p))
   const typeOf = (st) => (st.isDirectory() ? 'directory' : st.isFile() ? 'file' : 'other')
   const stat = (p) => {
@@ -242,14 +242,19 @@ const PACKAGE_MANAGERS = {
 // Their names.
 const PACKAGE_MANAGER_NAMES = Object.keys(PACKAGE_MANAGERS)
 
-// layOutTree's tree, with the host reading `project` through it: the tree serves what the package
-// manager installs, and any file it writes beside it at the root.
+// layOutTree's tree, with the host reading `project` through it (treeHost).
 export async function loadTree(options) {
   const tree = await layOutTree(options)
-  const pm = PACKAGE_MANAGERS[options.packageManager]
+  return { ...tree, host: treeHost(tree, options.project) }
+}
+
+// The host reading `project`, a host of the project's Vfs, through `tree` (layOutTree's): the tree
+// serves what the package manager installs, and any file it writes beside it at the root.
+export function treeHost(tree, project) {
+  const pm = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
   const installs = [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
-  return { ...tree, host: vfsHost(tree.vfs, { root: tree.root, outside: options.project, installs, hides: pm.hides }) }
+  return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
 }
 
 // The lockfile `packageManager` installs from, e.g. 'pnpm-lock.yaml'.

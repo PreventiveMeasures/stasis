@@ -63,7 +63,10 @@ function formatForFile(file, host) {
   return `${type}${extname(file) === '.ts' ? '-typescript' : ''}`
 }
 
-function literalSpec(node) {
+// The errors oxc reports for a parse, but its warnings and advice.
+export const syntaxErrors = (parsed) => (parsed.errors ?? []).filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
+
+export function literalSpec(node) {
   if (!node) return null
   if (node.type === 'Literal' && typeof node.value === 'string') return node.value
   if (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis.length === 1) {
@@ -282,8 +285,7 @@ export class Scan {
 
     // oxc recovers from syntax errors (reports them in parsed.errors) rather than throwing;
     // Warning/Advice severities aren't real parse errors.
-    const nonWarning = (p) => (p.errors ?? []).filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
-    let errors = nonWarning(parsed)
+    let errors = syntaxErrors(parsed)
 
     // oxc's `unambiguous` mode counts top-level await as module syntax (since 0.109; before, a
     // TLA-only ESM file parsed here as a broken script). Keep mirroring Node for any script parse
@@ -291,7 +293,7 @@ export class Scan {
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
       try {
         const asModule = parser.parseSync(file, src, parseOptions('module'))
-        if (nonWarning(asModule).length === 0) {
+        if (syntaxErrors(asModule).length === 0) {
           parsed = asModule
           format = `module${tsSuffix}`
           errors = []
@@ -305,7 +307,7 @@ export class Scan {
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
       try {
         const asCommonjs = parser.parseSync(file, src, parseOptions('commonjs'))
-        if (nonWarning(asCommonjs).length === 0) {
+        if (syntaxErrors(asCommonjs).length === 0) {
           parsed = asCommonjs
           errors = []
         }
@@ -323,7 +325,7 @@ export class Scan {
       if (flowSrc !== null) {
         try {
           const asFlow = parser.parseSync(file, flowSrc, parseOptions(baseSourceType))
-          if (nonWarning(asFlow).length === 0) {
+          if (syntaxErrors(asFlow).length === 0) {
             parsed = asFlow
             format = declared ?? detectedFormat(parsed)
             errors = []

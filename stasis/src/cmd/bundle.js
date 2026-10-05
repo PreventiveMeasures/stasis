@@ -1234,11 +1234,15 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 }
 
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
-// project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk.
+// project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk;
+// `generate` only for JS.
 // -> the kind of bundle its entries make
 export function checkVfsOptions(name, options) {
   const kind = classifyEntries(name, options)
   if (options.metroResolver) throw new Error(`${name}: metroResolver is not supported`)
+  const { generate = [] } = options
+  if (!Array.isArray(generate) || generate.some((step) => step !== 'prisma')) throw new TypeError(`${name}: generate must be an array of 'prisma'`)
+  if (generate.length > 0 && kind !== 'js') throw new Error(`${name}: --generate is only valid for JS bundles`)
   return kind
 }
 
@@ -1251,11 +1255,13 @@ export function checkVfsOptions(name, options) {
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
-// through a State. `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or
-// for a JS bundle built through a State, the State's root, which is at or above it.
+// through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
+// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js).
+// `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a JS bundle
+// built through a State, the State's root, which is at or above it.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
-export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, ...options } = {}) {
-  const { checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, vfsHost } = await import('../vfs-bundle/tree.js')
+export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], ...options } = {}) {
+  const { checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
   // Checked as the Bundle checks it, before anything is fetched.
@@ -1265,7 +1271,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   cwd = project.realpath(posix.resolve('/', cwd))
   packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
-  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, cwd, host: project }), [packageManager])
+  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
   for (const entry of options.entries) {
@@ -1273,13 +1279,19 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const { host, stats } = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc })
+  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc })
+  let { host } = tree
+  if (generate.includes('prisma')) {
+    const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
+    const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
+    if (outputs.length > 0) host = treeHost(tree, vfsHost(withPrismaClients(vfs, outputs)))
+  }
   const args = { ...options, cwd, host, env: {} }
   const { bundle, lockfile, stateBuilt, root } = pm.kind === 'sol' ? { bundle: await buildSolidityBundle(args), root: cwd } : await buildJs({ ...args, innermostRoot })
   if (repo !== undefined) bundle.repo = repo
   // Rooted at cwd, where `stasis bundle` detects its repo.
   else if (!stateBuilt) bundle.repo ??= detectRepo(cwd, host)
-  return { bundle, lockfile: lockfile?.(), stats, packageManager, root }
+  return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
 }
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
