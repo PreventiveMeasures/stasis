@@ -1,5 +1,7 @@
 import { test } from 'node:test'
+import fs from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, posix } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
@@ -11,6 +13,10 @@ import { generatePrismaClients, withPrismaClients } from '../stasis/src/vfs-bund
 import { fakeClient, json } from './vfs-bundle-github.helper.js'
 
 /* eslint-disable no-await-in-loop -- each case waits on its own build, in order, its warnings read after it */
+
+// As they are before anything here generates.
+const { cwd } = process
+const { close } = fs
 
 // `generate: ['prisma']` over a pnpm workspace in a Vfs, with stand-in `prisma` and `@prisma/client`
 // linked from vendor/: nothing is fetched or run. Byte-exactness is prisma-generate.test.js's.
@@ -191,6 +197,13 @@ test('the generator is held to what `prisma generate` takes', async (t) => {
   const said = warnings(t)
   t.assert.deepStrictEqual(await clients({ 'prisma/schema.prisma': schema().replace('"../src/generated/prisma"', 'env("OUT")') }), [])
   t.assert.match(said().at(-1), /its output is env\("OUT"\), which stasis doesn't read$/u)
+})
+
+test("generating never loads @prisma/internals, which reads the host's npm config and patches fs", async (t) => {
+  t.assert.equal((await clients({ 'prisma/schema.prisma': schema() })).length, 1)
+  t.assert.ok(!Object.keys(createRequire(import.meta.url).cache).some((file) => file.includes('/@prisma/internals/')))
+  t.assert.equal(process.cwd, cwd)
+  t.assert.equal(fs.close, close)
 })
 
 test("an edge runtime's client carries the query compiler of the tree's prisma", async (t) => {
