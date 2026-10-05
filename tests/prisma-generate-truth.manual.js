@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 import { PRISMA_VERSIONS } from '../stasis/src/vfs-bundle/prisma.js'
 import { cases, clientHash, readHashes, writeHashes } from './prisma-generate.helper.js'
@@ -16,7 +16,7 @@ import { cases, clientHash, readHashes, writeHashes } from './prisma-generate.he
 const hashes = readHashes()
 const versions = process.argv.length > 2 ? process.argv.slice(2) : PRISMA_VERSIONS
 
-const filesUnder = (dir, at = '') => readdirSync(join(dir, at), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(dir, posix.join(at, entry.name)) : [posix.join(at, entry.name)]))
+const filesUnder = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative(dir, join(entry.parentPath, entry.name)))
 
 for (const version of versions) {
   const root = mkdtempSync(join(tmpdir(), `stasis-prisma-${version}-`))

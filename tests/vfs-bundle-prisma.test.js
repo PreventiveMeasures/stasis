@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost } from '../stasis/src/vfs-bundle.js'
 import { generatePrismaClients, withPrismaClients } from '../stasis/src/vfs-bundle/prisma.js'
-import { fakeClient } from './vfs-bundle-github.helper.js'
+import { fakeClient, json } from './vfs-bundle-github.helper.js'
 
 /* eslint-disable no-await-in-loop -- each case waits on its own build, in order, its warnings read after it */
 
@@ -17,7 +17,6 @@ import { fakeClient } from './vfs-bundle-github.helper.js'
 // fetched, and nothing of the project runs. That each client is the one its Prisma writes, byte for
 // byte, is prisma-generate.test.js's to say.
 
-const json = (value) => `${JSON.stringify(value)}\n`
 const write = (vfs, files) => {
   for (const [rel, text] of Object.entries(files)) {
     vfs.mkdir(posix.dirname(`/${rel}`), { recursive: true })

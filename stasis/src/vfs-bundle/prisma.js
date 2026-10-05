@@ -8,6 +8,7 @@ import { readJson } from '@exodus/stasis-core/bundle-util'
 import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
+import { holding, nearest } from './tree.js'
 
 // buildVfsBundle's `generate: ['prisma']`: the Prisma Client each project's `prisma generate` would
 // write, as the `prisma-client` generator of the Prisma it installs (7.4.0 to 7.10.0) writes it. The
@@ -44,6 +45,8 @@ export const PRISMA_VERSIONS = Object.keys(ENGINES)
 
 const newerThan = (version, than) => PRISMA_VERSIONS.indexOf(version) < PRISMA_VERSIONS.indexOf(than)
 
+const require = createRequire(import.meta.url)
+
 // --- the generator ---
 
 let loaded
@@ -52,7 +55,6 @@ let loaded
 // @prisma/engines-version it was built with, resolved from it.
 function loadGenerator() {
   if (loaded) return loaded
-  const require = createRequire(import.meta.url)
   let main
   try {
     main = require.resolve(GENERATOR)
@@ -66,32 +68,42 @@ function loadGenerator() {
   return loaded
 }
 
+// The servingFiles calls, one after another: each serves its own files through the shared `fs`.
+let serving = Promise.resolve()
+
 // `generate()` with each of `files` (absolute path -> bytes) read as if on disk, through the `fs`
 // the generator requires: where it reads the query compiler it copies into an edge runtime's client,
 // a file of its own `prisma generate` holds and the peer doesn't. Nothing else is served.
-async function servingFiles(files, generate) {
+function servingFiles(files, generate) {
   if (files.size === 0) return generate()
-  const fs = createRequire(import.meta.url)('node:fs')
-  const { existsSync: exists, readFileSync: read } = fs
-  fs.existsSync = (path, ...rest) => files.has(path) || exists(path, ...rest)
-  fs.readFileSync = (path, ...rest) => (files.has(path) ? Buffer.from(files.get(path)) : read(path, ...rest))
-  try {
-    return await generate()
-  } finally {
-    fs.existsSync = exists
-    fs.readFileSync = read
-  }
+  const served = serving.then(async () => {
+    const fs = require('node:fs')
+    const { existsSync: exists, readFileSync: read } = fs
+    fs.existsSync = (path, ...rest) => files.has(path) || exists(path, ...rest)
+    fs.readFileSync = (path, ...rest) => (files.has(path) ? Buffer.from(files.get(path)) : read(path, ...rest))
+    try {
+      return await generate()
+    } finally {
+      fs.existsSync = exists
+      fs.readFileSync = read
+    }
+  })
+  serving = served.catch(() => {})
+  return served
 }
 
 // --- what `prisma generate` reads ---
 
+// The file at `name` in `dir` or the nearest of its ancestors holding one, or null.
+const nearestFile = (host, dir, name) => {
+  const at = nearest(dir, holding(host, name))
+  return at === null ? null : posix.join(at, name)
+}
+
 // The `prisma` installed for `dir`, as Node finds it from there, and its version; or null.
 function installedPrisma(host, dir) {
-  for (let at = dir; ; at = posix.dirname(at)) {
-    const file = posix.join(at, 'node_modules/prisma/package.json')
-    if (isFile(file, host)) return { file, version: readJson(file, host)?.version }
-    if (at === '/') return null
-  }
+  const file = nearestFile(host, dir, 'node_modules/prisma/package.json')
+  return file === null ? null : { file, version: readJson(file, host)?.version }
 }
 
 // Where @prisma/config looks for a project's config, in order: 7.10.0 tries `prisma7.config.*`
@@ -105,7 +117,6 @@ const configsOf = (version) => (newerThan(version, '7.9.1') ? [...PRISMA7_CONFIG
 // module.exports) is, through defineConfig(), `as`/`satisfies` and a top-level const, whose `schema`
 // is a string; undefined where it names none. Anything else is code stasis won't run, refused.
 function configSchema(file, text) {
-  const require = createRequire(import.meta.url)
   const lang = /\.[cm]?ts$/u.test(file) ? 'ts' : 'js'
   const { program, errors } = require('oxc-parser').parseSync(file, text, { lang, sourceType: 'unambiguous' })
   if (errors.length > 0) throw new Error(`${file}: ${errors[0].message}`)
@@ -154,8 +165,9 @@ function schemaFilesAt(host, path) {
   const files = []
   const seen = new Set()
   const walk = (dir) => {
-    if (seen.has(host.realpath(dir))) return
-    seen.add(host.realpath(dir))
+    const real = host.realpath(dir)
+    if (seen.has(real)) return
+    seen.add(real)
     for (const entry of host.readdir(dir)) {
       const at = entry.isSymbolicLink() ? host.realpath(posix.join(dir, entry.name)) : posix.join(dir, entry.name)
       if (isDir(at, host)) walk(at)
@@ -172,57 +184,52 @@ function schemaFilesAt(host, path) {
 function projectSchema(host, dir, version) {
   const config = configsOf(version).map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
   const named = config === undefined ? undefined : configSchema(config, host.readFile(config).toString('utf8'))
-  if (named !== undefined) {
-    const path = posix.resolve(posix.dirname(config), named)
+  let path
+  if (named === undefined) {
+    path = ['schema.prisma', 'prisma/schema.prisma'].map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
+    if (path === undefined) return null
+  } else {
+    path = posix.resolve(posix.dirname(config), named)
     if (!isFile(path, host) && !isDir(path, host)) throw new Error(`${config}: its schema ${named} is no file or directory`)
-    return { path, files: schemaFilesAt(host, path) }
   }
-  const path = ['schema.prisma', 'prisma/schema.prisma'].map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
-  return path === undefined ? null : { path, files: schemaFilesAt(host, path) }
+  return { path, files: schemaFilesAt(host, path) }
 }
 
 // get-tsconfig 4.10's normalizeCompilerOptions as far as the generator reads its result: each of
 // target, module and moduleResolution lowercased (es2015 as es6, node as node10), and the module and
 // moduleResolution a target or module implies where none is given, the target's first.
-const ES6_TARGETS = new Set(['es6', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024'])
+const CLASSIC_TARGETS = new Set(['es6', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'])
 const CLASSIC_MODULES = new Set(['es6', 'es2020', 'es2022', 'esnext', 'none', 'system', 'umd', 'amd'])
+const IMPLIED_RESOLUTION = { node16: 'node16', nodenext: 'nodenext', preserve: 'bundler' }
+const lower = (value, alias) => (value.toLowerCase() === alias[0] ? alias[1] : value.toLowerCase())
 function normalizeCompilerOptions(options) {
   const o = { ...options }
   if (o.target) {
-    o.target = o.target.toLowerCase() === 'es2015' ? 'es6' : o.target.toLowerCase()
-    if (o.target === 'esnext' || ES6_TARGETS.has(o.target)) {
+    o.target = lower(o.target, ['es2015', 'es6'])
+    if (CLASSIC_TARGETS.has(o.target)) {
       o.module ??= 'es6'
       o.moduleResolution ??= 'classic'
     }
   }
   if (o.module) {
-    o.module = o.module.toLowerCase() === 'es2015' ? 'es6' : o.module.toLowerCase()
-    if (CLASSIC_MODULES.has(o.module)) o.moduleResolution ??= 'classic'
-    if (o.module === 'node16') o.moduleResolution ??= 'node16'
-    if (o.module === 'nodenext') o.moduleResolution ??= 'nodenext'
-    if (o.module === 'preserve') o.moduleResolution ??= 'bundler'
+    o.module = lower(o.module, ['es2015', 'es6'])
+    o.moduleResolution ??= CLASSIC_MODULES.has(o.module) ? 'classic' : IMPLIED_RESOLUTION[o.module]
   }
-  if (o.moduleResolution) o.moduleResolution = o.moduleResolution.toLowerCase() === 'node' ? 'node10' : o.moduleResolution.toLowerCase()
+  if (o.moduleResolution) o.moduleResolution = lower(o.moduleResolution, ['node', 'node10'])
   return o
 }
 
 // The compilerOptions of the tsconfig.json nearest `dir` (get-tsconfig's getTsconfig), or undefined.
 function tsconfigOptions(host, dir) {
-  for (let at = dir; ; at = posix.dirname(at)) {
-    const file = posix.join(at, 'tsconfig.json')
-    if (isFile(file, host)) return normalizeCompilerOptions(loadTsconfigCompilerOptions(file, host))
-    if (at === '/') return undefined
-  }
+  const file = nearestFile(host, dir, 'tsconfig.json')
+  return file === null ? undefined : normalizeCompilerOptions(loadTsconfigCompilerOptions(file, host))
 }
 
 // The module format the `type` of the package.json nearest `dir` (package-up's) says: cjs without
 // one, or where it can't be read.
 function nearestPackageFormat(host, dir) {
-  for (let at = dir; ; at = posix.dirname(at)) {
-    const file = posix.join(at, 'package.json')
-    if (isFile(file, host)) return readJson(file, host)?.type === 'module' ? 'esm' : 'cjs'
-    if (at === '/') return 'cjs'
-  }
+  const file = nearestFile(host, dir, 'package.json')
+  return file !== null && readJson(file, host)?.type === 'module' ? 'esm' : 'cjs'
 }
 
 // --- the generator's options, as its generate() takes them from the schema and infers the rest ---
@@ -248,7 +255,7 @@ function parseExtension(value, kind, expected) {
 
 function parseModuleFormat(value) {
   const format = typeof value === 'string' ? { cjs: 'cjs', commonjs: 'cjs', esm: 'esm' }[value.toLowerCase()] : undefined
-  if (format === undefined) throw new Error(typeof value === 'string' ? `Invalid module format: "${value}", expected "esm" or "cjs"` : `Invalid module format: ${JSON.stringify(value)}, expected "esm" or "cjs"`)
+  if (format === undefined) throw new Error(`Invalid module format: ${typeof value === 'string' ? `"${value}"` : JSON.stringify(value)}, expected "esm" or "cjs"`)
   return format
 }
 
@@ -298,7 +305,6 @@ const lines = (...rows) => rows.join('\n')
 const CLIENT = 'client'
 const CLASS = 'internal/class'
 const NAMESPACE = 'internal/prismaNamespace'
-const isModel = (stem) => stem.startsWith('models/')
 
 // 7.10.0 adds the `schema` of each model to the runtime data model.
 function dropModelSchemas(text, path) {
@@ -440,81 +446,65 @@ function dropFindManyDistinctDocs(text) {
   return out.join('\n')
 }
 
-// Each version's client from the next newer one's: `version` and its engine stamped over the newer
-// ones, and `rewrite(text, stem, path)` for each file, by its name without the extension.
-const DOWN = [
-  { version: '7.9.1', rewrite: (text, stem, path) => (stem === CLASS ? dropModelSchemas(text, path) : text) },
-  { version: '7.9.0' },
-  {
-    version: '7.8.0',
-    rewrite(text, stem, path) {
-      if (stem === CLASS) {
-        text = swap(text, '>(options: Prisma.PrismaClientConstructorArgs<Options>): PrismaClient<', '>(options: Prisma.Subset<Options, Prisma.PrismaClientOptions> ): PrismaClient<', { path })
-        return swap(text, "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = Prisma.PrismaClientOptions['omit'],", "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = undefined,", { path })
-      }
-      if (stem !== NAMESPACE) return text
+// Each version's client from the next newer one's, for each version whose client differs from it
+// but in the version stamps (asVersion's): by the name of each file it rewrites without the generated
+// extension, or MODELS for each of models/, `(text, path) => text`.
+const MODELS = 'models/*'
+const ruleKey = (stem) => (stem.startsWith('models/') ? MODELS : stem)
+const example = (indent) => [`${indent}* const prisma = new PrismaClient({\n${indent}*   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL })\n${indent}* })\n`, `${indent}* const prisma = new PrismaClient()\n`]
+const DOWN = {
+  '7.9.1': { [CLASS]: dropModelSchemas },
+  '7.8.0': {
+    [CLASS]: (text, path) => {
+      text = swap(text, '>(options: Prisma.PrismaClientConstructorArgs<Options>): PrismaClient<', '>(options: Prisma.Subset<Options, Prisma.PrismaClientOptions> ): PrismaClient<', { path })
+      return swap(text, "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = Prisma.PrismaClientOptions['omit'],", "  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = undefined,", { path })
+    },
+    [NAMESPACE]: (text, path) => {
       text = swap(text, CONSTRUCTOR_ARGS, '', { path })
       text = swap(text, '    ((Without<T, U> & U) | (Without<U, T> & T)) & object\n', '    (Without<T, U> & U) | (Without<U, T> & T)\n', { path })
       text = swap(text, BASE_OPTIONS, UNION_OPTIONS, { path })
       return swap(text, OPTION_VARIANTS, '', { path })
     },
   },
-  {
-    version: '7.7.0',
-    rewrite(text, stem, path) {
-      if (stem === CLASS) {
-        // MongoDB's transactions take no isolation level.
-        return swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number, isolationLevel?: Prisma.TransactionIsolationLevel })`, `${TRANSACTION}, options?: { isolationLevel?: Prisma.TransactionIsolationLevel })`, { path, optional: true })
-          ?? swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number })`, `${TRANSACTION})`, { path })
-      }
-      return stem === NAMESPACE ? swap(text, QUERY_PLAN_CACHE, '', { path }) : text
-    },
+  '7.7.0': {
+    // MongoDB's transactions take no isolation level.
+    [CLASS]: (text, path) => swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number, isolationLevel?: Prisma.TransactionIsolationLevel })`, `${TRANSACTION}, options?: { isolationLevel?: Prisma.TransactionIsolationLevel })`, { path, optional: true })
+      ?? swap(text, `${TRANSACTION}, options?: { maxWait?: number, timeout?: number })`, `${TRANSACTION})`, { path }),
+    [NAMESPACE]: (text, path) => swap(text, QUERY_PLAN_CACHE, '', { path }),
   },
-  { version: '7.6.0' },
-  { version: '7.5.0', rewrite: (text, stem) => (isModel(stem) ? text.replace(/^export (type Get(\w+)GroupByPayload<T extends \2GroupByArgs> = )/mu, '$1') : text) },
-  {
-    version: '7.4.2',
-    rewrite(text, stem, path) {
-      if (isModel(stem)) return dropFindManyDistinctDocs(text)
-      // From 7.5.0, MongoDB's interactive transactions take no nested $transaction.
-      if (stem === CLASS) return swap(text, 'Omit<PrismaClient, runtime.ITXClientDenyList | "$transaction">', 'Omit<PrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text
-      if (stem === NAMESPACE) return swap(text, "Omit<DefaultPrismaClient, runtime.ITXClientDenyList | '$transaction'>", 'Omit<DefaultPrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text
-      return text
-    },
+  '7.5.0': { [MODELS]: (text) => text.replace(/^export (type Get(\w+)GroupByPayload<T extends \2GroupByArgs> = )/mu, '$1') },
+  '7.4.2': {
+    [MODELS]: dropFindManyDistinctDocs,
+    // From 7.5.0, MongoDB's interactive transactions take no nested $transaction.
+    [CLASS]: (text, path) => swap(text, 'Omit<PrismaClient, runtime.ITXClientDenyList | "$transaction">', 'Omit<PrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text,
+    [NAMESPACE]: (text, path) => swap(text, "Omit<DefaultPrismaClient, runtime.ITXClientDenyList | '$transaction'>", 'Omit<DefaultPrismaClient, runtime.ITXClientDenyList>', { path, optional: true }) ?? text,
   },
-  {
-    version: '7.4.1',
-    rewrite(text, stem, path) {
-      if (stem !== CLIENT && stem !== CLASS) return text
-      const example = (indent) => [`${indent}* const prisma = new PrismaClient({\n${indent}*   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL })\n${indent}* })\n`, `${indent}* const prisma = new PrismaClient()\n`]
-      text = swap(text, ...example(' '), { path, all: true })
-      return stem === CLASS ? swap(text, ...example('   '), { path, all: true }) : text
-    },
+  '7.4.1': {
+    [CLIENT]: (text, path) => swap(text, ...example(' '), { path, all: true }),
+    [CLASS]: (text, path) => swap(swap(text, ...example(' '), { path, all: true }), ...example('   '), { path, all: true }),
   },
-  {
-    version: '7.4.0',
-    rewrite: (text, stem, path) => (stem === CLASS ? swap(text, 'https://www.prisma.io/docs/orm/prisma-client/queries/transactions', 'https://www.prisma.io/docs/concepts/components/prisma-client/transactions', { path }) : text),
-  },
+  '7.4.0': { [CLASS]: (text, path) => swap(text, 'https://www.prisma.io/docs/orm/prisma-client/queries/transactions', 'https://www.prisma.io/docs/concepts/components/prisma-client/transactions', { path }) },
+}
+
+// The lines each client stamps its version and engine into, by the file they are in.
+const STAMPS = [
+  [CLASS, (version) => `"clientVersion": "${version}",\n  "engineVersion": "${ENGINES[version]}",`],
+  [NAMESPACE, (version) => ` * Prisma Client JS version: ${version}\n * Query Engine version: ${ENGINES[version]}\n`],
+  [NAMESPACE, (version) => `  client: "${version}",\n  engine: "${ENGINES[version]}"\n`],
 ]
 
-// `files` (path -> text) of the 7.10.0 client as `version`'s, whose files are named with `extension`.
+// `files` (path -> text, or bytes left as they are) of the 7.10.0 client as `version`'s, whose files
+// are named with `extension`: each older version's rewrites in turn, down to it, and its stamps.
 function asVersion(files, version, extension) {
-  let newer = GENERATOR_VERSION
-  for (const step of DOWN) {
-    if (!newerThan(newer, version)) break
-    const stamps = [
-      [`"clientVersion": "${newer}",\n  "engineVersion": "${ENGINES[newer]}",`, `"clientVersion": "${step.version}",\n  "engineVersion": "${ENGINES[step.version]}",`, CLASS],
-      [` * Prisma Client JS version: ${newer}\n * Query Engine version: ${ENGINES[newer]}\n`, ` * Prisma Client JS version: ${step.version}\n * Query Engine version: ${ENGINES[step.version]}\n`, NAMESPACE],
-      [`  client: "${newer}",\n  engine: "${ENGINES[newer]}"\n`, `  client: "${step.version}",\n  engine: "${ENGINES[step.version]}"\n`, NAMESPACE],
-    ]
-    for (const [path, text] of files) {
-      if (typeof text !== 'string') continue
-      const stem = path.slice(0, -extension.length - 1)
-      let out = text
-      for (const [from, to, where] of stamps) if (stem === where) out = swap(out, from, to, { path })
-      files.set(path, step.rewrite ? step.rewrite(out, stem, path) : out)
-    }
-    newer = step.version
+  if (version === GENERATOR_VERSION) return files
+  const steps = PRISMA_VERSIONS.slice(1, PRISMA_VERSIONS.indexOf(version) + 1).map((each) => DOWN[each]).filter(Boolean)
+  for (const [path, text] of files) {
+    if (typeof text !== 'string') continue
+    const stem = path.slice(0, -extension.length - 1)
+    let out = text
+    for (const step of steps) out = step[ruleKey(stem)]?.(out, path) ?? out
+    for (const [where, stamp] of STAMPS) if (stem === where) out = swap(out, stamp(GENERATOR_VERSION), stamp(version), { path })
+    files.set(path, out)
   }
   return files
 }
@@ -546,12 +536,13 @@ async function generateClientFor({ schema, generator, dmmf, datasources, outputD
   const activeProvider = datasources[0]?.activeProvider
   const compiler = queryCompiler(host, { prismaDir, dist, target: options.target, compilerBuild: options.compilerBuild, activeProvider })
   const scratch = await mkdtemp(join(tmpdir(), 'stasis-prisma-'))
+  const client = join(scratch, 'client')
   try {
     await servingFiles(compiler, () => generateClient({
       datamodel: internals.mergeSchemas({ schemas: schema.files }),
       schemaPath: schema.path,
       runtimeBase: '@prisma/client/runtime',
-      outputDir: join(scratch, 'client'),
+      outputDir: client,
       generator: { ...generator, output: { value: outputDir, fromEnvVar: null }, isCustomOutput: true },
       dmmf,
       datasources,
@@ -564,10 +555,19 @@ async function generateClientFor({ schema, generator, dmmf, datasources, outputD
     }))
     const files = new Map()
     // The query compiler as it is, the rest as text to rewrite.
-    for (const path of filesUnder(join(scratch, 'client'))) files.set(path, readFileSync(join(scratch, 'client', path), path.endsWith('.wasm') ? undefined : 'utf8'))
+    for (const path of filesUnder(client)) files.set(path, readFileSync(join(client, path), path.endsWith('.wasm') ? undefined : 'utf8'))
     return asVersion(files, version, options.generatedFileExtension)
   } finally {
     await rm(scratch, { recursive: true, force: true })
+  }
+}
+
+// What() as Prisma reads the schema at `path`, its refusal naming it.
+async function readingSchema(path, what) {
+  try {
+    return await what()
+  } catch (cause) {
+    throw new Error(`prisma: ${path}: ${cause.message}`, { cause })
   }
 }
 
@@ -582,7 +582,8 @@ export async function generatePrismaClients({ host, root, projects }) {
   for (const project of [...projects].toSorted()) {
     const dir = posix.join(root, project)
     const prisma = installedPrisma(host, dir)
-    const version = PRISMA_VERSIONS.includes(prisma?.version) ? prisma.version : GENERATOR_VERSION
+    const supported = PRISMA_VERSIONS.includes(prisma?.version)
+    const version = supported ? prisma.version : GENERATOR_VERSION
     let schema
     try {
       schema = projectSchema(host, dir, version)
@@ -592,22 +593,15 @@ export async function generatePrismaClients({ host, root, projects }) {
     }
     if (schema === null) continue
     // Read by Prisma 7.10.0, which another Prisma's schema needn't satisfy.
-    if (!PRISMA_VERSIONS.includes(prisma?.version)) {
+    if (!supported) {
       const installed = prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`
       console.warn(`[stasis] prisma: not generating for ${schema.path}: stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${installed}`)
       continue
     }
     const { internals } = loadGenerator()
-    const read = async (what) => {
-      try {
-        return await what()
-      } catch (cause) {
-        throw new Error(`prisma: ${schema.path}: ${cause.message}`, { cause })
-      }
-    }
-    // One project at a time, as its warnings read and as servingFiles serves the shared fs.
+    // One project at a time, in the order its warnings read.
     // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
-    const config = await read(() => internals.getConfig({ datamodel: schema.files }))
+    const config = await readingSchema(schema.path, () => internals.getConfig({ datamodel: schema.files }))
     const generators = config.generators.filter((generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null)
     for (const other of config.generators.filter((generator) => !generators.includes(generator))) {
       console.warn(`[stasis] prisma: not generating ${schema.path}'s generator ${other.name}: stasis generates the ${JSON.stringify(PROVIDER)} provider's alone`)
@@ -616,7 +610,7 @@ export async function generatePrismaClients({ host, root, projects }) {
     for (const warning of config.warnings) console.warn(`[stasis] prisma: ${warning}`)
     if (config.datasources.length === 0) throw new Error(`prisma: ${schema.path} defines no datasource`)
     // eslint-disable-next-line no-await-in-loop -- in order, one generator at a time
-    const dmmf = await read(() => internals.getDMMF({ datamodel: schema.files }))
+    const dmmf = await readingSchema(schema.path, () => internals.getDMMF({ datamodel: schema.files }))
     for (const generator of generators) {
       if (generator.output === null) throw new Error(`prisma: ${schema.path}: generator ${generator.name} names no output`)
       if (generator.output.fromEnvVar !== null) {

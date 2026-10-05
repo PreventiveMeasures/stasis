@@ -268,7 +268,7 @@ model Thing {
 const json = (v) => `${JSON.stringify(v, null, 2)}\n`
 const pkg = (extra = {}) => json({ name: 'case', private: true, ...extra })
 
-const cases = {}
+export const cases = {}
 const schemaCase = (name, schema, { pkgExtra, tsconfig, more = {} } = {}) => {
   cases[name] = { files: { 'package.json': pkg(pkgExtra), 'prisma/schema.prisma': schema, ...(tsconfig ? { 'tsconfig.json': json(tsconfig) } : {}), ...more }, cwd: '.', args: [] }
 }
@@ -316,7 +316,7 @@ for (const [name, extra] of Object.entries({
 schemaCase('opt-sqlite-workerd', gen('  runtime = "workerd"') + ds('sqlite') + SQLITE)
 
 // What the generator infers from tsconfig.json and package.json.
-const infer = (name, { tsconfig, pkgExtra, more } = {}) => schemaCase(name, gen() + ds('postgresql') + SMALL, { tsconfig, pkgExtra, more })
+const infer = (name, options) => schemaCase(name, gen() + ds('postgresql') + SMALL, options)
 infer('inf-none-type-module', { pkgExtra: { type: 'module' } })
 infer('inf-commonjs', { tsconfig: { compilerOptions: { module: 'commonjs' } } })
 infer('inf-nodenext-module', { tsconfig: { compilerOptions: { module: 'nodenext' } }, pkgExtra: { type: 'module' } })
@@ -357,13 +357,11 @@ cases['inf-output-in-src'] = {
   output: 'src/generated/prisma',
 }
 
-export { cases }
-
 // A query compiler's files as each case's `prisma` ships them in its build, which a client for an
 // edge runtime carries: stand-ins here, their bytes left out of the hash and checked on their own.
 export const isQueryCompiler = (path) => /^internal\/query_compiler_\w+_bg\.(?:js|wasm)$/u.test(path)
 const PROVIDERS = ['postgresql', 'mysql', 'sqlite', 'sqlserver', 'cockroachdb']
-export const queryCompilerFiles = () => Object.fromEntries(['fast', 'small'].flatMap((build) => PROVIDERS.flatMap((provider) => ['wasm', 'mjs'].map((ext) => {
+const queryCompilerFiles = () => Object.fromEntries(['fast', 'small'].flatMap((build) => PROVIDERS.flatMap((provider) => ['wasm', 'mjs'].map((ext) => {
   const name = `query_compiler_${build}_bg.${provider}.${ext}`
   return [`node_modules/prisma/build/${name}`, `stand-in ${name}\n`]
 }))))

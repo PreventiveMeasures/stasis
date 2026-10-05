@@ -20,7 +20,7 @@ import { isDir, isFile } from '../resolve-typescript.js'
 // reads the project through them. The project is read through a host it is given, and nothing else.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
-function nearest(cwd, holds) {
+export function nearest(cwd, holds) {
   for (let dir = cwd; ; dir = dirname(dir)) {
     if (holds(dir)) return dir
     if (dirname(dir) === dir) return null
@@ -28,7 +28,7 @@ function nearest(cwd, holds) {
 }
 
 // Whether a directory holds a file of one of `names`.
-const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
+export const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
 
 // The directory of the package cwd is in that is none of `projects` (their directories from
 // `root`), or null: the nearest package.json with a name between cwd and `root`, one without being a
