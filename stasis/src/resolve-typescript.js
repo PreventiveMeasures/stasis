@@ -299,24 +299,48 @@ function resolveExtendsTarget(fromFile, target, host) {
   throw new Error(`tsconfig extends target not found: '${target}' (from ${fromFile})`)
 }
 
+// The configs a tsconfig's `extends` chain reads, as [{ file, raw }]: each base (in the order
+// `extends` names them) before the config extending it, and `file` last. A base two configs share
+// is listed under each, so folding the list in order, later over earlier, is tsc's nested merge,
+// where the second extender's resolved options carry the shared base's again. Like tsc's, the
+// cycle check is per branch: only a config that extends itself, directly or not, throws.
+function tsconfigChain(file, host) {
+  const chain = []
+  const extending = new Set() // the configs on the branch being walked, each extending the next
+  const walk = (at) => {
+    if (extending.has(at)) throw new Error(`tsconfig extends cycle at ${at}`)
+    const raw = parseJsonc(host.readFile(at).toString('utf8'), at)
+    extending.add(at)
+    for (const base of [].concat(raw?.extends ?? [])) walk(resolveExtendsTarget(at, base, host))
+    extending.delete(at)
+    chain.push({ file: at, raw })
+  }
+  walk(file)
+  return chain
+}
+
 // Effective { paths, pathsDir, baseUrl } across the `extends` chain: bases apply in order, the
 // extending file overrides them; `paths` replaces wholesale (tsc never deep-merges it) and
 // remembers its declaring dir; `baseUrl` is resolved against its declaring file.
-function loadConfigChain(file, seen, host) {
-  if (seen.has(file)) throw new Error(`tsconfig extends cycle at ${file}`)
-  seen.add(file)
-  const raw = parseJsonc(host.readFile(file).toString('utf8'), file)
+function loadConfigChain(file, host) {
   const acc = {}
-  for (const base of [].concat(raw?.extends ?? [])) {
-    Object.assign(acc, loadConfigChain(resolveExtendsTarget(file, base, host), seen, host))
-  }
-  const co = raw?.compilerOptions ?? {}
-  if (typeof co.baseUrl === 'string') acc.baseUrl = resolvePath(dirname(file), co.baseUrl)
-  if (co.paths != null) {
-    acc.paths = co.paths
-    acc.pathsDir = dirname(file)
+  for (const { file: at, raw } of tsconfigChain(file, host)) {
+    const co = raw?.compilerOptions ?? {}
+    if (typeof co.baseUrl === 'string') acc.baseUrl = resolvePath(dirname(at), co.baseUrl)
+    if (co.paths != null) {
+      acc.paths = co.paths
+      acc.pathsDir = dirname(at)
+    }
   }
   return acc
+}
+
+// The `compilerOptions` a tsconfig resolves to across its `extends` chain, merged one level deep
+// as tsc and get-tsconfig merge them: each base in order, the extending file's own over them.
+export function loadTsconfigCompilerOptions(file, host = diskHost) {
+  let options = {}
+  for (const { raw } of tsconfigChain(file, host)) options = { ...options, ...raw?.compilerOptions }
+  return options
 }
 
 // Load a tsconfig's `compilerOptions.paths` into a matcher, following `extends`. Returns null when
@@ -328,7 +352,7 @@ function loadConfigChain(file, seen, host) {
 // (a non-array value, more than one '*' in a key or target) fail closed like tsc's config errors.
 export function loadTsconfigPaths(file, host = diskHost) {
   if (file == null) return null
-  const { paths, pathsDir, baseUrl } = loadConfigChain(file, new Set(), host)
+  const { paths, pathsDir, baseUrl } = loadConfigChain(file, host)
   if (paths == null || typeof paths !== 'object' || Object.keys(paths).length === 0) return null
   const starCount = (s) => s.split('*').length - 1
   for (const [key, targets] of Object.entries(paths)) {

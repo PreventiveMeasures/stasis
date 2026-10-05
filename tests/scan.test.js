@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Scan, scan } from '../stasis/src/scan.js'
-import { loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigCompilerOptions, loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -691,6 +691,30 @@ test('scan typescriptPaths maps aliases: exact keys, longest-prefix patterns, JS
   t.assert.equal(byParent.get('entry.ts').get('exact'), 'src/one.ts')
   // `paths` replaces wholesale across extends (tsc never merges maps), so the base key is gone.
   t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['dropped/one.js'])
+}))
+
+test('a tsconfig extending two bases that share one is no cycle, and merges as tsc does', withTmp((t, tmp) => {
+  const write = (file, config) => {
+    mkdirSync(dirname(join(tmp, file)), { recursive: true })
+    writeFileSync(join(tmp, file), JSON.stringify(config))
+  }
+  write('tsconfig.json', { extends: ['./b/tsconfig.json', './c/tsconfig.json'], compilerOptions: { strict: true } })
+  write('b/tsconfig.json', { extends: '../d/tsconfig.json', compilerOptions: { paths: { '@/*': ['./b/*'] }, target: 'es2020' } })
+  write('c/tsconfig.json', { extends: '../d/tsconfig.json', compilerOptions: { module: 'esnext' } })
+  write('d/tsconfig.json', { compilerOptions: { paths: { '@/*': ['./d/*'] }, target: 'es2022' } })
+  // c's options, as it resolves them, carry d's over b's: tsc's `paths` (based at d/) and target.
+  t.assert.deepStrictEqual(loadTsconfigPaths(join(tmp, 'tsconfig.json')).matchPaths('@/x'), [join(tmp, 'd', 'd', 'x')])
+  t.assert.deepStrictEqual(loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), {
+    paths: { '@/*': ['./d/*'] }, target: 'es2022', module: 'esnext', strict: true,
+  })
+}))
+
+test('a tsconfig that extends itself through another is a cycle', withTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ extends: './a.json' }))
+  writeFileSync(join(tmp, 'a.json'), JSON.stringify({ extends: './tsconfig.json', compilerOptions: { paths: { '@/*': ['./*'] } } }))
+  const cycle = { message: `tsconfig extends cycle at ${join(tmp, 'tsconfig.json')}` }
+  t.assert.throws(() => loadTsconfigPaths(join(tmp, 'tsconfig.json')), cycle)
+  t.assert.throws(() => loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), cycle)
 }))
 
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
