@@ -717,6 +717,23 @@ test('a tsconfig that extends itself through another is a cycle', withTmp((t, tm
   t.assert.throws(() => loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), cycle)
 }))
 
+test('a tsconfig\'s compilerOptions hold each path a base declares as tsc resolves it', withTmp((t, tmp) => {
+  mkdirSync(join(tmp, 'base'))
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ extends: './base/tsconfig.json', compilerOptions: { rootDirs: ['./a'] } }))
+  writeFileSync(join(tmp, 'base', 'tsconfig.json'), JSON.stringify({ compilerOptions: {
+    outDir: './dist', typeRoots: ['./types', '${configDir}/types'], declarationDir: '${configDir}/decl', paths: { '@/*': ['./*'] }, target: 'es2022',
+  } }))
+  // Against the base's dir, but `${configDir}` against the config loaded, and `paths` as declared.
+  t.assert.deepStrictEqual(loadTsconfigCompilerOptions(join(tmp, 'tsconfig.json')), {
+    outDir: join(tmp, 'base', 'dist'),
+    typeRoots: [join(tmp, 'base', 'types'), join(tmp, 'types')],
+    declarationDir: join(tmp, 'decl'),
+    paths: { '@/*': ['./*'] },
+    target: 'es2022',
+    rootDirs: [join(tmp, 'a')],
+  })
+}))
+
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({

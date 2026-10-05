@@ -335,11 +335,29 @@ function loadConfigChain(file, host) {
   return acc
 }
 
+// tsc's path-valued compilerOptions (a list's element by element), which it resolves against the
+// config declaring them, or, when one starts with `${configDir}`, against the config it loads.
+const TSCONFIG_PATH_OPTIONS = new Set(['baseUrl', 'declarationDir', 'generateCpuProfile', 'generateTrace', 'outDir', 'outFile', 'rootDir', 'tsBuildInfoFile'])
+const TSCONFIG_PATH_LIST_OPTIONS = new Set(['rootDirs', 'typeRoots'])
+const CONFIG_DIR = '${configDir}'
+
 // The `compilerOptions` a tsconfig resolves to across its `extends` chain, merged one level deep
-// as tsc and get-tsconfig merge them: each base in order, the extending file's own over them.
+// as tsc merges them: each base in order, the extending file's own over them, with each path-valued
+// option absolute, as tsc makes it (`paths` as declared, its targets the declaring config's).
 export function loadTsconfigCompilerOptions(file, host = diskHost) {
   let options = {}
-  for (const { raw } of tsconfigChain(file, host)) options = { ...options, ...raw?.compilerOptions }
+  for (const { file: at, raw } of tsconfigChain(file, host)) {
+    const absolute = (value) => {
+      if (typeof value !== 'string') return value
+      return value.startsWith(CONFIG_DIR) ? resolvePath(dirname(file), value.replace(CONFIG_DIR, './')) : resolvePath(dirname(at), value)
+    }
+    const own = { ...raw?.compilerOptions }
+    for (const [name, value] of Object.entries(own)) {
+      if (TSCONFIG_PATH_OPTIONS.has(name)) own[name] = absolute(value)
+      else if (TSCONFIG_PATH_LIST_OPTIONS.has(name) && Array.isArray(value)) own[name] = value.map(absolute)
+    }
+    options = { ...options, ...own }
+  }
   return options
 }
 
