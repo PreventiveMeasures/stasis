@@ -157,7 +157,9 @@ before(async () => {
   setCacheDir(join(cacheRoot, 'stasis'))
   await Promise.all(Object.entries(MANAGERS).map(async ([packageManager, m]) => {
     if (!existsSync(join(m.fixture, m.installed))) {
-      const child = spawn(m.install[0], m.install[1], { cwd: m.fixture })
+      // Through an npm cache of its own: the tarballs an install leaves in the one the builds
+      // consult would be read from there, and never fetched into the tarball cache.
+      const child = spawn(m.install[0], m.install[1], { cwd: m.fixture, env: { ...process.env, npm_config_cache: join(cacheRoot, 'install-cache') } })
       const stderrChunks = []
       child.stderr.on('data', (d) => stderrChunks.push(d))
       const [status] = await once(child, 'close')
@@ -385,7 +387,8 @@ describe('buildVfsBundle with yarn1, its lockfile', { concurrency: 1 }, () => {
 
 test('buildVfsBundle refuses layouts and options it cannot reproduce', async (t) => {
   const build = (options) => buildVfsBundle({ packageManager: 'pnpm', entries: ['src/entry.js'], ...options })
-  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=hoisted\n' }) }), /\.npmrc:1: node-linker: "hoisted" is not supported/u)
+  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=hoisted\n' }) }), /packageImportMethod: "auto" is not supported with the hoisted layout/u)
+  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=pnp\n' }) }), /\.npmrc:1: node-linker: "pnp" is not supported/u)
   const noLock = projectVfs('pnpm')
   noLock.rm('/pnpm-lock.yaml')
   await t.assert.rejects(build({ vfs: noLock }), /no pnpm-lock\.yaml found/u)

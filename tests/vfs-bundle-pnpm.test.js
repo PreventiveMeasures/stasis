@@ -70,7 +70,13 @@ test('pnpm: reads every project pnpm finds and every one the lockfile has, and t
   await t.assert.rejects(load({ vfs: project({ ...files, 'new/package.json': { name: 'new', version: '1.0.0', dependencies: { pkg: 'workspace:*' } } }) }), /manifests\["new"\]: the lockfile is not up to date with this package\.json/u)
   const { 'pkg/package.json': _pkg, ...withoutPkg } = files
   await t.assert.rejects(load({ vfs: project(withoutPkg) }), /importers\["pkg"\]: the package\.json of this project is not given/u)
-  await t.assert.rejects(load({ vfs: project({ ...files, '.npmrc': 'node-linker=hoisted\n' }) }), /\.npmrc:1: node-linker: "hoisted" is not supported/u)
+  // pnpm 10's hoisted layout, with no virtual store, is laid out where each copy of a package is its
+  // own (copy, clone or clone-or-copy), and refused where pnpm would hardlink them from its store, as
+  // `auto` does; a linker of neither layout is refused at the setting.
+  const hoisted = await load({ vfs: project({ ...files, '.npmrc': 'node-linker=hoisted\npackage-import-method=copy\n' }) })
+  t.assert.equal(hoisted.vfs.isDirectory('/node_modules/.pnpm'), false)
+  await t.assert.rejects(load({ vfs: project({ ...files, '.npmrc': 'node-linker=hoisted\n' }) }), /packageImportMethod: "auto" is not supported with the hoisted layout/u)
+  await t.assert.rejects(load({ vfs: project({ ...files, '.npmrc': 'node-linker=pnp\n' }) }), /\.npmrc:1: node-linker: "pnp" is not supported/u)
   // cwd may be in any project pnpm finds, or below a package.json that is only a `type` marker.
   t.assert.equal((await load({ vfs: project({ ...files, 'new/package.json': { name: 'new', version: '1.0.0' } }), cwd: '/new' })).stats.projects, 3)
   t.assert.equal((await load({ vfs: project({ ...files, 'src/package.json': { type: 'module' } }), cwd: '/src' })).stats.projects, 2)
