@@ -385,7 +385,8 @@ describe('buildVfsBundle with yarn1, its lockfile', { concurrency: 1 }, () => {
 
 test('buildVfsBundle refuses layouts and options it cannot reproduce', async (t) => {
   const build = (options) => buildVfsBundle({ packageManager: 'pnpm', entries: ['src/entry.js'], ...options })
-  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=hoisted\n' }) }), /\.npmrc:1: node-linker: "hoisted" is not supported/u)
+  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=hoisted\n' }) }), /packageImportMethod: "auto" is not supported with the hoisted layout/u)
+  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { '.npmrc': 'node-linker=pnp\n' }) }), /\.npmrc:1: node-linker: "pnp" is not supported/u)
   const noLock = projectVfs('pnpm')
   noLock.rm('/pnpm-lock.yaml')
   await t.assert.rejects(build({ vfs: noLock }), /no pnpm-lock\.yaml found/u)
