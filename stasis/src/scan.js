@@ -140,7 +140,7 @@ function collectSpecifiers(program) {
 // which only --typescript resolves -- so the build can take --typescript as given: every entry is
 // TypeScript, they hold at least one relative import naming a JS output (`./a.js`, or .jsx/.mjs/
 // .cjs), and not one of those is on disk while the TS source it maps to is (`./a.ts`; see
-// typescriptSiblings). Any part missing is no tell, and neither is an entry that doesn't parse as
+// typescriptSiblings), outside node_modules as the resolver requires. Any part missing is no tell, and neither is an entry that doesn't parse as
 // the scan parses it (Scan#parseFile; the scan reports it), nor one in node_modules, where
 // --typescript maps nothing. Read off the entries alone, before the scan.
 export function importsTypescriptByOutputName(entries, host = diskHost) {
@@ -164,8 +164,13 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
       }
     }
   }
+  // tsc's pick, the first TS source on disk, as the resolver maps it: none where it lies in node_modules.
   const isSource = (file) => !isTypeDeclaration(file) && (host.stat(file)?.isFile() ?? false)
-  return targets.length > 0 && targets.every((target) => host.stat(target) === null && typescriptSiblings(target).some(isSource))
+  const mapsTo = (target) => {
+    const pick = typescriptSiblings(target).find(isSource)
+    return pick !== undefined && !inNodeModules(pick, host)
+  }
+  return targets.length > 0 && targets.every((target) => host.stat(target) === null && mapsTo(target))
 }
 
 function condKey(set) {
