@@ -55,7 +55,7 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 // directory, of the kind its package manager builds: `packageManager` if given, else the one
 // detected as the build detects it. For pnpm and yarn 1, the entry points its package.json names,
 // resolved as the build resolves them with the same `conditions`, `mainFields`, `metro`,
-// `platforms`, `jsx` and `typescript` (packageEntries); for Soldeer, its .sol entry points by name
+// `platforms` and `typescript` (packageEntries); for Soldeer, its .sol entry points by name
 // and layout (solidityEntries). The options are checked as the build checks them, and `os`, the
 // one the build is for, detects the package manager as there. Of the project held in `vfs`, from
 // `cwd`; or of a GitHub repo, `{ github, sha, tag, directory, client }` as buildGitHubBundle takes

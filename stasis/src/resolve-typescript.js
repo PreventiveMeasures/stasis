@@ -8,7 +8,7 @@ import { diskHost } from '@exodus/stasis-core/host'
 // everywhere: when normal resolution misses and tsc would land on an on-disk TypeScript source,
 // complete the miss with that file. It never rewrites a resolution that succeeded, so an on-disk
 // `.js` always beats its `.ts` twin. The rules, in the shapes they apply to:
-//   - extension substitution: `./x.js` -> `./x.ts` (`.jsx` -> `.tsx` under --jsx, `.mjs` -> `.mts`,
+//   - extension substitution: `./x.js` -> `./x.ts` (`.jsx` -> `.tsx`, `.mjs` -> `.mts`,
 //     `.cjs` -> `.cts`) -- tsc never rewrites specifiers, so TS sources import each other by their
 //     OUTPUT names, and the specifier names a file that only exists as its TS source;
 //   - extension/index completion for an extensionless path (`./util` -> `./util.ts`,
@@ -22,8 +22,7 @@ import { diskHost } from '@exodus/stasis-core/host'
 // both resolvers share -- it is the dependency-free lower layer, importing from neither.
 
 // tsc's extension substitution table: the JS output extensions mapped back to the TS source
-// siblings that may sit on disk in their place. `.tsx` entries apply only when the caller can
-// carry/parse .tsx (i.e. --jsx). JS_OUTPUT_EXTS is derived, so the two cannot drift.
+// siblings that may sit on disk in their place. JS_OUTPUT_EXTS is derived, so the two cannot drift.
 const TS_SIBLING_EXTS = new Map([
   ['.js', ['.ts', '.tsx']],
   ['.jsx', ['.tsx']],
@@ -37,12 +36,12 @@ const JS_OUTPUT_EXTS = new Set(TS_SIBLING_EXTS.keys())
 // extname sees no extension in './.js', matching the extensionless gates downstream). Candidates
 // spelling a type declaration (./x.d.js -> ./x.d.ts) are returned too: every probe site refuses
 // declarations (types-only, erased at runtime), so the screen lives at probe time, once.
-export function typescriptSiblings(name, { tsx = false } = {}) {
+export function typescriptSiblings(name) {
   const ext = extname(name)
   const exts = TS_SIBLING_EXTS.get(ext)
   if (!exts) return []
   const stem = name.slice(0, -ext.length)
-  return exts.filter((e) => tsx || e !== '.tsx').map((e) => `${stem}${e}`)
+  return exts.map((e) => `${stem}${e}`)
 }
 
 // Extensions that never take the appended-`.ts` completion: JS outputs (substitution territory)
@@ -116,16 +115,11 @@ const probe = (p, host) => (!isTypeDeclaration(p) && isFile(p, host) ? p : null)
 
 // The extensions tsc's completion appends, in its order (tryAddingExtensions): .ts, .tsx, then --
 // with `js`, for a path Node never probed (a tsconfig paths target) -- .js, .jsx. A path Node
-// already completed needs only the TS ones. .tsx/.jsx only under `tsx` (carryable under --jsx);
-// .d.ts (tsc's third) is never a target (see probe).
-const JSX_COMPLETION_EXTS = new Set(['.tsx', '.jsx'])
-function completionExts({ tsx, js }) {
-  const exts = js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx']
-  return tsx ? exts : exts.filter((e) => !JSX_COMPLETION_EXTS.has(e))
-}
+// already completed needs only the TS ones. .d.ts (tsc's third) is never a target (see probe).
+const completionExts = (js) => (js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx'])
 
-// LOAD_INDEX with tsc's completions: dir/index.ts (+ index.tsx under tsx, + index.js/index.jsx with
-// `js`). Without `js`, Node already probed the .js/.json indexes before the fallback ever runs.
+// LOAD_INDEX with tsc's completions: dir/index.ts, dir/index.tsx (+ index.js/index.jsx with `js`).
+// Without `js`, Node already probed the .js/.json indexes before the fallback ever runs.
 function probeIndex(dir, exts, host) {
   for (const ext of exts) {
     const hit = probe(join(dir, `index${ext}`), host)
@@ -143,12 +137,12 @@ function probeIndex(dir, exts, host) {
 // `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
 // so only substitution applies (matching tsc's node16 rules). `js` completes JS extensions too, for
 // a base Node never probed (see completionExts).
-function probeTypescriptTarget(base, { tsx = false, js = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
-  const exts = completionExts({ tsx, js })
+function probeTypescriptTarget(base, { js = false, dirOnly = false, completion = true, dir = true, host = diskHost } = {}) {
+  const exts = completionExts(js)
   if (!dirOnly) {
     const literal = probe(base, host)
     if (literal) return literal
-    for (const cand of typescriptSiblings(base, { tsx })) {
+    for (const cand of typescriptSiblings(base)) {
       const hit = probe(cand, host)
       if (hit) return hit
     }
@@ -166,7 +160,7 @@ function probeTypescriptTarget(base, { tsx = false, js = false, dirOnly = false,
       // LOAD_AS_FILE(main) with substitution/completion, then LOAD_INDEX(main); a broken main
       // falls through to the package index, like Node.
       const entry = resolvePath(base, main)
-      const hit = probeTypescriptTarget(entry, { tsx, js, dir: false, host }) ?? probeIndex(entry, exts, host)
+      const hit = probeTypescriptTarget(entry, { js, dir: false, host }) ?? probeIndex(entry, exts, host)
       if (hit) return hit
     }
     return probeIndex(base, exts, host)
@@ -240,9 +234,9 @@ function manifestTargets(map, subpathKey, conditions) {
 // tsc's mapping of `key` ('.' or './sub') through the `exports` of the package in `pkgDir` (or of
 // a '#name' key through its `imports`): the targets `conditions` select, substitution only (Node
 // requires exports/imports targets to name exact files), the first on disk; or null.
-export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), tsx = false, host = diskHost } = {}) {
+export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), host = diskHost } = {}) {
   for (const target of manifestTargets(exports, key, conditions)) {
-    const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { tsx, completion: false, dir: false, host })
+    const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { completion: false, dir: false, host })
     if (hit) return hit
   }
   return null
@@ -427,26 +421,26 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
 
 // Resolve `spec` from `parentFile` the way tsc would complete a resolution BOTH Node and the
 // legacy-field resolver missed. Returns the absolute path of the on-disk source, or null.
-// `conditions` gates exports/imports maps (same set the failed resolution used); `tsx` widens the
-// substitutions to .tsx; `paths` is a loadTsconfigPaths matcher (or null). Dispatch by shape:
+// `conditions` gates exports/imports maps (same set the failed resolution used); `paths` is a
+// loadTsconfigPaths matcher (or null). Dispatch by shape:
 //   '#name'        -> the parent package's `imports` targets, substitution only;
 //   relative/abs   -> path substitution/completion (+ directory main/index);
 //   bare           -> tsconfig paths aliases first (tsc consults them before node_modules; JS
 //                     completion too, as Node never probed the target), then
 //                     the named package: its `exports` targets (substitution only) when it has
 //                     them, else its `main`/index (bare root) or subpath (substitution/completion).
-export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), tsx = false, paths = null, host = diskHost } = {}) {
+export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), paths = null, host = diskHost } = {}) {
   if (spec.startsWith('#')) {
     const scope = nearestPackage(parentFile, host)
-    return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, tsx, host }) : null
+    return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, host }) : null
   }
   if (spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..' || isAbsolute(spec)) {
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-    return probeTypescriptTarget(base, { tsx, dirOnly: DIR_ONLY_SPEC.test(spec), host })
+    return probeTypescriptTarget(base, { dirOnly: DIR_ONLY_SPEC.test(spec), host })
   }
   if (paths && !IN_NODE_MODULES.test(parentFile)) {
     for (const target of paths.matchPaths(spec)) {
-      const hit = probeTypescriptTarget(target, { tsx, js: true, dirOnly: target.endsWith('/'), host })
+      const hit = probeTypescriptTarget(target, { js: true, dirOnly: target.endsWith('/'), host })
       if (hit) return hit
     }
   }
@@ -455,11 +449,11 @@ export function resolveTypescriptFallback(parentFile, spec, { conditions = new S
   const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
   if (pkg.exports != null) {
     // `exports` fully governs a bare import (main is not a fallback); targets name exact files.
-    return typescriptExportsTarget(loc.pkgDir, pkg.exports, loc.subpath === '' ? '.' : `./${loc.subpath}`, { conditions, tsx, host })
+    return typescriptExportsTarget(loc.pkgDir, pkg.exports, loc.subpath === '' ? '.' : `./${loc.subpath}`, { conditions, host })
   }
   if (loc.subpath === '') {
     // Bare package root: LOAD_AS_DIRECTORY only (never `node_modules/dep.ts`).
-    return probeTypescriptTarget(loc.pkgDir, { tsx, dirOnly: true, host })
+    return probeTypescriptTarget(loc.pkgDir, { dirOnly: true, host })
   }
-  return probeTypescriptTarget(join(loc.pkgDir, loc.subpath), { tsx, dirOnly: DIR_ONLY_SPEC.test(spec), host })
+  return probeTypescriptTarget(join(loc.pkgDir, loc.subpath), { dirOnly: DIR_ONLY_SPEC.test(spec), host })
 }

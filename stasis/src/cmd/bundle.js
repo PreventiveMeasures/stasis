@@ -6,7 +6,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { JSX_FILE_EXTS, scan } from '../scan.js'
+import { scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
@@ -37,7 +37,7 @@ import {
 } from '../loaders/php.js'
 import { DEFAULT_BUNDLE_FILE, bundledSummary, packagesLabel, writeBundle, writeFile } from './output.js'
 
-const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts'])
+const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 const BASH_EXTS = new Set(['.sh', '.bash'])
 const RUST_EXTS = new Set(['.rs'])
 
@@ -596,11 +596,9 @@ function displayPath(url, baseDir) {
   return rel && !relativeEscapes(rel) ? rel : abs
 }
 
-// One unresolved scan edge for diagnostics, naming the .jsx/.tsx file --jsx would resolve it to
-// when the scan found one (Scan#jsxCandidate) -- --jsx stays opt-in, so the hint names the flag.
+// One unresolved scan edge for diagnostics.
 function describeUnresolved(u, show) {
-  const jsx = u.jsxURL ? `; resolves to ${show(u.jsxURL)} under --jsx` : ''
-  return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason}${jsx})`
+  return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason})`
 }
 
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
@@ -636,9 +634,7 @@ function analyzeScanner(scanner, { baseDir }) {
     for (const [parentURL, specMap] of byParent) {
       for (const [spec, childURL] of specMap) {
         if (!scanner.files.has(childURL)) {
-          // A reached .jsx/.tsx is carryable once --jsx opts it in (see scan.js JSX_FILE_EXTS).
-          const jsx = !scanner.jsx && JSX_FILE_EXTS.has(extname(fileURLToPath(childURL))) ? ' without --jsx' : ''
-          fatal.push(`${spec} from ${show(parentURL)} resolves to ${show(childURL)}, which a source bundle can't carry${jsx}`)
+          fatal.push(`${spec} from ${show(parentURL)} resolves to ${show(childURL)}, which a source bundle can't carry`)
         }
       }
     }
@@ -692,7 +688,7 @@ const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript 
 // root above it, where that holds no stasis file of its own.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost, innermostRoot = false } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
-    throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts file is required')
+    throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
   }
   for (const e of entries) {
     if (!JS_EXTS.has(extname(e))) throw new Error(`buildJsBundle: not a JS/TS file: ${e}`)
@@ -791,14 +787,12 @@ function innermostRootOf(baseDir, files, root, host) {
   return root
 }
 
-// Extensions probed when a resolved target names none. Limited to what a source bundle can
-// carry (scan's RESOLVABLE_EXTS) so the resolver never resolves a file the bundle would reject.
-// --jsx widens this to the JSX/TSX extensions (mirroring scan's jsx-gated RESOLVABLE_EXTS) so an
-// extensionless `import './Foo'` can land on Foo.jsx/Foo.tsx, as Metro's sourceExts do. `.js`/`.ts`
-// keep their existing precedence (base order preserved as a subsequence); collisions across the
-// added extensions are rare and, like the base list, don't track the project's real Metro order.
-const SOURCE_EXTS = ['js', 'json', 'ts']
-const SOURCE_EXTS_JSX = ['js', 'jsx', 'json', 'ts', 'tsx']
+// Extensions probed when a resolved target names none, in Metro's default sourceExts order.
+// Limited to what a source bundle can carry (scan's RESOLVABLE_EXTS) so the resolver never
+// resolves a file the bundle would reject; an extensionless `import './Foo'` can land on
+// Foo.jsx/Foo.tsx, as it does under Metro. Like Metro's default, this doesn't track a project's
+// own sourceExts.
+const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 // Synthetic path for the empty module a browser/react-native `false` redirect resolves to,
@@ -850,15 +844,14 @@ function nativeModuleFiles(pkgAbs, host) {
 // `platform` (null for --mainFields), its `mainFields` (Metro's under --metro), and the conditions
 // it adds to Node's: --metro asserts the RN conditions (+ browser on web); --mainFields carries the
 // user's --conditions.
-export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], jsx = false, typescript = false, typescriptPaths = null, host = diskHost }) {
+export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : conditions
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
     mainFields: fields,
     platform,
     preferNative: platform !== null && platform !== 'web',
-    // Under --jsx the resolver probes .jsx/.tsx too, matching scan's jsx-widened carryable set.
-    sourceExts: jsx ? SOURCE_EXTS_JSX : SOURCE_EXTS,
+    sourceExts: SOURCE_EXTS,
     conditions: resolveConditions('commonjs', extras),
     // Opt into Metro's package-entry browser-field quirks only on the --metro path.
     metro,
@@ -890,8 +883,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
 
   const scanConditions = cleanConditions(conditions)
 
-  // Under --jsx the resolver probes .jsx/.tsx too, matching scan's jsx-widened carryable set.
-  const sourceExts = jsx ? SOURCE_EXTS_JSX : SOURCE_EXTS
   // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
@@ -906,23 +897,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   let usesEmpty = false
 
   for (const platform of platforms) {
-    const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, jsx, typescript, typescriptPaths, host })
+    const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
     // --metro --metro-resolver delegates to the project's own metro-resolver for byte-for-byte Metro
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives
     // default/require|import/platform conditions itself, so it takes only the extra `react-native`
     // condition (browser comes from its per-platform map, keyed on `web`).
-    const metroResolverFor = (exts) => createMetroResolver({ projectDir: baseDir, platform, sourceExts: exts, mainFields, conditionNames: ['react-native'], host })
-    const resolver = metroResolver ? metroResolverFor(sourceExts) : field.resolver
-    // Without --jsx, the resolver --jsx would build names the .jsx/.tsx file a miss would land on:
-    // a hint in the unresolved report, never an edge (see Scan#jsxCandidate).
-    let jsxResolve = null
-    if (!jsx) {
-      jsxResolve = metroResolver
-        ? metroResolverFor(SOURCE_EXTS_JSX)
-        : fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, jsx: true, typescript, typescriptPaths, host }).resolver
-    }
-    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, jsxResolve, jsx, flow, resources: resourceSet, host })
+    const resolver = metroResolver
+      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts: SOURCE_EXTS, mainFields, conditionNames: ['react-native'], host })
+      : field.resolver
+    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, jsx, flow, resources: resourceSet, host })
     reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
@@ -1127,7 +1111,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
   else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
   else {
-    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts, all be .sh/.bash, or all be .rs (no mixing)`)
+    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs (no mixing)`)
   }
   if (mappingFile && kind !== 'sol') {
     throw new Error(`${name}: --mapping is only valid for .sol bundles`)
@@ -1175,7 +1159,8 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (mainFields !== undefined && kind !== 'js') {
     throw new Error(`${name}: --mainFields is only valid for JS bundles`)
   }
-  // --jsx toggles the scanner's JSX parsing for the .js family; only JS entries are scanned.
+  // --jsx toggles the scanner's JSX parsing for the .js family (.jsx/.tsx need no flag); only JS
+  // entries are scanned.
   if (jsx && kind !== 'js') {
     throw new Error(`${name}: --jsx is only valid for JS bundles`)
   }

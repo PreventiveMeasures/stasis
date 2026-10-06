@@ -38,8 +38,8 @@ function usage(prefix = '') {
   remappings.txt, foundry.lock, soldeer.lock, .gitmodules and package.json of the project and its
   bundled dependencies, as written: RPC/Etherscan keys and URL credentials in them included)
  stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
- stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts) ...
- stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts) ...
+ stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+ stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  (Rust: each crate's Cargo features are resolved from Cargo.toml/Cargo.lock like "cargo build" of the
@@ -55,7 +55,8 @@ function usage(prefix = '') {
  (writes to stasis.code.br by default, a JS bundle's in the project root its paths are relative to,
   where stasis run --bundle=load finds it; --output=- streams to stdout; --add merges into an
   existing bundle instead of replacing it (not with --output=-); --brotli-quality=0..11, default 9;
-  --jsx parses JSX in .js/.cjs/.mjs files, e.g. React Native source (put JSX-in-TS in a .tsx file);
+  --jsx parses JSX in .js/.cjs/.mjs files, e.g. React Native source (.jsx/.tsx files need no flag;
+   put JSX-in-TS in a .tsx file);
   --flow strips Flow types from .js/.cjs/.mjs sources oxc can't parse (needs the optional flow-remove-types dep);
   --typescript resolves TS the way tsc does: an import of ./x.js lands on ./x.ts when no .js is on disk
    (likewise .mjs/.cjs -> .mts/.cts, extensionless ./x -> ./x.ts, incl. exports/imports/main targets),
@@ -63,7 +64,7 @@ function usage(prefix = '') {
    not with --metro-resolver;
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
- stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts)|file.sol|dir) ...]
+ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
   either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
   GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory
@@ -296,11 +297,11 @@ if (command === '-v' || command === '--version') {
   if (dirError !== null) usage(`Error: ${dirError}`)
   const allSol = argv.every((f) => isSolidityEntry(f))
   const allPhp = argv.every((f) => f.endsWith('.php'))
-  const allJs = argv.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts)$/u.test(f))
+  const allJs = argv.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f))
   const allBash = argv.every((f) => /\.(?:sh|bash)$/u.test(f))
   const allRust = argv.every((f) => f.endsWith('.rs'))
   if (!allSol && !allPhp && !allJs && !allBash && !allRust) {
-    usage('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts, all be .sh/.bash, or all be .rs')
+    usage('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
   }
   if (values.mapping && !allSol) usage('Error: --mapping is only valid for .sol bundles')
   // --manifests: carry the Solidity build's description files (foundry.toml, remappings.txt, ...).
@@ -381,7 +382,7 @@ if (command === '-v' || command === '--version') {
   }
   if ((metro || platforms.length > 0) && !allJs) usage('Error: --metro is only valid for JS bundles')
   // --jsx: parse React Native's JSX-in-.js source in the static scanner (off by default; oxc,
-  // like tsc, only auto-enables JSX for .jsx/.tsx). Orthogonal to the resolver, so it pairs with
+  // like tsc, auto-enables JSX for .jsx/.tsx only). Orthogonal to the resolver, so it pairs with
   // plain/--mainFields/--metro alike -- JS-only, since no other entry language is scanned.
   const jsx = Boolean(values.jsx)
   if (jsx && !allJs) usage('Error: --jsx is only valid for JS bundles')

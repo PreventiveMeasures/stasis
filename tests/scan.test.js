@@ -571,18 +571,20 @@ test('scan typescript:true completes extensionless and directory specifiers with
   t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['./only-mts'], 'extensionless never lands on .mts/.cts')
 }))
 
-test('scan typescript:true probes .tsx only under jsx (off, a .tsx twin stays unresolved)', withTmp((t, tmp) => {
+test('scan typescript:true maps to a .tsx twin without jsx (.tsx is parsed by extension)', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'entry.ts'), 'import { App } from "./App.js"\nexport const v: unknown = App\n')
-  writeFileSync(join(tmp, 'App.tsx'), 'export function App(): unknown { return <span>x</span> }\n')
-  const off = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
-  t.assert.equal(off.unresolved.length, 1, 'without jsx the scanner cannot carry .tsx, so it must not resolve to one')
-  t.assert.equal(off.unresolved[0].jsx, 'App.tsx', 'the miss names the .tsx file jsx would resolve it to')
-  // Node never completes to .tsx, so without typescript there is no jsx-only target to name.
-  t.assert.equal(scan([join(tmp, 'entry.ts')]).toRelative(tmp).unresolved[0].jsx, undefined)
-  const on = scan([join(tmp, 'entry.ts')], { typescript: true, jsx: true }).toRelative(tmp)
-  t.assert.deepStrictEqual(on.unresolved, [])
-  t.assert.equal(flattenImports(on.imports).get('entry.ts').get('./App.js'), 'App.tsx')
+  writeFileSync(join(tmp, 'App.tsx'), 'import { dep } from "./dep.ts"\nexport function App(): unknown { return <span>{dep}</span> }\n')
+  writeFileSync(join(tmp, 'dep.ts'), 'export const dep: number = 1\n')
+  // Node never completes to .tsx, so without typescript the import stays unresolved.
+  t.assert.equal(scan([join(tmp, 'entry.ts')]).toRelative(tmp).unresolved.length, 1)
+  const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(result.parseErrors, [])
+  const byParent = flattenImports(result.imports)
+  t.assert.equal(byParent.get('entry.ts').get('./App.js'), 'App.tsx')
+  // The .tsx was parsed as TSX and walked past its JSX.
+  t.assert.equal(byParent.get('App.tsx').get('./dep.ts'), 'dep.ts')
 }))
 
 test('scan typescript:true substitutes bare package subpaths and manifest entry targets', withTmp((t, tmp) => {
@@ -780,18 +782,17 @@ test('scan typescriptPaths completes an alias target to .js/.jsx after the TS ex
   writeFileSync(join(tmp, 'src', 'mod.mjs'), 'export const m = 1\n')
   writeFileSync(join(tmp, 'src', 'comp.jsx'), 'export const c = <b>x</b>\n')
   const typescriptPaths = loadTsconfigPaths(join(tmp, 'tsconfig.json'))
-  const off = scan([join(tmp, 'entry.ts')], { typescript: true, typescriptPaths }).toRelative(tmp)
-  const byParent = flattenImports(off.imports)
+  const result = scan([join(tmp, 'entry.ts')], { typescript: true, typescriptPaths }).toRelative(tmp)
+  const byParent = flattenImports(result.imports)
   t.assert.equal(byParent.get('entry.ts').get('@/js'), 'src/js.js')
   t.assert.equal(byParent.get('entry.ts').get('@/dir'), 'src/dir/index.js')
   t.assert.equal(byParent.get('entry.ts').get('@/both'), 'src/both.ts', 'the TS extensions come first')
   t.assert.equal(byParent.get('entry.ts').get('@/typed'), 'src/typed.js', 'a declaration is never a target')
   t.assert.equal(byParent.get('entry.ts').get('@/file'), 'src/file.js', 'the file comes before the directory')
-  // .jsx is carryable (so probed) only under jsx; without it the miss names it.
-  t.assert.deepStrictEqual(off.unresolved.map((u) => [u.spec, u.jsx]), [['@/mod', undefined], ['@/comp', 'src/comp.jsx']])
-  const on = scan([join(tmp, 'entry.ts')], { typescript: true, typescriptPaths, jsx: true }).toRelative(tmp)
-  t.assert.equal(flattenImports(on.imports).get('entry.ts').get('@/comp'), 'src/comp.jsx')
-  t.assert.deepStrictEqual(on.unresolved.map((u) => u.spec), ['@/mod'])
+  // .jsx is parsed by extension, so it is a target without jsx.
+  t.assert.equal(byParent.get('entry.ts').get('@/comp'), 'src/comp.jsx')
+  t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['@/mod'])
+  t.assert.deepStrictEqual(result.parseErrors, [])
 }))
 
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
