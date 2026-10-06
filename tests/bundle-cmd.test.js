@@ -2465,9 +2465,9 @@ test('CLI: bundle --typescript --tsconfig=path uses the named config (and must e
   t.assert.match(missing.stderr, /tsconfig not found/)
 }))
 
-test('CLI: bundle --typescript names --jsx when an alias misses only for want of .tsx', withTmp((t, tmp) => {
-  // The alias target exists only as .tsx, which --typescript maps to only under --jsx (.tsx stays
-  // out of a bundle unless opted in): the miss must say so instead of a bare MODULE_NOT_FOUND.
+test('CLI: bundle --typescript maps an alias to a .tsx target without --jsx', withTmp((t, tmp) => {
+  // The alias target exists only as .tsx, which --typescript maps to as tsc does; .tsx is parsed
+  // by extension, so no --jsx is needed to carry it.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
   writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }))
   mkdirSync(join(tmp, 'src', 'x', 'y'), { recursive: true })
@@ -2476,12 +2476,7 @@ test('CLI: bundle --typescript names --jsx when an alias misses only for want of
   writeFileSync(join(tmp, 'src', 'a', 'b.tsx'), 'export const B = (): unknown => <b>x</b>\n')
   const outPath = join(tmp, 'out.br')
 
-  const noJsx = runCli(['bundle', '--typescript', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
-  t.assert.notEqual(noJsx.status, 0)
-  t.assert.match(noJsx.stderr, /unresolved import @\/a\/b from src\/x\/y\/z\.ts \(MODULE_NOT_FOUND; resolves to src\/a\/b\.tsx under --jsx\)/u)
-  t.assert.ok(!existsSync(outPath))
-
-  const r = runCli(['bundle', '--typescript', '--jsx', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
+  const r = runCli(['bundle', '--typescript', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a/b.tsx', 'src/x/y/z.ts'])
@@ -3354,14 +3349,14 @@ test('buildBundle threads jsx through to the scanner (programmatic API)', withTm
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['entry.js', 'x.js'])
 }))
 
-// --- .jsx/.tsx made carryable by --jsx -----------------------------------------------------
+// --- .jsx/.tsx parsed by extension, no --jsx -----------------------------------------------
 //
-// A React Native dependency's entry is often a .tsx/.jsx source file (react-native-safe-area-context
-// ships src/index.tsx). The scanner used to resolve that edge but never carry the file (.jsx/.tsx
-// weren't carryable extensions), failing with "which a source bundle can't carry". --jsx now makes
-// .jsx/.tsx carryable -- scanned, bundled, and (extensionless) probed by the --metro resolver. These
-// use the BUILT-IN field resolver (no metro-resolver install needed); metro-resolver.test.js covers
-// the same behaviour through the project's real metro-resolver.
+// oxc parses .jsx/.tsx as JSX/TSX from the filename alone, so they need no flag: a .jsx/.tsx entry,
+// or a React Native dependency whose entry is a .tsx/.jsx source file (react-native-safe-area-context
+// ships src/index.tsx), is scanned, bundled, and (extensionless) probed by the --metro resolver.
+// --jsx stays only for the .js family, whose extension can't tell. These use the BUILT-IN field
+// resolver (no metro-resolver install needed); metro-resolver.test.js covers the same behaviour
+// through the project's real metro-resolver.
 
 const writeTsxDep = (tmp, tsx) => {
   const dep = join(tmp, 'node_modules', 'tsx-dep', 'src')
@@ -3371,79 +3366,121 @@ const writeTsxDep = (tmp, tsx) => {
   writeFileSync(join(dep, 'index.tsx'), tsx)
 }
 
-test('CLI: bundle --metro carries a .tsx dependency only under --jsx (else fails closed, relative path)', withTmp((t, tmp) => {
-  // The entry is plain ESM (no JSX) so it parses with or without --jsx: the sole variable is the
-  // .tsx dependency, reachable always but carryable only under --jsx.
+test('CLI: bundle --metro carries a .tsx dependency without --jsx', withTmp((t, tmp) => {
   jsProject(tmp, { 'index.js': "import { SafeArea } from 'tsx-dep'\nexport const App = SafeArea\n" })
-  writeTsxDep(tmp, 'export const SafeArea = (): unknown => <View>hi</View>\n')
+  writeTsxDep(tmp, "import { inset } from './inset'\nexport const SafeArea = (): unknown => <View>{inset}</View>\n")
+  writeFileSync(join(tmp, 'node_modules', 'tsx-dep', 'src', 'inset.ts'), 'export const inset: number = 0\n')
   const outPath = join(tmp, 'out.br')
 
-  const noJsx = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.notEqual(noJsx.status, 0, 'a reached .tsx dependency must fail closed without --jsx')
-  t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
-  // Relativized message: project-relative parent + target, never the machine's absolute path.
-  t.assert.match(noJsx.stderr, /tsx-dep from index\.js resolves to node_modules\/tsx-dep\/src\/index\.tsx, which a source bundle can't carry without --jsx/)
-  // The absolute project path must not leak into the message (the stack trace names stasis' own
-  // source, but the scan-issue paths themselves must be project-relative).
-  t.assert.doesNotMatch(noJsx.stderr, new RegExp(tmp.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'), 'scan-issue paths must be project-relative, not absolute')
-  t.assert.ok(!existsSync(outPath))
-
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.doesNotMatch(r.stderr, /parse error/)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/tsx-dep/src/index.tsx'],
-    'the .tsx dependency must be scanned and carried under --jsx')
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/tsx-dep/src/index.tsx', 'node_modules/tsx-dep/src/inset.ts'],
+    'the .tsx dependency must be parsed past its JSX and carried')
   // Stored verbatim (untransformed) and tagged as a buildable code format.
-  t.assert.match(bundle.sources.get('node_modules/tsx-dep/src/index.tsx'), /<View>hi<\/View>/u)
+  t.assert.match(bundle.sources.get('node_modules/tsx-dep/src/index.tsx'), /<View>\{inset\}<\/View>/u)
   t.assert.equal(bundle.formats.get('node_modules/tsx-dep/src/index.tsx'), 'module')
 }))
 
-test('CLI: bundle --metro --jsx probes .tsx for an extensionless import (sourceExts)', withTmp((t, tmp) => {
-  // `import './Widget'` with only Widget.tsx on disk resolves only if the resolver probes .tsx --
-  // which --jsx adds to the metro/mainFields sourceExts. Without it the import is unresolved (fatal).
+test('CLI: bundle --metro names an un-carryable target by project-relative paths', withTmp((t, tmp) => {
+  jsProject(tmp, { 'index.js': "import addon from './addon.node'\nexport const App = addon\n", 'addon.node': 'binary' })
+  const outPath = join(tmp, 'out.br')
+  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /JS bundle would be broken at load time/)
+  t.assert.match(r.stderr, /\.\/addon\.node from index\.js resolves to addon\.node, which a source bundle can't carry/)
+  // The absolute project path must not leak into the message (the stack trace names stasis' own
+  // source, but the scan-issue paths themselves must be project-relative).
+  t.assert.doesNotMatch(r.stderr, new RegExp(tmp.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'), 'scan-issue paths must be project-relative, not absolute')
+  t.assert.ok(!existsSync(outPath))
+}))
+
+test('CLI: bundle --metro probes .tsx for an extensionless import without --jsx (sourceExts)', withTmp((t, tmp) => {
   jsProject(tmp, {
     'index.js': "import { W } from './Widget'\nexport const App = W\n",
     'Widget.tsx': 'export const W = (): unknown => <b>x</b>\n',
   })
   const outPath = join(tmp, 'out.br')
-
-  const noJsx = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.notEqual(noJsx.status, 0, 'without --jsx the resolver does not probe .tsx, so ./Widget is unresolved')
-  t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
-  // ...and names the .tsx file --jsx would resolve it to (the field resolver's --jsx twin).
-  t.assert.match(noJsx.stderr, /unresolved import \.\/Widget from index\.js \(MODULE_NOT_FOUND; resolves to Widget\.tsx under --jsx\)/)
-
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['Widget.tsx', 'index.js'],
     'the extensionless import must resolve to Widget.tsx and carry it')
 }))
 
-test('CLI: bundle (plain, no --metro) --jsx carries explicit .tsx AND .jsx imports via the Node resolver', withTmp((t, tmp) => {
-  // Exercises the DEFAULT (Node-resolver) scan branch, not the --metro custom resolver: an explicit
-  // `import './x.tsx'` / `import './y.jsx'` resolves to the exact file, and --jsx must carry both.
-  // Covers .jsx as well as .tsx (they share JSX_FILE_EXTS). The entry is plain ESM so it parses
-  // without --jsx, isolating the dependency extensions.
+test('CLI: bundle --metro probes in Metro\'s order: .js before .jsx, .jsx before .json', withTmp((t, tmp) => {
   jsProject(tmp, {
-    'index.js': "import { t } from './widget.tsx'\nimport { j } from './legacy.jsx'\nexport const App = [t, j]\n",
-    'widget.tsx': 'export const t = (): unknown => <View>t</View>\n',
-    'legacy.jsx': 'export const j = () => <View>j</View>\n',
+    'index.js': "import a from './a'\nimport b from './b'\nexport const App = [a, b]\n",
+    'a.js': 'export default 1\n',
+    'a.jsx': 'export default <i />\n',
+    'b.jsx': 'export default <i />\n',
+    'b.json': '{}\n',
   })
   const outPath = join(tmp, 'out.br')
-
-  const noJsx = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.notEqual(noJsx.status, 0, 'plain path must fail closed on reached .tsx/.jsx without --jsx')
-  t.assert.match(noJsx.stderr, /which a source bundle can't carry/)
-
-  const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'legacy.jsx', 'widget.tsx'],
-    'both the .tsx and .jsx dependency must be carried under --jsx on the plain path')
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['a.js', 'b.jsx', 'index.js'])
 }))
 
-test('CLI: bundle --jsx --flow strips Flow types from a .jsx dependency and walks its graph', withTmp((t, tmp) => {
+test('CLI: bundle (plain, no --metro) carries explicit .tsx AND .jsx imports via the Node resolver without --jsx', withTmp((t, tmp) => {
+  // Exercises the DEFAULT (Node-resolver) scan branch, not the --metro custom resolver: an explicit
+  // `import './x.tsx'` / `import './y.jsx'` resolves to the exact file, parsed past its JSX.
+  jsProject(tmp, {
+    'index.js': "import { t } from './widget.tsx'\nimport { j } from './legacy.jsx'\nexport const App = [t, j]\n",
+    'widget.tsx': "import { a } from './a.js'\nexport const t = (): unknown => <View>{a}</View>\n",
+    'legacy.jsx': "import { b } from './b.js'\nexport const j = () => <View>{b}</View>\n",
+    'a.js': 'export const a = 1\n',
+    'b.js': 'export const b = 2\n',
+  })
+  const outPath = join(tmp, 'out.br')
+  const r = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.doesNotMatch(r.stderr, /parse error/)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['a.js', 'b.js', 'index.js', 'legacy.jsx', 'widget.tsx'],
+    'both the .tsx and .jsx dependency, and the edges behind their JSX, must be carried')
+}))
+
+test('CLI: bundle takes .jsx and .tsx entries without --jsx', withTmp((t, tmp) => {
+  jsProject(tmp, {
+    'App.jsx': "import { Row } from './Row.tsx'\nexport const App = () => <Row />\n",
+    'Row.tsx': "import { gap } from './gap.ts'\nexport const Row = (): unknown => <View style={{ gap }} />\n",
+    'gap.ts': 'export const gap: number = 4\n',
+  })
+  const outPath = join(tmp, 'out.br')
+  for (const [entry, files] of [['App.jsx', ['App.jsx', 'Row.tsx', 'gap.ts']], ['Row.tsx', ['Row.tsx', 'gap.ts']]]) {
+    const r = runCli(['bundle', `--output=${outPath}`, entry], { cwd: tmp })
+    t.assert.equal(r.status, 0, `${entry} stderr: ${r.stderr}`)
+    t.assert.doesNotMatch(r.stderr, /parse error/)
+    const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), files)
+  }
+}))
+
+test('CLI: bundle still needs --jsx for JSX in a .js file a .jsx file imports', withTmp((t, tmp) => {
+  // .jsx parses by extension; that never carries over to the .js it imports, whose name can't tell.
+  jsProject(tmp, {
+    'App.jsx': "import { Row } from './Row.js'\nexport const App = () => <Row />\n",
+    'Row.js': "import { gap } from './gap.js'\nexport const Row = () => <View style={{ gap }} />\n",
+    'gap.js': 'export const gap = 4\n',
+  })
+  const outPath = join(tmp, 'out.br')
+  const noJsx = runCli(['bundle', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
+  t.assert.notEqual(noJsx.status, 0, 'JSX in a .js file must fail closed without --jsx')
+  t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
+  t.assert.match(noJsx.stderr, /parse error in Row\.js/)
+  t.assert.doesNotMatch(noJsx.stderr, /parse error in App\.jsx/)
+  t.assert.ok(!existsSync(outPath))
+
+  const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['App.jsx', 'Row.js', 'gap.js'])
+}))
+
+test('CLI: bundle --flow strips Flow types from a .jsx dependency and walks its graph', withTmp((t, tmp) => {
   // .jsx is JS + JSX and can carry Flow types (like .js); --flow must strip them so the scanner
   // parses past to the import graph, while .tsx (TypeScript) is left to oxc. Without --flow the
   // Flow-typed .jsx fails closed; the on-disk source is stored verbatim (only the parse input is
@@ -3455,11 +3492,11 @@ test('CLI: bundle --jsx --flow strips Flow types from a .jsx dependency and walk
   })
   const outPath = join(tmp, 'out.br')
 
-  const noFlow = runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.notEqual(noFlow.status, 0, 'a Flow-typed .jsx must fail closed under --jsx without --flow')
+  const noFlow = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.notEqual(noFlow.status, 0, 'a Flow-typed .jsx must fail closed without --flow')
   t.assert.match(noFlow.stderr, /JS bundle would be broken at load time/)
 
-  const r = runCli(['bundle', '--jsx', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = runCli(['bundle', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'dep.js', 'index.js'],
@@ -4462,7 +4499,7 @@ test('buildBundle rejects an empty entry list', async (t) => {
 test('buildBundle rejects mixed-language entries', async (t) => {
   await t.assert.rejects(
     () => buildBundle({ cwd: fixtures, entries: ['a.sol', 'b.js'] }),
-    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts, all be \.sh\/\.bash, or all be \.rs/,
+    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts\/\.jsx\/\.tsx, all be \.sh\/\.bash, or all be \.rs/,
   )
 })
 

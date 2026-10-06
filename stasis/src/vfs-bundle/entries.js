@@ -9,7 +9,7 @@ import { foundrySourceDir } from '../loaders/foundry.js'
 import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
 import { checkKind, checkVersion, packageManagerOf, vfsHost } from './tree.js'
 
-const JS = /\.[cm]?[jt]s$/u
+const JS = /\.(?:[cm]?[jt]s|[jt]sx)$/u
 // Node's own conditions for require() and for import, which the build's are added to.
 const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['import', 'node', 'node-addons', 'module-sync']]
 
@@ -21,7 +21,7 @@ const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['im
 // fields, else index); each subpath `exports` holds (but a pattern), as the package's name resolves
 // for require() and for import, with the conditions the build adds (the RN ones under `metro`); and
 // each `bin`. Only JS files in `dir` that are there, named from within it; none without a package.json.
-function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], jsx = false, typescript = false } = {}) {
+function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], typescript = false } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
   const pkg = readJson(manifest, host)
@@ -32,7 +32,7 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
     if (rel !== '' && !relativeEscapes(rel) && JS.test(rel)) found.add(rel)
   }
   const passes = metro || mainFields !== undefined
-    ? (metro ? platforms : [null]).map((platform) => fieldResolverFor(platform, { mainFields, metro, conditions, jsx, typescript, host }))
+    ? (metro ? platforms : [null]).map((platform) => fieldResolverFor(platform, { mainFields, metro, conditions, typescript, host }))
     : [{ extras: conditions, mainFields: ['main'] }]
   // Node's resolution of `specifier`, else under `typescript` the miss `mapped` as tsc maps it; a
   // real path either way, or undefined.
@@ -49,7 +49,7 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
     const entry = fields.map((name) => pkg[name]).find((value) => typeof value === 'string' && value !== '')
     if (entry !== undefined && posixPathEscapes(entry)) continue
     if (resolver === undefined) {
-      add(viaNode('./', NODE_CONDITIONS[0], extras, (set) => resolveTypescriptFallback(manifest, './', { conditions: set, tsx: jsx, host })))
+      add(viaNode('./', NODE_CONDITIONS[0], extras, (set) => resolveTypescriptFallback(manifest, './', { conditions: set, host })))
     } else {
       // A real path, as Node's resolution gives and the scan takes.
       const hit = resolver(manifest, './')
@@ -63,7 +63,7 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
     if (!subpath.startsWith('.') || subpath.includes('*') || subpath.endsWith('/')) continue
     const specifier = subpath === '.' ? name : `${name}${subpath.slice(1)}`
     for (const { extras } of passes) {
-      for (const names of NODE_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, tsx: jsx, host })))
+      for (const names of NODE_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, host })))
     }
   }
   const bins = typeof pkg.bin === 'string' ? [pkg.bin] : pkg.bin !== null && typeof pkg.bin === 'object' ? Object.values(pkg.bin) : []

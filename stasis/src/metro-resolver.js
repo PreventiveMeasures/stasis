@@ -64,7 +64,7 @@ function getPackageForModule(absModulePath) {
 export function createMetroResolver({
   projectDir,
   platform,
-  sourceExts = ['js', 'json', 'ts'],
+  sourceExts = ['js', 'jsx', 'json', 'ts', 'tsx'],
   mainFields = ['react-native', 'browser', 'main'],
   conditionNames = ['react-native'],
   conditionsByPlatform = { web: ['browser'] },

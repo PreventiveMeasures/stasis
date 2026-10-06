@@ -273,11 +273,9 @@ test('locatePackage matches the node_modules segment exactly, not a *-node_modul
 
 // --- TypeScript extension substitution (`typescript: true` / --typescript). ---
 
-test('typescriptSiblings maps JS output extensions to their TS sources (tsx only when probeable)', (t) => {
-  t.assert.deepStrictEqual(typescriptSiblings('./x.js'), ['./x.ts'])
-  t.assert.deepStrictEqual(typescriptSiblings('./x.js', { tsx: true }), ['./x.ts', './x.tsx'])
-  t.assert.deepStrictEqual(typescriptSiblings('./x.jsx'), [])
-  t.assert.deepStrictEqual(typescriptSiblings('./x.jsx', { tsx: true }), ['./x.tsx'])
+test('typescriptSiblings maps JS output extensions to their TS sources', (t) => {
+  t.assert.deepStrictEqual(typescriptSiblings('./x.js'), ['./x.ts', './x.tsx'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.jsx'), ['./x.tsx'])
   t.assert.deepStrictEqual(typescriptSiblings('./x.mjs'), ['./x.mts'])
   t.assert.deepStrictEqual(typescriptSiblings('./x.cjs'), ['./x.cts'])
   // Not substitutable: extensionless, already-TS, .json, unknown extensions.
@@ -289,7 +287,7 @@ test('typescriptSiblings maps JS output extensions to their TS sources (tsx only
   t.assert.deepStrictEqual(typescriptSiblings('./.js'), [])
   // A candidate spelling a type declaration IS returned -- every probe site refuses declarations
   // (the screen lives at probe time, once), pinned by the "never lands on a type declaration" tests.
-  t.assert.deepStrictEqual(typescriptSiblings('./x.d.js'), ['./x.d.ts'])
+  t.assert.deepStrictEqual(typescriptSiblings('./x.d.js'), ['./x.d.ts', './x.d.tsx'])
 })
 
 test('typescript: a missing x.js resolves to its x.ts sibling; an existing x.js wins', withTsTmp((t, tmp) => {

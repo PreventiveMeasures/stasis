@@ -174,10 +174,10 @@ function resolveSourceFile(base, opts) {
   // source siblings once the literal file (the bare probe above) is absent, so the on-disk `.js`
   // always wins over its `.ts` twin. Literal siblings only -- no platform suffixes (tsc has none);
   // extensionless bases keep going through the appended-extension loop below (sourceExts carries
-  // ts, and tsx under --jsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
+  // ts and tsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
   // `x.js.<ext>`, matching tsc's candidate order.
   if (opts.typescript) {
-    for (const cand of typescriptSiblings(base, { tsx: opts.sourceExts.includes('tsx') })) {
+    for (const cand of typescriptSiblings(base)) {
       const hit = probePath(cand, true)
       if (hit) return hit
     }
@@ -229,7 +229,7 @@ export function createFieldResolver({
   mainFields = ['main'],
   platform = null,
   preferNative = false,
-  sourceExts = ['js', 'json', 'ts'],
+  sourceExts = ['js', 'jsx', 'json', 'ts', 'tsx'],
   metro = false,
   typescript = false,
   typescriptPaths = null,
@@ -308,7 +308,6 @@ export function createFieldResolver({
     if (resolved) return resolved
     const hit = resolveTypescriptFallback(parentFile, specifier, {
       conditions: new Set(callConditions ?? conditions),
-      tsx: sourceExts.includes('tsx'),
       paths: typescriptPaths,
       host,
     })
