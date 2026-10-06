@@ -83,6 +83,14 @@ export const mergeRepo = (a, b) => {
   return fromEntries(kept.map((key) => [key, a[key]]))
 }
 
+// A parsed header `repo`, an older stasis's `root: true` read as unknown: it recorded one from a
+// package.json's claim as well as from a git work tree.
+const parsedRepo = (repo) => {
+  if (!isPlainObject(repo) || repo.root !== true || Object.hasOwn(repo, 'directory')) return repo
+  const { root: _root, ...rest } = repo
+  return rest
+}
+
 // A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
 const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
 const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
@@ -251,7 +259,7 @@ export class Bundle {
         ? parseExecutable(json.executable, { what: 'bundle', files: flatKeys, formats, scope: json.config.scope })
         : new Set(),
       reason: isPlainObject(json.reason) ? json.reason : undefined,
-      repo: json.repo,
+      repo: parsedRepo(json.repo),
       package: json.package,
     })
   }

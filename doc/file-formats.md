@@ -139,11 +139,11 @@ attested.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
   a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
   the fields and checks of the bundle's own `repo` (see `repo` under
-  `stasis.code.br`) but `root`. `root: true` is authoritative, so only a build's
-  own `repo` holds it, from the source layout the build reads; a dependency whose
-  manifest names no directory (or `./`) sits at an unknown place in its
-  repository. Builds record one for an npm package, read off its `package.json`
-  by the rules the bundle's own `repo` takes from one: `repository` alone names
+  `stasis.code.br`), but never `"directory": ""`: only a layout a build reads,
+  its own, places code at the repository's root. A dependency whose manifest
+  names no directory (or `./`) sits at an unknown place in its repository and
+  records no `directory`. Builds record one for an npm package, read off its
+  `package.json` by the rules the bundle's own `repo` takes from one: `repository` alone names
   the repository (`bugs` and `homepage` are often its old name), and
   `repository.directory`, else a GitHub tree `homepage` of it, the directory.
   First-party buckets carry none. It is the dependency's, changing only with it,
@@ -266,15 +266,14 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   - `github` must be a valid GitHub `owner/name`. The owner is 1–39 alphanumerics
     or single inner hyphens. The name is 1–100 characters of `[A-Za-z0-9._-]` and
     can't be `.` or `..`.
-  - `directory` must be a non-empty string: the bundle root's repo-relative POSIX
-    path, at most 1024 characters. It must be safe to use
+  - `directory` must be a string: the bundle root's repo-relative POSIX path, at
+    most 1024 characters, with `""` meaning the repository root. Any other value
+    must be safe to use
     unencoded in a GitHub URL (`https://github.com/<github>/tree/<ref>/<directory>`):
     `/`-separated segments of `[A-Za-z0-9._~@+-]`, none empty, `.` or `..`. So it
     is normalized, never absolute and never escapes the repository, and has no
-    backslash, drive prefix, space, `%`, `#`, `?` or `:`.
-  - `root` must be `true`: the bundle root is the repository root. It replaces
-    `directory` there (the two are exclusive), so a missing `directory` means
-    "unknown", never "the root".
+    backslash, drive prefix, space, `%`, `#`, `?` or `:`. A missing `directory`
+    means "unknown", never "the root".
   - `commit` must be a full lowercase git object id (a 40-hex SHA-1 or a 64-hex
     SHA-256).
 
@@ -285,18 +284,16 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   existing bundle (`stasis add`, `stasis bundle --add`, `stasis run` with
   `bundle = add`) never overwrites its `repo`: only the fields that agree between
   the existing bundle and the new build survive, and none if `github` differs or
-  the new build has none.
-  `root` follows the same rule as `directory`. For example, the same repository
-  and directory at a different commit keeps `github` and `directory` and drops
-  `commit`.
+  the new build has none. For example, the same repository and directory at a
+  different commit keeps `github` and `directory` and drops `commit`.
 
   Bundles written by `stasis run` (and the bundler plugins), `stasis bundle`, and
   `stasis add` fill in `repo` automatically, from git first:
   1. **Git:** the nearest work tree root (a directory holding `.git`) at or above
      the bundle root. `github` comes from the `[remote "origin"]` url in
      `.git/config`, `directory` from the bundle root's path below the work tree
-     root, and `commit` from `HEAD` (a detached sha, or the branch's loose ref or
-     `packed-refs` entry). stasis only reads files under `.git` and never runs git.
+     root (`""` at the work tree root), and `commit` from `HEAD` (a detached sha,
+     or the branch's loose ref or `packed-refs` entry). stasis only reads files under `.git` and never runs git.
   2. **package.json:** if git yields no GitHub origin, the nearest `package.json`
      at or above the bundle root that declares a `repository`, up to the work tree
      root. `github` comes from its GitHub URL or `github:`/`owner/name` shorthand
@@ -306,13 +303,18 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
      path below that `package.json`. When `repository.directory` is unset, a GitHub
      `homepage` of the same repository such as
      `https://github.com/owner/name/tree/main/packages/app#readme` supplies it
-     (`packages/app`; the branch is taken as one path segment). No `commit` is recorded. A `package.json`
-     naming a non-GitHub repository records nothing.
+     (`packages/app`; the branch is taken as one path segment). With neither, the
+     directory is unknown and none is recorded; nor is one where they come to the
+     repository root (`./`), as `""` is recorded only from a layout stasis reads.
+     No `commit` is recorded. A `package.json` naming a non-GitHub repository
+     records nothing.
 
-  At the repository root, detection records `root: true` rather than a
-  `directory`. A detected value that the rules above would reject is left out
+  A `stasis github-bundle` build records the fetched tree's own layout, `""` at
+  its root. A detected value that the rules above would reject is left out
   instead of failing the write; a directory that isn't URL-safe therefore records
-  neither `directory` nor `root`. In a split layout (`resourcesBundleFile`), each half
+  no `directory`. A bundle from an older stasis may hold `"root": true` in place of
+  `"directory": ""`; since it recorded one from a `package.json` too, parse reads
+  it as unknown and drops it. In a split layout (`resourcesBundleFile`), each half
   records the origin of its own contents: a fresh write gives both the detected
   `repo`, and adding to one half merges only that half's.
 - `package` (optional, right after `repo`) records which package the bundle is:

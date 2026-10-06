@@ -185,9 +185,9 @@ export async function buildGitHubBundle({ github, sha, tag, directory, client, p
   }
   const repo = { github, commit: tree.sha }
   const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo, client })
-  // The Vfs is the repo's tree, or the subtree at `directory`.
-  const at = posix.join(tree.subtree ? directory : '.', posix.relative('/', built.root))
-  built.bundle.repo = { ...repo, ...(at === '.' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}) }
+  // The Vfs is the repo's tree, or the subtree at `directory`: a layout known, so its root is `''`.
+  const at = posix.join(tree.subtree ? directory : '.', posix.relative('/', built.root)).replace(/^\.$/u, '')
+  built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) ? { directory: at } : {}) }
   return built
 }
 

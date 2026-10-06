@@ -12,7 +12,7 @@ import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
 import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, reposAgree, sameRepo, sortPaths, splitNodeModulesPath } from './util.js'
-import { dependencyRepo, detectRepo, packageJSONStat, packageJSONText, readModuleManifest } from './bundle-util.js'
+import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -744,7 +744,7 @@ export class State {
       pkgAbsolute = resolve(this.root, nmRoot, 'package.json')
       const rootPkg = pkgAbsolute === closestPkgAbsolute ? closestPkg : readPackageJSON(this.#host, pkgAbsolute)
       ;({ name, version } = rootPkg)
-      repo = dependencyRepo(rootPkg)
+      repo = packageRepo(rootPkg)
       assert.ok(name, `Missing name in ${this.relative(pkgAbsolute)}`)
       assert.ok(version, `Missing version in ${this.relative(pkgAbsolute)}`)
       if (closestPkgAbsolute !== pkgAbsolute && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {

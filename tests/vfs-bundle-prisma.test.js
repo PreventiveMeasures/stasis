@@ -252,5 +252,5 @@ test('github-bundle --generate=prisma bundles the clients of the repo it fetches
   await githubBundleCommand({ cwd: tmp, github: 'ExodusOSS/example', sha: 'a'.repeat(40), directory: 'packages/a', packageManager: 'pnpm', client, entries: ['index.ts'], generate: ['prisma'], output: 'out.br' })
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'out.br'))).toString('utf8'))
   t.assert.ok(bundle.sources.has(`${CLIENT}/internal/class.ts`))
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: 'ExodusOSS/example', root: true, commit: 'a'.repeat(40) })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: 'ExodusOSS/example', directory: '', commit: 'a'.repeat(40) })
 })

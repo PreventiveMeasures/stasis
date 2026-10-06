@@ -1264,7 +1264,7 @@ export function checkVfsOptions(name, options) {
 // would install, or its Solidity options, through the dependencies folder 'soldeer' would install; with
 // nothing read from disk but tarballs and zips, nor from the environment: a Solidity bundle is
 // built with foundry.toml's default profile, whatever FOUNDRY_PROFILE or remappings one sets, and no
-// EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory | root, commit }`,
+// EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built

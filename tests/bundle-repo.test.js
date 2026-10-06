@@ -19,12 +19,19 @@ test('Bundle round-trips repo right after config, in canonical key order', (t) =
   t.assert.deepStrictEqual(Object.keys(json).slice(0, 3), ['version', 'config', 'repo'])
   t.assert.deepStrictEqual(Object.keys(json.repo), ['github', 'directory', 'commit'])
   t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).repo }, { github: 'ExodusOSS/stasis', directory: 'packages/app', commit: SHA1 })
-  t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON({ github: 'o/n', root: true, commit: SHA256 })).repo },
-    { github: 'o/n', root: true, commit: SHA256 })
+  t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON({ github: 'o/n', directory: '', commit: SHA256 })).repo },
+    { github: 'o/n', directory: '', commit: SHA256 }, "`directory: ''`: the repository's root")
+})
+
+test("Bundle reads an older stasis's `root: true` as unknown, and never writes one", (t) => {
+  t.assert.deepStrictEqual({ ...Bundle.parse(withRepoJSON({ github: 'o/n', root: true, commit: SHA1 })).repo }, { github: 'o/n', commit: SHA1 },
+    'it was recorded from a package.json too: not the root')
+  t.assert.equal(Bundle.parse(withRepoJSON({ root: true })).repo, undefined, 'nothing else: no repo')
+  t.assert.throws(() => base({ github: 'o/n', root: true }), /unknown bundle repo key 'root'/u)
 })
 
 test('Bundle accepts URL-safe repo directories', (t) => {
-  for (const directory of ['a', 'packages/@scope/pkg-1.0_x', 'a/b~c/d+e', '.github/workflows', '..a/b..', 'x'.repeat(1024)]) {
+  for (const directory of ['', 'a', 'packages/@scope/pkg-1.0_x', 'a/b~c/d+e', '.github/workflows', '..a/b..', 'x'.repeat(1024)]) {
     t.assert.equal(Bundle.parse(withRepoJSON({ directory })).repo.directory, directory)
   }
 })
@@ -75,7 +82,6 @@ test('Bundle rejects an invalid repo block on parse and on construction', (t) =>
     { directory: 'c:' },
     { directory: '\\\\server\\share' },
     { directory: 'with space' },
-    { directory: '' },
     { root: false },
     { root: 'yes' },
     { directory: 'a', root: true },
@@ -114,7 +120,7 @@ test('Bundle carries repo through withReason, and merge keeps only agreeing fiel
     'another dir: only the directory is dropped')
   t.assert.deepStrictEqual({ ...stamped.merge(base({ github: 'o/n' })).repo }, { github: 'o/n' }, 'a field one side lacks is dropped')
   t.assert.equal(stamped.merge(base({ ...full, github: 'o/other' })).repo, undefined, 'another repo: reset')
-  const atRoot = { github: 'o/n', root: true, commit: SHA1 }
+  const atRoot = { github: 'o/n', directory: '', commit: SHA1 }
   t.assert.deepStrictEqual({ ...base(atRoot).merge(base(atRoot)).repo }, atRoot, 'root agreeing: kept')
   t.assert.deepStrictEqual({ ...base(atRoot).merge(base(full)).repo }, { github: 'o/n', commit: SHA1 },
     'root vs a directory: both dropped, like disagreeing directories')

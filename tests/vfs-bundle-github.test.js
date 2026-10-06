@@ -33,7 +33,7 @@ test('buildGitHubBundle builds a repo at a commit and stamps `repo` itself', asy
   const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   const { bundle, lockfile: lock } = await build({ client, entries: ['src/a.js'] })
   t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
   t.assert.doesNotMatch(lock.serialize(), /ExodusOSS/u)
   t.assert.deepStrictEqual(client.calls, [['getRepoTarball', GITHUB, SHA]])
 })
@@ -41,7 +41,7 @@ test('buildGitHubBundle builds a repo at a commit and stamps `repo` itself', asy
 test("buildGitHubBundle builds the default branch's head without a commit", async (t) => {
   const client = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' })
   const { bundle } = await build({ client, sha: undefined, entries: ['src/a.js'] })
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: HEAD })
   t.assert.deepStrictEqual(client.calls, [['getRepoHead', GITHUB, undefined], ['getRepoTarball', GITHUB, HEAD]])
 })
 
@@ -64,7 +64,7 @@ test('buildGitHubBundle builds the commit a tag names', async (t) => {
   const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': 'module.exports = 1\n' }
   const client = fakeClient(files, { tags: { 'v1.0.0': TAGGED } })
   const { bundle } = await build({ client, sha: undefined, tag: 'v1.0.0', entries: ['src/a.js'] })
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: TAGGED })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: TAGGED })
   t.assert.deepStrictEqual(client.calls, [['getRepoTag', GITHUB, 'v1.0.0'], ['getRepoTarball', GITHUB, TAGGED]])
   // A tag GitHub has no commit for is refused there, before the tree is fetched.
   const none = fakeClient(files)
@@ -462,11 +462,11 @@ test('buildGitHubBundle roots a JS bundle at the innermost package around the di
   // Files outside it, a sibling package's and the root's, root it at the project's root.
   const out = await build({ client: fakeClient(files), directory: 'packages/p', entries: ['src/out.js'] })
   t.assert.deepStrictEqual([...out.bundle.sources.keys()].toSorted(), ['packages/p/src/out.js', 'packages/q/index.js', 'shared.js'])
-  t.assert.deepStrictEqual({ ...out.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual({ ...out.bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
   // A stasis file at the project's root is its own choice of root, which the build keeps.
   const configured = await build({ client: fakeClient({ ...files, 'stasis.config.json': '{}\n' }), directory: 'packages/p', entries: ['src/a.js'] })
   t.assert.deepStrictEqual([...configured.bundle.sources.keys()], ['packages/p/src/a.js', 'packages/p/src/b.js'])
-  t.assert.deepStrictEqual({ ...configured.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual({ ...configured.bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
   // An npm workspace's member likewise, which reaches a sibling package through its link.
   const npm = {
     'package.json': json({ name: 'root', version: '1.0.0', private: true, workspaces: ['packages/*'] }),
@@ -479,7 +479,7 @@ test('buildGitHubBundle roots a JS bundle at the innermost package around the di
   t.assert.deepStrictEqual({ ...alone.bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
   const sibling = await build({ client: fakeClient(npm), packageManager: 'npm', directory: 'packages/p', entries: ['src/sibling.js'] })
   t.assert.deepStrictEqual([...sibling.bundle.sources.keys()], ['packages/p/src/sibling.js', 'packages/q/index.js'])
-  t.assert.deepStrictEqual({ ...sibling.bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual({ ...sibling.bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
   // The field resolver's and the Solidity bundles are of the directory, which `repo` names.
   const resolved = await build({ client: fakeClient(files), directory: 'packages/p', entries: ['src/a.js'], mainFields: ['main'] })
   t.assert.deepStrictEqual([...resolved.bundle.sources.keys()], ['src/a.js', 'src/b.js'])
@@ -757,9 +757,9 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.equal(watching, true, 'the watch on node:fs sees reads')
   t.assert.deepStrictEqual(read, [], 'nothing on disk is read')
   t.assert.deepStrictEqual(built.typescript.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/entry.ts', 'packages/p/index.js', 'packages/p/other.js', 'packages/p/package.json', 'packages/p/util.ts'], 'the link, the symlink and tsc\'s mapping resolve in the Vfs')
-  t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/node_modules/p/index.js', 'packages/app/node_modules/p/package.json', 'packages/app/package.json', 'packages/app/src/main.js'], 'the tree is read in place')
-  t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, root: true, commit: SHA })
+  t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(built.defaults.sources, ['index.js'], "the entries the package.json names, in the directory")
   t.assert.deepStrictEqual(built.defaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
   t.assert.deepStrictEqual(built.metroDefaults.sources, ['index.js'], 'as the field resolver resolves them, from the directory')
@@ -774,7 +774,7 @@ test('stasis github-bundle writes the bundle and lockfile of the repo at the com
     await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out/b.br', lockfile: 'out/b.lock.json' })
     const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'out', 'b.br'))).toString('utf8'))
     t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
-    t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA })
+    t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
     t.assert.deepStrictEqual([...Lockfile.parse(await readFile(join(tmp, 'out', 'b.lock.json'), 'utf8')).entries], ['src/a.js'])
     // A Solidity bundle has no lockfile, which is said before anything is fetched.
     const none = fakeClient({})
@@ -800,7 +800,7 @@ test('stasis github-bundle names its output after the repo and commit by default
   await githubBundleCommand({ cwd: tmp, github: GITHUB, packageManager: 'pnpm', client, entries: ['src/a.js'] })
   t.assert.deepStrictEqual(await readdir(tmp), ['ExodusOSS-example.bbbbbbb.stasis.code.br'], 'of the commit built: the head, where none is asked for')
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.bbbbbbb.stasis.code.br'))).toString('utf8'))
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: HEAD })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: HEAD })
   t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.bbbbbbb\.stasis\.code\.br$/u)
   // Whatever the repo is called, the name is of [A-Za-z0-9._-] alone.
   t.assert.equal(githubBundleFile({ github: GITHUB, commit: SHA }), 'ExodusOSS-example.aaaaaaa.stasis.code.br')
@@ -839,7 +839,7 @@ test('stasis github-bundle names the output of a directory after it, wherever th
   await githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, directory: 'packages/app', packageManager: 'pnpm', client, entries: ['src/a.js'] })
   t.assert.deepStrictEqual(await readdir(tmp), ['ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'])
   const bundle = Bundle.parse(brotliDecompressSync(await readFile(join(tmp, 'ExodusOSS-example.packages-app.aaaaaaa.stasis.code.br'))).toString('utf8'))
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, root: true, commit: SHA }, 'of a file outside the directory')
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: SHA }, 'of a file outside the directory')
   t.assert.match(warn.mock.calls.at(-1).arguments[0], / to ExodusOSS-example\.packages-app\.aaaaaaa\.stasis\.code\.br$/u)
 })
 

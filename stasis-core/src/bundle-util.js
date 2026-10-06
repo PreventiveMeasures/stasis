@@ -25,14 +25,14 @@ export function packageType(file, host = diskHost) {
 // at the root). Inside node_modules both name and version are required; a workspace package
 // outside node_modules may omit version (the name alone claims the bucket, matching
 // State#locateModule), and a node_modules one's `ecosystem` (npm) and `repo`, where its `repository`
-// names a GitHub one (dependencyRepo). Null if none. A malformed one is walked past, or with `strict` throws
+// names a GitHub one (packageRepo). Null if none. A malformed one is walked past, or with `strict` throws
 // (its files would otherwise land in the parent package); `check`, `host`: see readPackageJson.
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const pkg = readPackageJson(baseDir, toPosix(join(dir, 'package.json')), { strict, check, host })
     const inNodeModules = hasNodeModulesSegment(toPosix(dir))
     if (pkg?.name && (pkg.version || !inNodeModules)) {
-      const repo = inNodeModules ? dependencyRepo(pkg) : undefined
+      const repo = inNodeModules ? packageRepo(pkg) : undefined
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }) }
     }
@@ -199,13 +199,17 @@ export function githubHomepageDirectory(homepage, github) {
   }
 }
 
-// `base` joined with `rel` as `{ root: true }`, `{ directory }`, or `{}` if not a valid `directory`.
-// `base` is a package.json's `repository.directory`, which Windows users write with `\`: metadata, not
-// a name on disk, so its `\` is taken for a separator.
-const repoLocation = (base, rel) => {
-  const directory = posix.join(typeof base === 'string' ? base.replaceAll('\\', '/') : '', rel).replace(/^\/+|\/+$/gu, '')
-  if (directory === '' || directory === '.') return { root: true } // `./`, `a/../`, trailing slashes
-  return isValidRepoField('directory', directory) ? { directory } : {}
+// `{ directory }` where it is a valid one, else `{}`.
+const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
+
+// A package.json's declared `base` (its `repository.directory`) joined with `rel` as a `repoLocation`;
+// `{}` where none is declared (unknown, not the root), or where it comes to the root: `directory: ''`
+// is recorded from a layout read (detectRepo's git step), never a manifest's claim. Windows users
+// write `base` with `\`: metadata, not a name on disk, so its `\` is taken for a separator.
+const declaredLocation = (base, rel) => {
+  if (typeof base !== 'string') return {}
+  const directory = posix.join(base.replaceAll('\\', '/'), rel).replace(/^\/+|\/+$/gu, '')
+  return directory === '' || directory === '.' ? {} : repoLocation(directory) // `/`, `./`, `a/../`
 }
 
 // Git and common dirs, following a worktree/submodule `.git` file.
@@ -238,24 +242,18 @@ function repositoryUrl(json) {
 }
 
 // The `repo` a parsed package.json's `repository` names for `rel`, a directory below it ('' for its
-// own): `github` from its GitHub URL or shorthand, and `directory` (or `root: true`) from
-// `repository.directory` joined with `rel`; undefined where it names no GitHub repository.
+// own): `github` from its GitHub URL or shorthand, and `directory` from `repository.directory` joined
+// with `rel` (declaredLocation); undefined where it names no GitHub repository.
 export function packageRepo(json, rel = '') {
   const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
   // Often unset; fall back to a GitHub tree `homepage`.
   const base = typeof json.repository.directory === 'string' ? json.repository.directory : githubHomepageDirectory(json.homepage, github)
-  return { github, ...repoLocation(base, rel) }
+  return { github, ...declaredLocation(base, rel) }
 }
 
-// A dependency's `repo`, as its own package.json names it (packageRepo), but never `root: true`: a
-// build knows where it sits in a repository only for the source layout it builds from, its own.
-export function dependencyRepo(json) {
-  const repo = packageRepo(json)
-  return repo?.root ? { github: repo.github } : repo
-}
-
-// Bundle `repo` for `dir`: git origin/HEAD at the work tree root, else nearest package.json `repository`.
+// Bundle `repo` for `dir`: git origin/HEAD at the work tree root, with `dir`'s place in it (`''` at
+// the root), else nearest package.json `repository` (packageRepo).
 export function detectRepo(dir, host = diskHost) {
   const start = resolve(dir)
   let pkg = null // null: no package.json `repository` seen yet; undefined: one seen, not GitHub
@@ -269,7 +267,7 @@ export function detectRepo(dir, host = diskHost) {
     if (host.stat(dotGit) !== null) {
       const dirs = gitDirs(dotGit, host)
       const github = parseGithubRepository(gitOriginUrl(readText(host, join(dirs.commonDir, 'config'))))
-      if (github) return stripUndefined({ github, ...repoLocation('', rel), commit: gitHeadCommit(dirs, host) })
+      if (github) return stripUndefined({ github, ...repoLocation(rel), commit: gitHeadCommit(dirs, host) })
       return pkg ?? undefined
     }
     if (dirname(cursor) === cursor) return pkg ?? undefined

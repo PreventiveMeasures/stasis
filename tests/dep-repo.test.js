@@ -8,7 +8,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
-import { dependencyRepo, findPackageMetadata, packageRepo } from '@exodus/stasis-core/bundle-util'
+import { findPackageMetadata, packageRepo } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
@@ -46,13 +46,14 @@ function capture(dir, options) {
   return state
 }
 
-test('a dependency repo is read as a build reads its own, but never says root: only a build knows that of its own source layout', withTmp((t, dir) => {
-  t.assert.deepStrictEqual(dependencyRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
-  t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: './' } }), { github: 'o/n' }, 'the root named: still none')
-  t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
-  t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n', root: true }, "a build's own still does")
+test('a dependency repo is read as a build reads its own, which a manifest never places at the root: only a git layout does', withTmp((t, dir) => {
+  t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
+  for (const directory of ['./', '.', '', '/', 'a/../']) {
+    t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n' }, `${JSON.stringify(directory)}: the root named, still none`)
+  }
+  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
   for (const pkg of [{}, { repository: 'https://gitlab.com/o/n' }, { bugs: 'https://github.com/o/n/issues' }, { homepage: 'https://github.com/o/n' }, null]) {
-    t.assert.equal(dependencyRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)
+    t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)
   }
   writeProject(dir, { repository: 'github:o/dep' })
   t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'),
@@ -72,7 +73,7 @@ test('a dependency record carries repo after ecosystem, in a bundle and in a loc
 
 test('a dependency repo is validated as a bundle repo is, on parse and on serialize, and only a dependency carries one', (t) => {
   for (const [what, Artifact, of] of [['bundle', Bundle, bundleOf], ['lockfile', Lockfile, lockOf]]) {
-    for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', root: true }, 'o/n']) {
+    for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', directory: '' }, { github: 'o/n', root: true }, 'o/n']) {
       const json = JSON.parse(of({ 'node_modules/dep': dep() }).serialize())
       json.modules['node_modules/dep'].repo = repo
       t.assert.throws(() => Artifact.parse(JSON.stringify(json)), new RegExp(`${what} module 'node_modules/dep' repo`, 'u'), `${what} parse: ${JSON.stringify(repo)}`)
