@@ -95,11 +95,15 @@ export const normalizeRepo = (repo, what = 'bundle repo') => {
 }
 
 // A dependency's `repo`, the one its own manifest names: any dependency's record may carry one (one
-// tagged with an ecosystem, or under node_modules, as one from before the tag is), first-party code's none.
+// tagged with an ecosystem, or under node_modules, as one from before the tag is), first-party code's
+// none. `root: true` is authoritative, so it is a build's own alone: only the source layout it builds
+// from tells it, never a dependency's manifest.
 const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   if (repo === undefined) return undefined
   assert(ecosystem !== undefined || hasNodeModulesSegment(dir), `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
-  return normalizeRepo(repo, `${what} module '${dir}' repo`)
+  const normalized = normalizeRepo(repo, `${what} module '${dir}' repo`)
+  assert(normalized?.root === undefined, `${what} module '${dir}' repo: root is a build's own, never a dependency's`)
+  return normalized
 }
 
 // A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.

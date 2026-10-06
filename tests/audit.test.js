@@ -1054,7 +1054,7 @@ test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` a
 ))
 
 // A dependency record, recording `github` as its repo where given.
-const depRecord = (name, version, github) => ({ name, version, ecosystem: 'npm', ...(github && { repo: { github, root: true } }), files: { 'index.js': '' } })
+const depRecord = (name, version, github) => ({ name, version, ecosystem: 'npm', ...(github && { repo: { github } }), files: { 'index.js': '' } })
 // npm's registry answering the bulk advisories request with none, and `latest` (name -> repository) for each package's latest.
 const registry = (latest) => ({ url }) => {
   if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})

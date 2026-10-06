@@ -8,7 +8,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
-import { packageRepo, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
+import { dependencyRepo, findPackageMetadata, packageRepo, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
@@ -63,13 +63,35 @@ test('packageRepo reads a package.json as detectRepo reads one: repository, then
 })
 
 test('parseGithubRepository drops a #committish, and refuses an authority ending before github.com', (t) => {
-  for (const url of ['git+https://github.com/o/n.git#v1.2.3', 'github:o/n#main', 'o/n#semver:^1', 'git@github.com:o/n.git#abc']) {
+  for (const url of ['git+https://github.com/o/n.git#v1.2.3', 'github:o/n#main', 'o/n#semver:^1', 'git@github.com:o/n.git#abc', 'git+ssh://git@github.com:o/n.git', 'ssh://git@github.com:o/n']) {
     t.assert.equal(parseGithubRepository(url), 'o/n', url)
   }
-  for (const url of ['https://evil.example#@github.com/a/b', 'https://evil.example?@github.com/a/b', 'https://evil.example\\@github.com/a/b']) {
+  for (const url of ['https://evil.example#@github.com/a/b', 'https://evil.example?@github.com/a/b', 'https://evil.example\\@github.com/a/b', 'ssh://evil.example?@github.com:a/b']) {
     t.assert.equal(parseGithubRepository(url), null, url)
   }
   t.assert.equal(parseGithubRepository('https://user:p%40ss@github.com:443/o/n'), 'o/n', 'a userinfo of what RFC 3986 allows still passes')
+})
+
+test('a dependency repo never says root: only a build knows that of its own source layout', (t) => {
+  t.assert.deepStrictEqual(dependencyRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
+  t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: './' } }), { github: 'o/n' }, 'the root named: still none')
+  t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
+  t.assert.equal(dependencyRepo({ repository: 'https://gitlab.com/o/n' }), undefined)
+  t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n', root: true }, "a build's own still does")
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-dep-repo-'))
+  try {
+    writeProject(dir, { repository: 'github:o/dep' })
+    t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'), { pkgDir: 'node_modules/dep', name: 'dep', version: '1.0.0', repo: { github: 'o/dep' } })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  for (const [what, of] of [['bundle', bundleOf], ['lockfile', lockOf]]) {
+    const json = JSON.parse(of({ 'node_modules/dep': dep() }).serialize())
+    json.modules['node_modules/dep'].repo = { github: 'o/dep', root: true }
+    const refused = new RegExp(`${what} module 'node_modules/dep' repo: root is a build's own`, 'u')
+    t.assert.throws(() => (what === 'bundle' ? Bundle : Lockfile).parse(JSON.stringify(json)), refused, `${what} parse`)
+    t.assert.throws(() => of({ 'node_modules/dep': dep({ github: 'o/dep', root: true }) }).serialize(), refused, `${what} serialize`)
+  }
 })
 
 test('a dependency record carries repo after ecosystem, in a bundle and in a lockfile alike', (t) => {
@@ -114,7 +136,7 @@ test('merging takes a dependency repo one side lacks and refuses two that differ
     t.assert.deepStrictEqual({ ...merged(DEP_REPO, { ...DEP_REPO, github: 'O/Dep' }) }, DEP_REPO, `${what}: GitHub names are case-insensitive`)
     t.assert.deepStrictEqual({ ...merged(undefined, DEP_REPO) }, DEP_REPO, `${what}: into an artifact from before the field`)
     t.assert.deepStrictEqual({ ...merged(DEP_REPO, undefined) }, DEP_REPO, `${what}: from one`)
-    t.assert.throws(() => merged(DEP_REPO, { github: 'o/dep', root: true }), new RegExp(`${what} merge: module 'node_modules/dep' repo mismatch`, 'u'))
+    t.assert.throws(() => merged(DEP_REPO, { github: 'o/dep' }), new RegExp(`${what} merge: module 'node_modules/dep' repo mismatch`, 'u'))
     t.assert.throws(() => merged(DEP_REPO, { ...DEP_REPO, github: 'o/other' }), /repo mismatch/u)
   }
 })
@@ -148,7 +170,7 @@ test('State fills in a dependency repo a lockfile from an older stasis lacks', w
   delete old.modules['node_modules/dep'].repo
   writeFileSync(lockPath, JSON.stringify(old))
   const state = capture(tmp, { bundle: 'none', lock: 'add' })
-  t.assert.deepStrictEqual(JSON.parse(state.lockData).modules['node_modules/dep'].repo, { github: 'o/dep', root: true })
+  t.assert.deepStrictEqual(JSON.parse(state.lockData).modules['node_modules/dep'].repo, { github: 'o/dep' })
 }))
 
 test('State refuses a bundle whose dependency repo differs from the lockfile', withTmp((t, tmp) => {
@@ -156,7 +178,7 @@ test('State refuses a bundle whose dependency repo differs from the lockfile', w
   capture(tmp, { bundle: 'replace', lock: 'replace' }).write()
   const bundlePath = join(tmp, 'stasis.code.br')
   const bundle = readBundle(bundlePath)
-  bundle.modules['node_modules/dep'].repo = { github: 'o/other', root: true }
+  bundle.modules['node_modules/dep'].repo = { github: 'o/other' }
   writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(bundle)))
   t.assert.throws(() => new State(tmp, { scope: 'full', bundle: 'load', lock: 'frozen' }), /bundle module node_modules\/dep repo mismatch with lockfile/u)
   delete bundle.modules['node_modules/dep'].repo

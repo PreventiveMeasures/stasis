@@ -94,7 +94,7 @@ attested.
       "name": "@exodus/bytes",
       "version": "1.15.0",
       "ecosystem": "npm",
-      "repo": { "github": "ExodusOSS/bytes", "root": true },
+      "repo": { "github": "ExodusOSS/bytes" },
       "files": { "index.js": "sha512-…", "package.json": "sha512-…" }
     }
   },
@@ -138,7 +138,10 @@ attested.
   still load.
 - A dependency record carries a `repo`, after `ecosystem`, where its own manifest
   names a GitHub repository: `{ "github": "owner/name", "directory": "packages/x" }`,
-  or `"root": true` in place of `directory`. Any dependency's record may carry
+  `directory` where the manifest names one. It never carries `root`: `root: true`
+  is authoritative, so only a build's own `repo` holds it, from the source layout
+  the build reads, and a dependency's manifest naming no directory leaves where it
+  sits in its repository unknown. Any dependency's record may carry
   one, whatever its ecosystem (a static `stasis bundle` may record one for a
   Composer, Cargo or Soldeer package; `stasis run` buckets npm packages alone);
   a first-party bucket, with no `ecosystem` and outside `node_modules`, carries
@@ -146,7 +149,8 @@ attested.
   bundle's own `repo` takes from one (see `repo` under `stasis.code.br`):
   `repository` (its URL or `owner/name` shorthand, a `#committish` dropped), and
   `repository.directory`, else the directory of a GitHub tree `homepage` of the
-  same repository, else the repository root. A `repository` naming another forge,
+  same repository, and one naming the repository root (`./`) is left out as no
+  directory is. A `repository` naming another forge,
   or none, records none: `bugs` and `homepage` alone name none, as they are often
   a repository's old name. Unlike the bundle's own `repo`, which changes with each
   commit of the project, it is the dependency's, so the lockfile records it and

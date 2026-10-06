@@ -604,19 +604,19 @@ test('diffArtifacts reports a dependency repo change, but not a repo one side do
     config: { scope: 'node_modules' },
     modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': 'sha512-FOO' } } },
   })
-  const diff = diffArtifacts(lockOf(withRepo({ github: 'o/foo', root: true })), lockOf(withRepo({ github: 'o/elsewhere', directory: 'packages/foo' })))
+  const diff = diffArtifacts(lockOf(withRepo({ github: 'o/foo' })), lockOf(withRepo({ github: 'o/elsewhere', directory: 'packages/foo' })))
   // Parsed `repo` blocks are null-prototype: compared as the JSON they are.
   t.assert.deepStrictEqual(JSON.parse(JSON.stringify(diff.modules.changed)), [{
     dir: 'node_modules/foo', name: 'foo',
-    repoChange: { from: { github: 'o/foo', root: true }, to: { github: 'o/elsewhere', directory: 'packages/foo' } },
+    repoChange: { from: { github: 'o/foo' }, to: { github: 'o/elsewhere', directory: 'packages/foo' } },
   }])
   t.assert.ok(hasDifferences(diff), 'identical digests, another repo: the artifacts differ')
   t.assert.match(formatDiffStat(diff), /\* node_modules\/foo {2}foo repo o\/foo -> o\/elsewhere \(packages\/foo\)\n/u)
 
   for (const [left, right, why] of [
-    [undefined, { github: 'o/foo', root: true }, 'an artifact from before the field'],
-    [{ github: 'o/foo', root: true }, undefined, 'one from before the field'],
-    [{ github: 'o/foo', root: true }, { github: 'O/Foo', root: true }, "GitHub's names are case-insensitive"],
+    [undefined, { github: 'o/foo' }, 'an artifact from before the field'],
+    [{ github: 'o/foo' }, undefined, 'one from before the field'],
+    [{ github: 'o/foo' }, { github: 'O/Foo' }, "GitHub's names are case-insensitive"],
   ]) {
     t.assert.ok(!hasDifferences(diffArtifacts(lockOf(withRepo(left)), lockOf(withRepo(right)))), why)
   }
