@@ -1,6 +1,6 @@
 {
   "name": "@exodus/stasis-plugins",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0-beta.6",
   "description": "Bundler plugins (webpack, esbuild, Rollup, Metro) for @exodus/stasis-core",
   "type": "module",
   "exports": {
@@ -33,6 +33,6 @@
   },
   "homepage": "https://github.com/PreventiveMeasures/stasis#readme",
   "dependencies": {
-    "@exodus/stasis-core": "1.0.0-beta.5"
+    "@exodus/stasis-core": "1.0.0-beta.6"
   }
 }
