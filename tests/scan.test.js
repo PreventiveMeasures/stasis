@@ -624,6 +624,18 @@ test('importsTypescriptByOutputName: TS entries whose relative JS-output imports
   t.assert.equal(tell('broken.ts'), false)
 }))
 
+test('importsTypescriptByOutputName: no tell where tsc\'s pick for a .js import lies in node_modules', withTmp((t, tmp) => {
+  // x.ts links into an installed package, which the resolver refuses to map to -- with a local
+  // x.tsx beside it too, since tsc picks x.ts first.
+  mkdirSync(join(tmp, 'node_modules', 'pkg'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'pkg', 'x.ts'), 'export const x: number = 1\n')
+  symlinkSync(join('node_modules', 'pkg', 'x.ts'), join(tmp, 'x.ts'))
+  writeFileSync(join(tmp, 'entry.ts'), 'import { x } from "./x.js"\nexport const v: number = x\n')
+  t.assert.equal(importsTypescriptByOutputName([join(tmp, 'entry.ts')]), false)
+  writeFileSync(join(tmp, 'x.tsx'), 'export const x: number = 2\n')
+  t.assert.equal(importsTypescriptByOutputName([join(tmp, 'entry.ts')]), false)
+}))
+
 test('importsTypescriptByOutputName parses CommonJS entries as the scan does (top-level return)', withTmp((t, tmp) => {
   // Node runs CJS in its module wrapper, where a top-level `return` is legal: a .cts entry, a .ts
   // one in a "type": "commonjs" package, and a typeless .ts one Node detects as CJS all parse.
@@ -979,6 +991,22 @@ test('packageTsconfigPaths reads the project by real path, from a cwd reached th
   for (const cwd of [join(tmp, 'link'), join(tmp, 'link', 'tools')]) {
     t.assert.deepStrictEqual(packageTsconfigPaths(cwd).matchPaths('@/x', join(tmp, 'real', 'tools', 'a.ts')), [join(tmp, 'real', 'shared', 'x')], cwd)
   }
+}))
+
+test('packageTsconfigPaths reads the project up to projectCwd, as the State stops at PROJECT_CWD', withTmp((t, tmp) => {
+  // A nested project whose package.json names no package, inside a named repository: yarn's
+  // PROJECT_CWD roots the State at the nested one, so its own tsconfig.json applies there.
+  writeTree(tmp, {
+    'package.json': { name: 'outer' },
+    'tsconfig.json': aliasTo('./outer/*'),
+    '.git/HEAD': '',
+    'app/package.json': { type: 'module' },
+    'app/tsconfig.json': aliasTo('./src/*'),
+  })
+  const app = join(tmp, 'app')
+  const file = join(app, 'src', 'index.ts')
+  t.assert.deepStrictEqual(packageTsconfigPaths(app).matchPaths('@/x', file), [join(tmp, 'outer', 'x')])
+  t.assert.deepStrictEqual(packageTsconfigPaths(app, { projectCwd: app }).matchPaths('@/x', file), [join(app, 'src', 'x')])
 }))
 
 test('packageTsconfigPaths loads each config once, when first matched; lenient, one that does not load is none', withTmp((t, tmp) => {

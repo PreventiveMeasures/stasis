@@ -425,17 +425,19 @@ const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'
 // package.json of the package the importing file is in, as a matcher whose matchPaths(spec,
 // parentFile) is loadTsconfigPaths's for that config. The project is read up from `cwd` as the
 // State reads it: the directories holding a package.json, up to one holding .git or
-// pnpm-workspace.yaml. In a monorepo -- where one of those declares workspaces -- a file's package is
+// pnpm-workspace.yaml, or up to `projectCwd` (the State's PROJECT_CWD, as yarn sets it). In a monorepo -- where one of those declares workspaces -- a file's package is
 // the nearest directory at or above it, up to that workspace root, holding a named package.json
 // (the root itself where none below it does); outside one, every file takes the one config beside
 // the nearest named package.json at or above `cwd` (or the top-most package.json, where none is
 // named). Never in node_modules: no walk enters a node_modules directory, and resolveTypescriptFallback
 // matches no alias for a file under one. Each config loads once, when first matched; with `lenient`,
 // one that doesn't load matches nothing instead of throwing.
-export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false } = {}) {
+export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, projectCwd } = {}) {
+  const stop = projectCwd ? realpathOr(resolvePath(projectCwd), host) : null
   const dirs = [] // cwd and above, while the State's walk would go on; real paths, as importers are read
   for (let dir = realpathOr(resolvePath(cwd), host); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
     dirs.push(dir)
+    if (dir === stop) break
     if (host.stat(join(dir, '.git')) !== null || isFile(join(dir, 'pnpm-workspace.yaml'), host)) break
     if (dirname(dir) === dir) break
   }

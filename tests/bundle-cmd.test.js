@@ -2365,6 +2365,25 @@ test('buildBundle --typescript threads through the legacy-field resolver (--main
   t.assert.equal(bundle.imports.get('*').get('entry.ts').get('tsdep'), 'node_modules/tsdep/lib/main.ts')
 }))
 
+test('buildBundle --typescript reads the tsconfig.json of the project PROJECT_CWD roots (--mainFields path)', withTmp(async (t, tmp) => {
+  // yarn's PROJECT_CWD bounds the project as the State reads it: the nested app's own aliases apply,
+  // not those of the named repository it sits in.
+  for (const [name, content] of Object.entries({
+    'package.json': { name: 'outer', version: '1.0.0' },
+    'tsconfig.json': { compilerOptions: { paths: { '@/*': ['./outer/*'] } } },
+    'app/package.json': { type: 'module' },
+    'app/tsconfig.json': { compilerOptions: { paths: { '@/*': ['./src/*'] } } },
+    'app/src/index.ts': 'import { x } from "@/x"\nexport const v: number = x\n',
+    'app/src/x.ts': 'export const x: number = 1\n',
+  })) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  const app = join(tmp, 'app')
+  const bundle = await buildBundle({ cwd: app, env: { ...process.env, PROJECT_CWD: app }, entries: ['src/index.ts'], mainFields: ['main'], typescript: true })
+  t.assert.equal(bundle.imports.get('*').get('src/index.ts').get('@/x'), 'src/x.ts')
+}))
+
 test('buildBundle --typescript maps nothing into a package installed in node_modules (--mainFields path)', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   writeTsDependency(tmp, 'tsdep', { main: './lib/main.js' }, { installed: true })
