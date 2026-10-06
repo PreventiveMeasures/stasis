@@ -1,5 +1,6 @@
-import { test } from 'node:test'
+import { describe, test } from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -53,12 +54,35 @@ const cleanEnv = (() => {
   return rest
 })()
 
-const runCli = (args, opts = {}) => {
-  const r = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf-8', env: cleanEnv, ...opts })
+// spawnSync's result, from an async spawn: blocking spawnSync would stall the node:test event loop,
+// collapsing the `concurrency` of the spawned-CLI describe at the bottom of this file to
+// wall-clock-sequential. stdout/stderr are Buffers, or strings with `encoding`; stdin is closed at
+// once, as spawnSync leaves it without `input`.
+const spawnAsync = async (file, args, { encoding, ...opts } = {}) => {
+  const child = spawn(file, args, opts)
+  child.stdin.end()
+  const stdoutChunks = []
+  const stderrChunks = []
+  child.stdout.on('data', (d) => stdoutChunks.push(d))
+  child.stderr.on('data', (d) => stderrChunks.push(d))
+  const [status] = await once(child, 'close')
+  const decode = (chunks) => (encoding ? Buffer.concat(chunks).toString(encoding) : Buffer.concat(chunks))
+  return { status, stdout: decode(stdoutChunks), stderr: decode(stderrChunks) }
+}
+
+const runCli = async (args, opts = {}) => {
+  const r = await spawnAsync(process.execPath, [cli, ...args], { encoding: 'utf-8', env: cleanEnv, ...opts })
   r.stdout = stripVTControlCharacters(r.stdout)
   r.stderr = stripVTControlCharacters(r.stderr)
   return r
 }
+
+// Tests that spawn the CLI register through cliTest and run after all the others, CONCURRENCY at a
+// time (the describe at the bottom of this file). The rest run first, one at a time: some patch
+// process-wide state (process.chdir, console.warn) that a concurrent test would see.
+const CONCURRENCY = 4 // matches CI runner cores, like the other spawning test files
+const cliTests = []
+const cliTest = (...args) => cliTests.push(args)
 
 test('buildSolidityBundle produces a Bundle with sources, formats, imports, entries', async (t) => {
   const cwd = join(fixtures, 'basic')
@@ -1190,7 +1214,7 @@ test('a missing extensionless entry alone is a mistyped path, not a Solidity dir
   writeProject(tmp, { 'index.js': '' })
   await t.assert.rejects(() => buildBundle({ cwd: tmp, entries: ['indx'] }), /buildBundle: no such file or directory: indx/u)
   await captureStderr(() => t.assert.rejects(() => buildSolidityBundle({ cwd: tmp, entries: ['indx'] }), /No such file or directory: indx/u))
-  const r = runCli(['bundle', 'indx'], { cwd: tmp })
+  const r = await runCli(['bundle', 'indx'], { cwd: tmp })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Error: no such file or directory: indx/u)
 }))
@@ -1269,7 +1293,7 @@ test('buildSolidityBundle skips a missing or empty entry directory, as forge ski
   const { lines: empty } = await captureStderr(() => buildSolidityBundle({ cwd: tmp, entries: ['src', 'test', 'script'], env: {} }))
   t.assert.ok(empty.some((l) => l.includes('Skipping script/: no .sol files under it')))
   await captureStderr(() => t.assert.rejects(() => buildSolidityBundle({ cwd: tmp, entries: ['script', 'missing'], env: {} }), /No \.sol files under script\/, missing\//u))
-  const r = runCli(['bundle', '-o', join(tmp, 'out.br'), 'src', 'test', 'script', 'nope'], { cwd: tmp })
+  const r = await runCli(['bundle', '-o', join(tmp, 'out.br'), 'src', 'test', 'script', 'nope'], { cwd: tmp })
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.match(r.stderr, /Skipping nope\/: no such directory/u)
 }))
@@ -1329,26 +1353,26 @@ test('buildBundle rejects a directory entry or --manifests outside a Solidity bu
   await t.assert.rejects(() => buildBundle({ cwd, entries: ['a.js'], manifests: true }), /--manifests is only valid for \.sol bundles/u)
 })
 
-test('CLI: bundle takes Solidity directory entries and --manifests, and extract restores the manifests', withTmp((t, tmp) => {
+cliTest('CLI: bundle takes Solidity directory entries and --manifests, and extract restores the manifests', withTmp(async (t, tmp) => {
   const out = join(tmp, 'sol.stasis.code.br')
-  const r = runCli(['bundle', '--manifests', '-o', out, 'src', 'test', 'script'], { cwd: join(fixtures, 'foundry-project') })
+  const r = await runCli(['bundle', '--manifests', '-o', out, 'src', 'test', 'script'], { cwd: join(fixtures, 'foundry-project') })
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.match(r.stderr, /Bundled 17 files/u)
   const dir = join(tmp, 'extracted')
-  t.assert.equal(runCli(['extract', `--output=${dir}`, out]).status, 0)
+  t.assert.equal((await runCli(['extract', `--output=${dir}`, out])).status, 0)
   t.assert.equal(readFileSync(join(dir, 'lib/openzeppelin-contracts/remappings.txt'), 'utf8'), '@openzeppelin/contracts/=contracts/\n')
   t.assert.ok(existsSync(join(dir, 'src/Standalone.sol')))
 }))
 
-test('CLI: bundle rejects a directory entry mixed with non-Solidity entries, and --manifests for JS', (t) => {
+cliTest('CLI: bundle rejects a directory entry mixed with non-Solidity entries, and --manifests for JS', async (t) => {
   const cwd = join(fixtures, 'foundry-project')
-  let r = runCli(['bundle', 'src', 'a.js'], { cwd })
+  let r = await runCli(['bundle', 'src', 'a.js'], { cwd })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /directory entry is only supported for Solidity bundles/u)
-  r = runCli(['bundle', 'nope', 'a.js'], { cwd })
+  r = await runCli(['bundle', 'nope', 'a.js'], { cwd })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /no such file or directory: nope/u)
-  r = runCli(['bundle', '--manifests', 'a.js'], { cwd })
+  r = await runCli(['bundle', '--manifests', 'a.js'], { cwd })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--manifests is only valid for \.sol bundles/u)
 })
@@ -1387,50 +1411,50 @@ test('bundleCommand does not write the output file when bundling fails on unreso
 
 // CLI integration
 
-test('CLI: bundle with no files prints usage', (t) => {
-  const r = runCli(['bundle'])
+cliTest('CLI: bundle with no files prints usage', async (t) => {
+  const r = await runCli(['bundle'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Nothing to bundle/)
 })
 
-test('CLI: bundle rejects an arg with an unsupported extension', (t) => {
-  const r = runCli(['bundle', 'foo.txt'])
+cliTest('CLI: bundle rejects an arg with an unsupported extension', async (t) => {
+  const r = await runCli(['bundle', 'foo.txt'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
 
-test('CLI: bundle rejects mixing .sol and .js entries', (t) => {
-  const r = runCli(['bundle', 'a.sol', 'b.js'])
+cliTest('CLI: bundle rejects mixing .sol and .js entries', async (t) => {
+  const r = await runCli(['bundle', 'a.sol', 'b.js'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
 
-test('CLI: bundle rejects --mapping when entries are JS', (t) => {
-  const r = runCli(['bundle', '--mapping=remappings.txt', 'a.js'])
+cliTest('CLI: bundle rejects --mapping when entries are JS', async (t) => {
+  const r = await runCli(['bundle', '--mapping=remappings.txt', 'a.js'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--mapping is only valid for \.sol bundles/)
 })
 
-test('CLI: bundle rejects --scope when entries are .sol', (t) => {
-  const r = runCli(['bundle', '--scope=full', 'a.sol'])
+cliTest('CLI: bundle rejects --scope when entries are .sol', async (t) => {
+  const r = await runCli(['bundle', '--scope=full', 'a.sol'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--scope is only valid for JS bundles/)
 })
 
-test('CLI: bundle exits non-zero and writes no output when there are unresolved imports', withTmp((t, tmp) => {
+cliTest('CLI: bundle exits non-zero and writes no output when there are unresolved imports', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'missing') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'missing') })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /Solidity bundle has unresolved imports/)
   t.assert.match(r.stderr, /@missing\/Nope\.sol/)
   t.assert.ok(!existsSync(outPath), 'output file must not be written when bundling fails')
 }))
 
-test('CLI: bundle writes a brotli-compressed Bundle to stasis.code.br by default when no -o is given', withTmp((t, tmp) => {
+cliTest('CLI: bundle writes a brotli-compressed Bundle to stasis.code.br by default when no -o is given', withTmp(async (t, tmp) => {
   // Copy the fixture into a temp dir so the default-named artifact lands there
   // (and never pollutes the repo's fixtures).
   cpSync(join(fixtures, 'basic'), tmp, { recursive: true })
-  const r = runCli(['bundle', 'src/A.sol'], { cwd: tmp })
+  const r = await runCli(['bundle', 'src/A.sol'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const buf = readFileSync(join(tmp, 'stasis.code.br'))
   t.assert.notEqual(buf[0], 0x7b, 'output must be brotli, not JSON')
@@ -1442,10 +1466,10 @@ test('CLI: bundle writes a brotli-compressed Bundle to stasis.code.br by default
   )
 }))
 
-test('CLI: bundle writes a brotli-compressed Bundle to stdout with --output=-', (t) => {
-  // Capture stdout as binary; spawnSync's encoding option here is 'buffer'.
+cliTest('CLI: bundle writes a brotli-compressed Bundle to stdout with --output=-', async (t) => {
+  // Capture stdout as binary: no `encoding`, so it is a Buffer.
   // --output=- writes nothing to disk, so running in the read-only fixture is safe.
-  const r = spawnSync(process.execPath, [cli, 'bundle', '--output=-', 'src/A.sol'], {
+  const r = await spawnAsync(process.execPath, [cli, 'bundle', '--output=-', 'src/A.sol'], {
     cwd: join(fixtures, 'basic'),
     env: cleanEnv,
   })
@@ -1460,9 +1484,9 @@ test('CLI: bundle writes a brotli-compressed Bundle to stdout with --output=-', 
   )
 })
 
-test('CLI: bundle -o writes a brotli-compressed Bundle to the given path', withTmp((t, tmp) => {
+cliTest('CLI: bundle -o writes a brotli-compressed Bundle to the given path', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
@@ -1470,9 +1494,9 @@ test('CLI: bundle -o writes a brotli-compressed Bundle to the given path', withT
   t.assert.deepStrictEqual([...parsed.entries], ['src/A.sol'])
 }))
 
-test('CLI: bundle --mapping=remappings.txt resolves @-prefixed imports', withTmp((t, tmp) => {
+cliTest('CLI: bundle --mapping=remappings.txt resolves @-prefixed imports', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--mapping=remappings.txt', '-o', outPath, 'src/A.sol'],
     { cwd: join(fixtures, 'with-remappings-txt') },
   )
@@ -1485,9 +1509,9 @@ test('CLI: bundle --mapping=remappings.txt resolves @-prefixed imports', withTmp
   t.assert.ok(!Object.hasOwn(parsed.modules.get('.').files, 'remappings.txt'))
 }))
 
-test('CLI: bundle --mapping=foundry.toml resolves @-prefixed imports', withTmp((t, tmp) => {
+cliTest('CLI: bundle --mapping=foundry.toml resolves @-prefixed imports', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--mapping=foundry.toml', '-o', outPath, 'src/A.sol'],
     { cwd: join(fixtures, 'with-foundry-toml') },
   )
@@ -1500,22 +1524,22 @@ test('CLI: bundle --mapping=foundry.toml resolves @-prefixed imports', withTmp((
   t.assert.ok(!Object.hasOwn(parsed.modules.get('.').files, 'foundry.toml'))
 }))
 
-test('CLI: bundle prints a summary line to stderr with the file count, outermost dir, and destination', withTmp((t, tmp) => {
+cliTest('CLI: bundle prints a summary line to stderr with the file count, outermost dir, and destination', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.sol'], { cwd: join(fixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, new RegExp(`\\[stasis\\] Bundled 2 files in 1 package from src to ${outPath.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u'))
 }))
 
-test('CLI: bundle summary names stasis.code.br as the destination when no -o is given', withTmp((t, tmp) => {
+cliTest('CLI: bundle summary names stasis.code.br as the destination when no -o is given', withTmp(async (t, tmp) => {
   cpSync(join(fixtures, 'basic'), tmp, { recursive: true })
-  const r = runCli(['bundle', 'src/A.sol'], { cwd: tmp })
+  const r = await runCli(['bundle', 'src/A.sol'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 1 package from src to stasis\.code\.br/)
 }))
 
-test('CLI: bundle summary falls back to <stdout> with --output=-', (t) => {
-  const r = spawnSync(process.execPath, [cli, 'bundle', '--output=-', 'src/A.sol'], {
+cliTest('CLI: bundle summary falls back to <stdout> with --output=-', async (t) => {
+  const r = await spawnAsync(process.execPath, [cli, 'bundle', '--output=-', 'src/A.sol'], {
     cwd: join(fixtures, 'basic'),
     env: cleanEnv,
   })
@@ -1523,10 +1547,10 @@ test('CLI: bundle summary falls back to <stdout> with --output=-', (t) => {
   t.assert.match(r.stderr.toString('utf8'), /\[stasis\] Bundled 2 files in 1 package from src to <stdout>/)
 })
 
-test('CLI: bundle summary shows "." as outermost dir when files share no common parent', withTmp((t, tmp) => {
+cliTest('CLI: bundle summary shows "." as outermost dir when files share no common parent', withTmp(async (t, tmp) => {
   // with-remappings-txt has files under both src/ and lib/, so the common parent is "."
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--mapping=remappings.txt', '-o', outPath, 'src/A.sol'],
     { cwd: join(fixtures, 'with-remappings-txt') },
   )
@@ -1534,9 +1558,9 @@ test('CLI: bundle summary shows "." as outermost dir when files share no common 
   t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 1 package from \. to /)
 }))
 
-test('CLI: bundle summary counts files across workspace AND node_modules buckets', withTmp((t, tmp) => {
+cliTest('CLI: bundle summary counts files across workspace AND node_modules buckets', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--mapping=remappings.txt', '-o', outPath, 'src/A.sol'],
     { cwd: join(fixtures, 'with-node-modules') },
   )
@@ -1546,9 +1570,9 @@ test('CLI: bundle summary counts files across workspace AND node_modules buckets
   t.assert.match(r.stderr, /\[stasis\] Bundled 3 files in 3 packages from \. to /)
 }))
 
-test('CLI: bundle accepts multiple .sol entries', withTmp((t, tmp) => {
+cliTest('CLI: bundle accepts multiple .sol entries', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '-o', outPath, 'src/A.sol', 'src/B.sol'],
     { cwd: join(fixtures, 'shared') },
   )
@@ -1831,9 +1855,9 @@ test('bundleCommand writes a brotli-compressed PHP Bundle that round-trips throu
 
 // CLI integration (PHP)
 
-test('CLI: bundle accepts .php entries and writes a Bundle', withTmp((t, tmp) => {
+cliTest('CLI: bundle accepts .php entries and writes a Bundle', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.entries], ['src/A.php'])
@@ -1843,42 +1867,42 @@ test('CLI: bundle accepts .php entries and writes a Bundle', withTmp((t, tmp) =>
   )
 }))
 
-test('CLI: bundle rejects mixing .php and .js entries', (t) => {
-  const r = runCli(['bundle', 'a.php', 'b.js'])
+cliTest('CLI: bundle rejects mixing .php and .js entries', async (t) => {
+  const r = await runCli(['bundle', 'a.php', 'b.js'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
 
-test('CLI: bundle rejects --mapping when entries are PHP', (t) => {
-  const r = runCli(['bundle', '--mapping=remappings.txt', 'a.php'])
+cliTest('CLI: bundle rejects --mapping when entries are PHP', async (t) => {
+  const r = await runCli(['bundle', '--mapping=remappings.txt', 'a.php'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--mapping is only valid for \.sol bundles/)
 })
 
-test('CLI: bundle rejects --scope when entries are .php', (t) => {
-  const r = runCli(['bundle', '--scope=full', 'a.php'])
+cliTest('CLI: bundle rejects --scope when entries are .php', async (t) => {
+  const r = await runCli(['bundle', '--scope=full', 'a.php'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--scope is only valid for JS bundles/)
 })
 
-test('CLI: bundle rejects --lockfile when entries are .php', (t) => {
-  const r = runCli(['bundle', '--lockfile=stasis.lock.json', 'a.php'])
+cliTest('CLI: bundle rejects --lockfile when entries are .php', async (t) => {
+  const r = await runCli(['bundle', '--lockfile=stasis.lock.json', 'a.php'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--lockfile is only valid for JS bundles/)
 })
 
-test('CLI: bundle (php) exits non-zero and writes no output when there are unresolved includes', withTmp((t, tmp) => {
+cliTest('CLI: bundle (php) exits non-zero and writes no output when there are unresolved includes', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'missing') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'missing') })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /PHP bundle has unresolved imports/)
   t.assert.match(r.stderr, /Nope\.php/)
   t.assert.ok(!existsSync(outPath), 'output file must not be written when bundling fails')
 }))
 
-test('CLI: bundle (php) prints a summary line with the file count, outermost dir, and destination', withTmp((t, tmp) => {
+cliTest('CLI: bundle (php) prints a summary line with the file count, outermost dir, and destination', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/A.php'], { cwd: join(phpFixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, new RegExp(`\\[stasis\\] Bundled 2 files in 1 package from src to ${outPath.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u'))
 }))
@@ -1887,9 +1911,9 @@ test('CLI: bundle (php) prints a summary line with the file count, outermost dir
 
 const tsFixture = join(here, 'fixtures', 'cli-run-ts')
 
-test('CLI: bundle accepts a .ts entry and records type-stripping formats', withTmp((t, tmp) => {
+cliTest('CLI: bundle accepts a .ts entry and records type-stripping formats', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/entry.ts'], { cwd: tsFixture })
+  const r = await runCli(['bundle', '-o', outPath, 'src/entry.ts'], { cwd: tsFixture })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 1 package from src to /)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
@@ -1908,13 +1932,13 @@ test('CLI: bundle accepts a .ts entry and records type-stripping formats', withT
   t.assert.equal(parsed.imports.get('*').get('src/entry.ts').get('./hello.ts'), 'src/hello.ts')
 }))
 
-test('CLI: bundle allows mixing .ts and .js entries (both are JS-family)', withTmp((t, tmp) => {
+cliTest('CLI: bundle allows mixing .ts and .js entries (both are JS-family)', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-js-mix', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
   writeFileSync(join(tmp, 'a.ts'), 'export const a: number = 1\n')
   writeFileSync(join(tmp, 'b.js'), 'export const b = 2\n')
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'a.ts', 'b.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '-o', outPath, 'a.ts', 'b.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.entries].toSorted(), ['a.ts', 'b.js'])
@@ -1922,22 +1946,22 @@ test('CLI: bundle allows mixing .ts and .js entries (both are JS-family)', withT
   t.assert.equal(parsed.formats.get('b.js'), 'module')
 }))
 
-test('CLI: bundle rejects mixing .sol and .ts entries', (t) => {
-  const r = runCli(['bundle', 'a.sol', 'b.ts'])
+cliTest('CLI: bundle rejects mixing .sol and .ts entries', async (t) => {
+  const r = await runCli(['bundle', 'a.sol', 'b.ts'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts/)
 })
 
-test('CLI: a bundled .ts entry runs via --bundle=load, serving ESM TS sources from the bundle', withTmp((t, tmp) => {
+cliTest('CLI: a bundled .ts entry runs via --bundle=load, serving ESM TS sources from the bundle', withTmp(async (t, tmp) => {
   cpSync(tsFixture, tmp, { recursive: true })
   const bundlePath = join(tmp, 'snap.br')
-  const build = runCli(['bundle', `--output=${bundlePath}`, 'src/entry.ts'], { cwd: tmp })
+  const build = await runCli(['bundle', `--output=${bundlePath}`, 'src/entry.ts'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
 
   // ESM resolution goes fully through the hooks, so the imported file can be
   // served from the bundle even when it no longer exists on disk.
   rmSync(join(tmp, 'src', 'hello.ts'))
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.ts'],
     { cwd: tmp },
   )
@@ -1945,7 +1969,7 @@ test('CLI: a bundled .ts entry runs via --bundle=load, serving ESM TS sources fr
   t.assert.equal(load.stdout, 'hello, world\n')
 }))
 
-test('CLI: a .ts entry with ESM syntax in a typeless package bundles with the detected format and runs via --bundle=load', withTmp((t, tmp) => {
+cliTest('CLI: a .ts entry with ESM syntax in a typeless package bundles with the detected format and runs via --bundle=load', withTmp(async (t, tmp) => {
   // No `type` field: Node decides by module-syntax detection. The bundle must
   // record module-typescript (matching Node), not commonjs-typescript derived
   // from the package default — the CJS-TS translator would throw
@@ -1957,13 +1981,13 @@ test('CLI: a .ts entry with ESM syntax in a typeless package bundles with the de
   writeFileSync(join(tmp, 'hello.ts'), 'export const greet = (name: string): string => `hello, ${name}`\n')
 
   const bundlePath = join(tmp, 'snap.br')
-  const build = runCli(['bundle', `--output=${bundlePath}`, 'entry.ts'], { cwd: tmp })
+  const build = await runCli(['bundle', `--output=${bundlePath}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf8'))
   t.assert.equal(parsed.formats.get('entry.ts'), 'module-typescript')
   t.assert.equal(parsed.formats.get('hello.ts'), 'module-typescript')
 
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'entry.ts'],
     { cwd: tmp },
   )
@@ -1971,7 +1995,7 @@ test('CLI: a .ts entry with ESM syntax in a typeless package bundles with the de
   t.assert.equal(load.stdout, 'hello, detected\n')
 }))
 
-test('CLI: a commonjs-typescript bundle (.ts requiring .cts) runs via --bundle=load', withTmp((t, tmp) => {
+cliTest('CLI: a commonjs-typescript bundle (.ts requiring .cts) runs via --bundle=load', withTmp(async (t, tmp) => {
   // No `type` in package.json → .ts is commonjs-typescript, like .js → commonjs.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-cjs', version: '0.0.0' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
@@ -1980,13 +2004,13 @@ test('CLI: a commonjs-typescript bundle (.ts requiring .cts) runs via --bundle=l
   writeFileSync(join(tmp, 'hello.cts'), 'exports.greet = (name: string): string => `hello, ${name}`\n')
 
   const bundlePath = join(tmp, 'snap.br')
-  const build = runCli(['bundle', `--output=${bundlePath}`, 'entry.ts'], { cwd: tmp })
+  const build = await runCli(['bundle', `--output=${bundlePath}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf8'))
   t.assert.equal(parsed.formats.get('entry.ts'), 'commonjs-typescript')
   t.assert.equal(parsed.formats.get('hello.cts'), 'commonjs-typescript')
 
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'entry.ts'],
     { cwd: tmp },
   )
@@ -2003,7 +2027,7 @@ const cjsFixture = join(here, 'fixtures', 'cli-run-cjs')
 // disk. The merged-in formats/imports entries leaked into the new bundle,
 // silently attributing the previous build's files and edges to the new one.
 // Fix: build with bundle='replace' to skip the on-disk merge entirely.
-test('CLI: bundle (JS) does not inherit stale formats/imports from a pre-existing stasis.code.br', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) does not inherit stale formats/imports from a pre-existing stasis.code.br', withTmp(async (t, tmp) => {
   // Set up a tiny scope=full fixture so we can build two distinct bundles in the
   // same directory and observe the second's contents.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'stale-test', version: '0.0.0', type: 'module' }))
@@ -2018,11 +2042,11 @@ test('CLI: bundle (JS) does not inherit stale formats/imports from a pre-existin
 
   // First bundle: writes stasis.code.br with seed.js + seedlib.js.
   const bundlePath = join(tmp, 'stasis.code.br')
-  const r1 = runCli(['bundle', `--output=${bundlePath}`, 'seed.js'], { cwd: tmp })
+  const r1 = await runCli(['bundle', `--output=${bundlePath}`, 'seed.js'], { cwd: tmp })
   t.assert.equal(r1.status, 0, `first bundle stderr: ${r1.stderr}`)
 
   // Second bundle: same dir, different entry (entry.js, no seedlib dependency).
-  const r2 = runCli(['bundle', `--output=${bundlePath}`, 'entry.js'], { cwd: tmp })
+  const r2 = await runCli(['bundle', `--output=${bundlePath}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r2.status, 0, `second bundle stderr: ${r2.stderr}`)
 
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf-8'))
@@ -2044,13 +2068,13 @@ test('CLI: bundle (JS) does not inherit stale formats/imports from a pre-existin
 // IGNORED. Config.loadConfig overwrote the constructor option but only
 // asserted env-vs-file conflicts. Fix: also assert constructor-option-vs-file
 // conflict (symmetric with the env check).
-test('CLI: bundle --scope conflicting with stasis.config.json errors instead of silently winning', withTmp((t, tmp) => {
+cliTest('CLI: bundle --scope conflicting with stasis.config.json errors instead of silently winning', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'scope-test', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'node_modules' }))
   writeFileSync(join(tmp, 'entry.js'), 'console.log(1)\n')
 
-  const r = runCli(['bundle', '--scope=full', '--output=snap.br', 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--scope=full', '--output=snap.br', 'entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'should error on --scope vs config disagreement')
   t.assert.match(r.stderr, /Flags\/env can not override stasis\.config\.json|node_modules.*full|full.*node_modules/,
     `expected conflict error in stderr, got: ${r.stderr}`)
@@ -2090,9 +2114,9 @@ test('buildBundle rejects conditions for non-JS entries', async (t) => {
   )
 })
 
-test('CLI: bundle --conditions selects the matching exports branch', withTmp((t, tmp) => {
+cliTest('CLI: bundle --conditions selects the matching exports branch', withTmp(async (t, tmp) => {
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', '--conditions=react-native,browser', `--output=${out}`, 'src/entry.js'], { cwd: conditionsFixture })
+  const r = await runCli(['bundle', '--conditions=react-native,browser', `--output=${out}`, 'src/entry.js'], { cwd: conditionsFixture })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   const files = [...parsed.sources.keys()].filter((f) => f.includes('rnpkg'))
@@ -2100,47 +2124,47 @@ test('CLI: bundle --conditions selects the matching exports branch', withTmp((t,
   t.assert.deepStrictEqual(files, ['node_modules/rnpkg/rn.js'])
 }))
 
-test('CLI: bundle without --conditions resolves like plain Node (default branch)', withTmp((t, tmp) => {
+cliTest('CLI: bundle without --conditions resolves like plain Node (default branch)', withTmp(async (t, tmp) => {
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', `--output=${out}`, 'src/entry.js'], { cwd: conditionsFixture })
+  const r = await runCli(['bundle', `--output=${out}`, 'src/entry.js'], { cwd: conditionsFixture })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   const files = [...parsed.sources.keys()].filter((f) => f.includes('rnpkg'))
   t.assert.deepStrictEqual(files, ['node_modules/rnpkg/default.js'])
 }))
 
-test('CLI: bundle rejects --conditions for .sol entries', (t) => {
-  const r = runCli(['bundle', '--conditions=react-native', 'a.sol'])
+cliTest('CLI: bundle rejects --conditions for .sol entries', async (t) => {
+  const r = await runCli(['bundle', '--conditions=react-native', 'a.sol'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--conditions is only valid for JS bundles/)
 })
 
-test('CLI: bundle rejects an empty --conditions value', (t) => {
-  const r = runCli(['bundle', '--conditions=', 'src/entry.js'], { cwd: conditionsFixture })
+cliTest('CLI: bundle rejects an empty --conditions value', async (t) => {
+  const r = await runCli(['bundle', '--conditions=', 'src/entry.js'], { cwd: conditionsFixture })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--conditions must list at least one condition name/)
 })
 
-test('CLI: a --conditions bundle round-trips through --bundle=load with the selected file', withTmp((t, tmp) => {
+cliTest('CLI: a --conditions bundle round-trips through --bundle=load with the selected file', withTmp(async (t, tmp) => {
   // Build under react-native, then delete the branches it did NOT select; the bundle
   // must still load and run from its own bytes. This is exactly the wildcard-`*` keying
   // guarantee -- plain node at load never passes the react-native condition, so load
   // depends on getImport's `*` fallback resolving to the conditions-selected file.
   cpSync(conditionsFixture, tmp, { recursive: true })
   const bundlePath = join(tmp, 'stasis.code.br')
-  const build = runCli(['bundle', '--conditions=react-native', `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const build = await runCli(['bundle', '--conditions=react-native', `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
   rmSync(join(tmp, 'node_modules', 'rnpkg', 'default.js'))
   rmSync(join(tmp, 'node_modules', 'rnpkg', 'browser.js'))
-  const load = runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
   t.assert.equal(load.stdout, 'RN\n')
 }))
 
-test('CLI: bundle --conditions --lockfile attests the conditions-selected resolution', withTmp((t, tmp) => {
+cliTest('CLI: bundle --conditions --lockfile attests the conditions-selected resolution', withTmp(async (t, tmp) => {
   const bundlePath = join(tmp, 'snap.br')
   const lockPath = join(tmp, 'stasis.lock.json')
-  const r = runCli(['bundle', '--conditions=react-native', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: conditionsFixture })
+  const r = await runCli(['bundle', '--conditions=react-native', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: conditionsFixture })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   // The companion lockfile records the react-native target, not the default branch.
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
@@ -2192,10 +2216,10 @@ test('buildBundle rejects --flow for non-JS entries', async (t) => {
   )
 })
 
-test('CLI: bundle --flow strips Flow types so a Flow-typed entry bundles', withTmp((t, tmp) => {
+cliTest('CLI: bundle --flow strips Flow types so a Flow-typed entry bundles', withTmp(async (t, tmp) => {
   writeFlowProject(tmp)
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', '--flow', `--output=${out}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--flow', `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
@@ -2203,19 +2227,19 @@ test('CLI: bundle --flow strips Flow types so a Flow-typed entry bundles', withT
   t.assert.equal(parsed.sources.get('entry.js'), readFileSync(join(tmp, 'entry.js'), 'utf8'))
 }))
 
-test('CLI: bundle without --flow reports the Flow entry as broken at load time', withTmp((t, tmp) => {
+cliTest('CLI: bundle without --flow reports the Flow entry as broken at load time', withTmp(async (t, tmp) => {
   writeFlowProject(tmp)
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', `--output=${out}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /broken at load time/)
 }))
 
-test('CLI: bundle --flow combines with --lockfile, attesting the Flow import graph', withTmp((t, tmp) => {
+cliTest('CLI: bundle --flow combines with --lockfile, attesting the Flow import graph', withTmp(async (t, tmp) => {
   writeFlowProject(tmp)
   const out = join(tmp, 'snap.br')
   const lockPath = join(tmp, 'stasis.lock.json')
-  const r = runCli(['bundle', '--flow', `--lockfile=${lockPath}`, `--output=${out}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--flow', `--lockfile=${lockPath}`, `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
   t.assert.equal(lock.imports['*']['entry.js']['./dep.js'], 'dep.js')
@@ -2223,8 +2247,8 @@ test('CLI: bundle --flow combines with --lockfile, attesting the Flow import gra
   t.assert.ok(!('./types.js' in lock.imports['*']['entry.js']), 'the type-only import is not attested')
 }))
 
-test('CLI: bundle rejects --flow for .sol entries', (t) => {
-  const r = runCli(['bundle', '--flow', 'a.sol'])
+cliTest('CLI: bundle rejects --flow for .sol entries', async (t) => {
+  const r = await runCli(['bundle', '--flow', 'a.sol'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--flow is only valid for JS bundles/)
 })
@@ -2236,7 +2260,7 @@ test('buildBundle --flow threads through the legacy-field resolver (--mainFields
   t.assert.equal(bundle.sources.get('entry.js'), readFileSync(join(tmp, 'entry.js'), 'utf8'))
 }))
 
-test('CLI: bundle --flow --jsx bundles React-Native-style Flow+JSX source', withTmp((t, tmp) => {
+cliTest('CLI: bundle --flow --jsx bundles React-Native-style Flow+JSX source', withTmp(async (t, tmp) => {
   // The motivating case: RN source is both Flow-typed and uses JSX-in-.js. flow-remove-types
   // strips the Flow annotations while leaving the JSX intact, then oxc parses it under --jsx.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'rn-app', version: '1.0.0', type: 'module' }))
@@ -2247,7 +2271,7 @@ test('CLI: bundle --flow --jsx bundles React-Native-style Flow+JSX source', with
     'export function App(props: Props): React$Node { return <Dep count={props.n}><span>{props.n}</span></Dep> }\n')
   writeFileSync(join(tmp, 'dep.js'), 'export const Dep = () => null\n')
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', '--flow', '--jsx', `--output=${out}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--flow', '--jsx', `--output=${out}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.js', 'entry.js'])
@@ -2256,11 +2280,11 @@ test('CLI: bundle --flow --jsx bundles React-Native-style Flow+JSX source', with
   t.assert.match(parsed.sources.get('entry.js'), /<Dep count=/)
 }))
 
-test('CLI: bundle --flow alone still fails on JSX (JSX needs --jsx too)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --flow alone still fails on JSX (JSX needs --jsx too)', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'rn-app', version: '1.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'entry.js'),
     '// @flow\nexport function App(): React$Node { return <span>hi</span> }\n')
-  const r = runCli(['bundle', '--flow', `--output=${join(tmp, 'snap.br')}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--flow', `--output=${join(tmp, 'snap.br')}`, 'entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /broken at load time/)
 }))
@@ -2337,11 +2361,11 @@ test('buildBundle --typescript resolves per platform under --metro', withTmp(asy
   t.assert.equal(importTarget(bundle, 'entry.ts', './dep.js'), 'dep.ts')
 }))
 
-test('CLI: bundle --typescript bundles a nodenext-style TS project and the bundle loads', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript bundles a nodenext-style TS project and the bundle loads', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   writeFileSync(join(tmp, 'entry.ts'),
     'import { dep } from "./dep.js"\nconsole.log("ts-loaded", (dep as number) + 1)\n')
-  const r = runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
@@ -2349,7 +2373,7 @@ test('CLI: bundle --typescript bundles a nodenext-style TS project and the bundl
   t.assert.match(parsed.sources.get('entry.ts'), /from "\.\/dep\.js"/)
   // The mapped edge round-trips: --bundle=load resolves ./dep.js -> dep.ts from the import map
   // (plain node would refuse it), and Node strips the types at load.
-  const run = runCli(['run', '--lock=none', '--bundle=load', 'entry.ts'], { cwd: tmp })
+  const run = await runCli(['run', '--lock=none', '--bundle=load', 'entry.ts'], { cwd: tmp })
   t.assert.equal(run.status, 0, `run stderr: ${run.stderr}`)
   t.assert.match(run.stdout, /ts-loaded 2/)
 }))
@@ -2367,11 +2391,12 @@ const writeWorkspaceSubdir = (tmp) => {
   return join(tmp, 'a', 'b')
 }
 
-test('CLI: bundle from a workspace subdir writes to the workspace root, so it re-bundles and loads there', withTmp((t, tmp) => {
+cliTest('CLI: bundle from a workspace subdir writes to the workspace root, so it re-bundles and loads there', withTmp(async (t, tmp) => {
   const cwd = writeWorkspaceSubdir(tmp)
   // Twice: one written into a/b would root the second build there, out of shared/.
   for (let i = 0; i < 2; i++) {
-    const r = runCli(['bundle', '--typescript', '--jsx', 'src/index.ts'], { cwd })
+    // eslint-disable-next-line no-await-in-loop -- the second build runs over the first's output
+    const r = await runCli(['bundle', '--typescript', '--jsx', 'src/index.ts'], { cwd })
     t.assert.equal(r.status, 0, `bundle #${i + 1} stderr: ${r.stderr}`)
     t.assert.match(r.stderr, /\[stasis\] Bundled 2 files in 2 packages from \.\.\/\.\. to \.\.\/\.\.\/stasis\.code\.br/)
   }
@@ -2379,17 +2404,17 @@ test('CLI: bundle from a workspace subdir writes to the workspace root, so it re
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.entries], ['a/b/src/index.ts'])
   t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['a/b/src/index.ts', 'shared/index.js'])
-  const run = runCli(['run', '--lock=none', '--bundle=load', 'src/index.ts'], { cwd })
+  const run = await runCli(['run', '--lock=none', '--bundle=load', 'src/index.ts'], { cwd })
   t.assert.equal(run.status, 0, `run stderr: ${run.stderr}`)
   t.assert.match(run.stdout, /ws-loaded 2/)
 }))
 
-test('CLI: bundle names a stasis file below the root that roots the build out of the files it reaches', withTmp((t, tmp) => {
+cliTest('CLI: bundle names a stasis file below the root that roots the build out of the files it reaches', withTmp(async (t, tmp) => {
   const cwd = writeWorkspaceSubdir(tmp)
   // As an older stasis left it: a/b/stasis.code.br roots the State at a/b.
-  t.assert.equal(runCli(['bundle', '--typescript', 'src/index.ts'], { cwd }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--typescript', 'src/index.ts'], { cwd })).status, 0)
   cpSync(join(tmp, 'stasis.code.br'), join(cwd, 'stasis.code.br'))
-  const r = runCli(['bundle', '--typescript', 'src/index.ts'], { cwd })
+  const r = await runCli(['bundle', '--typescript', 'src/index.ts'], { cwd })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /\.\.\/\.\.\/shared\/index\.js is outside the project root at \. \(rooted there by its stasis\.code\.br, which can be removed if stale\)/)
 }))
@@ -2399,35 +2424,35 @@ test('CLI: bundle names a stasis file below the root that roots the build out of
 // Anything less leaves it off -- a project of Node-compatible .ts files importing ./dep.ts must
 // resolve as Node does -- and a miss --typescript would resolve names it instead.
 
-test('CLI: bundle takes --typescript as given where the TS entries import their TS sources by output name', withTmp((t, tmp) => {
+cliTest('CLI: bundle takes --typescript as given where the TS entries import their TS sources by output name', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   // Beyond the entries, the whole of --typescript applies: dep.ts's extensionless ./util only
   // resolves under it.
   writeFileSync(join(tmp, 'dep.ts'), 'import { u } from "./util"\nexport const dep: number = u\n')
   writeFileSync(join(tmp, 'util.ts'), 'export const u: number = 1\n')
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts', 'util.ts'])
   t.assert.equal(bundle.imports.get('*').get('dep.ts').get('./util'), 'util.ts')
 }))
 
-test('CLI: bundle --metro takes --typescript as given where the TS entries import their TS sources by output name', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro takes --typescript as given where the TS entries import their TS sources by output name', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios', `--output=${out}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
 }))
 
-test('CLI: bundle takes --typescript as given for a CommonJS .cts entry with a top-level return', withTmp((t, tmp) => {
+cliTest('CLI: bundle takes --typescript as given for a CommonJS .cts entry with a top-level return', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'cts-app', version: '1.2.3' }))
   writeFileSync(join(tmp, 'entry.cts'), 'const { dep } = require("./dep.cjs")\nif (!dep) return\nmodule.exports = dep\n')
   writeFileSync(join(tmp, 'dep.cts'), 'exports.dep = 1\n')
   const out = join(tmp, 'snap.br')
-  const r = runCli(['bundle', `--output=${out}`, 'entry.cts'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${out}`, 'entry.cts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /unresolved/)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
@@ -2441,12 +2466,12 @@ const partialTypescriptTells = [
   ['one relative .js import on disk', { 'entry.ts': 'import { dep } from "./dep.js"\nimport { real } from "./real.js"\nexport const v: number = dep + real\n', 'real.js': 'export const real = 1\n' }, 'entry.ts', /import \.\/dep\.js from entry\.ts \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u],
 ]
 for (const [label, files, entry, expected] of partialTypescriptTells) {
-  test(`CLI: bundle leaves --typescript off with ${label}, naming it on the miss it would resolve`, withTmp((t, tmp) => {
+  cliTest(`CLI: bundle leaves --typescript off with ${label}, naming it on the miss it would resolve`, withTmp(async (t, tmp) => {
     writeTsProject(tmp)
     rmSync(join(tmp, 'entry.ts'))
     for (const [name, content] of Object.entries(files)) writeFileSync(join(tmp, name), content)
     const out = join(tmp, 'snap.br')
-    const r = runCli(['bundle', `--output=${out}`, entry], { cwd: tmp })
+    const r = await runCli(['bundle', `--output=${out}`, entry], { cwd: tmp })
     t.assert.notEqual(r.status, 0)
     t.assert.match(r.stderr, /broken at load time/)
     t.assert.match(r.stderr, expected)
@@ -2454,56 +2479,56 @@ for (const [label, files, entry, expected] of partialTypescriptTells) {
   }))
 }
 
-test('CLI: bundle leaves --typescript off where a relative .js import has no TS source either, with no hint', withTmp((t, tmp) => {
+cliTest('CLI: bundle leaves --typescript off where a relative .js import has no TS source either, with no hint', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   rmSync(join(tmp, 'dep.ts'))
-  const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /import \.\/dep\.js from entry\.ts \(MODULE_NOT_FOUND\)/u)
 }))
 
-test('CLI: bundle resolves Node-compatible .ts imports as Node does, with --typescript off', withTmp((t, tmp) => {
+cliTest('CLI: bundle resolves Node-compatible .ts imports as Node does, with --typescript off', withTmp(async (t, tmp) => {
   // A TS entry importing ./dep.ts by its own name is Node's type stripping, not tsc: no tell, so
   // dep.ts's extensionless ./util stays a miss (named for --typescript) rather than resolving.
   writeTsProject(tmp)
   writeFileSync(join(tmp, 'entry.ts'), 'import { dep } from "./dep.ts"\nexport const v: number = dep\n')
   writeFileSync(join(tmp, 'dep.ts'), 'import { u } from "./util"\nexport const dep: number = u\n')
   writeFileSync(join(tmp, 'util.ts'), 'export const u: number = 1\n')
-  const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /import \.\/util from dep\.ts \(MODULE_NOT_FOUND; resolves to util\.ts under --typescript\)/u)
 
   writeFileSync(join(tmp, 'dep.ts'), 'export const dep: number = 1\n')
   const out = join(tmp, 'snap.br')
-  const ok = runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  const ok = await runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(ok.status, 0, `stderr: ${ok.stderr}`)
   t.assert.equal(Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8')).imports.get('*').get('entry.ts').get('./dep.ts'), 'dep.ts')
 }))
 
-test('CLI: bundle names --typescript on a miss only a tsconfig paths alias resolves', withTmp((t, tmp) => {
+cliTest('CLI: bundle names --typescript on a miss only a tsconfig paths alias resolves', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }))
   mkdirSync(join(tmp, 'src'))
   writeFileSync(join(tmp, 'src', 'a.ts'), 'export const a: number = 1\n')
   writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "@/a"\nexport const v: number = a\n')
-  const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /import @\/a from entry\.ts \(MODULE_NOT_FOUND; resolves to src\/a\.ts under --typescript\)/u)
 }))
 
-test('CLI: bundle --metro names --typescript on a miss its --typescript resolver would resolve', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro names --typescript on a miss its --typescript resolver would resolve', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   rmSync(join(tmp, 'entry.ts'))
   writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v = dep\n')
-  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${join(tmp, 'snap.br')}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios', `--output=${join(tmp, 'snap.br')}`, 'entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /import \.\/dep\.js from entry\.js \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u)
 }))
 
-test('CLI: bundle --typescript combines with --lockfile, attesting the mapped edge', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript combines with --lockfile, attesting the mapped edge', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
   const lockPath = join(tmp, 'stasis.lock.json')
-  const r = runCli(['bundle', '--typescript', `--lockfile=${lockPath}`, `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', `--lockfile=${lockPath}`, `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
   t.assert.equal(lock.imports['*']['entry.ts']['./dep.js'], 'dep.ts')
@@ -2512,21 +2537,21 @@ test('CLI: bundle --typescript combines with --lockfile, attesting the mapped ed
   t.assert.ok(!('dep.js' in lock.sources['.'].files))
 }))
 
-test('CLI: bundle rejects --typescript for .sol entries', (t) => {
-  const r = runCli(['bundle', '--typescript', 'a.sol'])
+cliTest('CLI: bundle rejects --typescript for .sol entries', async (t) => {
+  const r = await runCli(['bundle', '--typescript', 'a.sol'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--typescript is only valid for JS bundles/)
 })
 
-test('CLI: bundle rejects --typescript with --metro-resolver', (t) => {
-  const r = runCli(['bundle', '--typescript', '--metro', '--metro-resolver', '--platforms=ios', 'entry.ts'])
+cliTest('CLI: bundle rejects --typescript with --metro-resolver', async (t) => {
+  const r = await runCli(['bundle', '--typescript', '--metro', '--metro-resolver', '--platforms=ios', 'entry.ts'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--typescript is not supported with --metro-resolver/)
 })
 
 // --- tsconfig `compilerOptions.paths` under --typescript ---
 
-test('CLI: bundle --typescript auto-discovers tsconfig paths and the aliased bundle loads', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript auto-discovers tsconfig paths and the aliased bundle loads', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
   // JSONC on purpose (comments + trailing comma), like real tsconfigs.
   writeFileSync(join(tmp, 'tsconfig.json'), `{
@@ -2537,32 +2562,32 @@ test('CLI: bundle --typescript auto-discovers tsconfig paths and the aliased bun
   writeFileSync(join(tmp, 'entry.ts'),
     'import { dep } from "@/dep.js"\nconsole.log("aliased", (dep as number) + 1)\n')
   writeFileSync(join(tmp, 'src', 'dep.ts'), 'export const dep: number = 1\n')
-  const r = runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', '--output=stasis.code.br', 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
   t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['entry.ts', 'src/dep.ts'])
   t.assert.equal(parsed.imports.get('*').get('entry.ts').get('@/dep.js'), 'src/dep.ts')
   // The aliased edge round-trips: --bundle=load resolves it from the import map (plain node cannot).
-  const run = runCli(['run', '--lock=none', '--bundle=load', 'entry.ts'], { cwd: tmp })
+  const run = await runCli(['run', '--lock=none', '--bundle=load', 'entry.ts'], { cwd: tmp })
   t.assert.equal(run.status, 0, `run stderr: ${run.stderr}`)
   t.assert.match(run.stdout, /aliased 2/)
 }))
 
-test('CLI: bundle --typescript --tsconfig=path uses the named config (and must exist)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript --tsconfig=path uses the named config (and must exist)', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
   writeFileSync(join(tmp, 'tsconfig.build.json'), JSON.stringify({ compilerOptions: { paths: { '~/*': ['./lib/*'] } } }))
   mkdirSync(join(tmp, 'lib'))
   writeFileSync(join(tmp, 'entry.ts'), 'import { d } from "~/d.js"\nexport const v: number = d\n')
   writeFileSync(join(tmp, 'lib', 'd.ts'), 'export const d: number = 1\n')
-  const r = runCli(['bundle', '--typescript', '--tsconfig=tsconfig.build.json', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', '--tsconfig=tsconfig.build.json', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   // A named config that does not exist fails closed (a typo must not silently drop the aliases).
-  const missing = runCli(['bundle', '--typescript', '--tsconfig=tsconfig.nope.json', `--output=${join(tmp, 'snap2.br')}`, 'entry.ts'], { cwd: tmp })
+  const missing = await runCli(['bundle', '--typescript', '--tsconfig=tsconfig.nope.json', `--output=${join(tmp, 'snap2.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.notEqual(missing.status, 0)
   t.assert.match(missing.stderr, /tsconfig not found/)
 }))
 
-test('CLI: bundle --typescript maps an alias to a .tsx target without --jsx', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript maps an alias to a .tsx target without --jsx', withTmp(async (t, tmp) => {
   // The alias target exists only as .tsx, which --typescript maps to as tsc does; .tsx is parsed
   // by extension, so no --jsx is needed to carry it.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
@@ -2573,19 +2598,19 @@ test('CLI: bundle --typescript maps an alias to a .tsx target without --jsx', wi
   writeFileSync(join(tmp, 'src', 'a', 'b.tsx'), 'export const B = (): unknown => <b>x</b>\n')
   const outPath = join(tmp, 'out.br')
 
-  const r = runCli(['bundle', '--typescript', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', `--output=${outPath}`, 'src/x/y/z.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a/b.tsx', 'src/x/y/z.ts'])
 }))
 
-test('CLI: bundle rejects --tsconfig without --typescript', (t) => {
-  const r = runCli(['bundle', '--tsconfig=tsconfig.json', 'entry.ts'])
+cliTest('CLI: bundle rejects --tsconfig without --typescript', async (t) => {
+  const r = await runCli(['bundle', '--tsconfig=tsconfig.json', 'entry.ts'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--tsconfig is only valid with --typescript/)
 })
 
-test('CLI: bundle --typescript resolves an exports-bearing TS-source dependency', withTmp((t, tmp) => {
+cliTest('CLI: bundle --typescript resolves an exports-bearing TS-source dependency', withTmp(async (t, tmp) => {
   // The modern-default package shape: `exports` pointing at compiled output that only exists as
   // TS source (an unbuilt workspace dep). Plain --typescript must handle it like a main-bearing one.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
@@ -2594,7 +2619,7 @@ test('CLI: bundle --typescript resolves an exports-bearing TS-source dependency'
     JSON.stringify({ name: 'expdep', version: '2.0.0', exports: './lib/main.js' }))
   writeFileSync(join(tmp, 'node_modules', 'expdep', 'lib', 'main.ts'), 'export const m: number = 5\n')
   writeFileSync(join(tmp, 'entry.ts'), 'import { m } from "expdep"\nexport const v: number = m\n')
-  const r = runCli(['bundle', '--typescript', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  const r = await runCli(['bundle', '--typescript', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'snap.br'))).toString('utf8'))
   t.assert.equal(parsed.imports.get('*').get('entry.ts').get('expdep'), 'node_modules/expdep/lib/main.ts')
@@ -2673,10 +2698,10 @@ test('buildBundle --metro: a base .js can appear when one platform resolves to i
   t.assert.ok([...bundle.sources.keys()].includes('src/Button.js'))
 })
 
-test('CLI: bundle --metro --platforms writes a bundle + lockfile that round-trip with the platform map', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro --platforms writes a bundle + lockfile that round-trip with the platform map', withTmp(async (t, tmp) => {
   const out = join(tmp, 'metro.br')
   const lock = join(tmp, 'metro.lock.json')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--metro', '--platforms=ios,android', `--lockfile=${lock}`, `--output=${out}`, 'src/entry.js'],
     { cwd: fieldsFixture },
   )
@@ -2693,9 +2718,9 @@ test('CLI: bundle --metro --platforms writes a bundle + lockfile that round-trip
   t.assert.deepStrictEqual(Object.fromEntries(lt), { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
 }))
 
-test('CLI: --platforms accepts repeats and comma lists, unioned', withTmp((t, tmp) => {
+cliTest('CLI: --platforms accepts repeats and comma lists, unioned', withTmp(async (t, tmp) => {
   const out = join(tmp, 'metro.br')
-  const r = runCli(
+  const r = await runCli(
     ['bundle', '--metro', '--platforms=ios', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'],
     { cwd: fieldsFixture },
   )
@@ -2705,26 +2730,26 @@ test('CLI: --platforms accepts repeats and comma lists, unioned', withTmp((t, tm
   t.assert.deepStrictEqual(Object.keys(Object.fromEntries(bundle.imports.get('*').get('src/entry.js').get('./Button'))), ['android', 'ios'])
 }))
 
-test('CLI: a --metro multi-platform bundle fails closed under plain --bundle=load', withTmp((t, tmp) => {
+cliTest('CLI: a --metro multi-platform bundle fails closed under plain --bundle=load', withTmp(async (t, tmp) => {
   const out = join(tmp, 'metro.br')
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
   // Plain node has no platform context to pick a per-platform edge -> clear error, not a crash.
-  const load = runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'src/entry.js'], { cwd: fieldsFixture })
+  const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.notEqual(load.status, 0)
   t.assert.match(load.stderr, /platform-specific|ERR_STASIS_PLATFORM_SPECIFIC/)
 }))
 
-test('CLI: a --metro bundle verifies clean against its own companion lockfile at load (no ERR_ASSERTION)', withTmp((t, tmp) => {
+cliTest('CLI: a --metro bundle verifies clean against its own companion lockfile at load (no ERR_ASSERTION)', withTmp(async (t, tmp) => {
   cpSync(fieldsFixture, tmp, { recursive: true })
   const bundlePath = join(tmp, 'stasis.code.br')
   const lockPath = join(tmp, 'stasis.lock.json')
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })).status, 0)
   // `--lock=frozen` loads the bundle AND verifies it against the companion lockfile, so
   // the constructor cross-checks every edge; a per-platform edge is a Map on BOTH sides
   // and must compare STRUCTURALLY -- not throw ERR_ASSERTION on identical-but-distinct
   // Maps. The verification passes clean, then it fails closed at getImport (no platform
   // context) with the clean platform-specific error -- never an assertion mismatch.
-  const load = runCli(['run', '--bundle=load', '--lock=frozen', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const load = await runCli(['run', '--bundle=load', '--lock=frozen', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.notEqual(load.status, 0)
   t.assert.match(load.stderr, /platform-specific|ERR_STASIS_PLATFORM_SPECIFIC/)
   t.assert.doesNotMatch(load.stderr, /ERR_ASSERTION|mismatches the lockfile/)
@@ -2967,11 +2992,11 @@ test('buildBundle --mainFields (no --metro) does NOT pull native ios/android sou
   t.assert.ok(!files.has('RNThing.podspec') && !files.has('ios/RNThing.mm'), 'native capture is --metro-only')
 }))
 
-test('CLI: a --metro bundle + companion lockfile attest the native surface (by integrity), round-tripping', withTmp((t, tmp) => {
+cliTest('CLI: a --metro bundle + companion lockfile attest the native surface (by integrity), round-tripping', withTmp(async (t, tmp) => {
   writeRnFixture(tmp)
   const bundlePath = join(tmp, 'stasis.code.br')
   const lockPath = join(tmp, 'stasis.lock.json')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
 
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(bundlePath)).toString('utf8'))
@@ -2987,30 +3012,30 @@ test('CLI: a --metro bundle + companion lockfile attest the native surface (by i
   t.assert.ok(!('ios/helper.js' in lfiles), 'code under ios/ is not attested as native')
 }))
 
-test('CLI: --metro requires --platforms; --platforms requires --metro; --metro forbids --conditions/--mainFields', (t) => {
-  t.assert.match(runCli(['bundle', '--metro', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /--metro requires --platforms/)
-  t.assert.match(runCli(['bundle', '--platforms=ios', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /--platforms is only valid with --metro/)
-  t.assert.match(runCli(['bundle', '--metro', '--platforms=ios', '--conditions=x', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /--conditions can't be combined with --metro/)
-  t.assert.match(runCli(['bundle', '--metro', '--platforms=ios', '--mainFields=browser', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /--mainFields can't be combined with --metro/)
-  t.assert.match(runCli(['bundle', '--metro', '--platforms=ios', 'a.sol']).stderr, /--metro is only valid for JS bundles/)
+cliTest('CLI: --metro requires --platforms; --platforms requires --metro; --metro forbids --conditions/--mainFields', async (t) => {
+  t.assert.match((await runCli(['bundle', '--metro', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /--metro requires --platforms/)
+  t.assert.match((await runCli(['bundle', '--platforms=ios', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /--platforms is only valid with --metro/)
+  t.assert.match((await runCli(['bundle', '--metro', '--platforms=ios', '--conditions=x', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /--conditions can't be combined with --metro/)
+  t.assert.match((await runCli(['bundle', '--metro', '--platforms=ios', '--mainFields=browser', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /--mainFields can't be combined with --metro/)
+  t.assert.match((await runCli(['bundle', '--metro', '--platforms=ios', 'a.sol'])).stderr, /--metro is only valid for JS bundles/)
 })
 
-test('--platforms rejects a name containing / or * (the parsers would refuse the edge key)', async (t) => {
+cliTest('--platforms rejects a name containing / or * (the parsers would refuse the edge key)', async (t) => {
   // A platform name becomes an edge key; Bundle/Lockfile parse reject '/', and '*' is the
   // reserved placeholder. The writer must reject both rather than emit an unreadable bundle.
-  t.assert.match(runCli(['bundle', '--metro', '--platforms=ios,x/y', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /invalid --platforms value 'x\/y'/)
-  t.assert.match(runCli(['bundle', '--metro', '--platforms=*', 'src/entry.js'], { cwd: fieldsFixture }).stderr, /invalid --platforms value '\*'/)
+  t.assert.match((await runCli(['bundle', '--metro', '--platforms=ios,x/y', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /invalid --platforms value 'x\/y'/)
+  t.assert.match((await runCli(['bundle', '--metro', '--platforms=*', 'src/entry.js'], { cwd: fieldsFixture })).stderr, /invalid --platforms value '\*'/)
   await t.assert.rejects(
     () => buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'x/y'] }),
     /invalid platform 'x\/y'/,
   )
 })
 
-test('CLI: diff folds per-platform edges to the resolved-file set (detects a divergent target)', withTmp((t, tmp) => {
+cliTest('CLI: diff folds per-platform edges to the resolved-file set (detects a divergent target)', withTmp(async (t, tmp) => {
   const iosAndroid = join(tmp, 'ios-android.br')
   const iosWeb = join(tmp, 'ios-web.br')
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${iosAndroid}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,web', `--output=${iosWeb}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${iosAndroid}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,web', `--output=${iosWeb}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
   // ./Button is a per-platform Map on BOTH sides (ios+android vs ios+web); the FOLD is
   // what surfaces the divergence -- folded target sets {Button.ios.js, Button.android.js}
   // vs {Button.ios.js, Button.js} differ. Without the fold both Maps contribute nothing
@@ -3025,29 +3050,29 @@ test('CLI: diff folds per-platform edges to the resolved-file set (detects a div
   t.assert.deepStrictEqual(new Set(buttonChange.to), new Set(['src/Button.ios.js', 'src/Button.js']))
   // A --metro bundle still diffs clean against an identical copy (no false positives).
   const copy = join(tmp, 'copy.br')
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${copy}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${copy}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
   t.assert.equal(diffCommand({ left: iosAndroid, right: copy, stat: true, imports: true, out: stub }).differences, false)
 }))
 
-test('CLI: extract unpacks a --metro multi-platform bundle (both variants + a platform-keyed lockfile)', withTmp((t, tmp) => {
+cliTest('CLI: extract unpacks a --metro multi-platform bundle (both variants + a platform-keyed lockfile)', withTmp(async (t, tmp) => {
   const out = join(tmp, 'metro.br')
-  t.assert.equal(runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture }).status, 0)
+  t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
   const dir = join(tmp, 'ex')
-  t.assert.equal(runCli(['extract', `--output=${dir}`, out]).status, 0)
+  t.assert.equal((await runCli(['extract', `--output=${dir}`, out])).status, 0)
   t.assert.ok(existsSync(join(dir, 'src', 'Button.ios.js')) && existsSync(join(dir, 'src', 'Button.android.js')))
   const lock = JSON.parse(readFileSync(join(dir, 'stasis.lock.json'), 'utf8'))
   t.assert.deepStrictEqual(lock.imports['*']['src/entry.js']['./Button'], { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })
 }))
 
-test('CLI: bundle --mainFields rejects a non-JS bundle and an empty value', (t) => {
-  t.assert.match(runCli(['bundle', '--mainFields=browser', 'a.sol']).stderr, /--mainFields is only valid for JS bundles/)
-  const empty = runCli(['bundle', '--mainFields=', 'src/entry.js'], { cwd: fieldsFixture })
+cliTest('CLI: bundle --mainFields rejects a non-JS bundle and an empty value', async (t) => {
+  t.assert.match((await runCli(['bundle', '--mainFields=browser', 'a.sol'])).stderr, /--mainFields is only valid for JS bundles/)
+  const empty = await runCli(['bundle', '--mainFields=', 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.notEqual(empty.status, 0)
   t.assert.match(empty.stderr, /--mainFields must list at least one field/)
 })
 
-test('--mainFields rejects --scope (the field resolver always builds a full-scope bundle)', async (t) => {
-  const r = runCli(['bundle', '--scope=node_modules', '--mainFields=browser', 'src/entry.js'], { cwd: fieldsFixture })
+cliTest('--mainFields rejects --scope (the field resolver always builds a full-scope bundle)', async (t) => {
+  const r = await runCli(['bundle', '--scope=node_modules', '--mainFields=browser', 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--scope is not supported with --mainFields/)
   await t.assert.rejects(
@@ -3056,10 +3081,10 @@ test('--mainFields rejects --scope (the field resolver always builds a full-scop
   )
 })
 
-test('CLI: bundle --mainFields --lockfile attests the resolved (incl. empty-stub) edges', withTmp((t, tmp) => {
+cliTest('CLI: bundle --mainFields --lockfile attests the resolved (incl. empty-stub) edges', withTmp(async (t, tmp) => {
   const bundlePath = join(tmp, 'snap.br')
   const lockPath = join(tmp, 'stasis.lock.json')
-  const r = runCli(['bundle', '--mainFields=react-native,browser,main', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: fieldsFixture })
+  const r = await runCli(['bundle', '--mainFields=react-native,browser,main', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'src/entry.js'], { cwd: fieldsFixture })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
   const redir = lock.imports['*']['node_modules/redir/index.js']
@@ -3070,22 +3095,22 @@ test('CLI: bundle --mainFields --lockfile attests the resolved (incl. empty-stub
   t.assert.ok(lock.sources['.'].files['.stasis/empty-module.js'], 'empty module carries an integrity')
 }))
 
-test('CLI: a --mainFields bundle round-trips through --bundle=load (empty module + redirects from bundle)', withTmp((t, tmp) => {
+cliTest('CLI: a --mainFields bundle round-trips through --bundle=load (empty module + redirects from bundle)', withTmp(async (t, tmp) => {
   cpSync(fieldsFixture, tmp, { recursive: true })
   const bundlePath = join(tmp, 'stasis.code.br')
-  const build = runCli(['bundle', '--mainFields=react-native,browser,main', `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const build = await runCli(['bundle', '--mainFields=react-native,browser,main', `--output=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
   // Prove the browser redirect and the synthetic empty module come from the bundle, not
   // disk: drop the redirected-away file (its target browser-only.js stays), and note
   // `leftpad` was never installed -- its `false` redirect can only resolve to the
   // bundle's empty module.
   rmSync(join(tmp, 'node_modules', 'redir', 'node-only.js'))
-  const load = runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
+  const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
   t.assert.equal(load.stdout, 'ok\n')
 }))
 
-test('--mainFields fails closed on a node_modules symlink whose target escapes the project root', withTmp((t, tmp) => {
+cliTest('--mainFields fails closed on a node_modules symlink whose target escapes the project root', withTmp(async (t, tmp) => {
   // A dependency symlinked to a real file OUTSIDE the project root must not pull
   // out-of-tree bytes into the bundle: the resolved path is realpath'd and rejected,
   // the same way the State-based JS path and the non-JS loaders do.
@@ -3097,7 +3122,7 @@ test('--mainFields fails closed on a node_modules symlink whose target escapes t
     symlinkSync(join(outside, 'evil.js'), join(tmp, 'node_modules', 'extdep', 'index.js'))
     writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
     writeFileSync(join(tmp, 'app.js'), "require('extdep')\n")
-    const r = runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
+    const r = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
     t.assert.notEqual(r.status, 0)
     t.assert.match(r.stderr, /escaping bundle root/)
     t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle is written when a source escapes the root')
@@ -3124,7 +3149,7 @@ test('--mainFields bundles a dependency whose main is a directory or a broken pa
   t.assert.ok(files.has('node_modules/barebad/index.js'), 'broken-main dependency falls back to index and is bundled')
 }))
 
-test('--mainFields fails closed when a real reached file occupies the reserved empty-module path', withTmp((t, tmp) => {
+cliTest('--mainFields fails closed when a real reached file occupies the reserved empty-module path', withTmp(async (t, tmp) => {
   // A `false` browser redirect materialises a synthetic .stasis/empty-module.js; if the
   // project already has a real file there AND it is reached, the bundle must refuse rather
   // than clobber the real bytes with an empty module.
@@ -3132,12 +3157,12 @@ test('--mainFields fails closed when a real reached file occupies the reserved e
   mkdirSync(join(tmp, '.stasis'), { recursive: true })
   writeFileSync(join(tmp, '.stasis', 'empty-module.js'), "module.exports = 'REAL'\n")
   writeFileSync(join(tmp, 'app.js'), "require('./.stasis/empty-module.js')\nrequire('leftpad')\n")
-  const r = runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /reserved empty-module path/)
 }))
 
-test('--mainFields fails closed on a malformed package.json (does not resolve past it)', withTmp((t, tmp) => {
+cliTest('--mainFields fails closed on a malformed package.json (does not resolve past it)', withTmp(async (t, tmp) => {
   // Node throws ERR_INVALID_PACKAGE_CONFIG on a malformed manifest; the field resolver
   // must fail closed too, not silently fall back to index.js (which would resolve where
   // real Node rejects).
@@ -3146,7 +3171,7 @@ test('--mainFields fails closed on a malformed package.json (does not resolve pa
   mkdirSync(join(tmp, 'node_modules', 'broken'), { recursive: true })
   writeFileSync(join(tmp, 'node_modules', 'broken', 'package.json'), '{ not valid json')
   writeFileSync(join(tmp, 'node_modules', 'broken', 'index.js'), "module.exports = 'broken'\n")
-  const r = runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /Invalid package\.json/)
   t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle written on a malformed manifest')
@@ -3157,7 +3182,7 @@ test('--mainFields fails closed on a malformed package.json (does not resolve pa
 // for the same failure. ESM dynamic-import callers commonly do
 //   try { await import(x) } catch (e) { if (e.code !== 'ERR_MODULE_NOT_FOUND') throw e }
 // and that guard would re-throw on the bundle's ERR_ASSERTION.
-test('CLI: bundle load surfaces ERR_MODULE_NOT_FOUND for dynamic import of a missing module', withTmp((t, tmp) => {
+cliTest('CLI: bundle load surfaces ERR_MODULE_NOT_FOUND for dynamic import of a missing module', withTmp(async (t, tmp) => {
   cpSync(cjsFixture, tmp, { recursive: true })
   // Replace the entry with one that catches ERR_MODULE_NOT_FOUND specifically.
   const entry = join(tmp, 'src', 'entry.cjs')
@@ -3169,13 +3194,13 @@ test('CLI: bundle load surfaces ERR_MODULE_NOT_FOUND for dynamic import of a mis
   )
 
   const bundlePath = join(tmp, 'snap.br')
-  const build = runCli(['bundle', `--output=${bundlePath}`, 'src/entry.cjs'], { cwd: tmp })
+  const build = await runCli(['bundle', `--output=${bundlePath}`, 'src/entry.cjs'], { cwd: tmp })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
 
   // cjsFixture ships a stasis.lock.json; use lock=ignore so `stasis run` tolerates it.
   // The fixture's stasis.config.json declares scope=full, which is now the CLI default
   // since ed41d6f flipped --full into the implicit default. No scope flag needed.
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=ignore', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.cjs'],
     { cwd: tmp },
   )
@@ -3200,27 +3225,27 @@ const jsProject = (tmp, files, pkg = { name: 'fail-closed', version: '0.0.0', ty
   for (const [name, content] of Object.entries(files)) writeFileSync(join(tmp, name), content)
 }
 
-test('CLI: bundle (JS) fails closed when an export-from edge cannot be resolved', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails closed when an export-from edge cannot be resolved', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'file.mjs': 'export * from "@noble/ciphers/_arx.js"\n' })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'file.mjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'file.mjs'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'must exit non-zero on an unresolved static export-from')
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /unresolved export-from @noble\/ciphers\/_arx\.js from .*file\.mjs \(MODULE_NOT_FOUND\)/)
   t.assert.ok(!existsSync(outPath), 'output file must not be written when bundling fails')
 }))
 
-test('CLI: bundle (JS) fails closed when a static import edge cannot be resolved', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails closed when a static import edge cannot be resolved', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'entry.mjs': "import './missing.mjs'\n" })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'must exit non-zero on an unresolved static import')
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /unresolved import \.\/missing\.mjs from .*entry\.mjs/)
   t.assert.ok(!existsSync(outPath))
 }))
 
-test('CLI: bundle (JS) fails closed when a statically-imported module file does not parse', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails closed when a statically-imported module file does not parse', withTmp(async (t, tmp) => {
   // broken.mjs resolves fine (the file exists), but oxc can't parse it -- its
   // static edges are unknown, so the graph may have holes we can't enumerate.
   // oxc recovers from syntax errors instead of throwing, so this used to be
@@ -3230,14 +3255,14 @@ test('CLI: bundle (JS) fails closed when a statically-imported module file does 
     'broken.mjs': 'export const x = {\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'must exit non-zero when a statically-linked module file fails to parse')
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /parse error in .*broken\.mjs/)
   t.assert.ok(!existsSync(outPath))
 }))
 
-test('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc recovers from (import.meta in CJS)', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc recovers from (import.meta in CJS)', withTmp(async (t, tmp) => {
   // oxc reports `import.meta` in CJS as an error but its recovered AST keeps
   // the require() calls. A recovered CJS parse error is warn-only (see
   // analyzeScanner's fatalParse): the bundle must include the whole chain and
@@ -3248,7 +3273,7 @@ test('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc rec
     'extra.cjs': 'module.exports = 1\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /file\(s\) with parse errors; their recorded imports may be incomplete/)
   t.assert.match(r.stderr, /guard\.cjs/)
@@ -3257,7 +3282,7 @@ test('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc rec
     'the require edge inside the parse-error file must be salvaged and walked')
 }))
 
-test('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s module wrapper does', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s module wrapper does', withTmp(async (t, tmp) => {
   // oxc parses CJS as `commonjs`, which accepts a top-level `return` (and `new.target`) like
   // Node's wrapper: no parse-error warning, every require() edge walked, and the bundle loads.
   // guard.js sits in a typeless package (re-parsed as `commonjs` after detection); early.cjs is
@@ -3269,14 +3294,14 @@ test('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s modu
     'extra.js': 'module.exports = 1\n',
   }, { name: 'cjs-return', version: '0.0.0' })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['early.cjs', 'entry.js', 'extra.js', 'guard.js'])
   t.assert.equal(decoded.formats['guard.js'], 'commonjs')
 
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${outPath}`, 'entry.js'],
     { cwd: tmp },
   )
@@ -3284,7 +3309,7 @@ test('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s modu
   t.assert.equal(load.stdout, 'ok\n')
 }))
 
-test('CLI: bundle (JS) tolerates a missing static import behind a dynamic import() boundary', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) tolerates a missing static import behind a dynamic import() boundary', withTmp(async (t, tmp) => {
   // The optional-adapter pattern: a statically-broken subtree entered via
   // `await import()` surfaces as the dynamic import's rejection -- catchable,
   // and plain node takes the fallback branch. Only static-ESM-only paths from
@@ -3294,14 +3319,14 @@ test('CLI: bundle (JS) tolerates a missing static import behind a dynamic import
     'optional.mjs': "import 'not-installed-pkg'\nexport const name = 'optional'\n",
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /unresolved import\(s\); they will fall through at load time/)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.mjs', 'optional.mjs'])
 }))
 
-test('CLI: bundle (JS) fails closed when an edge resolves to a file a source bundle cannot carry', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails closed when an edge resolves to a file a source bundle cannot carry', withTmp(async (t, tmp) => {
   // require('./tool') of an extensionless file works in plain node, but scan
   // records the edge without ever bundling the target (not a RESOLVABLE ext).
   // This used to exit 0 with NO warning at all -- the import map pointed at a
@@ -3311,7 +3336,7 @@ test('CLI: bundle (JS) fails closed when an edge resolves to a file a source bun
     'tool': 'console.log("tool")\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'must exit non-zero on an edge the bundle cannot carry')
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /\.\/tool from .*entry\.cjs resolves to .*tool, which a source bundle can't carry/)
@@ -3325,20 +3350,20 @@ test('CLI: bundle (JS) fails closed when an edge resolves to a file a source bun
 // static edges can't be enumerated from the partial parse. `--jsx` opts the .js/.cjs/.mjs family
 // into JSX parsing so the scanner can walk past the JSX to the import graph.
 
-test('CLI: bundle (JS) fails closed on JSX in a .js file without --jsx', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails closed on JSX in a .js file without --jsx', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'entry.js': "import { greet } from './greet.js'\nexport const App = () => <Text>{greet}</Text>\n", 'greet.js': "export const greet = 'hi'\n" })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0, 'JSX in a .js file must fail closed by default (parser rejects it)')
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /parse error in .*entry\.js/)
   t.assert.ok(!existsSync(outPath))
 }))
 
-test('CLI: bundle --jsx parses JSX in a .js file and walks its import graph', withTmp((t, tmp) => {
+cliTest('CLI: bundle --jsx parses JSX in a .js file and walks its import graph', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'entry.js': "import { greet } from './greet.js'\nexport const App = () => <Text>{greet}</Text>\n", 'greet.js': "export const greet = 'hi'\n" })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--jsx', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   // The JSX file parsed cleanly and the edge behind it was followed.
@@ -3348,7 +3373,7 @@ test('CLI: bundle --jsx parses JSX in a .js file and walks its import graph', wi
   t.assert.match(decoded.sources['.'].files['entry.js'], /<Text>\{greet\}<\/Text>/u)
 }))
 
-test('CLI: bundle --metro --jsx bundles a React Native JSX-in-.js entry (the reported scenario)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro --jsx bundles a React Native JSX-in-.js entry (the reported scenario)', withTmp(async (t, tmp) => {
   // Modern RN source is ESM with JSX in .js files; under --metro the parse error was fatal
   // ("JS bundle would be broken at load time"). --jsx makes the scanner parse past the JSX.
   jsProject(tmp, {
@@ -3356,18 +3381,18 @@ test('CLI: bundle --metro --jsx bundles a React Native JSX-in-.js entry (the rep
     'Component.js': "export const Component = () => <View>hi</View>\n",
   })
   const outPath = join(tmp, 'out.br')
-  const noJsx = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const noJsx = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(noJsx.status, 0, 'without --jsx, --metro must still fail closed on JSX-in-.js')
   t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
 
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
     'the whole JSX chain must be walked on every platform')
 }))
 
-test('CLI: bundle --metro --jsx handles a typeless package (RN convention: no "type"), still detecting ESM', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro --jsx handles a typeless package (RN convention: no "type"), still detecting ESM', withTmp(async (t, tmp) => {
   // A React Native app's package.json usually has NO "type" field, so its .js files hit oxc's
   // `unambiguous` sourceType (declared === null) -- the primary --jsx path. It must parse the JSX
   // *and* keep detecting the ESM syntax, or the file lands in the wrong module format. (The other
@@ -3377,7 +3402,7 @@ test('CLI: bundle --metro --jsx handles a typeless package (RN convention: no "t
     'Component.js': "export const Component = () => <View>hi</View>\n",
   }, { name: 'rn-typeless', version: '0.0.0' }) // deliberately no "type" -> typeless package
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
@@ -3386,7 +3411,7 @@ test('CLI: bundle --metro --jsx handles a typeless package (RN convention: no "t
   t.assert.equal(decoded.formats['index.js'], 'module', 'import/export syntax must resolve to module even with JSX enabled')
 }))
 
-test('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-parse warning)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-parse warning)', withTmp(async (t, tmp) => {
   // JSX in a CJS file is only a *recovered* (tolerated) parse error without --jsx: the CLI warns
   // and salvages the require() edges but exits 0. With --jsx the file parses cleanly, so the
   // parse-error warning must disappear entirely while the graph is still walked. (Typeless
@@ -3397,11 +3422,11 @@ test('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-p
   }, { name: 'rn-cjs', version: '0.0.0' })
   const outPath = join(tmp, 'out.br')
 
-  const noJsx = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const noJsx = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(noJsx.status, 0, `CJS JSX is tolerated (recovered) without --jsx; stderr: ${noJsx.stderr}`)
   t.assert.match(noJsx.stderr, /file\(s\) with parse errors/, 'without --jsx the CJS JSX must warn as a salvaged parse error')
 
-  const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/, '--jsx must parse the CJS JSX cleanly (no salvaged-parse warning)')
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
@@ -3409,7 +3434,7 @@ test('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-p
   t.assert.equal(decoded.formats['index.js'], 'commonjs', 'the require/module.exports file stays CommonJS')
 }))
 
-test('CLI: bundle --jsx does not enable JSX for .ts files (its <T> generics collide with JSX)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --jsx does not enable JSX for .ts files (its <T> generics collide with JSX)', withTmp(async (t, tmp) => {
   // TypeScript reserves JSX for .tsx; a .ts file uses `<T>` for generics, so --jsx deliberately
   // leaves the .ts family JSX-free. A plain generic .ts still parses; JSX in a .ts still fails.
   jsProject(tmp, {
@@ -3417,18 +3442,18 @@ test('CLI: bundle --jsx does not enable JSX for .ts files (its <T> generics coll
     'bad.ts': 'export const App = () => <Text>hi</Text>\n',
   })
   const okOut = join(tmp, 'ok.br')
-  const ok = runCli(['bundle', '--jsx', `--output=${okOut}`, 'ok.ts'], { cwd: tmp })
+  const ok = await runCli(['bundle', '--jsx', `--output=${okOut}`, 'ok.ts'], { cwd: tmp })
   t.assert.equal(ok.status, 0, `a generic .ts must still parse under --jsx; stderr: ${ok.stderr}`)
 
   const badOut = join(tmp, 'bad.br')
-  const bad = runCli(['bundle', '--jsx', `--output=${badOut}`, 'bad.ts'], { cwd: tmp })
+  const bad = await runCli(['bundle', '--jsx', `--output=${badOut}`, 'bad.ts'], { cwd: tmp })
   t.assert.notEqual(bad.status, 0, 'JSX in a .ts file must still fail closed even with --jsx')
   t.assert.match(bad.stderr, /JS bundle would be broken at load time/)
   t.assert.ok(!existsSync(badOut))
 }))
 
-test('CLI: bundle --jsx is rejected for non-JS entries', (t) => {
-  const r = runCli(['bundle', '--jsx', 'a.sol'])
+cliTest('CLI: bundle --jsx is rejected for non-JS entries', async (t) => {
+  const r = await runCli(['bundle', '--jsx', 'a.sol'])
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /--jsx is only valid for JS bundles/)
 })
@@ -3463,13 +3488,13 @@ const writeTsxDep = (tmp, tsx) => {
   writeFileSync(join(dep, 'index.tsx'), tsx)
 }
 
-test('CLI: bundle --metro carries a .tsx dependency without --jsx', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro carries a .tsx dependency without --jsx', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import { SafeArea } from 'tsx-dep'\nexport const App = SafeArea\n" })
   writeTsxDep(tmp, "import { inset } from './inset'\nexport const SafeArea = (): unknown => <View>{inset}</View>\n")
   writeFileSync(join(tmp, 'node_modules', 'tsx-dep', 'src', 'inset.ts'), 'export const inset: number = 0\n')
   const outPath = join(tmp, 'out.br')
 
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
@@ -3480,10 +3505,10 @@ test('CLI: bundle --metro carries a .tsx dependency without --jsx', withTmp((t, 
   t.assert.equal(bundle.formats.get('node_modules/tsx-dep/src/index.tsx'), 'module')
 }))
 
-test('CLI: bundle --metro names an un-carryable target by project-relative paths', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro names an un-carryable target by project-relative paths', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import addon from './addon.node'\nexport const App = addon\n", 'addon.node': 'binary' })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /JS bundle would be broken at load time/)
   t.assert.match(r.stderr, /\.\/addon\.node from index\.js resolves to addon\.node, which a source bundle can't carry/)
@@ -3493,20 +3518,20 @@ test('CLI: bundle --metro names an un-carryable target by project-relative paths
   t.assert.ok(!existsSync(outPath))
 }))
 
-test('CLI: bundle --metro probes .tsx for an extensionless import without --jsx (sourceExts)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro probes .tsx for an extensionless import without --jsx (sourceExts)', withTmp(async (t, tmp) => {
   jsProject(tmp, {
     'index.js': "import { W } from './Widget'\nexport const App = W\n",
     'Widget.tsx': 'export const W = (): unknown => <b>x</b>\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['Widget.tsx', 'index.js'],
     'the extensionless import must resolve to Widget.tsx and carry it')
 }))
 
-test('CLI: bundle --metro probes in Metro\'s order: .js before .jsx, .jsx before .json', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro probes in Metro\'s order: .js before .jsx, .jsx before .json', withTmp(async (t, tmp) => {
   jsProject(tmp, {
     'index.js': "import a from './a'\nimport b from './b'\nexport const App = [a, b]\n",
     'a.js': 'export default 1\n',
@@ -3515,13 +3540,13 @@ test('CLI: bundle --metro probes in Metro\'s order: .js before .jsx, .jsx before
     'b.json': '{}\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['a.js', 'b.jsx', 'index.js'])
 }))
 
-test('CLI: bundle (plain, no --metro) carries explicit .tsx AND .jsx imports via the Node resolver without --jsx', withTmp((t, tmp) => {
+cliTest('CLI: bundle (plain, no --metro) carries explicit .tsx AND .jsx imports via the Node resolver without --jsx', withTmp(async (t, tmp) => {
   // Exercises the DEFAULT (Node-resolver) scan branch, not the --metro custom resolver: an explicit
   // `import './x.tsx'` / `import './y.jsx'` resolves to the exact file, parsed past its JSX.
   jsProject(tmp, {
@@ -3532,7 +3557,7 @@ test('CLI: bundle (plain, no --metro) carries explicit .tsx AND .jsx imports via
     'b.js': 'export const b = 2\n',
   })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
@@ -3540,7 +3565,7 @@ test('CLI: bundle (plain, no --metro) carries explicit .tsx AND .jsx imports via
     'both the .tsx and .jsx dependency, and the edges behind their JSX, must be carried')
 }))
 
-test('CLI: bundle takes .jsx and .tsx entries without --jsx', withTmp((t, tmp) => {
+cliTest('CLI: bundle takes .jsx and .tsx entries without --jsx', withTmp(async (t, tmp) => {
   jsProject(tmp, {
     'App.jsx': "import { Row } from './Row.tsx'\nexport const App = () => <Row />\n",
     'Row.tsx': "import { gap } from './gap.ts'\nexport const Row = (): unknown => <View style={{ gap }} />\n",
@@ -3548,7 +3573,8 @@ test('CLI: bundle takes .jsx and .tsx entries without --jsx', withTmp((t, tmp) =
   })
   const outPath = join(tmp, 'out.br')
   for (const [entry, files] of [['App.jsx', ['App.jsx', 'Row.tsx', 'gap.ts']], ['Row.tsx', ['Row.tsx', 'gap.ts']]]) {
-    const r = runCli(['bundle', `--output=${outPath}`, entry], { cwd: tmp })
+    // eslint-disable-next-line no-await-in-loop -- both write outPath
+    const r = await runCli(['bundle', `--output=${outPath}`, entry], { cwd: tmp })
     t.assert.equal(r.status, 0, `${entry} stderr: ${r.stderr}`)
     t.assert.doesNotMatch(r.stderr, /parse error/)
     const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
@@ -3556,7 +3582,7 @@ test('CLI: bundle takes .jsx and .tsx entries without --jsx', withTmp((t, tmp) =
   }
 }))
 
-test('CLI: bundle still needs --jsx for JSX in a .js file a .jsx file imports', withTmp((t, tmp) => {
+cliTest('CLI: bundle still needs --jsx for JSX in a .js file a .jsx file imports', withTmp(async (t, tmp) => {
   // .jsx parses by extension; that never carries over to the .js it imports, whose name can't tell.
   jsProject(tmp, {
     'App.jsx': "import { Row } from './Row.js'\nexport const App = () => <Row />\n",
@@ -3564,20 +3590,20 @@ test('CLI: bundle still needs --jsx for JSX in a .js file a .jsx file imports', 
     'gap.js': 'export const gap = 4\n',
   })
   const outPath = join(tmp, 'out.br')
-  const noJsx = runCli(['bundle', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
+  const noJsx = await runCli(['bundle', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
   t.assert.notEqual(noJsx.status, 0, 'JSX in a .js file must fail closed without --jsx')
   t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
   t.assert.match(noJsx.stderr, /parse error in Row\.js/)
   t.assert.doesNotMatch(noJsx.stderr, /parse error in App\.jsx/)
   t.assert.ok(!existsSync(outPath))
 
-  const r = runCli(['bundle', '--jsx', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
+  const r = await runCli(['bundle', '--jsx', `--output=${outPath}`, 'App.jsx'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['App.jsx', 'Row.js', 'gap.js'])
 }))
 
-test('CLI: bundle --flow strips Flow types from a .jsx dependency and walks its graph', withTmp((t, tmp) => {
+cliTest('CLI: bundle --flow strips Flow types from a .jsx dependency and walks its graph', withTmp(async (t, tmp) => {
   // .jsx is JS + JSX and can carry Flow types (like .js); --flow must strip them so the scanner
   // parses past to the import graph, while .tsx (TypeScript) is left to oxc. Without --flow the
   // Flow-typed .jsx fails closed; the on-disk source is stored verbatim (only the parse input is
@@ -3589,11 +3615,11 @@ test('CLI: bundle --flow strips Flow types from a .jsx dependency and walks its 
   })
   const outPath = join(tmp, 'out.br')
 
-  const noFlow = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const noFlow = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(noFlow.status, 0, 'a Flow-typed .jsx must fail closed without --flow')
   t.assert.match(noFlow.stderr, /JS bundle would be broken at load time/)
 
-  const r = runCli(['bundle', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'dep.js', 'index.js'],
@@ -3615,17 +3641,17 @@ const writeAssets = (tmp) => {
   writeFileSync(join(tmp, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>\n')
 }
 
-test('CLI: bundle --metro carries reached assets only with --resources (binary -> base64, text -> resource)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro carries reached assets only with --resources (binary -> base64, text -> resource)', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nimport icon from './icon.svg'\nexport const assets = [logo, icon]\n" })
   writeAssets(tmp)
   const outPath = join(tmp, 'out.br')
 
-  const noRes = runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const noRes = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(noRes.status, 0, 'a reached asset must fail closed without --resources')
   t.assert.match(noRes.stderr, /\.\/logo\.png from index\.js resolves to logo\.png, which a source bundle can't carry/)
   t.assert.ok(!existsSync(outPath))
 
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png,svg', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png,svg', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js', 'logo.png'],
@@ -3641,28 +3667,28 @@ test('CLI: bundle --metro carries reached assets only with --resources (binary -
   t.assert.equal(edges.get('./icon.svg'), 'icon.svg')
 }))
 
-test('CLI: bundle (plain, no --metro) --resources carries a reached asset', withTmp((t, tmp) => {
+cliTest('CLI: bundle (plain, no --metro) --resources carries a reached asset', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nexport const app = logo\n" })
   writeAssets(tmp)
   const outPath = join(tmp, 'out.br')
 
-  const noRes = runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const noRes = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(noRes.status, 0, 'plain path must also fail closed on a reached asset without --resources')
   t.assert.match(noRes.stderr, /which a source bundle can't carry/)
 
-  const r = runCli(['bundle', '--resources=png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--resources=png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'logo.png'])
   t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
 }))
 
-test('CLI: bundle --resources rejects a code extension and non-JS bundles', (t) => {
-  const code = runCli(['bundle', '--resources=js', 'index.js'])
+cliTest('CLI: bundle --resources rejects a code extension and non-JS bundles', async (t) => {
+  const code = await runCli(['bundle', '--resources=js', 'index.js'])
   t.assert.notEqual(code.status, 0)
   t.assert.match(code.stderr, /resources entry 'js' is a code extension/)
 
-  const nonJs = runCli(['bundle', '--resources=png', 'a.sol'])
+  const nonJs = await runCli(['bundle', '--resources=png', 'a.sol'])
   t.assert.notEqual(nonJs.status, 0)
   t.assert.match(nonJs.stderr, /--resources is only valid for JS bundles/)
 })
@@ -3681,28 +3707,28 @@ test('buildBundle threads resources through to the scanner (programmatic API)', 
   t.assert.equal(bundle.formats.get('icon.svg'), 'resource')
 }))
 
-test('CLI: bundle --metro --resources round-trips through its companion --lockfile (diff clean)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro --resources round-trips through its companion --lockfile (diff clean)', withTmp(async (t, tmp) => {
   // The lockfile attests the resource's RAW bytes (not the base64 string); diff of bundle vs
   // lockfile must report no differences, proving the resource:base64 round-trip is consistent.
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nexport const app = logo\n" })
   writeFileSync(join(tmp, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   const out = join(tmp, 'out.br')
   const lock = join(tmp, 'out.lock.json')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png', `--lockfile=${lock}`, `--output=${out}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png', `--lockfile=${lock}`, `--output=${out}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.ok(existsSync(out) && existsSync(lock))
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
   t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
-  t.assert.equal(runCli(['diff', '--stat', out, lock]).status, 0, 'resource bytes must round-trip through the lockfile')
+  t.assert.equal((await runCli(['diff', '--stat', out, lock])).status, 0, 'resource bytes must round-trip through the lockfile')
 }))
 
-test('CLI: bundle --resources carries an extensionless allowlisted filename and ignores unreached extensions', withTmp((t, tmp) => {
+cliTest('CLI: bundle --resources carries an extensionless allowlisted filename and ignores unreached extensions', withTmp(async (t, tmp) => {
   // classifyExtension falls back to the basename for extensionless files, so --resources=NOTICE
   // carries a reached `NOTICE` by name. `png` is allowlisted but nothing imports one -> it's a no-op.
   jsProject(tmp, { 'index.js': "import notice from './NOTICE'\nexport const app = notice\n" })
   writeFileSync(join(tmp, 'NOTICE'), 'all rights reserved\n')
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--resources=NOTICE,png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--resources=NOTICE,png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['NOTICE', 'index.js'],
@@ -3710,7 +3736,7 @@ test('CLI: bundle --resources carries an extensionless allowlisted filename and 
   t.assert.equal(bundle.formats.get('NOTICE'), 'resource')
 }))
 
-test('CLI: bundle --metro does not native-capture a package reached only for an asset', withTmp((t, tmp) => {
+cliTest('CLI: bundle --metro does not native-capture a package reached only for an asset', withTmp(async (t, tmp) => {
   // A node_modules package with a native ios/ file plus an asset; the entry imports ONLY the asset.
   // Importing an asset does not link a native module, so the package's ios/ surface must NOT be
   // captured (native capture follows the code/module graph, not --resources reaches).
@@ -3721,7 +3747,7 @@ test('CLI: bundle --metro does not native-capture a package reached only for an 
   writeFileSync(join(pkg, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
   writeFileSync(join(pkg, 'ios', 'Native.m'), '// native source\n')
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--resources=png', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   const files = [...bundle.sources.keys()]
@@ -3729,7 +3755,7 @@ test('CLI: bundle --metro does not native-capture a package reached only for an 
   t.assert.ok(!files.some((f) => f.endsWith('ios/Native.m')), 'the package native surface must not be captured for an asset-only reach')
 }))
 
-test('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing', withTmp(async (t, tmp) => {
   // The original bug report's root cause: stasis installed without oxc-parser.
   // getParser()'s throw was caught by the per-file parse handler, so every file
   // scanned as a silent zero-edge leaf -- the CLI bundled just the entry and
@@ -3759,7 +3785,7 @@ test('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing', 
   jsProject(proj, { 'file.mjs': 'export * from "@noble/ciphers/_arx.js"\n' })
 
   const outPath = join(proj, 'out.br')
-  const r = spawnSync(
+  const r = await spawnAsync(
     process.execPath,
     [join(stasisCopy, 'bin', 'stasis.js'), 'bundle', `--output=${outPath}`, 'file.mjs'],
     // NODE_PATH could expose an oxc-parser from elsewhere; blank it so the
@@ -3776,7 +3802,7 @@ test('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing', 
   t.assert.ok(!existsSync(outPath), 'no bundle must be written without a parser')
 }))
 
-test('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and the bundle loads', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and the bundle loads', withTmp(async (t, tmp) => {
   // No "type" in package.json: plain node (detect-module) runs ESM-syntax .js
   // as ESM. The bundle used to record format=commonjs for dep.js, so loading
   // it died with "does not provide an export named ..." while plain node ran
@@ -3786,13 +3812,13 @@ test('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and
     'dep.js': 'export const x = 42\n',
   }, { name: 'detect-module', version: '0.0.0' })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.mjs'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.equal(decoded.formats['dep.js'], 'module',
     'ambiguous .js with module syntax must be recorded as ESM, matching plain node')
 
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${outPath}`, 'entry.mjs'],
     { cwd: tmp },
   )
@@ -3800,7 +3826,7 @@ test('CLI: bundle (JS) honors Node module-syntax detection for ambiguous .js and
   t.assert.equal(load.stdout, '42\n')
 }))
 
-test('CLI: bundle (JS) detects module via top-level await in ambiguous .js and the bundle loads', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) detects module via top-level await in ambiguous .js and the bundle loads', withTmp(async (t, tmp) => {
   // Node's detector counts top-level await as module syntax; oxc's
   // hasModuleSyntax did not before 0.109. This lazy-load entry runs as ESM in plain node
   // but used to be bundled as format=commonjs -- a parse-error warning, exit
@@ -3810,14 +3836,14 @@ test('CLI: bundle (JS) detects module via top-level await in ambiguous .js and t
     'lazy.js': 'export const v = 42\n',
   }, { name: 'tla', version: '0.0.0' })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.doesNotMatch(r.stderr, /parse error/, 'a clean module re-parse must not surface as a parse error')
   const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
   t.assert.equal(decoded.formats['entry.js'], 'module',
     'TLA-only ambiguous .js must be recorded as ESM, matching plain node')
 
-  const load = runCli(
+  const load = await runCli(
     ['run', '--lock=none', '--bundle=load', `--bundle-file=${outPath}`, 'entry.js'],
     { cwd: tmp },
   )
@@ -3825,13 +3851,13 @@ test('CLI: bundle (JS) detects module via top-level await in ambiguous .js and t
   t.assert.equal(load.stdout, 'lazy 42\n')
 }))
 
-test('CLI: bundle (JS) still warns and writes the bundle for an unresolved require()', withTmp((t, tmp) => {
+cliTest('CLI: bundle (JS) still warns and writes the bundle for an unresolved require()', withTmp(async (t, tmp) => {
   // try/catch-able at runtime: the runtime loader never records this edge
   // either, and the user's catch handles the miss at load time exactly as it
   // handles MODULE_NOT_FOUND without a bundle. Must stay warn-only.
   jsProject(tmp, { 'entry.cjs': "try { require('not-installed-pkg') } catch {}\n" })
   const outPath = join(tmp, 'out.br')
-  const r = runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
+  const r = await runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stderr, /unresolved import\(s\); they will fall through at load time/)
   t.assert.match(r.stderr, /require not-installed-pkg from .*entry\.cjs \(MODULE_NOT_FOUND\)/)
@@ -3982,9 +4008,9 @@ test('buildBashBundle throws on an unresolved relative .sh reference (dangling s
   )
 })
 
-test('CLI: bundle (bash) exits non-zero and writes no output on an unresolved script', withTmp((t, tmp) => {
+cliTest('CLI: bundle (bash) exits non-zero and writes no output on an unresolved script', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'main.sh'], { cwd: join(bashFixtures, 'missing-dep') })
+  const r = await runCli(['bundle', '-o', outPath, 'main.sh'], { cwd: join(bashFixtures, 'missing-dep') })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /Bash bundle has unresolved scripts/)
   t.assert.match(r.stderr, /gone\.sh/)
@@ -4001,9 +4027,9 @@ test('bundleCommand writes a bash Bundle that round-trips through Bundle.parse',
   t.assert.equal(parsed.imports.get('shell').get('main.sh').get('./lib.sh'), 'lib.sh')
 }))
 
-test('CLI: bundle writes a brotli-compressed Bundle for a .sh entry', withTmp((t, tmp) => {
+cliTest('CLI: bundle writes a brotli-compressed Bundle for a .sh entry', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'main.sh'], { cwd: join(bashFixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'main.sh'], { cwd: join(bashFixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
@@ -4012,14 +4038,14 @@ test('CLI: bundle writes a brotli-compressed Bundle for a .sh entry', withTmp((t
   t.assert.equal(parsed.imports.get('shell').get('main.sh').get('./lib.sh'), 'lib.sh')
 }))
 
-test('CLI: bundle rejects mixing .sh and .js entries', (t) => {
-  const r = runCli(['bundle', 'a.sh', 'b.js'])
+cliTest('CLI: bundle rejects mixing .sh and .js entries', async (t) => {
+  const r = await runCli(['bundle', 'a.sh', 'b.js'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
 
-test('CLI: bundle rejects --scope for a .sh bundle', (t) => {
-  const r = runCli(['bundle', '--scope=full', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
+cliTest('CLI: bundle rejects --scope for a .sh bundle', async (t) => {
+  const r = await runCli(['bundle', '--scope=full', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--scope is only valid for JS bundles/)
 })
@@ -4230,8 +4256,8 @@ test('buildRustBundle leaves test/doc-only modules and the dev-deps they reach o
   t.assert.equal(lib.get('mod backend'), 'src/backend.rs')
 })
 
-test('CLI: bundle rejects --cargo for a non-Rust bundle', (t) => {
-  const r = runCli(['bundle', '--cargo', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
+cliTest('CLI: bundle rejects --cargo for a non-Rust bundle', async (t) => {
+  const r = await runCli(['bundle', '--cargo', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--cargo is only valid for Rust bundles/u)
 })
@@ -4243,17 +4269,17 @@ test('buildBundle rejects --cargo for a non-Rust bundle', async (t) => {
   )
 })
 
-test('CLI: bundle rejects the --cargo-* feature flags for a non-Rust bundle, and an empty --cargo-features', (t) => {
+cliTest('CLI: bundle rejects the --cargo-* feature flags for a non-Rust bundle, and an empty --cargo-features', async (t) => {
   const cwd = join(bashFixtures, 'basic')
-  t.assert.match(runCli(['bundle', '--cargo-features=x', 'main.sh'], { cwd }).stderr, /--cargo-features is only valid for Rust bundles/u)
-  t.assert.match(runCli(['bundle', '--cargo-no-default-features', 'main.sh'], { cwd }).stderr, /--cargo-no-default-features is only valid for Rust bundles/u)
-  t.assert.match(runCli(['bundle', '--cargo-all-features', 'main.sh'], { cwd }).stderr, /--cargo-all-features is only valid for Rust bundles/u)
-  t.assert.match(runCli(['bundle', '--cargo-target=host', 'main.sh'], { cwd }).stderr, /--cargo-target is only valid for Rust bundles/u)
-  t.assert.match(runCli(['bundle', '--cargo-manifests', 'main.sh'], { cwd }).stderr, /--cargo-manifests is only valid for Rust bundles/u)
-  const empty = runCli(['bundle', '--cargo-features=,', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
+  t.assert.match((await runCli(['bundle', '--cargo-features=x', 'main.sh'], { cwd })).stderr, /--cargo-features is only valid for Rust bundles/u)
+  t.assert.match((await runCli(['bundle', '--cargo-no-default-features', 'main.sh'], { cwd })).stderr, /--cargo-no-default-features is only valid for Rust bundles/u)
+  t.assert.match((await runCli(['bundle', '--cargo-all-features', 'main.sh'], { cwd })).stderr, /--cargo-all-features is only valid for Rust bundles/u)
+  t.assert.match((await runCli(['bundle', '--cargo-target=host', 'main.sh'], { cwd })).stderr, /--cargo-target is only valid for Rust bundles/u)
+  t.assert.match((await runCli(['bundle', '--cargo-manifests', 'main.sh'], { cwd })).stderr, /--cargo-manifests is only valid for Rust bundles/u)
+  const empty = await runCli(['bundle', '--cargo-features=,', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
   t.assert.equal(empty.status, 1)
   t.assert.match(empty.stderr, /--cargo-features must list at least one feature/u)
-  const target = runCli(['bundle', '--cargo-target=x86_64 linux', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
+  const target = await runCli(['bundle', '--cargo-target=x86_64 linux', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
   t.assert.equal(target.status, 1)
   t.assert.match(target.stderr, /--cargo-target must be a target triple or "host"/u)
 })
@@ -4269,13 +4295,13 @@ test('buildBundle rejects --cargo-target and --cargo-manifests for a non-Rust bu
   )
 })
 
-test('CLI: bundle --cargo-manifests adds the package manifest, lockfile and build script to a Rust bundle', withTmp((t, tmp) => {
+cliTest('CLI: bundle --cargo-manifests adds the package manifest, lockfile and build script to a Rust bundle', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
   const cwd = rustFixture('includes')
-  const plain = runCli(['bundle', '-o', outPath, 'src/lib.rs'], { cwd })
+  const plain = await runCli(['bundle', '-o', outPath, 'src/lib.rs'], { cwd })
   t.assert.equal(plain.status, 0, plain.stderr)
   t.assert.match(plain.stderr, /Bundled 7 files in 1 package/u)
-  const withManifests = runCli(['bundle', '--cargo-manifests', '-o', outPath, 'src/lib.rs'], { cwd })
+  const withManifests = await runCli(['bundle', '--cargo-manifests', '-o', outPath, 'src/lib.rs'], { cwd })
   t.assert.equal(withManifests.status, 0, withManifests.stderr)
   t.assert.match(withManifests.stderr, /Bundled 11 files in 1 package/u)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
@@ -4291,9 +4317,9 @@ test('CLI: bundle --cargo-manifests adds the package manifest, lockfile and buil
 
 const hasRustc = spawnSync('rustc', ['--version'], { stdio: 'ignore' }).status === 0
 
-test('CLI: bundle --cargo-target keeps only the named target\'s #[cfg_attr(…, path)] variant', { skip: hasRustc ? false : 'rustc not on PATH' }, withTmp((t, tmp) => {
+cliTest('CLI: bundle --cargo-target keeps only the named target\'s #[cfg_attr(…, path)] variant', { skip: hasRustc ? false : 'rustc not on PATH' }, withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '--cargo-target=x86_64-unknown-linux-gnu', '-o', outPath, 'src/lib.rs'], { cwd: join(rustFixtures, 'path-attr') })
+  const r = await runCli(['bundle', '--cargo-target=x86_64-unknown-linux-gnu', '-o', outPath, 'src/lib.rs'], { cwd: join(rustFixtures, 'path-attr') })
   t.assert.equal(r.status, 0, r.stderr)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.ok(parsed.sources.has('src/sys/unix.rs'))
@@ -4303,8 +4329,8 @@ test('CLI: bundle --cargo-target keeps only the named target\'s #[cfg_attr(…, 
   t.assert.equal(parsed.imports.get('rust').get('src/lib.rs').get('mod sys'), 'src/sys/unix.rs')
 }))
 
-test('CLI: EXODUS_STASIS_DEBUG=1 prints the resolved Rust features per package', (t) => {
-  const r = runCli(['bundle', '-o', '/dev/null', 'src/main.rs'], { cwd: join(rustFixtures, 'features'), env: { ...cleanEnv, EXODUS_STASIS_DEBUG: '1' } })
+cliTest('CLI: EXODUS_STASIS_DEBUG=1 prints the resolved Rust features per package', async (t) => {
+  const r = await runCli(['bundle', '-o', '/dev/null', 'src/main.rs'], { cwd: join(rustFixtures, 'features'), env: { ...cleanEnv, EXODUS_STASIS_DEBUG: '1' } })
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.match(r.stderr, /^\[stasis\] Rust features \(manifest replay, target\), 6 packages:$/mu)
   t.assert.match(r.stderr, /^\[stasis\] Rust features \(manifest replay, host\), 0 packages:$/mu)
@@ -4313,23 +4339,23 @@ test('CLI: EXODUS_STASIS_DEBUG=1 prints the resolved Rust features per package',
   t.assert.match(r.stderr, /^\[stasis\] {3}extra-dep@1\.0\.0 \(vendor\/extra-dep\): \(none\)$/mu)
   t.assert.match(r.stderr, /^\[stasis\] {3}winnowish@0\.6\.1 \(vendor\/winnowish\): default, std$/mu)
   t.assert.match(r.stderr, /^\[stasis\] {3}winnowish@0\.5\.0 \(vendor\/winnowish-0\.5\.0\): default, std$/mu)
-  const quiet = runCli(['bundle', '-o', '/dev/null', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
+  const quiet = await runCli(['bundle', '-o', '/dev/null', 'src/main.rs'], { cwd: join(rustFixtures, 'features') })
   t.assert.doesNotMatch(quiet.stderr, /Rust features \(/u)
 })
 
-test('CLI: bundle --cargo-features enables a root feature (repeatable, comma-separated)', withTmp((t, tmp) => {
+cliTest('CLI: bundle --cargo-features enables a root feature (repeatable, comma-separated)', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
   const cwd = join(rustFixtures, 'features')
-  const plain = runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd })
+  const plain = await runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd })
   t.assert.equal(plain.status, 0, plain.stderr)
   t.assert.match(plain.stderr, /Bundled 13 files in 6 packages/u)
-  const withSerde = runCli(['bundle', '--cargo-features=with-serde', '--cargo-features', 'fast,', '-o', outPath, 'src/main.rs'], { cwd })
+  const withSerde = await runCli(['bundle', '--cargo-features=with-serde', '--cargo-features', 'fast,', '-o', outPath, 'src/main.rs'], { cwd })
   t.assert.equal(withSerde.status, 0, withSerde.stderr)
   t.assert.match(withSerde.stderr, /Bundled 17 files in 7 packages/u)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
   t.assert.ok(parsed.sources.has('src/ser.rs'))
   t.assert.equal(parsed.modules.get('vendor/serde').ecosystem, 'cargo')
-  const noDefault = runCli(['bundle', '--cargo-no-default-features', '-o', outPath, 'src/main.rs'], { cwd })
+  const noDefault = await runCli(['bundle', '--cargo-no-default-features', '-o', outPath, 'src/main.rs'], { cwd })
   t.assert.equal(noDefault.status, 0, noDefault.stderr)
   t.assert.match(noDefault.stderr, /Bundled 12 files in 6 packages/u)
 }))
@@ -4398,9 +4424,9 @@ test('buildRustBundle bundles what is in-tree and hints at `cargo vendor` when d
   t.assert.equal(hint, '[stasis] Registry dependencies are bundled only when vendored in-tree: run `cargo vendor` first.')
 })
 
-test('CLI: bundle (rust) prints the `cargo vendor` hint to stderr and still exits 0', withTmp((t, tmp) => {
+cliTest('CLI: bundle (rust) prints the `cargo vendor` hint to stderr and still exits 0', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'no-vendor') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'no-vendor') })
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.match(r.stderr, /^\[stasis\] 2 crates referenced but not in the bundle: serde, syn$/mu)
   t.assert.match(r.stderr, /^\[stasis\] Registry dependencies are bundled only when vendored in-tree: run `cargo vendor` first\.$/mu)
@@ -4432,9 +4458,9 @@ test('buildRustBundle throws on an unresolvable mod declaration', async (t) => {
   )
 })
 
-test('CLI: bundle (rust) exits non-zero and writes no output on an unresolvable mod', withTmp((t, tmp) => {
+cliTest('CLI: bundle (rust) exits non-zero and writes no output on an unresolvable mod', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'missing-mod') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'missing-mod') })
   t.assert.notEqual(r.status, 0)
   t.assert.match(r.stderr, /Rust bundle has unresolved modules/)
   t.assert.match(r.stderr, /mod gone/)
@@ -4451,9 +4477,9 @@ test('bundleCommand writes a rust Bundle that round-trips through Bundle.parse',
   t.assert.equal(parsed.imports.get('rust').get('src/main.rs').get('mod foo'), 'src/foo.rs')
 }))
 
-test('CLI: bundle writes a brotli-compressed Bundle for a .rs entry', withTmp((t, tmp) => {
+cliTest('CLI: bundle writes a brotli-compressed Bundle for a .rs entry', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
-  const r = runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'basic') })
+  const r = await runCli(['bundle', '-o', outPath, 'src/main.rs'], { cwd: join(rustFixtures, 'basic') })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const buf = readFileSync(outPath)
   t.assert.notEqual(buf[0], 0x7b)
@@ -4462,8 +4488,8 @@ test('CLI: bundle writes a brotli-compressed Bundle for a .rs entry', withTmp((t
   t.assert.equal(parsed.imports.get('rust').get('src/main.rs').get('mod foo'), 'src/foo.rs')
 }))
 
-test('CLI: bundle rejects mixing .rs and .js entries', (t) => {
-  const r = runCli(['bundle', 'a.rs', 'b.js'])
+cliTest('CLI: bundle rejects mixing .rs and .js entries', async (t) => {
+  const r = await runCli(['bundle', 'a.rs', 'b.js'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
@@ -4674,12 +4700,12 @@ test('bundleCommand --add fails closed on a file whose bytes conflict, leaving t
   t.assert.deepStrictEqual(readFileSync(outPath), before)
 }))
 
-test('CLI: bundle --add merges into stasis.code.br and reports the added count', withTmp((t, tmp) => {
+cliTest('CLI: bundle --add merges into stasis.code.br and reports the added count', withTmp(async (t, tmp) => {
   cpSync(join(fixtures, 'shared'), tmp, { recursive: true })
-  const r1 = runCli(['bundle', 'src/A.sol'], { cwd: tmp })
+  const r1 = await runCli(['bundle', 'src/A.sol'], { cwd: tmp })
   t.assert.equal(r1.status, 0, `stderr: ${r1.stderr}`)
 
-  const r2 = runCli(['bundle', '--add', 'src/B.sol'], { cwd: tmp })
+  const r2 = await runCli(['bundle', '--add', 'src/B.sol'], { cwd: tmp })
   t.assert.equal(r2.status, 0, `stderr: ${r2.stderr}`)
   // One new file (B.sol) on top of the two already there (A.sol + Shared.sol).
   t.assert.match(r2.stderr, /\[stasis\] Added 1 file \(3 total in 1 package\) from src to stasis\.code\.br/)
@@ -4692,7 +4718,7 @@ test('CLI: bundle --add merges into stasis.code.br and reports the added count',
   )
 }))
 
-test('CLI: bundle --add (JS) carries both entries and unions the companion lockfile', withTmp((t, tmp) => {
+cliTest('CLI: bundle --add (JS) carries both entries and unions the companion lockfile', withTmp(async (t, tmp) => {
   // Contrast with the "does not inherit stale formats/imports" regression above:
   // there a second plain build REPLACES; here `--add` keeps the first entry too.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'add-js', version: '1.0.0', type: 'module' }))
@@ -4705,10 +4731,10 @@ test('CLI: bundle --add (JS) carries both entries and unions the companion lockf
   const bundlePath = join(tmp, 'stasis.code.br')
   const lockPath = join(tmp, 'stasis.lock.json')
   // Bootstrap with a.js.
-  const r1 = runCli(['bundle', '--add', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'a.js'], { cwd: tmp })
+  const r1 = await runCli(['bundle', '--add', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'a.js'], { cwd: tmp })
   t.assert.equal(r1.status, 0, `stderr: ${r1.stderr}`)
   // Add b.js.
-  const r2 = runCli(['bundle', '--add', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'b.js'], { cwd: tmp })
+  const r2 = await runCli(['bundle', '--add', `--lockfile=${lockPath}`, `--output=${bundlePath}`, 'b.js'], { cwd: tmp })
   t.assert.equal(r2.status, 0, `stderr: ${r2.stderr}`)
   t.assert.match(r2.stderr, /\[stasis\] Added 1 file/)
 
@@ -4722,8 +4748,8 @@ test('CLI: bundle --add (JS) carries both entries and unions the companion lockf
   t.assert.deepStrictEqual(Object.keys(lockfile.modules.get('.').files).toSorted(), ['a.js', 'b.js', 'shared.js'])
 }))
 
-test('CLI: bundle --add with --output=- prints usage', (t) => {
-  const r = runCli(['bundle', '--add', '--output=-', 'src/A.sol'], { cwd: join(fixtures, 'basic') })
+cliTest('CLI: bundle --add with --output=- prints usage', async (t) => {
+  const r = await runCli(['bundle', '--add', '--output=-', 'src/A.sol'], { cwd: join(fixtures, 'basic') })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /--add cannot be combined with --output=-/)
 })
@@ -4902,20 +4928,26 @@ test('buildBundle rejects packageJSON for non-JS entries', async (t) => {
   )
 })
 
-test('CLI: stasis bundle --package-json includes module manifests; rejected for .sol', withTmp((t, tmp) => {
+cliTest('CLI: stasis bundle --package-json includes module manifests; rejected for .sol', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'index.js'), "import { hi } from 'dep'\nexport default hi\n")
   mkdirSync(join(tmp, 'node_modules', 'dep'), { recursive: true })
   writeFileSync(join(tmp, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep', version: '1.2.3', type: 'module', main: 'main.js' }))
   writeFileSync(join(tmp, 'node_modules', 'dep', 'main.js'), "export const hi = 'hi'\n")
 
-  const r = runCli(['bundle', '--package-json', '--output=out.br', 'index.js'], { cwd: tmp })
+  const r = await runCli(['bundle', '--package-json', '--output=out.br', 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, r.stderr)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'out.br'))).toString('utf8'))
   t.assert.ok(new Set(bundle.sources.keys()).has('node_modules/dep/package.json'))
 
   writeFileSync(join(tmp, 'a.sol'), 'contract A {}\n')
-  const bad = runCli(['bundle', '--package-json', '--output=out2.br', 'a.sol'], { cwd: tmp })
+  const bad = await runCli(['bundle', '--package-json', '--output=out2.br', 'a.sol'], { cwd: tmp })
   t.assert.notEqual(bad.status, 0)
   t.assert.match(bad.stderr, /--package-json is only valid for JS bundles/)
 }))
+
+// Every cliTest above, after the in-process tests: each spawns its own CLI processes, in its own tmp
+// or read-only in a fixture, so CONCURRENCY of them overlap.
+describe('stasis CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, () => {
+  for (const args of cliTests) test(...args)
+})

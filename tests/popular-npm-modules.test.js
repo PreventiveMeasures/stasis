@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -315,7 +315,8 @@ describe('bundle + lockfile on the 10-package set', { concurrency: CONCURRENCY }
     const lodash = Object.values(decoded.modules).find((m) => m.name === 'lodash')
     lodash.files['lodash.js'] = `${lodash.files['lodash.js']}\n// tampered\n`
     const bundlePath = join(tmp, 'snap.br')
-    await writeFile(bundlePath, brotliCompressSync(JSON.stringify(decoded)))
+    // Quality 5 like the CLI's (cleanEnv): the default 11 is ~3.4s on this payload.
+    await writeFile(bundlePath, brotliCompressSync(JSON.stringify(decoded), { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }))
 
     const r = await run(
       ['run', '--lock=frozen', '--dependencies', '--bundle=load', `--bundle-file=${bundlePath}`, 'src/entry.js'],
