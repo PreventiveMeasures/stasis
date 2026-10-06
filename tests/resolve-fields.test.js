@@ -1,11 +1,11 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
-import { loadTsconfigPaths, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigPaths, resolveTypescriptFallback, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fx = join(here, 'fixtures', 'resolve-fields')
@@ -33,15 +33,22 @@ const withTsTmp = (fn) => (t) => {
     writeFileSync(join(tmp, 'both.ts'), 'export const x: number = 999\n')
     writeFileSync(join(tmp, 'weird.ts'), 'export const w: number = 1\n')
     writeFileSync(join(tmp, 'weird.js.ts'), 'export const w: number = 999\n')
-    mkdirSync(join(tmp, 'node_modules', 'tspkg', 'lib'), { recursive: true })
-    writeFileSync(join(tmp, 'node_modules', 'tspkg', 'package.json'),
-      JSON.stringify({ name: 'tspkg', version: '1.0.0', main: './lib/main.js' }))
-    writeFileSync(join(tmp, 'node_modules', 'tspkg', 'lib', 'main.ts'), 'export const m: number = 1\n')
-    mkdirSync(join(tmp, 'node_modules', 'exppkg', 'lib'), { recursive: true })
-    writeFileSync(join(tmp, 'node_modules', 'exppkg', 'package.json'),
-      JSON.stringify({ name: 'exppkg', version: '1.0.0', exports: { '.': './lib/main.js', './sub': { default: './lib/sub.js' } } }))
-    writeFileSync(join(tmp, 'node_modules', 'exppkg', 'lib', 'main.ts'), 'export const e: number = 1\n')
-    writeFileSync(join(tmp, 'node_modules', 'exppkg', 'lib', 'sub.ts'), 'export const s: number = 1\n')
+    // TS-source packages as a monorepo links them: in packages/, symlinked into node_modules. The
+    // same shapes installed in node_modules itself (`-installed`) get no --typescript mapping.
+    const tsPackage = (dir, manifest, files) => {
+      mkdirSync(join(dir, 'lib'), { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ version: '1.0.0', ...manifest }))
+      for (const file of files) writeFileSync(join(dir, 'lib', file), 'export const x: number = 1\n')
+    }
+    for (const [name, manifest, files] of [
+      ['tspkg', { main: './lib/main.js' }, ['main.ts']],
+      ['exppkg', { exports: { '.': './lib/main.js', './sub': { default: './lib/sub.js' } } }, ['main.ts', 'sub.ts']],
+    ]) {
+      tsPackage(join(tmp, 'packages', name), { name, ...manifest }, files)
+      mkdirSync(join(tmp, 'node_modules'), { recursive: true })
+      symlinkSync(join('..', 'packages', name), join(tmp, 'node_modules', name))
+      tsPackage(join(tmp, 'node_modules', `${name}-installed`), { name: `${name}-installed`, ...manifest }, files)
+    }
     return fn(t, tmp)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
@@ -302,9 +309,37 @@ test('typescript: a missing x.js resolves to its x.ts sibling; an existing x.js 
 
 test('typescript: a package main naming a missing .js lands on its .ts source', withTsTmp((t, tmp) => {
   // TS-source packages (workspace deps) commonly point main at their compiled name; with only
-  // the source on disk, the entry substitutes like any other path.
+  // the source on disk, the entry substitutes like any other path -- but never in node_modules.
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg')), 'node_modules/tspkg/lib/main.ts')
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg-installed')), null)
+}))
+
+test('typescript: an importer in node_modules gets no mapping, even where its import leaves it', withTsTmp((t, tmp) => {
+  // An installed package's file reaching out of node_modules to ./only-ts.js (only-ts.ts on disk)
+  // resolves as without --typescript; a linked workspace package's file, in node_modules by its
+  // lexical path alone, still maps.
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg-installed', 'lib', 'main.ts'), '../../../only-ts.js')), null)
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg', 'lib', 'main.ts'), '../../../only-ts.js')), 'only-ts.ts')
+}))
+
+test('typescript: no mapping into a file directly in node_modules', withTsTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'node_modules', 'loose.ts'), 'export const l: number = 1\n')
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), './node_modules/loose.js')), null)
+}))
+
+test('typescript: no mapping to a sibling whose real path lies in node_modules, nor past it', withTsTmp((t, tmp) => {
+  // linked.ts, beside the importer, is a link into an installed package: by its real path, no target.
+  // tsc picks it before linked.tsx, so with it refused nothing maps -- in both resolvers alike.
+  symlinkSync(join('node_modules', 'tspkg-installed', 'lib', 'main.ts'), join(tmp, 'linked.ts'))
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  const from = join(tmp, 'entry.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './linked.js')), null)
+  writeFileSync(join(tmp, 'linked.tsx'), 'export const l = (): unknown => null\n')
+  t.assert.equal(relTo(tmp, resolver(from, './linked.js')), null)
+  t.assert.equal(resolveTypescriptFallback(from, './linked.js'), null)
 }))
 
 test('typescript: substitution beats the appended-extension probe for a pathological x.js.ts', withTsTmp((t, tmp) => {
@@ -324,6 +359,9 @@ test('typescript: an exports target naming a missing .js lands on its .ts source
   t.assert.equal(relTo(tmp, resolver(from, 'exppkg/sub')), 'node_modules/exppkg/lib/sub.ts')
   // A subpath the exports map does not export stays unresolved -- the fallback never widens exports.
   t.assert.equal(relTo(tmp, resolver(from, 'exppkg/lib/main.js')), null)
+  // Installed in node_modules, not linked from the workspace: no mapping.
+  t.assert.equal(relTo(tmp, resolver(from, 'exppkg-installed')), null)
+  t.assert.equal(relTo(tmp, resolver(from, 'exppkg-installed/sub')), null)
   // Off by default.
   const plain = createFieldResolver({ mainFields: ['main'] })
   t.assert.equal(relTo(tmp, plain(from, 'exppkg')), null)

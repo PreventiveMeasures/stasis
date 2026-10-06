@@ -4,7 +4,7 @@ import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
 import { classifyExtension, classifyFormat, isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
-import { resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
@@ -140,10 +140,11 @@ function collectSpecifiers(program) {
 // which only --typescript resolves -- so the build can take --typescript as given: every entry is
 // TypeScript, they hold at least one relative import naming a JS output (`./a.js`, or .jsx/.mjs/
 // .cjs), and not one of those is on disk while the TS source it maps to is (`./a.ts`; see
-// typescriptSiblings). Any part missing is no tell, and neither is an entry that doesn't parse as
-// the scan parses it (Scan#parseFile; the scan reports it). Read off the entries alone, before the scan.
+// typescriptSiblings), outside node_modules as the resolver requires. Any part missing is no tell, and neither is an entry that doesn't parse as
+// the scan parses it (Scan#parseFile; the scan reports it), nor one in node_modules, where
+// --typescript maps nothing. Read off the entries alone, before the scan.
 export function importsTypescriptByOutputName(entries, host = diskHost) {
-  if (!entries.every((entry) => TS_EXTS.has(extname(entry)))) return false
+  if (!entries.every((entry) => TS_EXTS.has(extname(entry)) && !inNodeModules(entry, host))) return false
   // Outside the try, as in the scan: a missing oxc-parser is an env error, not an entry's.
   getParser()
   const scanner = new Scan({ host })
@@ -163,8 +164,13 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
       }
     }
   }
+  // tsc's pick, the first TS source on disk, as the resolver maps it: none where it lies in node_modules.
   const isSource = (file) => !isTypeDeclaration(file) && (host.stat(file)?.isFile() ?? false)
-  return targets.length > 0 && targets.every((target) => host.stat(target) === null && typescriptSiblings(target).some(isSource))
+  const mapsTo = (target) => {
+    const pick = typescriptSiblings(target).find(isSource)
+    return pick !== undefined && !inNodeModules(pick, host)
+  }
+  return targets.length > 0 && targets.every((target) => host.stat(target) === null && mapsTo(target))
 }
 
 function condKey(set) {
@@ -185,7 +191,7 @@ export class Scan {
   // off by default because oxc, like tsc, only auto-enables JSX for .jsx/.tsx by extension.
   // `flow`: strip Flow type syntax from JS-family sources before parsing (see #scanFile).
   // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
-  // `typescriptPaths` (a loadTsconfigPaths matcher) adding tsconfig alias support; only consulted
+  // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) adding tsconfig alias support; only consulted
   // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling. Without it, the
   // mapping only names the file a miss would resolve to under --typescript (see #typescriptCandidate).
   // `typescriptResolve`: the custom `resolve`'s --typescript twin (same shape), consulted only for

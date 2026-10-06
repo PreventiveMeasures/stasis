@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
@@ -669,16 +669,14 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
 // token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
-// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise the
-// project root's tsconfig.json applies when present (null matcher = no aliases). Without
-// --typescript they only hint a miss (Scan#typescriptCandidate), so a config that doesn't load is none.
-function typescriptPathsFor(typescript, baseDir, tsconfig, host) {
-  if (typescript) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
-  try {
-    return loadTsconfigPaths(discoverTsconfig(baseDir, undefined, host), host)
-  } catch {
-    return null
-  }
+// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig's for every file (it must
+// exist), else those of the tsconfig.json beside each importing file's package.json
+// (packageTsconfigPaths, the project read as the State reads it, to `env`'s PROJECT_CWD; null
+// matcher = no aliases). Without --typescript they only hint a miss (Scan#typescriptCandidate), so a
+// config that doesn't load is none.
+function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
+  if (typescript && tsconfig !== undefined) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
+  return packageTsconfigPaths(baseDir, { host, lenient: !typescript, projectCwd: env.PROJECT_CWD })
 }
 
 // Build a JS/TS Bundle (in-memory) by statically scanning the require/import graph; no
@@ -687,7 +685,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host) {
 // extra `exports`/`imports` conditions; on their own they don't honour legacy mainFields or
 // platform suffixes (see `--mainFields` / buildResolvedJsBundle). `typescript` maps a failed
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
-// `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json); it
+// `paths` aliases of `tsconfig` (an explicit config path, default each package's tsconfig.json); it
 // is taken as given where the entries import TS sources by output name (importsTypescriptByOutputName).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
@@ -709,7 +707,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
 
   typescript ||= importsTypescriptByOutputName(absEntries, host)
-  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
+  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
 
   const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, host })
 
@@ -876,7 +874,7 @@ export function fieldResolverFor(platform, { mainFields, metro = false, conditio
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. Returns { bundle, lockfile }.
-async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields, platforms, conditions = [], metro = false, metroResolver = false, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost }) {
+async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro = false, metroResolver = false, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
@@ -895,7 +893,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
   // which has no tsc mapping (classifyEntries rejects --typescript there).
   if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
-  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
+  const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildResolvedJsBundle', resources)
 

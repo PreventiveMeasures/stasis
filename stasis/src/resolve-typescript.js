@@ -49,6 +49,15 @@ export function typescriptSiblings(name) {
 // completed like an extensionless name, matching tsc's candidate list.
 const NO_COMPLETION_EXTS = new Set([...JS_OUTPUT_EXTS, '.ts', '.tsx', '.mts', '.cts', '.json'])
 
+// `path`'s real path, or `path` itself where it has none (not on disk).
+function realpathOr(path, host) {
+  try {
+    return host.realpath(path)
+  } catch {
+    return path
+  }
+}
+
 export function isFile(p, host = diskHost) {
   return host.stat(p)?.isFile() ?? false
 }
@@ -396,17 +405,79 @@ export function loadTsconfigPaths(file, host = diskHost) {
   }
 }
 
-// The tsconfig `--typescript` reads: an explicit `--tsconfig` path must exist (fail closed on a
-// typo); with none given, the project root's tsconfig.json applies when present, like tsc's own
-// discovery from a directory.
+// The tsconfig an explicit `--tsconfig` names, resolved against `baseDir`; it must exist (fail
+// closed on a typo). Without one, each package's own applies (packageTsconfigPaths).
 export function discoverTsconfig(baseDir, explicit, host = diskHost) {
-  if (explicit != null) {
-    const p = resolvePath(baseDir, explicit)
-    if (!isFile(p, host)) throw new Error(`tsconfig not found: ${explicit}`)
-    return p
+  const p = resolvePath(baseDir, explicit)
+  if (!isFile(p, host)) throw new Error(`tsconfig not found: ${explicit}`)
+  return p
+}
+
+// Whether `dir` holds a package: a package.json naming one. One with no name is a `type` marker,
+// its files the package's above (as vfs-bundle's holdsPackage reads it).
+const holdsNamedPackage = (dir, host) => isFile(join(dir, 'package.json'), host) && readJson(join(dir, 'package.json'), host)?.name !== undefined
+
+// Whether `dir` declares a monorepo's workspaces: a pnpm-workspace.yaml, or a package.json
+// `workspaces` (npm's and yarn's).
+const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'), host) || Boolean(readJson(join(dir, 'package.json'), host)?.workspaces)
+
+// The `paths` --typescript honours without --tsconfig: those of the tsconfig.json beside the
+// package.json of the package the importing file is in, as a matcher whose matchPaths(spec,
+// parentFile) is loadTsconfigPaths's for that config. The project is read up from `cwd` as the
+// State reads it: the directories holding a package.json, up to one holding .git or
+// pnpm-workspace.yaml, or up to `projectCwd` (the State's PROJECT_CWD, as yarn sets it). In a monorepo -- where one of those declares workspaces -- a file's package is
+// the nearest directory at or above it, up to that workspace root, holding a named package.json
+// (the root itself where none below it does); outside one, every file takes the one config beside
+// the nearest named package.json at or above `cwd` (or the top-most package.json, where none is
+// named). Never in node_modules: no walk enters a node_modules directory, and resolveTypescriptFallback
+// matches no alias for a file under one. Each config loads once, when first matched; with `lenient`,
+// one that doesn't load matches nothing instead of throwing.
+export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, projectCwd } = {}) {
+  const stop = projectCwd ? realpathOr(resolvePath(projectCwd), host) : null
+  const dirs = [] // cwd and above, while the State's walk would go on; real paths, as importers are read
+  for (let dir = realpathOr(resolvePath(cwd), host); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+    dirs.push(dir)
+    if (dir === stop) break
+    if (host.stat(join(dir, '.git')) !== null || isFile(join(dir, 'pnpm-workspace.yaml'), host)) break
+    if (dirname(dir) === dir) break
   }
-  const p = join(baseDir, 'tsconfig.json')
-  return isFile(p, host) ? p : null
+  const workspaceRoot = dirs.find((dir) => declaresWorkspaces(dir, host)) ?? null
+  const projectPackage = workspaceRoot === null
+    ? dirs.find((dir) => holdsNamedPackage(dir, host)) ?? dirs.findLast((dir) => isFile(join(dir, 'package.json'), host)) ?? null
+    : null
+  // The package directory `parentFile` is in, or null outside the workspace root. By its real path,
+  // as inNodeModules reads it: a linked workspace package reached through node_modules takes its
+  // own config, read where it lies, so a relative `extends` resolves as tsc resolves it.
+  const packageOf = (parentFile) => {
+    if (workspaceRoot === null) return projectPackage
+    for (let dir = dirname(realpathOr(parentFile, host)); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+      if (dir === workspaceRoot || holdsNamedPackage(dir, host)) return dir
+      if (dirname(dir) === dir) return null
+    }
+    return null
+  }
+  const matchers = new Map() // package dir -> loadTsconfigPaths matcher, or null
+  const matcherOf = (dir) => {
+    if (!matchers.has(dir)) {
+      const file = join(dir, 'tsconfig.json')
+      let matcher = null
+      if (isFile(file, host)) {
+        try {
+          matcher = loadTsconfigPaths(file, host)
+        } catch (error) {
+          if (!lenient) throw error
+        }
+      }
+      matchers.set(dir, matcher)
+    }
+    return matchers.get(dir)
+  }
+  return {
+    matchPaths(spec, parentFile) {
+      const dir = packageOf(parentFile)
+      return dir === null ? [] : (matcherOf(dir)?.matchPaths(spec) ?? [])
+    },
+  }
 }
 
 // --- the fallback dispatcher ---
@@ -415,14 +486,19 @@ export function discoverTsconfig(baseDir, explicit, host = diskHost) {
 // the file rules are skipped for them, exactly as Node skips LOAD_AS_FILE.
 const DIR_ONLY_SPEC = /(?:^|\/)\.{1,2}$|\/$/u
 
-// tsconfig paths map first-party aliases; a dependency's own bare imports must never be hijacked
-// by the app's aliases (tsc doesn't resolve node_modules files' imports through the app config).
-const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
+// A node_modules path segment, the last one included (the directory itself).
+const IN_NODE_MODULES = /(?:^|[\\/])node_modules(?:[\\/]|$)/u
+
+// Whether `file` lies in node_modules, by its real path where it has one (by its own, where it
+// doesn't): --typescript maps nothing from or into an installed package. A monorepo's workspace
+// packages, linked in through node_modules, really lie outside it, so they keep the mapping.
+export const inNodeModules = (file, host = diskHost) => IN_NODE_MODULES.test(realpathOr(file, host))
 
 // Resolve `spec` from `parentFile` the way tsc would complete a resolution BOTH Node and the
-// legacy-field resolver missed. Returns the absolute path of the on-disk source, or null.
-// `conditions` gates exports/imports maps (same set the failed resolution used); `paths` is a
-// loadTsconfigPaths matcher (or null). Dispatch by shape:
+// legacy-field resolver missed. Returns the absolute path of the on-disk source, or null -- always
+// null from or into node_modules (inNodeModules). `conditions` gates exports/imports maps (same set
+// the failed resolution used); `paths` is a tsconfig paths matcher (loadTsconfigPaths, or
+// packageTsconfigPaths), or null. Dispatch by shape:
 //   '#name'        -> the parent package's `imports` targets, substitution only;
 //   relative/abs   -> path substitution/completion (+ directory main/index);
 //   bare           -> tsconfig paths aliases first (tsc consults them before node_modules; JS
@@ -430,6 +506,12 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
 //                     the named package: its `exports` targets (substitution only) when it has
 //                     them, else its `main`/index (bare root) or subpath (substitution/completion).
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), paths = null, host = diskHost } = {}) {
+  if (inNodeModules(parentFile, host)) return null
+  const hit = typescriptTarget(parentFile, spec, { conditions, paths, host })
+  return hit == null || inNodeModules(hit, host) ? null : hit
+}
+
+function typescriptTarget(parentFile, spec, { conditions, paths, host }) {
   if (spec.startsWith('#')) {
     const scope = nearestPackage(parentFile, host)
     return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, host }) : null
@@ -438,8 +520,8 @@ export function resolveTypescriptFallback(parentFile, spec, { conditions = new S
     const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
     return probeTypescriptTarget(base, { dirOnly: DIR_ONLY_SPEC.test(spec), host })
   }
-  if (paths && !IN_NODE_MODULES.test(parentFile)) {
-    for (const target of paths.matchPaths(spec)) {
+  if (paths) {
+    for (const target of paths.matchPaths(spec, parentFile)) {
       const hit = probeTypescriptTarget(target, { js: true, dirOnly: target.endsWith('/'), host })
       if (hit) return hit
     }

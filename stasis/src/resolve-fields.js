@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
+  inNodeModules,
   isDir,
   isFile,
   locatePackage,
@@ -175,11 +176,15 @@ function resolveSourceFile(base, opts) {
   // always wins over its `.ts` twin. Literal siblings only -- no platform suffixes (tsc has none);
   // extensionless bases keep going through the appended-extension loop below (sourceExts carries
   // ts and tsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
-  // `x.js.<ext>`, matching tsc's candidate order.
+  // `x.js.<ext>`, matching tsc's candidate order. Never into node_modules: where tsc's pick, the
+  // first sibling on disk, lies there by its real path, nothing maps (inNodeModules), as the shared
+  // fallback refuses its own -- never a later sibling tsc wouldn't pick. The resolver drops
+  // `typescript` for an importer there.
   if (opts.typescript) {
     for (const cand of typescriptSiblings(base)) {
       const hit = probePath(cand, true)
-      if (hit) return hit
+      if (hit === null) continue
+      return typeof hit === 'string' && inNodeModules(hit, opts.host) ? null : hit
     }
   }
   for (const ext of opts.sourceExts) {
@@ -220,7 +225,7 @@ function resolveFileOrDir(base, opts) {
 // resolveEntryThroughMap and resolveSourceFile); leave it off for the esbuild-parity
 // `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
 // its `x.ts` sibling; see resolveSourceFile) plus the shared miss fallback (see below), and
-// `typescriptPaths` (a loadTsconfigPaths matcher) its tsconfig alias mapping.
+// `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
 // `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
 // (METRO_KEEP_ENTRY_ON_BROWSER_FALSE) per resolver -- primarily so tests can cover both branches.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default.
@@ -237,9 +242,12 @@ export function createFieldResolver({
   host = diskHost,
 } = {}) {
   const opts = { platform, preferNative, sourceExts, mainFields, metro, typescript, metroKeepEntryOnBrowserFalse, host }
+  // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
+  const fromNodeModules = { ...opts, typescript: false }
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
   const resolve = function resolve(parentFile, specifier, callConditions) {
+    const fileOpts = typescript && inNodeModules(parentFile, host) ? fromNodeModules : opts
     const conds = new Set(callConditions ?? conditions)
     const viaNode = (spec) => {
       try {
@@ -269,7 +277,7 @@ export function createFieldResolver({
         // Browser-map targets are relative to the PACKAGE ROOT, not the importing file; a
         // bare-module target re-enters resolution below.
         if (r.startsWith('.') || isAbsolute(r)) {
-          return resolveFileOrDir(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r), opts)
+          return resolveFileOrDir(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r), fileOpts)
         }
         spec = r
       }
@@ -280,7 +288,7 @@ export function createFieldResolver({
 
     if (spec.startsWith('.') || isAbsolute(spec)) {
       const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-      return resolveFileOrDir(base, opts)
+      return resolveFileOrDir(base, fileOpts)
     }
 
     const loc = locatePackage(dirname(parentFile), spec, host)
@@ -289,12 +297,12 @@ export function createFieldResolver({
     // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
     if (pkg.exports != null) return viaNode(spec)
     // A bare package import resolves its directory via the same dir algorithm as any other.
-    if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, opts)
+    if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, fileOpts)
     const sub = `./${loc.subpath}`
     const r = matchRedirect(mergeRedirectMap(pkg, mainFields), sub)
     if (r === false) return { empty: true }
     const target = typeof r === 'string' ? r : sub
-    return resolveFileOrDir(join(loc.pkgDir, target), opts)
+    return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
   }
   if (!typescript) return resolve
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping

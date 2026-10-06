@@ -1,13 +1,13 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Scan, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
-import { loadTsconfigCompilerOptions, loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -624,6 +624,18 @@ test('importsTypescriptByOutputName: TS entries whose relative JS-output imports
   t.assert.equal(tell('broken.ts'), false)
 }))
 
+test('importsTypescriptByOutputName: no tell where tsc\'s pick for a .js import lies in node_modules', withTmp((t, tmp) => {
+  // x.ts links into an installed package, which the resolver refuses to map to -- with a local
+  // x.tsx beside it too, since tsc picks x.ts first.
+  mkdirSync(join(tmp, 'node_modules', 'pkg'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'pkg', 'x.ts'), 'export const x: number = 1\n')
+  symlinkSync(join('node_modules', 'pkg', 'x.ts'), join(tmp, 'x.ts'))
+  writeFileSync(join(tmp, 'entry.ts'), 'import { x } from "./x.js"\nexport const v: number = x\n')
+  t.assert.equal(importsTypescriptByOutputName([join(tmp, 'entry.ts')]), false)
+  writeFileSync(join(tmp, 'x.tsx'), 'export const x: number = 2\n')
+  t.assert.equal(importsTypescriptByOutputName([join(tmp, 'entry.ts')]), false)
+}))
+
 test('importsTypescriptByOutputName parses CommonJS entries as the scan does (top-level return)', withTmp((t, tmp) => {
   // Node runs CJS in its module wrapper, where a top-level `return` is legal: a .cts entry, a .ts
   // one in a "type": "commonjs" package, and a typeless .ts one Node detects as CJS all parse.
@@ -648,11 +660,26 @@ test('scan without typescript names the file a miss would resolve to under it', 
   t.assert.deepStrictEqual(on.unresolved.map((u) => [u.spec, u.typescript]), [['./missing.js', undefined]])
 }))
 
+// TS-source packages under `dir`: dep (no main/exports, sub.ts), maindep (main naming the unbuilt
+// lib/main.js) and expdep (exports naming it), each with only the .ts on disk.
+const writeTsPackages = (dir) => {
+  for (const [name, manifest, files] of [
+    ['dep', {}, ['sub.ts']],
+    ['maindep', { main: './lib/main.js' }, ['lib/main.ts']],
+    ['expdep', { exports: { '.': { default: './lib/main.js' } } }, ['lib/main.ts']],
+  ]) {
+    mkdirSync(join(dir, name, 'lib'), { recursive: true })
+    writeFileSync(join(dir, name, 'package.json'), JSON.stringify({ name, version: '1.0.0', ...manifest }))
+    for (const file of files) writeFileSync(join(dir, name, file), 'export const x: number = 1\n')
+  }
+}
+
 test('scan typescript:true substitutes bare package subpaths and manifest entry targets', withTmp((t, tmp) => {
   // tsc's node16 rules substitute wherever a path lands: a bare subpath into a package without
   // `exports`, a `main` naming the unbuilt compiled file, an `exports` target, and a `#` subpath
   // `imports` target -- all resolve to the on-disk TS source. The two resolvers share one
   // dispatcher (resolve-typescript.js), so this scan-side behavior matches --mainFields/--metro.
+  // The packages are a monorepo's: in packages/, linked into node_modules, as pnpm links them.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({
     name: 'ts-res', version: '0.0.0', type: 'module', imports: { '#util': './util.js' },
   }))
@@ -660,24 +687,46 @@ test('scan typescript:true substitutes bare package subpaths and manifest entry 
     'import { x } from "dep/sub.js"\nimport { m } from "maindep"\nimport { e } from "expdep"\n' +
     'import { u } from "#util"\nexport const v: number = x + m + e + u\n')
   writeFileSync(join(tmp, 'util.ts'), 'export const u: number = 1\n')
-  mkdirSync(join(tmp, 'node_modules', 'dep'), { recursive: true })
-  writeFileSync(join(tmp, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep', version: '1.0.0' }))
-  writeFileSync(join(tmp, 'node_modules', 'dep', 'sub.ts'), 'export const x: number = 1\n')
-  mkdirSync(join(tmp, 'node_modules', 'maindep', 'lib'), { recursive: true })
-  writeFileSync(join(tmp, 'node_modules', 'maindep', 'package.json'),
-    JSON.stringify({ name: 'maindep', version: '1.0.0', main: './lib/main.js' }))
-  writeFileSync(join(tmp, 'node_modules', 'maindep', 'lib', 'main.ts'), 'export const m: number = 2\n')
-  mkdirSync(join(tmp, 'node_modules', 'expdep', 'lib'), { recursive: true })
-  writeFileSync(join(tmp, 'node_modules', 'expdep', 'package.json'),
-    JSON.stringify({ name: 'expdep', version: '1.0.0', exports: { '.': { default: './lib/main.js' } } }))
-  writeFileSync(join(tmp, 'node_modules', 'expdep', 'lib', 'main.ts'), 'export const e: number = 3\n')
+  writeTsPackages(join(tmp, 'packages'))
+  mkdirSync(join(tmp, 'node_modules'))
+  for (const name of ['dep', 'maindep', 'expdep']) symlinkSync(join('..', 'packages', name), join(tmp, 'node_modules', name))
   const result = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
   t.assert.deepStrictEqual(result.unresolved, [])
   const byParent = flattenImports(result.imports)
-  t.assert.equal(byParent.get('entry.ts').get('dep/sub.js'), 'node_modules/dep/sub.ts')
-  t.assert.equal(byParent.get('entry.ts').get('maindep'), 'node_modules/maindep/lib/main.ts')
-  t.assert.equal(byParent.get('entry.ts').get('expdep'), 'node_modules/expdep/lib/main.ts')
+  t.assert.equal(byParent.get('entry.ts').get('dep/sub.js'), 'packages/dep/sub.ts')
+  t.assert.equal(byParent.get('entry.ts').get('maindep'), 'packages/maindep/lib/main.ts')
+  t.assert.equal(byParent.get('entry.ts').get('expdep'), 'packages/expdep/lib/main.ts')
   t.assert.equal(byParent.get('entry.ts').get('#util'), 'util.ts')
+}))
+
+test('scan typescript:true maps nothing from or into node_modules', withTmp((t, tmp) => {
+  // The same packages installed in node_modules itself: no mapping into them, none of the
+  // imports their own files make, and no --typescript hint either way. A linked workspace
+  // package (wsdep) lies outside node_modules by its real path, so its own imports still map.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'entry.ts'),
+    'import { x } from "dep/sub.js"\nimport { m } from "maindep"\nimport { e } from "expdep"\n' +
+    'import { s } from "selfdep"\nimport { w } from "wsdep"\nexport const v: number = x + m + e + s + w\n')
+  writeTsPackages(join(tmp, 'node_modules'))
+  for (const [dir, name] of [[join(tmp, 'node_modules', 'selfdep'), 'selfdep'], [join(tmp, 'packages', 'wsdep'), 'wsdep']]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', type: 'module', main: './index.js' }))
+    writeFileSync(join(dir, 'index.js'), `export { y as ${name[0]} } from "./y.js"\n`)
+    writeFileSync(join(dir, 'y.ts'), 'export const y: number = 1\n')
+  }
+  symlinkSync(join('..', 'packages', 'wsdep'), join(tmp, 'node_modules', 'wsdep'))
+  for (const typescript of [true, false]) {
+    const result = scan([join(tmp, 'entry.ts')], { typescript }).toRelative(tmp)
+    const missed = (u) => [u.parent, u.spec, u.typescript]
+    t.assert.deepStrictEqual(result.unresolved.map(missed).toSorted(), [
+      ['entry.ts', 'dep/sub.js', undefined],
+      ['entry.ts', 'expdep', undefined],
+      ['entry.ts', 'maindep', undefined],
+      ['node_modules/selfdep/index.js', './y.js', undefined],
+      ...(typescript ? [] : [['packages/wsdep/index.js', './y.js', 'packages/wsdep/y.ts']]),
+    ], `typescript: ${typescript}`)
+    if (typescript) t.assert.equal(flattenImports(result.imports).get('packages/wsdep/index.js').get('./y.js'), 'packages/wsdep/y.ts')
+  }
 }))
 
 test('scan typescript:true respects the exports map (a subpath it does not export stays unresolved)', withTmp((t, tmp) => {
@@ -854,6 +903,127 @@ test('scan typescriptPaths completes an alias target to .js/.jsx after the TS ex
   t.assert.equal(byParent.get('entry.ts').get('@/comp'), 'src/comp.jsx')
   t.assert.deepStrictEqual(result.unresolved.map((u) => u.spec), ['@/mod'])
   t.assert.deepStrictEqual(result.parseErrors, [])
+}))
+
+// A project tree under `tmp`: `files` maps paths to contents (objects are JSON).
+const writeTree = (tmp, files) => {
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+}
+const aliasTo = (target) => ({ compilerOptions: { paths: { '@/*': [target] } } })
+
+test('packageTsconfigPaths: in a monorepo, each file takes its own package\'s tsconfig.json', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'root', private: true },
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'tsconfig.json': aliasTo('./root/*'),
+    '.git/HEAD': '',
+    'packages/a/package.json': { name: '@org/a' },
+    'packages/a/tsconfig.json': aliasTo('./src/*'),
+    'packages/a/src/esm/package.json': { type: 'module' }, // a `type` marker: still package a's
+    'packages/b/package.json': { name: '@org/b' }, // no tsconfig.json of its own
+    'tools/x.ts': '',
+  })
+  const a = join(tmp, 'packages', 'a')
+  for (const cwd of [tmp, a, join(a, 'src')]) {
+    const paths = packageTsconfigPaths(cwd)
+    const match = (file) => paths.matchPaths('@/x', join(tmp, file))
+    t.assert.deepStrictEqual(match('packages/a/src/index.ts'), [join(a, 'src', 'x')], cwd)
+    t.assert.deepStrictEqual(match('packages/a/src/esm/index.ts'), [join(a, 'src', 'x')], cwd)
+    t.assert.deepStrictEqual(match('packages/b/index.ts'), [], cwd)
+    // Outside any named package below the workspace root: the root's own.
+    t.assert.deepStrictEqual(match('tools/x.ts'), [join(tmp, 'root', 'x')], cwd)
+  }
+}))
+
+test('packageTsconfigPaths: outside a monorepo, every file takes the project\'s tsconfig.json', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app' },
+    'tsconfig.json': aliasTo('./src/*'),
+    '.git/HEAD': '',
+    'src/esm/package.json': { type: 'module' },
+    'examples/demo/package.json': { name: 'demo' },
+    'examples/demo/tsconfig.json': aliasTo('./demo/*'),
+  })
+  // From the project's own directory, or one below it holding only a `type` marker.
+  for (const cwd of [tmp, join(tmp, 'src'), join(tmp, 'src', 'esm')]) {
+    const paths = packageTsconfigPaths(cwd)
+    t.assert.deepStrictEqual(paths.matchPaths('@/x', join(tmp, 'src', 'a.ts')), [join(tmp, 'src', 'x')], cwd)
+    // A named package.json nested in a project that declares no workspaces is no package of its own.
+    t.assert.deepStrictEqual(paths.matchPaths('@/x', join(tmp, 'examples', 'demo', 'a.ts')), [join(tmp, 'src', 'x')], cwd)
+  }
+  // An app whose package.json names no package is still the project.
+  writeTree(tmp, { 'package.json': { private: true } })
+  t.assert.deepStrictEqual(packageTsconfigPaths(join(tmp, 'src', 'esm')).matchPaths('@/x', join(tmp, 'src', 'a.ts')), [join(tmp, 'src', 'x')])
+}))
+
+test('packageTsconfigPaths takes a linked workspace package by its real path, its relative `extends` included', withTmp((t, tmp) => {
+  // The field resolver reaches a linked package's files through node_modules; read there, lib's
+  // config would `extends` ../../tsconfig.base.json from node_modules/, not the repository root.
+  writeTree(tmp, {
+    'package.json': { name: 'root', private: true },
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'tsconfig.base.json': { compilerOptions: { baseUrl: '.', paths: { '@lib/*': ['packages/lib/src/*'] } } },
+    'packages/app/package.json': { name: 'app' },
+    'packages/lib/package.json': { name: 'lib' },
+    'packages/lib/tsconfig.json': { extends: '../../tsconfig.base.json' },
+    'packages/lib/src/index.ts': '',
+  })
+  mkdirSync(join(tmp, 'packages', 'app', 'node_modules'))
+  symlinkSync(join('..', '..', 'lib'), join(tmp, 'packages', 'app', 'node_modules', 'lib'))
+  const linked = join(tmp, 'packages', 'app', 'node_modules', 'lib', 'src', 'index.ts')
+  t.assert.deepStrictEqual(packageTsconfigPaths(tmp).matchPaths('@lib/x', linked), [join(tmp, 'packages', 'lib', 'src', 'x')])
+}))
+
+test('packageTsconfigPaths reads the project by real path, from a cwd reached through a link', withTmp((t, tmp) => {
+  // An unnamed workspace root (the common `{ "private": true, "workspaces": [...] }`): a file of
+  // its own is found as the root's only when the root is compared by the real path importers have.
+  writeTree(tmp, {
+    'real/package.json': { private: true, workspaces: ['packages/*'] },
+    'real/tsconfig.json': aliasTo('./shared/*'),
+    'real/.git/HEAD': '',
+    'real/packages/a/package.json': { name: 'a' },
+    'real/tools/a.ts': '',
+  })
+  symlinkSync('real', join(tmp, 'link'))
+  for (const cwd of [join(tmp, 'link'), join(tmp, 'link', 'tools')]) {
+    t.assert.deepStrictEqual(packageTsconfigPaths(cwd).matchPaths('@/x', join(tmp, 'real', 'tools', 'a.ts')), [join(tmp, 'real', 'shared', 'x')], cwd)
+  }
+}))
+
+test('packageTsconfigPaths reads the project up to projectCwd, as the State stops at PROJECT_CWD', withTmp((t, tmp) => {
+  // A nested project whose package.json names no package, inside a named repository: yarn's
+  // PROJECT_CWD roots the State at the nested one, so its own tsconfig.json applies there.
+  writeTree(tmp, {
+    'package.json': { name: 'outer' },
+    'tsconfig.json': aliasTo('./outer/*'),
+    '.git/HEAD': '',
+    'app/package.json': { type: 'module' },
+    'app/tsconfig.json': aliasTo('./src/*'),
+  })
+  const app = join(tmp, 'app')
+  const file = join(app, 'src', 'index.ts')
+  t.assert.deepStrictEqual(packageTsconfigPaths(app).matchPaths('@/x', file), [join(tmp, 'outer', 'x')])
+  t.assert.deepStrictEqual(packageTsconfigPaths(app, { projectCwd: app }).matchPaths('@/x', file), [join(app, 'src', 'x')])
+}))
+
+test('packageTsconfigPaths loads each config once, when first matched; lenient, one that does not load is none', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'root', workspaces: ['packages/*'] },
+    '.git/HEAD': '',
+    'packages/a/package.json': { name: 'a' },
+    'packages/a/tsconfig.json': '{ "compilerOptions": { "paths": { "@/*": "not-an-array" } } }',
+    'packages/b/package.json': { name: 'b' },
+    'packages/b/tsconfig.json': aliasTo('./*'),
+  })
+  const inA = join(tmp, 'packages', 'a', 'x.ts')
+  const inB = join(tmp, 'packages', 'b', 'x.ts')
+  // Nothing loads until a file of that package asks: b matches though a's config is malformed.
+  t.assert.deepStrictEqual(packageTsconfigPaths(tmp).matchPaths('@/y', inB), [join(tmp, 'packages', 'b', 'y')])
+  t.assert.throws(() => packageTsconfigPaths(tmp).matchPaths('@/y', inA), /must be an array of strings/u)
+  t.assert.deepStrictEqual(packageTsconfigPaths(tmp, { lenient: true }).matchPaths('@/y', inA), [])
 }))
 
 test('scan typescriptPaths never applies to node_modules parents and never beats a real resolution', withTmp((t, tmp) => {
