@@ -14,14 +14,24 @@ export const HEAD = 'b'.repeat(40)
 
 const encoder = new TextEncoder()
 
-// A gzipped tarball of `files` under `dir`, as GitHub's: one top directory named for the tree, and
-// the modes git archive's tar.umask 0002 gives. A `{ symlink }` value is a link to that target.
+// A gzipped tarball of `files` under `dir`, as GitHub's: one top directory named for the tree, an
+// entry for each directory before what it holds, as git archive writes them, and the modes its
+// tar.umask 0002 gives. A `{ symlink }` value is a link to that target.
 export const tarballOf = (files, dir = '') => {
   const prefix = dir ? `${dir}/` : ''
   const entries = [{ name: 'tree-id/', type: 'directory', mode: 0o775 }]
+  const dirs = new Set()
   for (const [path, value] of Object.entries(files)) {
     if (!path.startsWith(prefix)) continue
-    const name = `tree-id/${path.slice(prefix.length)}`
+    const rel = path.slice(prefix.length)
+    const parts = rel.split('/').slice(0, -1)
+    for (let i = 1; i <= parts.length; i++) {
+      const sub = parts.slice(0, i).join('/')
+      if (dirs.has(sub)) continue
+      dirs.add(sub)
+      entries.push({ name: `tree-id/${sub}/`, type: 'directory', mode: 0o775 })
+    }
+    const name = `tree-id/${rel}`
     entries.push(typeof value === 'string' ? { name, data: encoder.encode(value), mode: 0o664 } : { name, type: 'symlink', linkname: value.symlink })
   }
   return compress(pack(entries), 'gzip')

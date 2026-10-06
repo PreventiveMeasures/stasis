@@ -1271,11 +1271,13 @@ export function checkVfsOptions(name, options) {
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
 // through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
-// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js).
+// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js). `client`, a
+// @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
+// one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a JS bundle
 // built through a State, the State's root, which is at or above it.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
-export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], ...options } = {}) {
+export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, ...options } = {}) {
   const { checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
@@ -1294,7 +1296,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc })
+  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client })
   let { host } = tree
   if (generate.includes('prisma')) {
     const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')

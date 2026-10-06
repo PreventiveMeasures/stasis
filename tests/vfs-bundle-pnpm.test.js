@@ -122,7 +122,7 @@ test('pnpm: refuses what is no lockfile for the project, naming the file', async
 
 test('pnpm: links a directory a `link:` override names, and installs one a `file:` override names', async (t) => {
   const link = { 'package.json': { name: 'p', version: '1.0.0', dependencies: { foo: '^1.0.0' }, pnpm: { overrides: { foo: 'link:./vendor/foo' } } }, 'pnpm-lock.yaml': overrideLockfile('link:./vendor/foo', 'link:vendor/foo') }
-  await t.assert.rejects(load({ vfs: project(link) }), /overrides\["foo"\]: "vendor\/foo" holds no package\.json in the project given/u)
+  await t.assert.rejects(load({ vfs: project(link) }), /overrides\["foo"\]: "vendor\/foo" is not in the project given/u)
   const foo = { 'vendor/foo/package.json': { name: 'foo', version: '1.0.0', main: 'index.js' }, 'vendor/foo/index.js': 'module.exports = 1\n', 'vendor/foo/node_modules/x/i.js': '' }
   t.assert.equal((await load({ vfs: project({ ...link, ...foo }) })).vfs.readlink('/node_modules/foo'), '../vendor/foo')
   const file = { ...link, ...foo, 'package.json': { ...link['package.json'], pnpm: { overrides: { foo: 'file:./vendor/foo' } } }, 'pnpm-lock.yaml': FILE_OVERRIDE }
