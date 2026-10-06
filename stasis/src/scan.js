@@ -140,21 +140,23 @@ function collectSpecifiers(program) {
 // which only --typescript resolves -- so the build can take --typescript as given: every entry is
 // TypeScript, they hold at least one relative import naming a JS output (`./a.js`, or .jsx/.mjs/
 // .cjs), and not one of those is on disk while the TS source it maps to is (`./a.ts`; see
-// typescriptSiblings). Any part missing is no tell, and neither is an entry that doesn't parse (the
-// scan reports it). Read off the entries alone, before the scan.
+// typescriptSiblings). Any part missing is no tell, and neither is an entry that doesn't parse as
+// the scan parses it (Scan#parseFile; the scan reports it). Read off the entries alone, before the scan.
 export function importsTypescriptByOutputName(entries, host = diskHost) {
   if (!entries.every((entry) => TS_EXTS.has(extname(entry)))) return false
-  const parser = getParser()
+  // Outside the try, as in the scan: a missing oxc-parser is an env error, not an entry's.
+  getParser()
+  const scanner = new Scan({ host })
   const targets = []
   for (const entry of entries) {
-    let parsed
+    let result
     try {
-      parsed = parser.parseSync(entry, host.readFile(entry).toString('utf8'), { sourceType: 'unambiguous' })
+      result = scanner.parseFile(entry)
     } catch {
-      return false
+      return false // unreadable: the scan reports it
     }
-    if (syntaxErrors(parsed).length > 0) return false
-    for (const { spec } of collectSpecifiers(parsed.program)) {
+    if (result.crash !== undefined || result.errors.length > 0) return false
+    for (const { spec } of collectSpecifiers(result.parsed.program)) {
       if (spec?.startsWith('./') || spec?.startsWith('../')) {
         const target = resolvePath(dirname(entry), spec)
         if (typescriptSiblings(target).length > 0) targets.push(target)
@@ -292,25 +294,12 @@ export class Scan {
     }
   }
 
-  #scanFile(url, queue) {
-    const file = fileURLToPath(url)
+  // Parse `file` (a script extension) as Node loads it: under the format its name and package
+  // declare, or for a typeless .js/.ts the one Node detects from its syntax. -> { format, parsed,
+  // errors } (`errors`: what the parse still reports), or { declared, crash } where the parser
+  // itself threw on the file, salvaging nothing.
+  parseFile(file) {
     const ext = extname(file)
-    if (ext === '.json') {
-      this.files.set(url, { format: 'json', edges: [] })
-      return
-    }
-    if (this.#isResource(file)) {
-      // Allowlisted asset: carry it as a resource with no parse and no edges. `resource: true` is
-      // the authoritative signal (both bundle builders key off it); the concrete format
-      // (resource vs resource:base64) is byte-derived by the builder, so leave it unset here.
-      this.files.set(url, { format: null, edges: [], resource: true })
-      return
-    }
-    if (!SCRIPT_EXTS.has(ext)) {
-      this.files.set(url, { format: null, edges: [] })
-      return
-    }
-
     // declared === null: typeless package; Node decides .js/.ts by syntax, resolved after parse.
     const declared = formatForFile(file, this.host)
     const src = this.host.readFile(file).toString('utf8')
@@ -330,8 +319,7 @@ export class Scan {
     try {
       parsed = parser.parseSync(file, src, parseOptions(baseSourceType))
     } catch (cause) {
-      this.#recordParseError(url, declared, cause.message, false)
-      return
+      return { declared, crash: cause.message }
     }
 
     // Match Node's syntax detection for typeless packages: ESM syntax picks the module variant
@@ -393,6 +381,35 @@ export class Scan {
         } catch { /* keep the original parse + its errors */ }
       }
     }
+
+    return { format, parsed, errors }
+  }
+
+  #scanFile(url, queue) {
+    const file = fileURLToPath(url)
+    const ext = extname(file)
+    if (ext === '.json') {
+      this.files.set(url, { format: 'json', edges: [] })
+      return
+    }
+    if (this.#isResource(file)) {
+      // Allowlisted asset: carry it as a resource with no parse and no edges. `resource: true` is
+      // the authoritative signal (both bundle builders key off it); the concrete format
+      // (resource vs resource:base64) is byte-derived by the builder, so leave it unset here.
+      this.files.set(url, { format: null, edges: [], resource: true })
+      return
+    }
+    if (!SCRIPT_EXTS.has(ext)) {
+      this.files.set(url, { format: null, edges: [] })
+      return
+    }
+
+    const result = this.parseFile(file)
+    if (result.crash !== undefined) {
+      this.#recordParseError(url, result.declared, result.crash, false)
+      return
+    }
+    const { format, parsed, errors } = result
 
     let parseError
     if (errors.length > 0) {

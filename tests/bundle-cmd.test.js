@@ -2422,6 +2422,18 @@ test('CLI: bundle --metro takes --typescript as given where the TS entries impor
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
 }))
 
+test('CLI: bundle takes --typescript as given for a CommonJS .cts entry with a top-level return', withTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'cts-app', version: '1.2.3' }))
+  writeFileSync(join(tmp, 'entry.cts'), 'const { dep } = require("./dep.cjs")\nif (!dep) return\nmodule.exports = dep\n')
+  writeFileSync(join(tmp, 'dep.cts'), 'exports.dep = 1\n')
+  const out = join(tmp, 'snap.br')
+  const r = runCli(['bundle', `--output=${out}`, 'entry.cts'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.doesNotMatch(r.stderr, /unresolved/)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+  t.assert.equal(bundle.imports.get('*').get('entry.cts').get('./dep.cjs'), 'dep.cts')
+}))
+
 // Each case leaves one of the three out; the build fails, naming --typescript.
 const partialTypescriptTells = [
   ['a JS entry', { 'entry.js': 'import { dep } from "./dep.js"\nexport const v = dep\n' }, 'entry.js', /import \.\/dep\.js from entry\.js \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u],

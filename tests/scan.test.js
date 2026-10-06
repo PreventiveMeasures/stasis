@@ -624,6 +624,19 @@ test('importsTypescriptByOutputName: TS entries whose relative JS-output imports
   t.assert.equal(tell('broken.ts'), false)
 }))
 
+test('importsTypescriptByOutputName parses CommonJS entries as the scan does (top-level return)', withTmp((t, tmp) => {
+  // Node runs CJS in its module wrapper, where a top-level `return` is legal: a .cts entry, a .ts
+  // one in a "type": "commonjs" package, and a typeless .ts one Node detects as CJS all parse.
+  const body = 'const { dep } = require("./dep.cjs")\nif (!dep) return\nmodule.exports = dep\n'
+  for (const [dir, pkg, entry] of [['cts', {}, 'entry.cts'], ['commonjs', { type: 'commonjs' }, 'entry.ts'], ['typeless', {}, 'entry.ts']]) {
+    mkdirSync(join(tmp, dir))
+    writeFileSync(join(tmp, dir, 'package.json'), JSON.stringify({ name: dir, version: '0.0.0', ...pkg }))
+    writeFileSync(join(tmp, dir, entry), body)
+    writeFileSync(join(tmp, dir, 'dep.cts'), 'exports.dep = 1\n')
+    t.assert.equal(importsTypescriptByOutputName([join(tmp, dir, entry)]), true, dir)
+  }
+}))
+
 test('scan without typescript names the file a miss would resolve to under it', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "./a.js"\nimport { m } from "./missing.js"\nexport const v: number = a + m\n')
