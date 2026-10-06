@@ -37,14 +37,21 @@ test('parseGithubRepository accepts package.json repository spellings of a GitHu
     'git+ssh://git@github.com/ExodusOSS/stasis.git',
     'git@github.com:ExodusOSS/stasis.git',
     'https://user:token@github.com/ExodusOSS/stasis',
+    'https://user:p%40ss@github.com:443/ExodusOSS/stasis',
     'github:ExodusOSS/stasis',
     'ExodusOSS/stasis',
+    // npm's #committish is no part of the repo
+    'git+https://github.com/ExodusOSS/stasis.git#v1.2.3', 'github:ExodusOSS/stasis#main', 'ExodusOSS/stasis#semver:^1',
+    // the scp-like form, behind an ssh:// too
+    'git+ssh://git@github.com:ExodusOSS/stasis.git', 'ssh://git@github.com:ExodusOSS/stasis',
   ]) {
     t.assert.equal(parseGithubRepository(url), 'ExodusOSS/stasis', url)
   }
   for (const url of [
     'https://gitlab.com/a/b', 'gitlab:a/b', 'bitbucket:a/b', 'https://github.com/a/b/tree/main',
     '../b', '', undefined, null, 42,
+    // an authority ending before github.com is another host's
+    'https://evil.example#@github.com/a/b', 'https://evil.example?@github.com/a/b', 'https://evil.example\\@github.com/a/b', 'ssh://evil.example?@github.com:a/b',
   ]) {
     t.assert.equal(parseGithubRepository(url), null, String(url))
   }

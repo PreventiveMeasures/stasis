@@ -1,4 +1,4 @@
-import { sameRepo, sortPaths } from '@exodus/stasis-core/util'
+import { reposAgree, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
 // file level. Never reads disk. Comparing across kinds works by reducing every file to the same
@@ -36,7 +36,7 @@ export function normalizeArtifact(input, { hash } = {}) {
       digests.set(rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash))
     }
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
-    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo: repo ?? null, files: digests })
+    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo, files: digests })
   }
   // `executable` decides which files `stasis extract` chmods +x, so a change to it changes the tree
   // an artifact produces even when every digest matches -- it has to be part of "did these differ?".
@@ -81,7 +81,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
       change.nameChange = { from: l.name, to: r.name }
     }
     // A dependency's repo picks the GitHub advisories audit asks, so a change to it is one to review.
-    if (l.repo !== null && r.repo !== null && !sameRepo(l.repo, r.repo)) {
+    if (!reposAgree(l.repo, r.repo)) {
       change.repoChange = { from: l.repo, to: r.repo }
     }
     if (change.versionChange || change.nameChange || change.repoChange) modulesChanged.push(change)

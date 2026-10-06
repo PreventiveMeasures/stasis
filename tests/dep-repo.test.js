@@ -8,7 +8,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { addCommand } from '@exodus/stasis-core/add'
-import { dependencyRepo, findPackageMetadata, packageRepo, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
+import { dependencyRepo, findPackageMetadata, packageRepo } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
@@ -46,53 +46,18 @@ function capture(dir, options) {
   return state
 }
 
-test('packageRepo reads a package.json as detectRepo reads one: repository, then its directory or a GitHub tree homepage', (t) => {
-  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'git+https://github.com/o/n.git', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
-  t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n', root: true }, 'no directory: the repo root')
-  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'o/n', directory: '.\\packages\\x\\' } }), { github: 'o/n', directory: 'packages/x' })
-  t.assert.deepStrictEqual(packageRepo({ repository: 'https://github.com/o/n', homepage: 'https://github.com/o/n/tree/main/packages/x#readme' }),
-    { github: 'o/n', directory: 'packages/x' })
-  t.assert.deepStrictEqual(packageRepo({ repository: 'https://github.com/o/n', homepage: 'https://github.com/o/other/tree/main/x' }),
-    { github: 'o/n', root: true }, "another repo's homepage names no directory")
-  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'https://github.com/o/n', directory: 'with space' } }), { github: 'o/n' },
-    'a directory the format would reject is left out, root too')
-  t.assert.deepStrictEqual(packageRepo({ repository: 'https://github.com/o/n' }, 'sub'), { github: 'o/n', directory: 'sub' })
-  for (const pkg of [{}, { repository: 'https://gitlab.com/o/n' }, { bugs: 'https://github.com/o/n/issues' }, { homepage: 'https://github.com/o/n' }, null]) {
-    t.assert.equal(packageRepo(pkg), undefined, JSON.stringify(pkg))
-  }
-})
-
-test('parseGithubRepository drops a #committish, and refuses an authority ending before github.com', (t) => {
-  for (const url of ['git+https://github.com/o/n.git#v1.2.3', 'github:o/n#main', 'o/n#semver:^1', 'git@github.com:o/n.git#abc', 'git+ssh://git@github.com:o/n.git', 'ssh://git@github.com:o/n']) {
-    t.assert.equal(parseGithubRepository(url), 'o/n', url)
-  }
-  for (const url of ['https://evil.example#@github.com/a/b', 'https://evil.example?@github.com/a/b', 'https://evil.example\\@github.com/a/b', 'ssh://evil.example?@github.com:a/b']) {
-    t.assert.equal(parseGithubRepository(url), null, url)
-  }
-  t.assert.equal(parseGithubRepository('https://user:p%40ss@github.com:443/o/n'), 'o/n', 'a userinfo of what RFC 3986 allows still passes')
-})
-
-test('a dependency repo never says root: only a build knows that of its own source layout', (t) => {
+test('a dependency repo is read as a build reads its own, but never says root: only a build knows that of its own source layout', withTmp((t, dir) => {
   t.assert.deepStrictEqual(dependencyRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
   t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: './' } }), { github: 'o/n' }, 'the root named: still none')
   t.assert.deepStrictEqual(dependencyRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
-  t.assert.equal(dependencyRepo({ repository: 'https://gitlab.com/o/n' }), undefined)
   t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n', root: true }, "a build's own still does")
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-dep-repo-'))
-  try {
-    writeProject(dir, { repository: 'github:o/dep' })
-    t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'), { pkgDir: 'node_modules/dep', name: 'dep', version: '1.0.0', repo: { github: 'o/dep' } })
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
+  for (const pkg of [{}, { repository: 'https://gitlab.com/o/n' }, { bugs: 'https://github.com/o/n/issues' }, { homepage: 'https://github.com/o/n' }, null]) {
+    t.assert.equal(dependencyRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)
   }
-  for (const [what, of] of [['bundle', bundleOf], ['lockfile', lockOf]]) {
-    const json = JSON.parse(of({ 'node_modules/dep': dep() }).serialize())
-    json.modules['node_modules/dep'].repo = { github: 'o/dep', root: true }
-    const refused = new RegExp(`${what} module 'node_modules/dep' repo: root is a build's own`, 'u')
-    t.assert.throws(() => (what === 'bundle' ? Bundle : Lockfile).parse(JSON.stringify(json)), refused, `${what} parse`)
-    t.assert.throws(() => of({ 'node_modules/dep': dep({ github: 'o/dep', root: true }) }).serialize(), refused, `${what} serialize`)
-  }
-})
+  writeProject(dir, { repository: 'github:o/dep' })
+  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'),
+    { pkgDir: 'node_modules/dep', name: 'dep', version: '1.0.0', ecosystem: 'npm', repo: { github: 'o/dep' } })
+}))
 
 test('a dependency record carries repo after ecosystem, in a bundle and in a lockfile alike', (t) => {
   const modules = { 'node_modules/dep': dep({ directory: 'packages/dep', github: 'o/dep' }) }
@@ -107,7 +72,7 @@ test('a dependency record carries repo after ecosystem, in a bundle and in a loc
 
 test('a dependency repo is validated as a bundle repo is, on parse and on serialize, and only a dependency carries one', (t) => {
   for (const [what, Artifact, of] of [['bundle', Bundle, bundleOf], ['lockfile', Lockfile, lockOf]]) {
-    for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', directory: 'x', root: true }, 'o/n']) {
+    for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', root: true }, 'o/n']) {
       const json = JSON.parse(of({ 'node_modules/dep': dep() }).serialize())
       json.modules['node_modules/dep'].repo = repo
       t.assert.throws(() => Artifact.parse(JSON.stringify(json)), new RegExp(`${what} module 'node_modules/dep' repo`, 'u'), `${what} parse: ${JSON.stringify(repo)}`)

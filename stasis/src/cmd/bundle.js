@@ -223,8 +223,7 @@ function assembleCodeBundle({
       if (inNodeModules && !hasNodeModulesSegment(meta.pkgDir)) {
         throw new Error(`No package.json with name+version found for ${path}`)
       }
-      const bucketEcosystem = hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined
-      ensureBucket(meta.pkgDir, { ...meta, ecosystem: bucketEcosystem }).files[fileInBucket(meta.pkgDir, path)] = content
+      ensureBucket(meta.pkgDir, meta).files[fileInBucket(meta.pkgDir, path)] = content
     } else {
       if (inNodeModules) throw new Error(`No package.json with name+version found for ${path}`)
       ensureBucket('.', { name: workspaceName, version: workspaceVersion }).files[path] = content

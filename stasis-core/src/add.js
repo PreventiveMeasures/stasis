@@ -82,7 +82,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
     }
     if (meta) {
       const relInBucket = meta.pkgDir === '.' ? rel : rel.slice(meta.pkgDir.length + 1)
-      bucketFiles(meta.pkgDir, { ...meta, ecosystem: hasNodeModulesSegment(meta.pkgDir) ? 'npm' : undefined })[relInBucket] = content
+      bucketFiles(meta.pkgDir, meta)[relInBucket] = content
     } else {
       bucketFiles('.', { name: workspaceName, version: workspaceVersion })[rel] = content
     }

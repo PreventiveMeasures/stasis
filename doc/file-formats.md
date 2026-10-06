@@ -136,33 +136,24 @@ attested.
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
   still load.
-- A dependency record carries a `repo`, after `ecosystem`, where its own manifest
-  names a GitHub repository: `{ "github": "owner/name", "directory": "packages/x" }`,
-  `directory` where the manifest names one. It never carries `root`: `root: true`
-  is authoritative, so only a build's own `repo` holds it, from the source layout
-  the build reads, and a dependency's manifest naming no directory leaves where it
-  sits in its repository unknown. Any dependency's record may carry
-  one, whatever its ecosystem (a static `stasis bundle` may record one for a
-  Composer, Cargo or Soldeer package; `stasis run` buckets npm packages alone);
-  a first-party bucket, with no `ecosystem` and outside `node_modules`, carries
-  none. An npm package's is read off its `package.json` by the rules the
-  bundle's own `repo` takes from one (see `repo` under `stasis.code.br`):
-  `repository` (its URL or `owner/name` shorthand, a `#committish` dropped), and
-  `repository.directory`, else the directory of a GitHub tree `homepage` of the
-  same repository, and one naming the repository root (`./`) is left out as no
-  directory is. A `repository` naming another forge,
-  or none, records none: `bugs` and `homepage` alone name none, as they are often
-  a repository's old name. Unlike the bundle's own `repo`, which changes with each
-  commit of the project, it is the dependency's, so the lockfile records it and
-  holds it as it holds `name` and `version`: a run fails (`module repo mismatch`)
-  where a dependency's `package.json` names another repository than the lockfile
-  or bundle records for it, or none, and a bundle loaded beside a lockfile must
-  record the same one for each dependency both record. Its fields are validated as the
-  bundle's `repo` fields are. Artifacts predating the field lack it and still load: a run fills it in, and a
-  merge (`stasis add`, `--add`, `bundle = add`, `lock = add`) takes it from the
-  side that records it, but fails where both record different ones. `stasis audit
-  --repo-advisories` asks the repository recorded here rather than looking one up
-  in npm's registry, Packagist or crates.io (see the `stasis` README).
+- A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
+  a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
+  the fields and checks of the bundle's own `repo` (see `repo` under
+  `stasis.code.br`) but `root`. `root: true` is authoritative, so only a build's
+  own `repo` holds it, from the source layout the build reads; a dependency whose
+  manifest names no directory (or `./`) sits at an unknown place in its
+  repository. Builds record one for an npm package, read off its `package.json`
+  by the rules the bundle's own `repo` takes from one: `repository` alone names
+  the repository (`bugs` and `homepage` are often its old name), and
+  `repository.directory`, else a GitHub tree `homepage` of it, the directory.
+  First-party buckets carry none. It is the dependency's, changing only with it,
+  so the lockfile records it too and holds it as `name` and `version`: a run fails
+  (`module repo mismatch`) where a dependency's `package.json` names another
+  repository than recorded, or none, and a bundle loaded beside a lockfile must
+  agree with it. An artifact from before the field records none: a run fills it
+  in, and a merge (`stasis add`, `--add`, `bundle = add`, `lock = add`) takes the
+  side that records one, failing where both record different ones. `stasis audit
+  --repo-advisories` asks it rather than looking one up (see the `stasis` README).
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier

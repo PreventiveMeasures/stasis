@@ -74,14 +74,15 @@ export const sameRepo = (a, b) => Object.keys(REPO_FIELDS).every((key) => (key =
 export const reposAgree = (a, b) => a === undefined || b === undefined || sameRepo(a, b)
 
 // Validate a block against its `fields` (each optional: a check, or a nested block's fields), `what`
-// naming it in errors; canonical, frozen, undefined if empty.
+// naming it in errors; canonical, frozen, undefined if empty. Messages are built on failure alone: a
+// dependency's `repo` is checked on every parse and write.
 export const normalizeBlock = (block, fields, what) => {
   if (block === undefined) return undefined
-  assert(isPlainObject(block), `${what} must be an object`)
-  for (const key of Object.keys(block)) assert(Object.hasOwn(fields, key), `unknown ${what} key '${key}'`)
+  if (!isPlainObject(block)) assert(false, `${what} must be an object`)
+  for (const key of Object.keys(block)) if (!Object.hasOwn(fields, key)) assert(false, `unknown ${what} key '${key}'`)
   const entries = Object.entries(fields).map(([key, check]) => {
     if (typeof check === 'object') return [key, normalizeBlock(block[key], check, `${what}.${key}`)]
-    assert(block[key] === undefined || check(block[key]), `invalid ${what}.${key}: ${JSON.stringify(block[key])}`)
+    if (block[key] !== undefined && !check(block[key])) assert(false, `invalid ${what}.${key}: ${JSON.stringify(block[key])}`)
     return [key, block[key]]
   }).filter(([, value]) => value !== undefined)
   return entries.length === 0 ? undefined : Object.freeze(fromEntries(entries))
@@ -94,16 +95,18 @@ export const normalizeRepo = (repo, what = 'bundle repo') => {
   return normalized
 }
 
-// A dependency's `repo`, the one its own manifest names: any dependency's record may carry one (one
-// tagged with an ecosystem, or under node_modules, as one from before the tag is), first-party code's
-// none. `root: true` is authoritative, so it is a build's own alone: only the source layout it builds
-// from tells it, never a dependency's manifest.
+// A bucket's ecosystem as a dependency's: its `ecosystem` tag, or npm for an untagged one under
+// node_modules (an artifact from before the tag); undefined for first-party code.
+export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
+
+// A dependency's `repo` holds a build's own fields but `root`, which is authoritative (dependencyRepo).
+const DEPENDENCY_REPO_FIELDS = { github: REPO_FIELDS.github, directory: REPO_FIELDS.directory, commit: REPO_FIELDS.commit }
+
+// A dependency's `repo`, the one its own manifest names; first-party code carries none.
 const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   if (repo === undefined) return undefined
-  assert(ecosystem !== undefined || hasNodeModulesSegment(dir), `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
-  const normalized = normalizeRepo(repo, `${what} module '${dir}' repo`)
-  assert(normalized?.root === undefined, `${what} module '${dir}' repo: root is a build's own, never a dependency's`)
-  return normalized
+  if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
+  return normalizeBlock(repo, DEPENDENCY_REPO_FIELDS, `${what} module '${dir}' repo`)
 }
 
 // A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.

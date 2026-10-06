@@ -24,8 +24,8 @@ export function packageType(file, host = diskHost) {
 // Nearest package.json (walking up) that identifies a bucket; pkgDir is relative to baseDir ("."
 // at the root). Inside node_modules both name and version are required; a workspace package
 // outside node_modules may omit version (the name alone claims the bucket, matching
-// State#locateModule), and a node_modules one's `repo` where its `repository` names a GitHub one
-// (dependencyRepo). Null if none. A malformed one is walked past, or with `strict` throws
+// State#locateModule), and a node_modules one's `ecosystem` (npm) and `repo`, where its `repository`
+// names a GitHub one (dependencyRepo). Null if none. A malformed one is walked past, or with `strict` throws
 // (its files would otherwise land in the parent package); `check`, `host`: see readPackageJson.
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
@@ -34,7 +34,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     if (pkg?.name && (pkg.version || !inNodeModules)) {
       const repo = inNodeModules ? dependencyRepo(pkg) : undefined
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
-      return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(repo === undefined ? {} : { repo }) }
+      return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }) }
     }
     if (dir === '.' || dir === '/' || dir === '' || dirname(dir) === dir) return null
   }
