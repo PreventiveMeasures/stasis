@@ -10,6 +10,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Vfs, buildVfsBundle, setCacheDir, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { loadTree, vfsHost } from '../stasis/src/vfs-bundle/tree.js'
+import { fakeClient } from './vfs-bundle-github.helper.js'
 
 // @exodus/stasis/vfs-bundle with Soldeer. The fixture's project depends on stasis-sol-lib, a package
 // of its own whose zip (registry/) was served as Soldeer's registry serves one, to a real `soldeer
@@ -41,6 +42,13 @@ const projectVfs = (extra = {}) => {
 }
 
 const build = (options) => buildVfsBundle({ vfs: projectVfs(), packageManager: 'soldeer', entries: ENTRIES, ...options })
+
+// The fixture's stasis-sol-lib as a git dependency at REV, as `forge soldeer install` writes one.
+const REV = '0123456789abcdef0123456789abcdef01234567'
+const gitDependency = () => ({
+  'soldeer.lock': `[[dependencies]]\nname = "stasis-sol-lib"\nversion = "1.0.0"\ngit = "https://github.com/ExodusOSS/stasis-sol-lib.git"\nrev = "${REV}"\n`,
+  'foundry.toml': files['foundry.toml'].replace('stasis-sol-lib = "1.0.0"', `stasis-sol-lib = { version = "1.0.0", git = "https://github.com/ExodusOSS/stasis-sol-lib.git", rev = "${REV}" }`),
+})
 
 const bundleOnDisk = async (cwd, args) => {
   const { FOUNDRY_PROFILE: _p, FOUNDRY_REMAPPINGS: _r, DAPP_REMAPPINGS: _d, ...env } = process.env
@@ -96,7 +104,7 @@ test('soldeer: lays out, into a Vfs of its own, the dependencies folder a real i
   const vfs = projectVfs()
   const tree = await loadTree({ project: vfsHost(vfs), packageManager: 'soldeer', cwd: '/src' })
   t.assert.deepStrictEqual([tree.root, [...tree.projects], tree.packageManagerVersion], ['/', ['.'], '0.12.0'])
-  t.assert.deepStrictEqual(tree.stats, { dependencies: 1, files: 6, bytes: 637 })
+  t.assert.deepStrictEqual(tree.stats, { dependencies: 1, files: 6, bytes: 637, links: 0 })
   t.assert.deepStrictEqual(listVfs(tree.vfs, '/dependencies'), listDisk(join(fixture, 'dependencies')))
   t.assert.deepStrictEqual(tree.vfs.readdir('/'), ['dependencies'])
   t.assert.equal(vfs.isDirectory('/dependencies'), false, 'the project\'s Vfs is only read')
@@ -108,7 +116,7 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   const built = await build()
   t.assert.equal(built.bundle.serialize(), oracles.plain)
   t.assert.equal(built.lockfile, undefined, 'a Solidity bundle has no lockfile')
-  t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637 })
+  t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637, links: 0 })
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 
@@ -187,14 +195,21 @@ test('soldeer: installs from the nearest foundry.toml or soldeer.toml, never abo
   await t.assert.rejects(loadTree({ project: vfsHost(vfs), packageManager: 'soldeer', cwd: '/repo/sub/src' }), (err) => err.message === 'no soldeer.lock found in /repo, where /repo/sub/src is installed from')
 })
 
+test('buildVfsBundle with soldeer fetches a git dependency from GitHub through the client given', async (t) => {
+  // GitHub's tarball of that commit: the files the registry's zip of the same version holds.
+  const checkout = Object.fromEntries(Object.entries(listDisk(join(fixture, 'dependencies', 'stasis-sol-lib-1.0.0')))
+    .filter(([, node]) => node !== 'directory').map(([path, { data }]) => [path, Buffer.from(data, 'base64').toString('utf8')]))
+  const client = fakeClient(checkout)
+  const built = await build({ vfs: projectVfs(gitDependency()), client })
+  t.assert.deepStrictEqual(client.calls, [['getRepoTarball', 'ExodusOSS/stasis-sol-lib', REV]])
+  t.assert.equal(built.bundle.serialize(), oracles.plain, 'the bundle a registry install of the same files yields')
+})
+
 test('buildVfsBundle with soldeer refuses, naming the file, what it cannot reproduce, and checks its entries first', async (t) => {
-  const rev = '0123456789abcdef0123456789abcdef01234567'
-  const git = {
-    'soldeer.lock': `[[dependencies]]\nname = "stasis-sol-lib"\nversion = "1.0.0"\ngit = "https://github.com/ExodusOSS/stasis-sol-lib.git"\nrev = "${rev}"\n`,
-    'foundry.toml': files['foundry.toml'].replace('stasis-sol-lib = "1.0.0"', `stasis-sol-lib = { version = "1.0.0", git = "https://github.com/ExodusOSS/stasis-sol-lib.git", rev = "${rev}" }`),
-  }
+  const git = gitDependency()
   await t.assert.rejects(build({ vfs: projectVfs(git), entries: ['src/Typo.sol'] }), /^Error: entry not found: \/src\/Typo\.sol/u)
-  await t.assert.rejects(build({ vfs: projectVfs(git) }), /dependencies\["stasis-sol-lib"\]: a git dependency, which Soldeer clones with its history, is not supported/u)
+  // A git dependency is fetched through a client (deptree's `github`): with none, refused before any fetch.
+  await t.assert.rejects(build({ vfs: projectVfs(git) }), /^TypeError: github must be a GitHub client from createClient, which a git dependency is fetched through/u)
   await t.assert.rejects(build({ vfs: projectVfs({ 'soldeer.lock': git['soldeer.lock'] }) }), (err) => err.message === '/soldeer.lock: config.dependencies["stasis-sol-lib"]: a registry dependency, whose entry is a git one')
   await t.assert.rejects(build({ vfs: projectVfs({ 'soldeer.lock': '[[dependencies]\n' }) }), (err) => err.message.startsWith('/soldeer.lock: ') && err.cause?.name === 'TomlError')
   await t.assert.rejects(build({ packageManagerVersion: '0.11.0' }), /host\.soldeer: Soldeer "0\.11\.0" is not supported/u)

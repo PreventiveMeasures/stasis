@@ -232,7 +232,7 @@ const PACKAGE_MANAGERS = {
     installs: 'dependencies',
     hides: 'node_modules',
     async build(view, soldeer, file, given) {
-      const tree = await naming(file, buildSoldeerTree({ project: view, host: { soldeer, os: given?.os ?? process.platform } }))
+      const tree = await naming(file, buildSoldeerTree({ project: view, host: { soldeer, os: given?.os ?? process.platform }, github: given?.client }))
       settleSoldeer(view, tree.vfs, dirname(file))
       return tree
     },
@@ -348,8 +348,10 @@ export function checkVfs(name, vfs) {
 // path; a new Vfs holding the tree, rooted there; the directories of the projects it finds, from
 // there; deptree's counts; and the version reproduced, `packageManagerVersion` if given, else the one
 // the root package.json's packageManager pins, else the default. deptree reads the project through a
-// view of `project`, which nothing is written through.
-async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc }) {
+// view of `project`, which nothing is written through. `client`, a @preventive/upstream/github.js
+// client, is what a Soldeer git dependency is fetched through (deptree's `github`); without one, a
+// lockfile holding one is refused before anything is fetched.
+async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
@@ -362,7 +364,7 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
-  const { vfs, stats } = await pm.build(view, version, file, { os, cpu, libc })
+  const { vfs, stats } = await pm.build(view, version, file, { os, cpu, libc, client })
   return {
     root: project.realpath(found),
     vfs,

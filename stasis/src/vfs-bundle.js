@@ -12,10 +12,11 @@ import { NODE_MODULES_MANAGERS, checkTarget, checkVfs, detectPackageManager, loa
 // only read. The tree is laid out by @preventive/deptree into a Vfs of its own, and nothing is read
 // from disk or written there but the tarballs and zips: fetched from registry.npmjs.org and
 // Soldeer's registry, or read from npm's cache or ~/.audit's where one holds them, every copy held
-// to the lockfile's integrity before it is used; cached only where setCacheDir says.
+// to the lockfile's integrity before it is used; cached only where setCacheDir says. A Soldeer git
+// dependency is GitHub's tarball of its commit, fetched through the `client` buildVfsBundle is given.
 // buildGitHubBundle builds one from a GitHub repo at a commit, or the one a tag names (the default
 // branch's head without either), its tree fetched from GitHub and held to its git tree id, cached
-// there the same way.
+// there the same way, and its Soldeer git dependencies through the same client.
 
 export { buildVfsBundle } from './cmd/bundle.js'
 export { buildGitHubBundle } from './vfs-bundle/github.js'

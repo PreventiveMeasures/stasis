@@ -174,6 +174,8 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 // either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
 export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
+  // Its own, for a Soldeer git dependency too.
+  client ??= createClient({ token: null })
   const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)
   let { entries } = options
   if (entries === undefined) {
@@ -182,7 +184,7 @@ export async function buildGitHubBundle({ github, sha, tag, directory, client, p
     if (entries.length === 0) throw new Error(`${tree.where}: no entries given, and ${directory || 'the repo root'} ${tree.kind.none}`)
   }
   const repo = { github, commit: tree.sha }
-  const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo })
+  const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo, client })
   // The Vfs is the repo's tree, or the subtree at `directory`.
   const at = posix.join(tree.subtree ? directory : '.', posix.relative('/', built.root))
   built.bundle.repo = { ...repo, ...(at === '.' ? { root: true } : isValidRepoField('directory', at) ? { directory: at } : {}) }
