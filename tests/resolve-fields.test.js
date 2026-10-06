@@ -5,7 +5,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
-import { loadTsconfigPaths, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
+import { loadTsconfigPaths, resolveTypescriptFallback, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fx = join(here, 'fixtures', 'resolve-fields')
@@ -330,11 +330,16 @@ test('typescript: no mapping into a file directly in node_modules', withTsTmp((t
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), './node_modules/loose.js')), null)
 }))
 
-test('typescript: no mapping to a sibling whose real path lies in node_modules', withTsTmp((t, tmp) => {
+test('typescript: no mapping to a sibling whose real path lies in node_modules, nor past it', withTsTmp((t, tmp) => {
   // linked.ts, beside the importer, is a link into an installed package: by its real path, no target.
+  // tsc picks it before linked.tsx, so with it refused nothing maps -- in both resolvers alike.
   symlinkSync(join('node_modules', 'tspkg-installed', 'lib', 'main.ts'), join(tmp, 'linked.ts'))
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
-  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), './linked.js')), null)
+  const from = join(tmp, 'entry.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './linked.js')), null)
+  writeFileSync(join(tmp, 'linked.tsx'), 'export const l = (): unknown => null\n')
+  t.assert.equal(relTo(tmp, resolver(from, './linked.js')), null)
+  t.assert.equal(resolveTypescriptFallback(from, './linked.js'), null)
 }))
 
 test('typescript: substitution beats the appended-extension probe for a pathological x.js.ts', withTsTmp((t, tmp) => {

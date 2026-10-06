@@ -176,14 +176,15 @@ function resolveSourceFile(base, opts) {
   // always wins over its `.ts` twin. Literal siblings only -- no platform suffixes (tsc has none);
   // extensionless bases keep going through the appended-extension loop below (sourceExts carries
   // ts and tsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
-  // `x.js.<ext>`, matching tsc's candidate order. Never into node_modules: a sibling whose real path
-  // lies there is no target (inNodeModules, as the shared fallback checks its own; the resolver
-  // drops `typescript` for an importer there).
+  // `x.js.<ext>`, matching tsc's candidate order. Never into node_modules: where tsc's pick, the
+  // first sibling on disk, lies there by its real path, nothing maps (inNodeModules), as the shared
+  // fallback refuses its own -- never a later sibling tsc wouldn't pick. The resolver drops
+  // `typescript` for an importer there.
   if (opts.typescript) {
     for (const cand of typescriptSiblings(base)) {
       const hit = probePath(cand, true)
-      if (hit === null || (typeof hit === 'string' && inNodeModules(hit, opts.host))) continue
-      return hit
+      if (hit === null) continue
+      return typeof hit === 'string' && inNodeModules(hit, opts.host) ? null : hit
     }
   }
   for (const ext of opts.sourceExts) {
