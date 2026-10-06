@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
@@ -669,16 +669,13 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
 // token into the resolver.
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
-// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise the
-// project root's tsconfig.json applies when present (null matcher = no aliases). Without
-// --typescript they only hint a miss (Scan#typescriptCandidate), so a config that doesn't load is none.
+// --typescript honours tsconfig `paths` aliases: an explicit --tsconfig's for every file (it must
+// exist), else those of the tsconfig.json beside each importing file's package.json
+// (packageTsconfigPaths; null matcher = no aliases). Without --typescript they only hint a miss
+// (Scan#typescriptCandidate), so a config that doesn't load is none.
 function typescriptPathsFor(typescript, baseDir, tsconfig, host) {
-  if (typescript) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
-  try {
-    return loadTsconfigPaths(discoverTsconfig(baseDir, undefined, host), host)
-  } catch {
-    return null
-  }
+  if (typescript && tsconfig !== undefined) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
+  return packageTsconfigPaths(baseDir, { host, lenient: !typescript })
 }
 
 // Build a JS/TS Bundle (in-memory) by statically scanning the require/import graph; no
@@ -687,7 +684,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host) {
 // extra `exports`/`imports` conditions; on their own they don't honour legacy mainFields or
 // platform suffixes (see `--mainFields` / buildResolvedJsBundle). `typescript` maps a failed
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
-// `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json); it
+// `paths` aliases of `tsconfig` (an explicit config path, default each package's tsconfig.json); it
 // is taken as given where the entries import TS sources by output name (importsTypescriptByOutputName).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or

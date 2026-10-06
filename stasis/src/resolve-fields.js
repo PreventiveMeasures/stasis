@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
+  inNodeModules,
   isDir,
   isFile,
   locatePackage,
@@ -175,8 +176,8 @@ function resolveSourceFile(base, opts) {
   // always wins over its `.ts` twin. Literal siblings only -- no platform suffixes (tsc has none);
   // extensionless bases keep going through the appended-extension loop below (sourceExts carries
   // ts and tsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
-  // `x.js.<ext>`, matching tsc's candidate order.
-  if (opts.typescript) {
+  // `x.js.<ext>`, matching tsc's candidate order. Never in node_modules (inNodeModules).
+  if (opts.typescript && !inNodeModules(dirname(base), opts.host)) {
     for (const cand of typescriptSiblings(base)) {
       const hit = probePath(cand, true)
       if (hit) return hit
@@ -220,7 +221,7 @@ function resolveFileOrDir(base, opts) {
 // resolveEntryThroughMap and resolveSourceFile); leave it off for the esbuild-parity
 // `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
 // its `x.ts` sibling; see resolveSourceFile) plus the shared miss fallback (see below), and
-// `typescriptPaths` (a loadTsconfigPaths matcher) its tsconfig alias mapping.
+// `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
 // `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
 // (METRO_KEEP_ENTRY_ON_BROWSER_FALSE) per resolver -- primarily so tests can cover both branches.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default.

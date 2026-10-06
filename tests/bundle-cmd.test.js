@@ -2336,13 +2336,24 @@ test('buildBundle rejects --typescript with --metro-resolver (it cannot substitu
   )
 })
 
+// A TS-source package whose `manifest` names the compiled lib/main.js, with only lib/main.ts on
+// disk: in packages/ and linked into node_modules, as a monorepo links its workspace packages, or
+// with `installed`, in node_modules itself, where --typescript maps nothing.
+const writeTsDependency = (tmp, name, manifest, { installed = false } = {}) => {
+  const dir = installed ? join(tmp, 'node_modules', name) : join(tmp, 'packages', name)
+  mkdirSync(join(dir, 'lib'), { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '2.0.0', ...manifest }))
+  writeFileSync(join(dir, 'lib', 'main.ts'), 'export const m: number = 5\n')
+  if (!installed) {
+    mkdirSync(join(tmp, 'node_modules'), { recursive: true })
+    symlinkSync(join('..', 'packages', name), join(tmp, 'node_modules', name))
+  }
+}
+
 test('buildBundle --typescript threads through the legacy-field resolver (--mainFields path)', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
-  // A TS-source dependency whose main names the compiled file that isn't on disk.
-  mkdirSync(join(tmp, 'node_modules', 'tsdep', 'lib'), { recursive: true })
-  writeFileSync(join(tmp, 'node_modules', 'tsdep', 'package.json'),
-    JSON.stringify({ name: 'tsdep', version: '2.0.0', main: './lib/main.js' }))
-  writeFileSync(join(tmp, 'node_modules', 'tsdep', 'lib', 'main.ts'), 'export const m: number = 5\n')
+  // A workspace package whose main names the compiled file that isn't on disk.
+  writeTsDependency(tmp, 'tsdep', { main: './lib/main.js' })
   writeFileSync(join(tmp, 'entry.ts'),
     'import { dep } from "./dep.js"\nimport { m } from "tsdep"\nexport const v: number = dep + m\n')
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.ts'], mainFields: ['main'], typescript: true })
@@ -2352,6 +2363,17 @@ test('buildBundle --typescript threads through the legacy-field resolver (--main
   )
   t.assert.equal(bundle.imports.get('*').get('entry.ts').get('./dep.js'), 'dep.ts')
   t.assert.equal(bundle.imports.get('*').get('entry.ts').get('tsdep'), 'node_modules/tsdep/lib/main.ts')
+}))
+
+test('buildBundle --typescript maps nothing into a package installed in node_modules (--mainFields path)', withTmp(async (t, tmp) => {
+  writeTsProject(tmp)
+  writeTsDependency(tmp, 'tsdep', { main: './lib/main.js' }, { installed: true })
+  writeFileSync(join(tmp, 'entry.ts'),
+    'import { dep } from "./dep.js"\nimport { m } from "tsdep"\nexport const v: number = dep + m\n')
+  await t.assert.rejects(
+    () => buildBundle({ cwd: tmp, entries: ['entry.ts'], mainFields: ['main'], typescript: true }),
+    /unresolved import tsdep from entry\.ts \(MODULE_NOT_FOUND\)/u,
+  )
 }))
 
 test('buildBundle --typescript resolves per platform under --metro', withTmp(async (t, tmp) => {
@@ -2604,6 +2626,39 @@ cliTest('CLI: bundle --typescript maps an alias to a .tsx target without --jsx',
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a/b.tsx', 'src/x/y/z.ts'])
 }))
 
+cliTest('CLI: bundle --typescript takes each workspace package\'s own tsconfig.json paths, wherever it runs from', withTmp(async (t, tmp) => {
+  // A pnpm monorepo: app imports lib, which pnpm links into app's node_modules; both alias `@/*`
+  // to their own src/ in their own tsconfig.json. lib's files lie in packages/lib by their real
+  // path, so they take lib's aliases, not app's, whether stasis runs from the root or from app.
+  const files = {
+    'package.json': { name: 'root', private: true },
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'packages/app/package.json': { name: '@org/app', version: '1.0.0', type: 'module', dependencies: { '@org/lib': 'workspace:*' } },
+    'packages/app/tsconfig.json': { compilerOptions: { paths: { '@/*': ['./src/*'] } } },
+    'packages/app/src/index.ts': 'import { x } from "@/x"\nimport { lib } from "@org/lib"\nexport const v: number = x + lib\n',
+    'packages/app/src/x.ts': 'export const x: number = 1\n',
+    'packages/lib/package.json': { name: '@org/lib', version: '1.0.0', type: 'module', exports: './src/index.ts' },
+    'packages/lib/tsconfig.json': { compilerOptions: { paths: { '@/*': ['./src/*'] } } },
+    'packages/lib/src/index.ts': 'import { x } from "@/x"\nexport const lib: number = x\n',
+    'packages/lib/src/x.ts': 'export const x: number = 2\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'packages', 'app', 'node_modules', '@org'), { recursive: true })
+  symlinkSync(join('..', '..', '..', 'lib'), join(tmp, 'packages', 'app', 'node_modules', '@org', 'lib'))
+  await Promise.all([[tmp, 'packages/app/src/index.ts'], [join(tmp, 'packages', 'app'), 'src/index.ts']].map(async ([cwd, entry], i) => {
+    const out = join(tmp, `snap${i}.br`)
+    const r = await runCli(['bundle', '--typescript', `--output=${out}`, entry], { cwd })
+    t.assert.equal(r.status, 0, `${cwd}: ${r.stderr}`)
+    const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+    t.assert.equal(importTarget(bundle, 'packages/app/src/index.ts', '@/x'), 'packages/app/src/x.ts', cwd)
+    t.assert.equal(importTarget(bundle, 'packages/app/src/index.ts', '@org/lib'), 'packages/lib/src/index.ts', cwd)
+    t.assert.equal(importTarget(bundle, 'packages/lib/src/index.ts', '@/x'), 'packages/lib/src/x.ts', cwd)
+  }))
+}))
+
 cliTest('CLI: bundle rejects --tsconfig without --typescript', async (t) => {
   const r = await runCli(['bundle', '--tsconfig=tsconfig.json', 'entry.ts'])
   t.assert.notEqual(r.status, 0)
@@ -2614,15 +2669,21 @@ cliTest('CLI: bundle --typescript resolves an exports-bearing TS-source dependen
   // The modern-default package shape: `exports` pointing at compiled output that only exists as
   // TS source (an unbuilt workspace dep). Plain --typescript must handle it like a main-bearing one.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-app', version: '1.2.3', type: 'module' }))
-  mkdirSync(join(tmp, 'node_modules', 'expdep', 'lib'), { recursive: true })
-  writeFileSync(join(tmp, 'node_modules', 'expdep', 'package.json'),
-    JSON.stringify({ name: 'expdep', version: '2.0.0', exports: './lib/main.js' }))
-  writeFileSync(join(tmp, 'node_modules', 'expdep', 'lib', 'main.ts'), 'export const m: number = 5\n')
+  writeTsDependency(tmp, 'expdep', { exports: './lib/main.js' })
   writeFileSync(join(tmp, 'entry.ts'), 'import { m } from "expdep"\nexport const v: number = m\n')
   const r = await runCli(['bundle', '--typescript', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.equal(r.status, 0, `bundle stderr: ${r.stderr}`)
   const parsed = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'snap.br'))).toString('utf8'))
-  t.assert.equal(parsed.imports.get('*').get('entry.ts').get('expdep'), 'node_modules/expdep/lib/main.ts')
+  t.assert.equal(parsed.imports.get('*').get('entry.ts').get('expdep'), 'packages/expdep/lib/main.ts')
+
+  // Installed in node_modules rather than linked from the workspace, it maps to nothing, hint included.
+  rmSync(join(tmp, 'node_modules'), { recursive: true })
+  rmSync(join(tmp, 'packages'), { recursive: true })
+  writeTsDependency(tmp, 'expdep', { exports: './lib/main.js' }, { installed: true })
+  const installed = await runCli(['bundle', '--typescript', `--output=${join(tmp, 'snap2.br')}`, 'entry.ts'], { cwd: tmp })
+  t.assert.notEqual(installed.status, 0)
+  t.assert.match(installed.stderr, /unresolved import expdep from entry\.ts \(MODULE_NOT_FOUND\)/u)
+  t.assert.doesNotMatch(installed.stderr, /under --typescript/u)
 }))
 
 // --- Legacy-field / Metro resolution (`--mainFields`, `--metro --platforms`) ---

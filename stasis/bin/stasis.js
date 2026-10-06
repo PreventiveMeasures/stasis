@@ -60,8 +60,9 @@ function usage(prefix = '') {
   --flow strips Flow types from .js/.cjs/.mjs sources oxc can't parse (needs the optional flow-remove-types dep);
   --typescript resolves TS the way tsc does: an import of ./x.js lands on ./x.ts when no .js is on disk
    (likewise .mjs/.cjs -> .mts/.cts, extensionless ./x -> ./x.ts, incl. exports/imports/main targets),
-   honouring tsconfig compilerOptions.paths aliases (from ./tsconfig.json, or --tsconfig=path);
-   not with --metro-resolver; implied when every entry is TS and each relative ./x.js-style import
+   honouring tsconfig compilerOptions.paths aliases (from the tsconfig.json beside the importing
+   file's package.json -- its workspace package's in a monorepo, else the project's -- or --tsconfig=path);
+   never from or into node_modules (by real path, so linked workspace packages still are); not with --metro-resolver; implied when every entry is TS and each relative ./x.js-style import
    in them exists only as its TS source (otherwise a failing import it would resolve names it);
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
@@ -359,8 +360,8 @@ if (command === '-v' || command === '--version') {
   // extensionless) lands on its on-disk TS source (./x.ts, .mts, .cts); an existing .js always wins.
   if (values.typescript && !allJs) usage('Error: --typescript is only valid for JS bundles')
   const typescript = Boolean(values.typescript)
-  // --tsconfig: the config whose compilerOptions.paths aliases --typescript honours (default:
-  // the project root's tsconfig.json when present). Meaningless without --typescript.
+  // --tsconfig: the config whose compilerOptions.paths aliases --typescript honours (default: the
+  // tsconfig.json beside each importing file's package.json). Meaningless without --typescript.
   if (values.tsconfig !== undefined && !typescript) usage('Error: --tsconfig is only valid with --typescript')
   // --mainFields: legacy package entry fields (e.g. react-native,browser,main) for the non-exports resolver.
   if (values.mainFields !== undefined && !allJs) usage('Error: --mainFields is only valid for JS bundles')
