@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
@@ -143,6 +143,8 @@ const hardlinkCopy = async (src, dst) => {
 }
 
 const decode = (buf) => brotliDecompressSync(buf).toString('utf-8')
+// Quality 5, as the CLI writes here (EXODUS_STASIS_BROTLI_QUALITY): the default 11 is ~4s on these ~2MB bundles.
+const encode = (text) => brotliCompressSync(text, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } })
 
 // Each fixture's oracle, from a hardlinked copy of its real install: the files it is built from,
 // and the bundle and lockfile plain `stasis bundle` writes there.
@@ -195,117 +197,121 @@ const projectVfs = (packageManager, files = {}) => {
 
 const pick = (stats, keys) => Object.fromEntries(Object.keys(keys).map((key) => [key, stats[key]]))
 
-for (const [packageManager, m] of Object.entries(MANAGERS)) {
-  const build = (vfs, options) => buildVfsBundle({ vfs, packageManager, entries: ['src/entry.js'], ...options })
+// The package managers side by side, each over its own installed copy, which its tests share and so
+// take one at a time; the tarball cache they share is written write-then-rename.
+describe('buildVfsBundle with each package manager', { concurrency: true }, () => {
+  for (const [packageManager, m] of Object.entries(MANAGERS)) {
+    const build = (vfs, options) => buildVfsBundle({ vfs, packageManager, entries: ['src/entry.js'], ...options })
 
-  describe(`buildVfsBundle with ${packageManager}`, { concurrency: 1 }, () => {
-    test('builds, from the lockfile alone, the byte-identical bundle + lockfile a real install yields', async (t) => {
-      const vfs = projectVfs(packageManager)
-      const built = await build(vfs, { scope: 'full' })
-      t.assert.ok(built.bundle instanceof Bundle)
-      t.assert.equal(built.bundle.serialize(), oracles[packageManager].bundle)
-      t.assert.ok(built.lockfile instanceof Lockfile)
-      t.assert.equal(built.lockfile.serialize(), oracles[packageManager].lockfile)
-      t.assert.deepStrictEqual(pick(built.stats, m.stats), m.stats)
-      t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
-    })
+    describe(`buildVfsBundle with ${packageManager}`, { concurrency: 1 }, () => {
+      test('builds, from the lockfile alone, the byte-identical bundle + lockfile a real install yields', async (t) => {
+        const vfs = projectVfs(packageManager)
+        const built = await build(vfs, { scope: 'full' })
+        t.assert.ok(built.bundle instanceof Bundle)
+        t.assert.equal(built.bundle.serialize(), oracles[packageManager].bundle)
+        t.assert.ok(built.lockfile instanceof Lockfile)
+        t.assert.equal(built.lockfile.serialize(), oracles[packageManager].lockfile)
+        t.assert.deepStrictEqual(pick(built.stats, m.stats), m.stats)
+        t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
+      })
 
-    test('packageJSON, mainFields, metro and node_modules scope match the real install too', async (t) => {
-      const { installedCopy } = oracles[packageManager]
-      const variants = [
-        [['--package-json', '--scope=full'], { packageJSON: true, scope: 'full' }],
-        [['--mainFields=browser,main'], { mainFields: ['browser', 'main'] }],
-        [['--scope=node_modules'], { scope: 'node_modules' }],
-        [['--metro', '--platforms=ios,android', '--package-json'], { metro: true, platforms: ['ios', 'android'], packageJSON: true }],
-      ]
-      const reals = await Promise.all(variants.map(async ([flags]) => {
-        const name = flags.join('_').replaceAll(/[^\w]/gu, '_')
-        const r = await run(['bundle', ...flags, `--output=${join(installedCopy, `${name}.br`)}`, `--lockfile=${join(installedCopy, `${name}.lock.json`)}`, 'src/entry.js'], { cwd: installedCopy })
-        t.assert.equal(r.status, 0, `real ${flags}: ${r.stderr}`)
-        return { bundle: decode(await readFile(join(installedCopy, `${name}.br`))), lockfile: await readFile(join(installedCopy, `${name}.lock.json`), 'utf-8') }
+      test('packageJSON, mainFields, metro and node_modules scope match the real install too', async (t) => {
+        const { installedCopy } = oracles[packageManager]
+        const variants = [
+          [['--package-json', '--scope=full'], { packageJSON: true, scope: 'full' }],
+          [['--mainFields=browser,main'], { mainFields: ['browser', 'main'] }],
+          [['--scope=node_modules'], { scope: 'node_modules' }],
+          [['--metro', '--platforms=ios,android', '--package-json'], { metro: true, platforms: ['ios', 'android'], packageJSON: true }],
+        ]
+        const reals = await Promise.all(variants.map(async ([flags]) => {
+          const name = flags.join('_').replaceAll(/[^\w]/gu, '_')
+          const r = await run(['bundle', ...flags, `--output=${join(installedCopy, `${name}.br`)}`, `--lockfile=${join(installedCopy, `${name}.lock.json`)}`, 'src/entry.js'], { cwd: installedCopy })
+          t.assert.equal(r.status, 0, `real ${flags}: ${r.stderr}`)
+          return { bundle: decode(await readFile(join(installedCopy, `${name}.br`))), lockfile: await readFile(join(installedCopy, `${name}.lock.json`), 'utf-8') }
+        }))
+        const builts = await Promise.all(variants.map(([, options]) => build(projectVfs(packageManager), options)))
+        for (const [i, [flags]] of variants.entries()) {
+          t.assert.equal(builts[i].bundle.serialize(), reals[i].bundle, `bundle for ${flags.join(' ')}`)
+          t.assert.equal(builts[i].lockfile.serialize(), reals[i].lockfile, `lockfile for ${flags.join(' ')}`)
+        }
+      })
+
+      test('the bundle loads (--bundle=load) and its lockfile verifies (--lock=frozen) against the real install', withTmp(async (t, tmp) => {
+        const { installedCopy } = oracles[packageManager]
+        const { bundle, lockfile } = await build(projectVfs(packageManager), { scope: 'full' })
+        await writeFile(join(tmp, 'v.br'), encode(bundle.serialize()))
+        const load = await run(['run', '--lock=none', '--bundle=load', `--bundle-file=${join(tmp, 'v.br')}`, 'src/entry.js'], { cwd: installedCopy })
+        t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
+        t.assert.equal(load.stdout, expectedOutput)
+        await writeFile(join(installedCopy, 'stasis.lock.json'), lockfile.serialize())
+        try {
+          const frozen = await run(['run', '--lock=frozen', 'src/entry.js'], { cwd: installedCopy })
+          t.assert.equal(frozen.status, 0, `frozen stderr: ${frozen.stderr}`)
+          t.assert.equal(frozen.stdout, expectedOutput)
+        } finally {
+          await rm(join(installedCopy, 'stasis.lock.json'), { force: true })
+        }
       }))
-      const builts = await Promise.all(variants.map(([, options]) => build(projectVfs(packageManager), options)))
-      for (const [i, [flags]] of variants.entries()) {
-        t.assert.equal(builts[i].bundle.serialize(), reals[i].bundle, `bundle for ${flags.join(' ')}`)
-        t.assert.equal(builts[i].lockfile.serialize(), reals[i].lockfile, `lockfile for ${flags.join(' ')}`)
-      }
-    })
 
-    test('the bundle loads (--bundle=load) and its lockfile verifies (--lock=frozen) against the real install', withTmp(async (t, tmp) => {
-      const { installedCopy } = oracles[packageManager]
-      const { bundle, lockfile } = await build(projectVfs(packageManager), { scope: 'full' })
-      await writeFile(join(tmp, 'v.br'), brotliCompressSync(bundle.serialize()))
-      const load = await run(['run', '--lock=none', '--bundle=load', `--bundle-file=${join(tmp, 'v.br')}`, 'src/entry.js'], { cwd: installedCopy })
-      t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
-      t.assert.equal(load.stdout, expectedOutput)
-      await writeFile(join(installedCopy, 'stasis.lock.json'), lockfile.serialize())
-      try {
-        const frozen = await run(['run', '--lock=frozen', 'src/entry.js'], { cwd: installedCopy })
-        t.assert.equal(frozen.status, 0, `frozen stderr: ${frozen.stderr}`)
-        t.assert.equal(frozen.stdout, expectedOutput)
-      } finally {
-        await rm(join(installedCopy, 'stasis.lock.json'), { force: true })
-      }
-    }))
+      test('whatever the project holds as installed is ignored: a tampered node_modules does not reach the bundle', async (t) => {
+        const vfs = projectVfs(packageManager)
+        m.tamper(vfs)
+        const text = (await build(vfs, { scope: 'full' })).bundle.serialize()
+        t.assert.equal(text, oracles[packageManager].bundle)
+        t.assert.doesNotMatch(text, /TAMPERED/u)
+      })
 
-    test('whatever the project holds as installed is ignored: a tampered node_modules does not reach the bundle', async (t) => {
-      const vfs = projectVfs(packageManager)
-      m.tamper(vfs)
-      const text = (await build(vfs, { scope: 'full' })).bundle.serialize()
-      t.assert.equal(text, oracles[packageManager].bundle)
-      t.assert.doesNotMatch(text, /TAMPERED/u)
-    })
+      test('a lockfile integrity that does not match the registry tarball fails closed', async (t) => {
+        const lock = oracles[packageManager].files[m.lockfile]
+        const tampered = lock.replace(m.integrity, `$1sha512-${'A'.repeat(86)}==`)
+        t.assert.notEqual(tampered, lock)
+        await t.assert.rejects(build(projectVfs(packageManager, { [m.lockfile]: tampered }), { scope: 'full' }), new RegExp(`integrity mismatch for ${m.tampered.replaceAll('.', '\\.')}`, 'u'))
+      })
 
-    test('a lockfile integrity that does not match the registry tarball fails closed', async (t) => {
-      const lock = oracles[packageManager].files[m.lockfile]
-      const tampered = lock.replace(m.integrity, `$1sha512-${'A'.repeat(86)}==`)
-      t.assert.notEqual(tampered, lock)
-      await t.assert.rejects(build(projectVfs(packageManager, { [m.lockfile]: tampered }), { scope: 'full' }), new RegExp(`integrity mismatch for ${m.tampered.replaceAll('.', '\\.')}`, 'u'))
-    })
-
-    test('over a project held in a Vfs, nothing is read from disk but the tarball cache', withTmp(async (t, tmp) => {
-      // node:fs is wrapped before stasis is loaded, so every read through it is seen; a first build
-      // loads every module the build does, so what the second reads is data.
-      const files = Object.fromEntries(Object.entries(oracles[packageManager].files).map(([f, text]) => [`/${f}`, text]))
-      const script = `
-        import fs from 'node:fs'
-        import { syncBuiltinESMExports } from 'node:module'
-        const read = new Set()
-        const spy = (obj, name) => {
-          const real = obj[name]
-          obj[name] = Object.assign(function (p, ...rest) {
-            read.add(String(p))
-            return real.call(this, p, ...rest)
-          }, real)
-        }
-        for (const name of ['accessSync', 'existsSync', 'lstatSync', 'openSync', 'opendirSync', 'readFileSync', 'readdirSync', 'readlinkSync', 'realpathSync', 'statSync']) spy(fs, name)
-        for (const name of ['access', 'lstat', 'open', 'opendir', 'readFile', 'readdir', 'readlink', 'realpath', 'stat']) spy(fs.promises, name)
-        syncBuiltinESMExports()
-        const { Vfs, buildVfsBundle, setCacheDir } = await import(${JSON.stringify(pathToFileURL(join(here, '..', 'stasis', 'src', 'vfs-bundle.js')).href)})
-        setCacheDir(${JSON.stringify(join(cacheRoot, 'stasis'))})
-        const build = () => {
-          const vfs = new Vfs()
-          for (const [path, text] of Object.entries(${JSON.stringify(files)})) {
-            vfs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true })
-            vfs.writeFile(path, text)
+      test('over a project held in a Vfs, nothing is read from disk but the tarball cache', withTmp(async (t, tmp) => {
+        // node:fs is wrapped before stasis is loaded, so every read through it is seen; a first build
+        // loads every module the build does, so what the second reads is data.
+        const files = Object.fromEntries(Object.entries(oracles[packageManager].files).map(([f, text]) => [`/${f}`, text]))
+        const script = `
+          import fs from 'node:fs'
+          import { syncBuiltinESMExports } from 'node:module'
+          const read = new Set()
+          const spy = (obj, name) => {
+            const real = obj[name]
+            obj[name] = Object.assign(function (p, ...rest) {
+              read.add(String(p))
+              return real.call(this, p, ...rest)
+            }, real)
           }
-          return buildVfsBundle({ vfs, packageManager: ${JSON.stringify(packageManager)}, entries: ['src/entry.js'], scope: 'full' })
-        }
-        await build()
-        read.clear()
-        const { bundle, lockfile } = await build()
-        fs.writeFileSync(${JSON.stringify(join(tmp, 'out.json'))}, JSON.stringify({ bundle: bundle.serialize(), lockfile: lockfile.serialize(), read: [...read] }))
-      `
-      const r = await run(['--input-type=module', '-e', script], { cwd: tmp, node: true })
-      t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-      const { bundle, lockfile, read } = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-      t.assert.equal(bundle, oracles[packageManager].bundle)
-      t.assert.equal(lockfile, oracles[packageManager].lockfile)
-      t.assert.ok(read.length >= 86, 'the tarballs are read from the cache')
-      t.assert.deepStrictEqual(read.filter((p) => !p.startsWith(`${cacheRoot}/`)), [], 'nothing else on disk is read')
-    }))
-  })
-}
+          for (const name of ['accessSync', 'existsSync', 'lstatSync', 'openSync', 'opendirSync', 'readFileSync', 'readdirSync', 'readlinkSync', 'realpathSync', 'statSync']) spy(fs, name)
+          for (const name of ['access', 'lstat', 'open', 'opendir', 'readFile', 'readdir', 'readlink', 'realpath', 'stat']) spy(fs.promises, name)
+          syncBuiltinESMExports()
+          const { Vfs, buildVfsBundle, setCacheDir } = await import(${JSON.stringify(pathToFileURL(join(here, '..', 'stasis', 'src', 'vfs-bundle.js')).href)})
+          setCacheDir(${JSON.stringify(join(cacheRoot, 'stasis'))})
+          const build = () => {
+            const vfs = new Vfs()
+            for (const [path, text] of Object.entries(${JSON.stringify(files)})) {
+              vfs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true })
+              vfs.writeFile(path, text)
+            }
+            return buildVfsBundle({ vfs, packageManager: ${JSON.stringify(packageManager)}, entries: ['src/entry.js'], scope: 'full' })
+          }
+          await build()
+          read.clear()
+          const { bundle, lockfile } = await build()
+          fs.writeFileSync(${JSON.stringify(join(tmp, 'out.json'))}, JSON.stringify({ bundle: bundle.serialize(), lockfile: lockfile.serialize(), read: [...read] }))
+        `
+        const r = await run(['--input-type=module', '-e', script], { cwd: tmp, node: true })
+        t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+        const { bundle, lockfile, read } = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
+        t.assert.equal(bundle, oracles[packageManager].bundle)
+        t.assert.equal(lockfile, oracles[packageManager].lockfile)
+        t.assert.ok(read.length >= 86, 'the tarballs are read from the cache')
+        t.assert.deepStrictEqual(read.filter((p) => !p.startsWith(`${cacheRoot}/`)), [], 'nothing else on disk is read')
+      }))
+    })
+  }
+})
 
 describe('buildVfsBundle with pnpm, its cache and its lockfile', { concurrency: 1 }, () => {
   const build = (vfs) => buildVfsBundle({ vfs, packageManager: 'pnpm', entries: ['src/entry.js'], scope: 'full' })
