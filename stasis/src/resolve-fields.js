@@ -176,7 +176,8 @@ function resolveSourceFile(base, opts) {
   // always wins over its `.ts` twin. Literal siblings only -- no platform suffixes (tsc has none);
   // extensionless bases keep going through the appended-extension loop below (sourceExts carries
   // ts and tsx). Placed before that loop so `x.js` -> `x.ts` beats a pathological
-  // `x.js.<ext>`, matching tsc's candidate order. Never in node_modules (inNodeModules).
+  // `x.js.<ext>`, matching tsc's candidate order. Never into node_modules (inNodeModules; the
+  // resolver drops `typescript` for an importer there).
   if (opts.typescript && !inNodeModules(dirname(base), opts.host)) {
     for (const cand of typescriptSiblings(base)) {
       const hit = probePath(cand, true)
@@ -238,9 +239,12 @@ export function createFieldResolver({
   host = diskHost,
 } = {}) {
   const opts = { platform, preferNative, sourceExts, mainFields, metro, typescript, metroKeepEntryOnBrowserFalse, host }
+  // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
+  const fromNodeModules = { ...opts, typescript: false }
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
   const resolve = function resolve(parentFile, specifier, callConditions) {
+    const fileOpts = typescript && inNodeModules(parentFile, host) ? fromNodeModules : opts
     const conds = new Set(callConditions ?? conditions)
     const viaNode = (spec) => {
       try {
@@ -270,7 +274,7 @@ export function createFieldResolver({
         // Browser-map targets are relative to the PACKAGE ROOT, not the importing file; a
         // bare-module target re-enters resolution below.
         if (r.startsWith('.') || isAbsolute(r)) {
-          return resolveFileOrDir(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r), opts)
+          return resolveFileOrDir(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r), fileOpts)
         }
         spec = r
       }
@@ -281,7 +285,7 @@ export function createFieldResolver({
 
     if (spec.startsWith('.') || isAbsolute(spec)) {
       const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-      return resolveFileOrDir(base, opts)
+      return resolveFileOrDir(base, fileOpts)
     }
 
     const loc = locatePackage(dirname(parentFile), spec, host)
@@ -290,12 +294,12 @@ export function createFieldResolver({
     // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
     if (pkg.exports != null) return viaNode(spec)
     // A bare package import resolves its directory via the same dir algorithm as any other.
-    if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, opts)
+    if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, fileOpts)
     const sub = `./${loc.subpath}`
     const r = matchRedirect(mergeRedirectMap(pkg, mainFields), sub)
     if (r === false) return { empty: true }
     const target = typeof r === 'string' ? r : sub
-    return resolveFileOrDir(join(loc.pkgDir, target), opts)
+    return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
   }
   if (!typescript) return resolve
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping

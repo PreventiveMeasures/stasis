@@ -315,6 +315,15 @@ test('typescript: a package main naming a missing .js lands on its .ts source', 
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg-installed')), null)
 }))
 
+test('typescript: an importer in node_modules gets no mapping, even where its import leaves it', withTsTmp((t, tmp) => {
+  // An installed package's file reaching out of node_modules to ./only-ts.js (only-ts.ts on disk)
+  // resolves as without --typescript; a linked workspace package's file, in node_modules by its
+  // lexical path alone, still maps.
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg-installed', 'lib', 'main.ts'), '../../../only-ts.js')), null)
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg', 'lib', 'main.ts'), '../../../only-ts.js')), 'only-ts.ts')
+}))
+
 test('typescript: substitution beats the appended-extension probe for a pathological x.js.ts', withTsTmp((t, tmp) => {
   // Both `weird.ts` (tsc's substitution) and `weird.js.ts` (the sourceExts append) exist; tsc's
   // candidate order puts substitution first, so the append must not shadow it.
