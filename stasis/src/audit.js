@@ -1,4 +1,4 @@
-import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, sameGithub } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -18,11 +18,6 @@ const UNREGISTERED_CRATES = {
   'cargo-git': 'a crate vendored from a git repository, not crates.io',
   'cargo-unknown': 'a vendored crate with no .cargo-checksum.json, which may be a git checkout, not crates.io\'s',
 }
-
-// A bundle's dependency's ecosystem: its bucket's `ecosystem` tag, or npm for an untagged bucket
-// under node_modules (an artifact from before the tag); undefined for first-party code, which must
-// not be sent to a public registry (leaks names, adds noise).
-const ecosystemOf = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
 // A dependency's version as it is audited: a GitHub repo's `.gitmodules` branch `.`, git's for the
 // superproject's own branch, which the bundle does not know and advisories() takes for no branch, is
@@ -60,14 +55,19 @@ function unaudited({ ecosystem, version }) {
 // skipped, while one whose real code was bundled stays. Which consumers and import
 // EDGES reach that code is the reason column's concern -- collectReasons and
 // why.js apply the same evidence rule per file/edge there.
+//
+// A package's `github` is the repository its artifact records for it (its package.json's), where
+// one does; a GitHub repo is its own, and has none.
 export function collectPackagesFromFile(file) {
   const out = []
-  for (const [dir, { name, version, ecosystem: tagged, files }] of parseFile(file).modules) {
-    const ecosystem = ecosystemOf(dir, tagged)
+  for (const [dir, { name, version, ecosystem: tagged, repo, files }] of parseFile(file).modules) {
+    const ecosystem = dependencyEcosystem(dir, tagged)
+    // First-party code is never sent to a public registry (leaks names, adds noise).
     if (ecosystem === undefined) continue
     if (!name || !version) continue
     if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
-    out.push({ ecosystem, name, version: versionOf(ecosystem, version) })
+    const github = ecosystem === 'github' ? undefined : repo?.github
+    out.push({ ecosystem, name, version: versionOf(ecosystem, version), ...(github === undefined ? {} : { github }) })
   }
   return out
 }
@@ -76,18 +76,31 @@ export function collectPackagesFromFile(file) {
 const byNumbers = new Intl.Collator('en', { numeric: true }).compare
 const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNumbers(a, b))
 
+// Each package once, with the GitHub repository its artifacts record for its name, which
+// advisories() asks instead of looking one up. It takes one repository a name, so a name recorded
+// with two, by two of its versions (a package that moved) or by two artifacts, has none, and is
+// looked up as before.
 export function collectPackages(files) {
-  const seen = new Set()
-  const out = []
+  const byKey = new Map()
+  const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
   for (const file of files) {
-    for (const pkg of collectPackagesFromFile(file)) {
+    for (const { github, ...pkg } of collectPackagesFromFile(file)) {
       const key = keyOf(pkg.ecosystem, pkg.name, pkg.version)
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push(pkg)
+      if (!byKey.has(key)) byKey.set(key, pkg)
+      if (github === undefined) continue
+      const name = `${pkg.ecosystem}:${pkg.name}`
+      const known = repos.get(name)
+      // The first spelling stands.
+      if (known === undefined) repos.set(name, github)
+      else if (known !== null && !sameGithub(known, github)) repos.set(name, null)
     }
   }
-  return out.toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
+  return [...byKey.values()]
+    .map((pkg) => {
+      const github = repos.get(`${pkg.ecosystem}:${pkg.name}`)
+      return github ? { ...pkg, github } : pkg
+    })
+    .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
 
 // Map each audited package (keyOf it) to the bundle consumers ("reasons") that recorded its files.
@@ -104,7 +117,7 @@ export function collectReasons(files) {
     if (!fileReasons) continue
     const fileToPkg = new Map()
     for (const [dir, { name, version, ecosystem: tagged, files: modFiles }] of artifact.modules) {
-      const ecosystem = ecosystemOf(dir, tagged)
+      const ecosystem = dependencyEcosystem(dir, tagged)
       if (ecosystem === undefined || !name || !version) continue
       for (const rel of Object.keys(modFiles)) {
         if (!isEvidenceFile(name, version, rel, ecosystem)) continue
@@ -251,7 +264,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(asked.map(({ ecosystem, name, version }) => ({ ecosystem, name, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(asked.map(({ version, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.

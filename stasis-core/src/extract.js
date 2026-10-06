@@ -20,14 +20,14 @@ function assertCanonicalBase64(content, file) {
 
 export function lockfileFromBundle(bundle) {
   const modules = new Map()
-  for (const [dir, { name, version, ecosystem, files }] of bundle.modules) {
+  for (const [dir, { files, ...info }] of bundle.modules) {
     const hashed = Object.create(null)
     for (const [rel, content] of Object.entries(files)) {
       // Hash the raw on-disk bytes, so decode 'resource:base64' back first.
       const file = moduleFileKey(dir, rel)
       hashed[rel] = sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content)
     }
-    modules.set(dir, moduleInfo({ name, version, ecosystem, files: hashed }))
+    modules.set(dir, moduleInfo({ ...info, files: hashed }))
   }
   // Carry imports+formats across, else the derived lockfile is bytes-only and a later frozen run skips those cross-checks.
   return new Lockfile({

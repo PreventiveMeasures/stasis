@@ -94,6 +94,7 @@ attested.
       "name": "@exodus/bytes",
       "version": "1.15.0",
       "ecosystem": "npm",
+      "repo": { "github": "ExodusOSS/bytes" },
       "files": { "index.js": "sha512-…", "package.json": "sha512-…" }
     }
   },
@@ -135,6 +136,24 @@ attested.
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
   still load.
+- A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
+  a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
+  the fields and checks of the bundle's own `repo` (see `repo` under
+  `stasis.code.br`) but `root`. `root: true` is authoritative, so only a build's
+  own `repo` holds it, from the source layout the build reads; a dependency whose
+  manifest names no directory (or `./`) sits at an unknown place in its
+  repository. Builds record one for an npm package, read off its `package.json`
+  by the rules the bundle's own `repo` takes from one: `repository` alone names
+  the repository (`bugs` and `homepage` are often its old name), and
+  `repository.directory`, else a GitHub tree `homepage` of it, the directory.
+  First-party buckets carry none. It is the dependency's, changing only with it,
+  so the lockfile records it too and holds it as `name` and `version`: a run fails
+  (`module repo mismatch`) where a dependency's `package.json` names another
+  repository than recorded, or none, and a bundle loaded beside a lockfile must
+  agree with it. An artifact from before the field records none: a run fills it
+  in, and a merge (`stasis add`, `--add`, `bundle = add`, `lock = add`) takes the
+  side that records one, failing where both record different ones. `stasis audit
+  --repo-advisories` asks it rather than looking one up (see the `stasis` README).
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier
@@ -280,7 +299,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
      `packed-refs` entry). stasis only reads files under `.git` and never runs git.
   2. **package.json:** if git yields no GitHub origin, the nearest `package.json`
      at or above the bundle root that declares a `repository`, up to the work tree
-     root. `github` comes from its GitHub URL or `github:`/`owner/name` shorthand,
+     root. `github` comes from its GitHub URL or `github:`/`owner/name` shorthand
+     (a `#committish` dropped; a URL whose authority ends before `github.com`,
+     such as `https://evil.example?@github.com/a/b`, names none),
      and `directory` from `repository.directory` combined with the bundle root's
      path below that `package.json`. When `repository.directory` is unset, a GitHub
      `homepage` of the same repository such as

@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { moduleFileKey, narrowExecutable } from '@exodus/stasis-core/util'
+import { moduleFileKey, moduleInfo, narrowExecutable } from '@exodus/stasis-core/util'
 
 // Reconstruct an in-memory Bundle from a lockfile, reading every attested file from disk and
 // verifying each against the lockfile's SRI digest -- fail closed on mismatch, so this is as
@@ -14,7 +14,7 @@ export function bundleFromLockfile(lockfile, { root }) {
   if (!lockfile.imports) throw new Error('stasis: lockfile has no recorded import graph')
   const formats = lockfile.formats ?? new Map()
   const modules = new Map()
-  for (const [dir, { name, version, ecosystem, files }] of lockfile.modules) {
+  for (const [dir, { files, ...info }] of lockfile.modules) {
     const out = Object.create(null)
     for (const [rel, integrity] of Object.entries(files)) {
       const file = moduleFileKey(dir, rel)
@@ -42,9 +42,7 @@ export function bundleFromLockfile(lockfile, { root }) {
         out[rel] = bytes.toString('utf8')
       }
     }
-    modules.set(dir, ecosystem === undefined
-      ? { name, version, files: out }
-      : { name, version, ecosystem, files: out })
+    modules.set(dir, moduleInfo({ ...info, files: out }))
   }
   return new Bundle({
     config: lockfile.config,

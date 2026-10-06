@@ -114,8 +114,8 @@ function usage(prefix = '') {
   --reason=consumer shows only advisories related to that consumer, and with --why only its chains;
   --repo-advisories also asks each package's GitHub repository for the advisories its maintainers
   published there, before GitHub reviews them into the databases above; it needs a token in
-  GITHUB_TOKEN, and caches each package's repository for a month in the user cache dir, e.g.
-  ~/.cache/stasis)
+  GITHUB_TOKEN, and asks the repository each package's artifact records, else looks one up and
+  caches it for a month in the user cache dir, e.g. ~/.cache/stasis)
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  (streams to stdout by default; --output=- is explicit stdout)
 `.trim())
