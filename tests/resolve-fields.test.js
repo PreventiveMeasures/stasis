@@ -324,6 +324,12 @@ test('typescript: an importer in node_modules gets no mapping, even where its im
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg', 'lib', 'main.ts'), '../../../only-ts.js')), 'only-ts.ts')
 }))
 
+test('typescript: no mapping into a file directly in node_modules', withTsTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'node_modules', 'loose.ts'), 'export const l: number = 1\n')
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), './node_modules/loose.js')), null)
+}))
+
 test('typescript: substitution beats the appended-extension probe for a pathological x.js.ts', withTsTmp((t, tmp) => {
   // Both `weird.ts` (tsc's substitution) and `weird.js.ts` (the sourceExts append) exist; tsc's
   // candidate order puts substitution first, so the append must not shadow it.

@@ -473,8 +473,8 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false } =
 // the file rules are skipped for them, exactly as Node skips LOAD_AS_FILE.
 const DIR_ONLY_SPEC = /(?:^|\/)\.{1,2}$|\/$/u
 
-// A node_modules path segment.
-const IN_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/u
+// A node_modules path segment, the last one included (the directory itself).
+const IN_NODE_MODULES = /(?:^|[\\/])node_modules(?:[\\/]|$)/u
 
 // Whether `file` lies in node_modules, by its real path where it has one (by its own, where it
 // doesn't): --typescript maps nothing from or into an installed package. A monorepo's workspace
