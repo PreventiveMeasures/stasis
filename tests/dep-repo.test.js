@@ -138,6 +138,17 @@ test('State fills in a dependency repo a lockfile from an older stasis lacks', w
   t.assert.deepStrictEqual(JSON.parse(state.lockData).modules['node_modules/dep'].repo, { github: 'o/dep' })
 }))
 
+test('State holds a dependency to the repo its bundle records where the lockfile, from before the field, records none', withTmp((t, tmp) => {
+  writeProject(tmp, { repository: 'github:o/dep' })
+  capture(tmp, { bundle: 'replace', lock: 'replace' }).write()
+  const lockPath = join(tmp, 'stasis.lock.json')
+  const old = JSON.parse(readFileSync(lockPath, 'utf8'))
+  delete old.modules['node_modules/dep'].repo
+  writeFileSync(lockPath, JSON.stringify(old))
+  writeJson(join(tmp, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0', repository: 'github:o/elsewhere' })
+  t.assert.throws(() => capture(tmp, { bundle: 'load', lock: 'frozen' }), /module repo mismatch for 'node_modules\/dep'.*"o\/dep".*"o\/elsewhere"/u)
+}))
+
 test('State refuses a bundle whose dependency repo differs from the lockfile', withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep' })
   capture(tmp, { bundle: 'replace', lock: 'replace' }).write()

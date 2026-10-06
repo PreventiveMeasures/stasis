@@ -450,6 +450,9 @@ export class State {
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
         assert.ok(reposAgree(info.repo, lockModule.repo), `bundle module ${dir} repo mismatch with lockfile`)
+        // A lockfile from before the field records none: the bundle's then holds the package.json
+        // read and the other half of a split bundle to it.
+        if (lockModule.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...lockModule, repo: info.repo }))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
