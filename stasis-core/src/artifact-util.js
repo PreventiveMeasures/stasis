@@ -52,15 +52,15 @@ export function moduleFileKey(dir, rel) {
 
 // GitHub `owner/name` (owner 1-39, name 1-100 chars).
 const GITHUB_REPO = /^(?=[A-Za-z0-9-]{1,39}\/)[A-Za-z0-9](?:-?[A-Za-z0-9])*\/(?!\.\.?$)[\w.-]{1,100}$/u
-// Non-empty normalized repo-relative path of URL-safe segments (the repo root is `root: true`).
+// Non-empty normalized repo-relative path of URL-safe segments.
 const REPO_DIRECTORY = /^(?!\.\.?(?:\/|$))[\w.~@+-]+(?:\/(?!\.\.?(?:\/|$))[\w.~@+-]+)*$/u
 // Full lowercase SHA-1 or SHA-256.
 const GIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
 // The fields of a `repo`, the bundle's own or a dependency's, and their checks.
 export const REPO_FIELDS = {
   github: (v) => typeof v === 'string' && GITHUB_REPO.test(v),
-  directory: (v) => typeof v === 'string' && v.length <= 1024 && REPO_DIRECTORY.test(v),
-  root: (v) => v === true,
+  // `''` is the repository's root.
+  directory: (v) => typeof v === 'string' && v.length <= 1024 && (v === '' || REPO_DIRECTORY.test(v)),
   commit: (v) => typeof v === 'string' && GIT_SHA.test(v),
 }
 
@@ -89,18 +89,15 @@ export const normalizeBlock = (block, fields, what) => {
 }
 
 // Validate a `repo` (all fields optional); canonical key order, undefined if empty.
-export const normalizeRepo = (repo, what = 'bundle repo') => {
-  const normalized = normalizeBlock(repo, REPO_FIELDS, what)
-  assert(normalized?.directory === undefined || normalized.root === undefined, `${what} has both directory and root`)
-  return normalized
-}
+export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo, REPO_FIELDS, what)
 
 // A bucket's ecosystem as a dependency's: its `ecosystem` tag, or npm for an untagged one under
 // node_modules (an artifact from before the tag); undefined for first-party code.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
-// A dependency's `repo` holds a build's own fields but `root`, which is authoritative (dependencyRepo).
-const DEPENDENCY_REPO_FIELDS = { github: REPO_FIELDS.github, directory: REPO_FIELDS.directory, commit: REPO_FIELDS.commit }
+// A dependency's `repo` holds a build's own fields, but never `directory: ''`: only a layout a build
+// reads, its own, places code at a repository's root, never a manifest (packageRepo).
+const DEPENDENCY_REPO_FIELDS = { ...REPO_FIELDS, directory: (v) => v !== '' && REPO_FIELDS.directory(v) }
 
 // A dependency's `repo`, the one its own manifest names; first-party code carries none.
 const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {

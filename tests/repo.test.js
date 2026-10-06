@@ -65,7 +65,7 @@ test('gitOriginUrl reads only the origin remote in the shape git writes it', (t)
 })
 
 test('detectRepo reads package.json repository, combining its directory with a subdir', withTmp((t, tmp) => {
-  writeJson(join(tmp, 'package.json'), { name: 'root', repository: { type: 'git', url: 'git+https://github.com/o/n.git' } })
+  writeJson(join(tmp, 'package.json'), { name: 'root', repository: { type: 'git', url: 'git+https://github.com/o/n.git', directory: '.' } })
   mkdirSync(join(tmp, 'packages', 'a', 'src'), { recursive: true })
   writeJson(join(tmp, 'packages', 'a', 'package.json'), {
     name: 'a', repository: { type: 'git', url: 'https://github.com/o/n', directory: 'packages/a' },
@@ -73,7 +73,7 @@ test('detectRepo reads package.json repository, combining its directory with a s
   mkdirSync(join(tmp, 'packages', 'b'), { recursive: true })
   writeJson(join(tmp, 'packages', 'b', 'package.json'), { name: 'b' })
 
-  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', root: true }, 'repo root: root: true')
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n' }, "the repo root, as a manifest claims it: never `directory: ''`")
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'packages', 'a')), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'packages', 'a', 'src')), { github: 'o/n', directory: 'packages/a/src' },
     'a subdir below the declaring package.json is combined with repository.directory')
@@ -85,7 +85,9 @@ test('detectRepo normalizes repository.directory and accepts the string shorthan
   writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/n', directory: './pkg/' } })
   t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', directory: 'pkg' })
   writeJson(join(tmp, 'package.json'), { repository: 'o/n' })
-  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', root: true })
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n' }, 'no repository.directory: unknown, not the root')
+  mkdirSync(join(tmp, 'sub'))
+  t.assert.deepStrictEqual(detectRepo(join(tmp, 'sub')), { github: 'o/n' }, 'nor is a subdir below it known')
 }))
 
 test('detectRepo treats a non-GitHub package.json repository as authoritative', withTmp((t, tmp) => {
@@ -99,7 +101,7 @@ test('detectRepo prefers git over package.json, and only git yields commit', wit
   writeFileSync(join(tmp, '.git', 'HEAD'), `${SHA}\n`)
   writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/pkg', directory: 'elsewhere' } })
   mkdirSync(join(tmp, 'sub', 'dir'), { recursive: true })
-  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/git', root: true, commit: SHA })
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/git', directory: '', commit: SHA }, "the work tree root: `directory: ''`")
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'sub', 'dir')), { github: 'o/git', directory: 'sub/dir', commit: SHA })
 
   writeGitConfig(tmp, '[remote "upstream"]\n\turl = git@github.com:o/git.git\n')
@@ -113,7 +115,7 @@ test('detectRepo reads the commit from a branch ref, loose or packed', withTmp((
   writeGitConfig(tmp, ORIGIN('https://github.com/o/n'))
   const git = join(tmp, '.git')
   writeFileSync(join(git, 'HEAD'), 'ref: refs/heads/main\n')
-  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', root: true }, 'an unborn branch has no commit')
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', directory: '' }, 'an unborn branch has no commit')
 
   writeFileSync(join(git, 'packed-refs'), `# pack-refs with: peeled fully-peeled sorted\n${SHA2} refs/heads/main\n`)
   t.assert.equal(detectRepo(tmp).commit, SHA2, 'packed-refs')
@@ -149,7 +151,7 @@ test('stasis add records the detected repo', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'index.js'), 'export {}\n')
   addCommand({ cwd: tmp, entries: ['index.js'] })
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
-  t.assert.deepStrictEqual({ ...bundle.repo }, { github: 'o/n', root: true })
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: 'o/n' })
 }))
 
 test('State records repo in the bundle but not in the lockfile', withTmp((t, tmp) => {
@@ -180,7 +182,7 @@ test('stasis bundle of JS from a workspace subdir records the State root, which 
   await bundleCommand({ cwd: a, entries: ['index.js'], output: 'out.br', lockfile: undefined })
   const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(a, 'out.br'))).toString('utf8'))
   t.assert.deepStrictEqual(bundle.entries, ['packages/a/index.js'])
-  t.assert.deepStrictEqual(bundle.repo, { github: 'o/n', root: true })
+  t.assert.deepStrictEqual(bundle.repo, { github: 'o/n' })
 }))
 
 test('githubHomepageDirectory reads the dir of a GitHub tree homepage for the same repo', (t) => {
@@ -208,7 +210,7 @@ test('detectRepo takes directory from homepage when repository.directory is unse
   })
   t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g', directory: 'explicit' }, 'repository.directory wins')
   writeJson(join(pkg, 'package.json'), { repository: 'a/g', homepage: 'https://github.com/x/y/tree/master/c/d' })
-  t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g', root: true }, 'a homepage for another repo is ignored')
+  t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g' }, 'a homepage for another repo is ignored')
 }))
 
 test('detectRepo follows a linked worktree `.git` file to its git and common dirs', withTmp((t, tmp) => {
@@ -244,7 +246,7 @@ test('State adding to a bundle keeps only repo fields that agree with detection'
   const writeExisting = (repo) =>
     writeFileSync(join(tmp, 'stasis.code.br'), brotliCompressSync(new Bundle({ config: { scope: 'full' }, repo }).serialize()))
   const written = () => JSON.parse(new State(tmp, { bundle: 'add', lock: 'replace', scope: 'full' }).sourceData).repo
-  const recorded = { github: 'o/n', root: true, commit: SHA }
+  const recorded = { github: 'o/n', directory: '', commit: SHA }
 
   mkdirSync(join(tmp, '.git')) // a work tree with no GitHub origin: nothing detected
   writeExisting(recorded)
@@ -255,14 +257,14 @@ test('State adding to a bundle keeps only repo fields that agree with detection'
   writeExisting(recorded)
   t.assert.deepStrictEqual(written(), recorded, 'agreeing: kept')
   writeFileSync(join(tmp, '.git', 'HEAD'), `${SHA2}\n`)
-  t.assert.deepStrictEqual(written(), { github: 'o/n', root: true }, 'another commit: only the commit is dropped')
+  t.assert.deepStrictEqual(written(), { github: 'o/n', directory: '' }, 'another commit: only the commit is dropped')
   writeGitConfig(tmp, ORIGIN('git@github.com:o/other.git'))
   t.assert.equal(written(), undefined, 'another repo: reset, not overwritten')
   writeExisting(undefined)
   t.assert.equal(written(), undefined, 'adding to a bundle without repo: not overwritten')
 
   rmSync(join(tmp, 'stasis.code.br'))
-  t.assert.deepStrictEqual(written(), { github: 'o/other', root: true, commit: SHA2 }, 'a fresh bundle records the detected repo')
+  t.assert.deepStrictEqual(written(), { github: 'o/other', directory: '', commit: SHA2 }, 'a fresh bundle records the detected repo')
 }))
 
 test('detectRepo turns a Windows-style repository.directory into a POSIX path', withTmp((t, tmp) => {
@@ -280,7 +282,7 @@ test('both halves of a split bundle record the repo', withTmp(async (t, tmp) => 
   writeJson(join(tmp, 'stasis.config.json'), { bundleFile: 'code.br', resourcesBundleFile: 'res.br', resources: ['txt'] })
   writeFileSync(join(tmp, 'index.js'), 'export {}\n')
   writeFileSync(join(tmp, 'notes.txt'), 'hi\n')
-  const repo = { github: 'o/n', root: true, commit: SHA }
+  const repo = { github: 'o/n', directory: '', commit: SHA }
   const read = (file) => Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, file))).toString('utf8'))
 
   addCommand({ cwd: tmp, entries: ['index.js', 'notes.txt'] })
@@ -300,7 +302,7 @@ test('detectRepo strips ./ and trailing slashes from repository.directory', with
     return detectRepo(at)
   }
   for (const directory of ['./', '.', '', '/', 'a/../', './a/../', './/']) {
-    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n', root: true }, JSON.stringify(directory))
+    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n' }, `${JSON.stringify(directory)}: a manifest's root, never \`directory: ''\``)
   }
   t.assert.deepStrictEqual(dirOf('./packages/a/'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('packages//a///'), { github: 'o/n', directory: 'packages/a' })
@@ -314,9 +316,9 @@ test('State adding to a split bundle merges each half with its own repo', withTm
   writeJson(join(tmp, 'stasis.config.json'), { bundleFile: join(tmp, 'add-code.br'), resourcesBundleFile: join(tmp, 'add-res.br'), resources: ['txt'] })
   const write = (file, repo) =>
     writeFileSync(join(tmp, file), brotliCompressSync(new Bundle({ config: { scope: 'full' }, repo }).serialize()))
-  write('add-code.br', { github: 'o/n', root: true, commit: SHA }) // code from commit SHA
+  write('add-code.br', { github: 'o/n', directory: '', commit: SHA }) // code from commit SHA
   write('add-res.br', undefined) // resources from an undetected place
   const state = new State(tmp, { bundle: 'add', lock: 'replace', scope: 'full' })
-  t.assert.deepStrictEqual({ ...state.codeBundle.repo }, { github: 'o/n', root: true }, 'code: another commit drops just the commit')
+  t.assert.deepStrictEqual({ ...state.codeBundle.repo }, { github: 'o/n', directory: '' }, 'code: another commit drops just the commit')
   t.assert.equal(state.resourcesBundle.repo, undefined, 'resources: its own (absent) repo is not overwritten')
 }))
