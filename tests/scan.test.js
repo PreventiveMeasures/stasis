@@ -6,7 +6,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
-import { Scan, scan } from '../stasis/src/scan.js'
+import { Scan, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -585,6 +585,54 @@ test('scan typescript:true maps to a .tsx twin without jsx (.tsx is parsed by ex
   t.assert.equal(byParent.get('entry.ts').get('./App.js'), 'App.tsx')
   // The .tsx was parsed as TSX and walked past its JSX.
   t.assert.equal(byParent.get('App.tsx').get('./dep.ts'), 'dep.ts')
+}))
+
+test('importsTypescriptByOutputName: TS entries whose relative JS-output imports are all off disk with their TS sources on it', withTmp((t, tmp) => {
+  const write = (files) => {
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(tmp, name), content)
+  }
+  write({
+    'a.ts': 'export const a: number = 1\n',
+    'b.mts': 'export const b: number = 1\n',
+    'c.tsx': 'export const c = (): unknown => <i />\n',
+    'real.js': 'export const real = 1\n',
+    'types.d.ts': 'export type T = number\n',
+    'decl.d.ts': 'export declare const d: number\n',
+    'yes.ts': 'import { a } from "./a.js"\nexport { b } from "./b.mjs"\nimport type { T } from "./types.js"\nimport { x } from "pkg/x.js"\nexport const v: T = a + (await import("./c.jsx")).c\n',
+    'yes2.mts': 'import { a } from "./a.js"\nexport const w: number = a\n',
+    'plain.ts': 'import { a } from "./a.ts"\nimport { e } from "./a"\nexport const v: number = a + e\n',
+    'mixed.ts': 'import { a } from "./a.js"\nimport { real } from "./real.js"\nexport const v: number = a + real\n',
+    'twinless.ts': 'import { a } from "./a.js"\nimport { m } from "./missing.js"\nexport const v: number = a + m\n',
+    'declonly.ts': 'import { d } from "./decl.js"\nexport const v: number = d\n',
+    'broken.ts': 'import { a } from "./a.js"\nexport const = \n',
+    'entry.js': 'import { a } from "./a.js"\nexport const v = a\n',
+  })
+  const tell = (...entries) => importsTypescriptByOutputName(entries.map((e) => join(tmp, e)))
+  // .js -> .ts, .mjs -> .mts, .jsx -> .tsx; a type-only import (erased) and a bare one don't count.
+  t.assert.equal(tell('yes.ts'), true)
+  t.assert.equal(tell('yes.ts', 'yes2.mts'), true)
+  // A JS entry, alone or among TS ones.
+  t.assert.equal(tell('entry.js'), false)
+  t.assert.equal(tell('yes.ts', 'entry.js'), false)
+  // Node-compatible TS: no relative JS-output import at all.
+  t.assert.equal(tell('plain.ts'), false)
+  // One relative .js import on disk, or one with no TS source (a declaration is none).
+  t.assert.equal(tell('mixed.ts'), false)
+  t.assert.equal(tell('twinless.ts'), false)
+  t.assert.equal(tell('declonly.ts'), false)
+  // An entry that doesn't parse decides nothing.
+  t.assert.equal(tell('broken.ts'), false)
+}))
+
+test('scan without typescript names the file a miss would resolve to under it', withTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ts-res', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "./a.js"\nimport { m } from "./missing.js"\nexport const v: number = a + m\n')
+  writeFileSync(join(tmp, 'a.ts'), 'export const a: number = 1\n')
+  const result = scan([join(tmp, 'entry.ts')]).toRelative(tmp)
+  t.assert.deepStrictEqual(result.unresolved.map((u) => [u.spec, u.typescript]), [['./a.js', 'a.ts'], ['./missing.js', undefined]])
+  // Under typescript the miss resolves, so there is nothing to name.
+  const on = scan([join(tmp, 'entry.ts')], { typescript: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(on.unresolved.map((u) => [u.spec, u.typescript]), [['./missing.js', undefined]])
 }))
 
 test('scan typescript:true substitutes bare package subpaths and manifest entry targets', withTmp((t, tmp) => {

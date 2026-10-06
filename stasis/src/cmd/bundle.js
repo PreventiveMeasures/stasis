@@ -6,7 +6,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { scan } from '../scan.js'
+import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
@@ -596,9 +596,11 @@ function displayPath(url, baseDir) {
   return rel && !relativeEscapes(rel) ? rel : abs
 }
 
-// One unresolved scan edge for diagnostics.
+// One unresolved scan edge for diagnostics, naming the file --typescript would resolve it to when
+// the scan found one (Scan#typescriptCandidate).
 function describeUnresolved(u, show) {
-  return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason})`
+  const typescript = u.typescriptURL ? `; resolves to ${show(u.typescriptURL)} under --typescript` : ''
+  return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason}${typescript})`
 }
 
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
@@ -672,8 +674,16 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
 const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'string' ? c.trim() : c)).filter(Boolean)
 
 // --typescript honours tsconfig `paths` aliases: an explicit --tsconfig must exist, otherwise the
-// project root's tsconfig.json applies when present (null matcher = no aliases).
-const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript ? loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host) : null)
+// project root's tsconfig.json applies when present (null matcher = no aliases). Without
+// --typescript they only hint a miss (Scan#typescriptCandidate), so a config that doesn't load is none.
+function typescriptPathsFor(typescript, baseDir, tsconfig, host) {
+  if (typescript) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
+  try {
+    return loadTsconfigPaths(discoverTsconfig(baseDir, undefined, host), host)
+  } catch {
+    return null
+  }
+}
 
 // Build a JS/TS Bundle (in-memory) by statically scanning the require/import graph; no
 // user code is executed, and TS is stored verbatim (Node strips types at load). Scope comes
@@ -681,7 +691,8 @@ const typescriptPathsFor = (typescript, baseDir, tsconfig, host) => (typescript 
 // extra `exports`/`imports` conditions; on their own they don't honour legacy mainFields or
 // platform suffixes (see `--mainFields` / buildResolvedJsBundle). `typescript` maps a failed
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
-// `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json).
+// `paths` aliases of `tsconfig` (an explicit config path, default the project's tsconfig.json); it
+// is taken as given where the entries import TS sources by output name (importsTypescriptByOutputName).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
 // above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
@@ -701,6 +712,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
   const resourceSet = parseResourcesOption('buildJsBundle', resources)
 
+  typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
 
   const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, host })
@@ -883,6 +895,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
 
   const scanConditions = cleanConditions(conditions)
 
+  // Taken as given where the entries import TS sources by output name, but under --metro-resolver,
+  // which has no tsc mapping (classifyEntries rejects --typescript there).
+  if (!metroResolver) typescript ||= importsTypescriptByOutputName(absEntries, host)
   // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host)
   // --resources: extensions/filenames carried as opaque assets instead of failing "can't carry".
@@ -906,7 +921,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), entries, mainFields,
     const resolver = metroResolver
       ? createMetroResolver({ projectDir: baseDir, platform, sourceExts: SOURCE_EXTS, mainFields, conditionNames: ['react-native'], host })
       : field.resolver
-    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, jsx, flow, resources: resourceSet, host })
+    // Without --typescript, the field resolver --typescript would build names the file a miss would
+    // land on: a hint in the unresolved report, never an edge (see Scan#typescriptCandidate).
+    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript: true, typescriptPaths, host }).resolver
+    const scanner = scan(absEntries, { conditions: extras, resolve: resolver, typescriptResolve, jsx, flow, resources: resourceSet, host })
     reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens

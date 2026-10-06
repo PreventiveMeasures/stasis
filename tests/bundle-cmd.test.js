@@ -2291,12 +2291,11 @@ test('buildBundle (JS) --typescript resolves .js specifiers to their on-disk .ts
   t.assert.equal(bundle.formats.get('dep.ts'), 'module-typescript')
 }))
 
-test('buildBundle (JS) without --typescript fails closed on the unmapped .js specifier', withTmp(async (t, tmp) => {
+test('buildBundle (JS) takes --typescript as given where the TS entries import their TS sources by output name', withTmp(async (t, tmp) => {
   writeTsProject(tmp)
-  await t.assert.rejects(
-    () => buildBundle({ cwd: tmp, entries: ['entry.ts'] }),
-    /would be broken at load time/,
-  )
+  const bundle = await buildBundle({ cwd: tmp, entries: ['entry.ts'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
+  t.assert.equal(bundle.imports.get('*').get('entry.ts').get('./dep.js'), 'dep.ts')
 }))
 
 test('buildBundle rejects --typescript for non-JS entries', async (t) => {
@@ -2395,12 +2394,98 @@ test('CLI: bundle names a stasis file below the root that roots the build out of
   t.assert.match(r.stderr, /\.\.\/\.\.\/shared\/index\.js is outside the project root at \. \(rooted there by its stasis\.code\.br, which can be removed if stale\)/)
 }))
 
-test('CLI: bundle without --typescript reports the .js -> .ts miss as broken at load time', withTmp((t, tmp) => {
+// --typescript is taken as given only where every entry is TypeScript, the entries import at least
+// one relative JS output (./dep.js), and every one of those is off disk with its TS source on it.
+// Anything less leaves it off -- a project of Node-compatible .ts files importing ./dep.ts must
+// resolve as Node does -- and a miss --typescript would resolve names it instead.
+
+test('CLI: bundle takes --typescript as given where the TS entries import their TS sources by output name', withTmp((t, tmp) => {
   writeTsProject(tmp)
+  // Beyond the entries, the whole of --typescript applies: dep.ts's extensionless ./util only
+  // resolves under it.
+  writeFileSync(join(tmp, 'dep.ts'), 'import { u } from "./util"\nexport const dep: number = u\n')
+  writeFileSync(join(tmp, 'util.ts'), 'export const u: number = 1\n')
+  const out = join(tmp, 'snap.br')
+  const r = runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts', 'util.ts'])
+  t.assert.equal(bundle.imports.get('*').get('dep.ts').get('./util'), 'util.ts')
+}))
+
+test('CLI: bundle --metro takes --typescript as given where the TS entries import their TS sources by output name', withTmp((t, tmp) => {
+  writeTsProject(tmp)
+  const out = join(tmp, 'snap.br')
+  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['dep.ts', 'entry.ts'])
+}))
+
+// Each case leaves one of the three out; the build fails, naming --typescript.
+const partialTypescriptTells = [
+  ['a JS entry', { 'entry.js': 'import { dep } from "./dep.js"\nexport const v = dep\n' }, 'entry.js', /import \.\/dep\.js from entry\.js \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u],
+  ['no relative .js import in the entries', { 'entry.ts': 'import { dep } from "./dep"\nexport const v: number = dep\n' }, 'entry.ts', /import \.\/dep from entry\.ts \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u],
+  ['one relative .js import on disk', { 'entry.ts': 'import { dep } from "./dep.js"\nimport { real } from "./real.js"\nexport const v: number = dep + real\n', 'real.js': 'export const real = 1\n' }, 'entry.ts', /import \.\/dep\.js from entry\.ts \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u],
+]
+for (const [label, files, entry, expected] of partialTypescriptTells) {
+  test(`CLI: bundle leaves --typescript off with ${label}, naming it on the miss it would resolve`, withTmp((t, tmp) => {
+    writeTsProject(tmp)
+    rmSync(join(tmp, 'entry.ts'))
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(tmp, name), content)
+    const out = join(tmp, 'snap.br')
+    const r = runCli(['bundle', `--output=${out}`, entry], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /broken at load time/)
+    t.assert.match(r.stderr, expected)
+    t.assert.ok(!existsSync(out))
+  }))
+}
+
+test('CLI: bundle leaves --typescript off where a relative .js import has no TS source either, with no hint', withTmp((t, tmp) => {
+  writeTsProject(tmp)
+  rmSync(join(tmp, 'dep.ts'))
   const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
-  t.assert.match(r.stderr, /broken at load time/)
-  t.assert.match(r.stderr, /\.\/dep\.js/)
+  t.assert.match(r.stderr, /import \.\/dep\.js from entry\.ts \(MODULE_NOT_FOUND\)/u)
+}))
+
+test('CLI: bundle resolves Node-compatible .ts imports as Node does, with --typescript off', withTmp((t, tmp) => {
+  // A TS entry importing ./dep.ts by its own name is Node's type stripping, not tsc: no tell, so
+  // dep.ts's extensionless ./util stays a miss (named for --typescript) rather than resolving.
+  writeTsProject(tmp)
+  writeFileSync(join(tmp, 'entry.ts'), 'import { dep } from "./dep.ts"\nexport const v: number = dep\n')
+  writeFileSync(join(tmp, 'dep.ts'), 'import { u } from "./util"\nexport const dep: number = u\n')
+  writeFileSync(join(tmp, 'util.ts'), 'export const u: number = 1\n')
+  const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /import \.\/util from dep\.ts \(MODULE_NOT_FOUND; resolves to util\.ts under --typescript\)/u)
+
+  writeFileSync(join(tmp, 'dep.ts'), 'export const dep: number = 1\n')
+  const out = join(tmp, 'snap.br')
+  const ok = runCli(['bundle', `--output=${out}`, 'entry.ts'], { cwd: tmp })
+  t.assert.equal(ok.status, 0, `stderr: ${ok.stderr}`)
+  t.assert.equal(Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8')).imports.get('*').get('entry.ts').get('./dep.ts'), 'dep.ts')
+}))
+
+test('CLI: bundle names --typescript on a miss only a tsconfig paths alias resolves', withTmp((t, tmp) => {
+  writeTsProject(tmp)
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }))
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'a.ts'), 'export const a: number = 1\n')
+  writeFileSync(join(tmp, 'entry.ts'), 'import { a } from "@/a"\nexport const v: number = a\n')
+  const r = runCli(['bundle', `--output=${join(tmp, 'snap.br')}`, 'entry.ts'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /import @\/a from entry\.ts \(MODULE_NOT_FOUND; resolves to src\/a\.ts under --typescript\)/u)
+}))
+
+test('CLI: bundle --metro names --typescript on a miss its --typescript resolver would resolve', withTmp((t, tmp) => {
+  writeTsProject(tmp)
+  rmSync(join(tmp, 'entry.ts'))
+  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v = dep\n')
+  const r = runCli(['bundle', '--metro', '--platforms=ios', `--output=${join(tmp, 'snap.br')}`, 'entry.js'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /import \.\/dep\.js from entry\.js \(MODULE_NOT_FOUND; resolves to dep\.ts under --typescript\)/u)
 }))
 
 test('CLI: bundle --typescript combines with --lockfile, attesting the mapped edge', withTmp((t, tmp) => {

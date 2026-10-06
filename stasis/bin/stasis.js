@@ -61,7 +61,8 @@ function usage(prefix = '') {
   --typescript resolves TS the way tsc does: an import of ./x.js lands on ./x.ts when no .js is on disk
    (likewise .mjs/.cjs -> .mts/.cts, extensionless ./x -> ./x.ts, incl. exports/imports/main targets),
    honouring tsconfig compilerOptions.paths aliases (from ./tsconfig.json, or --tsconfig=path);
-   not with --metro-resolver;
+   not with --metro-resolver; implied when every entry is TS and each relative ./x.js-style import
+   in them exists only as its TS source (otherwise a failing import it would resolve names it);
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]

@@ -1,10 +1,10 @@
-import { extname, resolve as resolvePath, relative } from 'node:path'
+import { dirname, extname, resolve as resolvePath, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, relativeEscapes } from '@exodus/stasis-core/util'
-import { resolveTypescriptFallback } from './resolve-typescript.js'
+import { classifyExtension, classifyFormat, isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
+import { resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
@@ -24,6 +24,7 @@ const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 // these. .jsx is included (it's JS + JSX, and can carry Flow types like .js); .tsx is not (it's
 // TypeScript). flow-remove-types preserves JSX, so a stripped .jsx re-parses under lang:jsx.
 const FLOW_EXTS = new Set(['.js', '.cjs', '.mjs', '.jsx'])
+const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
 
 // Required lazily so non-JS bundlers don't load the native oxc parser.
 let _parser
@@ -111,6 +112,59 @@ function findCallSpecifiers(ast, push) {
   visit(ast)
 }
 
+// The import specifiers `program` holds, as { kind, spec } ({ kind, dynamic: true } for a computed
+// one). STATEMENT-level type-ness decides an edge, matching what survives type erasure at runtime
+// (verbatimModuleSyntax / Node's own type stripping): an `import type` / `export type` statement is
+// erased whole, so no edge; a statement that merely lists inline `type` specifiers
+// (`import { type A }`, `export { type B } from`) -- or none at all (`import {}`, `export {} from`)
+// -- still loads its module, so its edge is real. oxc's module records can't draw that line
+// (`import type { A }` and `import { type A }` yield identical all-isType entries, and
+// `export {} from` yields no entry at all), so the statements are read off the AST, where
+// importKind/exportKind carry it.
+function collectSpecifiers(program) {
+  const specs = []
+  for (const node of program.body) {
+    if (node.type === 'ImportDeclaration') {
+      if (node.importKind !== 'type') specs.push({ kind: 'import', spec: node.source.value })
+    } else if (node.type === 'ExportNamedDeclaration') {
+      if (node.source != null && node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
+    } else if (node.type === 'ExportAllDeclaration') {
+      if (node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
+    }
+  }
+  findCallSpecifiers(program, (s) => specs.push(s))
+  return specs
+}
+
+// Whether `entries` (absolute paths) import TS sources by their OUTPUT names -- tsc's convention,
+// which only --typescript resolves -- so the build can take --typescript as given: every entry is
+// TypeScript, they hold at least one relative import naming a JS output (`./a.js`, or .jsx/.mjs/
+// .cjs), and not one of those is on disk while the TS source it maps to is (`./a.ts`; see
+// typescriptSiblings). Any part missing is no tell, and neither is an entry that doesn't parse (the
+// scan reports it). Read off the entries alone, before the scan.
+export function importsTypescriptByOutputName(entries, host = diskHost) {
+  if (!entries.every((entry) => TS_EXTS.has(extname(entry)))) return false
+  const parser = getParser()
+  const targets = []
+  for (const entry of entries) {
+    let parsed
+    try {
+      parsed = parser.parseSync(entry, host.readFile(entry).toString('utf8'), { sourceType: 'unambiguous' })
+    } catch {
+      return false
+    }
+    if (syntaxErrors(parsed).length > 0) return false
+    for (const { spec } of collectSpecifiers(parsed.program)) {
+      if (spec?.startsWith('./') || spec?.startsWith('../')) {
+        const target = resolvePath(dirname(entry), spec)
+        if (typescriptSiblings(target).length > 0) targets.push(target)
+      }
+    }
+  }
+  const isSource = (file) => !isTypeDeclaration(file) && (host.stat(file)?.isFile() ?? false)
+  return targets.length > 0 && targets.every((target) => host.stat(target) === null && typescriptSiblings(target).some(isSource))
+}
+
 function condKey(set) {
   return [...set].join(', ')
 }
@@ -130,14 +184,18 @@ export class Scan {
   // `flow`: strip Flow type syntax from JS-family sources before parsing (see #scanFile).
   // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
   // `typescriptPaths` (a loadTsconfigPaths matcher) adding tsconfig alias support; only consulted
-  // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling.
+  // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling. Without it, the
+  // mapping only names the file a miss would resolve to under --typescript (see #typescriptCandidate).
+  // `typescriptResolve`: the custom `resolve`'s --typescript twin (same shape), consulted only for
+  // that hint; null when there is no custom resolver or `typescript` is on.
   // `resources` (a `parseResourcesOption` Set of extensions/filenames): reached files matching it
   // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
   // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
   // `host`: the filesystem the walk reads and resolves through (@exodus/stasis-core/host).
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, resources = new Set(), host = diskHost } = {}) {
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), host = diskHost } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
+    this.typescriptResolve = typescriptResolve
     this.jsx = jsx
     this.flow = flow
     this.typescript = typescript
@@ -206,6 +264,16 @@ export class Scan {
     } catch {
       return null
     }
+  }
+
+  // The file: URL a miss would resolve to under --typescript, or null: a hint for the unresolved
+  // report only, never an edge. A custom resolver asks its --typescript twin; the built-in one
+  // tsc's mapping, as #typescriptResolve gives it under --typescript.
+  #typescriptCandidate(parentFile, spec, conditions) {
+    if (this.typescript) return null
+    if (this.customResolve) return this.typescriptResolve?.(parentFile, spec, conditions)?.url ?? null
+    const hit = this.#typescriptResolve(parentFile, spec, conditions)
+    return hit == null ? null : pathToFileURL(hit).toString()
   }
 
   // Strip Flow type syntax to plain JS via the optional flow-remove-types dep (resolved lazily; a
@@ -338,25 +406,7 @@ export class Scan {
       this.parseErrors.push({ url, format, message: parseError, recovered: true })
     }
 
-    const specs = []
-    // STATEMENT-level type-ness decides an edge, matching what survives type erasure at runtime
-    // (verbatimModuleSyntax / Node's own type stripping): an `import type` / `export type`
-    // statement is erased whole, so no edge; a statement that merely lists inline `type`
-    // specifiers (`import { type A }`, `export { type B } from`) -- or none at all (`import {}`,
-    // `export {} from`) -- still loads its module, so its edge is real. oxc's module records
-    // can't draw that line (`import type { A }` and `import { type A }` yield identical
-    // all-isType entries, and `export {} from` yields no entry at all), so the statements are
-    // read off the AST, where importKind/exportKind carry it.
-    for (const node of parsed.program.body) {
-      if (node.type === 'ImportDeclaration') {
-        if (node.importKind !== 'type') specs.push({ kind: 'import', spec: node.source.value })
-      } else if (node.type === 'ExportNamedDeclaration') {
-        if (node.source != null && node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
-      } else if (node.type === 'ExportAllDeclaration') {
-        if (node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
-      }
-    }
-    findCallSpecifiers(parsed.program, (s) => specs.push(s))
+    const specs = collectSpecifiers(parsed.program)
 
     // The edge KIND picks the resolution context, not the parent's format: createRequire()d
     // require() inside ESM resolves under REQUIRE conditions, literal import() inside CJS under
@@ -371,9 +421,11 @@ export class Scan {
       specMaps.get(key).set(s.spec, childURL)
       if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
-    const addUnresolved = (s, reason) => {
+    // Records the file --typescript would land the miss on too (typescriptURL), resolved as the miss was.
+    const addUnresolved = (s, reason, conditions) => {
       edges.push({ ...s, error: reason })
-      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason })
+      const typescriptURL = this.#typescriptCandidate(file, s.spec, conditions)
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...(typescriptURL ? { typescriptURL } : {}) })
     }
 
     for (const s of specs) {
@@ -396,7 +448,7 @@ export class Scan {
         } else if (r?.url) {
           addChild(s, key, r.url, fileURLToPath(r.url))
         } else {
-          addUnresolved(s, 'MODULE_NOT_FOUND')
+          addUnresolved(s, 'MODULE_NOT_FOUND', conditions)
         }
         continue
       }
@@ -412,7 +464,7 @@ export class Scan {
         // stays keyed by the ORIGINAL specifier -- only the target is the mapped file.
         if (this.typescript) childPath = this.#typescriptResolve(file, s.spec, conditions)
         if (childPath == null) {
-          addUnresolved(s, cause.code ?? cause.message)
+          addUnresolved(s, cause.code ?? cause.message, conditions)
           continue
         }
       }
@@ -450,7 +502,7 @@ export class Scan {
           ),
         ])
       ),
-      unresolved: this.unresolved.map(({ parentURL, ...rest }) => ({ parent: rel(parentURL), ...rest })),
+      unresolved: this.unresolved.map(({ parentURL, typescriptURL, ...rest }) => ({ parent: rel(parentURL), ...rest, ...(typescriptURL ? { typescript: rel(typescriptURL) } : {}) })),
       parseErrors: this.parseErrors.map(({ url, ...rest }) => ({ file: rel(url), ...rest })),
     }
   }
