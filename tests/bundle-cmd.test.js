@@ -2659,6 +2659,31 @@ cliTest('CLI: bundle --typescript takes each workspace package\'s own tsconfig.j
   }))
 }))
 
+cliTest('CLI: bundle --mainFields --typescript reads a linked workspace package\'s tsconfig.json where it lies', withTmp(async (t, tmp) => {
+  // The field resolver keeps a main-field package's lexical node_modules path; lib's config, which
+  // `extends` ../../tsconfig.base.json, must still be read from packages/lib, not through the link.
+  const files = {
+    'package.json': { name: 'root', private: true },
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'tsconfig.base.json': { compilerOptions: { baseUrl: '.', paths: { '@lib/*': ['packages/lib/src/*'] } } },
+    'packages/app/package.json': { name: 'app', version: '1.0.0', type: 'module' },
+    'packages/app/src/index.ts': 'import { lib } from "lib"\nexport const v: number = lib\n',
+    'packages/lib/package.json': { name: 'lib', version: '1.0.0', type: 'module', main: './src/index.ts' },
+    'packages/lib/tsconfig.json': { extends: '../../tsconfig.base.json' },
+    'packages/lib/src/index.ts': 'import { x } from "@lib/x"\nexport const lib: number = x\n',
+    'packages/lib/src/x.ts': 'export const x: number = 2\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'packages', 'app', 'node_modules'))
+  symlinkSync(join('..', '..', 'lib'), join(tmp, 'packages', 'app', 'node_modules', 'lib'))
+  const r = await runCli(['bundle', '--typescript', '--mainFields=main', `--output=${join(tmp, 'snap.br')}`, 'packages/app/src/index.ts'], { cwd: tmp })
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.doesNotMatch(r.stderr, /unresolved/u)
+}))
+
 cliTest('CLI: bundle rejects --tsconfig without --typescript', async (t) => {
   const r = await runCli(['bundle', '--tsconfig=tsconfig.json', 'entry.ts'])
   t.assert.notEqual(r.status, 0)

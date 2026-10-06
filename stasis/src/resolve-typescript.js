@@ -434,10 +434,16 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false } =
   const projectPackage = workspaceRoot === null
     ? dirs.find((dir) => holdsNamedPackage(dir, host)) ?? dirs.findLast((dir) => isFile(join(dir, 'package.json'), host)) ?? null
     : null
-  // The package directory `parentFile` is in, or null outside the workspace root.
+  // The package directory `parentFile` is in, or null outside the workspace root. By its real path,
+  // as inNodeModules reads it: a linked workspace package reached through node_modules takes its
+  // own config, read where it lies, so a relative `extends` resolves as tsc resolves it.
   const packageOf = (parentFile) => {
     if (workspaceRoot === null) return projectPackage
-    for (let dir = dirname(parentFile); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+    let real = parentFile
+    try {
+      real = host.realpath(parentFile)
+    } catch { /* not on disk: its own path decides */ }
+    for (let dir = dirname(real); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
       if (dir === workspaceRoot || holdsNamedPackage(dir, host)) return dir
       if (dirname(dir) === dir) return null
     }

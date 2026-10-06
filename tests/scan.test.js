@@ -947,6 +947,24 @@ test('packageTsconfigPaths: outside a monorepo, every file takes the project\'s 
   t.assert.deepStrictEqual(packageTsconfigPaths(join(tmp, 'src', 'esm')).matchPaths('@/x', join(tmp, 'src', 'a.ts')), [join(tmp, 'src', 'x')])
 }))
 
+test('packageTsconfigPaths takes a linked workspace package by its real path, its relative `extends` included', withTmp((t, tmp) => {
+  // The field resolver reaches a linked package's files through node_modules; read there, lib's
+  // config would `extends` ../../tsconfig.base.json from node_modules/, not the repository root.
+  writeTree(tmp, {
+    'package.json': { name: 'root', private: true },
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'tsconfig.base.json': { compilerOptions: { baseUrl: '.', paths: { '@lib/*': ['packages/lib/src/*'] } } },
+    'packages/app/package.json': { name: 'app' },
+    'packages/lib/package.json': { name: 'lib' },
+    'packages/lib/tsconfig.json': { extends: '../../tsconfig.base.json' },
+    'packages/lib/src/index.ts': '',
+  })
+  mkdirSync(join(tmp, 'packages', 'app', 'node_modules'))
+  symlinkSync(join('..', '..', 'lib'), join(tmp, 'packages', 'app', 'node_modules', 'lib'))
+  const linked = join(tmp, 'packages', 'app', 'node_modules', 'lib', 'src', 'index.ts')
+  t.assert.deepStrictEqual(packageTsconfigPaths(tmp).matchPaths('@lib/x', linked), [join(tmp, 'packages', 'lib', 'src', 'x')])
+}))
+
 test('packageTsconfigPaths loads each config once, when first matched; lenient, one that does not load is none', withTmp((t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'root', workspaces: ['packages/*'] },
