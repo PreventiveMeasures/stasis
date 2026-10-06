@@ -965,6 +965,22 @@ test('packageTsconfigPaths takes a linked workspace package by its real path, it
   t.assert.deepStrictEqual(packageTsconfigPaths(tmp).matchPaths('@lib/x', linked), [join(tmp, 'packages', 'lib', 'src', 'x')])
 }))
 
+test('packageTsconfigPaths reads the project by real path, from a cwd reached through a link', withTmp((t, tmp) => {
+  // An unnamed workspace root (the common `{ "private": true, "workspaces": [...] }`): a file of
+  // its own is found as the root's only when the root is compared by the real path importers have.
+  writeTree(tmp, {
+    'real/package.json': { private: true, workspaces: ['packages/*'] },
+    'real/tsconfig.json': aliasTo('./shared/*'),
+    'real/.git/HEAD': '',
+    'real/packages/a/package.json': { name: 'a' },
+    'real/tools/a.ts': '',
+  })
+  symlinkSync('real', join(tmp, 'link'))
+  for (const cwd of [join(tmp, 'link'), join(tmp, 'link', 'tools')]) {
+    t.assert.deepStrictEqual(packageTsconfigPaths(cwd).matchPaths('@/x', join(tmp, 'real', 'tools', 'a.ts')), [join(tmp, 'real', 'shared', 'x')], cwd)
+  }
+}))
+
 test('packageTsconfigPaths loads each config once, when first matched; lenient, one that does not load is none', withTmp((t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'root', workspaces: ['packages/*'] },

@@ -49,6 +49,15 @@ export function typescriptSiblings(name) {
 // completed like an extensionless name, matching tsc's candidate list.
 const NO_COMPLETION_EXTS = new Set([...JS_OUTPUT_EXTS, '.ts', '.tsx', '.mts', '.cts', '.json'])
 
+// `path`'s real path, or `path` itself where it has none (not on disk).
+function realpathOr(path, host) {
+  try {
+    return host.realpath(path)
+  } catch {
+    return path
+  }
+}
+
 export function isFile(p, host = diskHost) {
   return host.stat(p)?.isFile() ?? false
 }
@@ -424,8 +433,8 @@ const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'
 // matches no alias for a file under one. Each config loads once, when first matched; with `lenient`,
 // one that doesn't load matches nothing instead of throwing.
 export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false } = {}) {
-  const dirs = [] // cwd and above, while the State's walk would go on
-  for (let dir = resolvePath(cwd); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+  const dirs = [] // cwd and above, while the State's walk would go on; real paths, as importers are read
+  for (let dir = realpathOr(resolvePath(cwd), host); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
     dirs.push(dir)
     if (host.stat(join(dir, '.git')) !== null || isFile(join(dir, 'pnpm-workspace.yaml'), host)) break
     if (dirname(dir) === dir) break
@@ -439,11 +448,7 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false } =
   // own config, read where it lies, so a relative `extends` resolves as tsc resolves it.
   const packageOf = (parentFile) => {
     if (workspaceRoot === null) return projectPackage
-    let real = parentFile
-    try {
-      real = host.realpath(parentFile)
-    } catch { /* not on disk: its own path decides */ }
-    for (let dir = dirname(real); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+    for (let dir = dirname(realpathOr(parentFile, host)); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
       if (dir === workspaceRoot || holdsNamedPackage(dir, host)) return dir
       if (dirname(dir) === dir) return null
     }
@@ -485,13 +490,7 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules(?:[\\/]|$)/u
 // Whether `file` lies in node_modules, by its real path where it has one (by its own, where it
 // doesn't): --typescript maps nothing from or into an installed package. A monorepo's workspace
 // packages, linked in through node_modules, really lie outside it, so they keep the mapping.
-export function inNodeModules(file, host = diskHost) {
-  let real = file
-  try {
-    real = host.realpath(file)
-  } catch { /* not on disk: its own path decides */ }
-  return IN_NODE_MODULES.test(real)
-}
+export const inNodeModules = (file, host = diskHost) => IN_NODE_MODULES.test(realpathOr(file, host))
 
 // Resolve `spec` from `parentFile` the way tsc would complete a resolution BOTH Node and the
 // legacy-field resolver missed. Returns the absolute path of the on-disk source, or null -- always
