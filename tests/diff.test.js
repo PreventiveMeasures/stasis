@@ -597,3 +597,27 @@ test('diff --stat --imports reports redirected edges and exits 1 on an import-on
   t.assert.match(withImports.stdout, /Imports: 0 added, 0 removed, 1 changed/)
   t.assert.match(withImports.stdout, /old\.js -> node_modules\/foo\/new\.js/)
 }))
+
+test('diffArtifacts reports a dependency repo change, but not a repo one side does not record', (t) => {
+  const withRepo = (repo) => ({
+    version: 0,
+    config: { scope: 'node_modules' },
+    modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': 'sha512-FOO' } } },
+  })
+  const diff = diffArtifacts(lockOf(withRepo({ github: 'o/foo', root: true })), lockOf(withRepo({ github: 'o/elsewhere', directory: 'packages/foo' })))
+  // Parsed `repo` blocks are null-prototype: compared as the JSON they are.
+  t.assert.deepStrictEqual(JSON.parse(JSON.stringify(diff.modules.changed)), [{
+    dir: 'node_modules/foo', name: 'foo',
+    repoChange: { from: { github: 'o/foo', root: true }, to: { github: 'o/elsewhere', directory: 'packages/foo' } },
+  }])
+  t.assert.ok(hasDifferences(diff), 'identical digests, another repo: the artifacts differ')
+  t.assert.match(formatDiffStat(diff), /\* node_modules\/foo {2}foo repo o\/foo -> o\/elsewhere \(packages\/foo\)\n/u)
+
+  for (const [left, right, why] of [
+    [undefined, { github: 'o/foo', root: true }, 'an artifact from before the field'],
+    [{ github: 'o/foo', root: true }, undefined, 'one from before the field'],
+    [{ github: 'o/foo', root: true }, { github: 'O/Foo', root: true }, "GitHub's names are case-insensitive"],
+  ]) {
+    t.assert.ok(!hasDifferences(diffArtifacts(lockOf(withRepo(left)), lockOf(withRepo(right)))), why)
+  }
+})

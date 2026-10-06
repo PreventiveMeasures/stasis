@@ -1,4 +1,4 @@
-import { sortPaths } from '@exodus/stasis-core/util'
+import { sameRepo, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
 // file level. Never reads disk. Comparing across kinds works by reducing every file to the same
@@ -21,7 +21,7 @@ function digestOf(kind, format, value, hash) {
 
 const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
 
-// Project an artifact onto a uniform shape: scope + Map<dir, { name, version, ecosystem,
+// Project an artifact onto a uniform shape: scope + Map<dir, { name, version, ecosystem, repo,
 // files: Map<rel, digest> }>. `input` is { artifact, kind }; `hash` re-hashes bundle bytes only.
 export function normalizeArtifact(input, { hash } = {}) {
   const { artifact, kind } = input ?? {}
@@ -30,13 +30,13 @@ export function normalizeArtifact(input, { hash } = {}) {
   }
   const formats = artifact.formats ?? new Map()
   const modules = new Map()
-  for (const [dir, { name, version, ecosystem, files }] of artifact.modules) {
+  for (const [dir, { name, version, ecosystem, repo, files }] of artifact.modules) {
     const digests = new Map()
     for (const [rel, value] of Object.entries(files)) {
       digests.set(rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash))
     }
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
-    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, files: digests })
+    modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo: repo ?? null, files: digests })
   }
   // `executable` decides which files `stasis extract` chmods +x, so a change to it changes the tree
   // an artifact produces even when every digest matches -- it has to be part of "did these differ?".
@@ -45,8 +45,8 @@ export function normalizeArtifact(input, { hash } = {}) {
 
 // Diff two `{ artifact, kind }` operands (`left` = baseline/"from", `right` = "to"). Modules are
 // compared whole-package; files only within packages present on BOTH sides (a one-sided package is
-// reported once as an added/removed module, not per-file). A version/name change is reported only
-// when both sides record a non-null value. `{ imports: true }` also diffs the resolution graphs
+// reported once as an added/removed module, not per-file). A version/name/repo change is reported
+// only when both sides record a non-null value (an artifact from before `repo` records none). `{ imports: true }` also diffs the resolution graphs
 // (opt-in; verbose). `hash` is required only when a bundle is an operand.
 export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   const L = normalizeArtifact(left, { hash })
@@ -80,7 +80,11 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     if (l.name !== null && r.name !== null && l.name !== r.name) {
       change.nameChange = { from: l.name, to: r.name }
     }
-    if (change.versionChange || change.nameChange) modulesChanged.push(change)
+    // A dependency's repo picks the GitHub advisories audit asks, so a change to it is one to review.
+    if (l.repo !== null && r.repo !== null && !sameRepo(l.repo, r.repo)) {
+      change.repoChange = { from: l.repo, to: r.repo }
+    }
+    if (change.versionChange || change.nameChange || change.repoChange) modulesChanged.push(change)
 
     const rels = new Set([...l.files.keys(), ...r.files.keys()])
     for (const rel of rels) {
@@ -203,10 +207,14 @@ const REMOVED = '-'
 const ADDED = '+'
 const CHANGED = '*'
 
-function describeModuleChange({ name, versionChange, nameChange }) {
+// `owner/name`, its commit and directory where recorded: `owner/name@0123abc (packages/x)`.
+const repoLabel = ({ github, commit, directory }) => `${github ?? '?'}${commit ? `@${commit.slice(0, 7)}` : ''}${directory ? ` (${directory})` : ''}`
+
+function describeModuleChange({ name, versionChange, nameChange, repoChange }) {
   const segs = []
   if (versionChange) segs.push(`${versionChange.from} -> ${versionChange.to}`)
   if (nameChange) segs.push(`name ${nameChange.from} -> ${nameChange.to}`)
+  if (repoChange) segs.push(`repo ${repoLabel(repoChange.from)} -> ${repoLabel(repoChange.to)}`)
   return `${name ? `${name} ` : ''}${segs.join(', ')}`
 }
 

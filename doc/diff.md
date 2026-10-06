@@ -34,9 +34,11 @@ byte-identical file never shows as a difference.
 - **added** / **removed** — a package directory present on only one side (the
   workspace `"."` bucket, a `node_modules/<pkg>` dependency, …). Carries the
   package `name@version` and its file count.
-- **changed** — a package on both sides whose `name` or `version` differs,
-  reported only when both sides record one. A legacy `version: 0` bundle records
-  neither, so it is never flagged.
+- **changed** — a package on both sides whose `name`, `version` or `repo` (the
+  dependency's GitHub repository, which picks the advisories `stasis audit
+  --repo-advisories` asks) differs, reported only when both sides record one. A
+  legacy `version: 0` bundle records neither name nor version, and an artifact
+  from before `repo` records none, so neither is flagged for lacking one.
 
 **Files** (within packages present on **both** sides):
 
