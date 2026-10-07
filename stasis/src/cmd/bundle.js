@@ -848,8 +848,9 @@ function nativeModuleFiles(pkgAbs, host) {
 
 // The built-in field/suffix resolver (resolve-fields.js) the legacy-field build resolves with on
 // `platform` (null for --mainFields), its `mainFields` (Metro's under --metro), and the conditions
-// it adds to Node's: --metro asserts the RN conditions (+ browser on web); --mainFields carries the
-// user's --conditions.
+// it adds to the bundler base (`import`/`require` + `default`, never Node's `node`; see
+// resolveConditions): --metro asserts the RN conditions (+ browser on web), Metro's own set;
+// --mainFields carries the user's --conditions.
 export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : conditions
   const fields = metro ? METRO_MAIN_FIELDS : mainFields

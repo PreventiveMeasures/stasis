@@ -237,10 +237,15 @@ export class Scan {
     return this
   }
 
-  // Must match the runtime resolver's condition set (omitting one resolves `exports`-gated
-  // packages to a different file) AND its order: the recorded key must equal the runtime
-  // hooks' string for exact lookups. Extras go where Node puts user conditions in each set.
+  // Node's resolver: must match the runtime resolver's condition set (omitting one resolves
+  // `exports`-gated packages to a different file) AND its order: the recorded key must equal the
+  // runtime hooks' string for exact lookups. Extras go where Node puts user conditions in each set.
+  // A custom resolver (--mainFields/--metro) resolves for a bundler instead, so it gets what
+  // esbuild, webpack and Metro all assert: `import`/`require`, `default` (which Node's resolver
+  // matches anyway) and the extras, never `node`, `node-addons` or `module-sync`; the same set as
+  // resolve-fields.js's resolveConditions.
   #conditionSet(context) {
+    if (this.customResolve) return new Set([context, 'default', ...this.extraConditions])
     return context === 'import'
       ? new Set(['node', 'import', 'module-sync', 'node-addons', ...this.extraConditions])
       : new Set(['require', 'node', 'node-addons', ...this.extraConditions, 'module-sync'])

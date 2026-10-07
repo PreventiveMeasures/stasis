@@ -20,7 +20,7 @@ and Rust bundles, see [Other languages](#other-languages).
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. Not with `--mainFields`/`--metro`, which always emit full scope. |
-| `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's. |
+| `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
 | `--metro --platforms=ios,android` | Resolve the way Metro does. See [Metro](#metro---metro). |
 | `--metro-resolver` | With `--metro`: resolve through the project's own `metro-resolver` instead of the built-in approximation. |
@@ -77,14 +77,44 @@ Node's conditions, `main`, extension and index probing.
   in that order, including the `browser` field's object form (file redirection
   and `false` stubs). Always a full-scope bundle.
 
+### Conditions
+
+The conditions each mode asserts for `exports` and `imports` maps (`default`
+always matches):
+
+| Mode | Conditions |
+| - | - |
+| Node (default) | `node`, `import` or `require`, `module-sync`, `node-addons`, then `--conditions` |
+| `--mainFields` | `import` or `require`, then `--conditions` |
+| `--metro`, `--metro --metro-resolver` | `import` or `require`, `react-native`, and `browser` on `web` |
+
+Resolving as Node, `import` or `require` follows the edge (an `import`,
+`export ... from` or `import()` asserts `import`, a `require()` `require`),
+and the set is the one Node itself asserts, so `stasis run --bundle=load`
+lands on the file Node would. An `exports` map listing `node` first therefore
+takes that branch whatever `--conditions` adds.
+
+`--mainFields` and `--metro` resolve as a bundler does: `import` or `require`
+follows the importing file's format, and `node`, `node-addons` and
+`module-sync` are never asserted. A package whose `exports` lists `node` first
+(`uuid` 9: `node`, `browser`, `default`) resolves to its `browser` target
+under `--mainFields=browser,module,main --conditions=browser`, as esbuild
+(platform `browser`) and webpack 5 (target `web`) do, and under `--metro` to
+the first of its `react-native`, `default` and, on `web`, `browser` targets,
+as Metro with React Native's config does. `--metro` asserts Metro's own set:
+under `--metro-resolver` the project's `metro-resolver` is given `react-native`
+and adds the rest itself. esbuild also asserts `module`, and webpack `module`,
+`webpack` and `production` or `development`: add them with `--conditions`
+where a package's map tells them apart.
+
 ### Metro (`--metro`)
 
 `--metro --platforms=ios,android` resolves the way Metro does: React Native's
-conditions and `mainFields`, and the `.ios`/`.android`/`.native` file
-suffixes, each platform resolved on its own and all of them recorded in one
-bundle. `--platforms` is repeatable and/or comma-separated (`--platforms=web`
-too). It sets its own conditions and `mainFields`, so it doesn't combine with
-`--conditions` or `--mainFields`.
+[conditions](#conditions) and `mainFields`, and the `.ios`/`.android`/`.native`
+file suffixes, each platform resolved on its own and all of them recorded in
+one bundle. `--platforms` is repeatable and/or comma-separated
+(`--platforms=web` too). It sets its own conditions and `mainFields`, so it
+doesn't combine with `--conditions` or `--mainFields`.
 
 It also carries each bundled dependency's native build inputs: for every
 `node_modules` package the code graph reaches, its `ios/` and `android/`
