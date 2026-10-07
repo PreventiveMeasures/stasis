@@ -74,7 +74,7 @@ export class StasisEsbuild {
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
   #probes = new Map()  // [kind, resolveDir, specifier] -> Promise<disabled path | null>
-  #resolving = new Set()  // keys of the imports whose build.resolve() is in flight (see onResolve)
+  #resolving = new Map()  // import key -> promise of its capture resolution, while in flight (see onResolve)
   // Capture declines its resolutions, so no pluginData reaches onLoad; it finds these by path.
   #targets = new Map()  // path -> 'code' | 'resource', for every file an import or entry resolved to
   #entries = new Set()  // paths of the entry points
@@ -251,21 +251,12 @@ export class StasisEsbuild {
     // the nearest tsconfig's JSX and TypeScript settings, the "main" fallback of a "module" path. So
     // this hook records what build.resolve() finds, then declines: esbuild resolves the import again,
     // to the same file, and onLoad attests and serves that file by its path.
-    onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
+    const resolveAndRecord = async (specifier, attrs, args) => {
       const isEntry = !args.importer
 
       // Resolve with the arguments esbuild passed us, so the plugins after this one and then esbuild's
-      // resolver answer as they will once we decline. That call re-enters this hook: decline it.
-      // (Sorted: the attributes cross esbuild as a Go map, in no set order.)
-      const key = JSON.stringify([args.importer, args.resolveDir, args.kind, specifier, Object.entries(attrs).toSorted()])
-      if (this.#resolving.has(key)) return undefined
-      this.#resolving.add(key)
-      let res
-      try {
-        res = await resolve(specifier, { ...args, with: attrs })
-      } finally {
-        this.#resolving.delete(key)
-      }
+      // resolver answer as they will once we decline.
+      const res = await resolve(specifier, { ...args, with: attrs })
       // A miss is esbuild's to report -- or to tolerate, as it does a require() in a try/catch (debug's
       // optional supports-color). Decline so it re-resolves exactly as without us; no edge.
       if (res.errors.length > 0) return undefined
@@ -322,6 +313,22 @@ export class StasisEsbuild {
         if (isEntry) this.#entries.add(res.path)
       }
       return undefined
+    }
+
+    onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
+      // The build.resolve() above re-enters this hook with the same arguments: decline that call. An
+      // identical import resolving at the same time (from a file esbuild loads twice, as with and
+      // without a suffix) can't be told from it, so it declines unrecorded too; onLoad waits for this
+      // resolution to record the file. (Sorted: the attributes cross esbuild as a Go map, in no set order.)
+      const key = JSON.stringify([args.importer, args.resolveDir, args.kind, specifier, Object.entries(attrs).toSorted()])
+      if (this.#resolving.has(key)) return undefined
+      const resolution = resolveAndRecord(specifier, attrs, args)
+      this.#resolving.set(key, resolution)
+      try {
+        return await resolution
+      } finally {
+        this.#resolving.delete(key)
+      }
     })
 
     // The empty module of a disabled file (see above), as esbuild's loader for disabled modules has it.
@@ -331,7 +338,14 @@ export class StasisEsbuild {
       // What onResolve found for this path: by path at capture, as pluginData at load. Any other file
       // -- one a plugin before this one resolved -- is left to esbuild and that plugin.
       const { loadBundle } = this.#state.config
-      const kind = (loadBundle ? pluginData?.kind : this.#targets.get(path)) ?? 'skip'
+      let kind = loadBundle ? pluginData?.kind : this.#targets.get(path)
+      // Not recorded yet: an import that declined as a twin of one still resolving (see onResolve) can
+      // load first. Wait out the resolutions in flight -- none waits on a load -- and look again.
+      if (kind === undefined && !loadBundle && this.#resolving.size > 0) {
+        await Promise.allSettled(this.#resolving.values())
+        kind = this.#targets.get(path)
+      }
+      kind ??= 'skip'
       if (kind === 'skip') return undefined
       const isEntry = loadBundle ? pluginData?.isEntry : this.#entries.has(path)
       // Accept only the `type` import attribute; other attributes aren't persistable to the lockfile yet.

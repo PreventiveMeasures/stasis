@@ -19,6 +19,7 @@ const browserMapFixture = join(here, 'fixtures', 'esbuild-browser-map')
 const nodeModeFixture = join(here, 'fixtures', 'esbuild-node-mode')
 const tsconfigFixture = join(here, 'fixtures', 'esbuild-tsconfig')
 const pluginAfterFixture = join(here, 'fixtures', 'esbuild-plugin-after')
+const duplicateImporterFixture = join(here, 'fixtures', 'esbuild-duplicate-importer')
 
 // Route png/svg through esbuild's native `file` loader (copies the asset, returns a URL).
 const FILE_LOADER = JSON.stringify({ '.png': 'file', '.svg': 'file' })
@@ -1437,5 +1438,28 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const replay = await run(['src/entry.js'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load')) })
     t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
     t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.js'), 'utf-8'), captureOutput)
+  }))
+
+  // src/a.js is loaded twice (as is and as `?dup`, by a plugin before StasisEsbuild), so its `./b.js`
+  // import resolves twice with identical arguments. The second can't be told from the first's own
+  // nested build.resolve() and declines unrecorded; a plugin after StasisEsbuild holds the first back
+  // so the second's b.js reaches onLoad before the first records it. onLoad must wait, not skip it.
+  test('an import resolving twice at once still has its file attested', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(duplicateImporterFixture, capDir, { recursive: true })
+    const plugins = {
+      STASIS_TEST_ESBUILD_PLUGINS_BEFORE: JSON.stringify(['suffix-plugin.js']),
+      STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['slow-plugin.js']),
+    }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), plugins, 'src/entry.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/entry.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8'), readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.imports['*']['src/a.js']['./b.js'], 'src/b.js')
+    t.assert.ok(lock.sources['.'].files['src/b.js']?.startsWith('sha512-'), 'b.js is attested')
   }))
 })
