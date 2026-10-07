@@ -90,11 +90,13 @@ function githubSlug(url) {
 }
 
 // The github.com ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
+// `github`, the repository a submodule's url names where it is GitHub's (parseGithubRepository,
+// which a host merely holding `github.com` doesn't pass), or null.
 function githubSubmodules(submodules) {
   const byPath = new Map()
   for (const { path, url, branch } of submodules) {
     const name = url && githubSlug(url)
-    if (name) byPath.set(path, { name, branch })
+    if (name) byPath.set(path, { name, branch, github: parseGithubRepository(url) })
   }
   return byPath
 }
@@ -140,9 +142,10 @@ function soldeerGitRepos(baseDir, ownership, host) {
 // node_modules/workspace logic. `ownership.assert` vets a package.json path before it is read
 // through `host`. A bucket's `repo` is the GitHub repository it is checked out from, at its root, at
 // the commit its checkout's HEAD is at, as the bundle's own `repo` reads one: a submodule's, from
-// the repository .gitmodules names; a Soldeer git dependency's, where it is its soldeer.lock `rev`
-// (soldeerGitRepos), as Soldeer holds a checkout to the lockfile before taking it for installed: a
-// folder left at another commit since the lockfile changed, or no checkout, records none.
+// the GitHub repository its .gitmodules url names; a Soldeer git dependency's, where it is its
+// soldeer.lock `rev` (soldeerGitRepos), as Soldeer holds a checkout to the lockfile before taking it
+// for installed: a folder left at another commit since the lockfile changed, or no checkout, records
+// none.
 function makeSolidityClassifier(baseDir, ownership, host) {
   const submodules = githubSubmodules(ownership.submodules)
   const check = ownership.assert
@@ -165,10 +168,10 @@ function makeSolidityClassifier(baseDir, ownership, host) {
         return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
-    for (const [sub, { name, branch }] of submodules) {
+    for (const [sub, { name, branch, github }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
-        const repo = repoRootAt(name, commitOf(sub))
+        const repo = repoRootAt(github, commitOf(sub))
         return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github', ...(repo === undefined ? {} : { repo }) }
       }
     }

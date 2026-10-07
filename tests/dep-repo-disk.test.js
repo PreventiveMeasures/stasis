@@ -59,6 +59,11 @@ test("a lib/ submodule records the repository .gitmodules names, at its root, at
   // A HEAD that names no full commit records nothing: a commit is all the checkout adds.
   write(join(gitDir, 'HEAD'), 'abc1234\n')
   t.assert.equal(repoOf(await buildSolidity(tmp), SUBMODULE), undefined)
+  // A url whose host merely holds `github.com` names no GitHub repository.
+  write(join(gitDir, 'HEAD'), `${COMMIT}\n`)
+  const gitmodules = readFileSync(join(tmp, '.gitmodules'), 'utf8')
+  write(join(tmp, '.gitmodules'), gitmodules.replace('https://github.com/', 'https://notgithub.com/'))
+  t.assert.equal(repoOf(await buildSolidity(tmp), SUBMODULE), undefined, 'notgithub.com')
 }))
 
 test('a Soldeer git dependency records the GitHub repository soldeer.lock names, at its root, at its rev, where its checkout is there', withTmp(async (t, tmp) => {
