@@ -54,11 +54,12 @@ stasis run --lock=add --bundle=add --mock app.js  # build without the app's side
 | `ignore` | Tolerate a file on disk without loading or writing it |
 | `load` | Bundle only: serve the recorded bytes instead of reading disk |
 
-At least one of `--lock` and `--bundle` is set. `--bundle=load` goes with
-`--lock=frozen` or `ignore`, never `add` or `replace`; `--bundle=frozen`
-composes with any lock mode, and makes the bundle its own attestation, so a
-frozen bundle needs no sibling lockfile. Both files are looked up in the
-project root, see [discovery](file-formats.md#discovery).
+At least one of `--lock` and `--bundle` is set. `--bundle=load` runs from the
+bundle alone with no `--lock`, or verified against the lockfile with
+`--lock=frozen` (`--lock=ignore` tolerates one on disk); never with `add` or
+`replace`. `--bundle=frozen` composes with any lock mode, and makes the bundle
+its own attestation, so a frozen bundle needs no sibling lockfile. Both files
+are looked up in the project root, see [discovery](file-formats.md#discovery).
 
 ## Preloads (`--import`)
 
