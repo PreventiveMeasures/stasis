@@ -89,14 +89,14 @@ importers:
         specifier: 1.0.0-beta.4
         version: 1.0.0-beta.4(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: 1.0.0-alpha.8
-        version: 1.0.0-alpha.8(@noble/hashes@2.4.0)
+        specifier: 1.0.0-alpha.9
+        version: 1.0.0-alpha.9(@noble/hashes@2.4.0)
       '@preventive/lockfile':
         specifier: 1.0.0-alpha.7
         version: 1.0.0-alpha.7(@noble/hashes@2.4.0)
       '@preventive/upstream':
-        specifier: 1.0.0-alpha.10
-        version: 1.0.0-alpha.10
+        specifier: 1.0.0-alpha.11
+        version: 1.0.0-alpha.11
       '@preventive/vfs':
         specifier: 1.0.0-beta.4
         version: 1.0.0-beta.4
@@ -728,8 +728,8 @@ packages:
     resolution: {integrity: sha512-lJN3Wdt1pdsYXjAKJatYFn97N1l+0Kge6ixHIvHR1bdk5Zy/zDxigPbc3Rv1F13zObgV6X1TK7IvvHEaqFCvIA==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.0.0-beta.4.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/deptree@1.0.0-alpha.8':
-    resolution: {integrity: sha512-xc7Qtnx3WTyxpfcDCP0y+/lQWWM48zMH2pF7Pa4YIaiOr4ZrI9Ex5rVfzp5IAjGONSPmQiokloZfPXAZ+IMd/g==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.0-alpha.8.tgz}
+  '@preventive/deptree@1.0.0-alpha.9':
+    resolution: {integrity: sha512-CSdEgAspMjikMV80dwwLtNIQ2QtQcIi9Vwb3/APmnUY+vMj+Go7mJNTMdtQ/OyzOqKRh7df+Ppez0rU6FxeL1A==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.0-alpha.9.tgz}
     engines: {node: '>=24.14.0'}
 
   '@preventive/diff@1.0.1':
@@ -740,8 +740,8 @@ packages:
     resolution: {integrity: sha512-Dfr/iHIUfsMQqbC9sJ10LaHdKL+Buf7D1ZAqZXcFpgU2N13uDsgA77qmjlmD7o7IWTi9suOC6LclAZyFNLPzRA==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.0.0-alpha.7.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/upstream@1.0.0-alpha.10':
-    resolution: {integrity: sha512-PF8XLDtxk3af5bnVI653FAnqszT4AETjjidEHFQeO4SmTcsEoucvGwxYQoSD9ZCInIZRZyVIwSBPonAewPsDvA==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.0.0-alpha.10.tgz}
+  '@preventive/upstream@1.0.0-alpha.11':
+    resolution: {integrity: sha512-6twGUJhvrEuhHZ0BuK7SFcTS5Y2MdDaJq1TBtL4SXwEKAUz+N+8YmxbQgR8LGvr6KyvF9t8QOM9q1lrAmAKKHQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.0.0-alpha.11.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       semver: ^7.5.2
@@ -3221,13 +3221,13 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.0.0-alpha.8(@noble/hashes@2.4.0)':
+  '@preventive/deptree@1.0.0-alpha.9(@noble/hashes@2.4.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@preventive/archive': 1.0.0-beta.4(@noble/hashes@2.4.0)
       '@preventive/diff': 1.0.1
       '@preventive/lockfile': 1.0.0-alpha.7(@noble/hashes@2.4.0)
-      '@preventive/upstream': 1.0.0-alpha.10
+      '@preventive/upstream': 1.0.0-alpha.11
       '@preventive/vfs': 1.0.0-beta.4
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -3241,7 +3241,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/upstream@1.0.0-alpha.10': {}
+  '@preventive/upstream@1.0.0-alpha.11': {}
 
   '@preventive/vfs@1.0.0-beta.4': {}
 
