@@ -3419,6 +3419,32 @@ test('--metro carries the native surface of a workspace package linked into node
   t.assert.equal(bundle.formats.get('packages/rn-lib/ios/RnLib.mm'), 'objcpp')
 }))
 
+test('--metro takes a linked react-native for core by its manifest, and the packages of a linked scope', withTmp(async (t, tmp) => {
+  // react-native linked under an alias is core all the same: its whole native tree (React/), not just
+  // ios/android. A scope linked whole (node_modules/@acme -> ../packages/acme) holds @acme/native.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'src/index.js': "require('rn')\nrequire('@acme/native')\n",
+    'packages/react-native/package.json': { name: 'react-native', version: '0.80.0', main: './index.js' },
+    'packages/react-native/index.js': 'module.exports = 1\n',
+    'packages/react-native/React/RCTBridge.h': '@interface RCTBridge @end\n',
+    'packages/acme/native/package.json': { name: '@acme/native', version: '1.0.0', main: './index.js' },
+    'packages/acme/native/index.js': 'module.exports = 2\n',
+    'packages/acme/native/android/build.gradle': '// gradle\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync(join('..', 'packages', 'react-native'), join(tmp, 'node_modules', 'rn'))
+  symlinkSync(join('..', 'packages', 'acme'), join(tmp, 'node_modules', '@acme'))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
+  const carried = new Set(bundle.sources.keys())
+  t.assert.ok(carried.has('packages/react-native/React/RCTBridge.h'), 'react-native\'s whole native tree')
+  t.assert.ok(carried.has('packages/acme/native/android/build.gradle'), '@acme/native\'s native surface')
+}))
+
 cliTest('CLI: bundle --mainFields / --metro warns of no unresolved import in a pnpm layout', withTmp(async (t, tmp) => {
   writePnpmLayout(tmp)
   const runs = [['--mainFields=browser,module,main', '--conditions=browser'], ['--metro', '--platforms=ios']]

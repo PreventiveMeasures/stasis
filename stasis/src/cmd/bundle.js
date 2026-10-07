@@ -999,7 +999,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // node_modules. Native source is stored as code under a language tag; other assets as
   // 'resource'/'resource:base64'.
   if (metro) {
-    const pkgDirs = new Map() // package dir -> the name it's installed under
+    const pkgDirs = new Map() // package dir -> its package's name
     // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
     // not a linked native dependency, so it must not drag in its ios/android surface.
     const isCode = (rel) => !resourceRels.has(rel)
@@ -1013,17 +1013,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // name or alias, through a browser/react-native map, by a relative path): one linked, under any
     // name, into a node_modules its importer finds packages in (the directories the resolver looks
     // in). One linked nowhere there is the project's own source.
-    const linksIn = new Map() // directory -> Map<real package dir, installed name> of its node_modules' links
+    const linksIn = new Map() // directory -> Set of the real package dirs linked into a node_modules it finds packages in
     const linkedFrom = (dir) => {
       let links = linksIn.get(dir)
       if (links !== undefined) return links
       const parent = dirname(dir)
-      links = new Map(parent === dir ? [] : linkedFrom(parent))
-      const nodeModules = join(dir, 'node_modules')
-      const link = (abs, name) => {
+      links = new Set(parent === dir ? [] : linkedFrom(parent))
+      const link = (abs) => {
         try {
           const rel = toRel(host.realpath(abs))
-          if (!splitNodeModulesPath(rel)) links.set(rel, name)
+          if (!splitNodeModulesPath(rel)) links.add(rel)
         } catch { /* a dangling link, or one out of the root, whose files the scan pass refused already */ }
       }
       const listing = (abs) => {
@@ -1035,12 +1034,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
       // As locatePackage: a directory named node_modules holds no node_modules of its own to look in.
       if (basename(dir) !== 'node_modules') {
+        const nodeModules = join(dir, 'node_modules')
         for (const ent of listing(nodeModules)) {
-          if (ent.isSymbolicLink()) link(join(nodeModules, ent.name), ent.name)
-          else if (ent.name.startsWith('@') && ent.isDirectory()) {
-            for (const scoped of listing(join(nodeModules, ent.name))) {
-              if (scoped.isSymbolicLink()) link(join(nodeModules, ent.name, scoped.name), `${ent.name}/${scoped.name}`)
+          const abs = join(nodeModules, ent.name)
+          if (ent.name.startsWith('@')) {
+            // A scope holds packages, a directory or a link to one (a whole scope linked, where
+            // every package in it is reached through the link).
+            for (const scoped of listing(abs)) {
+              if (ent.isSymbolicLink() || scoped.isSymbolicLink()) link(join(abs, scoped.name))
             }
+          } else if (ent.isSymbolicLink()) {
+            link(abs)
           }
         }
       }
@@ -1054,8 +1058,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (!isCode(target) || splitNodeModulesPath(target)) continue
           const pkg = packageOf(target)
           if (!pkg || pkg.pkgDir === '.' || pkg.pkgDir === from || pkgDirs.has(pkg.pkgDir)) continue
-          const name = linkedFrom(dirname(join(baseDir, parent))).get(pkg.pkgDir)
-          if (name !== undefined) pkgDirs.set(pkg.pkgDir, name)
+          // Named by its own manifest, whatever name it's linked under.
+          if (linkedFrom(dirname(join(baseDir, parent))).has(pkg.pkgDir)) pkgDirs.set(pkg.pkgDir, pkg.name)
         }
       }
     }
