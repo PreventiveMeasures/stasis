@@ -301,11 +301,16 @@ test("detectRepo strips ./ and trailing slashes from repository.directory, the r
     writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/n', directory } })
     return detectRepo(at)
   }
-  for (const directory of ['./', '.', '', '/', 'a/../', './a/../', './/']) {
+  for (const directory of ['./', '.', '', '/', '/.', './.', './/']) {
     t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
+  }
+  for (const directory of ['a/../', './a/..', 'packages/../a']) {
+    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n' }, `${JSON.stringify(directory)}: a \`..\` part, unknown`)
+    t.assert.deepStrictEqual(dirOf(directory, join(tmp, 'sub')), { github: 'o/n' }, `${JSON.stringify(directory)}: unknown below it too`)
   }
   t.assert.deepStrictEqual(dirOf('./packages/a/'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('packages//a///'), { github: 'o/n', directory: 'packages/a' })
+  t.assert.deepStrictEqual(dirOf('./packages/./a'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('./', join(tmp, 'sub')), { github: 'o/n', directory: 'sub' })
 }))
 

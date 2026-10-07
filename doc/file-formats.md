@@ -230,8 +230,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   bundle's own `repo` takes from one: `repository` alone names the repository
   (`bugs` and `homepage` are often its old name), and `repository.directory`,
   else a GitHub tree `homepage` of it, the directory, `""` where it comes to the
-  repository root (`./`, `/`). A dependency whose manifest names no directory
-  sits at an unknown place in its repository and records no `directory`.
+  repository root (`./`, `/`). A dependency whose manifest names no directory,
+  or one with a `..` part, sits at an unknown place in its repository and
+  records no `directory`.
   First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
   never written to the lockfile, never attested, and never checked against a
   dependency's `package.json` or another artifact's record. A run fills it in
@@ -305,9 +306,11 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
      `homepage` of the same repository such as
      `https://github.com/owner/name/tree/main/packages/app#readme` supplies it
      (`packages/app`; the branch is taken as one path segment). With neither, the
-     directory is unknown and none is recorded; where they come to the
-     repository root (`./`, `/`), it is `""`. No `commit` is recorded. A
-     `package.json` naming a non-GitHub repository records nothing.
+     directory is unknown and none is recorded, as where they have a `..` part
+     (`a/..` is no claim on the root); empty and `.` parts are dropped, and
+     where they come to the repository root (`./`, `/`), it is `""`. No
+     `commit` is recorded. A `package.json` naming a non-GitHub repository
+     records nothing.
 
   A `stasis github-bundle` build records the fetched tree's own layout, `""` at
   its root. A detected value that the rules above would reject is left out

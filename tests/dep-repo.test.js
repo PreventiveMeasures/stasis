@@ -48,10 +48,12 @@ function capture(dir, options) {
 
 test("a dependency repo is read as a build reads its own: a declared directory at the root is `''`, none declared is unknown", withTmp((t, dir) => {
   t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
-  for (const directory of ['./', '.', '', '/', 'a/../', '.\\']) {
+  for (const directory of ['./', '.', '', '/', '/.', './.', '.\\']) {
     t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
   }
-  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: '../x' } }), { github: 'o/n' }, 'outside the repository: unknown')
+  for (const directory of ['../x', 'a/..', 'a/../', 'a/../b']) {
+    t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n' }, `${JSON.stringify(directory)}: a \`..\` part, unknown`)
+  }
   t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
   for (const pkg of [{}, { repository: 'https://gitlab.com/o/n' }, { bugs: 'https://github.com/o/n/issues' }, { homepage: 'https://github.com/o/n' }, null]) {
     t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)

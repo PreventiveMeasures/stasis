@@ -203,12 +203,15 @@ export function githubHomepageDirectory(homepage, github) {
 const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
 
 // A package.json's declared `base` (its `repository.directory`) joined with `rel` as a `repoLocation`;
-// `{}` where none is declared (unknown, not the root). One that comes to the root (`''`, `.`, `./`,
-// `/`, `a/../`) is the root, `''`. Windows users write `base` with `\`: metadata, not a name on
-// disk, so its `\` is taken for a separator.
+// `{}` where none is declared (unknown, not the root), or where `base` has a `..` part, whatever it
+// would come to (`a/..` is no claim on the root). Its empty and `.` parts are dropped, and one that
+// comes to the root (`''`, `.`, `./`, `/`, `/.`) is the root, `''`. Windows users write `base` with
+// `\`: metadata, not a name on disk, so its `\` is taken for a separator.
 const declaredLocation = (base, rel) => {
   if (typeof base !== 'string') return {}
-  const directory = posix.join(base.replaceAll('\\', '/'), rel).replace(/^\/+|\/+$/gu, '')
+  const path = base.replaceAll('\\', '/')
+  if (path.split('/').includes('..')) return {}
+  const directory = posix.join(path, rel).replace(/^\/+|\/+$/gu, '')
   return repoLocation(directory === '.' ? '' : directory)
 }
 
