@@ -1052,14 +1052,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       return links
     }
     for (const [parent, bySpec] of edges) {
-      const from = packageOf(parent)?.pkgDir
       for (const byPlatform of bySpec.values()) {
         for (const target of byPlatform.values()) {
           if (!isCode(target) || splitNodeModulesPath(target)) continue
-          const pkg = packageOf(target)
-          if (!pkg || pkg.pkgDir === '.' || pkg.pkgDir === from || pkgDirs.has(pkg.pkgDir)) continue
+          const links = linkedFrom(dirname(join(baseDir, parent)))
+          // The linked root holding the target, nearest first: its entry may lie below a manifest of
+          // its own (a named dist/package.json), as a node_modules path names the package it's in.
+          let root = posix.dirname(target)
+          while (root !== '.' && !links.has(root)) root = posix.dirname(root)
+          // The project's own source isn't a dependency, nor is an import within the package itself.
+          if (root === '.' || parent.startsWith(`${root}/`) || pkgDirs.has(root)) continue
           // Named by its own manifest, whatever name it's linked under.
-          if (linkedFrom(dirname(join(baseDir, parent))).has(pkg.pkgDir)) pkgDirs.set(pkg.pkgDir, pkg.name)
+          pkgDirs.set(root, readPackageJson(baseDir, `${root}/package.json`, { host })?.name)
         }
       }
     }

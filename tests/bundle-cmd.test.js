@@ -3445,6 +3445,28 @@ test('--metro takes a linked react-native for core by its manifest, and the pack
   t.assert.ok(carried.has('packages/acme/native/android/build.gradle'), '@acme/native\'s native surface')
 }))
 
+test('--metro takes a linked package from its linked root, below which its entry has a manifest of its own', withTmp(async (t, tmp) => {
+  // rn-dist's main is dist/index.js, beside a named dist/package.json (a package published from its
+  // build): the package linked is still rn-dist, whose native surface is at its root.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'src/index.js': "require('rn-dist')\n",
+    'packages/rn-dist/package.json': { name: 'rn-dist', version: '1.0.0', main: './dist/index.js' },
+    'packages/rn-dist/dist/package.json': { name: 'rn-dist', version: '1.0.0', main: './index.js' },
+    'packages/rn-dist/dist/index.js': 'module.exports = 1\n',
+    'packages/rn-dist/android/build.gradle': '// gradle\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync(join('..', 'packages', 'rn-dist'), join(tmp, 'node_modules', 'rn-dist'))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['android'] })
+  t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-dist'), 'packages/rn-dist/dist/index.js')
+  t.assert.ok(bundle.sources.has('packages/rn-dist/android/build.gradle'), 'rn-dist\'s native surface, at its root')
+}))
+
 cliTest('CLI: bundle --mainFields / --metro warns of no unresolved import in a pnpm layout', withTmp(async (t, tmp) => {
   writePnpmLayout(tmp)
   const runs = [['--mainFields=browser,module,main', '--conditions=browser'], ['--metro', '--platforms=ios']]
