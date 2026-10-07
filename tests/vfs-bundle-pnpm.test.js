@@ -254,3 +254,18 @@ test('buildVfsBundle resolves mainFields and metro from where a pnpm-installed p
   // Keyed alike, as the bundlers key them.
   for (const { bundle } of [node, fields, metro]) t.assert.deepStrictEqual([...bundle.modules.keys()].filter((dir) => dir !== '.').toSorted(), [dep, sib])
 })
+
+test('buildVfsBundle with metro carries the native surface of a workspace package pnpm links into node_modules', async (t) => {
+  // w is reached by its real path, w/, out of node_modules, but it's linked there: a dependency.
+  const files = {
+    'package.json': { name: 'p', version: '1.0.0', dependencies: { w: 'workspace:*' } },
+    'pnpm-workspace.yaml': 'packages:\n  - w\n',
+    'pnpm-lock.yaml': ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    dependencies:', '      w:', '        specifier: workspace:*', '        version: link:w', '', '  w: {}', ''].join('\n'),
+    'w/package.json': { name: 'w', version: '1.0.0', main: 'i.js' },
+    'w/i.js': 'module.exports = 2\n',
+    'w/android/build.gradle': '// gradle\n',
+    'src/a.js': "require('w')\n",
+  }
+  const { bundle } = await build({ vfs: project(files), entries: ['src/a.js'], metro: true, platforms: ['android'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a.js', 'w/android/build.gradle', 'w/i.js', 'w/package.json'])
+})

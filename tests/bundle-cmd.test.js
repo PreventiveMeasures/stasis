@@ -3366,11 +3366,11 @@ test('--metro carries the native surface of a workspace package linked into node
   // A workspace package linked into node_modules is reached by its real path, out of node_modules,
   // but is a dependency like any installed one, however the import reaches it: rn-lib by its own
   // name, rn-mapped through the app's react-native map, rn-aliased by the name it's installed under,
-  // linked-rel by a relative path. other is linked nowhere, and the app's own native project is no
-  // dependency's.
+  // linked-rel by a relative path, native by a relative path though it's installed under an alias.
+  // other is linked nowhere, and the app's own native project is no dependency's.
   const files = {
     'package.json': { name: 'app', version: '1.0.0', 'react-native': { './src/impl.js': 'rn-mapped' } },
-    'src/index.js': "require('rn-lib')\nrequire('./impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/other')\n",
+    'src/index.js': "require('rn-lib')\nrequire('./impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/native')\nrequire('../packages/other')\n",
     'ios/App.mm': '@implementation App @end\n',
     'packages/rn-lib/package.json': { name: 'rn-lib', version: '1.0.0', main: './index.js' },
     'packages/rn-lib/index.js': 'module.exports = 1\n',
@@ -3380,17 +3380,17 @@ test('--metro carries the native surface of a workspace package linked into node
     'packages/other/index.js': 'module.exports = 2\n',
     'packages/other/ios/Other.mm': '@implementation Other @end\n',
   }
-  for (const name of ['rn-mapped', 'rn-aliased', 'linked-rel']) {
-    files[`packages/${name}/package.json`] = { name, version: '1.0.0', main: './index.js' }
-    files[`packages/${name}/index.js`] = 'module.exports = 3\n'
-    files[`packages/${name}/android/build.gradle`] = '// gradle\n'
+  for (const [dir, name] of [['rn-mapped', 'rn-mapped'], ['rn-aliased', 'rn-aliased'], ['linked-rel', 'linked-rel'], ['native', 'real-native']]) {
+    files[`packages/${dir}/package.json`] = { name, version: '1.0.0', main: './index.js' }
+    files[`packages/${dir}/index.js`] = 'module.exports = 3\n'
+    files[`packages/${dir}/android/build.gradle`] = '// gradle\n'
   }
   for (const [name, content] of Object.entries(files)) {
     mkdirSync(dirname(join(tmp, name)), { recursive: true })
     writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
   }
   mkdirSync(join(tmp, 'node_modules'))
-  for (const [link, dir] of [['rn-lib', 'rn-lib'], ['rn-mapped', 'rn-mapped'], ['rn-alias', 'rn-aliased'], ['linked-rel', 'linked-rel']]) {
+  for (const [link, dir] of [['rn-lib', 'rn-lib'], ['rn-mapped', 'rn-mapped'], ['rn-alias', 'rn-aliased'], ['linked-rel', 'linked-rel'], ['native-alias', 'native']]) {
     symlinkSync(join('..', 'packages', dir), join(tmp, 'node_modules', link))
   }
   const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
@@ -3400,6 +3400,9 @@ test('--metro carries the native surface of a workspace package linked into node
     'packages/linked-rel/android/build.gradle',
     'packages/linked-rel/index.js',
     'packages/linked-rel/package.json',
+    'packages/native/android/build.gradle',
+    'packages/native/index.js',
+    'packages/native/package.json',
     'packages/other/index.js',
     'packages/rn-aliased/android/build.gradle',
     'packages/rn-aliased/index.js',

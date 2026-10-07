@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { dirname, extname, join, posix, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths, locatePackage, packageTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
@@ -1010,29 +1010,51 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     // A package linked into node_modules from out of it (a workspace package) is reached by its real
     // path, out of node_modules, but is a dependency all the same, however an import reaches it (by
-    // name, through a browser/react-native map, by a relative path): one linked where its importer
-    // finds packages, under its own name or the bare name the import spelled (an alias), located as
-    // the resolver locates a package. One linked nowhere there is the project's own source.
-    const linkedAs = (fromDir, name, pkgDir) => {
-      const loc = locatePackage(fromDir, name, host)
-      if (!loc) return false
-      try {
-        return toRel(host.realpath(loc.pkgDir)) === pkgDir
-      } catch {
-        return false // a link out of the root, whose files the scan pass refused already
+    // name or alias, through a browser/react-native map, by a relative path): one linked, under any
+    // name, into a node_modules its importer finds packages in (the directories the resolver looks
+    // in). One linked nowhere there is the project's own source.
+    const linksIn = new Map() // directory -> Map<real package dir, installed name> of its node_modules' links
+    const linkedFrom = (dir) => {
+      let links = linksIn.get(dir)
+      if (links !== undefined) return links
+      const parent = dirname(dir)
+      links = new Map(parent === dir ? [] : linkedFrom(parent))
+      const nodeModules = join(dir, 'node_modules')
+      const link = (abs, name) => {
+        try {
+          const rel = toRel(host.realpath(abs))
+          if (!splitNodeModulesPath(rel)) links.set(rel, name)
+        } catch { /* a dangling link, or one out of the root, whose files the scan pass refused already */ }
       }
+      const listing = (abs) => {
+        try {
+          return host.readdir(abs)
+        } catch {
+          return []
+        }
+      }
+      // As locatePackage: a directory named node_modules holds no node_modules of its own to look in.
+      if (basename(dir) !== 'node_modules') {
+        for (const ent of listing(nodeModules)) {
+          if (ent.isSymbolicLink()) link(join(nodeModules, ent.name), ent.name)
+          else if (ent.name.startsWith('@') && ent.isDirectory()) {
+            for (const scoped of listing(join(nodeModules, ent.name))) {
+              if (scoped.isSymbolicLink()) link(join(nodeModules, ent.name, scoped.name), `${ent.name}/${scoped.name}`)
+            }
+          }
+        }
+      }
+      linksIn.set(dir, links)
+      return links
     }
     for (const [parent, bySpec] of edges) {
       const from = packageOf(parent)?.pkgDir
-      const fromDir = dirname(join(baseDir, parent))
-      for (const [spec, byPlatform] of bySpec) {
-        const bare = !(spec.startsWith('.') || spec.startsWith('#') || posix.isAbsolute(spec))
+      for (const byPlatform of bySpec.values()) {
         for (const target of byPlatform.values()) {
           if (!isCode(target) || splitNodeModulesPath(target)) continue
           const pkg = packageOf(target)
           if (!pkg || pkg.pkgDir === '.' || pkg.pkgDir === from || pkgDirs.has(pkg.pkgDir)) continue
-          const names = bare ? [pkg.name, spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/')] : [pkg.name]
-          const name = names.find((n) => linkedAs(fromDir, n, pkg.pkgDir))
+          const name = linkedFrom(dirname(join(baseDir, parent))).get(pkg.pkgDir)
           if (name !== undefined) pkgDirs.set(pkg.pkgDir, name)
         }
       }
