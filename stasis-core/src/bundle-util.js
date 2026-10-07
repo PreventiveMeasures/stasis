@@ -159,10 +159,10 @@ export function readJson(file, host = diskHost) {
 // npm lets it name is no part of the repo; a URL's userinfo holds only what RFC 3986 allows there, so
 // a `?` or `\` ending the authority early (`https://evil.example?@github.com/a/b`) isn't GitHub's. An
 // scp-like `git@github.com:owner/name` is taken behind an `ssh://` too (`git+ssh://git@github.com:o/n`),
-// as package.json files spell it.
+// as package.json files spell it. The host is GitHub's with a `www.` too, which is stripped.
 export function parseGithubRepository(url) {
   if (typeof url !== 'string') return null
-  const match = /^(?:github:|(?:git\+)?(?:(?:https?|ssh|git):\/\/(?:[\w.~%!$&'()*+,;=:-]*@)?github\.com(?::\d+)?\/|ssh:\/\/(?:[\w.~%!$&'()*+,;=-]*@)?github\.com:|(?:[^@/:]+@)?github\.com:))?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/iu.exec(url.trim().replace(/#.*$/su, ''))
+  const match = /^(?:github:|(?:git\+)?(?:(?:https?|ssh|git):\/\/(?:[\w.~%!$&'()*+,;=:-]*@)?(?:www\.)?github\.com(?::\d+)?\/|ssh:\/\/(?:[\w.~%!$&'()*+,;=-]*@)?(?:www\.)?github\.com:|(?:[^@/:]+@)?(?:www\.)?github\.com:))?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/iu.exec(url.trim().replace(/#.*$/su, ''))
   // Must also pass the bundle format's `github` check.
   const github = match && `${match[1]}/${match[2]}`
   return github && isValidRepoField('github', github) ? github : null

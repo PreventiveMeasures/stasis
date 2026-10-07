@@ -332,8 +332,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   2. **package.json:** if git yields no GitHub origin, the nearest `package.json`
      at or above the bundle root that declares a `repository`, up to the work tree
      root. `github` comes from its GitHub URL or `github:`/`owner/name` shorthand
-     (a `#committish` dropped; a URL whose authority ends before `github.com`,
-     such as `https://evil.example?@github.com/a/b`, names none),
+     (a `#committish` dropped, `www.github.com` taken for `github.com`; a URL
+     whose authority ends before `github.com`, such as
+     `https://evil.example?@github.com/a/b`, names none),
      and `directory` from `repository.directory` combined with the bundle root's
      path below that `package.json`. When `repository.directory` is unset, a GitHub
      `homepage` of the same repository such as
@@ -863,10 +864,11 @@ file resolves out of:
 | Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
 
 A dep under `node_modules` is `npm` whatever the language. A git submodule is
-`github` only where its `.gitmodules` url is GitHub's (`https`, `ssh`, `git`,
-scp-like `git@github.com:` or `github:`); one of another host, even one holding
-`github.com` (`https://notgithub.com/o/n`), or a path, is bucketed as any file
-outside `node_modules` is, by its nearest `package.json`, first-party. A git
+`github` only where its `.gitmodules` url is GitHub's: `https`, `ssh`, `git` or
+scp-like (`git@github.com:`) at `github.com` or `www.github.com`, or `github:`.
+One of another host, even one holding `github.com` (`https://notgithub.com/o/n`),
+or a path, is bucketed as any file outside `node_modules` is, by its nearest
+`package.json`, first-party. A git
 submodule with no `package.json`/`branch`, or a Soldeer dir with no version
 suffix, falls back to `0.0.0`; the workspace bucket carries no `ecosystem`. A
 Rust crate reached through a Cargo `path` dependency is first-party (its own

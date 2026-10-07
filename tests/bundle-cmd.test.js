@@ -233,6 +233,8 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     'ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
     'git@github.com:OpenZeppelin/openzeppelin-contracts.git',
     'github.com:OpenZeppelin/openzeppelin-contracts',
+    'https://www.github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'git@www.github.com:OpenZeppelin/openzeppelin-contracts.git',
     'git+https://github.com/OpenZeppelin/openzeppelin-contracts.git',
     'git+ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
     'github:OpenZeppelin/openzeppelin-contracts',
@@ -248,6 +250,7 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
   for (const url of [
     'https://notgithub.com/OpenZeppelin/openzeppelin-contracts.git',
     'https://github.com.evil.example/OpenZeppelin/openzeppelin-contracts',
+    'https://www.github.com.evil.example/OpenZeppelin/openzeppelin-contracts',
     'https://evil.example/github.com/OpenZeppelin/openzeppelin-contracts',
     'https://evil.example?@github.com/OpenZeppelin/openzeppelin-contracts',
     'git@notgithub.com:OpenZeppelin/openzeppelin-contracts.git',
