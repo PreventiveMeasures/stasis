@@ -211,6 +211,12 @@ test('detectRepo takes directory from homepage when repository.directory is unse
   t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g', directory: 'explicit' }, 'repository.directory wins')
   writeJson(join(pkg, 'package.json'), { repository: 'a/g', homepage: 'https://github.com/x/y/tree/master/c/d' })
   t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g' }, 'a homepage for another repo is ignored')
+  // Only repository.directory declares the root: a homepage tree path coming to it names none.
+  for (const path of ['.', './', '%2E', './/.']) {
+    writeJson(join(pkg, 'package.json'), { repository: 'a/g', homepage: `https://github.com/a/g/tree/master/${path}` })
+    t.assert.deepStrictEqual(detectRepo(pkg), { github: 'a/g' }, `${path}: unknown, not the root`)
+    t.assert.deepStrictEqual(detectRepo(join(pkg, 'src')), { github: 'a/g' }, `${path}: unknown below it too`)
+  }
 }))
 
 test('detectRepo follows a linked worktree `.git` file to its git and common dirs', withTmp((t, tmp) => {
@@ -301,11 +307,16 @@ test("detectRepo strips ./ and trailing slashes from repository.directory, the r
     writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/n', directory } })
     return detectRepo(at)
   }
-  for (const directory of ['./', '.', '', '/', 'a/../', './a/../', './/']) {
+  for (const directory of ['./', '.', '', '/', '/.', './.', './/']) {
     t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
+  }
+  for (const directory of ['a/../', './a/..', 'packages/../a']) {
+    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n' }, `${JSON.stringify(directory)}: a \`..\` part, unknown`)
+    t.assert.deepStrictEqual(dirOf(directory, join(tmp, 'sub')), { github: 'o/n' }, `${JSON.stringify(directory)}: unknown below it too`)
   }
   t.assert.deepStrictEqual(dirOf('./packages/a/'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('packages//a///'), { github: 'o/n', directory: 'packages/a' })
+  t.assert.deepStrictEqual(dirOf('./packages/./a'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('./', join(tmp, 'sub')), { github: 'o/n', directory: 'sub' })
 }))
 
