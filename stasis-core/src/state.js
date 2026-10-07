@@ -11,7 +11,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, reposAgree, sameRepo, sortPaths, splitNodeModulesPath } from './util.js'
+import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath } from './util.js'
 import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -449,9 +449,7 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        assert.ok(reposAgree(info.repo, lockModule.repo), `bundle module ${dir} repo mismatch with lockfile`)
-        // A lockfile from before the field records none: the bundle's then holds the package.json
-        // read and the other half of a split bundle to it.
+        // `repo` is metadata, which a lockfile never records: the bundle's is taken, to be written again.
         if (lockModule.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...lockModule, repo: info.repo }))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
@@ -500,7 +498,7 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          assert.ok(reposAgree(info.repo, existing.repo), `bundle ${dir} repo mismatch`)
+          // `repo` is metadata, held to nothing: the first half's that records one.
           if (existing.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...existing, repo: info.repo }))
         }
       }
@@ -788,14 +786,8 @@ export class State {
       assert.fail(`module identity mismatch for '${dir}': artifact records ` +
         `'${module.name}@${module.version ?? '(none)'}', package.json has '${name}@${version ?? '(none)'}'${hint}`)
     }
-    // A dependency's repo is its package.json's, held to the artifact's record as its identity is; an
-    // artifact from an older stasis records none, and gets it.
-    if (module.repo === undefined) {
-      if (repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
-    } else if (repo === undefined || !sameRepo(module.repo, repo)) {
-      assert.fail(`module repo mismatch for '${dir}': artifact records ${JSON.stringify(module.repo)}, ` +
-        `package.json names ${repo === undefined ? 'no GitHub repository' : JSON.stringify(repo)}`)
-    }
+    // A dependency's repo is metadata, its package.json's, held to nothing: a record with none gets it.
+    if (module.repo === undefined && repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
 
     return { absolute, file, dir, module, closestType }
   }

@@ -203,13 +203,13 @@ export function githubHomepageDirectory(homepage, github) {
 const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
 
 // A package.json's declared `base` (its `repository.directory`) joined with `rel` as a `repoLocation`;
-// `{}` where none is declared (unknown, not the root), or where it comes to the root: `directory: ''`
-// is recorded from a layout read (detectRepo's git step), never a manifest's claim. Windows users
-// write `base` with `\`: metadata, not a name on disk, so its `\` is taken for a separator.
+// `{}` where none is declared (unknown, not the root). One that comes to the root (`''`, `.`, `./`,
+// `/`, `a/../`) is the root, `''`. Windows users write `base` with `\`: metadata, not a name on
+// disk, so its `\` is taken for a separator.
 const declaredLocation = (base, rel) => {
   if (typeof base !== 'string') return {}
   const directory = posix.join(base.replaceAll('\\', '/'), rel).replace(/^\/+|\/+$/gu, '')
-  return directory === '' || directory === '.' ? {} : repoLocation(directory) // `/`, `./`, `a/../`
+  return repoLocation(directory === '.' ? '' : directory)
 }
 
 // Git and common dirs, following a worktree/submodule `.git` file.

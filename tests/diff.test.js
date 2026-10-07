@@ -599,12 +599,15 @@ test('diff --stat --imports reports redirected edges and exits 1 on an import-on
 }))
 
 test('diffArtifacts reports a dependency repo change, but not a repo one side does not record', (t) => {
-  const withRepo = (repo) => ({
-    version: 0,
+  // A bundle carries a dependency's repo; a lockfile never does.
+  const withRepo = (repo) => codeOf({
+    version: 1,
     config: { scope: 'node_modules' },
-    modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': 'sha512-FOO' } } },
+    modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': 'module.exports = 1\n' } } },
+    formats: {},
+    imports: {},
   })
-  const diff = diffArtifacts(lockOf(withRepo({ github: 'o/foo' })), lockOf(withRepo({ github: 'o/elsewhere', directory: 'packages/foo' })))
+  const diff = diffArtifacts(withRepo({ github: 'o/foo' }), withRepo({ github: 'o/elsewhere', directory: 'packages/foo' }), HASH)
   // Parsed `repo` blocks are null-prototype: compared as the JSON they are.
   t.assert.deepStrictEqual(JSON.parse(JSON.stringify(diff.modules.changed)), [{
     dir: 'node_modules/foo', name: 'foo',
@@ -618,6 +621,6 @@ test('diffArtifacts reports a dependency repo change, but not a repo one side do
     [{ github: 'o/foo' }, undefined, 'one from before the field'],
     [{ github: 'o/foo' }, { github: 'O/Foo' }, "GitHub's names are case-insensitive"],
   ]) {
-    t.assert.ok(!hasDifferences(diffArtifacts(lockOf(withRepo(left)), lockOf(withRepo(right)))), why)
+    t.assert.ok(!hasDifferences(diffArtifacts(withRepo(left), withRepo(right), HASH)), why)
   }
 })

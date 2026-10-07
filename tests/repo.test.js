@@ -73,7 +73,7 @@ test('detectRepo reads package.json repository, combining its directory with a s
   mkdirSync(join(tmp, 'packages', 'b'), { recursive: true })
   writeJson(join(tmp, 'packages', 'b', 'package.json'), { name: 'b' })
 
-  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n' }, "the repo root, as a manifest claims it: never `directory: ''`")
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/n', directory: '' }, 'the repo root, as the manifest declares it')
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'packages', 'a')), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'packages', 'a', 'src')), { github: 'o/n', directory: 'packages/a/src' },
     'a subdir below the declaring package.json is combined with repository.directory')
@@ -294,7 +294,7 @@ test('both halves of a split bundle record the repo', withTmp(async (t, tmp) => 
   t.assert.deepStrictEqual({ ...state.resourcesBundle.repo }, repo, 'State: resources half')
 }))
 
-test('detectRepo strips ./ and trailing slashes from repository.directory', withTmp((t, tmp) => {
+test("detectRepo strips ./ and trailing slashes from repository.directory, the root coming to `''`", withTmp((t, tmp) => {
   mkdirSync(join(tmp, '.git'))
   mkdirSync(join(tmp, 'sub'))
   const dirOf = (directory, at = tmp) => {
@@ -302,7 +302,7 @@ test('detectRepo strips ./ and trailing slashes from repository.directory', with
     return detectRepo(at)
   }
   for (const directory of ['./', '.', '', '/', 'a/../', './a/../', './/']) {
-    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n' }, `${JSON.stringify(directory)}: a manifest's root, never \`directory: ''\``)
+    t.assert.deepStrictEqual(dirOf(directory), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
   }
   t.assert.deepStrictEqual(dirOf('./packages/a/'), { github: 'o/n', directory: 'packages/a' })
   t.assert.deepStrictEqual(dirOf('packages//a///'), { github: 'o/n', directory: 'packages/a' })
