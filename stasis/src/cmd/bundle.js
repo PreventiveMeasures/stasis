@@ -83,12 +83,17 @@ function parseSoldeerDir(seg) {
   return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
 }
 
+// A url as git reads a host from one: scp's `[user@]host:path`, with no scheme and a colon before
+// its first slash, or a URL whose authority, `[userinfo@]host[:port]`, ends at the first slash after
+// it. Not npm's `github:owner/name`, which git reads as the host `github`'s path, whatever an ssh
+// alias or `insteadOf` makes of it, nor its `ssh://git@github.com:owner/name`, whose host is
+// `github.com:owner` to git; and a url with no colon before its first slash is a path.
+const GIT_HOST_URL = /^(?!github:)(?:[^/]*:(?!\/\/)|[^/:]+:\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/iu
+
 // The GitHub repository, `owner/name`, a .gitmodules `url` names (parseGithubRepository), else null:
-// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for the shorthands
-// a package.json takes for GitHub's, which git doesn't: it takes `owner/name` for a path, as it does
-// any url with no colon before its first slash, and `github:owner/name` for scp's `host:path`, on
-// the host `github`, whatever an ssh alias or `insteadOf` makes of it.
-const submoduleGithub = (url) => (/^(?!github:)[^/]*:/iu.test(url) ? parseGithubRepository(url) : null)
+// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for a spelling a
+// package.json takes for GitHub's that git reads another way (GIT_HOST_URL).
+const submoduleGithub = (url) => (GIT_HOST_URL.test(url) ? parseGithubRepository(url) : null)
 
 // The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {

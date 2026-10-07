@@ -230,7 +230,7 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     'https://user:token@github.com:443/OpenZeppelin/openzeppelin-contracts.git',
     'git://github.com/OpenZeppelin/openzeppelin-contracts.git',
     'ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
-    'ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    'ssh://git@github.com:22/OpenZeppelin/openzeppelin-contracts.git',
     'git@github.com:OpenZeppelin/openzeppelin-contracts.git',
     'github.com:OpenZeppelin/openzeppelin-contracts',
     'https://www.github.com/OpenZeppelin/openzeppelin-contracts.git',
@@ -260,6 +260,10 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     // npm's shorthand, which git takes for the host `github`'s path.
     'github:OpenZeppelin/openzeppelin-contracts',
     'GitHub:OpenZeppelin/openzeppelin-contracts',
+    // scp's `host:path` behind a scheme, as a package.json may spell it: to git, the host
+    // `github.com:OpenZeppelin`'s path `/openzeppelin-contracts.git`.
+    'ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    'git+ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const bundle = await build(url)
