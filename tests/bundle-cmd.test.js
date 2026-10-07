@@ -238,6 +238,7 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     'git@www.github.com:OpenZeppelin/openzeppelin-contracts.git',
     'git@GitHub.com:OpenZeppelin/openzeppelin-contracts.git',
     'git+ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'ssh+git://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const oz = (await build(url)).modules.get(SUB)

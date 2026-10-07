@@ -96,8 +96,9 @@ const GIT_URL = /^(?:[^/]*:(?!\/\/)|(?:https?|git|ssh|git\+ssh|ssh\+git):\/\/(?:
 // none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for a url git
 // doesn't fetch as one (GIT_URL), nor for npm's `github:owner/name`, the host `github`'s path to git,
 // whatever an ssh alias or `insteadOf` makes of it, nor one with a `#`, which git keeps in the path
-// it asks for (`owner/name.git#v1`) where npm takes a committish.
-const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url) : null)
+// it asks for (`owner/name.git#v1`) where npm takes a committish. git's `ssh+git://`, which a
+// package.json doesn't spell, is its `ssh://`.
+const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url.replace(/^ssh\+git:/u, 'ssh:')) : null)
 
 // The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {
