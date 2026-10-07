@@ -65,18 +65,24 @@ const writeOutput = Boolean(outdirEnv)
 // app config would (esbuild has no electron preset; externals are user-declared).
 const externalRaw = process.env.STASIS_TEST_ESBUILD_EXTERNAL
 const external = externalRaw ? JSON.parse(externalRaw) : undefined
+// STASIS_TEST_ESBUILD_PLATFORM -- esbuild `platform` (default node), e.g. browser so
+// package.json `browser` maps apply.
+const platform = process.env.STASIS_TEST_ESBUILD_PLATFORM ?? 'node'
+// STASIS_TEST_ESBUILD_PLAIN=1 -- build without the plugin: the plain-esbuild baseline a
+// capture build's output must match byte-for-byte. Combine with STASIS_TEST_PRELOAD=0.
+const plain = process.env.STASIS_TEST_ESBUILD_PLAIN === '1'
 try {
   await esbuild.build({
     entryPoints: entries.map((e) => resolve(process.cwd(), e)),
     bundle: true,
     outdir: dist,
-    platform: 'node',
+    platform,
     format: 'esm',
     write: writeOutput,
     logLevel: 'silent',
     ...(loader ? { loader } : {}),
     ...(external ? { external } : {}),
-    plugins: [new StasisEsbuild(pluginOptions)],
+    plugins: plain ? [] : [new StasisEsbuild(pluginOptions)],
   })
 } finally {
   if (!writeOutput) await rm(dist, { recursive: true, force: true })

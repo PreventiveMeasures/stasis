@@ -13,7 +13,7 @@ import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -801,9 +801,6 @@ function innermostRootOf(baseDir, files, root, host) {
 const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
-// Synthetic path for the empty module a browser/react-native `false` redirect resolves to,
-// carried as a real empty CJS file so the edge points at attestable bytes.
-const EMPTY_MODULE_PATH = '.stasis/empty-module.js'
 
 // Recursively collect the files under `dirAbs` whose name `keep` takes, skipping build output,
 // symlinks (cycle/escape hazard) and, directly in `dirAbs`, the dirs `skipAtRoot` names. Absolute

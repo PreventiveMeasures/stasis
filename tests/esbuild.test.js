@@ -14,6 +14,8 @@ const fullFixture = join(here, 'fixtures', 'esbuild-full')
 const nmFixture = join(here, 'fixtures', 'esbuild-nm')
 const jsonFixture = join(here, 'fixtures', 'esbuild-json')
 const assetsFixture = join(here, 'fixtures', 'esbuild-assets')
+const optionalRequireFixture = join(here, 'fixtures', 'esbuild-optional-require')
+const browserMapFixture = join(here, 'fixtures', 'esbuild-browser-map')
 
 // Route png/svg through esbuild's native `file` loader (copies the asset, returns a URL).
 const FILE_LOADER = JSON.stringify({ '.png': 'file', '.svg': 'file' })
@@ -33,8 +35,10 @@ const {
 // spawn() + once('close') yields between tests, so the concurrent esbuild builds
 // actually overlap. Each test still gets its own subprocess -- and thus a fresh
 // preload singleton -- so the isolation the spawn model provides is unchanged.
-const run = async (entries, { cwd, env = {} }) => {
-  const child = spawn(process.execPath, [helper, ...entries], {
+const run = async (entries, { cwd, env = {} }) => runNode([helper, ...entries], { cwd, env })
+
+const runNode = async (args, { cwd, env = {} }) => {
+  const child = spawn(process.execPath, args, {
     cwd,
     env: { ...cleanEnv, ...env },
   })
@@ -1107,5 +1111,212 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     })
     t.assert.notEqual(r.status, 0, 'load must fail when a resource\'s bytes are missing from the bundle')
     t.assert.match(r.stderr, /logo\.png/)
+  }))
+
+  // ----- Resolution parity: imports esbuild fails or disables --------------------------
+  //
+  // The plugin re-resolves every import with build.resolve(). Two results of that API must go back
+  // to esbuild rather than be returned: a failure (esbuild tolerates one inside try/catch) and an
+  // import a `browser` field maps to `false` (the API drops esbuild's "disabled" flag). Each test
+  // pins the capture output byte-for-byte to a build without the plugin (STASIS_TEST_ESBUILD_PLAIN).
+  // The entries are .mjs: a plugin-resolved .js in a "type": "module" package loses node-mode
+  // interop (`__toESM(x, 1)`), a separate divergence these tests don't cover.
+
+  const plainBuild = (cwd, outdir, env = {}) => run(['src/entry.mjs'], {
+    cwd,
+    env: { STASIS_TEST_PRELOAD: '0', STASIS_TEST_ESBUILD_PLAIN: '1', STASIS_TEST_ESBUILD_OUTDIR: outdir, ...env },
+  })
+  const captureEnv = (bundleFile, outdir, env = {}) => ({
+    EXODUS_STASIS_LOCK: 'add',
+    EXODUS_STASIS_SCOPE: 'full',
+    EXODUS_STASIS_BUNDLE: 'add',
+    EXODUS_STASIS_BUNDLE_FILE: bundleFile,
+    STASIS_TEST_ESBUILD_OUTDIR: outdir,
+    ...env,
+  })
+  // A load-side dir holding only the bundle + a minimal package.json (see the clean-dir test above).
+  const cleanLoadDir = (tmp, bundleFile) => {
+    const loadDir = join(tmp, 'load')
+    mkdirSync(loadDir)
+    copyFileSync(bundleFile, join(loadDir, 'snapshot.br'))
+    writeFileSync(join(loadDir, 'package.json'), '{ "name": "stasis-load", "version": "0.0.0", "private": true, "type": "module" }')
+    return loadDir
+  }
+  const loadEnv = (loadDir, outdir, env = {}) => ({
+    EXODUS_STASIS_LOCK: 'none',
+    EXODUS_STASIS_SCOPE: 'full',
+    EXODUS_STASIS_BUNDLE: 'load',
+    EXODUS_STASIS_BUNDLE_FILE: join(loadDir, 'snapshot.br'),
+    STASIS_TEST_ESBUILD_OUTDIR: outdir,
+    ...env,
+  })
+  const BROWSER = { STASIS_TEST_ESBUILD_PLATFORM: 'browser' }
+
+  // debug@4's src/node.js does `try { require('supports-color') } catch {}`; esbuild leaves an
+  // unresolvable require() in a try/catch as is. Returning build.resolve()'s errors failed the build
+  // with `Could not resolve "supports-color"`; declining lets esbuild tolerate it, with no edge.
+  test('a require() esbuild cannot resolve inside try/catch is tolerated as without the plugin (no edge)', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(optionalRequireFixture, capDir, { recursive: true })
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'))
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture')) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.match(captureOutput, /require\("supports-color"\)/, 'the miss stays a runtime require, as esbuild leaves it')
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['node_modules/fake-debug/src/node.js'], undefined, 'no edge for the miss')
+    t.assert.equal(lock.imports['*']['src/entry.mjs']['fake-debug'], 'node_modules/fake-debug/src/node.js')
+
+    // Load mode has no edge to serve either, so esbuild tolerates the same miss there.
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load')) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.js'), 'utf-8'), captureOutput)
+  }))
+
+  // browser-map's package.json maps ./lib/server.js, fs and the installed node-only package to
+  // `false`. build.resolve() returns the bare `fs` with no namespace (esbuild: "returned a
+  // non-absolute path: fs") and the two files as plain paths (bundled for real). Declining lets
+  // esbuild emit its own empty `(disabled):` modules.
+  test('platform=browser: imports a `browser` field maps to false are disabled as without the plugin, never bundled or attested', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), BROWSER)
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), BROWSER) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.match(captureOutput, /\(disabled\):node_modules\/browser-map\/lib\/server\.js/)
+    t.assert.match(captureOutput, /\(disabled\):fs/)
+    t.assert.match(captureOutput, /\(disabled\):node_modules\/node-only\/index\.js/)
+    t.assert.doesNotMatch(captureOutput, /SERVER-ONLY-CODE|NODE-ONLY-CODE/)
+
+    // Every disabled edge points at the one attested empty module; the real files are never attested.
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['node_modules/browser-map/index.js'], {
+      './lib/server.js': '.stasis/empty-module.js',
+      './lib/shared.js': 'node_modules/browser-map/lib/shared.js',
+      fs: '.stasis/empty-module.js',
+      'node-only': '.stasis/empty-module.js',
+    })
+    t.assert.deepStrictEqual(Object.keys(lock.modules['node_modules/browser-map'].files).toSorted(), ['index.js', 'lib/shared.js'])
+    t.assert.equal(lock.modules['node_modules/node-only'], undefined)
+    t.assert.ok(lock.sources['.'].files['.stasis/empty-module.js'].startsWith('sha512-'))
+    t.assert.equal(lock.formats['.stasis/empty-module.js'], 'commonjs')
+    const decoded = JSON.parse(brotliDecompressSync(readFileSync(capBundle)))
+    t.assert.equal(decoded.sources['.'].files['.stasis/empty-module.js'], '')
+
+    // The recorded edges replay: a frozen re-capture attests the same graph.
+    const frozen = await run(['src/entry.mjs'], {
+      cwd: capDir,
+      env: { EXODUS_STASIS_LOCK: 'frozen', EXODUS_STASIS_SCOPE: 'full', STASIS_TEST_ESBUILD_OUTDIR: join(tmp, 'out-frozen'), ...BROWSER },
+    })
+    t.assert.equal(frozen.status, 0, `frozen stderr: ${frozen.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-frozen', 'entry.js'), 'utf-8'), captureOutput)
+  }))
+
+  // Load mode resolves the disabled edges through the bundle to the empty module, which it serves
+  // from the bundle like any file: no package.json or browser map on disk is needed. It renders as
+  // one `.stasis/empty-module.js` module rather than esbuild's per-import `(disabled):` ones, so the
+  // bytes differ from capture's; what the bundle evaluates to doesn't.
+  test('platform=browser: bundle=load serves the empty module for disabled imports from a clean dir', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), BROWSER) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), BROWSER) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    const replayOutput = readFileSync(join(tmp, 'out-load', 'entry.js'), 'utf-8')
+    t.assert.match(replayOutput, /"\.stasis\/empty-module\.js"\(\) \{/)
+    t.assert.doesNotMatch(replayOutput, /SERVER-ONLY-CODE|NODE-ONLY-CODE/)
+
+    const ranCapture = await runNode([join(tmp, 'out-capture', 'entry.js')], { cwd: tmp })
+    const ranReplay = await runNode([join(tmp, 'out-load', 'entry.js')], { cwd: tmp })
+    t.assert.equal(ranCapture.status, 0, `capture output stderr: ${ranCapture.stderr}`)
+    t.assert.equal(ranReplay.status, 0, `replay output stderr: ${ranReplay.stderr}`)
+    t.assert.equal(ranCapture.stdout, '{"server":{},"fs":{},"nodeOnly":{},"shared":"shared"}\n')
+    t.assert.equal(ranReplay.stdout, ranCapture.stdout)
+  }))
+
+  // esbuild gives a disabled module its `empty` loader, the one a CSS @import, `composes` or url()
+  // accepts. Load mode serves the shared empty module with it too, so a CSS importer replays:
+  // under the `js` loader esbuild rejects it (`Cannot import ".stasis/empty-module.js" into a CSS file`).
+  test('platform=browser: disabled CSS @import and url() replay at bundle=load', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    const pkg = join(capDir, 'node_modules', 'css-map')
+    mkdirSync(pkg)
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'css-map', version: '1.0.0', main: './index.js', browser: { './server.css': false, './server.png': false } }))
+    writeFileSync(join(pkg, 'index.js'), "require('./style.css')\n")
+    writeFileSync(join(pkg, 'style.css'), '@import "./server.css";\n.a { color: red; background: url(./server.png) }\n')
+    writeFileSync(join(pkg, 'server.css'), '.server-only { color: blue }\n')
+    writeFileSync(join(pkg, 'server.png'), 'PNG')
+    writeFileSync(join(capDir, 'src', 'entry.mjs'), "import 'css-map'\n")
+    const css = {
+      ...BROWSER,
+      STASIS_TEST_ESBUILD_LOADER: JSON.stringify({ '.css': 'css', '.png': 'file' }),
+      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['css', 'png'] }),
+    }
+
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), css)
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), css) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureCss = readFileSync(join(tmp, 'out-capture', 'entry.css'), 'utf-8')
+    t.assert.equal(captureCss, readFileSync(join(tmp, 'out-plain', 'entry.css'), 'utf-8'))
+    t.assert.doesNotMatch(captureCss, /server-only/)
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['node_modules/css-map/style.css'], {
+      './server.css': '.stasis/empty-module.js',
+      './server.png': '.stasis/empty-module.js',
+    })
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), css) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), captureCss)
+  }))
+
+  // `browser` maps apply only under platform:'browser': on node the same package bundles the real
+  // files and externalizes fs, and the plugin must attest them as usual.
+  test('platform=node: `browser` field maps stay inert, as without the plugin', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'))
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture')) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.match(captureOutput, /SERVER-ONLY-CODE/)
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.imports['*']['node_modules/browser-map/index.js']['./lib/server.js'], 'node_modules/browser-map/lib/server.js')
+    t.assert.ok(lock.modules['node_modules/node-only'].files['index.js'].startsWith('sha512-'))
+    t.assert.equal(lock.sources['.'].files['.stasis/empty-module.js'], undefined)
+  }))
+
+  test('a disabled import refuses a real file at the reserved empty-module path', withTmp(async (t, tmp) => {
+    cpSync(browserMapFixture, tmp, { recursive: true })
+    mkdirSync(join(tmp, '.stasis'))
+    writeFileSync(join(tmp, '.stasis', 'empty-module.js'), "module.exports = 'REAL'\n")
+
+    const r = await run(['src/entry.mjs'], { cwd: tmp, env: captureEnv(join(tmp, 'snapshot.br'), join(tmp, 'out'), BROWSER) })
+    t.assert.notEqual(r.status, 0, `expected build failure; stderr=${r.stderr}`)
+    t.assert.match(r.stderr, /reserved path \.stasis\/empty-module\.js/)
   }))
 })
