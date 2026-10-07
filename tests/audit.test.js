@@ -1079,15 +1079,18 @@ test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` a
 
 // A dependency record, recording `github` as its repo where given.
 const depRecord = (name, version, github) => ({ name, version, ecosystem: 'npm', ...(github && { repo: { github } }), files: { 'index.js': '' } })
-// npm's registry answering the bulk advisories request with none, and `latest` (name -> repository) for each package's latest.
-const registry = (latest) => ({ url }) => {
+// npm's registry answering the bulk advisories request with none, and for each package of `named`
+// (name -> repository) the document of any version, which names that repository: the newest one
+// audited is the one looked up.
+const VERSION_DOCUMENT = /^https:\/\/registry\.npmjs\.org\/([^/]+)\/([^/]+)$/u
+const registry = (named) => ({ url }) => {
   if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
-  const name = /^https:\/\/registry\.npmjs\.org\/([^/]+)\/latest$/u.exec(url)?.[1]
-  if (Object.hasOwn(latest, name)) return json({ name, version: '1.0.0', repository: latest[name] })
+  const [, name, version] = VERSION_DOCUMENT.exec(url) ?? []
+  if (Object.hasOwn(named, name)) return json({ name, version, repository: named[name] })
   throw new Error(`unexpected request: ${url}`)
 }
 const listing = (asked) => ({ listRepoAdvisories: async ({ repo }) => { asked.push(repo); return [] } })
-const lookedUp = (calls) => calls.map((call) => call.url).filter((url) => url.endsWith('/latest')).toSorted()
+const lookedUp = (calls) => calls.map((call) => call.url).filter((url) => VERSION_DOCUMENT.test(url)).toSorted()
 
 test('audit() asks the repo an artifact records for a dependency instead of looking one up', withFetch(
   registry({ 'looked-up': 'github:o/looked-up', moved: 'github:new/moved' }),
@@ -1110,7 +1113,7 @@ test('audit() asks the repo an artifact records for a dependency instead of look
       const asked = []
       await audit([bundle], { repoAdvisories: true, github: listing(asked) })
       t.assert.deepStrictEqual(asked.toSorted(), ['new/moved', 'o/dep', 'o/looked-up'])
-      t.assert.deepStrictEqual(lookedUp(calls), ['https://registry.npmjs.org/looked-up/latest', 'https://registry.npmjs.org/moved/latest'],
+      t.assert.deepStrictEqual(lookedUp(calls), ['https://registry.npmjs.org/looked-up/1.0.0', 'https://registry.npmjs.org/moved/2.0.0'],
         'only what no artifact records, or records two of, is looked up')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -1147,7 +1150,7 @@ test('audit() asks the repo a bundled package.json names where no repo is record
       const asked = []
       await audit([bundle, lock], { repoAdvisories: true, github: listing(asked) })
       t.assert.deepStrictEqual(asked.toSorted(), ['o/bad-json', 'o/bom', 'o/from-manifest', 'o/locked', 'o/not-github', 'o/recorded'])
-      t.assert.deepStrictEqual(lookedUp(calls), ['bad-json', 'locked', 'not-github'].map((name) => `https://registry.npmjs.org/${name}/latest`),
+      t.assert.deepStrictEqual(lookedUp(calls), ['bad-json', 'locked', 'not-github'].map((name) => `https://registry.npmjs.org/${name}/1.0.0`),
         'only what neither the record nor a bundled package.json names is looked up')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -1172,7 +1175,7 @@ test('audit() looks up a name two artifacts record different repos for, whatever
         return repos
       }))
       t.assert.deepStrictEqual(asked, [['o/split'], ['o/split']], 'the repo looked up, not either one recorded')
-      t.assert.deepStrictEqual(lookedUp(calls), Array(2).fill('https://registry.npmjs.org/split/latest'))
+      t.assert.deepStrictEqual(lookedUp(calls), Array(2).fill('https://registry.npmjs.org/split/1.0.0'))
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

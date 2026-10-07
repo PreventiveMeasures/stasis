@@ -1273,13 +1273,16 @@ export function checkVfsOptions(name, options) {
 // tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js). `client`, a
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
-// `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a JS bundle
-// built through a State, the State's root, which is at or above it.
+// `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
+// dependency is recorded at the commit the tree installs it from, where deptree names one
+// (pinCommits). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
+// JS bundle built through a State, the State's root, which is at or above it.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
-export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, ...options } = {}) {
-  const { checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, ...options } = {}) {
+  const { checkCache, checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
+  checkCache('buildVfsBundle', cache)
   // Checked as the Bundle checks it, before anything is fetched.
   if (repo !== undefined) repo = new Bundle({ repo }).repo
   const project = vfsHost(vfs)
@@ -1295,7 +1298,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client })
+  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache })
   let { host } = tree
   if (generate.includes('prisma')) {
     const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
@@ -1307,6 +1310,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   if (repo !== undefined) bundle.repo = repo
   // Rooted at cwd, where `stasis bundle` detects its repo.
   else if (!stateBuilt) bundle.repo ??= detectRepo(cwd, host)
+  pinCommits(bundle, root, tree)
   return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
 }
 

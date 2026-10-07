@@ -41,9 +41,17 @@ with scripts off:
 | `npm` | `npm ci --ignore-scripts` | npm 10.9.3 to 10.9.9, or 11.11.1 to 11.21.0 |
 | `soldeer` | `soldeer install` | Soldeer 0.12 |
 
-Every tarball and zip is held to the lockfile. A Soldeer git dependency on
-GitHub is fetched as the repo is. All of it is cached where `stasis audit`
-caches: the user cache directory, see [audit](audit.md#repository-advisories---repo-advisories).
+Every tarball and zip is held to the lockfile. Beside each npm package's
+tarball, the registry's version document of it is fetched, held to the same
+integrity, for the commit it was published from (`gitHead`). A Soldeer git
+dependency on GitHub is fetched as the repo is. All of it is cached where
+`stasis audit` caches: the user cache directory, see [audit](audit.md#repository-advisories---repo-advisories).
+
+Each dependency's `repo` records that commit beside the GitHub repository its
+`package.json` names, and a Soldeer git dependency's the repository it is
+fetched from, at its root, and the lockfile's `rev` (see
+[file formats](file-formats.md)). Like everything in `repo`, it is the
+publisher's word, held to no repository.
 
 ## Entries
 
@@ -99,7 +107,16 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
 
 - `buildGitHubBundle(options)` builds the same bundle from a GitHub repo, at a
   commit or the one a tag names; `buildVfsBundle(options)` from a project held
-  in a `Vfs` (exported too), which is only read.
+  in a `Vfs` (exported too), which is only read. `loadNodeModules(options)` lays
+  out a project's `node_modules` alone, with deptree's `installed`, each package
+  by its `path` with the `commit` its version document names.
+- Those three take `cache`: where npm packages' tarballs and version documents
+  are kept, as `@preventive/upstream`'s `CacheOptions` take it. Left out, in
+  `setCacheDir`'s cache; a store of the caller's, `{ read(type, key),
+  write(type, key, value) }`, in place of it; or `false`, nowhere, though
+  `setCacheDir`'s cache is still read. Anything else is a `TypeError`, before
+  anything is fetched. GitHub's trees and Soldeer's zips are kept in
+  `setCacheDir`'s cache whatever it is.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`.
 - `setCacheDir(dir)` is where tarballs, zips and trees are cached; the CLI

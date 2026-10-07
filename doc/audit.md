@@ -40,7 +40,7 @@ artifact tags it with (see [file formats](file-formats.md)):
 | `npm` | `node_modules` packages | npm's advisories |
 | `cargo` | crates vendored from a registry | OSV |
 | `composer` | Composer packages | OSV; a dev version (`dev-main`, `1.x-dev`) is listed as not audited, no database having one |
-| `soldeer` | Soldeer packages | the advisories their GitHub repository publishes |
+| `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: a git dependency's, the one its artifact records, else the one Soldeer's registry names |
 | `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV, whose crate of that name may be another |
 
@@ -81,8 +81,10 @@ only once GitHub reviews them. It needs a GitHub token in `GITHUB_TOKEN`.
 Each package's repository is the one its artifact records for it (its
 `package.json`'s, see `repo` in [file formats](file-formats.md)); else, for an
 npm package a bundle carries the `package.json` of but records no `repo` for
-(one built before the field), the one that manifest names; else it is looked up
-in npm's registry, Packagist or crates.io and cached for a month in the user
+(one built before the field), the one that manifest names; else it is looked
+up: an npm package's in the registry's document of its newest version audited,
+cached for good (the registry never takes a version twice), and a Composer
+package's or crate's in Packagist or crates.io, cached for a month, in the user
 cache directory:
 
 | Platform | Cache directory |
