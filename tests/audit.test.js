@@ -223,12 +223,12 @@ test('collectPackages flags recorded code even when no import edge targets it', 
 test('collectPackages does not correct ws versions outside the verified range', withTmp((t, tmp) => {
   // The stub is only verified up to the range pinned in audit-corrections.js; a
   // newer ws stays audited even when recorded only as browser.js.
-  const bundle = writeBundle(tmp, 'ws9.br', {
+  const bundle = writeBundle(tmp, 'ws-next.br', {
     modules: {
-      'node_modules/ws': { name: 'ws', version: '9.0.0', files: { 'browser.js': '// ?\n', 'package.json': '{}' } },
+      'node_modules/ws': { name: 'ws', version: '8.22.1', files: { 'browser.js': '// ?\n', 'package.json': '{}' } },
     },
   })
-  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '9.0.0' }])
+  t.assert.deepStrictEqual(collectPackages([bundle]), [{ ecosystem: 'npm', name: 'ws', version: '8.22.1' }])
 }))
 
 test('collectPackages skips node-fetch recorded only as browser.js (<= 2.7.0)', withTmp((t, tmp) => {
@@ -277,7 +277,7 @@ test('collectPackages applies the same evidence rule to lockfiles', withTmp((t, 
   // (real code attested) stays audited.
   const lock = writeLock(tmp, 'ws.lock.json', {
     modules: {
-      'node_modules/ws': { name: 'ws', version: '8.21.1', files: { 'browser.js': 'sha512-w', 'package.json': 'sha512-p' } },
+      'node_modules/ws': { name: 'ws', version: '8.22.0', files: { 'browser.js': 'sha512-w', 'package.json': 'sha512-p' } },
       'node_modules/foo': { name: 'foo', version: '1.2.3', files: { 'index.js': 'sha512-y', 'package.json': 'sha512-p' } },
     },
   })
