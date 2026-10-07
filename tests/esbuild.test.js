@@ -20,6 +20,7 @@ const nodeModeFixture = join(here, 'fixtures', 'esbuild-node-mode')
 const tsconfigFixture = join(here, 'fixtures', 'esbuild-tsconfig')
 const pluginAfterFixture = join(here, 'fixtures', 'esbuild-plugin-after')
 const duplicateImporterFixture = join(here, 'fixtures', 'esbuild-duplicate-importer')
+const rawSuffixFixture = join(here, 'fixtures', 'esbuild-raw-suffix')
 
 // Route png/svg through esbuild's native `file` loader (copies the asset, returns a URL).
 const FILE_LOADER = JSON.stringify({ '.png': 'file', '.svg': 'file' })
@@ -1480,5 +1481,28 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const capture = await run(['src/tagged.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
     t.assert.notEqual(capture.status, 0, 'capture must fail closed')
     t.assert.match(capture.stderr, /Conflict for "\.\/b\.js"/)
+  }))
+
+  // A plugin before StasisEsbuild resolves `./a.js?raw` to src/a.js with the suffix kept, for a plugin
+  // after it to load as text. src/a.js is a recorded file too (imported plainly), but the `?raw` module
+  // is not capture's: it must reach that loader, not be served as the JS file.
+  test('a suffixed module of a recorded file is left to the plugin that loads it', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(rawSuffixFixture, capDir, { recursive: true })
+    const plugins = {
+      STASIS_TEST_ESBUILD_PLUGINS_BEFORE: JSON.stringify(['raw-resolve-plugin.js']),
+      STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['raw-load-plugin.js']),
+    }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), plugins, 'src/entry.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/entry.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8'), readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    const ran = await runNode([join(tmp, 'out-capture', 'entry.js')], { cwd: tmp })
+    t.assert.equal(ran.stdout, '{"a":"a","aSource":"export default \'a\'\\n"}\n')
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.ok(lock.sources['.'].files['src/a.js'].startsWith('sha512-'), 'the plain import is still attested')
   }))
 })
