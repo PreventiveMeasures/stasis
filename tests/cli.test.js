@@ -107,8 +107,7 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
   })
 
   test('--help prints usage and exits 0', async (t) => {
-    for (const flag of ['--help', '-h']) {
-      const r = await run([flag])
+    for (const r of await Promise.all(['--help', '-h'].map((flag) => run([flag])))) {
       t.assert.equal(r.status, 0)
       t.assert.match(r.stderr, /Usage:/)
       t.assert.match(r.stderr, /stasis run/)
