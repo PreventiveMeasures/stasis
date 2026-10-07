@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -114,4 +114,24 @@ test('createNodeResolver(diskHost) agrees with require.resolve on every case, hi
   }
   t.assert.ok(cases.length > 200)
   t.assert.deepStrictEqual(mismatches, [])
+}))
+
+test('builtins: false resolves a builtin name to the installed package of that name, exports included', withTmp((t, d) => {
+  const w = (rel, content = '') => {
+    mkdirSync(dirname(join(d, rel)), { recursive: true })
+    writeFileSync(join(d, rel), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  w('main.js')
+  w('node_modules/buffer/package.json', { name: 'buffer', main: 'index.js' }); w('node_modules/buffer/index.js')
+  w('node_modules/util/package.json', { name: 'util', exports: { '.': { browser: './browser.js', default: './util.js' } } }); w('node_modules/util/browser.js'); w('node_modules/util/util.js')
+  const mine = createNodeResolver(diskHost)
+  const parent = join(d, 'main.js')
+  const off = { builtins: false }
+  const real = (rel) => join(realpathSync(d), rel) // hits are real paths
+  t.assert.equal(mine.resolve(parent, 'buffer'), 'buffer') // as require.resolve
+  t.assert.equal(mine.resolve(parent, 'buffer', undefined, off), real('node_modules/buffer/index.js'))
+  t.assert.equal(mine.resolve(parent, 'util', ['require', 'browser'], off), real('node_modules/util/browser.js'))
+  t.assert.equal(mine.resolve(parent, 'util', ['require'], off), real('node_modules/util/util.js'))
+  t.assert.equal(mine.resolve(parent, 'util', ['require']), 'util') // the memo keeps the two apart
+  t.assert.throws(() => mine.resolve(parent, 'fs', undefined, off), { code: 'MODULE_NOT_FOUND' })
 }))

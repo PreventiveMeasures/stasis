@@ -14,6 +14,7 @@ import {
   typescriptSiblings,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
+import { createNodeResolver } from './resolve-node.js'
 
 // Static module resolver for legacy package fields (`react-native`/`browser`/`main` + browser-spec
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), reproducing Metro/React-Native
@@ -24,8 +25,14 @@ import { diskHost } from '@exodus/stasis-core/host'
 // Returns, for each specifier:
 //   { url }      resolved to a real file (file: URL string)
 //   { empty }    a browser/react-native field mapped it to `false` (empty module)
-//   { builtin }  a Node builtin
+//   { builtin }  a Node builtin: a `node:` specifier, or a builtin name no installed package resolves
 //   null         unresolved
+//
+// Browser and React Native targets have no Node builtins, so a bare builtin name (`buffer`,
+// `events`, `util`, `process`, ...) resolves to the installed npm package of that name, as esbuild
+// (platform browser), webpack 5 (target web) and Metro bundle it. Where nothing is installed it
+// stays a builtin, as the --metro-resolver adapter reports Metro's miss on one (metro-resolver.js),
+// rather than an unresolved edge: Metro and webpack fail the build there.
 
 // Metro divergence toggle. When a package's browser map maps its OWN entry to `false` (under
 // Metro's matching rules, which include bare keys like {"buf": false} for main "./buf.js"),
@@ -246,6 +253,9 @@ export function createFieldResolver({
   const opts = { platform, preferNative, sourceExts, mainFields, metro, typescript, metroKeepEntryOnBrowserFalse, host }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
+  // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
+  // one (see the header) resolves through this instead, with builtins off; built on first use.
+  let packageResolver
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
   const resolve = function resolve(parentFile, specifier, callConditions) {
@@ -253,10 +263,27 @@ export function createFieldResolver({
     const conds = new Set(callConditions ?? conditions)
     const viaNode = (spec) => {
       try {
-        return fileResolution(host.resolve(parentFile, spec, conds))
+        if (!isBuiltin(spec)) return fileResolution(host.resolve(parentFile, spec, conds))
+        packageResolver ??= createNodeResolver(host)
+        return fileResolution(packageResolver.resolve(parentFile, spec, conds, { builtins: false }))
       } catch {
         return null
       }
+    }
+    // A bare specifier (`mod`, `mod/sub`) through node_modules.
+    const viaPackage = (spec) => {
+      const loc = locatePackage(dirname(parentFile), spec, host)
+      if (!loc) return null
+      const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
+      // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
+      if (pkg.exports != null) return viaNode(spec)
+      // A bare package import resolves its directory via the same dir algorithm as any other.
+      if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, fileOpts)
+      const sub = `./${loc.subpath}`
+      const r = matchRedirect(mergeRedirectMap(pkg, mainFields), sub)
+      if (r === false) return { empty: true }
+      const target = typeof r === 'string' ? r : sub
+      return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
     }
     // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
     if (specifier.startsWith('#')) return viaNode(specifier)
@@ -285,26 +312,15 @@ export function createFieldResolver({
       }
     }
 
-    // A builtin the browser map did not remap resolves to the builtin itself.
-    if (isBuiltin(spec)) return { builtin: true }
-
     if (spec.startsWith('.') || isAbsolute(spec)) {
       const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
       return resolveFileOrDir(base, fileOpts)
     }
 
-    const loc = locatePackage(dirname(parentFile), spec, host)
-    if (!loc) return null
-    const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
-    // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
-    if (pkg.exports != null) return viaNode(spec)
-    // A bare package import resolves its directory via the same dir algorithm as any other.
-    if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, fileOpts)
-    const sub = `./${loc.subpath}`
-    const r = matchRedirect(mergeRedirectMap(pkg, mainFields), sub)
-    if (r === false) return { empty: true }
-    const target = typeof r === 'string' ? r : sub
-    return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
+    // A builtin the browser map did not remap: its `node:` form names the builtin itself; a bare
+    // name is the installed package of that name (see the header), the builtin where none resolves.
+    if (isBuiltin(spec)) return spec.startsWith('node:') ? { builtin: true } : (viaPackage(spec) ?? { builtin: true })
+    return viaPackage(spec)
   }
   if (!typescript) return resolve
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping

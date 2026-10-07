@@ -385,9 +385,10 @@ export function createNodeResolver(host) {
 
   const notFound = (request, parentFile) => Object.assign(codedError('MODULE_NOT_FOUND', `Cannot find module '${request}'\nRequire stack:\n- ${parentFile}`), { requireStack: [parentFile] })
 
-  // Module._resolveFilename: -> the file's real path, or a builtin's id.
-  const resolveFilename = (parentFile, request, conditions) => {
-    if (isBuiltin(request)) return request
+  // Module._resolveFilename: -> the file's real path, or a builtin's id. Without `builtins`, a
+  // request naming a builtin is looked up like any bare name (see resolve).
+  const resolveFilename = (parentFile, request, conditions, builtins) => {
+    if (builtins && isBuiltin(request)) return request
     if (request === '') throw notFound(request, parentFile)
     if (request[0] === '#') {
       const pkg = readPackageScope(parentFile)
@@ -404,12 +405,14 @@ export function createNodeResolver(host) {
 
   return {
     // `conditions`: `require.resolve`'s own by default. A builtin returns its id, as it does.
-    resolve(parentFile, request, conditions = REQUIRE_CONDITIONS) {
+    // `builtins: false` resolves for a target with no Node builtins: a bare builtin name (`buffer`)
+    // is the installed package of that name, through its `exports` like any other.
+    resolve(parentFile, request, conditions = REQUIRE_CONDITIONS, { builtins = true } = {}) {
       parentFile = resolve(parentFile)
       if (!(conditions instanceof Set)) conditions = new Set(conditions)
-      const key = `${dirname(parentFile)}\0${request}\0${[...conditions].join(',')}`
+      const key = `${dirname(parentFile)}\0${request}\0${[...conditions].join(',')}${builtins ? '' : '\0nobuiltins'}`
       let hit = memo.get(key)
-      if (hit === undefined) memo.set(key, hit = resolveFilename(parentFile, request, conditions))
+      if (hit === undefined) memo.set(key, hit = resolveFilename(parentFile, request, conditions, builtins))
       return hit
     },
   }
