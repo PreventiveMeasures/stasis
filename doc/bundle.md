@@ -107,6 +107,18 @@ and adds the rest itself. esbuild also asserts `module`, and webpack `module`,
 `webpack` and `production` or `development`: add them with `--conditions`
 where a package's map tells them apart.
 
+### Node builtins
+
+Resolving as Node, a builtin (`fs`, `buffer`, `node:fs`) is left to the
+runtime and not bundled. Browser and React Native targets have no Node
+builtins, so under `--mainFields` and `--metro` a bare builtin name (`buffer`,
+`events`, `util`, `process`) is the installed npm package of that name, as
+esbuild (platform `browser`), webpack 5 (target `web`) and Metro bundle it. A
+`browser`/`react-native` map entry for the name (`{"fs": false}`,
+`{"crypto": "crypto-browserify"}`) still wins. A `node:` specifier, or a name
+no installed package resolves (`fs` with nothing installed), stays a builtin:
+it is recorded but not bundled, where Metro and webpack would fail the build.
+
 ### Metro (`--metro`)
 
 `--metro --platforms=ios,android` resolves the way Metro does: React Native's

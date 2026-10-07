@@ -311,6 +311,55 @@ test('the browser map can disable or shim a Node builtin (it wins over the built
   t.assert.equal(rel(mk()(from, 'path')), '<builtin>') // not mapped -> still a builtin
 })
 
+test('a bare builtin name resolves to the installed package of that name (no Node builtins off Node)', (t) => {
+  // buffer: { main: "index.js" }, installed. esbuild (platform browser), webpack 5 and Metro all
+  // bundle node_modules/buffer for `import { Buffer } from 'buffer'`, so the edge lands there.
+  t.assert.equal(rel(mk()(entry, 'buffer')), 'node_modules/buffer/index.js')
+  t.assert.equal(rel(mk({ mainFields: ['browser', 'module', 'main'], extras: ['browser'] })(entry, 'buffer')), 'node_modules/buffer/index.js')
+  t.assert.equal(rel(mk({ platform: 'ios', metro: true })(entry, 'buffer')), 'node_modules/buffer/index.js')
+  t.assert.equal(rel(mk({ platform: 'web', extras: ['browser'], metro: true })(entry, 'buffer')), 'node_modules/buffer/index.js')
+})
+
+test('an installed builtin-named package with exports resolves through them, under the bundler conditions', (t) => {
+  // util: exports { ".": { browser, default } }. Node's own resolver answers `util` with the
+  // builtin, so this takes the builtins-off path; `util/types` (a builtin subpath) isn't exported,
+  // so it falls back to the builtin rather than going unresolved.
+  t.assert.equal(rel(mk({ extras: ['browser'] })(entry, 'util')), 'node_modules/util/util-browser.js')
+  t.assert.equal(rel(mk()(entry, 'util')), 'node_modules/util/util.js')
+  t.assert.equal(rel(mk()(entry, 'util/types')), '<builtin>')
+})
+
+test('an uninstalled builtin and a node: specifier stay builtins, even with the package installed', (t) => {
+  t.assert.equal(rel(mk()(entry, 'fs')), '<builtin>') // no node_modules/fs
+  t.assert.equal(rel(mk({ platform: 'ios', metro: true })(entry, 'fs')), '<builtin>')
+  t.assert.equal(rel(mk()(entry, 'node:buffer')), '<builtin>') // node_modules/buffer is installed
+  t.assert.equal(rel(mk({ platform: 'ios', metro: true })(entry, 'node:buffer')), '<builtin>')
+})
+
+test('a browser-map false on a builtin name wins over the installed package', (t) => {
+  // nobuffer browser map: { "buffer": false }, with node_modules/buffer installed beside it.
+  const from = join(fx, 'node_modules', 'nobuffer', 'index.js')
+  t.assert.equal(rel(mk()(from, 'buffer')), '<empty>')
+  t.assert.equal(rel(mk({ platform: 'ios', metro: true })(from, 'buffer')), '<empty>')
+  t.assert.equal(rel(mk({ mainFields: ['main'] })(from, 'buffer')), 'node_modules/buffer/index.js') // map not honoured
+})
+
+test('scan records an edge to an installed builtin-named package, and a builtin edge where none is', (t) => {
+  const resolve = mk({ extras: ['browser'] })
+  const s = scan([join(fx, 'src', 'entry-polyfills.js')], { conditions: ['browser'], resolve }).toRelative(fx)
+  const edges = Object.fromEntries(s.files.get('src/entry-polyfills.js').edges.map((e) => [e.spec, e.child ?? (e.builtin ? '<builtin>' : e.empty ? '<empty>' : null)]))
+  t.assert.deepStrictEqual(edges, {
+    buffer: 'node_modules/buffer/index.js',
+    util: 'node_modules/util/util-browser.js',
+    'util/types': '<builtin>',
+    fs: '<builtin>',
+    'node:buffer': '<builtin>',
+    nobuffer: 'node_modules/nobuffer/index.js',
+  })
+  t.assert.deepStrictEqual(s.files.get('node_modules/nobuffer/index.js').edges.map((e) => [e.spec, Boolean(e.empty)]), [['buffer', true]])
+  t.assert.deepStrictEqual(s.unresolved, [])
+})
+
 test('an unresolvable specifier returns null', (t) => {
   t.assert.equal(rel(mk()(entry, './does-not-exist')), null)
   t.assert.equal(rel(mk()(entry, 'no-such-package')), null)
