@@ -86,7 +86,8 @@ test('a Composer package records the GitHub repository of its git source, at its
   cpSync(phpFixture, tmp, { recursive: true })
   const LIB = 'vendor/acme/lib'
   const buildPhp = async () => repoOf(await buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), LIB)
-  // acme/lib as Packagist locks a package from GitHub, in composer.lock and installed.json alike.
+  // acme/lib as Packagist locks a package from GitHub, in composer.lock and installed.json alike:
+  // its dist at `dist`, a reference, null for one with none, or false for no dist.
   const relock = ({ url = 'https://github.com/acme/lib.git', reference = COMMIT, dist = reference } = {}) => {
     for (const file of ['composer.lock', 'vendor/composer/installed.json']) {
       const path = join(tmp, file)
@@ -98,7 +99,7 @@ test('a Composer package records the GitHub repository of its git source, at its
         name,
         version,
         source: { type: 'git', url, reference },
-        dist: { type: 'zip', url: `https://api.github.com/repos/acme/lib/zipball/${dist}`, reference: dist, shasum: '' },
+        ...(dist === false ? {} : { dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', ...(dist === null ? {} : { reference: dist }), shasum: '' } }),
         ...rest,
       }
       writeFileSync(path, `${JSON.stringify(json, null, 4)}\n`)
@@ -112,6 +113,10 @@ test('a Composer package records the GitHub repository of its git source, at its
   t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, "git's scp-like URL")
   relock({ dist: OTHER })
   t.assert.equal(await buildPhp(), undefined, 'a dist at another reference: which was installed is unknown')
+  relock({ dist: null })
+  t.assert.equal(await buildPhp(), undefined, 'a dist at no reference: an archive no commit is known of')
+  relock({ dist: false })
+  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, 'no dist: installed from its source')
   relock({ url: 'https://gitlab.com/acme/lib.git' })
   t.assert.equal(await buildPhp(), undefined, 'not GitHub')
   // installed.json alone, as Composer 1 leaves it: as it says.

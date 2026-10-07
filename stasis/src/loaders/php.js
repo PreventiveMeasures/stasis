@@ -536,10 +536,11 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
 
 // The GitHub repository a Composer package `p` (composer.lock's, or installed.json's) is cloned
 // from, at the commit it is installed at: its git `source` on GitHub, at its `reference` where that
-// is a full commit and its dist, if any, names the same. Packagist takes a package from the root of
-// its repository, so `directory` is ''. Undefined otherwise.
+// is a full commit and it has no dist, or one at the same reference: a dist with none, or another,
+// is an archive no commit is known of, which Composer installs by default. Packagist takes a
+// package from the root of its repository, so `directory` is ''. Undefined otherwise.
 function composerRepo({ source, dist }) {
-  if (source?.type !== 'git' || (dist?.reference != null && dist.reference !== source.reference)) return undefined
+  if (source?.type !== 'git' || (dist != null && dist.reference !== source.reference)) return undefined
   const github = parseGithubRepository(source.url)
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
