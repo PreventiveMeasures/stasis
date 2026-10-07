@@ -9,6 +9,8 @@ import { readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
+import { isValidRepoField } from '@exodus/stasis-core/bundle'
+import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
 import { assertRealPathWithinBase, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
@@ -532,20 +534,40 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
   return installed
 }
 
-// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra }]`, `dir` where
+// The GitHub repository a Composer package `p` (composer.lock's, or installed.json's) is cloned
+// from, at the commit it is installed at: its git `source` on GitHub, at its `reference` where that
+// is a full commit and what is installed at `at` (its directory, or null for none) is at it.
+// Installed from its source -- as installed.json's `installation-source`, `from`, says, or as it
+// must be with no dist, or as a git checkout there shows -- it is a clone Composer checked out at
+// the reference, which may have been moved since: so only where that checkout's HEAD is it. Else
+// from its dist, which Composer installs by default: only one at the same reference, as one with
+// none, or another, is an archive no commit is known of. Packagist takes a package from the root
+// of its repository, so `directory` is ''. Undefined otherwise.
+function composerRepo({ source, dist }, from, at) {
+  if (source?.type !== 'git') return undefined
+  const fromSource = from === 'source' || dist == null || (at !== null && existsSync(join(at, '.git')))
+  if (fromSource ? at === null || checkoutCommit(at) !== source.reference : dist.reference !== source.reference) return undefined
+  const github = parseGithubRepository(source.url)
+  return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
+}
+
+// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo }]`, `dir` where
 // the package is installed, baseDir-relative (null for nowhere in baseDir, as a metapackage). Of
 // its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
 // `composer install` reads them -- one it refuses stops the build -- each package where Composer
 // installs it (lockedDir), so no install is needed; else of vendor/composer/installed.json, as
 // it is. Where both are, installed.json must be the lockfile's install (assertInstalledAsLocked):
-// its packages, each where installed.json says.
+// its packages, each where installed.json says. `repo` is composerRepo's.
 export function loadComposerPackages(baseDir) {
   const { vendorDir } = readComposerJson(baseDir)
   const lockText = readUtf8OrNull(join(baseDir, 'composer.lock'), 'composer.lock')
   if (lockText === null) {
     return readInstalledPackages(baseDir, vendorDir)
       .filter((p) => p?.name && p.version)
-      .map((p) => ({ name: p.name, version: p.version, dir: installedDir(baseDir, vendorDir, p), extra: p.extra }))
+      .map((p) => {
+        const dir = installedDir(baseDir, vendorDir, p)
+        return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, p['installation-source'], dir == null ? null : join(baseDir, dir)) }
+      })
   }
 
   const composerJson = readUtf8OrNull(join(baseDir, 'composer.json'), 'composer.json')
@@ -554,9 +576,13 @@ export function loadComposerPackages(baseDir) {
   const installedText = readUtf8OrNull(join(baseDir, installedFile), installedFile)
   const installed = installedText === null ? null : assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir })
   const dirs = installed === null ? null : new Map(installed.packages.map((p) => [p.name, installedDir(baseDir, vendorDir, p)]))
+  const from = new Map(installed?.packages.map((p) => [p.name, p['installation-source']]))
   return Object.values(lock.packages)
     .filter((p) => dirs === null || dirs.has(p.name))
-    .map((p) => ({ name: p.name, version: p.version, dir: dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), extra: p.extra }))
+    .map((p) => {
+      const dir = dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name)
+      return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, from.get(p.name), dir == null ? null : join(baseDir, dir)) }
+    })
 }
 
 // Build the autoload config for `baseDir`, merging the root composer.json
@@ -667,28 +693,28 @@ function matchingPrefixes(map, name) {
   return [...map].filter(([prefix]) => name.startsWith(prefix)).toSorted((a, b) => b[0].length - a[0].length)
 }
 
-// The versions of the Composer `packages` (loadComposerPackages: the authoritative source; a
-// package's own composer.json usually omits `version`), by where each is installed and by name.
+// The versions and repos of the Composer `packages` (loadComposerPackages: the authoritative source;
+// a package's own composer.json usually omits `version`), by where each is installed and by name.
 function packageVersions(packages) {
   const byDir = new Map()
   const byName = new Map()
-  for (const { name, version, dir } of packages) {
-    byName.set(name, version)
-    if (dir) byDir.set(dir, version)
+  for (const { name, version, dir, repo } of packages) {
+    byName.set(name, { version, repo })
+    if (dir) byDir.set(dir, { version, repo })
   }
   return { byDir, byName }
 }
 
 // Walk up from a bundled file to the nearest named composer.json, returning
-// { pkgDir, name, version } (pkgDir "." for the root; version from composer.lock or
+// { pkgDir, name, version, repo } (pkgDir "." for the root; version and repo from composer.lock or
 // installed.json by dir/name, else composer.json `version`, else `fallbackVersion`). Null if none.
 function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
   let dir = dirname(fileRelPath)
   for (;;) {
     const cj = readJsonIfExists(join(baseDir, dir, 'composer.json'))
     if (cj?.name) {
-      const version = installed.byDir.get(dir) ?? installed.byName.get(cj.name) ?? cj.version ?? fallbackVersion
-      return { pkgDir: dir, name: cj.name, version }
+      const known = installed.byDir.get(dir) ?? installed.byName.get(cj.name)
+      return { pkgDir: dir, name: cj.name, version: known?.version ?? cj.version ?? fallbackVersion, repo: known?.repo }
     }
     if (dir === '.' || dir === '/' || dir === '') return null
     const parent = dirname(dir)
@@ -700,16 +726,17 @@ function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
 // Group bundled PHP sources into per-package buckets keyed by the nearest
 // composer.json's directory (vendor deps get their own; workspace files and
 // orphans -> the root "." bucket with the placeholder identity). Returns a
-// Map<dir, { name, version, files }>. `packages`: loadComposerPackages(baseDir).
+// Map<dir, { name, version, ecosystem?, repo?, files }>, a dependency's `repo` where composerRepo
+// gives one. `packages`: loadComposerPackages(baseDir).
 export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
   const installed = packageVersions(packages)
 
   const modules = new Map()
-  const ensureBucket = (dir, name, version, ecosystem) => {
+  const ensureBucket = (dir, name, version, ecosystem, repo) => {
     if (!modules.has(dir)) {
       modules.set(dir, ecosystem === undefined
         ? { name, version, files: Object.create(null) }
-        : { name, version, ecosystem, files: Object.create(null) })
+        : { name, version, ecosystem, ...(repo === undefined ? {} : { repo }), files: Object.create(null) })
     }
     return modules.get(dir)
   }
@@ -721,7 +748,7 @@ export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVers
       // Below the root package = an installed Composer dependency, tagged
       // `composer`; the root "." bucket is workspace code and stays ecosystem-less.
       const ecosystem = pkg.pkgDir === '.' ? undefined : 'composer'
-      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem).files[rel] = content
+      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg.repo).files[rel] = content
     } else {
       ensureBucket('.', fallbackName, fallbackVersion).files[path] = content
     }

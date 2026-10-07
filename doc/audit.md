@@ -79,7 +79,8 @@ advisories its maintainers published there, which the databases above carry
 only once GitHub reviews them. It needs a GitHub token in `GITHUB_TOKEN`.
 
 Each package's repository is the one its artifact records for it (its
-`package.json`'s, see `repo` in [file formats](file-formats.md)); else, for an
+`package.json`'s, or for a Composer package its git source's, see `repo` in
+[file formats](file-formats.md)); else, for an
 npm package a bundle carries the `package.json` of but records no `repo` for
 (one built before the field), the one that manifest names; else it is looked
 up: an npm package's in the registry's document of its newest version audited,
