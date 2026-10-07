@@ -350,7 +350,8 @@ export class StasisEsbuild {
       // alone could claim such a module of a recorded file, so at capture: an import capture declined
       // never loads with a suffix (it refuses one), and with pluginData only if a plugin after this one
       // set it when resolving it; otherwise the module is another plugin's (say a `?raw` one, or one
-      // tagged for a later loader).
+      // tagged for a later loader). A module capture claims it serves itself, as it attested it: a
+      // loader in a plugin after this one never sees it, whatever pluginData its resolver set.
       const { loadBundle } = this.#state.config
       if (!loadBundle && suffix !== '') return undefined
       const recorded = () => (pluginData === undefined || this.#dataTargets.has(path) ? this.#targets.get(path) : undefined)
