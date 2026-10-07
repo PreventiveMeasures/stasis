@@ -78,6 +78,7 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis sbom --format=cyclonedx app.stasis.code.br` | export a CycloneDX SBOM for a lockfile or bundle |
 
 Each command's options are documented in [doc/](https://github.com/PreventiveMeasures/stasis/tree/main/doc):
+[`run`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/run.md),
 [`bundle`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/bundle.md) (and `add`),
 [`github-bundle`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/github-bundle.md),
 [`build`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/build.md),

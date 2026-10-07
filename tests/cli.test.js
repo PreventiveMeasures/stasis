@@ -106,10 +106,29 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.match(r.stderr, /stasis run/)
   })
 
-  test('unknown command prints usage and exits 1', async (t) => {
+  test('--help prints usage and exits 0', async (t) => {
+    for (const flag of ['--help', '-h']) {
+      const r = await run([flag])
+      t.assert.equal(r.status, 0)
+      t.assert.match(r.stderr, /Usage:/)
+      t.assert.match(r.stderr, /stasis run/)
+    }
+  })
+
+  test('unknown command fails with a hint, not the usage', async (t) => {
     const r = await run(['nope'])
     t.assert.equal(r.status, 1)
-    t.assert.match(r.stderr, /Usage:/)
+    t.assert.match(r.stderr, /Error: unknown command 'nope'/)
+    t.assert.match(r.stderr, /Run 'stasis --help' for usage\./)
+    t.assert.doesNotMatch(r.stderr, /Usage:/)
+  })
+
+  test('a usage error prints the message and a hint, not the usage', async (t) => {
+    const r = await run(['run', '--lock=bogus', 'x.js'])
+    t.assert.equal(r.status, 1)
+    t.assert.match(r.stderr, /Error: invalid --lock value/)
+    t.assert.match(r.stderr, /Run 'stasis --help' for usage\./)
+    t.assert.doesNotMatch(r.stderr, /Usage:/)
   })
 
   test('run with no path prints "Nothing to run"', async (t) => {

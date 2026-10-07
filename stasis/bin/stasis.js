@@ -18,109 +18,34 @@ const jsname = argv.shift()
 const pathsEqual = (a, b) => a === b || (existsSync(a) && realpathSync(a) === b)
 assert(basename(jsname) === 'stasis' || pathsEqual(jsname, fileURLToPath(import.meta.url)))
 
-function usage(prefix = '') {
-  console.error(`${prefix}\nUsage:
+const HELP = `Usage:
  stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
- (--import forwards extra preload modules (repeatable) to the node process running the entry,
-  e.g. --import=./instrument.mjs for a setup/instrumentation preload; a preload's own module
-  graph is runner infrastructure like stasis's loader itself, so it stays out of the
-  lockfile/bundle -- except modules the app graph also reaches, which are attested like any
-  other app code; with --mock, preloads run under the mock's side-effect denials, so a preload
-  that spawns helper processes cannot work there)
+ stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
- (Solidity: a directory stands for every .sol file under it (a missing or empty one is skipped) --
-  "stasis bundle src test script" is what "forge build" compiles, "stasis bundle contracts" what
-  Hardhat does; imports resolve through the remappings "forge build" uses (remappings.txt,
-  foundry.toml's profile, FOUNDRY_PROFILE, lib/ auto-detection incl. dependencies' own configs),
-  else a root remappings.txt, then node_modules by file path; --mapping instead takes exactly the
-  remappings that one file lists; an import must reach a .sol file inside the project, and a
-  dependency's only other dependencies' files; --manifests also carries foundry.toml,
-  remappings.txt, foundry.lock, soldeer.lock, .gitmodules and package.json of the project and its
-  bundled dependencies, as written: RPC/Etherscan keys and URL credentials in them included)
- stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
- stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
- stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
- stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
- (Rust: each crate's Cargo features are resolved from Cargo.toml/Cargo.lock like "cargo build" of the
-  entries' packages, so #[cfg(feature = ...)] code that is off stays out -- by cargo's own resolver
-  when there is a Cargo.lock (version 3 or 4; an older one stops the build), --cargo-target and every
-  locked package in-tree, by replaying the manifests otherwise (said, with why); --cargo takes the resolution
-  from "cargo metadata" instead -- it runs cargo, so only on a project you trust; the --cargo-*
-  feature flags are cargo's --features / --no-default-features / --all-features for those packages;
-  --cargo-target asks rustc for the target's cfgs so #[cfg(unix)]-style code for other targets stays
-  out too, otherwise it is all kept; --cargo-manifests also bundles each bundled package's Cargo.toml
-  and build script (a vendored crate's .cargo-checksum.json too), the workspace Cargo.toml, Cargo.lock
-  and cargo configs, as written: tokens and URL credentials in them included)
- (writes to stasis.code.br by default, a JS bundle's in the project root its paths are relative to,
-  where stasis run --bundle=load finds it; --output=- streams to stdout; --add merges into an
-  existing bundle instead of replacing it (not with --output=-); --brotli-quality=0..11, default 9;
-  --jsx parses JSX in .js/.cjs/.mjs files, e.g. React Native source (.jsx/.tsx files need no flag;
-   put JSX-in-TS in a .tsx file);
-  --flow strips Flow types from .js/.cjs/.mjs sources oxc can't parse (needs the optional flow-remove-types dep);
-  --typescript resolves TS the way tsc does: an import of ./x.js lands on ./x.ts when no .js is on disk
-   (likewise .mjs/.cjs -> .mts/.cts, extensionless ./x -> ./x.ts, incl. exports/imports/main targets),
-   honouring tsconfig compilerOptions.paths aliases (from the tsconfig.json beside the importing
-   file's package.json -- its workspace package's in a monorepo, else the project's -- or --tsconfig=path);
-   never from or into node_modules (by real path, so linked workspace packages still are); not with --metro-resolver; implied when every entry is TS and each relative ./x.js-style import
-   in them exists only as its TS source (otherwise a failing import it would resolve names it);
-  --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
-  --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
+ stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
- (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
-  either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
-  GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory
-  from the lockfile alone, as "pnpm install --frozen-lockfile --ignore-scripts" (pnpm 9, 10, 11 or
-  12), "yarn install --frozen-lockfile --ignore-scripts" (yarn 1.22), "npm ci --ignore-scripts"
-  (npm 10.9.3 to 10.9.9, or 11.11.1 to 11.21.0) or "soldeer install" (0.12, for .sol entries)
-  would: nothing is installed, no package script runs, and every tarball and zip is held to the
-  lockfile, all cached where "stasis audit" caches. Without --package-manager, the one whose
-  lockfile installs --directory (or the repo's root), if only one's does; at
-  --package-manager-version, else at the root package.json's packageManager pin, else pnpm
-  10.33.4, yarn 1.22.22, npm 11.21.0 (which no packageManager pins) or Soldeer 0.12.0. The entries
-  are paths in --directory, or in the repo; without them, the JS files its package.json names as
-  main, exports and bin, resolved as the build resolves them (--conditions, --mainFields, --metro
-  --platforms, --typescript), or for Soldeer its .sol files directly in it, under contracts/, and
-  under its source directory (foundry.toml's src, else src/), but tests, scripts, mocks and
-  dependency or build directories; its paths, and the directory its repo names, are
-  --directory's, or of a JS bundle, the innermost package's at or above it holding every file it
-  bundles, the project root's where one is outside; not with --metro-resolver, --cargo* or --add;
-  --generate=prisma first writes, for each project with a "prisma-client" generator, the Prisma
-  Client its "prisma generate" would (Prisma 7.4.0 to 7.10.0), with the optional
-  @prisma/client-generator-ts 7.10.0 dependency: nothing of the repo runs, its schema and config
-  are read as data, and its prisma for its version alone;
-  writes to owner-name.<commit's first 7>.stasis.code.br by default,
-  owner-name.<--directory, its / made ->.<commit's first 7>.stasis.code.br with --directory, each
-  character outside [A-Za-z0-9._-] made _, and a directory too deep to fit in 255 characters cut,
-  with a hash of it; --output=- streams to stdout)
  stasis add path/to/(file|dir) ...
- (adds the listed files to the project's bundle(s) with no dependency resolution;
-  a directory expands to its files. Requires a stasis.config.json (all fields optional).)
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
- (--platform=hermes downlevels every file for Hermes (classes, let/const, arrows, ...; via esbuild + Babel)
-  and defaults --format to iife; --babel instead transforms every file with the project's own
-  babel.config.(js|cjs|mjs|json); both resolve @babel/core and plugins from the project's dev deps)
  stasis extract [--output=path/to/dir] path/to/bundle.stasis.code.br
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
- stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/file ...
- (audits the dependencies the files hold: npm packages by npm's advisories, vendored crates and
-  Composer packages by OSV's, and Soldeer packages and GitHub repos (Foundry's lib/) by those their
-  GitHub repository publishes, asked with GITHUB_TOKEN where it is set; a Composer dev version is
-  listed as not audited, no database having one;
-  --why lists, per advisory, the cross-module import paths that pull an npm package in,
-  prefixed by the bundle consumer that imports each chain at the top level, e.g. "run: a -> b -> c";
-  it skips chains whose full tail is already listed as its own chain -- --why-deep keeps them all;
-  --why-full spells every chain out instead of collapsing repeated tails to "a -> b -> ... -> d";
-  --reason=consumer shows only advisories related to that consumer, and with --why only its chains;
-  --repo-advisories also asks each package's GitHub repository for the advisories its maintainers
-  published there, before GitHub reviews them into the databases above; it needs a token in
-  GITHUB_TOKEN, and asks the repository each package's artifact records, else the one the
-  package.json a bundle carries of an npm package names, else looks one up and caches it for a
-  month in the user cache dir, e.g. ~/.cache/stasis)
+ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
- (streams to stdout by default; --output=- is explicit stdout)
-`.trim())
+ stasis --version
+
+Each command's options: https://github.com/PreventiveMeasures/stasis/blob/main/doc/<command>.md
+(run, bundle, github-bundle, build, extract, diff, prune, audit, sbom; add is in bundle.md)`
+
+// The help, on stderr. Exits 0 when asked for (--help), 1 when printed for want of a command.
+function usage(asked = false) {
+  console.error(HELP)
+  process.exit(asked ? 0 : 1)
+}
+
+// A usage error: the message and where the help is, never the help itself.
+function fail(message) {
+  console.error(`${message}\nRun 'stasis --help' for usage.`)
   process.exit(1)
 }
 
@@ -143,6 +68,8 @@ const command = argv.shift()
 if (command === '-v' || command === '--version') {
   console.log(`v${pkg.version}`)
   process.exit(0)
+} else if (command === '-h' || command === '--help') {
+  usage(true)
 } else if (command === 'run') {
   const options = {
     lock: { type: 'string', default: 'none' },
@@ -161,27 +88,27 @@ if (command === '-v' || command === '--version') {
   }
   const values = parseLeadingOptions(argv, options, {
     valueFlags: ['--bundle', '--bundle-file', '--resources-bundle-file', '--lock', '--import', '--resources', '--brotli-quality'],
-    onError: usage,
+    onError: fail,
   })
-  if (argv.length === 0) usage('Nothing to run: no path to file given')
-  if (!['none', 'ignore', 'add', 'replace', 'frozen'].includes(values.lock)) usage('Error: invalid --lock value')
+  if (argv.length === 0) fail('Nothing to run: no path to file given')
+  if (!['none', 'ignore', 'add', 'replace', 'frozen'].includes(values.lock)) fail('Error: invalid --lock value')
   const lock = values.lock
   const scope = values.dependencies ? 'node_modules' : 'full'
   const bundle = values.bundle
   const bundleFile = values['bundle-file'] ? resolve(values['bundle-file']) : ''
   const resourcesBundleFile = values['resources-bundle-file'] ? resolve(values['resources-bundle-file']) : ''
   const debug = values.debug ? '1' : ''
-  if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) usage('Error: invalid --bundle value')
-  if (bundleFile && bundle === 'none') usage('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
+  if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) fail('Error: invalid --bundle value')
+  if (bundleFile && bundle === 'none') fail('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
   // --resources-bundle-file needs an active bundle mode (unlike --bundle-file, inert under ignore).
-  if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) usage('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
-  if (bundle === 'load' && lock !== 'frozen' && lock !== 'none' && lock !== 'ignore') usage('Error: --bundle=load is incompatible with --lock=(add|replace)')
-  if (lock === 'none' && bundle === 'none') usage('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
-  if (values.mock && bundle === 'load') usage('Error: --mock is for capturing imports while building a bundle; not compatible with --bundle=load')
+  if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
+  if (bundle === 'load' && lock !== 'frozen' && lock !== 'none' && lock !== 'ignore') fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
+  if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
+  if (values.mock && bundle === 'load') fail('Error: --mock is for capturing imports while building a bundle; not compatible with --bundle=load')
   // --fs requires a bundle mode (add|replace|load); `sync` patches the sync fs readers,
   // `async` adds their callback + fs.promises counterparts on top.
-  if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) usage("Error: --fs must be 'sync' or 'async'")
-  if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) usage('Error: --fs requires --bundle=(add|replace|load)')
+  if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
+  if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
   const captureFs = values.fs ?? ''
   // --resources: comma-separated extension/filename allowlist for `--fs` captures.
   const resources = values.resources ?? ''
@@ -190,13 +117,13 @@ if (command === '-v' || command === '--version') {
     try {
       brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
     } catch (cause) {
-      usage(`Error: ${cause.message}`)
+      fail(`Error: ${cause.message}`)
     }
   }
   // --import: extra preload module(s) passed through to the spawned node. Node resolves each
   // against the project cwd; they ride AFTER stasis's own loader import.
   const imports = values.import ?? []
-  if (imports.some((s) => s === '')) usage('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
+  if (imports.some((s) => s === '')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
   // Not a usage error: plain instrumentation/setup preloads still work under the mock; only ones
   // that need the denied surfaces (spawning helper processes, network) die, and they do so loudly.
   if (values.mock && imports.length > 0) {
@@ -207,7 +134,7 @@ if (command === '-v' || command === '--version') {
   // --package-json: auto-include every bundled module's package.json. Only meaningful while WRITING
   // a bundle (add|replace) -- there's nothing to fold the manifests into otherwise.
   if (values['package-json'] && bundle !== 'add' && bundle !== 'replace') {
-    usage('Error: --package-json requires --bundle=(add|replace)')
+    fail('Error: --package-json requires --bundle=(add|replace)')
   }
   const packageJSON = values['package-json'] ? '1' : ''
   console.warn('[stasis] Running stasis with config:', { lock, scope, bundle, ...(bundleFile && { bundleFile }), ...(resourcesBundleFile && { resourcesBundleFile }), ...(childProcess && { childProcess: true }), ...(packageJSON && { packageJSON: true }), ...(values.mock && { mock: true }), ...(imports.length > 0 && { import: imports }), ...(values.fs && { fs: values.fs }), ...(resources && { resources }), ...(brotliQuality !== undefined && { brotliQuality }) })
@@ -240,7 +167,7 @@ if (command === '-v' || command === '--version') {
       while (!existsSync(p) && dirname(p) !== p) p = dirname(p)
       // Refuse write access to the filesystem root -- it would disable the --permission layer everywhere.
       if (p === dirname(p)) {
-        usage(`Error: no existing parent directory for ${flag}=${file}; create one first or choose a path under an existing directory`)
+        fail(`Error: no existing parent directory for ${flag}=${file}; create one first or choose a path under an existing directory`)
       }
       if (!writeAllow.includes(p)) writeAllow.push(p)
     }
@@ -290,36 +217,36 @@ if (command === '-v' || command === '--version') {
   }
   const values = parseLeadingOptions(argv, options, {
     valueFlags: ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--brotli-quality', '-o'],
-    onError: usage,
+    onError: fail,
   })
-  if (argv.length === 0) usage('Nothing to bundle: no entry file given')
+  if (argv.length === 0) fail('Nothing to bundle: no entry file given')
   // A directory entry stands for the .sol files under it (Solidity only); an extensionless path
   // that doesn't exist is a missing one (skipped with a warning).
   const { directoryEntryError, isSolidityEntry } = await import('../src/cmd/bundle.js')
   const dirError = directoryEntryError(argv)
-  if (dirError !== null) usage(`Error: ${dirError}`)
+  if (dirError !== null) fail(`Error: ${dirError}`)
   const allSol = argv.every((f) => isSolidityEntry(f))
   const allPhp = argv.every((f) => f.endsWith('.php'))
   const allJs = argv.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f))
   const allBash = argv.every((f) => /\.(?:sh|bash)$/u.test(f))
   const allRust = argv.every((f) => f.endsWith('.rs'))
   if (!allSol && !allPhp && !allJs && !allBash && !allRust) {
-    usage('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
+    fail('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
   }
-  if (values.mapping && !allSol) usage('Error: --mapping is only valid for .sol bundles')
+  if (values.mapping && !allSol) fail('Error: --mapping is only valid for .sol bundles')
   // --manifests: carry the Solidity build's description files (foundry.toml, remappings.txt, ...).
   const manifests = Boolean(values.manifests)
-  if (manifests && !allSol) usage('Error: --manifests is only valid for .sol bundles')
+  if (manifests && !allSol) fail('Error: --manifests is only valid for .sol bundles')
   // --cargo: take the Rust feature/dependency resolution from `cargo metadata` (runs cargo; opt-in).
   const cargo = Boolean(values.cargo)
-  if (cargo && !allRust) usage('Error: --cargo is only valid for Rust bundles')
+  if (cargo && !allRust) fail('Error: --cargo is only valid for Rust bundles')
   // --cargo-features / --cargo-no-default-features / --cargo-all-features: cargo's own feature flags
   // for the entries' packages (`pkg/feat` targets one, or a dependency). --cargo-features is
   // repeatable and/or comma-separated; parseFeatureList is the one splitter (the resolver reuses it).
   const { parseFeatureList } = await import('../src/loaders/cargo.js')
   const cargoFeatures = parseFeatureList(values['cargo-features'] ?? [])
   if (values['cargo-features'] !== undefined && cargoFeatures.length === 0) {
-    usage('Error: --cargo-features must list at least one feature (e.g. --cargo-features=serde,app/tls)')
+    fail('Error: --cargo-features must list at least one feature (e.g. --cargo-features=serde,app/tls)')
   }
   const cargoNoDefaultFeatures = Boolean(values['cargo-no-default-features'])
   const cargoAllFeatures = Boolean(values['cargo-all-features'])
@@ -327,50 +254,50 @@ if (command === '-v' || command === '--version') {
   // `#[cfg(unix)]`-style code. A triple is letters, digits, `-`, `_` and `.` (`x86_64-unknown-linux-gnu`).
   const cargoTarget = values['cargo-target'] ?? null
   if (cargoTarget !== null && !/^[\w.-]+$/u.test(cargoTarget)) {
-    usage('Error: --cargo-target must be a target triple or "host" (e.g. --cargo-target=aarch64-apple-darwin)')
+    fail('Error: --cargo-target must be a target triple or "host" (e.g. --cargo-target=aarch64-apple-darwin)')
   }
   // --cargo-manifests: carry each bundled package's Cargo.toml and build script, the workspace
   // Cargo.toml, Cargo.lock and .cargo/config.toml too (the Rust counterpart of --package-json).
   const cargoManifests = Boolean(values['cargo-manifests'])
   if (!allRust) {
     const given = { 'cargo-features': cargoFeatures.length > 0, 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget !== null, 'cargo-manifests': cargoManifests }
-    for (const [flag, on] of Object.entries(given)) if (on) usage(`Error: --${flag} is only valid for Rust bundles`)
+    for (const [flag, on] of Object.entries(given)) if (on) fail(`Error: --${flag} is only valid for Rust bundles`)
   }
-  if (values.scope && !allJs) usage('Error: --scope is only valid for JS bundles')
+  if (values.scope && !allJs) fail('Error: --scope is only valid for JS bundles')
   if (values.scope && !['node_modules', 'full'].includes(values.scope)) {
-    usage('Error: --scope must be node_modules or full')
+    fail('Error: --scope must be node_modules or full')
   }
-  if (values.lockfile && !allJs) usage('Error: --lockfile is only valid for JS bundles')
+  if (values.lockfile && !allJs) fail('Error: --lockfile is only valid for JS bundles')
   // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore --scope.
   if (values.scope !== undefined && (values.mainFields !== undefined || values.metro)) {
-    usage('Error: --scope is not supported with --mainFields or --metro')
+    fail('Error: --scope is not supported with --mainFields or --metro')
   }
   // --conditions: extra exports/imports resolution conditions merged onto Node's defaults;
   // they don't honour legacy `mainFields` or platform suffixes (see --mainFields).
-  if (values.conditions !== undefined && !allJs) usage('Error: --conditions is only valid for JS bundles')
+  if (values.conditions !== undefined && !allJs) fail('Error: --conditions is only valid for JS bundles')
   const conditions = values.conditions === undefined
     ? []
     : values.conditions.split(',').map((s) => s.trim()).filter(Boolean)
   if (values.conditions !== undefined && conditions.length === 0) {
-    usage('Error: --conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
+    fail('Error: --conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
   }
   // --flow: strip Flow type syntax (via the optional flow-remove-types dep) before parsing; JS-only.
-  if (values.flow && !allJs) usage('Error: --flow is only valid for JS bundles')
+  if (values.flow && !allJs) fail('Error: --flow is only valid for JS bundles')
   const flow = Boolean(values.flow)
   // --typescript: resolve like tsc -- a specifier naming a missing JS output (./x.js, .mjs, .cjs,
   // extensionless) lands on its on-disk TS source (./x.ts, .mts, .cts); an existing .js always wins.
-  if (values.typescript && !allJs) usage('Error: --typescript is only valid for JS bundles')
+  if (values.typescript && !allJs) fail('Error: --typescript is only valid for JS bundles')
   const typescript = Boolean(values.typescript)
   // --tsconfig: the config whose compilerOptions.paths aliases --typescript honours (default: the
   // tsconfig.json beside each importing file's package.json). Meaningless without --typescript.
-  if (values.tsconfig !== undefined && !typescript) usage('Error: --tsconfig is only valid with --typescript')
+  if (values.tsconfig !== undefined && !typescript) fail('Error: --tsconfig is only valid with --typescript')
   // --mainFields: legacy package entry fields (e.g. react-native,browser,main) for the non-exports resolver.
-  if (values.mainFields !== undefined && !allJs) usage('Error: --mainFields is only valid for JS bundles')
+  if (values.mainFields !== undefined && !allJs) fail('Error: --mainFields is only valid for JS bundles')
   const mainFields = values.mainFields === undefined
     ? undefined
     : values.mainFields.split(',').map((s) => s.trim()).filter(Boolean)
   if (values.mainFields !== undefined && mainFields.length === 0) {
-    usage('Error: --mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
+    fail('Error: --mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
   }
   // --metro: resolve like Metro/RN (its own conditions + mainFields, platform suffixes per
   // --platforms target). --platforms is repeatable and/or comma-separated; the values union.
@@ -381,55 +308,55 @@ if (command === '-v' || command === '--version') {
   const platforms = [...new Set((values.platforms ?? []).flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean))]
   // A platform name becomes an edge key: reject '/' (parsers reject it) and '*' (reserved placeholder).
   for (const p of platforms) {
-    if (p === '*' || p.includes('/')) usage(`Error: invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)
+    if (p === '*' || p.includes('/')) fail(`Error: invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)
   }
-  if ((metro || platforms.length > 0) && !allJs) usage('Error: --metro is only valid for JS bundles')
+  if ((metro || platforms.length > 0) && !allJs) fail('Error: --metro is only valid for JS bundles')
   // --jsx: parse React Native's JSX-in-.js source in the static scanner (off by default; oxc,
   // like tsc, auto-enables JSX for .jsx/.tsx only). Orthogonal to the resolver, so it pairs with
   // plain/--mainFields/--metro alike -- JS-only, since no other entry language is scanned.
   const jsx = Boolean(values.jsx)
-  if (jsx && !allJs) usage('Error: --jsx is only valid for JS bundles')
+  if (jsx && !allJs) fail('Error: --jsx is only valid for JS bundles')
   // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
   // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).
   const packageJSON = Boolean(values['package-json'])
-  if (packageJSON && !allJs) usage('Error: --package-json is only valid for JS bundles')
+  if (packageJSON && !allJs) fail('Error: --package-json is only valid for JS bundles')
   // --resources: comma-separated extension/filename allowlist for assets reached through the graph
   // (e.g. --resources=png,svg). They're carried as resources instead of failing "can't carry" --
   // for graphs that aren't fully loadable in JS (Metro consumes such assets). JS-only.
-  if (values.resources !== undefined && !allJs) usage('Error: --resources is only valid for JS bundles')
+  if (values.resources !== undefined && !allJs) fail('Error: --resources is only valid for JS bundles')
   const resources = values.resources === undefined
     ? []
     : values.resources.split(',').map((s) => s.trim()).filter(Boolean)
   if (values.resources !== undefined && resources.length === 0) {
-    usage('Error: --resources must list at least one extension or filename (e.g. --resources=png,svg)')
+    fail('Error: --resources must list at least one extension or filename (e.g. --resources=png,svg)')
   }
   try {
     parseResourcesOption('--resources', resources) // validate early for a clean usage error (code exts / bad chars rejected)
   } catch (cause) {
-    usage(`Error: ${cause.message}`)
+    fail(`Error: ${cause.message}`)
   }
   if (metro) {
-    if (conditions.length > 0) usage("Error: --conditions can't be combined with --metro (it sets its own conditions)")
-    if (mainFields !== undefined) usage("Error: --mainFields can't be combined with --metro (it sets its own mainFields)")
-    if (platforms.length === 0) usage('Error: --metro requires --platforms (e.g. --platforms=ios,android)')
+    if (conditions.length > 0) fail("Error: --conditions can't be combined with --metro (it sets its own conditions)")
+    if (mainFields !== undefined) fail("Error: --mainFields can't be combined with --metro (it sets its own mainFields)")
+    if (platforms.length === 0) fail('Error: --metro requires --platforms (e.g. --platforms=ios,android)')
   } else if (platforms.length > 0) {
-    usage('Error: --platforms is only valid with --metro')
+    fail('Error: --platforms is only valid with --metro')
   }
-  if (metroResolver && !metro) usage('Error: --metro-resolver is only valid with --metro')
+  if (metroResolver && !metro) fail('Error: --metro-resolver is only valid with --metro')
   // metro-resolver can't substitute .js -> .ts, so --typescript would silently not apply -- reject it.
-  if (typescript && metroResolver) usage("Error: --typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
+  if (typescript && metroResolver) fail("Error: --typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
   // --brotli-quality: valid for every entry language (no allJs gate).
   let brotliQuality
   if (values['brotli-quality'] !== undefined) {
     try {
       brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
     } catch (cause) {
-      usage(`Error: ${cause.message}`)
+      fail(`Error: ${cause.message}`)
     }
   }
   // --add merges into the existing bundle at --output, so it can't target write-only stdout.
   const add = Boolean(values.add)
-  if (add && values.output === '-') usage('Error: --add cannot be combined with --output=-')
+  if (add && values.output === '-') fail('Error: --add cannot be combined with --output=-')
   const { bundleCommand } = await import('../src/cmd/bundle.js')
   await bundleCommand({
     cwd: process.cwd(),
@@ -486,10 +413,10 @@ if (command === '-v' || command === '--version') {
     generate: { type: 'string', multiple: true },
   }, {
     valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '--generate', '-o'],
-    onError: usage,
+    onError: fail,
   })
-  if (values.github === undefined) usage('Error: github-bundle requires --github=owner/name, the repo to bundle')
-  if (values.sha !== undefined && values.tag !== undefined) usage('Error: github-bundle takes --sha or --tag, not both')
+  if (values.github === undefined) fail('Error: github-bundle requires --github=owner/name, the repo to bundle')
+  if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
   let brotliQuality
@@ -497,7 +424,7 @@ if (command === '-v' || command === '--version') {
     try {
       brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
     } catch (cause) {
-      usage(`Error: ${cause.message}`)
+      fail(`Error: ${cause.message}`)
     }
   }
   // Tarballs, zips and GitHub trees are cached where `stasis audit` caches.
@@ -533,10 +460,10 @@ if (command === '-v' || command === '--version') {
 } else if (command === 'add') {
   // add packs the listed files (no resolver), taking split targets + resource allowlist from
   // stasis.config.json; it takes no flags.
-  if (argv.length === 0) usage('Nothing to add: no file given')
-  if (argv.some((a) => a.startsWith('-'))) usage('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
+  if (argv.length === 0) fail('Nothing to add: no file given')
+  if (argv.some((a) => a.startsWith('-'))) fail('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
   const { addCommand } = await import('@exodus/stasis-core/add')
-  // Let addCommand's runtime errors propagate as-is; wrapping in usage() would bury the cause.
+  // Let addCommand's runtime errors propagate as-is; wrapping in fail() would bury the cause.
   addCommand({ cwd: process.cwd(), entries: argv, logLabel: 'stasis' })
 } else if (command === 'build') {
   const options = {
@@ -553,37 +480,37 @@ if (command === '-v' || command === '--version') {
   }
   const values = parseLeadingOptions(argv, options, {
     valueFlags: ['--output', '-o', '--format', '--platform', '--define', '--external', '--loader'],
-    onError: usage,
+    onError: fail,
   })
-  if (argv.length === 0) usage('Nothing to build: no bundle or lockfile given')
-  if (argv.length > 2) usage('Error: build takes a bundle or lockfile and an optional entry point')
+  if (argv.length === 0) fail('Nothing to build: no bundle or lockfile given')
+  if (argv.length > 2) fail('Error: build takes a bundle or lockfile and an optional entry point')
   // esbuild output knobs; the import graph itself is fixed by the artifact, not these.
   if (values.format !== undefined && !['esm', 'cjs', 'iife'].includes(values.format)) {
-    usage('Error: --format must be esm, cjs, or iife')
+    fail('Error: --format must be esm, cjs, or iife')
   }
   if (values.platform !== undefined && !['node', 'browser', 'neutral', 'hermes'].includes(values.platform)) {
-    usage('Error: --platform must be node, browser, neutral, or hermes')
+    fail('Error: --platform must be node, browser, neutral, or hermes')
   }
   // Hermes has no import/export; --format defaults to iife under --platform=hermes (see buildCommand).
   if (values.platform === 'hermes' && values.format === 'esm') {
-    usage('Error: --platform=hermes cannot emit ESM; use --format=iife (the hermes default) or cjs')
+    fail('Error: --platform=hermes cannot emit ESM; use --format=iife (the hermes default) or cjs')
   }
-  if (!values.output) usage('Error: --output is required (a .js/.cjs/.mjs file, or a directory)')
+  if (!values.output) fail('Error: --output is required (a .js/.cjs/.mjs file, or a directory)')
   // build can't stream to stdout; without this, --output=- would create a dir literally named `-`.
-  if (values.output === '-') usage('Error: stasis build cannot stream to stdout; --output must be a .js/.cjs/.mjs file or a directory')
+  if (values.output === '-') fail('Error: stasis build cannot stream to stdout; --output must be a .js/.cjs/.mjs file or a directory')
   // --define=KEY=VALUE -> esbuild define map; VALUE is forwarded verbatim and must be valid JS
   // (a JSON literal or an identifier), e.g. --define=DEBUG=false.
   const define = {}
   for (const entry of values.define ?? []) {
     const eq = entry.indexOf('=')
-    if (eq <= 0) usage(`Error: --define must be KEY=VALUE (got '${entry}')`)
+    if (eq <= 0) fail(`Error: --define must be KEY=VALUE (got '${entry}')`)
     define[entry.slice(0, eq)] = entry.slice(eq + 1)
   }
   // --loader=.ext:NAME -> esbuild loader override for that extension (e.g. --loader=.js:jsx).
   const loader = {}
   for (const entry of values.loader ?? []) {
     const colon = entry.indexOf(':')
-    if (colon <= 0 || !entry.startsWith('.')) usage(`Error: --loader must be .EXT:LOADER (got '${entry}')`)
+    if (colon <= 0 || !entry.startsWith('.')) fail(`Error: --loader must be .EXT:LOADER (got '${entry}')`)
     loader[entry.slice(0, colon)] = entry.slice(colon + 1)
   }
   const { buildCommand } = await import('../src/cmd/build.js')
@@ -605,9 +532,9 @@ if (command === '-v' || command === '--version') {
   const options = {
     output: { type: 'string', short: 'o' },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o'], onError: usage })
-  if (argv.length === 0) usage('Nothing to extract: no bundle file given')
-  if (argv.length > 1) usage('Error: extract takes exactly one bundle file')
+  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o'], onError: fail })
+  if (argv.length === 0) fail('Nothing to extract: no bundle file given')
+  if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
   const { extractCommand } = await import('@exodus/stasis-core/extract')
   extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, logLabel: 'stasis' })
 } else if (command === 'diff') {
@@ -615,27 +542,27 @@ if (command === '-v' || command === '--version') {
     stat: { type: 'boolean' },
     imports: { type: 'boolean' },
   }
-  const values = parseLeadingOptions(argv, options, { onError: usage })
+  const values = parseLeadingOptions(argv, options, { onError: fail })
   // --stat is required for now (it reports what changed, not the content); bare `stasis diff`
   // is reserved for a future content-level diff.
-  if (!values.stat) usage('Error: stasis diff currently requires --stat')
-  if (argv.length !== 2) usage('Error: stasis diff takes exactly two files (lockfile or bundle)')
+  if (!values.stat) fail('Error: stasis diff currently requires --stat')
+  if (argv.length !== 2) fail('Error: stasis diff takes exactly two files (lockfile or bundle)')
   // --imports also diffs the resolution graphs (added/removed/redirected edges); off by default (verbose).
   const { diffCommand } = await import('../src/cmd/diff.js')
   const { differences } = diffCommand({ cwd: process.cwd(), left: argv[0], right: argv[1], stat: true, imports: values.imports })
   // Exit non-zero when the artifacts differ, so it composes in CI.
   process.exitCode = differences ? 1 : 0
 } else if (command === 'prune') {
-  if (argv.length > 1) usage('Error: prune takes at most one path argument')
+  if (argv.length > 1) fail('Error: prune takes at most one path argument')
   const root = argv[0] ? resolve(argv[0]) : process.cwd()
   const { prune } = await import('@exodus/stasis-core/prune')
   const { removed, validated } = prune({ root })
   console.warn(`[stasis] prune: validated ${validated.length} file(s), removed ${removed.length} file(s)`)
 } else if (command === 'audit') {
-  const values = parseLeadingOptions(argv, { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }, { valueFlags: ['--reason'], onError: usage })
-  if (argv.length === 0) usage('Nothing to audit: no path to file given')
+  const values = parseLeadingOptions(argv, { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }, { valueFlags: ['--reason'], onError: fail })
+  if (argv.length === 0) fail('Nothing to audit: no path to file given')
   const repoAdvisories = Boolean(values['repo-advisories'])
-  if (repoAdvisories && !process.env.GITHUB_TOKEN) usage('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
+  if (repoAdvisories && !process.env.GITHUB_TOKEN) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
   // A Soldeer package's and a GitHub repo's advisories are their repository's, asked of GitHub with
   // GITHUB_TOKEN where it is set; the client asks nothing for any other package by itself.
   const github = (await import('@preventive/upstream/github.js')).createClient({ token: process.env.GITHUB_TOKEN || null })
@@ -653,10 +580,10 @@ if (command === '-v' || command === '--version') {
     format: { type: 'string' },
     output: { type: 'string', short: 'o' },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--format', '--output', '-o'], onError: usage })
-  if (!values.format) usage('Error: stasis sbom requires --format=(spdx|cyclonedx)')
-  if (!['spdx', 'cyclonedx'].includes(values.format)) usage('Error: --format must be spdx or cyclonedx')
-  if (argv.length === 0) usage('Nothing to export: no lockfile or bundle given')
+  const values = parseLeadingOptions(argv, options, { valueFlags: ['--format', '--output', '-o'], onError: fail })
+  if (!values.format) fail('Error: stasis sbom requires --format=(spdx|cyclonedx)')
+  if (!['spdx', 'cyclonedx'].includes(values.format)) fail('Error: --format must be spdx or cyclonedx')
+  if (argv.length === 0) fail('Nothing to export: no lockfile or bundle given')
   const { sbomCommand } = await import('../src/cmd/sbom.js')
   sbomCommand({
     cwd: process.cwd(),
@@ -664,6 +591,8 @@ if (command === '-v' || command === '--version') {
     format: values.format,
     output: values.output,
   })
-} else {
+} else if (command === undefined) {
   usage()
+} else {
+  fail(`Error: unknown command '${command}'`)
 }
