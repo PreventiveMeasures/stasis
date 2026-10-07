@@ -84,10 +84,11 @@ function parseSoldeerDir(seg) {
 }
 
 // The GitHub repository, `owner/name`, a .gitmodules `url` names (parseGithubRepository), else null:
-// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for the `owner/name`
-// shorthand a package.json takes for GitHub's, which git takes for a path, as it does any url with
-// no colon before its first slash.
-const submoduleGithub = (url) => (/^[^/]*:/u.test(url) ? parseGithubRepository(url) : null)
+// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for the shorthands
+// a package.json takes for GitHub's, which git doesn't: it takes `owner/name` for a path, as it does
+// any url with no colon before its first slash, and `github:owner/name` for scp's `host:path`, on
+// the host `github`, whatever an ssh alias or `insteadOf` makes of it.
+const submoduleGithub = (url) => (/^(?!github:)[^/]*:/iu.test(url) ? parseGithubRepository(url) : null)
 
 // The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {

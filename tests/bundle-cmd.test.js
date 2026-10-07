@@ -221,7 +221,7 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     return buildSolidityBundle({ cwd: tmp, entries: ['src/A.sol'], mappingFile: 'remappings.txt' })
   }
 
-  // A GitHub URL however git spells one, and the `github:` and `git+` ones a package.json does.
+  // A GitHub URL however git spells one, and the `git+` ones a package.json does.
   for (const url of [
     'https://github.com/OpenZeppelin/openzeppelin-contracts',
     'https://github.com/OpenZeppelin/openzeppelin-contracts.git',
@@ -237,7 +237,6 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     'git@www.github.com:OpenZeppelin/openzeppelin-contracts.git',
     'git+https://github.com/OpenZeppelin/openzeppelin-contracts.git',
     'git+ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
-    'github:OpenZeppelin/openzeppelin-contracts',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const oz = (await build(url)).modules.get(SUB)
@@ -258,6 +257,9 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     // Paths to git: no colon before the first slash.
     'OpenZeppelin/openzeppelin-contracts',
     '../openzeppelin-contracts.git',
+    // npm's shorthand, which git takes for the host `github`'s path.
+    'github:OpenZeppelin/openzeppelin-contracts',
+    'GitHub:OpenZeppelin/openzeppelin-contracts',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const bundle = await build(url)

@@ -865,10 +865,11 @@ file resolves out of:
 
 A dep under `node_modules` is `npm` whatever the language. A git submodule is
 `github` only where its `.gitmodules` url is GitHub's: `https`, `ssh`, `git` or
-scp-like (`git@github.com:`) at `github.com` or `www.github.com`, or `github:`.
-One of another host, even one holding `github.com` (`https://notgithub.com/o/n`),
-or a path, is bucketed as any file outside `node_modules` is, by its nearest
-`package.json`, first-party. A git
+scp-like (`git@github.com:`) at `github.com` or `www.github.com`. One of another
+host, even one holding `github.com` (`https://notgithub.com/o/n`), or a path, is
+bucketed as any file outside `node_modules` is, by its nearest `package.json`,
+first-party; so is one in npm's `github:o/n` shorthand, which git reads as the
+host `github`'s path, whatever an ssh alias makes of it. A git
 submodule with no `package.json`/`branch`, or a Soldeer dir with no version
 suffix, falls back to `0.0.0`; the workspace bucket carries no `ecosystem`. A
 Rust crate reached through a Cargo `path` dependency is first-party (its own
