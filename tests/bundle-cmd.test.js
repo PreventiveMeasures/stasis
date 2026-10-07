@@ -2776,6 +2776,20 @@ test('buildBundle asserts Node conditions only resolving as Node: --mainFields/-
   t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, metro: true, platforms: ['ios', 'web'] })), [{ ios: nf('rn.js'), web: nf('browser.js') }, nf('rn.js')])
 })
 
+test('buildBundle asserts `module` under --mainFields alone, as esbuild and webpack do', async (t) => {
+  // modulecond's `exports` lists the bundler-only `module` condition first: esbuild and webpack
+  // take it from an import and a require() alike, Node and Metro never do.
+  const entries = ['src/entry-module-cond.js', 'src/entry-module-cond.cjs']
+  const targets = (bundle) => entries.map((entry) => importTarget(bundle, entry, 'modulecond'))
+  const mc = (file) => `node_modules/modulecond/${file}`
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries })), [mc('import.js'), mc('require.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, conditions: ['browser'] })), [mc('import.js'), mc('require.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, mainFields: ['main'] })), [mc('module.js'), mc('module.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, mainFields: ['browser', 'module', 'main'], conditions: ['browser'] })), [mc('module.js'), mc('module.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, mainFields: ['main'], conditions: ['module'] })), [mc('module.js'), mc('module.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, metro: true, platforms: ['ios', 'web'] })), [mc('import.js'), mc('require.js')])
+})
+
 test('buildBundle --metro bundles every platform at once: union files, divergent edges unflatten', async (t) => {
   const bundle = await buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
   const files = new Set(bundle.sources.keys())

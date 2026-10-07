@@ -227,6 +227,23 @@ test('suggestedEntries takes no `node` export with metro or mainFields, as the b
   }))
 })
 
+// The same package with its ESM build under the bundler-only `module` condition: mainFields asserts
+// it, as esbuild and webpack do; Node's resolution and metro never do.
+test('suggestedEntries takes the `module` export with mainFields alone, as the build does', async (t) => {
+  const exports = { '.': { module: './exp-module.js', browser: './exp-browser.js', 'react-native': './exp-rn.js', default: './exp.js' } }
+  const moduleFirst = { ...reactNative, 'package.json': json({ ...JSON.parse(reactNative['package.json']), exports }), 'exp-module.js': '' }
+  const cases = [
+    [{}, ['main.js', 'exp.js']],
+    [{ conditions: ['browser'] }, ['main.js', 'exp-browser.js']],
+    [{ metro: true, platforms: ['ios', 'android'] }, ['rn.ios.js', 'rn.js', 'exp-rn.js']],
+    [{ mainFields: ['browser', 'main'] }, ['browser.js', 'exp-module.js']],
+    [{ mainFields: ['browser', 'main'], conditions: ['browser'] }, ['browser.js', 'exp-module.js']],
+  ]
+  await Promise.all(cases.map(async ([options, expected]) => {
+    t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(moduleFirst), ...options }), expected, JSON.stringify(options))
+  }))
+})
+
 test('suggestedEntries maps what resolution misses to its TS source under typescript, as the build does', async (t) => {
   // Entry points named by their compiled outputs, of which only the TS sources are in the tree.
   const named = {

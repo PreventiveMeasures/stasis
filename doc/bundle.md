@@ -85,7 +85,7 @@ always matches):
 | Mode | Conditions |
 | - | - |
 | Node (default) | `node`, `import` or `require`, `module-sync`, `node-addons`, then `--conditions` |
-| `--mainFields` | `import` or `require`, then `--conditions` |
+| `--mainFields` | `import` or `require`, `module`, then `--conditions` |
 | `--metro`, `--metro --metro-resolver` | `import` or `require`, `react-native`, and `browser` on `web` |
 
 Resolving as Node, `import` or `require` follows the edge (an `import`,
@@ -103,9 +103,15 @@ under `--mainFields=browser,module,main --conditions=browser`, as esbuild
 the first of its `react-native`, `default` and, on `web`, `browser` targets,
 as Metro with React Native's config does. `--metro` asserts Metro's own set:
 under `--metro-resolver` the project's `metro-resolver` is given `react-native`
-and adds the rest itself. esbuild also asserts `module`, and webpack `module`,
-`webpack` and `production` or `development`: add them with `--conditions`
-where a package's map tells them apart.
+and adds the rest itself.
+
+`--mainFields` also asserts `module`, the bundler-only condition esbuild and
+webpack 5 assert on every platform, from an `import` and a `require()` alike:
+a package listing its ESM build under `module` (`xstate`, `@emotion/react`,
+`@reduxjs/toolkit`) resolves to it, as those bundlers resolve it. Node and
+Metro never assert it. webpack also asserts `webpack` and `production` or
+`development`: add them with `--conditions` where a package's map tells them
+apart.
 
 ### Node builtins
 
