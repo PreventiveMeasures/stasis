@@ -1505,4 +1505,25 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
     t.assert.ok(lock.sources['.'].files['src/a.js'].startsWith('sha512-'), 'the plain import is still attested')
   }))
+
+  // The same file, tagged instead of suffixed: a plugin before StasisEsbuild resolves `@text/a` to
+  // src/a.js with pluginData for the later plugin to load as text. Both imports share that one module,
+  // which loads with the tag; capture recorded src/a.js without pluginData, so it isn't capture's.
+  // (A plugin after StasisEsbuild that resolves with pluginData is covered by the alias test above.)
+  test('a module of a recorded file tagged by a plugin before StasisEsbuild is left to the plugin that loads it', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(rawSuffixFixture, capDir, { recursive: true })
+    const plugins = {
+      STASIS_TEST_ESBUILD_PLUGINS_BEFORE: JSON.stringify(['text-resolve-plugin.js']),
+      STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['raw-load-plugin.js']),
+    }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), plugins, 'src/text.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/text.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'text.js'), 'utf-8'), readFileSync(join(tmp, 'out-plain', 'text.js'), 'utf-8'))
+    const ran = await runNode([join(tmp, 'out-capture', 'text.js')], { cwd: tmp })
+    t.assert.equal(ran.stdout, '{"a":"export default \'a\'\\n","aText":"export default \'a\'\\n"}\n')
+  }))
 })

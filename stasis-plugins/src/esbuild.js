@@ -78,6 +78,7 @@ export class StasisEsbuild {
   // Capture declines its resolutions, so no pluginData reaches onLoad; it finds these by path.
   #targets = new Map()  // path -> 'code' | 'resource', for every file an import or entry resolved to
   #entries = new Set()  // paths of the entry points
+  #dataTargets = new Set()  // paths of the targets a plugin after this one resolved with pluginData
 
   // Build starts observed by this instance (across rebuilds and separate build()/context() calls);
   // the second is refused in onStart.
@@ -314,6 +315,7 @@ export class StasisEsbuild {
       if (kind !== 'skip') {
         this.#targets.set(res.path, kind)
         if (isEntry) this.#entries.add(res.path)
+        if (res.pluginData !== undefined) this.#dataTargets.add(res.path)
       }
       return undefined
     }
@@ -343,19 +345,21 @@ export class StasisEsbuild {
     onLoad({ filter: /$/, namespace: '(disabled)' }, () => ({ contents: '', loader: 'empty' }))
 
     onLoad({ filter: /$/, namespace: 'file' }, async ({ path, suffix, pluginData, with: attrs }) => {
-      // What onResolve found for this path: by path at capture, as pluginData at load. Any other file
-      // -- one a plugin before this one resolved -- is left to esbuild and that plugin. At capture that
-      // includes any load with a suffix or pluginData: an import capture declined has neither (it
-      // refuses a suffix, and esbuild's resolver sets no pluginData), so a path match alone would claim
-      // another plugin's module of the same file, such as a `?raw` one meant for a later loader.
+      // What onResolve found for this path: by path at capture, as pluginData at load. Any other module
+      // -- one a plugin before this one resolved -- is left to esbuild and that plugin. A path match
+      // alone could claim such a module of a recorded file, so at capture: an import capture declined
+      // never loads with a suffix (it refuses one), and with pluginData only if a plugin after this one
+      // set it when resolving it; otherwise the module is another plugin's (say a `?raw` one, or one
+      // tagged for a later loader).
       const { loadBundle } = this.#state.config
-      if (!loadBundle && (suffix !== '' || pluginData !== undefined)) return undefined
-      let kind = loadBundle ? pluginData?.kind : this.#targets.get(path)
+      if (!loadBundle && suffix !== '') return undefined
+      const recorded = () => (pluginData === undefined || this.#dataTargets.has(path) ? this.#targets.get(path) : undefined)
+      let kind = loadBundle ? pluginData?.kind : recorded()
       // Not recorded yet: an import that declined as a twin of one still resolving (see onResolve) can
       // load first. Wait out the resolutions in flight -- none waits on a load -- and look again.
       if (kind === undefined && !loadBundle && this.#resolving.size > 0) {
         await Promise.allSettled([...this.#resolving.values()].flatMap((inFlight) => [...inFlight.values()]))
-        kind = this.#targets.get(path)
+        kind = recorded()
       }
       kind ??= 'skip'
       if (kind === 'skip') return undefined
