@@ -192,6 +192,32 @@ test('pnpm: by the directory pnpm 9 installs it in, its `#` kept, and an MD5 in 
 }))
 
 
+test('pnpm: a git dependency with peers, by the directory its snapshot key names, peers and all', withTmp(async (t, dir) => {
+  // The lockfile keys a package by its id in `packages`, and by its peers too in `snapshots`, whose
+  // key pnpm names the directory after: `(peer@1.0.0)` made `_peer@1.0.0`.
+  const key = `lib@https://codeload.github.com/o/lib/tar.gz/${SHA.tar}`
+  const store = `lib@https+++codeload.github.com+o+lib+tar.gz+${SHA.tar}_peer@1.0.0`
+  writeProject(dir, ['lib'])
+  writePackage(dir, `node_modules/.pnpm/${store}/node_modules/lib`, { name: 'lib', peerDependencies: { peer: '^1.0.0' } })
+  symlinkSync(`.pnpm/${store}/node_modules/lib`, join(dir, 'node_modules', 'lib'))
+  writeFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), [
+    "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '',
+    'importers:', '', '  .:', '    dependencies:',
+    '      lib:', '        specifier: x', `        version: '${key.slice('lib@'.length)}(peer@1.0.0)'`,
+    '      peer:', '        specifier: 1.0.0', '        version: 1.0.0', '',
+    'packages:', '',
+    `  '${key}':`, `    resolution: {tarball: 'https://codeload.github.com/o/lib/tar.gz/${SHA.tar}'}`, '    version: 1.0.0', '    peerDependencies:', '      peer: ^1.0.0', '',
+    '  peer@1.0.0:', `    resolution: {integrity: sha512-${'A'.repeat(86)}==}`, '',
+    'snapshots:', '',
+    `  '${key}(peer@1.0.0)':`, '    dependencies:', '      peer: 1.0.0', '',
+    '  peer@1.0.0: {}', '',
+  ].join('\n'))
+  for (const [label, byDir] of await bundledEach(dir)) {
+    const repos = Object.fromEntries(Object.entries(byDir).map(([at, repo]) => [at.slice(at.lastIndexOf('/') + 1), repo]))
+    t.assert.deepStrictEqual(repos.lib, { github: 'o/lib', directory: '', commit: SHA.tar }, label)
+  }
+}))
+
 test("npm's and yarn's records: one missing or unreadable, or both at once, records nothing, and fails no build", withTmp(async (t, dir) => {
   writeProject(dir, ['dep'])
   writePackage(dir, 'node_modules/dep', { name: 'dep', repository: 'github:o/dep' })
