@@ -243,6 +243,26 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
     records an npm package's at the `gitHead` of the registry's version
     document of it, fetched beside its tarball and held to the lockfile's
     integrity, and only beside a `github` its `package.json` names.
+  - A JS build from disk (`stasis bundle`, `buildBundle`) records a git
+    dependency's, read off what the package manager that laid out its
+    `node_modules` left there: npm's (7 and later) hidden lockfile,
+    `node_modules/.package-lock.json`, by the package's location, where it
+    records the version installed there; pnpm's (9 to 12) copy of its
+    lockfile, `node_modules/.pnpm/lock.yaml`, by the directory under
+    `node_modules/.pnpm` the package is installed in; yarn 1's `yarn.lock`, by
+    the name the package is installed as and its version, where one entry alone
+    has both and the `node_modules/.yarn-integrity` yarn wrote has that entry
+    installed as `yarn.lock` resolves it now. Where that resolution is a full
+    commit of a GitHub repository, a git URL's or GitHub's tarball of one
+    (`https://codeload.github.com/owner/name/tar.gz/<sha>`), the dependency
+    records that repository, at its root (`""`) or the subdirectory pnpm
+    records (`#path:`), and the commit, in place of the `repo` its
+    `package.json` names: the record is of the repository installed from, a
+    fork's where the manifest names the one forked. A registry package records
+    none, as nothing on disk names its commit; nor does another host's
+    repository, an abbreviated commit, or npm's record beside yarn's in one
+    `node_modules`. `package-lock.json` and `pnpm-lock.yaml` are not read: they
+    say what an install would lay out, not what one did.
   - A Soldeer git dependency on GitHub records that repository at its root
     (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out: from a
     lockfile alone, the commit deptree fetches; on disk, only where its folder

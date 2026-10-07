@@ -41,6 +41,7 @@
     "src/cmd/sbom.js",
     "src/diff.js",
     "src/esbuild.js",
+    "src/installed-commits.js",
     "src/json-stream.js",
     "src/loader.js",
     "src/loader-mock.js",
