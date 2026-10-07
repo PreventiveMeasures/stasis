@@ -959,8 +959,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const realBase = host.realpath(baseDir)
   for (const abs of reached) {
     const rel = toRel(abs)
-    // Security: the field resolver returns the lexical path, so an in-tree-named symlink
-    // escaping the root would slip past toRel's textual check -- realpath and fail closed.
+    // Security: a resolved file arrives by its real path, which toRel already holds to the root,
+    // but an entry is taken as spelled (and --metro-resolver keeps a path it can't realpath), so an
+    // in-tree-named symlink escaping the root would slip past toRel's textual check -- realpath and
+    // fail closed.
     assertRealPathWithinBase(realBase, baseDir, rel, host)
     const buf = host.readFile(abs)
     if (resourceRels.has(rel)) {

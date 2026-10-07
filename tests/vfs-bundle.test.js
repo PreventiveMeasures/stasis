@@ -209,6 +209,16 @@ const unpinned = (text) => {
   return bundle.serialize()
 }
 
+// Where debug's src/common.js resolves its `ms` to in `bundle`, under any condition key.
+const debugMs = (bundle) => {
+  for (const byParent of bundle.imports.values()) {
+    for (const [parent, specs] of byParent) {
+      if (parent.endsWith('/debug/src/common.js') && specs.has('ms')) return specs.get('ms')
+    }
+  }
+  return undefined
+}
+
 // The package managers side by side, each over its own installed copy, which its tests share and so
 // take one at a time; the tarball cache they share is written write-then-rename.
 describe('buildVfsBundle with each package manager', { concurrency: true }, () => {
@@ -256,6 +266,8 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         for (const [i, [flags]] of variants.entries()) {
           t.assert.equal(unpinned(builts[i].bundle.serialize()), reals[i].bundle, `bundle for ${flags.join(' ')}`)
           t.assert.equal(builts[i].lockfile.serialize(), reals[i].lockfile, `lockfile for ${flags.join(' ')}`)
+          // debug's own ms, which pnpm links beside where debug really lies, under .pnpm.
+          t.assert.ok(builts[i].bundle.sources.has(debugMs(builts[i].bundle)), `debug's ms for ${flags.join(' ')}`)
         }
       })
 
