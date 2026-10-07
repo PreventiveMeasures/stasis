@@ -3362,6 +3362,41 @@ test('--mainFields and --metro build from a cwd named through a link', withTmp(a
   }
 }))
 
+test('--metro carries the native surface of a workspace package linked into node_modules, by its real path', withTmp(async (t, tmp) => {
+  // rn-lib is reached by its real path, out of node_modules, through the link its bare import takes:
+  // a dependency like any installed one. other is reached by a relative path alone, through no link,
+  // and the app's own native project is no dependency's.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'src/index.js': "require('rn-lib')\nrequire('../packages/other')\n",
+    'ios/App.mm': '@implementation App @end\n',
+    'packages/rn-lib/package.json': { name: 'rn-lib', version: '1.0.0', main: './index.js' },
+    'packages/rn-lib/index.js': 'module.exports = 1\n',
+    'packages/rn-lib/rn-lib.podspec': 'Pod::Spec.new\n',
+    'packages/rn-lib/ios/RnLib.mm': '@implementation RnLib @end\n',
+    'packages/other/package.json': { name: 'other', version: '1.0.0', main: './index.js' },
+    'packages/other/index.js': 'module.exports = 2\n',
+    'packages/other/ios/Other.mm': '@implementation Other @end\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync(join('..', 'packages', 'rn-lib'), join(tmp, 'node_modules', 'rn-lib'))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-lib'), 'packages/rn-lib/index.js')
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
+    'packages/other/index.js',
+    'packages/rn-lib/index.js',
+    'packages/rn-lib/ios/RnLib.mm',
+    'packages/rn-lib/package.json',
+    'packages/rn-lib/rn-lib.podspec',
+    'src/index.js',
+  ])
+  t.assert.equal(bundle.formats.get('packages/rn-lib/ios/RnLib.mm'), 'objcpp')
+}))
+
 cliTest('CLI: bundle --mainFields / --metro warns of no unresolved import in a pnpm layout', withTmp(async (t, tmp) => {
   writePnpmLayout(tmp)
   const runs = [['--mainFields=browser,module,main', '--conditions=browser'], ['--metro', '--platforms=ios']]

@@ -8,7 +8,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigPaths, locatePackage, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
@@ -991,24 +991,47 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   }
 
   // --metro also carries each bundled dependency's native build-input surface (ios/android
-  // sources + podspecs), scoped to the node_modules packages actually in the bundle. Native
-  // source is stored as code under a language tag; other assets as 'resource'/'resource:base64'.
+  // sources + podspecs), scoped to the packages in the bundle installed or linked into
+  // node_modules. Native source is stored as code under a language tag; other assets as
+  // 'resource'/'resource:base64'.
   if (metro) {
-    const pkgDirs = new Set()
+    const pkgDirs = new Map() // package dir -> the name it's installed under
+    // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
+    // not a linked native dependency, so it must not drag in its ios/android surface.
+    const isCode = (rel) => !resourceRels.has(rel)
     for (const abs of reached) {
-      // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
-      // not a linked native dependency, so it must not drag in its ios/android surface.
       const rel = toRel(abs)
-      if (resourceRels.has(rel)) continue
-      const nm = splitNodeModulesPath(rel)
-      if (nm) pkgDirs.add(nm.dir)
+      const nm = isCode(rel) && splitNodeModulesPath(rel)
+      if (nm) pkgDirs.set(nm.dir, nm.name)
     }
-    for (const pkgDir of [...pkgDirs].toSorted()) {
+    // A package linked into node_modules from out of it (a workspace package) is reached by its real
+    // path, out of node_modules, but is a dependency all the same: one a bare import reaches through
+    // such a link, located as the resolver located it. A relative or tsconfig-paths import into it
+    // goes through no link.
+    for (const [parent, bySpec] of edges) {
+      for (const [spec, byPlatform] of bySpec) {
+        if (spec.startsWith('.') || spec.startsWith('#') || posix.isAbsolute(spec)) continue
+        const targets = [...byPlatform.values()].filter((target) => isCode(target) && !splitNodeModulesPath(target))
+        if (targets.length === 0) continue
+        const loc = locatePackage(dirname(join(baseDir, parent)), spec, host)
+        if (!loc) continue
+        let pkgDir
+        try {
+          pkgDir = toRel(host.realpath(loc.pkgDir))
+        } catch {
+          continue // a link out of the root, whose files the scan pass refused already
+        }
+        if (targets.some((target) => target.startsWith(`${pkgDir}/`))) {
+          pkgDirs.set(pkgDir, spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/'))
+        }
+      }
+    }
+    for (const [pkgDir, name] of [...pkgDirs].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       const pkgAbs = join(baseDir, pkgDir)
       // react-native core isn't a Pod (config reports it via reactNativePath, not `dependencies`),
       // so walk its whole tree for native source (React/, ReactCommon/, ReactAndroid/, ...) the same
       // way a native dep's ios/android surface is walked; every other dep gets its ios/android + podspecs.
-      const isRnCore = pkgDir.slice(pkgDir.lastIndexOf('node_modules/') + 'node_modules/'.length) === 'react-native'
+      const isRnCore = name === 'react-native'
       const files = isRnCore ? [] : nativeModuleFiles(pkgAbs, host)
       if (isRnCore) walkNative(pkgAbs, files, host, isNativeSource)
       for (const abs of files) {
