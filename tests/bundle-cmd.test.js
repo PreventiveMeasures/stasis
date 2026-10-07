@@ -213,6 +213,91 @@ test('buildSolidityBundle attributes Soldeer deps as `soldeer` and github-submod
   t.assert.deepStrictEqual(Object.keys(oz.files), ['contracts/utils/Math.sol'])
 })
 
+test('buildSolidityBundle takes a submodule for a `github` dependency only where its .gitmodules url is GitHub\'s', withTmp(async (t, tmp) => {
+  cpSync(join(fixtures, 'with-deps-ecosystems'), tmp, { recursive: true })
+  const SUB = 'lib/openzeppelin-contracts'
+  // `url` quoted, so a `#` or `;` in it is no comment; `value` as written.
+  const build = (url, value = `"${url}"`) => {
+    writeFileSync(join(tmp, '.gitmodules'), `[submodule "${SUB}"]\n\tpath = ${SUB}\n\turl = ${value}\n`)
+    return buildSolidityBundle({ cwd: tmp, entries: ['src/A.sol'], mappingFile: 'remappings.txt' })
+  }
+
+  // A GitHub URL however git spells one.
+  for (const url of [
+    'https://github.com/OpenZeppelin/openzeppelin-contracts',
+    'https://github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'https://github.com/OpenZeppelin/openzeppelin-contracts/',
+    'http://GitHub.com/OpenZeppelin/openzeppelin-contracts',
+    'https://user:token@github.com:443/OpenZeppelin/openzeppelin-contracts.git',
+    'git://github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'ssh://git@github.com:22/OpenZeppelin/openzeppelin-contracts.git',
+    'git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    'github.com:OpenZeppelin/openzeppelin-contracts',
+    'https://www.github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'git@www.github.com:OpenZeppelin/openzeppelin-contracts.git',
+    'git@GitHub.com:OpenZeppelin/openzeppelin-contracts.git',
+    'git+ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'ssh+git://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
+  ]) {
+    // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
+    const oz = (await build(url)).modules.get(SUB)
+    t.assert.deepStrictEqual([oz?.name, oz?.ecosystem], ['OpenZeppelin/openzeppelin-contracts', 'github'], url)
+  }
+  // Unquoted, a `#` starts a comment, to git as to the reader: the url ends before it.
+  const commented = (await build(null, 'https://github.com/OpenZeppelin/openzeppelin-contracts.git#v5.0.0')).modules.get(SUB)
+  t.assert.deepStrictEqual([commented?.name, commented?.ecosystem], ['OpenZeppelin/openzeppelin-contracts', 'github'])
+
+  // Any other url names no GitHub repository, however much of one it holds: the submodule is no
+  // `github` dependency, and its files go by the nearest package.json, as any outside node_modules
+  // do. With none, they are the workspace's, first-party, which `stasis audit` asks no one about.
+  for (const url of [
+    'https://notgithub.com/OpenZeppelin/openzeppelin-contracts.git',
+    'https://github.com.evil.example/OpenZeppelin/openzeppelin-contracts',
+    'https://www.github.com.evil.example/OpenZeppelin/openzeppelin-contracts',
+    'https://evil.example/github.com/OpenZeppelin/openzeppelin-contracts',
+    'https://evil.example?@github.com/OpenZeppelin/openzeppelin-contracts',
+    'git@notgithub.com:OpenZeppelin/openzeppelin-contracts.git',
+    'https://gitlab.com/OpenZeppelin/openzeppelin-contracts.git',
+    // Paths to git: no colon before the first slash.
+    'OpenZeppelin/openzeppelin-contracts',
+    '../openzeppelin-contracts.git',
+    // npm's shorthand, which git takes for the host `github`'s path.
+    'github:OpenZeppelin/openzeppelin-contracts',
+    'GitHub:OpenZeppelin/openzeppelin-contracts',
+    // scp's `host:path` behind a scheme, as a package.json may spell it: to git, the host
+    // `github.com:OpenZeppelin`'s path `/openzeppelin-contracts.git`.
+    'ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    'git+ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    // A `#`, which git asks the host for as part of the path, where npm takes a committish.
+    'git@github.com:OpenZeppelin/openzeppelin-contracts.git#mirror',
+    'https://github.com/OpenZeppelin/openzeppelin-contracts.git#v5.0.0',
+    // Transports git doesn't have: it looks for a remote helper of that name.
+    'git+https://github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'HTTPS://github.com/OpenZeppelin/openzeppelin-contracts',
+  ]) {
+    // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
+    const bundle = await build(url)
+    t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(), ['.', 'dependencies/solmate-6.8.0'], url)
+    const root = bundle.modules.get('.')
+    t.assert.equal(root.ecosystem, undefined, url)
+    t.assert.deepStrictEqual(Object.keys(root.files).toSorted(), [`${SUB}/contracts/utils/Math.sol`, 'src/A.sol'], url)
+  }
+
+  // With a package.json, as OpenZeppelin's checkout has, its own bucket under that name, still
+  // first-party; a GitHub url makes it the `github` dependency, the package.json giving its version.
+  writeFileSync(join(tmp, SUB, 'package.json'), JSON.stringify({ name: '@openzeppelin/contracts', version: '5.0.0' }))
+  const identity = ({ name, version, ecosystem }) => ({ name, version, ecosystem })
+  t.assert.deepStrictEqual(
+    identity((await build('https://notgithub.com/OpenZeppelin/openzeppelin-contracts.git')).modules.get(SUB)),
+    { name: '@openzeppelin/contracts', version: '5.0.0', ecosystem: undefined },
+  )
+  t.assert.deepStrictEqual(
+    identity((await build('https://github.com/OpenZeppelin/openzeppelin-contracts.git')).modules.get(SUB)),
+    { name: 'OpenZeppelin/openzeppelin-contracts', version: '5.0.0', ecosystem: 'github' },
+  )
+}))
+
 test('buildSolidityBundle resolves @-scoped imports via node_modules with no mapping file', async (t) => {
   // No --mapping passed: @oz/contracts/utils/Math.sol must fall back to
   // node_modules/@oz/contracts/utils/Math.sol on disk.

@@ -84,20 +84,29 @@ function parseSoldeerDir(seg) {
   return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
 }
 
-// Extract `owner/repo` from a github.com remote (https/ssh/scp); null for non-github hosts.
-function githubSlug(url) {
-  const m = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/iu.exec(url)
-  return m ? `${m[1]}/${m[2]}` : null
-}
+// A url as git fetches from a host: scp's `[user@]host:path`, with no scheme and a colon before its
+// first slash, or a URL of a transport git has itself (`http`, `https`, `git`, `ssh` and its
+// `git+ssh`/`ssh+git` aliases, lowercase, as git spells them), its authority, `[userinfo@]host[:port]`,
+// ending at the first slash after it. Not, then, what a package.json spells GitHub's that git reads
+// another way or not at all: `ssh://git@github.com:owner/name`, whose host is `github.com:owner` to
+// git; `git+https://` or `HTTPS://`, transports git doesn't have; nor `owner/name`, a path, as is any
+// url with no colon before its first slash.
+const GIT_URL = /^(?:[^/]*:(?!\/\/)|(?:https?|git|ssh|git\+ssh|ssh\+git):\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/u
 
-// The github.com ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
-// `github`, the repository a submodule's url names where it is GitHub's (parseGithubRepository,
-// which a host merely holding `github.com` doesn't pass), or null.
+// The GitHub repository, `owner/name`, a .gitmodules `url` names (parseGithubRepository), else null:
+// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for a url git
+// doesn't fetch as one (GIT_URL), nor for npm's `github:owner/name`, the host `github`'s path to git,
+// whatever an ssh alias or `insteadOf` makes of it, nor one with a `#`, which git keeps in the path
+// it asks for (`owner/name.git#v1`) where npm takes a committish. git's `ssh+git://`, which a
+// package.json doesn't spell, is its `ssh://`.
+const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url.replace(/^ssh\+git:/u, 'ssh:')) : null)
+
+// The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {
   const byPath = new Map()
   for (const { path, url, branch } of submodules) {
-    const name = url && githubSlug(url)
-    if (name) byPath.set(path, { name, branch, github: parseGithubRepository(url) })
+    const name = url && submoduleGithub(url)
+    if (name) byPath.set(path, { name, branch })
   }
   return byPath
 }
@@ -169,10 +178,10 @@ function makeSolidityClassifier(baseDir, ownership, host) {
         return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
-    for (const [sub, { name, branch, github }] of submodules) {
+    for (const [sub, { name, branch }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
-        const repo = repoRootAt(github, commitOf(sub))
+        const repo = repoRootAt(name, commitOf(sub))
         return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github', ...(repo === undefined ? {} : { repo }) }
       }
     }

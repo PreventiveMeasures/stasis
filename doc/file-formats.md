@@ -352,8 +352,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   2. **package.json:** if git yields no GitHub origin, the nearest `package.json`
      at or above the bundle root that declares a `repository`, up to the work tree
      root. `github` comes from its GitHub URL or `github:`/`owner/name` shorthand
-     (a `#committish` dropped; a URL whose authority ends before `github.com`,
-     such as `https://evil.example?@github.com/a/b`, names none),
+     (a `#committish` dropped, `www.github.com` taken for `github.com`; a URL
+     whose authority ends before `github.com`, such as
+     `https://evil.example?@github.com/a/b`, names none),
      and `directory` from `repository.directory` combined with the bundle root's
      path below that `package.json`. When `repository.directory` is unset, a GitHub
      `homepage` of the same repository such as
@@ -882,11 +883,21 @@ file resolves out of:
 | Rust | the same, a git checkout's copy | `cargo-git` (name/version from `Cargo.toml`) |
 | Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
 
-A dep under `node_modules` is `npm` whatever the language. A git submodule with no
-`package.json`/`branch`, or a Soldeer dir with no version suffix, falls back to
-`0.0.0`; the workspace bucket carries no `ecosystem`. A Rust crate reached
-through a Cargo `path` dependency is first-party (its own `Cargo.toml` bucket, no
-`ecosystem`), not a registry dep. Where a vendored crate was copied from, its
+A dep under `node_modules` is `npm` whatever the language. A git submodule is
+`github` only where its `.gitmodules` url is GitHub's: `https`, `ssh`, `git` or
+scp-like (`git@github.com:`) at `github.com` or `www.github.com`. One of another
+host, even one holding `github.com` (`https://notgithub.com/o/n`), or a path, is
+bucketed as any file outside `node_modules` is, by its nearest `package.json`,
+first-party; so is one a `package.json` takes for GitHub's that git reads
+another way, or not at all: `github:o/n`, the host `github`'s path to git,
+whatever an ssh alias makes of it; `ssh://git@github.com:o/n`, whose host is
+`github.com:o`; a `#committish`, which git keeps in the path it asks for; and
+`git+https://` or `HTTPS://`, transports git doesn't have. A git
+submodule with no `package.json`/`branch`, or a Soldeer dir with no version
+suffix, falls back to `0.0.0`; the workspace bucket carries no `ecosystem`. A
+Rust crate reached through a Cargo `path` dependency is first-party (its own
+`Cargo.toml` bucket, no `ecosystem`), not a registry dep. Where a vendored
+crate was copied from, its
 `.cargo-checksum.json` tells: `cargo vendor` writes a registry crate's with the
 package's checksum, a git dependency's with `"package": null`. Only a registry's
 copy is `cargo`, which `stasis audit` asks OSV about as crates.io's crate and

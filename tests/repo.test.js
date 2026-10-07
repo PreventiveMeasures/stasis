@@ -44,6 +44,9 @@ test('parseGithubRepository accepts package.json repository spellings of a GitHu
     'git+https://github.com/ExodusOSS/stasis.git#v1.2.3', 'github:ExodusOSS/stasis#main', 'ExodusOSS/stasis#semver:^1',
     // the scp-like form, behind an ssh:// too
     'git+ssh://git@github.com:ExodusOSS/stasis.git', 'ssh://git@github.com:ExodusOSS/stasis',
+    // GitHub's host with a `www.`, stripped
+    'https://www.github.com/ExodusOSS/stasis', 'git+ssh://git@WWW.github.com/ExodusOSS/stasis.git',
+    'ssh://git@www.github.com:ExodusOSS/stasis', 'git@www.github.com:ExodusOSS/stasis.git',
   ]) {
     t.assert.equal(parseGithubRepository(url), 'ExodusOSS/stasis', url)
   }
@@ -52,6 +55,8 @@ test('parseGithubRepository accepts package.json repository spellings of a GitHu
     '../b', '', undefined, null, 42,
     // an authority ending before github.com is another host's
     'https://evil.example#@github.com/a/b', 'https://evil.example?@github.com/a/b', 'https://evil.example\\@github.com/a/b', 'ssh://evil.example?@github.com:a/b',
+    // a `www.` of another host, or another host's under GitHub's
+    'https://www.github.com.evil.example/a/b', 'https://wwwgithub.com/a/b', 'https://evil.www.github.com/a/b', 'git@www.notgithub.com:a/b',
   ]) {
     t.assert.equal(parseGithubRepository(url), null, String(url))
   }
