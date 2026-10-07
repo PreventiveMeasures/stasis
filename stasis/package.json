@@ -1,6 +1,6 @@
 {
   "name": "@exodus/stasis",
-  "version": "1.0.0-beta.6",
+  "version": "1.0.0-beta.7",
   "description": "File-level source bundles and lockfiles",
   "type": "module",
   "exports": {
@@ -93,8 +93,8 @@
   "homepage": "https://github.com/PreventiveMeasures/stasis#readme",
   "dependencies": {
     "@exodus/bytes": "^1.16.0",
-    "@exodus/stasis-core": "1.0.0-beta.6",
-    "@exodus/stasis-plugins": "1.0.0-beta.6",
+    "@exodus/stasis-core": "1.0.0-beta.7",
+    "@exodus/stasis-plugins": "1.0.0-beta.7",
     "@preventive/archive": "1.0.0-beta.4",
     "@preventive/deptree": "1.0.0-alpha.8",
     "@preventive/lockfile": "1.0.0-alpha.7",
