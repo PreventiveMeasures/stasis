@@ -3363,12 +3363,14 @@ test('--mainFields and --metro build from a cwd named through a link', withTmp(a
 }))
 
 test('--metro carries the native surface of a workspace package linked into node_modules, by its real path', withTmp(async (t, tmp) => {
-  // rn-lib is reached by its real path, out of node_modules, through the link its bare import takes:
-  // a dependency like any installed one. other is reached by a relative path alone, through no link,
-  // and the app's own native project is no dependency's.
+  // A workspace package linked into node_modules is reached by its real path, out of node_modules,
+  // but is a dependency like any installed one, however the import reaches it: rn-lib by its own
+  // name, rn-mapped through the app's react-native map, rn-aliased by the name it's installed under,
+  // linked-rel by a relative path. other is linked nowhere, and the app's own native project is no
+  // dependency's.
   const files = {
-    'package.json': { name: 'app', version: '1.0.0' },
-    'src/index.js': "require('rn-lib')\nrequire('../packages/other')\n",
+    'package.json': { name: 'app', version: '1.0.0', 'react-native': { './src/impl.js': 'rn-mapped' } },
+    'src/index.js': "require('rn-lib')\nrequire('./impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/other')\n",
     'ios/App.mm': '@implementation App @end\n',
     'packages/rn-lib/package.json': { name: 'rn-lib', version: '1.0.0', main: './index.js' },
     'packages/rn-lib/index.js': 'module.exports = 1\n',
@@ -3378,20 +3380,37 @@ test('--metro carries the native surface of a workspace package linked into node
     'packages/other/index.js': 'module.exports = 2\n',
     'packages/other/ios/Other.mm': '@implementation Other @end\n',
   }
+  for (const name of ['rn-mapped', 'rn-aliased', 'linked-rel']) {
+    files[`packages/${name}/package.json`] = { name, version: '1.0.0', main: './index.js' }
+    files[`packages/${name}/index.js`] = 'module.exports = 3\n'
+    files[`packages/${name}/android/build.gradle`] = '// gradle\n'
+  }
   for (const [name, content] of Object.entries(files)) {
     mkdirSync(dirname(join(tmp, name)), { recursive: true })
     writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
   }
   mkdirSync(join(tmp, 'node_modules'))
-  symlinkSync(join('..', 'packages', 'rn-lib'), join(tmp, 'node_modules', 'rn-lib'))
+  for (const [link, dir] of [['rn-lib', 'rn-lib'], ['rn-mapped', 'rn-mapped'], ['rn-alias', 'rn-aliased'], ['linked-rel', 'linked-rel']]) {
+    symlinkSync(join('..', 'packages', dir), join(tmp, 'node_modules', link))
+  }
   const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
   t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-lib'), 'packages/rn-lib/index.js')
+  t.assert.equal(importTarget(bundle, 'src/index.js', './impl'), 'packages/rn-mapped/index.js')
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
+    'packages/linked-rel/android/build.gradle',
+    'packages/linked-rel/index.js',
+    'packages/linked-rel/package.json',
     'packages/other/index.js',
+    'packages/rn-aliased/android/build.gradle',
+    'packages/rn-aliased/index.js',
+    'packages/rn-aliased/package.json',
     'packages/rn-lib/index.js',
     'packages/rn-lib/ios/RnLib.mm',
     'packages/rn-lib/package.json',
     'packages/rn-lib/rn-lib.podspec',
+    'packages/rn-mapped/android/build.gradle',
+    'packages/rn-mapped/index.js',
+    'packages/rn-mapped/package.json',
     'src/index.js',
   ])
   t.assert.equal(bundle.formats.get('packages/rn-lib/ios/RnLib.mm'), 'objcpp')

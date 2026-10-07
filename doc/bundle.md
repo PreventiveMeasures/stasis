@@ -131,9 +131,9 @@ doesn't combine with `--conditions` or `--mainFields`.
 It also carries each bundled dependency's native build inputs: for every
 `node_modules` package the code graph reaches, its `ios/` and `android/`
 sources and its podspecs (for `react-native` itself, its whole native tree).
-That includes a workspace package linked into `node_modules`, carried where
-it lies (`packages/<name>/...`) when a bare import reaches it through the
-link; one reached only by a relative path is not a dependency.
+That includes a workspace package linked into the `node_modules` its importer
+resolves packages from, carried where it lies (`packages/<name>/...`) however
+the import reaches it; one linked nowhere there is the project's own source.
 A package reached only for an asset through `--resources` is not a linked
 native dependency and contributes none. Build output (`build`, `.gradle`,
 `.cxx`, `Pods`, `DerivedData`, nested `node_modules`) is skipped.

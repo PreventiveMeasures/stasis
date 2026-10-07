@@ -990,6 +990,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     put(EMPTY_MODULE_PATH, '', 'commonjs', Buffer.alloc(0))
   }
 
+  // The package a bundled file is in (findPackageMetadata: its pkgDir and identity, null where no
+  // manifest names one), memoized per directory so a package's many files don't each re-walk to it.
+  const packageOf = packageLookup(baseDir, { host })
+
   // --metro also carries each bundled dependency's native build-input surface (ios/android
   // sources + podspecs), scoped to the packages in the bundle installed or linked into
   // node_modules. Native source is stored as code under a language tag; other assets as
@@ -1005,24 +1009,31 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       if (nm) pkgDirs.set(nm.dir, nm.name)
     }
     // A package linked into node_modules from out of it (a workspace package) is reached by its real
-    // path, out of node_modules, but is a dependency all the same: one a bare import reaches through
-    // such a link, located as the resolver located it. A relative or tsconfig-paths import into it
-    // goes through no link.
+    // path, out of node_modules, but is a dependency all the same, however an import reaches it (by
+    // name, through a browser/react-native map, by a relative path): one linked where its importer
+    // finds packages, under its own name or the bare name the import spelled (an alias), located as
+    // the resolver locates a package. One linked nowhere there is the project's own source.
+    const linkedAs = (fromDir, name, pkgDir) => {
+      const loc = locatePackage(fromDir, name, host)
+      if (!loc) return false
+      try {
+        return toRel(host.realpath(loc.pkgDir)) === pkgDir
+      } catch {
+        return false // a link out of the root, whose files the scan pass refused already
+      }
+    }
     for (const [parent, bySpec] of edges) {
+      const from = packageOf(parent)?.pkgDir
+      const fromDir = dirname(join(baseDir, parent))
       for (const [spec, byPlatform] of bySpec) {
-        if (spec.startsWith('.') || spec.startsWith('#') || posix.isAbsolute(spec)) continue
-        const targets = [...byPlatform.values()].filter((target) => isCode(target) && !splitNodeModulesPath(target))
-        if (targets.length === 0) continue
-        const loc = locatePackage(dirname(join(baseDir, parent)), spec, host)
-        if (!loc) continue
-        let pkgDir
-        try {
-          pkgDir = toRel(host.realpath(loc.pkgDir))
-        } catch {
-          continue // a link out of the root, whose files the scan pass refused already
-        }
-        if (targets.some((target) => target.startsWith(`${pkgDir}/`))) {
-          pkgDirs.set(pkgDir, spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/'))
+        const bare = !(spec.startsWith('.') || spec.startsWith('#') || posix.isAbsolute(spec))
+        for (const target of byPlatform.values()) {
+          if (!isCode(target) || splitNodeModulesPath(target)) continue
+          const pkg = packageOf(target)
+          if (!pkg || pkg.pkgDir === '.' || pkg.pkgDir === from || pkgDirs.has(pkg.pkgDir)) continue
+          const names = bare ? [pkg.name, spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/')] : [pkg.name]
+          const name = names.find((n) => linkedAs(fromDir, n, pkg.pkgDir))
+          if (name !== undefined) pkgDirs.set(pkg.pkgDir, name)
         }
       }
     }
@@ -1071,12 +1082,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --package-json: fold each bundled module's package.json into `sources` (and its integrity into
   // the companion lockfile) even when the scan never reached it. Buckets are the ones
-  // assembleCodeBundle derives, from the same `packageOf` (findPackageMetadata -> pkgDir, else the
-  // '.' workspace bucket; packageLookup memoizes it per directory so a package's many files don't
-  // each re-walk to the same manifest). readModuleManifest applies the read/validate rules shared
-  // with the State path (containment, UTF-8-aborts); no identity check here -- these buckets are
-  // all fresh from disk.
-  const packageOf = packageLookup(baseDir, { host })
+  // assembleCodeBundle derives, from the same `packageOf` (its pkgDir, else the '.' workspace
+  // bucket). readModuleManifest applies the read/validate rules shared with the State path
+  // (containment, UTF-8-aborts); no identity check here -- these buckets are all fresh from disk.
   if (packageJSON) {
     const pkgDirs = new Set()
     for (const abs of reached) {
