@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { dirname, extname, join, posix, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -877,8 +877,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
 
+  // A resolved file arrives by its real path, an entry as spelled: under a cwd named through a link,
+  // the files the scan reaches lie below the root's real path, not below `baseDir` as spelled. Either
+  // is the root; a file below neither is outside it. (Realpathed only when needed, so a missing cwd
+  // is still the scan's missing entry.)
+  let realRoot
   const toRel = (abs) => {
-    const rel = toPosix(relative(baseDir, abs))
+    let rel = toPosix(relative(baseDir, abs))
+    if (relativeEscapes(rel)) {
+      realRoot ??= host.realpath(baseDir)
+      rel = toPosix(relative(realRoot, abs))
+    }
     if (relativeEscapes(rel)) {
       throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
     }
@@ -956,8 +965,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const realBase = host.realpath(baseDir)
   for (const abs of reached) {
     const rel = toRel(abs)
-    // Security: the field resolver returns the lexical path, so an in-tree-named symlink
-    // escaping the root would slip past toRel's textual check -- realpath and fail closed.
+    // Security: a resolved file arrives by its real path, which toRel already holds to the root,
+    // but an entry is taken as spelled (and --metro-resolver keeps a path it can't realpath), so an
+    // in-tree-named symlink escaping the root would slip past toRel's textual check -- realpath and
+    // fail closed.
     assertRealPathWithinBase(realBase, baseDir, rel, host)
     const buf = host.readFile(abs)
     if (resourceRels.has(rel)) {
@@ -976,25 +987,89 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     put(EMPTY_MODULE_PATH, '', 'commonjs', Buffer.alloc(0))
   }
 
+  // The package a bundled file is in (findPackageMetadata: its pkgDir and identity, null where no
+  // manifest names one), memoized per directory so a package's many files don't each re-walk to it.
+  const packageOf = packageLookup(baseDir, { host })
+
   // --metro also carries each bundled dependency's native build-input surface (ios/android
-  // sources + podspecs), scoped to the node_modules packages actually in the bundle. Native
-  // source is stored as code under a language tag; other assets as 'resource'/'resource:base64'.
+  // sources + podspecs), scoped to the packages in the bundle installed or linked into
+  // node_modules. Native source is stored as code under a language tag; other assets as
+  // 'resource'/'resource:base64'.
   if (metro) {
-    const pkgDirs = new Set()
+    const pkgDirs = new Map() // package dir -> its package's name
+    // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
+    // not a linked native dependency, so it must not drag in its ios/android surface.
+    const isCode = (rel) => !resourceRels.has(rel)
     for (const abs of reached) {
-      // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
-      // not a linked native dependency, so it must not drag in its ios/android surface.
       const rel = toRel(abs)
-      if (resourceRels.has(rel)) continue
-      const nm = splitNodeModulesPath(rel)
-      if (nm) pkgDirs.add(nm.dir)
+      const nm = isCode(rel) && splitNodeModulesPath(rel)
+      if (nm) pkgDirs.set(nm.dir, nm.name)
     }
-    for (const pkgDir of [...pkgDirs].toSorted()) {
+    // A package linked into node_modules from out of it (a workspace package) is reached by its real
+    // path, out of node_modules, but is a dependency all the same, however an import reaches it (by
+    // name or alias, through a browser/react-native map, by a relative path): one linked, under any
+    // name, into a node_modules its importer finds packages in (the directories the resolver looks
+    // in). One linked nowhere there is the project's own source.
+    const linksIn = new Map() // directory -> Set of the real package dirs linked into a node_modules it finds packages in
+    const linkedFrom = (dir) => {
+      let links = linksIn.get(dir)
+      if (links !== undefined) return links
+      const parent = dirname(dir)
+      links = new Set(parent === dir ? [] : linkedFrom(parent))
+      const link = (abs) => {
+        try {
+          const rel = toRel(host.realpath(abs))
+          if (!splitNodeModulesPath(rel)) links.add(rel)
+        } catch { /* a dangling link, or one out of the root, whose files the scan pass refused already */ }
+      }
+      const listing = (abs) => {
+        try {
+          return host.readdir(abs)
+        } catch {
+          return []
+        }
+      }
+      // As locatePackage: a directory named node_modules holds no node_modules of its own to look in.
+      if (basename(dir) !== 'node_modules') {
+        const nodeModules = join(dir, 'node_modules')
+        for (const ent of listing(nodeModules)) {
+          const abs = join(nodeModules, ent.name)
+          if (ent.name.startsWith('@')) {
+            // A scope holds packages, a directory or a link to one (a whole scope linked, where
+            // every package in it is reached through the link).
+            for (const scoped of listing(abs)) {
+              if (ent.isSymbolicLink() || scoped.isSymbolicLink()) link(join(abs, scoped.name))
+            }
+          } else if (ent.isSymbolicLink()) {
+            link(abs)
+          }
+        }
+      }
+      linksIn.set(dir, links)
+      return links
+    }
+    for (const [parent, bySpec] of edges) {
+      for (const byPlatform of bySpec.values()) {
+        for (const target of byPlatform.values()) {
+          if (!isCode(target) || splitNodeModulesPath(target)) continue
+          const links = linkedFrom(dirname(join(baseDir, parent)))
+          // The linked root holding the target, nearest first: its entry may lie below a manifest of
+          // its own (a named dist/package.json), as a node_modules path names the package it's in.
+          let root = posix.dirname(target)
+          while (root !== '.' && !links.has(root)) root = posix.dirname(root)
+          // The project's own source isn't a dependency, nor is an import within the package itself.
+          if (root === '.' || parent.startsWith(`${root}/`) || pkgDirs.has(root)) continue
+          // Named by its own manifest, whatever name it's linked under.
+          pkgDirs.set(root, readPackageJson(baseDir, `${root}/package.json`, { host })?.name)
+        }
+      }
+    }
+    for (const [pkgDir, name] of [...pkgDirs].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       const pkgAbs = join(baseDir, pkgDir)
       // react-native core isn't a Pod (config reports it via reactNativePath, not `dependencies`),
       // so walk its whole tree for native source (React/, ReactCommon/, ReactAndroid/, ...) the same
       // way a native dep's ios/android surface is walked; every other dep gets its ios/android + podspecs.
-      const isRnCore = pkgDir.slice(pkgDir.lastIndexOf('node_modules/') + 'node_modules/'.length) === 'react-native'
+      const isRnCore = name === 'react-native'
       const files = isRnCore ? [] : nativeModuleFiles(pkgAbs, host)
       if (isRnCore) walkNative(pkgAbs, files, host, isNativeSource)
       for (const abs of files) {
@@ -1034,12 +1109,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --package-json: fold each bundled module's package.json into `sources` (and its integrity into
   // the companion lockfile) even when the scan never reached it. Buckets are the ones
-  // assembleCodeBundle derives, from the same `packageOf` (findPackageMetadata -> pkgDir, else the
-  // '.' workspace bucket; packageLookup memoizes it per directory so a package's many files don't
-  // each re-walk to the same manifest). readModuleManifest applies the read/validate rules shared
-  // with the State path (containment, UTF-8-aborts); no identity check here -- these buckets are
-  // all fresh from disk.
-  const packageOf = packageLookup(baseDir, { host })
+  // assembleCodeBundle derives, from the same `packageOf` (its pkgDir, else the '.' workspace
+  // bucket). readModuleManifest applies the read/validate rules shared with the State path
+  // (containment, UTF-8-aborts); no identity check here -- these buckets are all fresh from disk.
   if (packageJSON) {
     const pkgDirs = new Set()
     for (const abs of reached) {

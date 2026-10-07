@@ -23,7 +23,7 @@ import { createNodeResolver } from './resolve-node.js'
 // resolveConditions). No user code is executed (only package.json is stat/read).
 //
 // Returns, for each specifier:
-//   { url }      resolved to a real file (file: URL string)
+//   { url }      resolved to a file, by its real path (file: URL string; see fileResolution)
 //   { empty }    a browser/react-native field mapped it to `false` (empty module)
 //   { builtin }  a Node builtin: a `node:` specifier, or a builtin name no installed package resolves
 //   null         unresolved
@@ -114,7 +114,21 @@ function resolveEntryThroughMap(map, main, opts) {
   return { entry: main }
 }
 
-const fileResolution = (path) => ({ url: pathToFileURL(path).toString() })
+// A resolved file by its REAL path (through `host`, so a Vfs host's links are followed too), as Node,
+// Metro and esbuild record one: under pnpm's isolated layout `node_modules/debug` links into
+// `node_modules/.pnpm/debug@x/node_modules/debug`, whose own imports (a sibling `ms`) resolve only
+// from where it really lies. Probing stays on the path as reached, so a candidate and the package
+// scope read from it (resolveSourceFile's metro redirect) are one spelling; only the hit is
+// realpathed. null where the file has no real path (gone since it was probed).
+function fileResolution(path, host) {
+  let real
+  try {
+    real = host.realpath(path)
+  } catch {
+    return null
+  }
+  return { url: pathToFileURL(real).toString() }
+}
 
 // Match a package-relative path (`./x`) against the redirect map, trying `.js`/`.json` appended.
 function matchRedirect(map, relPath) {
@@ -207,7 +221,7 @@ function resolveSourceFile(base, opts) {
 // bare package-name imports, not to a path landing on a directory.
 function resolveFileOrDir(base, opts) {
   // resolveSourceFile yields a path, { empty: true } (a metro candidate-redirect hit), or null.
-  const asResolution = (hit) => (hit == null ? null : typeof hit === 'string' ? fileResolution(hit) : hit)
+  const asResolution = (hit) => (hit == null ? null : typeof hit === 'string' ? fileResolution(hit, opts.host) : hit)
   const file = asResolution(resolveSourceFile(base, opts))
   if (file) return file
   if (isDir(base, opts.host)) {
@@ -263,9 +277,9 @@ export function createFieldResolver({
     const conds = new Set(callConditions ?? conditions)
     const viaNode = (spec) => {
       try {
-        if (!isBuiltin(spec)) return fileResolution(host.resolve(parentFile, spec, conds))
+        if (!isBuiltin(spec)) return fileResolution(host.resolve(parentFile, spec, conds), host)
         packageResolver ??= createNodeResolver(host)
-        return fileResolution(packageResolver.resolve(parentFile, spec, conds, { builtins: false }))
+        return fileResolution(packageResolver.resolve(parentFile, spec, conds, { builtins: false }), host)
       } catch {
         return null
       }
@@ -337,7 +351,7 @@ export function createFieldResolver({
       paths: typescriptPaths,
       host,
     })
-    return hit == null ? null : fileResolution(hit)
+    return hit == null ? null : fileResolution(hit, host)
   }
 }
 

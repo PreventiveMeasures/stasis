@@ -2357,12 +2357,13 @@ test('buildBundle --typescript threads through the legacy-field resolver (--main
   writeFileSync(join(tmp, 'entry.ts'),
     'import { dep } from "./dep.js"\nimport { m } from "tsdep"\nexport const v: number = dep + m\n')
   const bundle = await buildBundle({ cwd: tmp, entries: ['entry.ts'], mainFields: ['main'], typescript: true })
+  // Keyed by its real path, where the link into node_modules leads, as Node's resolution keys it.
   t.assert.deepStrictEqual(
     [...bundle.sources.keys()].toSorted(),
-    ['dep.ts', 'entry.ts', 'node_modules/tsdep/lib/main.ts'],
+    ['dep.ts', 'entry.ts', 'packages/tsdep/lib/main.ts'],
   )
   t.assert.equal(bundle.imports.get('*').get('entry.ts').get('./dep.js'), 'dep.ts')
-  t.assert.equal(bundle.imports.get('*').get('entry.ts').get('tsdep'), 'node_modules/tsdep/lib/main.ts')
+  t.assert.equal(bundle.imports.get('*').get('entry.ts').get('tsdep'), 'packages/tsdep/lib/main.ts')
 }))
 
 test('buildBundle --typescript reads the tsconfig.json of the project PROJECT_CWD roots (--mainFields path)', withTmp(async (t, tmp) => {
@@ -2679,8 +2680,8 @@ cliTest('CLI: bundle --typescript takes each workspace package\'s own tsconfig.j
 }))
 
 cliTest('CLI: bundle --mainFields --typescript reads a linked workspace package\'s tsconfig.json where it lies', withTmp(async (t, tmp) => {
-  // The field resolver keeps a main-field package's lexical node_modules path; lib's config, which
-  // `extends` ../../tsconfig.base.json, must still be read from packages/lib, not through the link.
+  // lib is a main-field package reached through its node_modules link; its config, which
+  // `extends` ../../tsconfig.base.json, must be read from packages/lib, not through the link.
   const files = {
     'package.json': { name: 'root', private: true },
     'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
@@ -3233,8 +3234,8 @@ cliTest('CLI: a --mainFields bundle round-trips through --bundle=load (empty mod
 
 cliTest('--mainFields fails closed on a node_modules symlink whose target escapes the project root', withTmp(async (t, tmp) => {
   // A dependency symlinked to a real file OUTSIDE the project root must not pull
-  // out-of-tree bytes into the bundle: the resolved path is realpath'd and rejected,
-  // the same way the State-based JS path and the non-JS loaders do.
+  // out-of-tree bytes into the bundle: the resolver records its real path, which the build
+  // refuses, the same way the State-based JS path and the non-JS loaders do.
   const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
   try {
     writeFileSync(join(outside, 'evil.js'), 'module.exports = "external"\n')
@@ -3245,8 +3246,15 @@ cliTest('--mainFields fails closed on a node_modules symlink whose target escape
     writeFileSync(join(tmp, 'app.js'), "require('extdep')\n")
     const r = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
     t.assert.notEqual(r.status, 0)
-    t.assert.match(r.stderr, /escaping bundle root/)
+    t.assert.match(r.stderr, /Bundle would reach a file outside the project root: .*evil\.js/)
     t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle is written when a source escapes the root')
+    // An entry is taken as spelled, so one linked out of the root passes the textual check and is
+    // refused by its real path.
+    symlinkSync(join(outside, 'evil.js'), join(tmp, 'linked.js'))
+    const entry = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'linked.js'], { cwd: tmp })
+    t.assert.notEqual(entry.status, 0)
+    t.assert.match(entry.stderr, /Refusing to follow symlink escaping bundle root: linked\.js -> .*evil\.js/)
+    t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle is written when an entry escapes the root')
   } finally {
     rmSync(outside, { recursive: true, force: true })
   }
@@ -3268,6 +3276,205 @@ test('--mainFields bundles a dependency whose main is a directory or a broken pa
   const files = new Set(bundle.sources.keys())
   t.assert.ok(files.has('local/inner/index.js'), 'directory-main dependency is bundled')
   t.assert.ok(files.has('node_modules/barebad/index.js'), 'broken-main dependency falls back to index and is bundled')
+}))
+
+// pnpm's isolated layout: a top-level dependency is a link into node_modules/.pnpm/<id>/node_modules/<name>,
+// beside links to its own dependencies (dep's sib), which a file of it finds only from where it really lies.
+const PNPM_DEP = 'node_modules/.pnpm/dep@1.0.0/node_modules/dep'
+const PNPM_SIB = 'node_modules/.pnpm/sib@2.0.0/node_modules/sib'
+const writePnpmLayout = (tmp) => {
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0', dependencies: { dep: '1.0.0' } },
+    'src/index.js': "require('dep')\nrequire('dep/platform')\n",
+    [`${PNPM_DEP}/package.json`]: {
+      name: 'dep',
+      version: '1.0.0',
+      main: './index.js',
+      browser: { './index.js': './browser.js', './platform.ios.js': './platform-ios.js', './common.ios.js': './common-ios.js' },
+    },
+    [`${PNPM_DEP}/index.js`]: "module.exports = require('./common')\n",
+    [`${PNPM_DEP}/browser.js`]: "module.exports = require('./common')\n",
+    [`${PNPM_DEP}/common.js`]: "module.exports = require('sib')\n",
+    [`${PNPM_DEP}/common-ios.js`]: "module.exports = require('sib')\n",
+    [`${PNPM_DEP}/platform.js`]: "module.exports = 'any'\n",
+    [`${PNPM_DEP}/platform-ios.js`]: "module.exports = 'ios'\n",
+    [`${PNPM_DEP}/ios/Dep.mm`]: '@implementation Dep @end\n',
+    [`${PNPM_SIB}/package.json`]: { name: 'sib', version: '2.0.0', main: './index.js' },
+    [`${PNPM_SIB}/index.js`]: "module.exports = 'sib'\n",
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  symlinkSync('.pnpm/dep@1.0.0/node_modules/dep', join(tmp, 'node_modules', 'dep'))
+  symlinkSync('../../sib@2.0.0/node_modules/sib', join(tmp, 'node_modules', '.pnpm', 'dep@1.0.0', 'node_modules', 'sib'))
+}
+
+test('--mainFields and --metro resolve a pnpm-linked dependency by its real path, as Node does', withTmp(async (t, tmp) => {
+  const cwd = realpathSync(tmp)
+  writePnpmLayout(cwd)
+  const entries = ['src/index.js']
+  const node = await buildBundle({ cwd, entries })
+  const fields = await buildBundle({ cwd, entries, mainFields: ['browser', 'module', 'main'], conditions: ['browser'] })
+  const metro = await buildBundle({ cwd, entries, metro: true, platforms: ['ios', 'android'] })
+  // Every mode keys the packages where they really lie, so the bundles line up.
+  for (const bundle of [node, fields, metro]) {
+    t.assert.deepStrictEqual([...bundle.modules.keys()].filter((dir) => dir !== '.').toSorted(), [PNPM_DEP, PNPM_SIB])
+  }
+  t.assert.equal(importTarget(node, `${PNPM_DEP}/common.js`, 'sib'), `${PNPM_SIB}/index.js`)
+
+  t.assert.equal(importTarget(fields, 'src/index.js', 'dep'), `${PNPM_DEP}/browser.js`)
+  t.assert.equal(importTarget(fields, 'src/index.js', 'dep/platform'), `${PNPM_DEP}/platform.js`)
+  t.assert.equal(importTarget(fields, `${PNPM_DEP}/browser.js`, './common'), `${PNPM_DEP}/common.js`)
+  // dep's own dependency, found beside where dep really lies.
+  t.assert.equal(importTarget(fields, `${PNPM_DEP}/common.js`, 'sib'), `${PNPM_SIB}/index.js`)
+
+  // Metro's per-candidate browser redirect reads the package from the path probed: through the
+  // top-level link for dep's subpath, from dep's real path for dep's own import.
+  t.assert.equal(importTarget(metro, 'src/index.js', 'dep'), `${PNPM_DEP}/browser.js`)
+  t.assert.deepStrictEqual(importTarget(metro, 'src/index.js', 'dep/platform'), { android: `${PNPM_DEP}/platform.js`, ios: `${PNPM_DEP}/platform-ios.js` })
+  t.assert.deepStrictEqual(importTarget(metro, `${PNPM_DEP}/browser.js`, './common'), { android: `${PNPM_DEP}/common.js`, ios: `${PNPM_DEP}/common-ios.js` })
+  for (const file of ['common.js', 'common-ios.js']) t.assert.equal(importTarget(metro, `${PNPM_DEP}/${file}`, 'sib'), `${PNPM_SIB}/index.js`)
+  // dep's native surface rides along under the same real path.
+  t.assert.equal(metro.formats.get(`${PNPM_DEP}/ios/Dep.mm`), 'objcpp')
+  t.assert.ok(![...metro.sources.keys()].some((file) => file.startsWith('node_modules/dep/')), 'nothing by the link\'s path')
+}))
+
+test('--mainFields and --metro build from a cwd named through a link', withTmp(async (t, tmp) => {
+  // The resolved files arrive by their real path, below the root the link names; the entries as
+  // spelled, relative or absolute through the link.
+  const real = join(realpathSync(tmp), 'real')
+  writePnpmLayout(real)
+  writeFileSync(join(real, 'src', 'index.js'), "require('./local')\nrequire('dep')\n")
+  writeFileSync(join(real, 'src', 'local.js'), "module.exports = 'local'\n")
+  const cwd = join(tmp, 'link')
+  symlinkSync(real, cwd)
+  const builds = await Promise.all([
+    { entries: ['src/index.js'], mainFields: ['browser', 'main'] },
+    { entries: [join(cwd, 'src', 'index.js')], mainFields: ['browser', 'main'] },
+    { entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] },
+  ].map((options) => buildBundle({ cwd, ...options })))
+  for (const bundle of builds) {
+    t.assert.deepStrictEqual([...bundle.entries], ['src/index.js'])
+    t.assert.equal(importTarget(bundle, 'src/index.js', './local'), 'src/local.js')
+    t.assert.equal(importTarget(bundle, 'src/index.js', 'dep'), `${PNPM_DEP}/browser.js`)
+    t.assert.ok(bundle.sources.has(`${PNPM_SIB}/index.js`), 'dep\'s sib')
+  }
+}))
+
+test('--metro carries the native surface of a workspace package linked into node_modules, by its real path', withTmp(async (t, tmp) => {
+  // A workspace package linked into node_modules is reached by its real path, out of node_modules,
+  // but is a dependency like any installed one, however the import reaches it: rn-lib by its own
+  // name, rn-mapped through the app's react-native map, rn-aliased by the name it's installed under,
+  // linked-rel by a relative path, native by a relative path though it's installed under an alias.
+  // other is linked nowhere, and the app's own native project is no dependency's.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0', 'react-native': { './src/impl.js': 'rn-mapped' } },
+    'src/index.js': "require('rn-lib')\nrequire('./impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/native')\nrequire('../packages/other')\n",
+    'ios/App.mm': '@implementation App @end\n',
+    'packages/rn-lib/package.json': { name: 'rn-lib', version: '1.0.0', main: './index.js' },
+    'packages/rn-lib/index.js': 'module.exports = 1\n',
+    'packages/rn-lib/rn-lib.podspec': 'Pod::Spec.new\n',
+    'packages/rn-lib/ios/RnLib.mm': '@implementation RnLib @end\n',
+    'packages/other/package.json': { name: 'other', version: '1.0.0', main: './index.js' },
+    'packages/other/index.js': 'module.exports = 2\n',
+    'packages/other/ios/Other.mm': '@implementation Other @end\n',
+  }
+  for (const [dir, name] of [['rn-mapped', 'rn-mapped'], ['rn-aliased', 'rn-aliased'], ['linked-rel', 'linked-rel'], ['native', 'real-native']]) {
+    files[`packages/${dir}/package.json`] = { name, version: '1.0.0', main: './index.js' }
+    files[`packages/${dir}/index.js`] = 'module.exports = 3\n'
+    files[`packages/${dir}/android/build.gradle`] = '// gradle\n'
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  for (const [link, dir] of [['rn-lib', 'rn-lib'], ['rn-mapped', 'rn-mapped'], ['rn-alias', 'rn-aliased'], ['linked-rel', 'linked-rel'], ['native-alias', 'native']]) {
+    symlinkSync(join('..', 'packages', dir), join(tmp, 'node_modules', link))
+  }
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-lib'), 'packages/rn-lib/index.js')
+  t.assert.equal(importTarget(bundle, 'src/index.js', './impl'), 'packages/rn-mapped/index.js')
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
+    'packages/linked-rel/android/build.gradle',
+    'packages/linked-rel/index.js',
+    'packages/linked-rel/package.json',
+    'packages/native/android/build.gradle',
+    'packages/native/index.js',
+    'packages/native/package.json',
+    'packages/other/index.js',
+    'packages/rn-aliased/android/build.gradle',
+    'packages/rn-aliased/index.js',
+    'packages/rn-aliased/package.json',
+    'packages/rn-lib/index.js',
+    'packages/rn-lib/ios/RnLib.mm',
+    'packages/rn-lib/package.json',
+    'packages/rn-lib/rn-lib.podspec',
+    'packages/rn-mapped/android/build.gradle',
+    'packages/rn-mapped/index.js',
+    'packages/rn-mapped/package.json',
+    'src/index.js',
+  ])
+  t.assert.equal(bundle.formats.get('packages/rn-lib/ios/RnLib.mm'), 'objcpp')
+}))
+
+test('--metro takes a linked react-native for core by its manifest, and the packages of a linked scope', withTmp(async (t, tmp) => {
+  // react-native linked under an alias is core all the same: its whole native tree (React/), not just
+  // ios/android. A scope linked whole (node_modules/@acme -> ../packages/acme) holds @acme/native.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'src/index.js': "require('rn')\nrequire('@acme/native')\n",
+    'packages/react-native/package.json': { name: 'react-native', version: '0.80.0', main: './index.js' },
+    'packages/react-native/index.js': 'module.exports = 1\n',
+    'packages/react-native/React/RCTBridge.h': '@interface RCTBridge @end\n',
+    'packages/acme/native/package.json': { name: '@acme/native', version: '1.0.0', main: './index.js' },
+    'packages/acme/native/index.js': 'module.exports = 2\n',
+    'packages/acme/native/android/build.gradle': '// gradle\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync(join('..', 'packages', 'react-native'), join(tmp, 'node_modules', 'rn'))
+  symlinkSync(join('..', 'packages', 'acme'), join(tmp, 'node_modules', '@acme'))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
+  const carried = new Set(bundle.sources.keys())
+  t.assert.ok(carried.has('packages/react-native/React/RCTBridge.h'), 'react-native\'s whole native tree')
+  t.assert.ok(carried.has('packages/acme/native/android/build.gradle'), '@acme/native\'s native surface')
+}))
+
+test('--metro takes a linked package from its linked root, below which its entry has a manifest of its own', withTmp(async (t, tmp) => {
+  // rn-dist's main is dist/index.js, beside a named dist/package.json (a package published from its
+  // build): the package linked is still rn-dist, whose native surface is at its root.
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'src/index.js': "require('rn-dist')\n",
+    'packages/rn-dist/package.json': { name: 'rn-dist', version: '1.0.0', main: './dist/index.js' },
+    'packages/rn-dist/dist/package.json': { name: 'rn-dist', version: '1.0.0', main: './index.js' },
+    'packages/rn-dist/dist/index.js': 'module.exports = 1\n',
+    'packages/rn-dist/android/build.gradle': '// gradle\n',
+  }
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, name)), { recursive: true })
+    writeFileSync(join(tmp, name), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  mkdirSync(join(tmp, 'node_modules'))
+  symlinkSync(join('..', 'packages', 'rn-dist'), join(tmp, 'node_modules', 'rn-dist'))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['android'] })
+  t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-dist'), 'packages/rn-dist/dist/index.js')
+  t.assert.ok(bundle.sources.has('packages/rn-dist/android/build.gradle'), 'rn-dist\'s native surface, at its root')
+}))
+
+cliTest('CLI: bundle --mainFields / --metro warns of no unresolved import in a pnpm layout', withTmp(async (t, tmp) => {
+  writePnpmLayout(tmp)
+  const runs = [['--mainFields=browser,module,main', '--conditions=browser'], ['--metro', '--platforms=ios']]
+  await Promise.all(runs.map(async (flags, i) => {
+    const r = await runCli(['bundle', ...flags, `--output=out${i}.br`, 'src/index.js'], { cwd: tmp })
+    t.assert.equal(r.status, 0, `${flags}: ${r.stderr}`)
+    t.assert.doesNotMatch(r.stderr, /unresolved/u, flags.join(' '))
+  }))
 }))
 
 cliTest('--mainFields fails closed when a real reached file occupies the reserved empty-module path', withTmp(async (t, tmp) => {

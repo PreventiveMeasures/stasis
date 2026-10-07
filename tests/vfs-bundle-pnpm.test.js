@@ -224,3 +224,48 @@ test('buildVfsBundle puts `repo` on the Bundle, never on its lockfile, over what
   t.assert.deepStrictEqual({ ...(await build({ vfs: declared, entries: ['src/a.js'], mainFields: ['main'] })).bundle.repo }, { github: 'ExodusOSS/stasis' })
   t.assert.deepStrictEqual((await build({ vfs: declared, entries: ['src/a.js'], repo })).bundle.repo, built.bundle.repo)
 })
+
+test('buildVfsBundle resolves mainFields and metro from where a pnpm-installed package really lies, as Node does', async (t) => {
+  // dep is linked into node_modules from .pnpm, beside a link to its own dependency sib, which it
+  // finds only from its real path there: the top-level link's directory holds no sib. (Both are
+  // directories `file:` overrides name, so nothing is fetched.)
+  const files = {
+    'package.json': { name: 'p', version: '1.0.0', dependencies: { dep: '^1.0.0' }, pnpm: { overrides: { dep: 'file:./vendor/dep', sib: 'file:./vendor/sib' } } },
+    'pnpm-lock.yaml': ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'overrides:', '  dep: file:./vendor/dep', '  sib: file:./vendor/sib', '', 'importers:', '', '  .:', '    dependencies:', '      dep:', '        specifier: file:vendor/dep', '        version: file:vendor/dep', '', 'packages:', '', '  dep@file:vendor/dep:', '    resolution: {directory: vendor/dep, type: directory}', '', '  sib@file:vendor/sib:', '    resolution: {directory: vendor/sib, type: directory}', '', 'snapshots:', '', '  dep@file:vendor/dep:', '    dependencies:', '      sib: file:vendor/sib', '', '  sib@file:vendor/sib: {}', ''].join('\n'),
+    'vendor/dep/package.json': { name: 'dep', version: '1.0.0', main: './index.js', browser: { './index.js': './browser.js' }, dependencies: { sib: '^2.0.0' } },
+    'vendor/dep/index.js': "module.exports = require('sib')\n",
+    'vendor/dep/browser.js': "module.exports = require('sib')\n",
+    'vendor/sib/package.json': { name: 'sib', version: '2.0.0', main: './index.js' },
+    'vendor/sib/index.js': "module.exports = 'sib'\n",
+    'src/a.js': "require('dep')\n",
+  }
+  const dep = 'node_modules/.pnpm/dep@file+vendor+dep/node_modules/dep'
+  const sib = 'node_modules/.pnpm/sib@file+vendor+sib/node_modules/sib'
+  const { vfs: tree } = await load({ vfs: project(files) })
+  t.assert.equal(tree.readlink('/node_modules/dep'), '.pnpm/dep@file+vendor+dep/node_modules/dep')
+  t.assert.equal(tree.isDirectory('/node_modules/sib'), false, 'sib is no top-level dependency')
+  const [node, fields, metro] = await Promise.all([{}, { mainFields: ['browser', 'main'] }, { metro: true, platforms: ['ios', 'android'] }]
+    .map((options) => build({ vfs: project(files), entries: ['src/a.js'], ...options })))
+  const imports = ({ bundle }) => Object.fromEntries([...bundle.imports.get('*')].map(([parent, specs]) => [parent, Object.fromEntries(specs)]))
+  t.assert.deepStrictEqual(imports(node), { 'src/a.js': { dep: `${dep}/index.js` }, [`${dep}/index.js`]: { sib: `${sib}/index.js` } })
+  for (const built of [fields, metro]) {
+    t.assert.deepStrictEqual(imports(built), { 'src/a.js': { dep: `${dep}/browser.js` }, [`${dep}/browser.js`]: { sib: `${sib}/index.js` } })
+  }
+  // Keyed alike, as the bundlers key them.
+  for (const { bundle } of [node, fields, metro]) t.assert.deepStrictEqual([...bundle.modules.keys()].filter((dir) => dir !== '.').toSorted(), [dep, sib])
+})
+
+test('buildVfsBundle with metro carries the native surface of a workspace package pnpm links into node_modules', async (t) => {
+  // w is reached by its real path, w/, out of node_modules, but it's linked there: a dependency.
+  const files = {
+    'package.json': { name: 'p', version: '1.0.0', dependencies: { w: 'workspace:*' } },
+    'pnpm-workspace.yaml': 'packages:\n  - w\n',
+    'pnpm-lock.yaml': ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    dependencies:', '      w:', '        specifier: workspace:*', '        version: link:w', '', '  w: {}', ''].join('\n'),
+    'w/package.json': { name: 'w', version: '1.0.0', main: 'i.js' },
+    'w/i.js': 'module.exports = 2\n',
+    'w/android/build.gradle': '// gradle\n',
+    'src/a.js': "require('w')\n",
+  }
+  const { bundle } = await build({ vfs: project(files), entries: ['src/a.js'], metro: true, platforms: ['android'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a.js', 'w/android/build.gradle', 'w/i.js', 'w/package.json'])
+})

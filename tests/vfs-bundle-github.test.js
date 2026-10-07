@@ -776,7 +776,7 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.deepStrictEqual(read, [], 'nothing on disk is read')
   t.assert.deepStrictEqual(built.typescript.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/entry.ts', 'packages/p/index.js', 'packages/p/other.js', 'packages/p/package.json', 'packages/p/util.ts'], 'the link, the symlink and tsc\'s mapping resolve in the Vfs')
   t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, directory: '', commit: SHA })
-  t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/node_modules/p/index.js', 'packages/app/node_modules/p/package.json', 'packages/app/package.json', 'packages/app/src/main.js'], 'the tree is read in place')
+  t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/main.js', 'packages/p/index.js', 'packages/p/package.json'], 'the tree is read in place, the link by where it leads in the Vfs')
   t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(built.defaults.sources, ['index.js'], "the entries the package.json names, in the directory")
   t.assert.deepStrictEqual(built.defaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })

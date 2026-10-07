@@ -405,8 +405,9 @@ test('typescript: a missing x.js resolves to its x.ts sibling; an existing x.js 
 test('typescript: a package main naming a missing .js lands on its .ts source', withTsTmp((t, tmp) => {
   // TS-source packages (workspace deps) commonly point main at their compiled name; with only
   // the source on disk, the entry substitutes like any other path -- but never in node_modules.
+  // The hit is its real path, in packages/ where the link leads.
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
-  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg')), 'node_modules/tspkg/lib/main.ts')
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg')), 'packages/tspkg/lib/main.ts')
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg-installed')), null)
 }))
 
@@ -450,8 +451,8 @@ test('typescript: an exports target naming a missing .js lands on its .ts source
   // behave alike under the flag (tsc's node16 rules substitute both).
   const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
   const from = join(tmp, 'entry.ts')
-  t.assert.equal(relTo(tmp, resolver(from, 'exppkg')), 'node_modules/exppkg/lib/main.ts')
-  t.assert.equal(relTo(tmp, resolver(from, 'exppkg/sub')), 'node_modules/exppkg/lib/sub.ts')
+  t.assert.equal(relTo(tmp, resolver(from, 'exppkg')), 'packages/exppkg/lib/main.ts')
+  t.assert.equal(relTo(tmp, resolver(from, 'exppkg/sub')), 'packages/exppkg/lib/sub.ts')
   // A subpath the exports map does not export stays unresolved -- the fallback never widens exports.
   t.assert.equal(relTo(tmp, resolver(from, 'exppkg/lib/main.js')), null)
   // Installed in node_modules, not linked from the workspace: no mapping.
