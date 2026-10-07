@@ -1119,8 +1119,8 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
   // to esbuild rather than be returned: a failure (esbuild tolerates one inside try/catch) and an
   // import a `browser` field maps to `false` (the API drops esbuild's "disabled" flag). Each test
   // pins the capture output byte-for-byte to a build without the plugin (STASIS_TEST_ESBUILD_PLAIN).
-  // The entries are .mjs: a plugin-resolved .js in a "type": "module" package loses node-mode
-  // interop (`__toESM(x, 1)`), a separate divergence these tests don't cover.
+  // The entries are .mjs, which esbuild types by extension: a plugin-resolved .js loses its package.json
+  // `type`, which the section at the end covers.
 
   const plainBuild = (cwd, outdir, env = {}) => run(['src/entry.mjs'], {
     cwd,
@@ -1318,5 +1318,79 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const r = await run(['src/entry.mjs'], { cwd: tmp, env: captureEnv(join(tmp, 'snapshot.br'), join(tmp, 'out'), BROWSER) })
     t.assert.notEqual(r.status, 0, `expected build failure; stderr=${r.stderr}`)
     t.assert.match(r.stderr, /reserved path \.stasis\/empty-module\.js/)
+  }))
+
+  // ----- package.json `type`: build as plain esbuild does, or refuse ------------------------
+  //
+  // esbuild takes a .js file's module type from its package.json `type` only when its own resolver
+  // loaded the file; the plugin serves every file, so esbuild never sees one. Where that changes the
+  // build -- here Node's default-import interop in a "type": "module" package -- capture and load must
+  // refuse; otherwise they must match a build without the plugin.
+
+  const TYPE_MODULE = '{ "name": "interop-app", "version": "0.0.0", "private": true, "type": "module" }'
+  const BABELISH = "exports.__esModule = true\nexports.default = 'the-default'\n"
+  const interopProject = (dir, entry) => {
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), TYPE_MODULE)
+    writeFileSync(join(dir, 'src', 'babelish.cjs'), BABELISH)
+    writeFileSync(join(dir, 'src', entry), "import x from './babelish.cjs'\nconsole.log(JSON.stringify(x))\n")
+  }
+
+  test('capture refuses a "type": "module" default import of a CommonJS module marked __esModule, writing nothing', withTmp(async (t, tmp) => {
+    interopProject(tmp, 'entry.js')
+    const plain = await run(['src/entry.js'], {
+      cwd: tmp,
+      env: { STASIS_TEST_PRELOAD: '0', STASIS_TEST_ESBUILD_PLAIN: '1', STASIS_TEST_ESBUILD_OUTDIR: join(tmp, 'out-plain') },
+    })
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    t.assert.match(readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'), /__toESM\(require_babelish\(\), 1\)/)
+
+    const capBundle = join(tmp, 'snapshot.br')
+    const capture = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(capBundle, join(tmp, 'out-capture')) })
+    t.assert.notEqual(capture.status, 0)
+    t.assert.match(capture.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/babelish\.cjs'/)
+    t.assert.equal(existsSync(capBundle), false, 'no bundle is written')
+  }))
+
+  test('capture and load of a .mjs importer (typed by extension) match a build without the plugin', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    interopProject(capDir, 'entry.mjs')
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'))
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    const plainOutput = readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8')
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture')) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8'), plainOutput)
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load')) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.js'), 'utf-8'), plainOutput)
+  }))
+
+  test('load refuses a bundle whose "type": "module" importer default-imports a CommonJS module marked __esModule', withTmp(async (t, tmp) => {
+    // As `stasis bundle` records it: Node's formats, the importer 'module'.
+    const bundle = {
+      version: 1,
+      config: { scope: 'full' },
+      entries: ['src/entry.js'],
+      sources: {
+        '.': {
+          name: 'stasis-load',
+          version: '0.0.0',
+          files: { 'src/entry.js': "import x from './babelish.cjs'\nconsole.log(JSON.stringify(x))\n", 'src/babelish.cjs': BABELISH },
+        },
+      },
+      formats: { 'src/entry.js': 'module', 'src/babelish.cjs': 'commonjs' },
+      imports: { '*': { 'src/entry.js': { './babelish.cjs': 'src/babelish.cjs' } } },
+    }
+    const bundleFile = join(tmp, 'app.br')
+    writeFileSync(bundleFile, brotliCompressSync(JSON.stringify(bundle)))
+    const loadDir = cleanLoadDir(tmp, bundleFile)
+    const replay = await run(['src/entry.js'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load')) })
+    t.assert.notEqual(replay.status, 0)
+    t.assert.match(replay.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/babelish\.cjs'/)
   }))
 })
