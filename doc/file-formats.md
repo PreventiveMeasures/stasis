@@ -224,21 +224,26 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   code in `scope = full` must declare at least one entry; a resources-only bundle
   may have none.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
-  a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
-  the fields and checks of the bundle's own `repo` (see `repo` below). Builds
-  record one for an npm package, read off its `package.json` by the rules the
-  bundle's own `repo` takes from one: `repository` alone names the repository
+  a `repo`, after `ecosystem`: the GitHub repository its own manifest names,
+  `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
+  with the fields and checks of the bundle's own `repo` (see `repo` below), except
+  that `github` is required: a `directory` or `commit` places nothing without the
+  repository it is in, so a `repo` without one (`{}` too) is rejected on both
+  serialize and parse. Builds record one for an npm package, read off its
+  `package.json` by the rules the bundle's own `repo` takes from one:
+  `repository` alone names the repository
   (`bugs` and `homepage` are often its old name), and `repository.directory`,
   else a GitHub tree `homepage` of it, the directory, `""` where
   `repository.directory` comes to the repository root (`./`, `/`); a homepage
   never places one there. A dependency whose manifest names no directory, or
   one with a `..` part, sits at an unknown place in its repository and records
-  no `directory`.
+  no `directory`. No build records a `commit` for a dependency yet.
   First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
   never written to the lockfile, never attested, and never checked against a
   dependency's `package.json` or another artifact's record. A run fills it in
   where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)
-  takes the side that records one, the existing bundle's where both do. `stasis
+  takes the side that records one, the existing bundle's, whole, where both do:
+  a `commit` only the added side records is not taken into it. `stasis
   audit --repo-advisories` asks it rather than looking one up, and for a record
   with none, the one its bundled `package.json` names by the same rules (see the
   `stasis` README).

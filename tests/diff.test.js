@@ -615,6 +615,8 @@ test('diffArtifacts reports a dependency repo change, but not a repo one side do
   }])
   t.assert.ok(hasDifferences(diff), 'identical digests, another repo: the artifacts differ')
   t.assert.match(formatDiffStat(diff), /\* node_modules\/foo {2}foo repo o\/foo -> o\/elsewhere \(packages\/foo\)\n/u)
+  const pinned = diffArtifacts(withRepo({ github: 'o/foo' }), withRepo({ github: 'o/foo', commit: 'abcdef0'.padEnd(40, '0') }), HASH)
+  t.assert.match(formatDiffStat(pinned), /\* node_modules\/foo {2}foo repo o\/foo -> o\/foo@abcdef0\n/u, 'a commit one side records: a repo change')
 
   for (const [left, right, why] of [
     [undefined, { github: 'o/foo' }, 'an artifact from before the field'],

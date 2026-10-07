@@ -25,6 +25,7 @@ const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value))
 const readBundle = (file) => JSON.parse(brotliDecompressSync(readFileSync(file)).toString('utf8'))
 
 const DEP_REPO = { github: 'o/dep', directory: 'packages/dep' }
+const COMMIT = 'a'.repeat(40)
 const dep = (repo) => ({ name: 'dep', version: '1.0.0', ecosystem: 'npm', ...(repo && { repo }), files: { 'index.js': 'module.exports = 1\n' } })
 const bundleOf = (modules) => new Bundle({ config: { scope: 'node_modules' }, modules: new Map(Object.entries(modules)) })
 const lockOf = (modules) => new Lockfile({ config: { scope: 'node_modules' }, modules: new Map(Object.entries(modules)), imports: new Map(), formats: new Map() })
@@ -82,8 +83,19 @@ test('a dependency record carries repo after ecosystem in a bundle; a lockfile n
   t.assert.equal(Lockfile.parse(JSON.stringify(lock)).modules.get('node_modules/dep').repo, undefined, 'nor read from one')
 })
 
-test('a dependency repo is validated as a bundle repo is, on parse and on serialize, and only a dependency carries one', (t) => {
-  for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', root: true }, 'o/n']) {
+test('a dependency repo may name a commit: `{ github, directory?, commit? }`, in that order, in a bundle alone', (t) => {
+  for (const repo of [{ commit: COMMIT, directory: 'packages/dep', github: 'o/dep' }, { commit: COMMIT, github: 'o/dep' }]) {
+    const json = JSON.parse(bundleOf({ 'node_modules/dep': dep(repo) }).serialize())
+    t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep'].repo), Object.hasOwn(repo, 'directory') ? ['github', 'directory', 'commit'] : ['github', 'commit'], 'canonical key order')
+    t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).modules.get('node_modules/dep').repo }, { ...json.modules['node_modules/dep'].repo })
+    t.assert.equal(JSON.parse(lockOf({ 'node_modules/dep': dep(repo) }).serialize()).modules['node_modules/dep'].repo, undefined, 'metadata: never in a lockfile')
+  }
+})
+
+test('a dependency repo is validated as a bundle repo is, its github required, on parse and on serialize, and only a dependency carries one', (t) => {
+  const invalid = [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', root: true }, { github: 'o/n', commit: 'abc1234' }, 'o/n']
+  const githubless = [{ directory: 'packages/dep' }, { directory: '' }, { commit: COMMIT }, { directory: 'packages/dep', commit: COMMIT }, {}]
+  for (const repo of [...invalid, ...githubless]) {
     const json = JSON.parse(bundleOf({ 'node_modules/dep': dep() }).serialize())
     json.modules['node_modules/dep'].repo = repo
     t.assert.throws(() => Bundle.parse(JSON.stringify(json)), /bundle module 'node_modules\/dep' repo/u, `parse: ${JSON.stringify(repo)}`)
@@ -111,6 +123,8 @@ test('merging takes a dependency repo one side lacks, and holds two that differ 
   t.assert.deepStrictEqual({ ...merged(undefined, DEP_REPO) }, DEP_REPO, 'into an artifact from before the field')
   t.assert.deepStrictEqual({ ...merged(DEP_REPO, undefined) }, DEP_REPO, 'from one')
   t.assert.deepStrictEqual({ ...merged(DEP_REPO, { github: 'o/other' }) }, DEP_REPO, "metadata: the existing side's, no mismatch")
+  t.assert.deepStrictEqual({ ...merged(DEP_REPO, { ...DEP_REPO, commit: COMMIT }) }, DEP_REPO, "the existing side's whole: no commit taken into it")
+  t.assert.deepStrictEqual({ ...merged({ ...DEP_REPO, commit: COMMIT }, DEP_REPO) }, { ...DEP_REPO, commit: COMMIT }, 'nor dropped from it')
 })
 
 test('State records a dependency repo, from its own package.json, in the bundle alone', withTmp((t, tmp) => {
