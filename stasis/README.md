@@ -27,7 +27,7 @@ Lockfile can attest the bundle in a readable form, but that's not required - bun
 | Modes: `add`, `replace`, `frozen`, `ignore` | Modes: `load`, `add`, `replace`, `frozen`, `ignore` |
 
 The main difference between lockfiles and bundles is that lockfiles contain integrities, and bundles contain full content.\
-See [file formats](https://github.com/ExodusOSS/stasis/blob/main/doc/file-formats.md).
+See [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md).
 
 Both can be run in full scope (default) or just in `node_modules` scope.
 
@@ -58,38 +58,39 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis run --lock=add --bundle=add --mock app.js` | build without the app's side effects (network, fs writes) |
 | `stasis run --lock=add --child-process app.js` | also attest modules loaded in forked child processes (e.g. Metro transform workers) |
 | `stasis run --bundle=add --fs=sync app.js` | build a bundle that also captures sync `fs.readFileSync`/`readdirSync` reads |
-| `stasis run --lock=add --import=./instrument.mjs app.js` | forward extra preload modules (repeatable) to the node process running the entry: a preload's own module graph is runner infrastructure like stasis's loader itself — evaluated, but not captured. Modules the app graph *also* reaches (or that execute through a preload-transplanted `require()` pipeline) are still attested like any other app code, so frozen replays and `--bundle=load` stay fail-closed |
-| `stasis bundle src/index.js` | build a bundle statically, without executing it, into the `stasis.code.br` of the project root its paths are relative to (from a workspace package, the workspace root), where `stasis run --bundle=load` finds it |
-| `stasis bundle --add src/worker.js` | merge more entries (and their import graph) into an existing `stasis.code.br` instead of replacing it |
-| `stasis add a.js icon.svg` | add the listed files to the project's bundles (config-driven), with no dependency resolution |
-| `stasis add src assets` | same, expanding each directory to every file under it, minus an auto-excluded set unless explicitly named |
-| `stasis bundle --conditions=react-native,browser app.js` | statically bundle, asserting extra `exports`/`imports` resolution conditions |
-| `stasis bundle --mainFields=react-native,browser,main app.js` | statically bundle, honoring legacy package `mainFields` (incl. browser-field object redirection) |
-| `stasis bundle --metro --platforms=ios,android app.js` | statically bundle the way Metro resolves: RN conditions + mainFields + `.ios`/`.android`/`.native` suffixes, all platforms at once, plus each bundled native dependency's `ios/`/`android/` sources + podspec |
-| `stasis bundle --metro --metro-resolver --platforms=ios,android app.js` | same, but resolve through the project's own `metro-resolver` (byte-for-byte Metro fidelity) instead of the built-in approximation; requires `metro-resolver` installed (it ships with `react-native`/`metro`) |
-| `stasis bundle --flow app.js` | statically bundle Flow-typed sources: when oxc can't parse a `.js`/`.cjs`/`.mjs` file, strip its Flow syntax and retry so the import graph resolves (needs the optional `flow-remove-types` dependency; the stored source stays the original bytes). Combines with `--jsx`/`--conditions`/`--mainFields`/`--metro` |
-| `stasis bundle --typescript src/index.ts` | statically bundle TS sources that import by output name, the way tsc resolves: a `./x.js` (or `.jsx`/`.mjs`/`.cjs`) specifier with no such file on disk lands on its on-disk `./x.ts` or `./x.tsx` (`.tsx`/`.mts`/`.cts`) source, and an extensionless `./x` probes `./x.ts`, `./x.tsx` and `./x/index.ts(x)`; the same substitution applies to package `main`/`exports`/`imports` targets and bare subpaths, and an existing `.js` always wins over its `.ts` twin. None of this applies from or into `node_modules`, by real path: an installed package is used as published, while a monorepo's workspace packages, linked in through `node_modules`, really live outside it and resolve like the project's own files. On without the flag when every entry is TypeScript and their relative imports of JS outputs (`./x.js`) are each only on disk as the TS source (`./x.ts`) -- tsc's convention; a project of Node-compatible `.ts` files importing `./x.ts` keeps Node's resolution. Otherwise an import that fails but would resolve under it names the file and `--typescript` in the error. Combines with `--jsx`/`--conditions`/`--mainFields`/`--metro` (not `--metro-resolver`, which can't substitute) |
-| `stasis bundle --typescript --tsconfig=tsconfig.build.json src/index.ts` | same, honoring tsconfig `compilerOptions.paths` aliases (e.g. `"@/*": ["./src/*"]`, resolved against `baseUrl`, `extends` followed) for bare specifiers nothing else resolves, an extensionless target completing as tsc's does (`.ts`, `.tsx`, then `.js`, `.jsx`, then the directory's `index`); without `--tsconfig`, the `tsconfig.json` beside the importing file's `package.json` applies when present: in a monorepo (a `pnpm-workspace.yaml` or `package.json` `workspaces` at or above the cwd) the nearest named `package.json` at or above the file, else the project's one (the nearest named `package.json` at or above the cwd); never for a file in `node_modules`, and no lookup walks through one |
-| `stasis github-bundle --github=owner/name [--sha=<commit>] [--tag=<name>] [--directory=path] [--package-manager=pnpm] [src/index.js]` | statically bundle a GitHub repo at a commit, or the one `--tag` names (the default branch's head without either), as `stasis bundle` bundles a clone of it once installed: the tree is fetched (with `GITHUB_TOKEN` where set) and held to its git tree id, and the dependencies are laid out in memory from the lockfile alone (`pnpm`, `yarn1`, `npm`, or `soldeer` for `.sol` entries, a Soldeer git dependency on GitHub fetched as the repo is; without `--package-manager`, the one whose lockfile installs the directory, where only one's does), with nothing installed and no package script run; where no entries are given, they are the JS files the directory's `package.json` names (`main`, `exports`, `bin`), resolved as the build resolves (`--conditions`, `--mainFields`, `--metro --platforms`, `--typescript`), or for Soldeer its `.sol` files directly in it, under `contracts/`, and under its source directory (`foundry.toml`'s `src`, else `src/`), but tests, scripts, mocks and dependency or build directories; its paths, and the directory its `repo` names, are the directory's, or for a JS bundle, the innermost package's at or above it that holds every file it bundles (the project root's, where one is outside it, such as a sibling workspace package or the root's `node_modules`); written to `owner-name.<commit's first 7>.stasis.code.br` by default, `owner-name.<directory, its / made ->.<commit's first 7>.stasis.code.br` with `--directory` (each character outside `[A-Za-z0-9._-]` made `_`, and a directory too deep to fit in 255 characters cut, with a hash of it); takes `stasis bundle`'s options for the entries and `--lockfile` (as a library: `buildGitHubBundle` in `@exodus/stasis/vfs-bundle`, and `suggestedEntries` for the entries it would take, of a GitHub repo or a Vfs) |
-| `stasis github-bundle --github=owner/name --generate=prisma packages/api/src/index.ts` | same, with the Prisma Client each project's `prisma generate` would write first: for each project the lockfile installs with a `prisma-client` generator in its schema (the one its Prisma config names as a string literal or `path.join` of them, else `schema.prisma` or `prisma/schema.prisma`), as the Prisma it installs (7.4.0 to 7.10.0: its `prisma`, or beside Prisma 8, the one its `@prisma/prisma7` runs) writes it, byte for byte, where the generator's `output` says, the bundle then carrying it as a source like any other. Nothing of the repo runs: the schema, the config's `schema` path, and the `tsconfig.json` and `package.json` the generator infers its module format and import extensions from are read as data, its installed `prisma` only for its version (and, for an edge runtime's client, the query compiler it ships). The client is generated by the optional `@prisma/client-generator-ts` 7.10.0 dependency and rewritten as the version installed writes it; a project it can't generate for is skipped with a warning |
-| `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly (entry optional when the bundle has one) |
+| `stasis run --lock=add --import=./instrument.mjs app.js` | also load a preload module; its own graph is runner infrastructure, not attested |
+| `stasis bundle src/index.js` | build a bundle statically, without executing it |
+| `stasis bundle --add src/worker.js` | merge more entries into the existing bundle |
+| `stasis bundle --conditions=react-native,browser app.js` | statically bundle with extra `exports`/`imports` resolution conditions |
+| `stasis bundle --mainFields=react-native,browser,main app.js` | statically bundle honoring legacy package `mainFields` |
+| `stasis bundle --metro --platforms=ios,android app.js` | statically bundle the way Metro resolves, all platforms at once |
+| `stasis bundle --typescript src/index.ts` | statically bundle TS sources, resolving `./x.js` imports to `./x.ts` as tsc does |
+| `stasis add src assets` | add files to the project's bundles as-is, with no dependency resolution |
+| `stasis github-bundle --github=owner/name --sha=<commit> src/index.js` | statically bundle a GitHub repo at a commit, with nothing installed |
+| `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly |
 | `stasis build --output=out.js stasis.lock.json [entry]` | same, reading + verifying sources from disk against the lockfile |
 | `stasis extract app.stasis.code.br` | unpack a bundle back to sources + a `stasis.lock.json` |
 | `stasis diff --stat a.lock.json b.stasis.code.br` | summarize module/file differences between two lockfiles/bundles |
 | `stasis prune` | trim `node_modules` to the lockfile, verifying the rest |
-| `stasis audit stasis.lock.json` | report npm advisories for a lockfile's dependencies |
-| `stasis audit app.stasis.code.br` | report advisories for a bundle's dependencies: npm packages by npm's advisories, crates vendored from a registry and Composer packages by OSV's, and Soldeer packages and GitHub repos (Foundry's `lib/`) by those their GitHub repository publishes, asked with `GITHUB_TOKEN` where it is set; a Composer dev version, and a crate vendored from git or with no `.cargo-checksum.json` (never sent to OSV), are listed as not audited |
-| `stasis audit --why app.stasis.code.br` | same, with the cross-module import paths that pull each flagged package in (`run: a -> b -> c`), prefixed by the consumer that imports each chain at the top level; a chain is skipped when its full tail is already listed as its own chain |
-| `stasis audit --why-deep app.stasis.code.br` | like `--why`, but keep those longer chains too (every path, shared tails collapsed to `a -> b -> ... -> d`) |
-| `stasis audit --why-full app.stasis.code.br` | like `--why`, but spell every chain out with no `...` collapse (combine with `--why-deep` for the complete raw listing) |
-| `stasis audit --reason=run app.stasis.code.br` | show only advisories related to one consumer (`run`); with `--why`, keep only that consumer's chains |
-| `GITHUB_TOKEN=... stasis audit --repo-advisories stasis.lock.json` | also ask each dependency's GitHub repository for the advisories its maintainers published there, which npm's database has only once GitHub reviews them; needs a GitHub token in `GITHUB_TOKEN`. Each package's repository is the one its artifact records (its `package.json`'s, see `repo` in [file formats](https://github.com/ExodusOSS/stasis/blob/main/doc/file-formats.md)), else, for an npm package a bundle records none for but carries the `package.json` of (one built before the field), the one that names, else it is looked up in npm's registry, Packagist or crates.io and cached for a month in the user cache directory (`$XDG_CACHE_HOME/stasis`, `~/.cache/stasis`, `~/Library/Caches/stasis` on macOS, `%LOCALAPPDATA%\stasis\Cache` on Windows) |
+| `stasis audit stasis.lock.json` | report advisories for a lockfile's or bundle's dependencies |
+| `stasis audit --why app.stasis.code.br` | same, with the import chains that pull each flagged package in |
 | `stasis sbom --format=spdx stasis.lock.json` | export an SPDX SBOM for a lockfile or bundle |
 | `stasis sbom --format=cyclonedx app.stasis.code.br` | export a CycloneDX SBOM for a lockfile or bundle |
 
+Each command's options are documented in [doc/](https://github.com/PreventiveMeasures/stasis/tree/main/doc):
+[`bundle`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/bundle.md) (and `add`),
+[`github-bundle`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/github-bundle.md),
+[`build`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/build.md),
+[`extract`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/extract.md),
+[`diff`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/diff.md),
+[`prune`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/prune.md),
+[`audit`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/audit.md),
+[`sbom`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/sbom.md).
+`stasis bundle` also bundles Solidity, PHP, Bash and Rust sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust).
+
 ## Runtime
 
-The zero-dependency [`@exodus/stasis-core`](../stasis-core) CLI provides `run`, `prune`, and `add` commands only; the bundler plugins live in [`@exodus/stasis-plugins`](../stasis-plugins).
+The zero-dependency [`@exodus/stasis-core`](../stasis-core) CLI provides the `run`, `add`, `extract` and `prune` commands only; the bundler plugins live in [`@exodus/stasis-plugins`](../stasis-plugins).
 
 ## License
 
