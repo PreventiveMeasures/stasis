@@ -1,8 +1,9 @@
+import { packageRepo } from '@exodus/stasis-core/bundle-util'
 import { dependencyEcosystem, moduleFileKey, sameGithub } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
-import { parseFile } from './parse.js'
+import { parseFile, parseFileWithKind } from './parse.js'
 import { collectWhy, invertReason } from './why.js'
 
 // Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates (those
@@ -57,19 +58,34 @@ function unaudited({ ecosystem, version }) {
 // why.js apply the same evidence rule per file/edge there.
 //
 // A package's `github` is the repository its artifact records for it (its package.json's), where
-// one does; a GitHub repo is its own, and has none.
+// one does; else, for an npm package a bundle carries the package.json of (one built before builds
+// recorded `repo`), the one that names, read by the rule builds record it by. A GitHub repo is its
+// own, and has none.
 export function collectPackagesFromFile(file) {
   const out = []
-  for (const [dir, { name, version, ecosystem: tagged, repo, files }] of parseFile(file).modules) {
+  const { kind, artifact } = parseFileWithKind(file)
+  for (const [dir, { name, version, ecosystem: tagged, repo, files }] of artifact.modules) {
     const ecosystem = dependencyEcosystem(dir, tagged)
     // First-party code is never sent to a public registry (leaks names, adds noise).
     if (ecosystem === undefined) continue
     if (!name || !version) continue
     if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
-    const github = ecosystem === 'github' ? undefined : repo?.github
+    let github = ecosystem === 'github' ? undefined : repo?.github
+    if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
     out.push({ ecosystem, name, version: versionOf(ecosystem, version), ...(github === undefined ? {} : { github }) })
   }
   return out
+}
+
+// The GitHub repository a bundled package.json's text names (packageRepo), or undefined where it
+// names none or doesn't parse. A lockfile holds the file's digest alone, never asked here.
+function manifestRepo(text) {
+  if (typeof text !== 'string') return undefined
+  try {
+    return packageRepo(JSON.parse(text))?.github
+  } catch {
+    return undefined
+  }
 }
 
 // Versions in semver's order where both are semver's, else as numbers in text compare.

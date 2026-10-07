@@ -1094,6 +1094,41 @@ test('audit() asks the repo an artifact records for a dependency instead of look
   }
 ))
 
+test('audit() asks the repo a bundled package.json names where no repo is recorded, instead of looking one up', withFetch(
+  registry({ 'not-github': 'github:o/not-github', 'bad-json': 'github:o/bad-json', locked: 'github:o/locked' }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // A record from before `repo`, carrying its package.json.
+      const withManifest = (name, repository, text = JSON.stringify({ name, version: '1.0.0', repository })) =>
+        ({ ...depRecord(name, '1.0.0'), files: { 'index.js': '', 'package.json': text } })
+      const bundle = writeBundle(tmp, 'snapshot.br', {
+        formats: {},
+        modules: {
+          'node_modules/from-manifest': withManifest('from-manifest', { type: 'git', url: 'git+https://github.com/o/from-manifest.git' }),
+          'node_modules/recorded': { ...withManifest('recorded', 'github:other/recorded'), repo: { github: 'o/recorded' } },
+          'node_modules/not-github': withManifest('not-github', 'https://gitlab.com/o/not-github'),
+          'node_modules/bad-json': withManifest('bad-json', undefined, '{'),
+        },
+      })
+      // A lockfile records the package.json's digest alone.
+      const lock = writeLock(tmp, 'stasis.lock.json', {
+        modules: { 'node_modules/locked': { name: 'locked', version: '1.0.0', files: { 'index.js': 'sha512-a', 'package.json': 'sha512-b' } } },
+      })
+      t.assert.deepStrictEqual(collectPackages([bundle, lock]).map(({ name, github }) => [name, github]), [
+        ['bad-json', undefined], ['from-manifest', 'o/from-manifest'], ['locked', undefined], ['not-github', undefined], ['recorded', 'o/recorded'],
+      ])
+      const asked = []
+      await audit([bundle, lock], { repoAdvisories: true, github: listing(asked) })
+      t.assert.deepStrictEqual(asked.toSorted(), ['o/bad-json', 'o/from-manifest', 'o/locked', 'o/not-github', 'o/recorded'])
+      t.assert.deepStrictEqual(lookedUp(calls), ['bad-json', 'locked', 'not-github'].map((name) => `https://registry.npmjs.org/${name}/latest`),
+        'only what neither the record nor a bundled package.json names is looked up')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
 test('audit() looks up a name two artifacts record different repos for, whatever their order', withFetch(
   registry({ split: 'github:o/split' }),
   async (t, calls) => {
