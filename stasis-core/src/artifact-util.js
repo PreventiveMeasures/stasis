@@ -95,12 +95,15 @@ export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo
 // node_modules (an artifact from before the tag); undefined for first-party code.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
-// A dependency's `repo`, the one its own manifest names, with the bundle's own fields; first-party
+// A dependency's `repo`, the one its own manifest names, with the bundle's own fields, `github`
+// required: a `directory` or `commit` places nothing without the repository it is in. First-party
 // code carries none.
 const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   if (repo === undefined) return undefined
   if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
-  return normalizeRepo(repo, `${what} module '${dir}' repo`)
+  const normalized = normalizeRepo(repo, `${what} module '${dir}' repo`)
+  if (normalized?.github === undefined) assert(false, `${what} module '${dir}' repo has no github`)
+  return normalized
 }
 
 // A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.
