@@ -66,7 +66,7 @@ function usage(prefix = '') {
    in them exists only as its TS source (otherwise a failing import it would resolve names it);
   --resources carries reached assets (e.g. --resources=png,svg) as resources instead of failing to bundle them;
   --package-json auto-includes each bundled module's package.json, even ones the scan never reached)
- stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  (bundles a GitHub repo at a commit, or the one --tag names, its default branch's head without
   either, as "stasis bundle" bundles a clone of it once installed: the tree is fetched (with
   GITHUB_TOKEN where set) and held to its git tree id, and the dependencies are laid out in memory

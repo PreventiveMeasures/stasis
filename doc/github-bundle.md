@@ -7,7 +7,7 @@ in memory from its lockfile alone. No package script runs, and nothing of the
 repository executes.
 
 ```sh
-stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer)] [--package-manager-version=version] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -16,7 +16,7 @@ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
 | `--directory=path` | A directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does. |
-| `--package-manager-version` | The version whose layout to reproduce. Default: the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
+| `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
 | `--generate=prisma` | Generate each project's Prisma Client first. See [Prisma](#prisma---generateprisma). |
 | `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
