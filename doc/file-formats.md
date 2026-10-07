@@ -153,7 +153,9 @@ attested.
   agree with it. An artifact from before the field records none: a run fills it
   in, and a merge (`stasis add`, `--add`, `bundle = add`, `lock = add`) takes the
   side that records one, failing where both record different ones. `stasis audit
-  --repo-advisories` asks it rather than looking one up (see the `stasis` README).
+  --repo-advisories` asks it rather than looking one up, and for a bundle's record
+  with none, the one its bundled `package.json` names by the same rules (see the
+  `stasis` README).
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier
