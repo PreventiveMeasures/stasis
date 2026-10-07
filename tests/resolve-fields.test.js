@@ -5,6 +5,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
+import { scan } from '../stasis/src/scan.js'
 import { loadTsconfigPaths, resolveTypescriptFallback, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -247,6 +248,51 @@ test('exports wins over a legacy browser main field, honoring conditions', (t) =
   // gating react-native/default. exports must win; the browser main field is ignored.
   t.assert.equal(rel(mk({ extras: ['react-native'] })(entry, 'exportswins')), 'node_modules/exportswins/rn.js')
   t.assert.equal(rel(mk()(entry, 'exportswins')), 'node_modules/exportswins/def.js')
+})
+
+// nodefirst's `exports` lists `node` FIRST, then browser, react-native and default (uuid's shape),
+// and its `#target` import the same; `./format` splits on import/require.
+const nodeFirstInternal = join(fx, 'node_modules', 'nodefirst', 'internal.js')
+const nodeFirstFiles = (scanner) => [...scanner.files.keys()].map((url) => relTo(fx, { url })).filter((f) => f.includes('nodefirst')).toSorted()
+
+test('resolveConditions is a bundler base, import or require by format plus default, never node', (t) => {
+  t.assert.deepStrictEqual(resolveConditions('module', ['browser']), ['import', 'default', 'browser'])
+  t.assert.deepStrictEqual(resolveConditions('module-typescript'), ['import', 'default'])
+  t.assert.deepStrictEqual(resolveConditions('commonjs', ['react-native']), ['require', 'default', 'react-native'])
+  t.assert.deepStrictEqual(resolveConditions('commonjs', ['default', 'require']), ['require', 'default'])
+})
+
+test('a node-first exports map resolves to the extras, then default, never node', (t) => {
+  // Each as the bundler asserting the same conditions picks it: esbuild/webpack for browser,
+  // Metro with React Native's config for react-native.
+  t.assert.equal(rel(mk()(entry, 'nodefirst')), 'node_modules/nodefirst/default.js')
+  t.assert.equal(rel(mk({ extras: ['browser'] })(entry, 'nodefirst')), 'node_modules/nodefirst/browser.js')
+  t.assert.equal(rel(mk({ extras: ['react-native'] })(entry, 'nodefirst')), 'node_modules/nodefirst/rn.js')
+  // Both, as Metro on web asserts them: the map's key order decides.
+  t.assert.equal(rel(mk({ extras: ['react-native', 'browser'] })(entry, 'nodefirst')), 'node_modules/nodefirst/browser.js')
+  // The same for a `#name` import.
+  t.assert.equal(rel(mk()(nodeFirstInternal, '#target')), 'node_modules/nodefirst/default.js')
+  t.assert.equal(rel(mk({ extras: ['react-native'] })(nodeFirstInternal, '#target')), 'node_modules/nodefirst/rn.js')
+  // The per-call set picks import or require.
+  const resolve = mk()
+  t.assert.equal(rel(resolve(entry, 'nodefirst/format', new Set(resolveConditions('module')))), 'node_modules/nodefirst/import.js')
+  t.assert.equal(rel(resolve(entry, 'nodefirst/format', new Set(resolveConditions('commonjs')))), 'node_modules/nodefirst/require.js')
+})
+
+test("scan hands a custom resolver resolveConditions' set for each parent's format; Node's own scan keeps node", (t) => {
+  const seen = new Map()
+  const field = mk({ extras: ['browser'] })
+  const resolve = (parent, spec, conditions) => {
+    seen.set(relative(fx, parent).split(/[\\/]/u).join('/'), [...conditions])
+    return field(parent, spec, conditions)
+  }
+  const entries = [join(fx, 'src', 'entry-node-first.js')]
+  const custom = scan(entries, { conditions: ['browser'], resolve })
+  t.assert.deepStrictEqual(seen.get('src/entry-node-first.js'), resolveConditions('module', ['browser']))
+  t.assert.deepStrictEqual(seen.get('node_modules/nodefirst/internal.js'), resolveConditions('commonjs', ['browser']))
+  t.assert.deepStrictEqual(nodeFirstFiles(custom), ['node_modules/nodefirst/browser.js', 'node_modules/nodefirst/default.js', 'node_modules/nodefirst/internal.js'])
+  // Without a custom resolver, Node's conditions: `node` wins whatever is added.
+  t.assert.deepStrictEqual(nodeFirstFiles(scan(entries, { conditions: ['browser'] })), ['node_modules/nodefirst/internal.js', 'node_modules/nodefirst/node.js'])
 })
 
 test('builtins are reported as builtins', (t) => {

@@ -6,12 +6,15 @@ import { isAutoExcludedDir, isPlainObject, posixPathEscapes, relativeEscapes } f
 import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
+import { resolveConditions } from '../resolve-fields.js'
 import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
 import { checkKind, checkVersion, packageManagerOf, vfsHost } from './tree.js'
 
 const JS = /\.(?:[cm]?[jt]s|[jt]sx)$/u
-// Node's own conditions for require() and for import, which the build's are added to.
+// Node's own conditions for require() and for import, which the build's are added to; with
+// `mainFields` or `metro`, the field resolver's bundler ones instead (no `node`).
 const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['import', 'node', 'node-addons', 'module-sync']]
+const FIELD_CONDITIONS = ['commonjs', 'module'].map((format) => resolveConditions(format))
 
 // The entry points the package.json in `dir` names, as paths from `dir`, resolved as the JS build
 // with the given options resolves: as Node does, `conditions` added, or with `mainFields` or
@@ -19,8 +22,9 @@ const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['im
 // that misses mapped as tsc maps it under `typescript`, as the build's fallback maps it. In
 // that order: its own entry, as the build resolves `./` there (`main`, or the first of the main
 // fields, else index); each subpath `exports` holds (but a pattern), as the package's name resolves
-// for require() and for import, with the conditions the build adds (the RN ones under `metro`); and
-// each `bin`. Only JS files in `dir` that are there, named from within it; none without a package.json.
+// for require() and for import, with the conditions the build adds (the RN ones under `metro`) to
+// Node's, or with `mainFields` or `metro` to the field resolver's; and each `bin`. Only JS files in
+// `dir` that are there, named from within it; none without a package.json.
 function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], typescript = false } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
@@ -62,8 +66,8 @@ function packageEntries(host, dir, { conditions = [], mainFields, metro = false,
   for (const subpath of typeof name === 'string' ? subpaths : []) {
     if (!subpath.startsWith('.') || subpath.includes('*') || subpath.endsWith('/')) continue
     const specifier = subpath === '.' ? name : `${name}${subpath.slice(1)}`
-    for (const { extras } of passes) {
-      for (const names of NODE_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, host })))
+    for (const { extras, resolver } of passes) {
+      for (const names of resolver === undefined ? NODE_CONDITIONS : FIELD_CONDITIONS) add(viaNode(specifier, names, extras, (set) => typescriptExportsTarget(real, exports, subpath, { conditions: set, host })))
     }
   }
   const bins = typeof pkg.bin === 'string' ? [pkg.bin] : pkg.bin !== null && typeof pkg.bin === 'object' ? Object.values(pkg.bin) : []

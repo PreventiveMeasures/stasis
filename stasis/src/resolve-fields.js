@@ -18,7 +18,8 @@ import { diskHost } from '@exodus/stasis-core/host'
 // Static module resolver for legacy package fields (`react-native`/`browser`/`main` + browser-spec
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), reproducing Metro/React-Native
 // resolution that Node's own resolver (used by scan.js) can't. `exports`-bearing packages are
-// delegated to Node. No user code is executed (only package.json is stat/read).
+// delegated to Node's algorithm, under a bundler's conditions rather than Node's (see
+// resolveConditions). No user code is executed (only package.json is stat/read).
 //
 // Returns, for each specifier:
 //   { url }      resolved to a real file (file: URL string)
@@ -219,8 +220,9 @@ function resolveFileOrDir(base, opts) {
   return null
 }
 
-// Build a resolver bound to options: `conditions` gates `exports` packages (delegated to Node),
-// `mainFields`/`platform`/`preferNative`/`sourceExts` drive the legacy-field + suffix probing.
+// Build a resolver bound to options: `conditions` (a resolveConditions set) gates `exports`
+// packages (delegated to Node's algorithm), `mainFields`/`platform`/`preferNative`/`sourceExts`
+// drive the legacy-field + suffix probing.
 // `metro` opts into Metro's package-entry + candidate-redirect semantics (see
 // resolveEntryThroughMap and resolveSourceFile); leave it off for the esbuild-parity
 // `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
@@ -328,11 +330,11 @@ function isModuleFormat(format) {
   return format === 'module' || format === 'module-typescript'
 }
 
-// Condition set for a parent of the given format: Node's format-driven base (matching scan's
-// #conditionsFor) plus extras. Order is irrelevant (Node membership-tests against exports key order).
+// Condition set for a parent of the given format, as scan's #conditionSet gives a custom resolver:
+// `import` or `require` by format, `default` (which Node's resolver matches anyway), plus extras.
+// A bundler's base, not Node's: esbuild, webpack and Metro assert `import`/`require` and
+// `default`, never `node`, so an `exports` map listing `node` first can't win over the extras.
+// Order is irrelevant (Node membership-tests against exports key order).
 export function resolveConditions(format, extras = []) {
-  const base = isModuleFormat(format)
-    ? ['node', 'import', 'module-sync', 'node-addons']
-    : ['node', 'require', 'module-sync', 'node-addons']
-  return [...new Set([...base, ...extras])]
+  return [...new Set([isModuleFormat(format) ? 'import' : 'require', 'default', ...extras])]
 }

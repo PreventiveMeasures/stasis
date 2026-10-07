@@ -18,6 +18,7 @@ const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
 const fx = join(here, 'fixtures', 'resolve-fields')
 const entry = join(fx, 'src', 'entry.js')
 const redirIndex = join(fx, 'node_modules', 'redir', 'index.js')
+const nodeFirstInternal = join(fx, 'node_modules', 'nodefirst', 'internal.js')
 // A project whose only dependency's React Native entry is a .tsx source file (the
 // react-native-safe-area-context shape). The entry itself is plain ESM, so the .tsx dependency is
 // the sole variable.
@@ -86,6 +87,9 @@ const PARITY_CASES = [
   ['browser false (bare) -> empty', redirIndex, 'leftpad'],
   ['dotted bare specifier shimmed', redirIndex, 'socket.io'],
   ['exports wins over browser main, honoring conditions', entry, 'exportswins'],
+  // A `node` branch first in `exports` (and `imports`): Metro never asserts `node`.
+  ['node-first exports: never the node branch', entry, 'nodefirst'],
+  ['node-first #imports: never the node branch', nodeFirstInternal, '#target'],
 ]
 
 test('adapter matches the built-in resolver on the shared Metro cases', ifMetro, (t) => {
@@ -94,6 +98,17 @@ test('adapter matches the built-in resolver on the shared Metro cases', ifMetro,
   for (const [label, from, spec] of PARITY_CASES) {
     t.assert.equal(rel(metro(from, spec)), rel(field(from, spec)), label)
   }
+})
+
+test('on web both resolvers assert react-native and browser, and neither node', ifMetro, (t) => {
+  // fieldResolverFor's web extras; metro-resolver adds browser itself from its per-platform map.
+  const field = mkField({ platform: 'web', extras: ['react-native', 'browser'] })
+  const metro = mkMetro({ platform: 'web' })
+  t.assert.equal(rel(metro(entry, 'nodefirst')), 'node_modules/nodefirst/browser.js')
+  t.assert.equal(rel(field(entry, 'nodefirst')), 'node_modules/nodefirst/browser.js')
+  // #target has no browser branch: react-native, as Metro takes it.
+  t.assert.equal(rel(metro(nodeFirstInternal, '#target')), 'node_modules/nodefirst/rn.js')
+  t.assert.equal(rel(field(nodeFirstInternal, '#target')), 'node_modules/nodefirst/rn.js')
 })
 
 test('platform suffixes: metro-resolver picks name.<platform>.ext, native off web', ifMetro, (t) => {
@@ -156,6 +171,15 @@ test('buildBundle --metro --metro-resolver matches the built-in resolver for thi
   const viaMetro = await buildBundle({ ...opts, metroResolver: true })
   // entry.js imports only cases both resolvers agree on, so the bundles are file-for-file equal.
   t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), [...builtin.sources.keys()].toSorted())
+})
+
+test('buildBundle --metro matches --metro-resolver on a node-first exports map, every platform', ifMetro, async (t) => {
+  const opts = { cwd: fx, entries: ['src/entry-node-first.js'], metro: true, platforms: ['ios', 'android', 'web'] }
+  const builtin = await buildBundle(opts)
+  const viaMetro = await buildBundle({ ...opts, metroResolver: true })
+  t.assert.deepStrictEqual([...builtin.sources.keys()].toSorted(), [...viaMetro.sources.keys()].toSorted())
+  t.assert.deepStrictEqual(builtin.imports, viaMetro.imports)
+  t.assert.ok(!builtin.sources.has('node_modules/nodefirst/node.js'))
 })
 
 test('CLI: bundle --metro --metro-resolver writes a bundle + lockfile that round-trip', ifMetro, withTmp((t, tmp) => {

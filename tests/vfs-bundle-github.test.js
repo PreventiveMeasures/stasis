@@ -209,6 +209,24 @@ test('suggestedEntries resolves the entries as the build does with metro, platfo
   await t.assert.rejects(suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(app), metro: true, platforms: ['a/b'] }), /^Error: suggestedEntries: invalid platform 'a\/b'/u)
 })
 
+// The same package with a `node` branch first in its `exports`, as uuid's: Node's resolution takes
+// it whatever conditions are added, the field resolver never does (no bundler asserts `node`).
+test('suggestedEntries takes no `node` export with metro or mainFields, as the build takes none', async (t) => {
+  const exports = { '.': { node: './exp-node.js', browser: './exp-browser.js', 'react-native': './exp-rn.js', default: './exp.js' } }
+  const nodeFirst = { ...reactNative, 'package.json': json({ ...JSON.parse(reactNative['package.json']), exports }), 'exp-node.js': '' }
+  const cases = [
+    [{}, ['main.js', 'exp-node.js']],
+    [{ conditions: ['browser'] }, ['main.js', 'exp-node.js']],
+    [{ metro: true, platforms: ['ios', 'android'] }, ['rn.ios.js', 'rn.js', 'exp-rn.js']],
+    [{ metro: true, platforms: ['web'] }, ['rn.js', 'exp-browser.js']],
+    [{ mainFields: ['browser', 'main'] }, ['browser.js', 'exp.js']],
+    [{ mainFields: ['browser', 'main'], conditions: ['browser'] }, ['browser.js', 'exp-browser.js']],
+  ]
+  await Promise.all(cases.map(async ([options, expected]) => {
+    t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(nodeFirst), ...options }), expected, JSON.stringify(options))
+  }))
+})
+
 test('suggestedEntries maps what resolution misses to its TS source under typescript, as the build does', async (t) => {
   // Entry points named by their compiled outputs, of which only the TS sources are in the tree.
   const named = {

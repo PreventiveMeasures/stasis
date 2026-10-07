@@ -2759,6 +2759,22 @@ test('buildBundle --mainFields resolves entry fields, browser redirects, and emp
   t.assert.equal(bundle.formats.get('.stasis/empty-module.js'), 'commonjs')
 })
 
+test('buildBundle asserts Node conditions only resolving as Node: --mainFields/--metro never take a node-first export', async (t) => {
+  // nodefirst's `exports` (and its `#target` import, from internal.js) list `node` first, uuid's
+  // shape: Node's resolution takes it whatever --conditions adds, as Node itself would.
+  const entries = ['src/entry-node-first.js']
+  const targets = (bundle) => [importTarget(bundle, 'src/entry-node-first.js', 'nodefirst'), importTarget(bundle, 'node_modules/nodefirst/internal.js', '#target')]
+  const node = 'node_modules/nodefirst/node.js'
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries })), [node, node])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, conditions: ['browser'] })), [node, node])
+  // A bundler's resolution asserts import/require, default and the extras, as esbuild, webpack and Metro do.
+  const nf = (file) => `node_modules/nodefirst/${file}`
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, mainFields: ['main'] })), [nf('default.js'), nf('default.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, mainFields: ['browser', 'module', 'main'], conditions: ['browser'] })), [nf('browser.js'), nf('default.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, metro: true, platforms: ['ios', 'android'] })), [nf('rn.js'), nf('rn.js')])
+  t.assert.deepStrictEqual(targets(await buildBundle({ cwd: fieldsFixture, entries, metro: true, platforms: ['ios', 'web'] })), [{ ios: nf('rn.js'), web: nf('browser.js') }, nf('rn.js')])
+})
+
 test('buildBundle --metro bundles every platform at once: union files, divergent edges unflatten', async (t) => {
   const bundle = await buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
   const files = new Set(bundle.sources.keys())
