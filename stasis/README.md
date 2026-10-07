@@ -87,6 +87,10 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis sbom --format=spdx stasis.lock.json` | export an SPDX SBOM for a lockfile or bundle |
 | `stasis sbom --format=cyclonedx app.stasis.code.br` | export a CycloneDX SBOM for a lockfile or bundle |
 
+## Audit corrections
+
+`stasis audit` does not count a package as present when all it ships is a file known to hold none of its code, such as `ws`'s throw-only `browser.js`. Those corrections are exported as plain data from `@exodus/stasis/audit-corrections`, so other tools (one reading a tree laid out by `@preventive/deptree`, for example) can apply the same rule without keeping their own copy. `CORRECTIONS` lists, for each package, the `ecosystem`, `name`, `file`, the `range` of versions it was verified for, and the `integrity` of every copy of that file published in the range, in the `sha512-…` form a stasis lockfile records. `isEvidenceFile(name, version, file, ecosystem)` applies the rule as `stasis audit` does.
+
 ## Runtime
 
 The zero-dependency [`@exodus/stasis-core`](../stasis-core) CLI provides `run`, `prune`, and `add` commands only; the bundler plugins live in [`@exodus/stasis-plugins`](../stasis-plugins).

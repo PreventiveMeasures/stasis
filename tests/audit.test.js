@@ -7,7 +7,10 @@ import { brotliCompressSync } from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import { stripVTControlCharacters } from 'node:util'
 
+import { sha512integrity } from '@exodus/stasis-core/state-util'
+
 import { audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
+import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -283,6 +286,27 @@ test('collectPackages applies the same evidence rule to lockfiles', withTmp((t, 
   })
   t.assert.deepStrictEqual(collectPackages([lock]), [{ ecosystem: 'npm', name: 'foo', version: '1.2.3' }])
 }))
+
+test('CORRECTIONS list each verified copy by the integrity a stasis lockfile records for it', (t) => {
+  // ws 8.22.0's browser.js, byte for byte: a lockfile attesting it records this integrity, and a
+  // tool holding the file's bytes (a tree @preventive/deptree lays out) can check them against it.
+  const stub = "'use strict';\n\nmodule.exports = function () {\n  throw new Error(\n    'ws does not work in the browser. Browser clients must use the native ' +\n      'WebSocket object'\n  );\n};\n"
+  const ws = CORRECTIONS.find((c) => c.ecosystem === 'npm' && c.name === 'ws')
+  t.assert.ok(ws.integrity.includes(sha512integrity(stub)))
+  t.assert.equal(isEvidenceFile('ws', '8.22.0', ws.file), false)
+  for (const { integrity } of CORRECTIONS) {
+    t.assert.ok(integrity.length > 0)
+    t.assert.equal(new Set(integrity).size, integrity.length)
+    for (const one of integrity) t.assert.match(one, /^sha512-[\d+/A-Za-z]{86}==$/)
+  }
+})
+
+test('isEvidenceFile corrects a file only in its own ecosystem', (t) => {
+  // A Soldeer package or GitHub repo named like an npm package is not that package.
+  t.assert.equal(isEvidenceFile('ws', '8.22.0', 'browser.js', 'npm'), false)
+  t.assert.equal(isEvidenceFile('ws', '8.22.0', 'browser.js', 'soldeer'), true)
+  t.assert.equal(isEvidenceFile('ws', '8.22.0', 'browser.js', 'github'), true)
+})
 
 test('collectReasons excludes a consumer that recorded only corrected files', withTmp((t, tmp) => {
   // webpack shipped nothing of ws but the stub (+ manifest): none of ws's real

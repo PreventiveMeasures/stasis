@@ -19,6 +19,7 @@
     "./lockfile": "./src/lockfile.js",
     "./prune": "./src/prune.js",
     "./sbom": "./src/sbom.js",
+    "./audit-corrections": "./src/audit-corrections.js",
     "./vfs-bundle": "./src/vfs-bundle.js",
     "./logo.svg": "./logo.svg"
   },
