@@ -243,8 +243,12 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
     records an npm package's at the `gitHead` of the registry's version
     document of it, fetched beside its tarball and held to the lockfile's
     integrity, and only beside a `github` its `package.json` names.
-  - A Soldeer git dependency on GitHub, in any build, records that repository
-    at its root (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out.
+  - A Soldeer git dependency on GitHub records that repository at its root
+    (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out: from a
+    lockfile alone, the commit deptree fetches; on disk, only where its folder
+    is a git checkout whose HEAD is that commit, as Soldeer leaves one. One left
+    at another commit since the lockfile changed, or with no `.git`, records
+    none.
   - A Foundry `lib/` submodule (ecosystem `github`), on disk, records the
     GitHub repository `.gitmodules` names at its root and its checkout's HEAD,
     read from its git directory as the bundle's own `commit` is (see `repo`

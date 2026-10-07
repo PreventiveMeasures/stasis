@@ -61,14 +61,24 @@ test("a lib/ submodule records the repository .gitmodules names, at its root, at
   t.assert.equal(repoOf(await buildSolidity(tmp), SUBMODULE), undefined)
 }))
 
-test('a Soldeer git dependency records the GitHub repository soldeer.lock names, at its root, at its rev', withTmp(async (t, tmp) => {
+test('a Soldeer git dependency records the GitHub repository soldeer.lock names, at its root, at its rev, where its checkout is there', withTmp(async (t, tmp) => {
   cpSync(solidityFixture, tmp, { recursive: true })
   const lock = (entry) => write(join(tmp, 'soldeer.lock'), `[[dependencies]]\nname = "solmate"\nversion = "6.8.0"\n${entry}`)
+  // As Soldeer clones one: a git repository of its own, its HEAD at `head`.
+  const checkout = (head) => write(join(tmp, SOLDEER, '.git', 'HEAD'), `${head}\n`)
+  checkout(COMMIT)
   t.assert.equal(repoOf(await buildSolidity(tmp), SOLDEER), undefined, 'no soldeer.lock: none')
   lock(`git = "https://github.com/transmissions11/solmate.git"\nrev = "${COMMIT}"\n`)
   const bundle = await buildSolidity(tmp)
   t.assert.deepStrictEqual(repoOf(bundle, SOLDEER), { github: 'transmissions11/solmate', directory: '', commit: COMMIT })
   t.assert.equal(bundle.modules.get(SOLDEER).ecosystem, 'soldeer')
+  // A checkout left at another commit, as `soldeer install` leaves one until it is reinstalled, or
+  // none: the lockfile's rev is not what is there.
+  checkout(OTHER)
+  t.assert.equal(repoOf(await buildSolidity(tmp), SOLDEER), undefined, 'a checkout at another commit')
+  rmSync(join(tmp, SOLDEER, '.git'), { recursive: true })
+  t.assert.equal(repoOf(await buildSolidity(tmp), SOLDEER), undefined, 'no checkout')
+  checkout(COMMIT)
   // Nothing recorded, and nothing refused, where the lockfile names no GitHub repository at a full
   // commit, or is none Soldeer writes.
   for (const [entry, why] of [

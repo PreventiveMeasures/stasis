@@ -117,8 +117,8 @@ function ownedText(baseDir, rel, ownership, host) {
 
 // Each git dependency the root's soldeer.lock installs from GitHub, by its folder under
 // `dependencies/` (`<name>-<version>`, as Soldeer names it): the repository's root at the lockfile's
-// `rev`, which Soldeer checks out. None where the lockfile can't be read or parsed: it is metadata,
-// which never stops a build.
+// `rev`, which Soldeer checks out there. None where the lockfile can't be read or parsed: it is
+// metadata, which never stops a build.
 function soldeerGitRepos(baseDir, ownership, host) {
   const text = ownedText(baseDir, 'soldeer.lock', ownership, host)
   let lock = null
@@ -139,29 +139,36 @@ function soldeerGitRepos(baseDir, ownership, host) {
 // github submodule (`lib/`, via the `.gitmodules` `ownership` read), else null to defer to the
 // node_modules/workspace logic. `ownership.assert` vets a package.json path before it is read
 // through `host`. A bucket's `repo` is the GitHub repository it is checked out from, at its root, at
-// the commit it is at: a submodule's checkout's HEAD, as the bundle's own `repo` reads one; a
-// Soldeer git dependency's soldeer.lock `rev` (soldeerGitRepos).
+// the commit its checkout's HEAD is at, as the bundle's own `repo` reads one: a submodule's, from
+// the repository .gitmodules names; a Soldeer git dependency's, where it is its soldeer.lock `rev`
+// (soldeerGitRepos), as Soldeer holds a checkout to the lockfile before taking it for installed: a
+// folder left at another commit since the lockfile changed, or no checkout, records none.
 function makeSolidityClassifier(baseDir, ownership, host) {
   const submodules = githubSubmodules(ownership.submodules)
   const check = ownership.assert
   const versions = new Map() // a submodule's package.json version, read once
-  const commits = new Map() // a submodule's checkout's commit, read once
+  const commits = new Map() // a bucket's checkout's commit, read once
+  const commitOf = (dir) => {
+    if (!commits.has(dir)) commits.set(dir, checkoutCommit(join(baseDir, dir), host))
+    return commits.get(dir)
+  }
   let soldeer // soldeerGitRepos, read at the first Soldeer file
   return (path) => {
     if (path.startsWith('dependencies/')) {
       const seg = path.slice('dependencies/'.length).split('/')[0]
       if (seg) {
         const { name, version } = parseSoldeerDir(seg)
+        const bucketDir = `dependencies/${seg}`
         soldeer ??= soldeerGitRepos(baseDir, ownership, host)
-        const repo = soldeer.get(seg)
-        return { bucketDir: `dependencies/${seg}`, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
+        const locked = soldeer.get(seg)
+        const repo = locked !== undefined && commitOf(bucketDir) === locked.commit ? locked : undefined
+        return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
     for (const [sub, { name, branch }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
-        if (!commits.has(sub)) commits.set(sub, checkoutCommit(join(baseDir, sub), host))
-        const repo = repoRootAt(name, commits.get(sub))
+        const repo = repoRootAt(name, commitOf(sub))
         return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github', ...(repo === undefined ? {} : { repo }) }
       }
     }
