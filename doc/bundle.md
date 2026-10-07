@@ -12,10 +12,7 @@ stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=we
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
-and Rust bundles from `.sol`, `.php`, `.sh`/`.bash` and `.rs` entries (all the
-entries of one invocation in one language): see
-[file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust)
-for what those carry, and `stasis --help` for their options.
+and Rust bundles, see [Other languages](#other-languages).
 
 | Flag | Meaning |
 | - | - |
@@ -170,6 +167,45 @@ and [file formats](file-formats.md#resources-in-the-bundle).
 scan never reached, so `stasis run --bundle=load` and `stasis prune` can read
 every dependency's manifest. It is the `packageJSON` key of
 [`stasis.config.json`](file-formats.md#stasisconfigjson).
+
+## Other languages
+
+`stasis bundle` also builds Solidity, PHP, Bash and Rust bundles, from `.sol`,
+`.php`, `.sh`/`.bash` and `.rs` entries, all the entries of one invocation in
+one language. How each is resolved and what the bundle carries is in
+[file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust).
+
+```sh
+stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
+stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
+stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
+stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
+```
+
+A Solidity directory entry stands for every `.sol` file under it (a missing or
+empty one is skipped): `stasis bundle src test script` is what `forge build`
+compiles, `stasis bundle contracts` what Hardhat does. Imports resolve through
+the remappings `forge build` uses (`remappings.txt`, `foundry.toml`'s profile,
+`FOUNDRY_PROFILE`, `lib/` auto-detection, dependencies' own configs included),
+else a root `remappings.txt`, then `node_modules` by file path; an import must
+reach a `.sol` file inside the project, and a dependency's only other
+dependencies' files.
+
+| Flag | Meaning |
+| - | - |
+| `--mapping=path` | Solidity: take exactly the remappings that one file lists instead. |
+| `--manifests` | Solidity: also carry `foundry.toml`, `remappings.txt`, `foundry.lock`, `soldeer.lock`, `.gitmodules` and `package.json` of the project and its bundled dependencies, as written: RPC/Etherscan keys and URL credentials in them included. |
+| `--cargo` | Rust: take the feature and dependency resolution from `cargo metadata`. It runs cargo, so only on a project you trust. |
+| `--cargo-features=a,b,pkg/c`, `--cargo-no-default-features`, `--cargo-all-features` | Rust: cargo's `--features`, `--no-default-features` and `--all-features` for the entries' packages. |
+| `--cargo-target=(triple\|host)` | Rust: ask rustc for the target's cfgs, so `#[cfg(unix)]`-style code for other targets stays out too; otherwise it is all kept. |
+| `--cargo-manifests` | Rust: also bundle each bundled package's `Cargo.toml` and build script (a vendored crate's `.cargo-checksum.json` too), the workspace `Cargo.toml`, `Cargo.lock` and cargo configs, as written: tokens and URL credentials in them included. |
+
+A Rust bundle resolves each crate's Cargo features from `Cargo.toml` and
+`Cargo.lock` like `cargo build` of the entries' packages, so `#[cfg(feature =
+...)]` code that is off stays out: by cargo's own resolver where there is a
+`Cargo.lock` (version 3 or 4; an older one stops the build), `--cargo-target`
+and every locked package in-tree, else by replaying the manifests (said, with
+why).
 
 ## `stasis add`
 
