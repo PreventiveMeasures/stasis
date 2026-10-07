@@ -83,20 +83,18 @@ function parseSoldeerDir(seg) {
   return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
 }
 
-// Extract `owner/repo` from a github.com remote (https/ssh/scp); null for non-github hosts.
-function githubSlug(url) {
-  const m = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/iu.exec(url)
-  return m ? `${m[1]}/${m[2]}` : null
-}
+// The GitHub repository, `owner/name`, a .gitmodules `url` names (parseGithubRepository), else null:
+// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for the `owner/name`
+// shorthand a package.json takes for GitHub's, which git takes for a path, as it does any url with
+// no colon before its first slash.
+const submoduleGithub = (url) => (/^[^/]*:/u.test(url) ? parseGithubRepository(url) : null)
 
-// The github.com ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
-// `github`, the repository a submodule's url names where it is GitHub's (parseGithubRepository,
-// which a host merely holding `github.com` doesn't pass), or null.
+// The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {
   const byPath = new Map()
   for (const { path, url, branch } of submodules) {
-    const name = url && githubSlug(url)
-    if (name) byPath.set(path, { name, branch, github: parseGithubRepository(url) })
+    const name = url && submoduleGithub(url)
+    if (name) byPath.set(path, { name, branch })
   }
   return byPath
 }
@@ -168,10 +166,10 @@ function makeSolidityClassifier(baseDir, ownership, host) {
         return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
-    for (const [sub, { name, branch, github }] of submodules) {
+    for (const [sub, { name, branch }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
-        const repo = repoRootAt(github, commitOf(sub))
+        const repo = repoRootAt(name, commitOf(sub))
         return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github', ...(repo === undefined ? {} : { repo }) }
       }
     }

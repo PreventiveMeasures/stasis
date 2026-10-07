@@ -862,11 +862,16 @@ file resolves out of:
 | Rust | the same, a git checkout's copy | `cargo-git` (name/version from `Cargo.toml`) |
 | Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
 
-A dep under `node_modules` is `npm` whatever the language. A git submodule with no
-`package.json`/`branch`, or a Soldeer dir with no version suffix, falls back to
-`0.0.0`; the workspace bucket carries no `ecosystem`. A Rust crate reached
-through a Cargo `path` dependency is first-party (its own `Cargo.toml` bucket, no
-`ecosystem`), not a registry dep. Where a vendored crate was copied from, its
+A dep under `node_modules` is `npm` whatever the language. A git submodule is
+`github` only where its `.gitmodules` url is GitHub's (`https`, `ssh`, `git`,
+scp-like `git@github.com:` or `github:`); one of another host, even one holding
+`github.com` (`https://notgithub.com/o/n`), or a path, is bucketed as any file
+outside `node_modules` is, by its nearest `package.json`, first-party. A git
+submodule with no `package.json`/`branch`, or a Soldeer dir with no version
+suffix, falls back to `0.0.0`; the workspace bucket carries no `ecosystem`. A
+Rust crate reached through a Cargo `path` dependency is first-party (its own
+`Cargo.toml` bucket, no `ecosystem`), not a registry dep. Where a vendored
+crate was copied from, its
 `.cargo-checksum.json` tells: `cargo vendor` writes a registry crate's with the
 package's checksum, a git dependency's with `"package": null`. Only a registry's
 copy is `cargo`, which `stasis audit` asks OSV about as crates.io's crate and
