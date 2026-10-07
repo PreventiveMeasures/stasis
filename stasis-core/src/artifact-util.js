@@ -25,6 +25,10 @@ export const KNOWN_FORMATS = new Set([
 // Payload-free stat records: attest a path's KIND, no content, and yield to a real format.
 export const isStatFormat = (format) => STAT_FORMATS.has(format)
 
+// Reserved synthetic file a disabled import (a `browser`/`react-native` field mapping it to `false`)
+// points at: never on disk, carried as empty CommonJS so the edge resolves to attested bytes.
+export const EMPTY_MODULE_PATH = '.stasis/empty-module.js'
+
 // The post-erasure family of a '-typescript' loader format ('module-typescript' -> 'module'): a
 // transforming preload (`stasis run --import tsx`) resolves/serves a TypeScript file as the JS
 // family it transpiles to, while the attestation keeps the on-disk format. undefined otherwise.

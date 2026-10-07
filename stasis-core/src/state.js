@@ -11,7 +11,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath } from './util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath } from './util.js'
 import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -723,13 +723,19 @@ export class State {
 
   // Canonicalize `url` and resolve/register the owning package bucket. `directory: true` walks up
   // ourselves -- Node's findPackageJSON is unreliable for a directory URL (EISDIR, or the parent's).
-  #locateModule(url, { directory = false } = {}) {
+  // `synthetic: true` (EMPTY_MODULE_PATH) is never on disk: it must NOT exist, and walks up from its dir.
+  #locateModule(url, { directory = false, synthetic = false } = {}) {
     // Canonicalize first: a linked-in workspace source is recorded under its real path (a source).
     const { absolute } = this.#canonical(url)
-    assert.ok(this.#host.stat(absolute) !== null)
     const file = this.relative(absolute)
+    if (synthetic) {
+      assert.ok(this.#host.stat(absolute) === null, `the reserved path ${file} is needed for a synthetic empty module, but the project has a real file there`)
+    } else {
+      assert.ok(this.#host.stat(absolute) !== null)
+    }
 
-    const closestPkgAbsolute = directory ? this.#nearestPackageJsonFor(absolute) : this.#host.findPackageJSON(absolute)
+    const closestPkgAbsolute = directory ? this.#nearestPackageJsonFor(absolute)
+      : synthetic ? this.#nearestPackageJsonFor(dirname(absolute)) : this.#host.findPackageJSON(absolute)
     const closestPkg = readPackageJSON(this.#host, closestPkgAbsolute)
 
     const closestType = closestPkg.type
@@ -794,7 +800,19 @@ export class State {
 
   // `resource: true` (legacy alias `isBinary: true`): format derived from bytes. `inferFormat: false`
   // records bytes without imposing a loader format (defers module-vs-commonjs to the loader).
-  addFile(url, { source, format, isEntry, isBinary, resource, inferFormat = true, reason = 'run', fsRead = false } = {}) {
+  addFile(url, options = {}) {
+    this.#addFile(url, options)
+  }
+
+  // Record the empty module a disabled import resolves to (EMPTY_MODULE_PATH, the file `stasis bundle`
+  // emits for a `browser` field `false`), attested like any file but never read from disk. -> its URL
+  addEmptyModule({ reason = 'run' } = {}) {
+    const url = pathToFileURL(resolve(this.root, EMPTY_MODULE_PATH)).toString()
+    this.#addFile(url, { source: '', format: 'commonjs', inferFormat: false, reason }, { synthetic: true })
+    return url
+  }
+
+  #addFile(url, { source, format, isEntry, isBinary, resource, inferFormat = true, reason = 'run', fsRead = false } = {}, { synthetic = false } = {}) {
     const asResource = resource === true || isBinary === true
     if (!asResource && Bundle.isResourceFormat(format)) {
       throw new Error(`addFile: format '${format}' requires resource: true`)
@@ -805,7 +823,7 @@ export class State {
     if (asResource && isEntry) {
       throw new Error(`addFile: a resource can't be an entry (resource:true + isEntry:true)`)
     }
-    const { absolute, file, dir, module, closestType } = this.#locateModule(url)
+    const { absolute, file, dir, module, closestType } = this.#locateModule(url, { synthetic })
 
     // Real content supersedes a payload-free stat record: drop it so the noupsert below records the
     // actual format instead of conflicting with 'stat:*'.
@@ -855,7 +873,7 @@ export class State {
 
     const buf = typeof source === 'string' ? Buffer.from(source) : source
     // Verify a CALLER-PROVIDED source against disk; tautological when we read it ourselves.
-    if (!sourceFromDisk) assert.deepStrictEqual(this.#host.readFile(absolute), buf)
+    if (!sourceFromDisk && !synthetic) assert.deepStrictEqual(this.#host.readFile(absolute), buf)
 
     if (asResource) {
       const derived = isUtf8(buf) ? 'resource' : 'resource:base64'
@@ -920,7 +938,7 @@ export class State {
 
     if (format) noupsert(this.formats, file, format)
 
-    this.#recordExecutable(file, absolute)
+    if (!synthetic) this.#recordExecutable(file, absolute)
   }
 
   // Observe `file` on disk and record or refute its execute bit; disk wins over whatever a lockfile/
