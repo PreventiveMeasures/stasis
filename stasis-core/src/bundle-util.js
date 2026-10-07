@@ -202,6 +202,9 @@ export function githubHomepageDirectory(homepage, github) {
 // `{ directory }` where it is a valid one, else `{}`.
 const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
 
+// Whether a declared path is the repository's root: nothing but empty and `.` parts (`./`, `/.`).
+const isRootPath = (path) => path.replaceAll('\\', '/').split('/').every((part) => part === '' || part === '.')
+
 // A package.json's declared `base` (its `repository.directory`) joined with `rel` as a `repoLocation`;
 // `{}` where none is declared (unknown, not the root), or where `base` has a `..` part, whatever it
 // would come to (`a/..` is no claim on the root). Its empty and `.` parts are dropped, and one that
@@ -250,8 +253,13 @@ function repositoryUrl(json) {
 export function packageRepo(json, rel = '') {
   const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
-  // Often unset; fall back to a GitHub tree `homepage`.
-  const base = typeof json.repository.directory === 'string' ? json.repository.directory : githubHomepageDirectory(json.homepage, github)
+  let base = json.repository.directory
+  // Often unset; fall back to a GitHub tree `homepage`, which places a package below the root, never
+  // at it: only `repository.directory` declares the root (`/tree/main/.` declares nothing).
+  if (typeof base !== 'string') {
+    base = githubHomepageDirectory(json.homepage, github)
+    if (base !== undefined && isRootPath(base)) base = undefined
+  }
   return { github, ...declaredLocation(base, rel) }
 }
 

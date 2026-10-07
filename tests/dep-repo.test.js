@@ -51,6 +51,9 @@ test("a dependency repo is read as a build reads its own: a declared directory a
   for (const directory of ['./', '.', '', '/', '/.', './.', '.\\']) {
     t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
   }
+  for (const path of ['.', './', '%2E']) {
+    t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n', homepage: `https://github.com/o/n/tree/main/${path}` }), { github: 'o/n' }, `homepage ${path}: no claim on the root`)
+  }
   for (const directory of ['../x', 'a/..', 'a/../', 'a/../b']) {
     t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n' }, `${JSON.stringify(directory)}: a \`..\` part, unknown`)
   }
