@@ -19,7 +19,7 @@ for what those carry, and `stasis --help` for their options.
 
 | Flag | Meaning |
 | - | - |
-| `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, see [Output](#output). `-` streams to stdout. |
+| `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. Not with `--mainFields`/`--metro`, which always emit full scope. |
@@ -37,13 +37,16 @@ for what those carry, and `stasis --help` for their options.
 
 ## Output
 
-By default a JS bundle is written to `stasis.code.br` in the project root its
-paths are relative to: the project's at or above the cwd, which for a workspace
-package is the workspace root. That is where `stasis run --bundle=load` looks
-for it; written below the root, it would load as rooted there, and root the
-next `stasis bundle` there too, out of the files above it. `--output` names
-another path (relative to the cwd), and `--output=-` streams the bundle to
-stdout, the summary going to stderr.
+By default a JS bundle is written to `stasis.code.br` in the directory its
+paths are relative to. Resolving as Node does (the default, with `--conditions`
+or `--typescript` too), that is the project root at or above the cwd, which for
+a workspace package is the workspace root: where `stasis run --bundle=load`
+looks for it; written below the root, it would load as rooted there, and root
+the next `stasis bundle` there too, out of the files above it. With
+`--mainFields` or `--metro`, the bundle's paths are relative to the cwd
+instead, and so the default `stasis.code.br` is the cwd's: run it from the
+package's directory. `--output` names another path (relative to the cwd), and
+`--output=-` streams the bundle to stdout, the summary going to stderr.
 
 `--add` unions the fresh build into the bundle already on disk at `--output`,
 to merge more entries and their import graph into one bundle; a file both
@@ -182,14 +185,30 @@ allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
 `stasis.lock.json` is updated only when one already exists. It also ships on
 the core CLI as `stasis-core add`.
 
-A directory expands to every file under it, minus an auto-excluded set:
-`.git`, `.github`, `.settings`, `example`/`examples`, `__tests__`, `__mocks__`
-and `jest` directories, type declarations (`.d.ts`), dotenv files and stasis's
-own artifacts. The directory rules apply below the named root only: `stasis
-add src/examples` sweeps the directory it was pointed at, `stasis add src`
-skips an `examples` it merely found. Skipped files are counted in the summary.
+A directory expands to every file under it, minus what a sweep leaves out:
+
+- dotfiles, and everything under a dot-directory (`.env`, `.git/`, ...): the
+  sweep never finds them, so they aren't counted as skipped either;
+- files under an `example`/`examples`, `__tests__`, `__mocks__`, `jest` or
+  Apple prebuilt slice (`ios-arm64`, ...) directory, below the named root only:
+  `stasis add src/examples` sweeps the directory it was pointed at, `stasis add
+  src` skips an `examples` it merely found;
+- type declarations (`.d.ts`, `.d.mts`, `.d.cts`), `*.env` files, stasis's own
+  artifacts (`stasis.lock.json`, `*stasis*.br`) and the bundles this run
+  writes to;
+- what a native walk leaves out: `*.md`, `*.log`, `*.map`, `*.flow` and
+  `*.swiftdoc` files (and `*.bat` off Windows), `LICENSE`/`LICENCE`/
+  `THIRD-PARTY-LICENSES`, `yarn.lock`, and tool configs such as `.prettierrc`,
+  `.flowconfig`, `.editorconfig`, `circle.yml` and `gradle-wrapper.properties`.
+
+So `stasis add src` does not attest everything under `src`. The skipped files
+are counted in the summary, the dotfiles aside. A file the command names is
+always taken, exclusions aside, and validated like any other: a non-code file
+needs its extension, or its extensionless filename (`LICENSE`), in the
+`resources` allowlist.
 
 ```sh
 stasis add a.js icon.svg     # these two files
-stasis add src assets        # every file under them, minus the auto-excluded set
+stasis add src assets        # every file under them, minus the set above
+stasis add src src/README.md # the README too, named
 ```
