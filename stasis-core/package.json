@@ -26,6 +26,7 @@
     "src/brotli.js",
     "src/bundle.js",
     "src/bundle-util.js",
+    "src/bundle-util.d.ts",
     "src/config.js",
     "src/extract.js",
     "src/fs.js",
