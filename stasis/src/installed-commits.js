@@ -5,7 +5,7 @@ import { toBase32 } from '@exodus/bytes/base32.js'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { isPlainObject, toPosix } from '@exodus/stasis-core/util'
+import { isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
@@ -131,11 +131,14 @@ const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^
 // one its package.json names (a fork's, where that names the one forked), at its root (`''`) or the
 // subdirectory pnpm records, at that commit. A dependency is found by its real path, through the link
 // pnpm installs it by: in a node_modules/.pnpm, by its directory there; else by its location from the
-// nearest directory, at or above the one its outermost node_modules is in, whose node_modules npm or
-// yarn laid out. Metadata, as `repo` is: never checked against the files installed.
+// nearest directory whose node_modules npm or yarn laid out, from the one its outermost node_modules
+// below the bundle root is in up to that root, whatever a directory above the root is named: a
+// record outside the root is another project's. Metadata, as `repo` is: never checked against the
+// files installed.
 export function pinInstalledCommits(bundle, root, host = diskHost) {
   const stores = new Map()
   const layouts = new Map()
+  let top // the bundle root's real path, as each package's is compared with it
   // The record of `dir`'s node_modules, or null where neither npm nor yarn laid it out; where both
   // left theirs, neither's, as which was last is not known.
   const layoutAt = (dir) => {
@@ -160,10 +163,17 @@ export function pinInstalledCommits(bundle, root, host = diskHost) {
       if (!stores.has(store)) stores.set(store, pnpmRecord(store, host))
       repo = stores.get(store)(name)
     } else {
-      const at = real.indexOf('/node_modules/')
-      if (at === -1) continue
-      let from = resolve(real.slice(0, at) || '/')
-      while (layoutAt(from) === null && dirname(from) !== from) from = dirname(from)
+      try {
+        top ??= resolve(host.realpath(resolve(root)))
+      } catch {
+        return
+      }
+      const rel = relative(top, real)
+      const parts = toPosix(rel).split('/')
+      const at = parts.indexOf('node_modules')
+      if (relativeEscapes(rel) || at === -1) continue
+      let from = resolve(top, ...parts.slice(0, at))
+      while (layoutAt(from) === null && from !== top) from = dirname(from)
       const commit = (layoutAt(from) ?? NONE)(toPosix(relative(from, real)), info.version)
       if (commit !== undefined) repo = { github: commit.github, directory: '', commit: commit.commit }
     }

@@ -218,6 +218,18 @@ test('pnpm: a git dependency with peers, by the directory its snapshot key names
   }
 }))
 
+test('npm: a project beneath a directory named node_modules is found by its own record, never one outside it', withTmp(async (t, tmp) => {
+  const dir = join(tmp, 'node_modules', 'app')
+  mkdirSync(dir, { recursive: true })
+  writeProject(dir, ['dep'])
+  writePackage(dir, 'node_modules/dep', { name: 'dep' })
+  // A record outside the project, of the directory above it, naming it at another commit.
+  writeJson(join(tmp, 'node_modules', '.package-lock.json'), { lockfileVersion: 3, packages: { 'node_modules/app/node_modules/dep': { version: '1.0.0', resolved: `git+ssh://git@github.com/o/outer.git#${SHA.fork}` } } })
+  for (const [label, byDir] of await bundledEach(dir)) t.assert.equal(byDir['node_modules/dep'], undefined, `${label}: no record of its own, none`)
+  writeJson(join(dir, 'node_modules', '.package-lock.json'), { lockfileVersion: 3, packages: { 'node_modules/dep': { version: '1.0.0', resolved: `git+ssh://git@github.com/o/dep.git#${SHA.dep}` } } })
+  for (const [label, byDir] of await bundledEach(dir)) t.assert.deepStrictEqual(byDir['node_modules/dep'], { github: 'o/dep', directory: '', commit: SHA.dep }, `${label}: its own`)
+}))
+
 test("npm's and yarn's records: one missing or unreadable, or both at once, records nothing, and fails no build", withTmp(async (t, dir) => {
   writeProject(dir, ['dep'])
   writePackage(dir, 'node_modules/dep', { name: 'dep', repository: 'github:o/dep' })
