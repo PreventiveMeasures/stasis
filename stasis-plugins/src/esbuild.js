@@ -74,6 +74,10 @@ export class StasisEsbuild {
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
   #probes = new Map()  // [kind, resolveDir, specifier] -> Promise<disabled path | null>
+  #resolving = new Set()  // keys of the imports whose build.resolve() is in flight (see onResolve)
+  // Capture declines its resolutions, so no pluginData reaches onLoad; it finds these by path.
+  #targets = new Map()  // path -> 'code' | 'resource', for every file an import or entry resolved to
+  #entries = new Set()  // paths of the entry points
 
   // Build starts observed by this instance (across rebuilds and separate build()/context() calls);
   // the second is refused in onStart.
@@ -206,6 +210,8 @@ export class StasisEsbuild {
     // Load mode: resolution comes from the bundle's import map, not esbuild's resolver -- the file
     // may not be on disk. Keep namespace:'file' with the original absolute path (esbuild doesn't stat
     // plugin-returned paths) so output bytes -- banners, asset names, source maps -- match a capture build.
+    // KNOWN GAP: what esbuild's resolver alone attaches to a file (see the capture hook below) is lost
+    // here, so a `.js` file of a "type": "module" package doesn't get capture's node-mode interop.
     onResolve({ filter: /$/ }, ({ path: specifier, importer, kind: resolveKind, with: attrs }) => {
       if (!this.#state.config.loadBundle) return undefined
       const isEntry = resolveKind === 'entry-point'
@@ -240,23 +246,45 @@ export class StasisEsbuild {
       return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
     })
 
+    // Capture: esbuild attaches some metadata only to a resolution its own resolver made, never to a
+    // plugin's result -- the enclosing package.json "type" (node-mode CommonJS interop, `__toESM(x, 1)`),
+    // the nearest tsconfig's JSX and TypeScript settings, the "main" fallback of a "module" path. So
+    // this hook records what build.resolve() finds, then declines: esbuild resolves the import again,
+    // to the same file, and onLoad attests and serves that file by its path.
     onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
       const isEntry = !args.importer
 
-      // Recurse with a synthetic namespace so esbuild's default resolver runs without re-entering us
-      const res = await resolve(specifier, { ...args, with: attrs, namespace: 'stasis' })
+      // Resolve with the arguments esbuild passed us, so the plugins after this one and then esbuild's
+      // resolver answer as they will once we decline. That call re-enters this hook: decline it.
+      // (Sorted: the attributes cross esbuild as a Go map, in no set order.)
+      const key = JSON.stringify([args.importer, args.resolveDir, args.kind, specifier, Object.entries(attrs).toSorted()])
+      if (this.#resolving.has(key)) return undefined
+      this.#resolving.add(key)
+      let res
+      try {
+        res = await resolve(specifier, { ...args, with: attrs })
+      } finally {
+        this.#resolving.delete(key)
+      }
       // A miss is esbuild's to report -- or to tolerate, as it does a require() in a try/catch (debug's
       // optional supports-color). Decline so it re-resolves exactly as without us; no edge.
       if (res.errors.length > 0) return undefined
-      // A disabled import (`browser` field `false`): returning `res` would bundle the real file or fail
-      // on a bare name, so decline and let esbuild re-resolve it into its own empty module. Capture
-      // points the edge at the attested empty module, which is what bundle=load serves.
+      // A disabled import (`browser` field `false`): `res` is the real file, or a bare name esbuild
+      // can't load, so it must become esbuild's empty `(disabled):` module. Capture points the edge at
+      // the attested empty module, which is what bundle=load serves.
       if (!isEntry && await this.#isDisabled(res, specifier, args, { esbuild, initialOptions })) {
-        if (!this.#state.config.loadBundle) {
-          this.#emptyModule ??= this.#state.addEmptyModule({ reason: 'esbuild' })
-          this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, this.#emptyModule, { importAttributes: attrs })
-        }
-        return undefined
+        if (this.#state.config.loadBundle) return undefined
+        this.#emptyModule ??= this.#state.addEmptyModule({ reason: 'esbuild' })
+        this.#state.addImport(pathToFileURL(args.importer).toString(), specifier, this.#emptyModule, { importAttributes: attrs })
+        // A bare name with no file: decline, and esbuild makes its `(disabled):<name>` module. A file
+        // can't be declined: esbuild would load it in the 'file' namespace with the same arguments as a
+        // real import of it (a `browser` map disables a bare name only for its own package's importers),
+        // which onLoad can't tell apart. So serve the empty module here, under a namespace esbuild prints
+        // as it prints its own: `(disabled):` and the path, relative unless `absPaths` covers code.
+        if (res.namespace !== 'file') return undefined
+        const cwd = initialOptions.absWorkingDir ?? process.cwd()
+        const path = initialOptions.absPaths?.includes('code') ? res.path : relative(cwd, res.path).replaceAll('\\', '/')
+        return { path, namespace: '(disabled)', sideEffects: res.sideEffects }
       }
       // A non-empty `suffix` (some CSS-modules plugins set one) can't be persisted to the bundle,
       // so refuse it rather than silently dropping it at capture.
@@ -286,12 +314,26 @@ export class StasisEsbuild {
         }
       }
 
-      return { ...res, pluginData: { ...res.pluginData, isEntry, kind } }
+      // Load mode reaches here only for an import the bundle has no edge for: return it, so onLoad
+      // fails closed on a file the bundle doesn't carry.
+      if (this.#state.config.loadBundle) return { ...res, pluginData: { ...res.pluginData, isEntry, kind } }
+      if (kind !== 'skip') {
+        this.#targets.set(res.path, kind)
+        if (isEntry) this.#entries.add(res.path)
+      }
+      return undefined
     })
 
+    // The empty module of a disabled file (see above), as esbuild's loader for disabled modules has it.
+    onLoad({ filter: /$/, namespace: '(disabled)' }, () => ({ contents: '', loader: 'empty' }))
+
     onLoad({ filter: /$/, namespace: 'file' }, async ({ path, pluginData, with: attrs }) => {
-      const kind = pluginData?.kind ?? 'skip'
+      // What onResolve found for this path: by path at capture, as pluginData at load. Any other file
+      // -- one a plugin before this one resolved -- is left to esbuild and that plugin.
+      const { loadBundle } = this.#state.config
+      const kind = (loadBundle ? pluginData?.kind : this.#targets.get(path)) ?? 'skip'
       if (kind === 'skip') return undefined
+      const isEntry = loadBundle ? pluginData?.isEntry : this.#entries.has(path)
       // Accept only the `type` import attribute; other attributes aren't persistable to the lockfile yet.
       for (const k of Object.keys(attrs)) {
         assert.equal(k, 'type', `unsupported import attribute: ${k}`)
@@ -299,7 +341,7 @@ export class StasisEsbuild {
 
       // Load mode: serve bytes the bundle attested. getFile verifies the hash and throws on a file
       // the bundle doesn't carry -- a missing in-scope file is a hard error, not a disk fallback.
-      if (this.#state.config.loadBundle) {
+      if (loadBundle) {
         const { source } = this.#state.getFile(pathToFileURL(path).toString())
         // A disabled import's stand-in gets esbuild's own loader for disabled modules: `empty` is the
         // one a CSS @import, `composes` or url() accepts, so one empty module serves JS and CSS importers.
@@ -324,7 +366,7 @@ export class StasisEsbuild {
         // contents/loader: emission is esbuild's job via the build's own `loader` config.
         if (!this.#seen.has(path)) {
           this.#seen.add(path)
-          this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, resource: true, reason: 'esbuild' })
+          this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry, resource: true, reason: 'esbuild' })
         }
         return undefined
       }
@@ -334,7 +376,7 @@ export class StasisEsbuild {
 
       if (!this.#seen.has(path)) {
         this.#seen.add(path)
-        this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, reason: 'esbuild' })
+        this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry, reason: 'esbuild' })
       }
 
       return { contents: source, loader: this.#loaderFor(path) }

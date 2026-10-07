@@ -16,6 +16,9 @@ const jsonFixture = join(here, 'fixtures', 'esbuild-json')
 const assetsFixture = join(here, 'fixtures', 'esbuild-assets')
 const optionalRequireFixture = join(here, 'fixtures', 'esbuild-optional-require')
 const browserMapFixture = join(here, 'fixtures', 'esbuild-browser-map')
+const nodeModeFixture = join(here, 'fixtures', 'esbuild-node-mode')
+const tsconfigFixture = join(here, 'fixtures', 'esbuild-tsconfig')
+const pluginAfterFixture = join(here, 'fixtures', 'esbuild-plugin-after')
 
 // Route png/svg through esbuild's native `file` loader (copies the asset, returns a URL).
 const FILE_LOADER = JSON.stringify({ '.png': 'file', '.svg': 'file' })
@@ -1115,14 +1118,13 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
 
   // ----- Resolution parity: imports esbuild fails or disables --------------------------
   //
-  // The plugin re-resolves every import with build.resolve(). Two results of that API must go back
-  // to esbuild rather than be returned: a failure (esbuild tolerates one inside try/catch) and an
-  // import a `browser` field maps to `false` (the API drops esbuild's "disabled" flag). Each test
-  // pins the capture output byte-for-byte to a build without the plugin (STASIS_TEST_ESBUILD_PLAIN).
-  // The entries are .mjs: a plugin-resolved .js in a "type": "module" package loses node-mode
-  // interop (`__toESM(x, 1)`), a separate divergence these tests don't cover.
+  // The plugin re-resolves every import with build.resolve(). Two results of that API need care: a
+  // failure (esbuild tolerates one inside try/catch) and an import a `browser` field maps to `false`
+  // (the API drops esbuild's "disabled" flag). Each test pins the capture output byte-for-byte to a
+  // build without the plugin (STASIS_TEST_ESBUILD_PLAIN). The entries are .mjs, which esbuild types
+  // by extension; the section after this one covers what it takes from package.json and tsconfig.
 
-  const plainBuild = (cwd, outdir, env = {}) => run(['src/entry.mjs'], {
+  const plainBuild = (cwd, outdir, env = {}, entry = 'src/entry.mjs') => run([entry], {
     cwd,
     env: { STASIS_TEST_PRELOAD: '0', STASIS_TEST_ESBUILD_PLAIN: '1', STASIS_TEST_ESBUILD_OUTDIR: outdir, ...env },
   })
@@ -1181,8 +1183,9 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
 
   // browser-map's package.json maps ./lib/server.js, fs and the installed node-only package to
   // `false`. build.resolve() returns the bare `fs` with no namespace (esbuild: "returned a
-  // non-absolute path: fs") and the two files as plain paths (bundled for real). Declining lets
-  // esbuild emit its own empty `(disabled):` modules.
+  // non-absolute path: fs") and the two files as plain paths (bundled for real). The plugin declines
+  // `fs` (esbuild emits its own empty `(disabled):fs`) and serves the two files' empty modules itself,
+  // printed as esbuild prints its own.
   test('platform=browser: imports a `browser` field maps to false are disabled as without the plugin, never bundled or attested', withTmp(async (t, tmp) => {
     const capDir = join(tmp, 'cap')
     cpSync(browserMapFixture, capDir, { recursive: true })
@@ -1310,6 +1313,39 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(lock.sources['.'].files['.stasis/empty-module.js'], undefined)
   }))
 
+  // browser-map's `browser` field disables node-only for browser-map's own imports only: an entry
+  // importing it gets the real file. esbuild then loads node-only/index.js twice, as an empty module
+  // and as itself, which onLoad couldn't tell apart; the empty one never reaches it.
+  test('platform=browser: a file disabled for one importer and imported for real by another is both, as without the plugin', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    writeFileSync(join(capDir, 'src', 'both.mjs'), "import bm from 'browser-map'\nimport nodeOnly from 'node-only'\nconsole.log(JSON.stringify({ bm, nodeOnly }))\n")
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), BROWSER, 'src/both.mjs')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/both.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), BROWSER) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'both.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'both.js'), 'utf-8'))
+    t.assert.match(captureOutput, /\(disabled\):node_modules\/node-only\/index\.js/)
+    t.assert.match(captureOutput, /NODE-ONLY-CODE/)
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.imports['*']['node_modules/browser-map/index.js']['node-only'], '.stasis/empty-module.js')
+    t.assert.equal(lock.imports['*']['src/both.mjs']['node-only'], 'node_modules/node-only/index.js')
+    t.assert.ok(lock.modules['node_modules/node-only'].files['index.js'].startsWith('sha512-'))
+
+    // Both edges replay from the bundle alone, to what the capture build evaluates to.
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/both.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), BROWSER) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    const ranCapture = await runNode([join(tmp, 'out-capture', 'both.js')], { cwd: tmp })
+    const ranReplay = await runNode([join(tmp, 'out-load', 'both.js')], { cwd: tmp })
+    t.assert.equal(ranCapture.stdout, '{"bm":{"server":{},"fs":{},"nodeOnly":{},"shared":"shared"},"nodeOnly":"NODE-ONLY-CODE"}\n')
+    t.assert.equal(ranReplay.stdout, ranCapture.stdout)
+  }))
+
   test('a disabled import refuses a real file at the reserved empty-module path', withTmp(async (t, tmp) => {
     cpSync(browserMapFixture, tmp, { recursive: true })
     mkdirSync(join(tmp, '.stasis'))
@@ -1318,5 +1354,88 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const r = await run(['src/entry.mjs'], { cwd: tmp, env: captureEnv(join(tmp, 'snapshot.br'), join(tmp, 'out'), BROWSER) })
     t.assert.notEqual(r.status, 0, `expected build failure; stderr=${r.stderr}`)
     t.assert.match(r.stderr, /reserved path \.stasis\/empty-module\.js/)
+  }))
+
+  // ----- Resolution parity: what only esbuild's resolver attaches ----------------------
+  //
+  // esbuild takes a .js file's module type from the enclosing package.json "type", and JSX/TS settings
+  // from the nearest tsconfig.json, only for a path its own resolver produced -- never for one a plugin
+  // returns. So capture records each resolution and declines it (esbuild re-resolves the same file),
+  // then attests the file in onLoad. bundle=load can't do that (the files may not be on disk): it serves
+  // the bundle's paths, so it doesn't reproduce these, a known gap the plugin documents.
+
+  // Node mode is `__toESM(x, 1)`: a default import of CommonJS is the whole exports object, as in Node,
+  // even when the module sets __esModule. A plugin-returned path dropped it (and with it Node's semantics).
+  test('a .js entry of a "type": "module" package keeps node-mode CommonJS interop, as without the plugin', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(nodeModeFixture, capDir, { recursive: true })
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), {}, 'src/entry.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/entry.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture')) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.match(captureOutput, /__toESM\(require_cjs_pkg\(\), 1\)/)
+
+    const ranSource = await runNode([join(capDir, 'src', 'entry.js')], { cwd: capDir })
+    const ranCapture = await runNode([join(tmp, 'out-capture', 'entry.js')], { cwd: tmp })
+    t.assert.equal(ranSource.stdout, '{"__esModule":true,"default":"default-export"}\n')
+    t.assert.equal(ranCapture.stdout, ranSource.stdout)
+
+    // Declining still attests: both files are read and recorded, and the edge is the one esbuild followed.
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.entries, ['src/entry.js'])
+    t.assert.equal(lock.imports['*']['src/entry.js']['cjs-pkg'], 'node_modules/cjs-pkg/index.js')
+    t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
+    t.assert.ok(lock.modules['node_modules/cjs-pkg'].files['index.js'].startsWith('sha512-'))
+    const decoded = JSON.parse(brotliDecompressSync(readFileSync(join(capDir, 'snapshot.br'))))
+    t.assert.equal(decoded.modules['node_modules/cjs-pkg'].files['index.js'], readFileSync(join(capDir, 'node_modules', 'cjs-pkg', 'index.js'), 'utf-8'))
+  }))
+
+  // tsconfig.json sets the JSX factory; without it esbuild emits React.createElement (a ReferenceError here).
+  test('a file under a tsconfig.json gets its JSX settings, as without the plugin', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(tsconfigFixture, capDir, { recursive: true })
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), {}, 'src/entry.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/entry.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture')) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.doesNotMatch(captureOutput, /React/)
+
+    const ran = await runNode([join(tmp, 'out-capture', 'entry.js')], { cwd: tmp })
+    t.assert.equal(ran.stdout, '<Fragment><b>hi</b></Fragment>\n', `stderr: ${ran.stderr}`)
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(Object.keys(lock.sources['.'].files).toSorted(), ['src/entry.js', 'src/h.js', 'src/view.jsx'])
+  }))
+
+  // A declined import is resolved again by the plugins after this one, so the plugin's own lookup
+  // must consult them too: an alias registered for the file namespace only resolves @app/greeting.
+  test('a plugin after StasisEsbuild resolves as without it, and the file it resolves to is attested', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(pluginAfterFixture, capDir, { recursive: true })
+    const after = { STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['alias-plugin.js']) }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), after, 'src/entry.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.js'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), after) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureOutput = readFileSync(join(tmp, 'out-capture', 'entry.js'), 'utf-8')
+    t.assert.equal(captureOutput, readFileSync(join(tmp, 'out-plain', 'entry.js'), 'utf-8'))
+    t.assert.match(captureOutput, /"hello"/)
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.imports['*']['src/entry.js']['@app/greeting'], 'src/greeting.js')
+    t.assert.ok(lock.sources['.'].files['src/greeting.js'].startsWith('sha512-'))
+
+    // The recorded edge replays from the bundle alone, with no alias plugin.
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.js'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load')) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.js'), 'utf-8'), captureOutput)
   }))
 })
