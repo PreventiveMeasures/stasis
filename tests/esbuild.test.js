@@ -1249,6 +1249,47 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(ranReplay.stdout, ranCapture.stdout)
   }))
 
+  // esbuild gives a disabled module its `empty` loader, the one a CSS @import, `composes` or url()
+  // accepts. Load mode serves the shared empty module with it too, so a CSS importer replays:
+  // under the `js` loader esbuild rejects it (`Cannot import ".stasis/empty-module.js" into a CSS file`).
+  test('platform=browser: disabled CSS @import and url() replay at bundle=load', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(browserMapFixture, capDir, { recursive: true })
+    const pkg = join(capDir, 'node_modules', 'css-map')
+    mkdirSync(pkg)
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'css-map', version: '1.0.0', main: './index.js', browser: { './server.css': false, './server.png': false } }))
+    writeFileSync(join(pkg, 'index.js'), "require('./style.css')\n")
+    writeFileSync(join(pkg, 'style.css'), '@import "./server.css";\n.a { color: red; background: url(./server.png) }\n')
+    writeFileSync(join(pkg, 'server.css'), '.server-only { color: blue }\n')
+    writeFileSync(join(pkg, 'server.png'), 'PNG')
+    writeFileSync(join(capDir, 'src', 'entry.mjs'), "import 'css-map'\n")
+    const css = {
+      ...BROWSER,
+      STASIS_TEST_ESBUILD_LOADER: JSON.stringify({ '.css': 'css', '.png': 'file' }),
+      STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ resources: ['css', 'png'] }),
+    }
+
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), css)
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    const capBundle = join(capDir, 'snapshot.br')
+    const capture = await run(['src/entry.mjs'], { cwd: capDir, env: captureEnv(capBundle, join(tmp, 'out-capture'), css) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    const captureCss = readFileSync(join(tmp, 'out-capture', 'entry.css'), 'utf-8')
+    t.assert.equal(captureCss, readFileSync(join(tmp, 'out-plain', 'entry.css'), 'utf-8'))
+    t.assert.doesNotMatch(captureCss, /server-only/)
+
+    const lock = JSON.parse(readFileSync(join(capDir, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['node_modules/css-map/style.css'], {
+      './server.css': '.stasis/empty-module.js',
+      './server.png': '.stasis/empty-module.js',
+    })
+
+    const loadDir = cleanLoadDir(tmp, capBundle)
+    const replay = await run(['src/entry.mjs'], { cwd: loadDir, env: loadEnv(loadDir, join(tmp, 'out-load'), css) })
+    t.assert.equal(replay.status, 0, `replay stderr: ${replay.stderr}`)
+    t.assert.equal(readFileSync(join(tmp, 'out-load', 'entry.css'), 'utf-8'), captureCss)
+  }))
+
   // `browser` maps apply only under platform:'browser': on node the same package bundles the real
   // files and externalizes fs, and the plugin must attest them as usual.
   test('platform=node: `browser` field maps stay inert, as without the plugin', withTmp(async (t, tmp) => {

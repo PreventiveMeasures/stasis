@@ -9,7 +9,7 @@ import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route esbuild's reads through the capture hook.
 import { realReadFile } from '@exodus/stasis-core/state-util'
-import { classifyExtension } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, classifyExtension } from '@exodus/stasis-core/util'
 
 // The build options esbuild's resolver reads, replayed into the disabled-import probe so it
 // resolves exactly as the build does.
@@ -235,7 +235,8 @@ export class StasisEsbuild {
         }
       }
       const format = this.#state.getFormat(url)
-      const kind = Bundle.isResourceFormat(format) ? 'resource' : 'code'
+      const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
+      const kind = isEmpty ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
       return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
     })
 
@@ -300,6 +301,9 @@ export class StasisEsbuild {
       // the bundle doesn't carry -- a missing in-scope file is a hard error, not a disk fallback.
       if (this.#state.config.loadBundle) {
         const { source } = this.#state.getFile(pathToFileURL(path).toString())
+        // A disabled import's stand-in gets esbuild's own loader for disabled modules: `empty` is the
+        // one a CSS @import, `composes` or url() accepts, so one empty module serves JS and CSS importers.
+        if (kind === 'empty') return { contents: source, loader: 'empty' }
         if (kind === 'resource') {
           // Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
           // per-extension loader only on its own load path), so replay the configured loader from
