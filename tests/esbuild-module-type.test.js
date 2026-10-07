@@ -1,0 +1,83 @@
+import { test } from 'node:test'
+
+import { analyzeModule } from '../stasis-plugins/src/esbuild-module-type.js'
+
+// The facts StasisEsbuild's package.json `type` checks rest on, read off the code esbuild parses.
+const analyze = (source, { path = 'f.js', loader = 'js' } = {}) => analyzeModule(source, { path, loader })
+
+test('analyzeModule: no facts for contents esbuild does not parse as JS/TS', (t) => {
+  t.assert.equal(analyze('{"a":1}', { path: 'f.json', loader: 'json' }), null)
+})
+
+test('analyzeModule: ESM syntax -- exports (type-only included), import.meta and top-level await vs plain imports', (t) => {
+  t.assert.equal(analyze('export const a = 1').esmExports, true)
+  t.assert.equal(analyze('export type X = 1', { path: 'f.ts', loader: 'ts' }).esmExports, true)
+  t.assert.equal(analyze('console.log(import.meta.url)').esmExports, true)
+  t.assert.equal(analyze("await import('./x.js')").esmExports, true)
+  t.assert.equal(analyze('async function f() { await g() }').esmExports, false)
+  const importOnly = analyze("import './x.js'\nconsole.log(1)")
+  t.assert.deepStrictEqual([importOnly.esmExports, importOnly.esmImports], [false, true])
+  t.assert.equal(analyze("import type { X } from './x'", { path: 'f.ts', loader: 'ts' }).esmImports, false)
+})
+
+test('analyzeModule: how each import observes its target -- default/namespace (interop) vs named vs side effect', (t) => {
+  const { imports } = analyze([
+    "import d from './d.cjs'",
+    "import * as ns from './ns.cjs'",
+    "import { default as dd } from './dd.cjs'",
+    "import { a } from './a.cjs'",
+    "import './side.js'",
+    "export { default } from './re.cjs'",
+    "export * as star from './star.cjs'",
+    "export * from './all.cjs'",
+    "export { b } from './b.cjs'",
+  ].join('\n'))
+  const interop = { bindings: true, interop: true }
+  const named = { bindings: true, interop: false }
+  t.assert.deepStrictEqual(Object.fromEntries(imports), {
+    './d.cjs': interop, './ns.cjs': interop, './dd.cjs': interop, './re.cjs': interop, './star.cjs': interop,
+    './a.cjs': named, './all.cjs': named, './b.cjs': named,
+    './side.js': { bindings: false, interop: false },
+  })
+})
+
+test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level this/return, direct eval', (t) => {
+  t.assert.equal(analyze('module.exports = 1').cjsUsage, 'yes')
+  t.assert.equal(analyze("if (typeof exports === 'object') exports.a = 1").cjsUsage, 'yes')
+  t.assert.equal(analyze('console.log(this)').cjsDetail, 'top-level `this`')
+  t.assert.equal(analyze('eval("1")').cjsUsage, 'yes')
+  t.assert.equal(analyze('if (x) return\nconsole.log(1)').cjsUsage, 'yes')
+  // Not CommonJS: `this` inside a function or class, `module` as a property name.
+  t.assert.equal(analyze('function f() { return this }\nclass A { m() { return this } }\nconst o = { module: 1 }\no.exports = 2').cjsUsage, 'no')
+  // A local `exports` may shadow the global: undecided.
+  t.assert.equal(analyze('const exports = {}\nexports.a = 1').cjsUsage, 'maybe')
+})
+
+test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a block-level function', (t) => {
+  t.assert.match(analyze('with (o) { x }').strictOnly, /with/)
+  t.assert.equal(analyze('{ function f() {} }').blockFunction, true)
+  t.assert.equal(analyze('function f() { function g() {} }\nconst h = () => { function i() {} }').blockFunction, false)
+})
+
+test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
+  t.assert.equal(analyze('exports.__esModule = true').setsEsModule, true)
+  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: true })').setsEsModule, true)
+  t.assert.equal(analyze('var d=Object.defineProperty;d(e,"__esModule",{value:!0})').setsEsModule, true)
+  t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
+  t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
+  t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
+})
+
+test('analyzeModule: requires whose result can become module.exports', (t) => {
+  const reexports = (source) => [...analyze(source).reexports].toSorted()
+  t.assert.deepStrictEqual(reexports("module.exports = require('./a')"), ['./a'])
+  t.assert.deepStrictEqual(reexports("if (prod) { module.exports = require('./p') } else { module.exports = require('./d') }"), ['./d', './p'])
+  t.assert.deepStrictEqual(reexports("module.exports = prod ? require('./p') : require('./d')"), ['./d', './p'])
+  t.assert.deepStrictEqual(reexports("const lib = require('./lib')\nconst other = require('./other')\nmodule.exports = lib"), ['./lib'])
+  t.assert.deepStrictEqual(reexports('__exportStar(require("./x"), exports)'), ['./x'])
+  t.assert.deepStrictEqual(reexports("Object.assign(module.exports, require('./y'))"), ['./y'])
+  t.assert.deepStrictEqual(reexports("module.exports = (function () { return require('./now') })()"), ['./now'])
+  // A require that runs later, inside a function, doesn't produce the exported value.
+  t.assert.deepStrictEqual(reexports("module.exports = function () { return require('./later') }"), [])
+  t.assert.deepStrictEqual(reexports("module.exports.helper = require('./helper')"), [])
+})
