@@ -216,12 +216,13 @@ test('buildSolidityBundle attributes Soldeer deps as `soldeer` and github-submod
 test('buildSolidityBundle takes a submodule for a `github` dependency only where its .gitmodules url is GitHub\'s', withTmp(async (t, tmp) => {
   cpSync(join(fixtures, 'with-deps-ecosystems'), tmp, { recursive: true })
   const SUB = 'lib/openzeppelin-contracts'
-  const build = (url) => {
-    writeFileSync(join(tmp, '.gitmodules'), `[submodule "${SUB}"]\n\tpath = ${SUB}\n\turl = ${url}\n`)
+  // `url` quoted, so a `#` or `;` in it is no comment; `value` as written.
+  const build = (url, value = `"${url}"`) => {
+    writeFileSync(join(tmp, '.gitmodules'), `[submodule "${SUB}"]\n\tpath = ${SUB}\n\turl = ${value}\n`)
     return buildSolidityBundle({ cwd: tmp, entries: ['src/A.sol'], mappingFile: 'remappings.txt' })
   }
 
-  // A GitHub URL however git spells one, and the `git+` ones a package.json does.
+  // A GitHub URL however git spells one.
   for (const url of [
     'https://github.com/OpenZeppelin/openzeppelin-contracts',
     'https://github.com/OpenZeppelin/openzeppelin-contracts.git',
@@ -235,13 +236,16 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     'github.com:OpenZeppelin/openzeppelin-contracts',
     'https://www.github.com/OpenZeppelin/openzeppelin-contracts.git',
     'git@www.github.com:OpenZeppelin/openzeppelin-contracts.git',
-    'git+https://github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'git@GitHub.com:OpenZeppelin/openzeppelin-contracts.git',
     'git+ssh://git@github.com/OpenZeppelin/openzeppelin-contracts.git',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const oz = (await build(url)).modules.get(SUB)
     t.assert.deepStrictEqual([oz?.name, oz?.ecosystem], ['OpenZeppelin/openzeppelin-contracts', 'github'], url)
   }
+  // Unquoted, a `#` starts a comment, to git as to the reader: the url ends before it.
+  const commented = (await build(null, 'https://github.com/OpenZeppelin/openzeppelin-contracts.git#v5.0.0')).modules.get(SUB)
+  t.assert.deepStrictEqual([commented?.name, commented?.ecosystem], ['OpenZeppelin/openzeppelin-contracts', 'github'])
 
   // Any other url names no GitHub repository, however much of one it holds: the submodule is no
   // `github` dependency, and its files go by the nearest package.json, as any outside node_modules
@@ -264,6 +268,12 @@ test('buildSolidityBundle takes a submodule for a `github` dependency only where
     // `github.com:OpenZeppelin`'s path `/openzeppelin-contracts.git`.
     'ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
     'git+ssh://git@github.com:OpenZeppelin/openzeppelin-contracts.git',
+    // A `#`, which git asks the host for as part of the path, where npm takes a committish.
+    'git@github.com:OpenZeppelin/openzeppelin-contracts.git#mirror',
+    'https://github.com/OpenZeppelin/openzeppelin-contracts.git#v5.0.0',
+    // Transports git doesn't have: it looks for a remote helper of that name.
+    'git+https://github.com/OpenZeppelin/openzeppelin-contracts.git',
+    'HTTPS://github.com/OpenZeppelin/openzeppelin-contracts',
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build reads the .gitmodules just written
     const bundle = await build(url)

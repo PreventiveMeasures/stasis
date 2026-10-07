@@ -83,17 +83,21 @@ function parseSoldeerDir(seg) {
   return m ? { name: m[1], version: m[2] } : { name: seg, version: '0.0.0' }
 }
 
-// A url as git reads a host from one: scp's `[user@]host:path`, with no scheme and a colon before
-// its first slash, or a URL whose authority, `[userinfo@]host[:port]`, ends at the first slash after
-// it. Not npm's `github:owner/name`, which git reads as the host `github`'s path, whatever an ssh
-// alias or `insteadOf` makes of it, nor its `ssh://git@github.com:owner/name`, whose host is
-// `github.com:owner` to git; and a url with no colon before its first slash is a path.
-const GIT_HOST_URL = /^(?!github:)(?:[^/]*:(?!\/\/)|[^/:]+:\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/iu
+// A url as git fetches from a host: scp's `[user@]host:path`, with no scheme and a colon before its
+// first slash, or a URL of a transport git has itself (`http`, `https`, `git`, `ssh` and its
+// `git+ssh`/`ssh+git` aliases, lowercase, as git spells them), its authority, `[userinfo@]host[:port]`,
+// ending at the first slash after it. Not, then, what a package.json spells GitHub's that git reads
+// another way or not at all: `ssh://git@github.com:owner/name`, whose host is `github.com:owner` to
+// git; `git+https://` or `HTTPS://`, transports git doesn't have; nor `owner/name`, a path, as is any
+// url with no colon before its first slash.
+const GIT_URL = /^(?:[^/]*:(?!\/\/)|(?:https?|git|ssh|git\+ssh|ssh\+git):\/\/(?:[^/@]*@)?[^/:@]*(?::\d*)?\/)/u
 
 // The GitHub repository, `owner/name`, a .gitmodules `url` names (parseGithubRepository), else null:
-// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for a spelling a
-// package.json takes for GitHub's that git reads another way (GIT_HOST_URL).
-const submoduleGithub = (url) => (GIT_HOST_URL.test(url) ? parseGithubRepository(url) : null)
+// none for a host merely holding `github.com` (`https://notgithub.com/o/n`), nor for a url git
+// doesn't fetch as one (GIT_URL), nor for npm's `github:owner/name`, the host `github`'s path to git,
+// whatever an ssh alias or `insteadOf` makes of it, nor one with a `#`, which git keeps in the path
+// it asks for (`owner/name.git#v1`) where npm takes a committish.
+const submoduleGithub = (url) => (GIT_URL.test(url) && !/^github:/iu.test(url) && !url.includes('#') ? parseGithubRepository(url) : null)
 
 // The GitHub ones of `submodules` (readGitmodules), as Map<submodulePath, { name, branch }>.
 function githubSubmodules(submodules) {
