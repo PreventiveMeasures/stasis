@@ -255,7 +255,10 @@ export class StasisEsbuild {
       const isEntry = !args.importer
 
       // Resolve with the arguments esbuild passed us, so the plugins after this one and then esbuild's
-      // resolver answer as they will once we decline.
+      // resolver answer as they will once we decline. That assumes a plugin answers the same arguments
+      // the same way each time: one that doesn't can make esbuild bundle a file other than the one
+      // recorded, unattested (bundle=load then fails on the recorded one). esbuild can't tell a plugin
+      // that declines where its import was finally resolved.
       const res = await resolve(specifier, { ...args, with: attrs })
       // A miss is esbuild's to report -- or to tolerate, as it does a require() in a try/catch (debug's
       // optional supports-color). Decline so it re-resolves exactly as without us; no edge.
