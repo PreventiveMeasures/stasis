@@ -14,11 +14,12 @@ const CORRECTIONS = [
   {
     // ws's browser build is a noop stub -- `module.exports = function () { throw
     // new Error('ws does not work in the browser...') }` -- with none of the
-    // WebSocket implementation in it. Verified against the ws 8.21.1 tarball
-    // (latest at the time of writing); re-check browser.js before widening.
+    // WebSocket implementation in it. Verified against the ws 8.22.0 tarball
+    // (latest at the time of writing; browser.js is byte-identical since 8.21.1);
+    // re-check browser.js before widening.
     name: 'ws',
     files: new Set(['browser.js']),
-    range: '<=8.21.1',
+    range: '<=8.22.0',
   },
   {
     // node-fetch's browser build re-exports the environment's native fetch
