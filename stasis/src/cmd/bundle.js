@@ -10,6 +10,7 @@ import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
+import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
@@ -1366,14 +1367,17 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, innermostR
   return { bundle: state.sourceBundle.withReason('bundle'), lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
-// The bundle of `kind` (classifyEntries') built from buildBundle's options.
+// The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk: a JS bundle's
+// git dependencies at the commits their package managers' records name (pinInstalledCommits).
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) {
   if (kind === 'sol') return { bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }
   if (kind === 'php') return { bundle: await buildPhpBundle({ cwd, entries }) }
   if (kind === 'bash') return { bundle: await buildBashBundle({ cwd, entries }) }
   if (kind === 'rust') return { bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }
-  return buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
+  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
+  pinInstalledCommits(built.bundle, built.root)
+  return built
 }
 
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
