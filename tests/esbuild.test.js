@@ -1462,4 +1462,23 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(lock.imports['*']['src/a.js']['./b.js'], 'src/b.js')
     t.assert.ok(lock.sources['.'].files['src/b.js']?.startsWith('sha512-'), 'b.js is attested')
   }))
+
+  // The same race, but the second copy (`?tagged`) carries pluginData the plugin after StasisEsbuild
+  // resolves to ./b-tagged.js. Plain esbuild bundles both files; one import of src/a.js can't record
+  // two, so capture must refuse -- not merge the two as one and bundle b-tagged.js unattested.
+  test('an import that resolves to two files for two copies of its importer is refused', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(duplicateImporterFixture, capDir, { recursive: true })
+    const plugins = {
+      STASIS_TEST_ESBUILD_PLUGINS_BEFORE: JSON.stringify(['suffix-plugin.js']),
+      STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['slow-plugin.js']),
+    }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), plugins, 'src/tagged.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+    t.assert.match(readFileSync(join(tmp, 'out-plain', 'tagged.js'), 'utf-8'), /"b-tagged"/)
+
+    const capture = await run(['src/tagged.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
+    t.assert.notEqual(capture.status, 0, 'capture must fail closed')
+    t.assert.match(capture.stderr, /Conflict for "\.\/b\.js"/)
+  }))
 })

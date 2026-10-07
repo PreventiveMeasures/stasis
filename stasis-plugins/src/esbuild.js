@@ -74,7 +74,7 @@ export class StasisEsbuild {
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
   #probes = new Map()  // [kind, resolveDir, specifier] -> Promise<disabled path | null>
-  #resolving = new Map()  // import key -> promise of its capture resolution, while in flight (see onResolve)
+  #resolving = new Map()  // importer pluginData -> (import key -> promise of its capture resolution), while in flight
   // Capture declines its resolutions, so no pluginData reaches onLoad; it finds these by path.
   #targets = new Map()  // path -> 'code' | 'resource', for every file an import or entry resolved to
   #entries = new Set()  // paths of the entry points
@@ -316,18 +316,23 @@ export class StasisEsbuild {
     }
 
     onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
-      // The build.resolve() above re-enters this hook with the same arguments: decline that call. An
-      // identical import resolving at the same time (from a file esbuild loads twice, as with and
+      // The build.resolve() above re-enters this hook with the same arguments: decline that call. They
+      // are matched in full -- the importer's pluginData by identity, as esbuild hands the nested call
+      // the very object passed to it -- so an import a plugin could resolve elsewhere is never merged.
+      // An identical import resolving at the same time (from a file esbuild loads twice, as with and
       // without a suffix) can't be told from it, so it declines unrecorded too; onLoad waits for this
       // resolution to record the file. (Sorted: the attributes cross esbuild as a Go map, in no set order.)
       const key = JSON.stringify([args.importer, args.resolveDir, args.kind, specifier, Object.entries(attrs).toSorted()])
-      if (this.#resolving.has(key)) return undefined
+      let inFlight = this.#resolving.get(args.pluginData)
+      if (inFlight?.has(key)) return undefined
+      if (inFlight === undefined) this.#resolving.set(args.pluginData, inFlight = new Map())
       const resolution = resolveAndRecord(specifier, attrs, args)
-      this.#resolving.set(key, resolution)
+      inFlight.set(key, resolution)
       try {
         return await resolution
       } finally {
-        this.#resolving.delete(key)
+        inFlight.delete(key)
+        if (inFlight.size === 0) this.#resolving.delete(args.pluginData)
       }
     })
 
@@ -342,7 +347,7 @@ export class StasisEsbuild {
       // Not recorded yet: an import that declined as a twin of one still resolving (see onResolve) can
       // load first. Wait out the resolutions in flight -- none waits on a load -- and look again.
       if (kind === undefined && !loadBundle && this.#resolving.size > 0) {
-        await Promise.allSettled(this.#resolving.values())
+        await Promise.allSettled([...this.#resolving.values()].flatMap((inFlight) => [...inFlight.values()]))
         kind = this.#targets.get(path)
       }
       kind ??= 'skip'
