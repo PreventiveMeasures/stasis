@@ -90,7 +90,8 @@ Each command's options are documented in [doc/](https://github.com/PreventiveMea
 
 ## Runtime
 
-The zero-dependency [`@exodus/stasis-core`](../stasis-core) CLI provides the `run`, `add`, `extract` and `prune` commands only; the bundler plugins live in [`@exodus/stasis-plugins`](../stasis-plugins).
+The zero-dependency [`@exodus/stasis-core`](../stasis-core) CLI provides the `run`, `add`, `extract` and `prune` commands only.\
+The bundler plugins live in [`@exodus/stasis-plugins`](../stasis-plugins).
 
 ## License
 
