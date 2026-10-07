@@ -44,6 +44,25 @@ const withTmp = (fn) => (t) => {
   }
 }
 
+test('--help prints usage and exits 0', (t) => {
+  for (const flag of ['--help', '-h']) {
+    const r = run([flag])
+    t.assert.equal(r.status, 0)
+    t.assert.match(r.stderr, /Usage:/)
+    t.assert.match(r.stderr, /stasis-core run/)
+  }
+})
+
+test('a usage error prints the message and a hint, not the usage', (t) => {
+  for (const args of [['nope'], ['run', '--lock=bogus', 'x.js']]) {
+    const r = run(args)
+    t.assert.equal(r.status, 1)
+    t.assert.match(r.stderr, /^Error: /mu)
+    t.assert.match(r.stderr, /Run 'stasis-core --help' for usage\./)
+    t.assert.doesNotMatch(r.stderr, /Usage:/)
+  }
+})
+
 test('no command prints usage covering run + add + extract + prune', (t) => {
   const r = run([])
   t.assert.equal(r.status, 1)
