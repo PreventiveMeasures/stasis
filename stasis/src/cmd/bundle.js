@@ -801,6 +801,11 @@ function innermostRootOf(baseDir, files, root, host) {
 const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
+// What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
+// `default`, and so `--mainFields` too: `module`, the bundler-only condition a package's ESM build
+// sits under, from an import and a require alike. (esbuild drops it when given conditions of its
+// own; webpack keeps it, as `--conditions` adds to it here.) Node and Metro never assert it.
+const BUNDLER_CONDITIONS = ['module']
 
 // Recursively collect the files under `dirAbs` whose name `keep` takes, skipping build output,
 // symlinks (cycle/escape hazard) and, directly in `dirAbs`, the dirs `skipAtRoot` names. Absolute
@@ -847,9 +852,9 @@ function nativeModuleFiles(pkgAbs, host) {
 // `platform` (null for --mainFields), its `mainFields` (Metro's under --metro), and the conditions
 // it adds to the bundler base (`import`/`require` + `default`, never Node's `node`; see
 // resolveConditions): --metro asserts the RN conditions (+ browser on web), Metro's own set;
-// --mainFields carries the user's --conditions.
+// --mainFields asserts esbuild's and webpack's `module` (BUNDLER_CONDITIONS) and the user's --conditions.
 export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
-  const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : conditions
+  const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
     mainFields: fields,
