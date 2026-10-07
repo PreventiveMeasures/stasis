@@ -89,8 +89,8 @@ importers:
         specifier: 1.0.0-beta.4
         version: 1.0.0-beta.4(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: 1.0.0-alpha.10
-        version: 1.0.0-alpha.10(@noble/hashes@2.4.0)
+        specifier: 1.0.0-alpha.11
+        version: 1.0.0-alpha.11(@noble/hashes@2.4.0)
       '@preventive/lockfile':
         specifier: 1.0.0-alpha.7
         version: 1.0.0-alpha.7(@noble/hashes@2.4.0)
@@ -728,8 +728,8 @@ packages:
     resolution: {integrity: sha512-lJN3Wdt1pdsYXjAKJatYFn97N1l+0Kge6ixHIvHR1bdk5Zy/zDxigPbc3Rv1F13zObgV6X1TK7IvvHEaqFCvIA==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.0.0-beta.4.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/deptree@1.0.0-alpha.10':
-    resolution: {integrity: sha512-vcHIVXadvSUy8avnzjIdDWlNGu6MN8cUrep86d2me8ASqrAh6ztdNoBjC3yW77qxQHQtg1PP6zqqDamAb7DWXQ==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.0-alpha.10.tgz}
+  '@preventive/deptree@1.0.0-alpha.11':
+    resolution: {integrity: sha512-OJd4JpogvomvbmwyIc3MHc1gskpg/fm3odkY8iLsui3ZBhtqXMb8dU3JaC52NUKZVzhfTuLHgiHSuV/Ep5zIyg==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.0-alpha.11.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
 
@@ -3222,7 +3222,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.0.0-alpha.10(@noble/hashes@2.4.0)':
+  '@preventive/deptree@1.0.0-alpha.11(@noble/hashes@2.4.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
