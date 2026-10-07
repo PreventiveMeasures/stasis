@@ -3340,6 +3340,28 @@ test('--mainFields and --metro resolve a pnpm-linked dependency by its real path
   t.assert.ok(![...metro.sources.keys()].some((file) => file.startsWith('node_modules/dep/')), 'nothing by the link\'s path')
 }))
 
+test('--mainFields and --metro build from a cwd named through a link', withTmp(async (t, tmp) => {
+  // The resolved files arrive by their real path, below the root the link names; the entries as
+  // spelled, relative or absolute through the link.
+  const real = join(realpathSync(tmp), 'real')
+  writePnpmLayout(real)
+  writeFileSync(join(real, 'src', 'index.js'), "require('./local')\nrequire('dep')\n")
+  writeFileSync(join(real, 'src', 'local.js'), "module.exports = 'local'\n")
+  const cwd = join(tmp, 'link')
+  symlinkSync(real, cwd)
+  const builds = await Promise.all([
+    { entries: ['src/index.js'], mainFields: ['browser', 'main'] },
+    { entries: [join(cwd, 'src', 'index.js')], mainFields: ['browser', 'main'] },
+    { entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] },
+  ].map((options) => buildBundle({ cwd, ...options })))
+  for (const bundle of builds) {
+    t.assert.deepStrictEqual([...bundle.entries], ['src/index.js'])
+    t.assert.equal(importTarget(bundle, 'src/index.js', './local'), 'src/local.js')
+    t.assert.equal(importTarget(bundle, 'src/index.js', 'dep'), `${PNPM_DEP}/browser.js`)
+    t.assert.ok(bundle.sources.has(`${PNPM_SIB}/index.js`), 'dep\'s sib')
+  }
+}))
+
 cliTest('CLI: bundle --mainFields / --metro warns of no unresolved import in a pnpm layout', withTmp(async (t, tmp) => {
   writePnpmLayout(tmp)
   const runs = [['--mainFields=browser,module,main', '--conditions=browser'], ['--metro', '--platforms=ios']]

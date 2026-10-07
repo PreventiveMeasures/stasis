@@ -880,8 +880,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
 
+  // A resolved file arrives by its real path, an entry as spelled: under a cwd named through a link,
+  // the files the scan reaches lie below the root's real path, not below `baseDir` as spelled. Either
+  // is the root; a file below neither is outside it. (Realpathed only when needed, so a missing cwd
+  // is still the scan's missing entry.)
+  let realRoot
   const toRel = (abs) => {
-    const rel = toPosix(relative(baseDir, abs))
+    let rel = toPosix(relative(baseDir, abs))
+    if (relativeEscapes(rel)) {
+      realRoot ??= host.realpath(baseDir)
+      rel = toPosix(relative(realRoot, abs))
+    }
     if (relativeEscapes(rel)) {
       throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
     }
