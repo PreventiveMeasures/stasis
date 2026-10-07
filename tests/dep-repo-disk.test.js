@@ -123,30 +123,42 @@ test('a Composer package records the GitHub repository of its git source, at its
       writeFileSync(path, `${JSON.stringify(json, null, 4)}\n`)
     }
   }
+  // Installed from its source, the package is a clone of its own, its HEAD at `head` (null: none).
+  const checkout = (head) => (head === null ? rmSync(join(tmp, LIB, '.git'), { recursive: true, force: true }) : write(join(tmp, LIB, '.git', 'HEAD'), `${head}\n`))
+  const AT_COMMIT = { github: 'acme/lib', directory: '', commit: COMMIT }
   t.assert.equal(await buildPhp(), undefined, 'from a path repository: none')
   relock()
-  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT })
+  t.assert.deepStrictEqual(await buildPhp(), AT_COMMIT)
   t.assert.equal(repoOf(await buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), '.'), undefined, 'the root package records none')
   relock({ url: 'git@github.com:acme/lib.git' })
-  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, "git's scp-like URL")
+  t.assert.deepStrictEqual(await buildPhp(), AT_COMMIT, "git's scp-like URL")
   relock({ dist: OTHER })
   t.assert.equal(await buildPhp(), undefined, 'a dist at another reference: which was installed is unknown')
   relock({ dist: null })
   t.assert.equal(await buildPhp(), undefined, 'a dist at no reference: an archive no commit is known of')
-  relock({ dist: false })
-  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, 'no dist: installed from its source')
-  // Installed from its source, Composer checked out its reference, whatever its dist is.
-  for (const dist of [OTHER, null]) {
-    relock({ dist, from: 'source' })
-    // eslint-disable-next-line no-await-in-loop -- each build reads the lockfile just written
-    t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, `installed from source, a dist at ${dist}`)
+  // Installed from its source (as installed.json says, or with no dist, the only way it can be), as
+  // its checkout is, whatever its dist is: at the reference until moved.
+  for (const lock of [{ dist: OTHER, from: 'source' }, { dist: null, from: 'source' }, { dist: false }]) {
+    relock(lock)
+    for (const [head, repo, why] of [[COMMIT, AT_COMMIT, 'at the reference'], [OTHER, undefined, 'moved since'], [null, undefined, 'no checkout']]) {
+      checkout(head)
+      // eslint-disable-next-line no-await-in-loop -- each build reads the files just written
+      t.assert.deepStrictEqual(await buildPhp(), repo, `${JSON.stringify(lock)}: ${why}`)
+    }
   }
+  // A dist install whose directory is a checkout all the same is held to it too.
+  relock()
+  checkout(OTHER)
+  t.assert.equal(await buildPhp(), undefined, 'a checkout at another commit')
+  checkout(null)
   relock({ url: 'https://gitlab.com/acme/lib.git' })
   t.assert.equal(await buildPhp(), undefined, 'not GitHub')
   // installed.json alone, as Composer 1 leaves it: as it says.
   relock({ dist: OTHER, from: 'source' })
   rmSync(join(tmp, 'composer.lock'))
-  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, 'installed from source')
+  checkout(COMMIT)
+  t.assert.deepStrictEqual(await buildPhp(), AT_COMMIT, 'installed from source')
+  checkout(null)
   relock({ dist: OTHER })
   t.assert.equal(await buildPhp(), undefined, 'installed from a dist at another reference')
 }))

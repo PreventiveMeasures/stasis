@@ -10,7 +10,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { parseGithubRepository } from '@exodus/stasis-core/bundle-util'
+import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
 import { assertRealPathWithinBase, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
@@ -536,13 +536,17 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
 
 // The GitHub repository a Composer package `p` (composer.lock's, or installed.json's) is cloned
 // from, at the commit it is installed at: its git `source` on GitHub, at its `reference` where that
-// is a full commit, and where installed.json's `installation-source`, `from`, says it is installed
-// from its source, which Composer checks out at that reference; else, where it has no dist or one
-// at the same reference: a dist with none, or another, is an archive no commit is known of, which
-// Composer installs by default. Packagist takes a package from the root of its repository, so
-// `directory` is ''. Undefined otherwise.
-function composerRepo({ source, dist }, from) {
-  if (source?.type !== 'git' || (from !== 'source' && dist != null && dist.reference !== source.reference)) return undefined
+// is a full commit and what is installed at `at` (its directory, or null for none) is at it.
+// Installed from its source -- as installed.json's `installation-source`, `from`, says, or as it
+// must be with no dist, or as a git checkout there shows -- it is a clone Composer checked out at
+// the reference, which may have been moved since: so only where that checkout's HEAD is it. Else
+// from its dist, which Composer installs by default: only one at the same reference, as one with
+// none, or another, is an archive no commit is known of. Packagist takes a package from the root
+// of its repository, so `directory` is ''. Undefined otherwise.
+function composerRepo({ source, dist }, from, at) {
+  if (source?.type !== 'git') return undefined
+  const fromSource = from === 'source' || dist == null || (at !== null && existsSync(join(at, '.git')))
+  if (fromSource ? at === null || checkoutCommit(at) !== source.reference : dist.reference !== source.reference) return undefined
   const github = parseGithubRepository(source.url)
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
@@ -560,7 +564,10 @@ export function loadComposerPackages(baseDir) {
   if (lockText === null) {
     return readInstalledPackages(baseDir, vendorDir)
       .filter((p) => p?.name && p.version)
-      .map((p) => ({ name: p.name, version: p.version, dir: installedDir(baseDir, vendorDir, p), extra: p.extra, repo: composerRepo(p, p['installation-source']) }))
+      .map((p) => {
+        const dir = installedDir(baseDir, vendorDir, p)
+        return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, p['installation-source'], dir == null ? null : join(baseDir, dir)) }
+      })
   }
 
   const composerJson = readUtf8OrNull(join(baseDir, 'composer.json'), 'composer.json')
@@ -572,7 +579,10 @@ export function loadComposerPackages(baseDir) {
   const from = new Map(installed?.packages.map((p) => [p.name, p['installation-source']]))
   return Object.values(lock.packages)
     .filter((p) => dirs === null || dirs.has(p.name))
-    .map((p) => ({ name: p.name, version: p.version, dir: dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), extra: p.extra, repo: composerRepo(p, from.get(p.name)) }))
+    .map((p) => {
+      const dir = dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name)
+      return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, from.get(p.name), dir == null ? null : join(baseDir, dir)) }
+    })
 }
 
 // Build the autoload config for `baseDir`, merging the root composer.json
