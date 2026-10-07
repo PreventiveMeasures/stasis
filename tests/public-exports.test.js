@@ -8,6 +8,7 @@ import { diffArtifacts, formatDiffStat, hasDifferences, normalizeArtifact } from
 import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost, loadNodeModules, setCacheDir } from '@exodus/stasis/vfs-bundle'
 import { Lockfile } from '@exodus/stasis/lockfile'
 import { buildPurl, collectComponents, generateSbom, sbom, toCyclonedx, toSpdx } from '@exodus/stasis/sbom'
+import { CORRECTIONS, isEvidenceFile } from '@exodus/stasis/audit-corrections'
 import { StasisEsbuild } from '@exodus/stasis/esbuild'
 import { StasisWebpack } from '@exodus/stasis/webpack'
 import { StasisRollup } from '@exodus/stasis/rollup'
@@ -74,6 +75,17 @@ test('@exodus/stasis/sbom exports the file-free SBOM API', (t) => {
   // Operates on already-parsed artifacts; an empty set still renders both formats.
   t.assert.equal(toSpdx([]).spdxVersion, 'SPDX-2.3')
   t.assert.equal(toCyclonedx([]).bomFormat, 'CycloneDX')
+})
+
+test('@exodus/stasis/audit-corrections exports the corrections as frozen plain data, and the evidence rule', (t) => {
+  t.assert.equal(typeof isEvidenceFile, 'function')
+  // Plain data, so a tool without stasis's code can take it as it is: JSON carries all of it.
+  t.assert.deepStrictEqual(JSON.parse(JSON.stringify(CORRECTIONS)), CORRECTIONS)
+  t.assert.ok(CORRECTIONS.length > 0 && Object.isFrozen(CORRECTIONS))
+  for (const correction of CORRECTIONS) {
+    t.assert.deepStrictEqual(Object.keys(correction), ['ecosystem', 'name', 'file', 'range', 'integrity'])
+    t.assert.ok(Object.isFrozen(correction) && Object.isFrozen(correction.integrity))
+  }
 })
 
 test('@exodus/stasis/diff exports the file-free diff API', (t) => {

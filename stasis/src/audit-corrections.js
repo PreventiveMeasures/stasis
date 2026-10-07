@@ -6,39 +6,62 @@ import { satisfies, valid } from '@preventive/upstream/semver.js'
 // package pulled in only through corrected files is skipped by the audit (see
 // collectPackagesFromFile) -- none of its real code ships, so no advisory applies.
 //
-// Each entry names a package, the audit-irrelevant files (relative to the module
-// dir), and `range` -- the semver range VERIFIED to match the rationale. The
-// correction never applies outside it: a release could change the file, so the
-// range is widened only after re-checking the file in the new versions.
-const CORRECTIONS = [
+// Exported as `@exodus/stasis/audit-corrections`, as plain data, so a tool that
+// lays out or reads packages without stasis -- a tree @preventive/deptree builds,
+// a server reading bundles -- can apply the same corrections without its own copy.
+// Each entry names a package of `ecosystem`, one audit-irrelevant `file` (relative
+// to the module dir), `range` -- the semver range VERIFIED to match the rationale --
+// and `integrity`, the sha512 of every distinct copy of `file` the versions in
+// `range` publish, as a stasis lockfile records a file: a holder of the file's bytes
+// can tell they are one of the copies verified. The correction never applies outside
+// the range: a release could change the file, so the range is widened only after
+// re-checking the file in the new versions, adding any new copy's integrity. Frozen,
+// as the audit reads these very objects.
+export const CORRECTIONS = Object.freeze([
   {
     // ws's browser build is a noop stub -- `module.exports = function () { throw
     // new Error('ws does not work in the browser...') }` -- with none of the
-    // WebSocket implementation in it. Verified against the ws 8.22.0 tarball
-    // (latest at the time of writing; browser.js is byte-identical since 8.21.1);
-    // re-check browser.js before widening.
+    // WebSocket implementation in it. browser.js ships from 6.0.0 on; every copy
+    // through 8.22.0 (latest at the time of writing) is one of these two, which
+    // differ only in a space; re-check browser.js before widening.
+    ecosystem: 'npm',
     name: 'ws',
-    files: new Set(['browser.js']),
+    file: 'browser.js',
     range: '<=8.22.0',
+    integrity: [
+      'sha512-98uEc4/THUpHCA7AQwBKLHHmxV6leyGmPkDAYZsoBiigxjKL8//TIb/oUKDUJLc+s/pwdGA9LR0F9e7nZHfXUQ==', // `function ()`: 6.0.0 - 6.1.1, 7.3.1 - 8.22.0
+      'sha512-F7vx6oiX9vsFoxNPTudk20Hjp7IzJePAJCYaSoX9FMJ2JaGVcFx4Bkw5W7+I3a1DsonitnosbpuG1qAMsUwH7w==', // `function()`: 6.1.2 - 7.3.0
+    ],
   },
   {
     // node-fetch's browser build re-exports the environment's native fetch
     // (`module.exports = globalObject.fetch`, plus Headers/Request/Response) --
     // none of the node-fetch implementation, where its advisories live, is in it.
-    // browser.js ships only through 2.7.0 (3.x dropped it); verified 2.6.13/2.7.0.
+    // browser.js ships only from 2.0.0 through 2.7.0 (3.x dropped it); every copy
+    // in the range is one of these, which differ in how they find the global.
+    ecosystem: 'npm',
     name: 'node-fetch',
-    files: new Set(['browser.js']),
+    file: 'browser.js',
     range: '<=2.7.0',
+    integrity: [
+      'sha512-uCZB0X6rUVIf5lZU2NN9/Z1Fd6cPCLg4M9eduYxOgSP3QZNwi0/xSa/s6AUFtvLz4y4MK02SJihOIhDoFIzdiA==', // 2.0.0 - 2.1.1
+      'sha512-toQ4RDdyjsAxTaxnaLs2AE56rXws+jMZV896U8pP0MSuKRiq8ZGKkOTMsvyCJoAJTbrgoQpr89H2n8+Z1ALcYA==', // 2.1.2
+      'sha512-LOd+I1R3xYSCHFN9oj3xeN3wa7fYYx5XQKTiKkvWn4dSYVgHI2jsXZp0mJt5KlQg3ECXXh5UtpEW7kGu1dG/aQ==', // 2.2.0 - 2.2.1
+      'sha512-2yo4Ysl+g09ocycwEBcN7IkSvM/KPpO9CW+1FI+0QfzvWJfaQepo+WEqn1/o5Og1weM14flcdv23hqZtxFXFUw==', // 2.3.0 - 2.6.0
+      'sha512-WgHaZJVwFovVrKVySaKzxzXssn5kY8y3x8NJThodDRL9nwUxV7Q1z/RRzuLZ2lNkxabHLpG/l+vu7KQ2tGbP8g==', // 2.6.1 - 2.6.7
+      'sha512-84sQFcu3uzgEsJOjIhz6tE8vInV1STCA4sX5EI9NK3Tt8n/Kb1serbKMz+YkdOAuCspHRiSUW2qV01z0wOgIXg==', // 2.6.8
+      'sha512-SkBfLO20d2Ngr6nhxgh/Pt6Yqe6oW8EB99KSPq0lrW0se8jIiRF3YpOe7hHbfNWxuNCsKoZZT98uCJI9OJAa/Q==', // 2.6.9 - 2.7.0
+    ],
   },
-]
+].map((correction) => Object.freeze({ ...correction, integrity: Object.freeze(correction.integrity) })))
 
 // Is `rel` (a file path relative to the module dir) audit-irrelevant for
-// `name@version`? Unknown or unparsable versions are never corrected (fail
-// closed: the package stays audited).
-function isCorrectedFile(name, version, rel) {
-  for (const { name: pkg, files, range } of CORRECTIONS) {
-    if (pkg !== name || !files.has(rel)) continue
-    if (valid(version) && satisfies(version, range)) return true
+// `name@version` of `ecosystem`? Unknown or unparsable versions are never
+// corrected (fail closed: the package stays audited).
+function isCorrectedFile(name, version, rel, ecosystem) {
+  for (const correction of CORRECTIONS) {
+    if (correction.ecosystem !== ecosystem || correction.name !== name || correction.file !== rel) continue
+    if (valid(version) && satisfies(version, correction.range)) return true
   }
   return false
 }
@@ -66,8 +89,8 @@ const isManifest = (rel, ecosystem) => MANIFESTS[ecosystem]?.has(rel.slice(rel.l
 // Is `rel` evidence that `name@version`'s REAL code is present, of a dependency of
 // `ecosystem` (npm by default)? This is the one rule every audit surface shares --
 // package presence, the reason column, and the --why chain graph all count a file
-// (or an edge targeting it) only when it passes. Manifests never do; corrected
-// files (npm's) don't within their verified range.
+// (or an edge targeting it) only when it passes. Manifests never do; CORRECTIONS'
+// files don't within their verified range.
 export function isEvidenceFile(name, version, rel, ecosystem = 'npm') {
-  return !isManifest(rel, ecosystem) && (ecosystem !== 'npm' || !isCorrectedFile(name, version, rel))
+  return !isManifest(rel, ecosystem) && !isCorrectedFile(name, version, rel, ecosystem)
 }
