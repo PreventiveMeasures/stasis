@@ -78,11 +78,12 @@ export function collectPackagesFromFile(file) {
 }
 
 // The GitHub repository a bundled package.json's text names (packageRepo), or undefined where it
-// names none or doesn't parse. A lockfile holds the file's digest alone, never asked here.
+// names none or doesn't parse. Read as Node reads one, past a byte order mark (packageJSONText),
+// which a bundle keeps in the text. A lockfile holds the file's digest alone, never asked here.
 function manifestRepo(text) {
   if (typeof text !== 'string') return undefined
   try {
-    return packageRepo(JSON.parse(text))?.github
+    return packageRepo(JSON.parse(text.replace(/^\uFEFF/u, '')))?.github
   } catch {
     return undefined
   }

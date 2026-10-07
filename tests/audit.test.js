@@ -1109,6 +1109,8 @@ test('audit() asks the repo a bundled package.json names where no repo is record
           'node_modules/recorded': { ...withManifest('recorded', 'github:other/recorded'), repo: { github: 'o/recorded' } },
           'node_modules/not-github': withManifest('not-github', 'https://gitlab.com/o/not-github'),
           'node_modules/bad-json': withManifest('bad-json', undefined, '{'),
+          // A byte order mark, which Node reads a package.json past, and a bundle keeps.
+          'node_modules/bom': withManifest('bom', undefined, `\uFEFF${JSON.stringify({ name: 'bom', version: '1.0.0', repository: 'github:o/bom' })}`),
         },
       })
       // A lockfile records the package.json's digest alone.
@@ -1116,11 +1118,11 @@ test('audit() asks the repo a bundled package.json names where no repo is record
         modules: { 'node_modules/locked': { name: 'locked', version: '1.0.0', files: { 'index.js': 'sha512-a', 'package.json': 'sha512-b' } } },
       })
       t.assert.deepStrictEqual(collectPackages([bundle, lock]).map(({ name, github }) => [name, github]), [
-        ['bad-json', undefined], ['from-manifest', 'o/from-manifest'], ['locked', undefined], ['not-github', undefined], ['recorded', 'o/recorded'],
+        ['bad-json', undefined], ['bom', 'o/bom'], ['from-manifest', 'o/from-manifest'], ['locked', undefined], ['not-github', undefined], ['recorded', 'o/recorded'],
       ])
       const asked = []
       await audit([bundle, lock], { repoAdvisories: true, github: listing(asked) })
-      t.assert.deepStrictEqual(asked.toSorted(), ['o/bad-json', 'o/from-manifest', 'o/locked', 'o/not-github', 'o/recorded'])
+      t.assert.deepStrictEqual(asked.toSorted(), ['o/bad-json', 'o/bom', 'o/from-manifest', 'o/locked', 'o/not-github', 'o/recorded'])
       t.assert.deepStrictEqual(lookedUp(calls), ['bad-json', 'locked', 'not-github'].map((name) => `https://registry.npmjs.org/${name}/latest`),
         'only what neither the record nor a bundled package.json names is looked up')
     } finally {
