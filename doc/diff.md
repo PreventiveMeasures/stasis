@@ -37,8 +37,8 @@ byte-identical file never shows as a difference.
 - **changed** — a package on both sides whose `name`, `version` or `repo` (the
   dependency's GitHub repository, which picks the advisories `stasis audit
   --repo-advisories` asks) differs, reported only when both sides record one. A
-  legacy `version: 0` bundle records neither name nor version, and an artifact
-  from before `repo` records none, so neither is flagged for lacking one.
+  legacy `version: 0` bundle records neither name nor version, and a lockfile, or
+  a bundle from before `repo`, records none, so neither is flagged for lacking one.
 
 **Files** (within packages present on **both** sides):
 

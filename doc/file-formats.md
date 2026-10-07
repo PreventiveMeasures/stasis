@@ -94,7 +94,6 @@ attested.
       "name": "@exodus/bytes",
       "version": "1.15.0",
       "ecosystem": "npm",
-      "repo": { "github": "ExodusOSS/bytes" },
       "files": { "index.js": "sha512-…", "package.json": "sha512-…" }
     }
   },
@@ -136,26 +135,9 @@ attested.
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
   still load.
-- A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
-  a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
-  the fields and checks of the bundle's own `repo` (see `repo` under
-  `stasis.code.br`), but never `"directory": ""`: only a layout a build reads,
-  its own, places code at the repository's root. A dependency whose manifest
-  names no directory (or `./`) sits at an unknown place in its repository and
-  records no `directory`. Builds record one for an npm package, read off its
-  `package.json` by the rules the bundle's own `repo` takes from one: `repository` alone names
-  the repository (`bugs` and `homepage` are often its old name), and
-  `repository.directory`, else a GitHub tree `homepage` of it, the directory.
-  First-party buckets carry none. It is the dependency's, changing only with it,
-  so the lockfile records it too and holds it as `name` and `version`: a run fails
-  (`module repo mismatch`) where a dependency's `package.json` names another
-  repository than recorded, or none, and a bundle loaded beside a lockfile must
-  agree with it. An artifact from before the field records none: a run fills it
-  in, and a merge (`stasis add`, `--add`, `bundle = add`, `lock = add`) takes the
-  side that records one, failing where both record different ones. `stasis audit
-  --repo-advisories` asks it rather than looking one up, and for a bundle's record
-  with none, the one its bundled `package.json` names by the same rules (see the
-  `stasis` README).
+- A record carries no `repo`: a dependency's repository is metadata, which a
+  bundle carries (see `modules` under `stasis.code.br`) and a lockfile neither
+  writes nor reads.
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier
@@ -241,6 +223,23 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   `scope = full`; `modules` may be omitted (treated as empty). A bundle carrying
   code in `scope = full` must declare at least one entry; a resources-only bundle
   may have none.
+- A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
+  a `repo`, after `ecosystem`: the GitHub repository its own manifest names, with
+  the fields and checks of the bundle's own `repo` (see `repo` below). Builds
+  record one for an npm package, read off its `package.json` by the rules the
+  bundle's own `repo` takes from one: `repository` alone names the repository
+  (`bugs` and `homepage` are often its old name), and `repository.directory`,
+  else a GitHub tree `homepage` of it, the directory, `""` where it comes to the
+  repository root (`./`, `/`). A dependency whose manifest names no directory
+  sits at an unknown place in its repository and records no `directory`.
+  First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
+  never written to the lockfile, never attested, and never checked against a
+  dependency's `package.json` or another artifact's record. A run fills it in
+  where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)
+  takes the side that records one, the existing bundle's where both do. `stasis
+  audit --repo-advisories` asks it rather than looking one up, and for a record
+  with none, the one its bundled `package.json` names by the same rules (see the
+  `stasis` README).
 - `formats`: project-relative path → format, same vocabulary as the lockfile's
   `formats`. May be missing per file for code whose format Node infers. TypeScript
   sources are stored verbatim (types intact); Node strips types at load time.
@@ -306,10 +305,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
      `homepage` of the same repository such as
      `https://github.com/owner/name/tree/main/packages/app#readme` supplies it
      (`packages/app`; the branch is taken as one path segment). With neither, the
-     directory is unknown and none is recorded; nor is one where they come to the
-     repository root (`./`), as `""` is recorded only from a layout stasis reads.
-     No `commit` is recorded. A `package.json` naming a non-GitHub repository
-     records nothing.
+     directory is unknown and none is recorded; where they come to the
+     repository root (`./`, `/`), it is `""`. No `commit` is recorded. A
+     `package.json` naming a non-GitHub repository records nothing.
 
   A `stasis github-bundle` build records the fetched tree's own layout, `""` at
   its root. A detected value that the rules above would reject is left out

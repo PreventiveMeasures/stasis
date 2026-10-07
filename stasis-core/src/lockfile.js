@@ -4,6 +4,9 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
+// A record as a lockfile holds it: without `repo`, metadata a bundle carries and nothing attests.
+const lockRecord = ({ repo: _metadata, ...info }) => info
+
 export class Lockfile {
   static VERSION = VERSION
 
@@ -43,7 +46,7 @@ export class Lockfile {
     for (const [dir, info] of Object.entries(json.modules)) {
       assert(hasNodeModulesSegment(dir))
       assert(info?.name && info.version && info.files)
-      modules.set(dir, normalizeModule(info, dir, 'lockfile'))
+      modules.set(dir, normalizeModule(lockRecord(info), dir, 'lockfile'))
     }
 
     let entries = new Set()
@@ -53,7 +56,7 @@ export class Lockfile {
         assert(!hasNodeModulesSegment(dir))
         // A workspace bucket may omit version (a private/unpublished package.json can lack one).
         assert(info?.name && info.files)
-        modules.set(dir, normalizeModule(info, dir, 'lockfile'))
+        modules.set(dir, normalizeModule(lockRecord(info), dir, 'lockfile'))
       }
     }
 
@@ -78,7 +81,7 @@ export class Lockfile {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { modules, sources } = groupModules(this.modules, { what: 'lockfile' })
+    const { modules, sources } = groupModules(this.modules, { repo: false, what: 'lockfile' })
     const store = { version: this.version, config: this.config }
     if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules

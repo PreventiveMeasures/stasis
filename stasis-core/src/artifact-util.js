@@ -95,15 +95,12 @@ export const normalizeRepo = (repo, what = 'bundle repo') => normalizeBlock(repo
 // node_modules (an artifact from before the tag); undefined for first-party code.
 export const dependencyEcosystem = (dir, ecosystem) => ecosystem ?? (hasNodeModulesSegment(dir) ? 'npm' : undefined)
 
-// A dependency's `repo` holds a build's own fields, but never `directory: ''`: only a layout a build
-// reads, its own, places code at a repository's root, never a manifest (packageRepo).
-const DEPENDENCY_REPO_FIELDS = { ...REPO_FIELDS, directory: (v) => v !== '' && REPO_FIELDS.directory(v) }
-
-// A dependency's `repo`, the one its own manifest names; first-party code carries none.
+// A dependency's `repo`, the one its own manifest names, with the bundle's own fields; first-party
+// code carries none.
 const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   if (repo === undefined) return undefined
   if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no repo`)
-  return normalizeBlock(repo, DEPENDENCY_REPO_FIELDS, `${what} module '${dir}' repo`)
+  return normalizeRepo(repo, `${what} module '${dir}' repo`)
 }
 
 // A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.
@@ -356,15 +353,16 @@ export function serializeImports(imports) {
 }
 
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects
-// of a `what` artifact, buckets and files path-sorted so the bytes are canonical.
-export function groupModules(modules, { skipEmpty = false, what } = {}) {
+// of a `what` artifact, buckets and files path-sorted so the bytes are canonical. `repo: false`
+// leaves each record's `repo` out: metadata, which a lockfile never carries.
+export function groupModules(modules, { skipEmpty = false, repo = true, what } = {}) {
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
     const files = fromEntries(Object.entries(info.files).toSorted(byPath))
-    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: normalizeModuleRepo(dir, info, what), files })])
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: repo ? normalizeModuleRepo(dir, info, what) : undefined, files })])
   }
   return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
 }
@@ -493,8 +491,7 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      assert(reposAgree(existing.repo, info.repo),
-        `${label}: module '${dir}' repo mismatch (${JSON.stringify(existing.repo)} vs ${JSON.stringify(info.repo)})`)
+      // `repo` is metadata, held to nothing: either side's, where only one records it, else `a`'s.
       if (existing.repo === undefined && info.repo !== undefined) out.set(dir, moduleInfo({ ...existing, repo: info.repo }))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {

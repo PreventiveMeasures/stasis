@@ -46,11 +46,12 @@ function capture(dir, options) {
   return state
 }
 
-test('a dependency repo is read as a build reads its own, which a manifest never places at the root: only a git layout does', withTmp((t, dir) => {
+test("a dependency repo is read as a build reads its own: a declared directory at the root is `''`, none declared is unknown", withTmp((t, dir) => {
   t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n' }), { github: 'o/n' }, 'no directory: unknown, not the root')
-  for (const directory of ['./', '.', '', '/', 'a/../']) {
-    t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n' }, `${JSON.stringify(directory)}: the root named, still none`)
+  for (const directory of ['./', '.', '', '/', 'a/../', '.\\']) {
+    t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory } }), { github: 'o/n', directory: '' }, `${JSON.stringify(directory)}: the root`)
   }
+  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: '../x' } }), { github: 'o/n' }, 'outside the repository: unknown')
   t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: 'packages/x' } }), { github: 'o/n', directory: 'packages/x' })
   for (const pkg of [{}, { repository: 'https://gitlab.com/o/n' }, { bugs: 'https://github.com/o/n/issues' }, { homepage: 'https://github.com/o/n' }, null]) {
     t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: repository alone names it`)
@@ -58,121 +59,104 @@ test('a dependency repo is read as a build reads its own, which a manifest never
   writeProject(dir, { repository: 'github:o/dep' })
   t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js'),
     { pkgDir: 'node_modules/dep', name: 'dep', version: '1.0.0', ecosystem: 'npm', repo: { github: 'o/dep' } })
+  writeProject(dir, { repository: { url: 'github:o/dep', directory: './' } })
+  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js').repo, { github: 'o/dep', directory: '' })
 }))
 
-test('a dependency record carries repo after ecosystem, in a bundle and in a lockfile alike', (t) => {
+test('a dependency record carries repo after ecosystem in a bundle; a lockfile neither writes nor reads one', (t) => {
   const modules = { 'node_modules/dep': dep({ directory: 'packages/dep', github: 'o/dep' }) }
-  for (const [artifact, parse] of [[bundleOf(modules), Bundle.parse], [lockOf(modules), Lockfile.parse]]) {
-    const json = JSON.parse(artifact.serialize())
-    t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'repo', 'files'])
-    t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep'].repo), ['github', 'directory'], 'canonical key order')
-    t.assert.deepStrictEqual({ ...parse(JSON.stringify(json)).modules.get('node_modules/dep').repo }, DEP_REPO)
-  }
+  const json = JSON.parse(bundleOf(modules).serialize())
+  t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'repo', 'files'])
+  t.assert.deepStrictEqual(Object.keys(json.modules['node_modules/dep'].repo), ['github', 'directory'], 'canonical key order')
+  t.assert.deepStrictEqual({ ...Bundle.parse(JSON.stringify(json)).modules.get('node_modules/dep').repo }, DEP_REPO)
   t.assert.equal(JSON.parse(bundleOf({ 'node_modules/dep': dep() }).serialize()).modules['node_modules/dep'].repo, undefined, 'none: no key')
+
+  const lock = JSON.parse(lockOf(modules).serialize())
+  t.assert.deepStrictEqual(Object.keys(lock.modules['node_modules/dep']), ['name', 'version', 'ecosystem', 'files'], 'metadata: never in a lockfile')
+  lock.modules['node_modules/dep'].repo = DEP_REPO
+  t.assert.equal(Lockfile.parse(JSON.stringify(lock)).modules.get('node_modules/dep').repo, undefined, 'nor read from one')
 })
 
 test('a dependency repo is validated as a bundle repo is, on parse and on serialize, and only a dependency carries one', (t) => {
-  for (const [what, Artifact, of] of [['bundle', Bundle, bundleOf], ['lockfile', Lockfile, lockOf]]) {
-    for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', directory: '' }, { github: 'o/n', root: true }, 'o/n']) {
-      const json = JSON.parse(of({ 'node_modules/dep': dep() }).serialize())
-      json.modules['node_modules/dep'].repo = repo
-      t.assert.throws(() => Artifact.parse(JSON.stringify(json)), new RegExp(`${what} module 'node_modules/dep' repo`, 'u'), `${what} parse: ${JSON.stringify(repo)}`)
-      t.assert.throws(() => of({ 'node_modules/dep': dep(repo) }).serialize(), new RegExp(`${what} module 'node_modules/dep' repo`, 'u'), `${what} serialize: ${JSON.stringify(repo)}`)
-    }
+  for (const repo of [{ github: 'not a repo' }, { github: 'o/n', tag: 'v1' }, { github: 'o/n', root: true }, 'o/n']) {
+    const json = JSON.parse(bundleOf({ 'node_modules/dep': dep() }).serialize())
+    json.modules['node_modules/dep'].repo = repo
+    t.assert.throws(() => Bundle.parse(JSON.stringify(json)), /bundle module 'node_modules\/dep' repo/u, `parse: ${JSON.stringify(repo)}`)
+    t.assert.throws(() => bundleOf({ 'node_modules/dep': dep(repo) }).serialize(), /bundle module 'node_modules\/dep' repo/u, `serialize: ${JSON.stringify(repo)}`)
   }
+  const root = { github: 'o/n', directory: '' }
+  t.assert.deepStrictEqual({ ...Bundle.parse(bundleOf({ 'node_modules/dep': dep(root) }).serialize()).modules.get('node_modules/dep').repo }, root, "the root, `''`, as the bundle's own")
   const json = JSON.parse(new Bundle({ config: { scope: 'full' }, modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'a.js': '' } }]]) }).serialize())
   json.sources['.'].repo = DEP_REPO
   t.assert.throws(() => Bundle.parse(JSON.stringify(json)), /'\.' is no dependency's bucket/u, "first-party code's repo is the bundle's own")
 })
 
-test("a dependency of any ecosystem may carry a repo, beside first-party code's buckets", (t) => {
+test("a dependency of any ecosystem may carry a repo in a bundle, beside first-party code's buckets", (t) => {
   const crate = { name: 'serde', version: '1.0.100', ecosystem: 'cargo', repo: { github: 'serde-rs/serde', directory: 'serde' }, files: { 'src/lib.rs': '' } }
   const modules = new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.rs': '' } }], ['vendor/serde', crate]])
   const bundle = new Bundle({ config: { scope: 'full' }, entries: new Set(['src/main.rs']), modules })
   const lock = new Lockfile({ config: { scope: 'full' }, entries: new Set(['src/main.rs']), modules, imports: new Map(), formats: new Map() })
-  for (const [artifact, parse] of [[bundle, Bundle.parse], [lock, Lockfile.parse]]) {
-    t.assert.deepStrictEqual({ ...parse(artifact.serialize()).modules.get('vendor/serde').repo }, crate.repo)
-  }
+  t.assert.deepStrictEqual({ ...Bundle.parse(bundle.serialize()).modules.get('vendor/serde').repo }, crate.repo)
+  t.assert.equal(Lockfile.parse(lock.serialize()).modules.get('vendor/serde').repo, undefined)
 })
 
-test('merging takes a dependency repo one side lacks and refuses two that differ', (t) => {
-  for (const [of, what] of [[bundleOf, 'bundle'], [lockOf, 'lockfile']]) {
-    const merged = (a, b) => of({ 'node_modules/dep': dep(a) }).merge(of({ 'node_modules/dep': dep(b) })).modules.get('node_modules/dep').repo
-    t.assert.deepStrictEqual({ ...merged(DEP_REPO, DEP_REPO) }, DEP_REPO, `${what}: agreeing`)
-    t.assert.deepStrictEqual({ ...merged(DEP_REPO, { ...DEP_REPO, github: 'O/Dep' }) }, DEP_REPO, `${what}: GitHub names are case-insensitive`)
-    t.assert.deepStrictEqual({ ...merged(undefined, DEP_REPO) }, DEP_REPO, `${what}: into an artifact from before the field`)
-    t.assert.deepStrictEqual({ ...merged(DEP_REPO, undefined) }, DEP_REPO, `${what}: from one`)
-    t.assert.throws(() => merged(DEP_REPO, { github: 'o/dep' }), new RegExp(`${what} merge: module 'node_modules/dep' repo mismatch`, 'u'))
-    t.assert.throws(() => merged(DEP_REPO, { ...DEP_REPO, github: 'o/other' }), /repo mismatch/u)
-  }
+test('merging takes a dependency repo one side lacks, and holds two that differ to nothing', (t) => {
+  const merged = (a, b) => bundleOf({ 'node_modules/dep': dep(a) }).merge(bundleOf({ 'node_modules/dep': dep(b) })).modules.get('node_modules/dep').repo
+  t.assert.deepStrictEqual({ ...merged(DEP_REPO, DEP_REPO) }, DEP_REPO, 'agreeing')
+  t.assert.deepStrictEqual({ ...merged(undefined, DEP_REPO) }, DEP_REPO, 'into an artifact from before the field')
+  t.assert.deepStrictEqual({ ...merged(DEP_REPO, undefined) }, DEP_REPO, 'from one')
+  t.assert.deepStrictEqual({ ...merged(DEP_REPO, { github: 'o/other' }) }, DEP_REPO, "metadata: the existing side's, no mismatch")
 })
 
-test('State records a dependency repo, from its own package.json, in the lockfile and the bundle', withTmp((t, tmp) => {
+test('State records a dependency repo, from its own package.json, in the bundle alone', withTmp((t, tmp) => {
   writeProject(tmp, { repository: { type: 'git', url: 'git+https://github.com/o/dep.git', directory: 'packages/dep' } })
   const state = capture(tmp, { bundle: 'replace', lock: 'replace' })
-  t.assert.deepStrictEqual(JSON.parse(state.lockData).modules['node_modules/dep'].repo, DEP_REPO)
   t.assert.deepStrictEqual(JSON.parse(state.sourceData).modules['node_modules/dep'].repo, DEP_REPO)
+  t.assert.equal(JSON.parse(state.lockData).modules['node_modules/dep'].repo, undefined, 'metadata: never in the lockfile')
   t.assert.equal(JSON.parse(state.lockData).sources['.'].repo, undefined, 'first-party code records none')
   t.assert.equal(JSON.parse(state.lockData).repo, undefined, "the build's own repo never reaches the lockfile")
 }))
 
-test('State holds a dependency repo to the one recorded, as it holds its name and version', withTmp((t, tmp) => {
+test('State holds a dependency repo to nothing: a package.json naming another, or none, is no mismatch', withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep' })
   capture(tmp, { bundle: 'none', lock: 'replace' }).write()
-  t.assert.doesNotThrow(() => capture(tmp, { bundle: 'none', lock: 'frozen' }))
-
-  writeJson(join(tmp, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0', repository: 'github:o/elsewhere' })
-  t.assert.throws(() => capture(tmp, { bundle: 'none', lock: 'frozen' }), /module repo mismatch for 'node_modules\/dep'.*"o\/dep".*"o\/elsewhere"/u)
-  t.assert.throws(() => capture(tmp, { bundle: 'none', lock: 'add' }), /module repo mismatch/u)
-  writeJson(join(tmp, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0' })
-  t.assert.throws(() => capture(tmp, { bundle: 'none', lock: 'frozen' }), /module repo mismatch.*names no GitHub repository/u)
+  for (const pkg of [{ repository: 'github:o/elsewhere' }, {}]) {
+    writeJson(join(tmp, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0', ...pkg })
+    t.assert.doesNotThrow(() => capture(tmp, { bundle: 'none', lock: 'frozen' }), JSON.stringify(pkg))
+  }
 }))
 
-test('State fills in a dependency repo a lockfile from an older stasis lacks', withTmp((t, tmp) => {
+test('State fills in a dependency repo a bundle from an older stasis lacks', withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep' })
-  capture(tmp, { bundle: 'none', lock: 'replace' }).write()
-  const lockPath = join(tmp, 'stasis.lock.json')
-  const old = JSON.parse(readFileSync(lockPath, 'utf8'))
+  capture(tmp, { bundle: 'replace', lock: 'none' }).write()
+  const bundlePath = join(tmp, 'stasis.code.br')
+  const old = readBundle(bundlePath)
   delete old.modules['node_modules/dep'].repo
-  writeFileSync(lockPath, JSON.stringify(old))
-  const state = capture(tmp, { bundle: 'none', lock: 'add' })
-  t.assert.deepStrictEqual(JSON.parse(state.lockData).modules['node_modules/dep'].repo, { github: 'o/dep' })
+  writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(old)))
+  const state = capture(tmp, { bundle: 'add', lock: 'none' })
+  t.assert.deepStrictEqual(JSON.parse(state.sourceData).modules['node_modules/dep'].repo, { github: 'o/dep' })
 }))
 
-test('State holds a dependency to the repo its bundle records where the lockfile, from before the field, records none', withTmp((t, tmp) => {
-  writeProject(tmp, { repository: 'github:o/dep' })
-  capture(tmp, { bundle: 'replace', lock: 'replace' }).write()
-  const lockPath = join(tmp, 'stasis.lock.json')
-  const old = JSON.parse(readFileSync(lockPath, 'utf8'))
-  delete old.modules['node_modules/dep'].repo
-  writeFileSync(lockPath, JSON.stringify(old))
-  writeJson(join(tmp, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0', repository: 'github:o/elsewhere' })
-  t.assert.throws(() => capture(tmp, { bundle: 'load', lock: 'frozen' }), /module repo mismatch for 'node_modules\/dep'.*"o\/dep".*"o\/elsewhere"/u)
-}))
-
-test('State refuses a bundle whose dependency repo differs from the lockfile', withTmp((t, tmp) => {
+test('State loads a bundle beside its lockfile whatever dependency repo the bundle records', withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep' })
   capture(tmp, { bundle: 'replace', lock: 'replace' }).write()
   const bundlePath = join(tmp, 'stasis.code.br')
   const bundle = readBundle(bundlePath)
   bundle.modules['node_modules/dep'].repo = { github: 'o/other' }
   writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(bundle)))
-  t.assert.throws(() => new State(tmp, { scope: 'full', bundle: 'load', lock: 'frozen' }), /bundle module node_modules\/dep repo mismatch with lockfile/u)
-  delete bundle.modules['node_modules/dep'].repo
-  writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(bundle)))
-  t.assert.doesNotThrow(() => new State(tmp, { scope: 'full', bundle: 'load', lock: 'frozen' }), 'a bundle from before the field')
+  t.assert.doesNotThrow(() => new State(tmp, { scope: 'full', bundle: 'load', lock: 'frozen' }))
 }))
 
-test('stasis add records a dependency repo in the bundle and the lockfile', withTmp((t, tmp) => {
+test('stasis add records a dependency repo in the bundle, never the lockfile', withTmp((t, tmp) => {
   writeProject(tmp, { repository: { url: 'https://github.com/o/dep', directory: 'packages/dep' } })
   writeJson(join(tmp, 'stasis.config.json'), {})
   writeJson(join(tmp, 'stasis.lock.json'), { version: 0, config: { scope: 'full' }, entries: [], sources: {}, modules: {}, imports: {}, formats: {} })
   addCommand({ cwd: tmp, entries: ['node_modules/dep/index.js'] })
   t.assert.deepStrictEqual(readBundle(join(tmp, 'stasis.code.br')).modules['node_modules/dep'].repo, DEP_REPO)
-  t.assert.deepStrictEqual(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).modules['node_modules/dep'].repo, DEP_REPO)
+  t.assert.equal(JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).modules['node_modules/dep'].repo, undefined)
 }))
 
-test('stasis bundle records a dependency repo in the bundle and its lockfile, through a State and through the field resolver', withTmp(async (t, tmp) => {
+test('stasis bundle records a dependency repo in the bundle, never its lockfile, through a State and through the field resolver', withTmp(async (t, tmp) => {
   writeProject(tmp, { repository: { url: 'https://github.com/o/dep', directory: 'packages/dep' } })
   const written = await Promise.all([['state', {}], ['resolver', { mainFields: ['main'] }]].map(async ([label, options]) => {
     await bundleCommand({ cwd: tmp, entries: ['index.js'], output: `${label}.br`, lockfile: `${label}.lock.json`, ...options })
@@ -180,6 +164,6 @@ test('stasis bundle records a dependency repo in the bundle and its lockfile, th
   }))
   for (const [label, bundle, lock] of written) {
     t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, DEP_REPO, `${label}: bundle`)
-    t.assert.deepStrictEqual(lock.modules['node_modules/dep'].repo, DEP_REPO, `${label}: lockfile`)
+    t.assert.equal(lock.modules['node_modules/dep'].repo, undefined, `${label}: lockfile`)
   }
 }))
