@@ -204,7 +204,8 @@ A directory expands to every file under it, minus what a sweep leaves out:
 So `stasis add src` does not attest everything under `src`. The skipped files
 are counted in the summary, the dotfiles aside. A file the command names is
 always taken, exclusions aside, and validated like any other: a non-code file
-needs its extension in the `resources` allowlist.
+needs its extension, or its extensionless filename (`LICENSE`), in the
+`resources` allowlist.
 
 ```sh
 stasis add a.js icon.svg     # these two files
