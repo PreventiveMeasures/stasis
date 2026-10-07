@@ -536,11 +536,13 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
 
 // The GitHub repository a Composer package `p` (composer.lock's, or installed.json's) is cloned
 // from, at the commit it is installed at: its git `source` on GitHub, at its `reference` where that
-// is a full commit and it has no dist, or one at the same reference: a dist with none, or another,
-// is an archive no commit is known of, which Composer installs by default. Packagist takes a
-// package from the root of its repository, so `directory` is ''. Undefined otherwise.
-function composerRepo({ source, dist }) {
-  if (source?.type !== 'git' || (dist != null && dist.reference !== source.reference)) return undefined
+// is a full commit, and where installed.json's `installation-source`, `from`, says it is installed
+// from its source, which Composer checks out at that reference; else, where it has no dist or one
+// at the same reference: a dist with none, or another, is an archive no commit is known of, which
+// Composer installs by default. Packagist takes a package from the root of its repository, so
+// `directory` is ''. Undefined otherwise.
+function composerRepo({ source, dist }, from) {
+  if (source?.type !== 'git' || (from !== 'source' && dist != null && dist.reference !== source.reference)) return undefined
   const github = parseGithubRepository(source.url)
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
@@ -558,7 +560,7 @@ export function loadComposerPackages(baseDir) {
   if (lockText === null) {
     return readInstalledPackages(baseDir, vendorDir)
       .filter((p) => p?.name && p.version)
-      .map((p) => ({ name: p.name, version: p.version, dir: installedDir(baseDir, vendorDir, p), extra: p.extra, repo: composerRepo(p) }))
+      .map((p) => ({ name: p.name, version: p.version, dir: installedDir(baseDir, vendorDir, p), extra: p.extra, repo: composerRepo(p, p['installation-source']) }))
   }
 
   const composerJson = readUtf8OrNull(join(baseDir, 'composer.json'), 'composer.json')
@@ -567,9 +569,10 @@ export function loadComposerPackages(baseDir) {
   const installedText = readUtf8OrNull(join(baseDir, installedFile), installedFile)
   const installed = installedText === null ? null : assertInstalledAsLocked(lockText, installedText, { installedFile, vendorDir })
   const dirs = installed === null ? null : new Map(installed.packages.map((p) => [p.name, installedDir(baseDir, vendorDir, p)]))
+  const from = new Map(installed?.packages.map((p) => [p.name, p['installation-source']]))
   return Object.values(lock.packages)
     .filter((p) => dirs === null || dirs.has(p.name))
-    .map((p) => ({ name: p.name, version: p.version, dir: dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), extra: p.extra, repo: composerRepo(p) }))
+    .map((p) => ({ name: p.name, version: p.version, dir: dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name), extra: p.extra, repo: composerRepo(p, from.get(p.name)) }))
 }
 
 // Build the autoload config for `baseDir`, merging the root composer.json

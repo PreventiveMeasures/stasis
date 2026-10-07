@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -82,15 +82,17 @@ test('a Soldeer git dependency records the GitHub repository soldeer.lock names,
   }
 }))
 
-test('a Composer package records the GitHub repository of its git source, at its root, at the reference its source and dist agree on', withTmp(async (t, tmp) => {
+test('a Composer package records the GitHub repository of its git source, at its root, at the reference it is installed at', withTmp(async (t, tmp) => {
   cpSync(phpFixture, tmp, { recursive: true })
   const LIB = 'vendor/acme/lib'
   const buildPhp = async () => repoOf(await buildPhpBundle({ cwd: tmp, entries: ['index.php'] }), LIB)
   // acme/lib as Packagist locks a package from GitHub, in composer.lock and installed.json alike:
-  // its dist at `dist`, a reference, null for one with none, or false for no dist.
-  const relock = ({ url = 'https://github.com/acme/lib.git', reference = COMMIT, dist = reference } = {}) => {
+  // its dist at `dist`, a reference, null for one with none, or false for no dist; installed from
+  // `from`, as installed.json says.
+  const relock = ({ url = 'https://github.com/acme/lib.git', reference = COMMIT, dist = reference, from = 'dist' } = {}) => {
     for (const file of ['composer.lock', 'vendor/composer/installed.json']) {
       const path = join(tmp, file)
+      if (!existsSync(path)) continue
       const json = JSON.parse(readFileSync(path, 'utf8'))
       const at = json.packages.findIndex((p) => p.name === 'acme/lib')
       // In the order Composer writes a package's keys, as the lockfile is held to.
@@ -101,6 +103,7 @@ test('a Composer package records the GitHub repository of its git source, at its
         source: { type: 'git', url, reference },
         ...(dist === false ? {} : { dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', ...(dist === null ? {} : { reference: dist }), shasum: '' } }),
         ...rest,
+        ...(file === 'composer.lock' ? {} : { 'installation-source': from }),
       }
       writeFileSync(path, `${JSON.stringify(json, null, 4)}\n`)
     }
@@ -117,10 +120,18 @@ test('a Composer package records the GitHub repository of its git source, at its
   t.assert.equal(await buildPhp(), undefined, 'a dist at no reference: an archive no commit is known of')
   relock({ dist: false })
   t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, 'no dist: installed from its source')
+  // Installed from its source, Composer checked out its reference, whatever its dist is.
+  for (const dist of [OTHER, null]) {
+    relock({ dist, from: 'source' })
+    // eslint-disable-next-line no-await-in-loop -- each build reads the lockfile just written
+    t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, `installed from source, a dist at ${dist}`)
+  }
   relock({ url: 'https://gitlab.com/acme/lib.git' })
   t.assert.equal(await buildPhp(), undefined, 'not GitHub')
   // installed.json alone, as Composer 1 leaves it: as it says.
-  relock()
+  relock({ dist: OTHER, from: 'source' })
   rmSync(join(tmp, 'composer.lock'))
-  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT })
+  t.assert.deepStrictEqual(await buildPhp(), { github: 'acme/lib', directory: '', commit: COMMIT }, 'installed from source')
+  relock({ dist: OTHER })
+  t.assert.equal(await buildPhp(), undefined, 'installed from a dist at another reference')
 }))

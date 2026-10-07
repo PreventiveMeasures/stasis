@@ -253,7 +253,9 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   - A Composer package records the GitHub repository of its git `source`, at
     its root, as Packagist takes a package from its repository's, and the
     `source.reference` that `composer.lock`, or `installed.json` without one,
-    records, where its `dist`, if any, names the same reference.
+    records, where `installed.json` says it is installed from its source, which
+    Composer checks out there, or where it has no `dist` or one at the same
+    reference.
 
   Each is the publisher's or the package manager's word, held to no
   repository, and a lockfile that can't be read records none rather than
