@@ -4,7 +4,7 @@ import { dirname, extname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
-import { Bundle } from '@exodus/stasis-core/bundle'
+import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
@@ -12,9 +12,10 @@ import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from
 import { createMetroResolver } from '../metro-resolver.js'
 import { State } from '@exodus/stasis-core/state'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
-import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
+import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
+import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
   SOLIDITY_ROOT_MANIFESTS,
@@ -98,26 +99,70 @@ function githubSubmodules(submodules) {
   return byPath
 }
 
+// The root of the GitHub repository `github` at `commit`, where both are valid; else undefined.
+const repoRootAt = (github, commit) => (isValidRepoField('github', github) && isValidRepoField('commit', commit) ? { github, directory: '', commit } : undefined)
+
+// The text of `rel`, a file of the project root, read as `ownership` vouches for it; null where it
+// refuses it, nothing is there, or it isn't UTF-8.
+function ownedText(baseDir, rel, ownership, host) {
+  const { reason, real, outside } = ownership.of(rel)
+  if (reason || real === null || outside) return null
+  try {
+    const buf = readRegularFileOrNull(join(host.realpath(baseDir), real), rel, host)
+    return buf === null ? null : decodeUtf8(buf, rel)
+  } catch {
+    return null
+  }
+}
+
+// Each git dependency the root's soldeer.lock installs from GitHub, by its folder under
+// `dependencies/` (`<name>-<version>`, as Soldeer names it): the repository's root at the lockfile's
+// `rev`, which Soldeer checks out. None where the lockfile can't be read or parsed: it is metadata,
+// which never stops a build.
+function soldeerGitRepos(baseDir, ownership, host) {
+  const text = ownedText(baseDir, 'soldeer.lock', ownership, host)
+  let lock = null
+  try {
+    lock = text === null ? null : parseSoldeerLockfile(text)
+  } catch {
+    // Not one Soldeer writes: nothing is recorded from it.
+  }
+  const repos = new Map()
+  for (const dep of Object.values(lock?.dependencies ?? {})) {
+    const repo = dep.type === 'git' ? repoRootAt(parseGithubRepository(dep.git), dep.rev) : undefined
+    if (repo !== undefined) repos.set(`${dep.name}-${dep.version}`, repo)
+  }
+  return repos
+}
+
 // Classify a Solidity file's dep bucket: Soldeer (`dependencies/<name>-<version>/`) or a
 // github submodule (`lib/`, via the `.gitmodules` `ownership` read), else null to defer to the
 // node_modules/workspace logic. `ownership.assert` vets a package.json path before it is read
-// through `host`.
+// through `host`. A bucket's `repo` is the GitHub repository it is checked out from, at its root, at
+// the commit it is at: a submodule's checkout's HEAD, as the bundle's own `repo` reads one; a
+// Soldeer git dependency's soldeer.lock `rev` (soldeerGitRepos).
 function makeSolidityClassifier(baseDir, ownership, host) {
   const submodules = githubSubmodules(ownership.submodules)
   const check = ownership.assert
   const versions = new Map() // a submodule's package.json version, read once
+  const commits = new Map() // a submodule's checkout's commit, read once
+  let soldeer // soldeerGitRepos, read at the first Soldeer file
   return (path) => {
     if (path.startsWith('dependencies/')) {
       const seg = path.slice('dependencies/'.length).split('/')[0]
       if (seg) {
         const { name, version } = parseSoldeerDir(seg)
-        return { bucketDir: `dependencies/${seg}`, name, version, ecosystem: 'soldeer' }
+        soldeer ??= soldeerGitRepos(baseDir, ownership, host)
+        const repo = soldeer.get(seg)
+        return { bucketDir: `dependencies/${seg}`, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
     for (const [sub, { name, branch }] of submodules) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
-        return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github' }
+        if (!commits.has(sub)) commits.set(sub, checkoutCommit(join(baseDir, sub), host))
+        const repo = repoRootAt(name, commits.get(sub))
+        return { bucketDir: sub, name, version: versions.get(sub) ?? branch ?? '0.0.0', ecosystem: 'github', ...(repo === undefined ? {} : { repo }) }
       }
     }
     return null

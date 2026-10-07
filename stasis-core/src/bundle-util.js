@@ -240,6 +240,14 @@ function gitHeadCommit({ gitDir, commonDir }, host) {
   return isValidRepoField('commit', commit) ? commit : undefined
 }
 
+// HEAD's commit of the git checkout at `dir` (gitHeadCommit), its `.git` a directory or the `gitdir:`
+// file of a submodule or worktree; undefined where it holds none. Read through `host`, under `.git`
+// alone; git never runs.
+export function checkoutCommit(dir, host = diskHost) {
+  const dotGit = join(dir, '.git')
+  return host.stat(dotGit) === null ? undefined : gitHeadCommit(gitDirs(dotGit, host), host)
+}
+
 // A parsed package.json's `repository` url (the string shorthand, or its `url`), or undefined.
 function repositoryUrl(json) {
   const repository = json?.repository

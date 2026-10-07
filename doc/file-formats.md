@@ -237,15 +237,27 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   `repository.directory` comes to the repository root (`./`, `/`); a homepage
   never places one there. A dependency whose manifest names no directory, or
   one with a `..` part, sits at an unknown place in its repository and records
-  no `directory`. Only a build from a lockfile alone (`stasis github-bundle`,
-  `buildVfsBundle`) records a `commit`, the one the package manager's tree is
-  installed from where it names a full one: an npm package's is the `gitHead`
-  of the registry's version document of it, fetched beside its tarball and held
-  to the lockfile's integrity, and recorded only beside a `github` its
-  `package.json` names; a Soldeer git dependency on GitHub records that
-  repository, at its root (`""`), and the lockfile's `rev`. Either is the
-  publisher's word, held to no repository.
-  First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
+  no `directory`. A `commit` is recorded where what installed a dependency
+  names a full one:
+  - A build from a lockfile alone (`stasis github-bundle`, `buildVfsBundle`)
+    records an npm package's at the `gitHead` of the registry's version
+    document of it, fetched beside its tarball and held to the lockfile's
+    integrity, and only beside a `github` its `package.json` names.
+  - A Soldeer git dependency on GitHub, in any build, records that repository
+    at its root (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out.
+  - A Foundry `lib/` submodule (ecosystem `github`), on disk, records the
+    GitHub repository `.gitmodules` names at its root and its checkout's HEAD,
+    read from its git directory as the bundle's own `commit` is (see `repo`
+    below); one with no `.git`, as `forge install --no-git` leaves it, records
+    none.
+  - A Composer package records the GitHub repository of its git `source`, at
+    its root, as Packagist takes a package from its repository's, and the
+    `source.reference` that `composer.lock`, or `installed.json` without one,
+    records, where its `dist`, if any, names the same reference.
+
+  Each is the publisher's or the package manager's word, held to no
+  repository, and a lockfile that can't be read records none rather than
+  stopping the build. First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
   never written to the lockfile, never attested, and never checked against a
   dependency's `package.json` or another artifact's record. A run fills it in
   where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)
