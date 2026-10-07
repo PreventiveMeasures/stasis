@@ -237,7 +237,14 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   `repository.directory` comes to the repository root (`./`, `/`); a homepage
   never places one there. A dependency whose manifest names no directory, or
   one with a `..` part, sits at an unknown place in its repository and records
-  no `directory`. No build records a `commit` for a dependency yet.
+  no `directory`. Only a build from a lockfile alone (`stasis github-bundle`,
+  `buildVfsBundle`) records a `commit`, the one the package manager's tree is
+  installed from where it names a full one: an npm package's is the `gitHead`
+  of the registry's version document of it, fetched beside its tarball and held
+  to the lockfile's integrity, and recorded only beside a `github` its
+  `package.json` names; a Soldeer git dependency on GitHub records that
+  repository, at its root (`""`), and the lockfile's `rev`. Either is the
+  publisher's word, held to no repository.
   First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
   never written to the lockfile, never attested, and never checked against a
   dependency's `package.json` or another artifact's record. A run fills it in

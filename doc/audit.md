@@ -40,7 +40,7 @@ artifact tags it with (see [file formats](file-formats.md)):
 | `npm` | `node_modules` packages | npm's advisories |
 | `cargo` | crates vendored from a registry | OSV |
 | `composer` | Composer packages | OSV; a dev version (`dev-main`, `1.x-dev`) is listed as not audited, no database having one |
-| `soldeer` | Soldeer packages | the advisories their GitHub repository publishes |
+| `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: a git dependency's, the one its artifact records, else the one Soldeer's registry names |
 | `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV, whose crate of that name may be another |
 

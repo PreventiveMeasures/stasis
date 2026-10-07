@@ -202,7 +202,11 @@ test('buildVfsBundle with soldeer fetches a git dependency from GitHub through t
   const client = fakeClient(checkout)
   const built = await build({ vfs: projectVfs(gitDependency()), client })
   t.assert.deepStrictEqual(client.calls, [['getRepoTarball', 'ExodusOSS/stasis-sol-lib', REV]])
-  t.assert.equal(built.bundle.serialize(), oracles.plain, 'the bundle a registry install of the same files yields')
+  const json = JSON.parse(built.bundle.serialize())
+  const dep = json.sources['dependencies/stasis-sol-lib-1.0.0']
+  t.assert.deepStrictEqual(dep.repo, { github: 'ExodusOSS/stasis-sol-lib', directory: '', commit: REV }, 'the root of the repository it is fetched from, at the lockfile rev')
+  delete dep.repo
+  t.assert.deepStrictEqual(json, JSON.parse(oracles.plain), 'else the bundle a registry install of the same files yields')
 })
 
 test('buildVfsBundle with soldeer refuses, naming the file, what it cannot reproduce, and checks its entries first', async (t) => {

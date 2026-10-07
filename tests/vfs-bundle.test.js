@@ -197,6 +197,18 @@ const projectVfs = (packageManager, files = {}) => {
 
 const pick = (stats, keys) => Object.fromEntries(Object.keys(keys).map((key) => [key, stats[key]]))
 
+// A bundle's text with each dependency's `commit` left out: a build from the lockfile records the
+// one its version document names, which no installed package.json tells `stasis bundle`.
+const unpinned = (text) => {
+  const bundle = Bundle.parse(text)
+  for (const [dir, { repo, ...info }] of bundle.modules) {
+    if (repo?.commit === undefined) continue
+    const { commit: _, ...rest } = repo
+    bundle.modules.set(dir, { ...info, repo: rest })
+  }
+  return bundle.serialize()
+}
+
 // The package managers side by side, each over its own installed copy, which its tests share and so
 // take one at a time; the tarball cache they share is written write-then-rename.
 describe('buildVfsBundle with each package manager', { concurrency: true }, () => {
@@ -208,11 +220,22 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         const vfs = projectVfs(packageManager)
         const built = await build(vfs, { scope: 'full' })
         t.assert.ok(built.bundle instanceof Bundle)
-        t.assert.equal(built.bundle.serialize(), oracles[packageManager].bundle)
+        t.assert.equal(unpinned(built.bundle.serialize()), oracles[packageManager].bundle)
         t.assert.ok(built.lockfile instanceof Lockfile)
         t.assert.equal(built.lockfile.serialize(), oracles[packageManager].lockfile)
         t.assert.deepStrictEqual(pick(built.stats, m.stats), m.stats)
         t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
+      })
+
+      test('records each dependency at the commit its version document names, in the repository its package.json does', async (t) => {
+        const { bundle } = await build(projectVfs(packageManager), { scope: 'full' })
+        const { installed } = await loadNodeModules({ vfs: projectVfs(packageManager), packageManager })
+        const named = new Map(installed.filter((pkg) => pkg.commit !== undefined).map((pkg) => [pkg.path, pkg.commit]))
+        const pinned = [...bundle.modules].filter(([, { repo }]) => repo?.commit !== undefined)
+        t.assert.ok(pinned.length > 0, 'the registry names the commit of some')
+        for (const [dir, { repo }] of bundle.modules) {
+          t.assert.equal(repo?.commit, repo?.github === undefined ? undefined : named.get(dir), dir)
+        }
       })
 
       test('packageJSON, mainFields, metro and node_modules scope match the real install too', async (t) => {
@@ -231,7 +254,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         }))
         const builts = await Promise.all(variants.map(([, options]) => build(projectVfs(packageManager), options)))
         for (const [i, [flags]] of variants.entries()) {
-          t.assert.equal(builts[i].bundle.serialize(), reals[i].bundle, `bundle for ${flags.join(' ')}`)
+          t.assert.equal(unpinned(builts[i].bundle.serialize()), reals[i].bundle, `bundle for ${flags.join(' ')}`)
           t.assert.equal(builts[i].lockfile.serialize(), reals[i].lockfile, `lockfile for ${flags.join(' ')}`)
         }
       })
@@ -257,7 +280,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         const vfs = projectVfs(packageManager)
         m.tamper(vfs)
         const text = (await build(vfs, { scope: 'full' })).bundle.serialize()
-        t.assert.equal(text, oracles[packageManager].bundle)
+        t.assert.equal(unpinned(text), oracles[packageManager].bundle)
         t.assert.doesNotMatch(text, /TAMPERED/u)
       })
 
@@ -304,7 +327,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         const r = await run(['--input-type=module', '-e', script], { cwd: tmp, node: true })
         t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
         const { bundle, lockfile, read } = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-        t.assert.equal(bundle, oracles[packageManager].bundle)
+        t.assert.equal(unpinned(bundle), oracles[packageManager].bundle)
         t.assert.equal(lockfile, oracles[packageManager].lockfile)
         t.assert.ok(read.length >= 86, 'the tarballs are read from the cache')
         t.assert.deepStrictEqual(read.filter((p) => !p.startsWith(`${cacheRoot}/`)), [], 'nothing else on disk is read')
@@ -337,7 +360,7 @@ describe('buildVfsBundle with pnpm, its cache and its lockfile', { concurrency: 
     const stamped = await mtimes()
     const warm = await build(projectVfs('pnpm'))
     t.assert.equal(warm.stats.tarballs, 86)
-    t.assert.equal(warm.bundle.serialize(), oracles.pnpm.bundle)
+    t.assert.equal(unpinned(warm.bundle.serialize()), oracles.pnpm.bundle)
     t.assert.deepStrictEqual(await mtimes(), stamped, 'every tarball was served from the cache')
     // Corrupt one cached tarball: the build stops there, fetches nothing over it, and leaves the
     // file for inspection.
@@ -360,7 +383,7 @@ describe('buildVfsBundle with pnpm, its cache and its lockfile', { concurrency: 
     })
     t.assert.equal((withUrls.match(/tarball: https:\/\//gu) ?? []).length, 86, 'every package got a URL')
     const workspace = { 'pnpm-workspace.yaml': 'lockfileIncludeTarballUrl: true\n' }
-    t.assert.equal((await build(projectVfs('pnpm', { ...workspace, 'pnpm-lock.yaml': withUrls }))).bundle.serialize(), oracles.pnpm.bundle)
+    t.assert.equal(unpinned((await build(projectVfs('pnpm', { ...workspace, 'pnpm-lock.yaml': withUrls }))).bundle.serialize()), oracles.pnpm.bundle)
     // One URL off the registry, or naming another version's tarball: the build fails before
     // anything is fetched.
     await Promise.all([

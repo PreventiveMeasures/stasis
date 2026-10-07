@@ -8,7 +8,7 @@ import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle } from '../cmd/bundle.js'
 import { KINDS, checkAhead } from './entries.js'
-import { checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { checkCache, checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
@@ -172,8 +172,11 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 // one is outside the others; `repo` names that directory and the commit. Nothing is read from disk:
 // the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree id
 // either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
+// `cache` is buildVfsBundle's, for the npm packages the tree installs: the repo's tree is cached
+// where setCacheDir says, whatever it is.
 export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
+  checkCache('buildGitHubBundle', options.cache)
   // Its own, for a Soldeer git dependency too.
   client ??= createClient({ token: null })
   const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)

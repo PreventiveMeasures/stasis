@@ -1,7 +1,8 @@
 import { constants } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path'
 
-import { NO_ENTRY, packageJSONStat, packageJSONText, readJson } from '@exodus/stasis-core/bundle-util'
+import { isValidRepoField } from '@exodus/stasis-core/bundle'
+import { NO_ENTRY, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
@@ -114,6 +115,14 @@ export function checkTarget(name, { os, cpu, libc }) {
   if (libc !== undefined && !LIBCS.has(libc)) throw new TypeError(`${name}: libc must be one of 'glibc', 'musl', 'unknown'`)
 }
 
+// `cache`, where npm packages' tarballs and version documents are kept, as @preventive/upstream's
+// CacheOptions take it: left out, in setCacheDir's cache; a store with `read` and `write`, in place
+// of it; or false, nowhere. Checked as deptree checks it, before anything is fetched.
+export function checkCache(name, cache) {
+  if (cache === undefined || cache === false || (typeof cache?.read === 'function' && typeof cache?.write === 'function')) return
+  throw new TypeError(`${name}: cache must be false, or a store with read and write, or left out`)
+}
+
 // yarn installs a workspace from the root that declares it, whatever yarn.lock is nearer, and any
 // other package from the nearest yarn.lock.
 function yarn1Root(host, cwd) {
@@ -191,7 +200,7 @@ const PACKAGE_MANAGERS = {
     alone: async (names, above) => !(await above()).some((dir) => dir.includes('pnpm-workspace.yaml')),
     projects: (view, pnpm) => findPnpmProjects({ project: view, host: { pnpm } }),
     installs: 'node_modules',
-    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) } }),
+    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) }, cache: given?.cache }),
   },
   yarn1: {
     kind: 'js',
@@ -205,7 +214,7 @@ const PACKAGE_MANAGERS = {
     installs: 'node_modules',
     build: (view, yarn, file, given) => {
       const { libc: _, ...host } = target({ ...given, libc: 'unknown' }) // yarn 1 matches no libc
-      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host } }))
+      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host }, cache: given?.cache }))
     },
   },
   npm: {
@@ -218,7 +227,7 @@ const PACKAGE_MANAGERS = {
     alone: async (names, above) => !(await above()).some((dir) => dir.includes('package.json')),
     projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
     installs: 'node_modules',
-    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given) })),
+    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given?.cache })),
   },
   soldeer: {
     kind: 'sol',
@@ -343,15 +352,17 @@ export function checkVfs(name, vfs) {
   }
 }
 
-// -> { root, vfs, projects, stats, packageManager, packageManagerVersion }, of the project `project`
-// holds that `cwd` is in, as `packageManager` installs it: the directory it installs from, as a real
-// path; a new Vfs holding the tree, rooted there; the directories of the projects it finds, from
-// there; deptree's counts; and the version reproduced, `packageManagerVersion` if given, else the one
-// the root package.json's packageManager pins, else the default. deptree reads the project through a
-// view of `project`, which nothing is written through. `client`, a @preventive/upstream/github.js
-// client, is what a Soldeer git dependency is fetched through (deptree's `github`); without one, a
-// lockfile holding one is refused before anything is fetched.
-async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client }) {
+// -> { root, vfs, projects, stats, installed, packageManager, packageManagerVersion }, of the project
+// `project` holds that `cwd` is in, as `packageManager` installs it: the directory it installs from,
+// as a real path; a new Vfs holding the tree, rooted there; the directories of the projects it finds,
+// from there; deptree's counts, and what it installs, each by its `path` from there; and the version
+// reproduced, `packageManagerVersion` if given, else the one the root package.json's packageManager
+// pins, else the default. deptree reads the project through a view of `project`, which nothing is
+// written through. `client`, a @preventive/upstream/github.js client, is what a Soldeer git
+// dependency is fetched through (deptree's `github`); without one, a lockfile holding one is refused
+// before anything is fetched. `cache` (checkCache) is where npm packages' tarballs and version
+// documents are kept, which deptree fetches for pnpm, yarn1 and npm.
+async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
@@ -364,14 +375,37 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
-  const { vfs, stats } = await pm.build(view, version, file, { os, cpu, libc, client })
+  const { vfs, stats, installed } = await pm.build(view, version, file, { os, cpu, libc, client, cache })
   return {
     root: project.realpath(found),
     vfs,
     projects,
     stats,
+    installed,
     packageManager,
     packageManagerVersion: version ?? (String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined),
+  }
+}
+
+// The root of the GitHub repository a git URL names, or undefined for another host's.
+const githubRoot = (url) => {
+  const github = parseGithubRepository(url)
+  return github === null ? undefined : { github, directory: '' }
+}
+
+// Each dependency of `bundle`, its paths from `root`, at the commit the tree (layOutTree's) installs
+// it from, where deptree names a full one: an npm package at its gitHead, which the registry's
+// version document names, a commit of the repository its own package.json names, so taken only
+// where the bundle records that one; a Soldeer git dependency at its lockfile's `rev`, the root of
+// the repository it is fetched from, where that is a GitHub one. Metadata, as `repo` is: the
+// publisher's word, held to no repository.
+export function pinCommits(bundle, root, { root: from, installed }) {
+  const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
+  for (const [dir, info] of bundle.modules) {
+    const pkg = byDir.get(dir)
+    if (!isValidRepoField('commit', pkg?.commit)) continue
+    const repo = info.repo ?? githubRoot(pkg.git)
+    if (repo !== undefined) bundle.modules.set(dir, { ...info, repo: { ...repo, commit: pkg.commit } })
   }
 }
 
