@@ -744,7 +744,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     // plugin's build sees no CommonJS use, inlines the file, and `arguments` is the output's own.
     await bundleProject(t, tmp, {
       'package.json': '{ "name": "mini", "version": "1.0.0", "type": "commonjs" }',
-      'src/args.js': 'console.log(arguments.length)\n',
+      'src/args.js': 'console.log(String(arguments.length))\n',
       'src/index.mjs': "import './args.js'\n",
     }, 'src/index.mjs')
     writeFileSync(join(tmp, 'plain.cjs'), await plainEsbuild(tmp, 'src/index.mjs', 'plain.cjs', 'cjs'))
