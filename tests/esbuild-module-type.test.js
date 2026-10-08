@@ -49,14 +49,25 @@ test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level
   t.assert.equal(analyze('if (x) return\nconsole.log(1)').cjsUsage, 'yes')
   // Not CommonJS: `this` inside a function or class, `module` as a property name.
   t.assert.equal(analyze('function f() { return this }\nclass A { m() { return this } }\nconst o = { module: 1 }\no.exports = 2').cjsUsage, 'no')
-  // A local `exports` may shadow the global: undecided.
-  t.assert.equal(analyze('const exports = {}\nexports.a = 1').cjsUsage, 'maybe')
+  // A module-scope import/let/const/function/class binds every reference to the name; esbuild merges a
+  // module-scope `var` with the CommonJS binding instead.
+  t.assert.equal(analyze("import module from 'pkg'\nmodule.run()").cjsUsage, 'no')
+  t.assert.equal(analyze('const exports = {}\nexports.a = 1').cjsUsage, 'no')
+  t.assert.equal(analyze('function module() {}\nmodule()').cjsUsage, 'no')
+  t.assert.equal(analyze('var exports = {}\nexports.a = 1').cjsUsage, 'yes')
+  t.assert.equal(analyze('declare const module: any\nmodule.exports = 1', { path: 'f.ts', loader: 'ts' }).cjsUsage, 'yes')
+  // A nested declaration binds only some references: undecided.
+  t.assert.equal(analyze('function f(exports) { exports.a = 1 }\nexports.b = 2').cjsUsage, 'maybe')
 })
 
 test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a block-level function', (t) => {
   t.assert.match(analyze('with (o) { x }').strictOnly, /with/)
   t.assert.equal(analyze('{ function f() {} }').blockFunction, true)
   t.assert.equal(analyze('function f() { function g() {} }\nconst h = () => { function i() {} }').blockFunction, false)
+  // Strict anyway, whatever the package type: a directive, a strict function, a class.
+  t.assert.equal(analyze("'use strict'\nif (x) { function f() {} }").blockFunction, false)
+  t.assert.equal(analyze("function g() { 'use strict'; { function f() {} } }").blockFunction, false)
+  t.assert.equal(analyze('class A { m() { { function f() {} } } }').blockFunction, false)
 })
 
 test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
@@ -64,6 +75,12 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: true })').setsEsModule, true)
   t.assert.equal(analyze('var d=Object.defineProperty;d(e,"__esModule",{value:!0})').setsEsModule, true)
   t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
+  t.assert.equal(analyze('const out = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: true } })').setsEsModule, true)
+  // A literal that never becomes the exports, or only ends up nested in them, doesn't mark them.
+  t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
+  t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
+  t.assert.equal(analyze('const base = { __esModule: true }\nmodule.exports = { ...base, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })
@@ -80,4 +97,6 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   // A require that runs later, inside a function, doesn't produce the exported value.
   t.assert.deepStrictEqual(reexports("module.exports = function () { return require('./later') }"), [])
   t.assert.deepStrictEqual(reexports("module.exports.helper = require('./helper')"), [])
+  // Nested in the exports isn't the exports; spread into them is.
+  t.assert.deepStrictEqual(reexports("module.exports = { a: require('./a'), ...require('./b') }"), ['./b'])
 })
