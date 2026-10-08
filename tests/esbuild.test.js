@@ -1438,6 +1438,16 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
   }))
 
+  test('capture does not follow a re-export to a file the browser map disables: the build serves the empty module', withTmp(async (t, tmp) => {
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ ...JSON.parse(TYPE_MODULE), browser: { './src/babelish.cjs': false } }))
+    writeFileSync(join(tmp, 'src', 'babelish.cjs'), BABELISH)
+    writeFileSync(join(tmp, 'src', 'reexport.cjs'), "module.exports = require('./babelish.cjs')\n")
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './reexport.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const capture = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(join(tmp, 'snapshot.br'), join(tmp, 'out'), { ...BROWSER, EXODUS_STASIS_LOCK: 'none' }) })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+  }))
+
   test('load refuses a bundle whose "type": "module" importer default-imports a CommonJS module marked __esModule', withTmp(async (t, tmp) => {
     // As `stasis bundle` records it: Node's formats, the importer 'module'.
     const bundle = {

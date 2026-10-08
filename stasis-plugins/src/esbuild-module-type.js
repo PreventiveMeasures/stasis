@@ -278,17 +278,26 @@ function mayNameEsModule(key, out) {
 }
 
 // What an instance of `callee` (`new Box()`) gets from its class and superclasses: instance fields and
-// prototype methods. A class reached by name is the caller's to follow (out.instances); one a require()
-// returns is another module's.
+// prototype members, and what a constructor returns, which replaces the instance (returned, for the caller to
+// scan as values). A class reached by name is the caller's to follow (out.instances); one a require() returns
+// is another module's.
 function scanInstance(callee, out) {
+  const returned = []
   for (let cls = callee; cls; cls = cls.superClass) {
     if (cls.type === 'Identifier') {
       out.instances.add(cls.name)
-      return
+      break
     }
-    if (cls.type !== 'ClassExpression' && cls.type !== 'ClassDeclaration') return
+    if (FUNCTIONS.has(cls.type)) {
+      returned.push(...returnedValues(cls))
+      break
+    }
+    if (cls.type !== 'ClassExpression' && cls.type !== 'ClassDeclaration') break
     scanMembers(cls, false, out)
+    const constructor = cls.body.body.find((member) => member.type === 'MethodDefinition' && member.kind === 'constructor')
+    if (constructor) returned.push(...returnedValues(constructor.value))
   }
+  return returned
 }
 
 // What can become the value an expression assigns to module.exports (or copies into it): the expression
@@ -335,7 +344,7 @@ function scanValue(node, out) {
         stack.push(...elementsOf(current.object, out))
         break
       case 'NewExpression':
-        scanInstance(current.callee, out)
+        stack.push(...scanInstance(current.callee, out))
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
       case 'ObjectExpression':
@@ -690,7 +699,9 @@ export function analyzeModule(source, { path, loader }) {
     const assigned = assignments.get(name) ?? []
     const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: exported.keys, symbols: false, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
-    else if (kind === 'instance') for (const origin of [...inits, ...assigned]) scanInstance(origin, found)
+    else if (kind === 'instance') {
+      for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found)) scanValue(value, found)
+    }
     else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found)) scanValue(value, found)
     else {
       const fns = [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))]
