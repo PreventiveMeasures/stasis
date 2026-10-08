@@ -93,27 +93,28 @@ function isNonReference(parent, key) {
   }
 }
 
-function isBinding(parent, key, grandparent) {
-  switch (parent.type) {
+// Whether a child sits in a binding position: a declaration's name or binding pattern, not an
+// assignment target (`[module] = values` assigns the existing name). `binding` is the parent's own state.
+const PATTERNS = new Set(['ObjectPattern', 'ArrayPattern', 'RestElement', 'TSParameterProperty'])
+function bindsChild(node, childKey, binding) {
+  switch (node.type) {
     case 'VariableDeclarator':
-      return key === 'id'
+      return childKey === 'id'
     case 'FunctionDeclaration':
     case 'FunctionExpression':
     case 'ArrowFunctionExpression':
-      return key === 'id' || key === 'params'
+      return childKey === 'params' || childKey === 'id'
     case 'ClassDeclaration':
     case 'ClassExpression':
+      return childKey === 'id'
     case 'CatchClause':
-      return key === 'id' || key === 'param'
+      return childKey === 'param'
     case 'AssignmentPattern':
-      return key === 'left'
-    case 'RestElement':
-    case 'ArrayPattern':
-      return true
+      return binding && childKey === 'left'
     case 'Property':
-      return key === 'value' && grandparent?.type === 'ObjectPattern'
+      return binding && childKey === 'value'
     default:
-      return false
+      return binding && PATTERNS.has(node.type)
   }
 }
 
@@ -306,6 +307,7 @@ export function analyzeModule(source, { path, loader }) {
   const functionDecls = new Map()  // name -> [FunctionDeclaration]
   // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
   const copies = new Map()  // name -> [argument]
+  const assignments = new Map()  // name -> [assigned value]: `out = value` (destructuring: the whole right side)
   // A fresh local object (every binding of the name an object-literal declarator, never reassigned): an
   // `__esModule` mark on one only reaches the exports if the object does.
   const bindingCounts = new Map()
@@ -320,12 +322,13 @@ export function analyzeModule(source, { path, loader }) {
   const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), marked: false }
 
   // Iterative: minified code nests deeper than the call stack allows. fnDepth counts every function
-  // (return/await scope), thisDepth only those with their own `this` (non-arrow functions, class bodies);
-  // strict is whether the code around the node is strict-mode (a directive, a class); scope and fnScope
-  // are the innermost scope and the one a `var` lands in.
-  const stack = [[parsed.program, null, null, null, 0, 0, hasUseStrict(parsed.program.body), root, root]]
+  // (return/await scope), thisDepth only what has its own `this` (non-arrow functions, class field values,
+  // static blocks); strict is whether the code around the node is strict-mode (a directive, a class); scope
+  // and fnScope are the innermost scope and the one a `var` lands in; binding is whether the node sits in a
+  // binding position.
+  const stack = [[parsed.program, null, null, null, 0, 0, hasUseStrict(parsed.program.body), root, root, false]]
   while (stack.length > 0) {
-    const [node, parent, key, grandparent, fnDepth, thisDepth, strict, scope, fnScope] = stack.pop()
+    const [node, parent, key, grandparent, fnDepth, thisDepth, strict, scope, fnScope, binding] = stack.pop()
     if (TYPE_ONLY.has(node.type) || node.declare) continue
     let childScope = scope
     let childFnScope = fnScope
@@ -413,7 +416,10 @@ export function analyzeModule(source, { path, loader }) {
       case 'AssignmentExpression':
         if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right)) &&
           (node.left.computed ? stringValue(node.left.property) : node.left.property.name) === '__esModule') markReceiver(node.left.object)
-        for (const name of patternNames(node.left)) reassigned.add(name)
+        for (const name of patternNames(node.left)) {
+          reassigned.add(name)
+          assignments.set(name, [...(assignments.get(name) ?? []), node.right])
+        }
         if (isExportsTarget(node.left)) scanValue(node.right, exported)
         break
       case 'VariableDeclarator':
@@ -459,7 +465,7 @@ export function analyzeModule(source, { path, loader }) {
         break
       case 'Identifier':
         if (parent && !isNonReference(parent, key)) {
-          if (isBinding(parent, key, grandparent)) count(bindingCounts, node.name)
+          if (binding) count(bindingCounts, node.name)
           else if (tracked(node.name)) references.push([node.name, scope])
         }
         break
@@ -473,14 +479,17 @@ export function analyzeModule(source, { path, loader }) {
       for (const param of node.params) for (const name of patternNames(param)) declare(childScope, name, 'param')
       bodyScope = { names: new Set(), parent: childScope }
     }
-    const ownsThis = node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ClassBody'
+    // Non-arrow functions have their own `this`; in a class, field initializers and static blocks do too, but a
+    // computed key and `extends` see the outer one.
+    const ownsThis = (childKey) => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' ||
+      node.type === 'StaticBlock' || ((node.type === 'PropertyDefinition' || node.type === 'AccessorProperty') && childKey === 'value')
     const childFnDepth = FUNCTIONS.has(node.type) ? fnDepth + 1 : fnDepth
-    const childThisDepth = ownsThis ? thisDepth + 1 : thisDepth
     const childStrict = strict || node.type === 'ClassDeclaration' || node.type === 'ClassExpression' ||
       (FUNCTIONS.has(node.type) && node.body?.type === 'BlockStatement' && hasUseStrict(node.body.body))
     for (const [child, childKey] of children(node)) {
       const [inScope, inFnScope] = bodyScope && childKey === 'body' ? [bodyScope, bodyScope] : [childScope, childFnScope]
-      stack.push([child, node, childKey, parent, childFnDepth, childThisDepth, childStrict, inScope, inFnScope])
+      const childThisDepth = ownsThis(childKey) ? thisDepth + 1 : thisDepth
+      stack.push([child, node, childKey, parent, childFnDepth, childThisDepth, childStrict, inScope, inFnScope, bindsChild(node, childKey, binding)])
     }
   }
 
@@ -499,8 +508,8 @@ export function analyzeModule(source, { path, loader }) {
     facts.cjsDetail = `\`${free}\``
   }
 
-  // Follow what becomes module.exports through declarations (`const lib = require('./lib'); module.exports =
-  // lib`) and the returns of local functions it calls (`module.exports = load()`), transitively.
+  // Follow what becomes module.exports through declarations and assignments (`const lib = require('./lib');
+  // module.exports = lib`) and the returns of local functions it calls (`module.exports = load()`), transitively.
   const values = new Set()
   const calls = new Set()
   const pending = [...[...exported.identifiers].map((name) => ['value', name]), ...[...exported.callees].map((name) => ['call', name])]
@@ -510,8 +519,9 @@ export function analyzeModule(source, { path, loader }) {
     if (done.has(name)) continue
     done.add(name)
     const inits = declarators.get(name) ?? []
-    const sources = kind === 'value' ? [...inits, ...(copies.get(name) ?? [])]
-      : [...(functionDecls.get(name) ?? []), ...inits.filter((init) => FUNCTIONS.has(init.type))].flatMap((fn) => returnedValues(fn))
+    const assigned = assignments.get(name) ?? []
+    const sources = kind === 'value' ? [...inits, ...assigned, ...(copies.get(name) ?? [])]
+      : [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))].flatMap((fn) => returnedValues(fn))
     for (const origin of sources) {
       const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), marked: false }
       scanValue(origin, found)
