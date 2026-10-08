@@ -21,6 +21,7 @@
 import { resolve, join } from 'node:path'
 import { rm, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import * as esbuild from 'esbuild'
 
 import { State } from '@exodus/stasis-core/state'
@@ -71,6 +72,14 @@ const platform = process.env.STASIS_TEST_ESBUILD_PLATFORM ?? 'node'
 // STASIS_TEST_ESBUILD_PLAIN=1 -- build without the plugin: the plain-esbuild baseline a
 // capture build's output must match byte-for-byte. Combine with STASIS_TEST_PRELOAD=0.
 const plain = process.env.STASIS_TEST_ESBUILD_PLAIN === '1'
+// STASIS_TEST_ESBUILD_PLUGINS_BEFORE / _AFTER (JSON arrays) -- modules, relative to the
+// cwd, whose default export is an esbuild plugin to run before / after StasisEsbuild
+// (or alone, when plain).
+const loadPlugins = async (raw) => (raw
+  ? Promise.all(JSON.parse(raw).map(async (m) => (await import(pathToFileURL(resolve(m)).href)).default))
+  : [])
+const pluginsBefore = await loadPlugins(process.env.STASIS_TEST_ESBUILD_PLUGINS_BEFORE)
+const pluginsAfter = await loadPlugins(process.env.STASIS_TEST_ESBUILD_PLUGINS_AFTER)
 try {
   await esbuild.build({
     entryPoints: entries.map((e) => resolve(process.cwd(), e)),
@@ -82,7 +91,7 @@ try {
     logLevel: 'silent',
     ...(loader ? { loader } : {}),
     ...(external ? { external } : {}),
-    plugins: plain ? [] : [new StasisEsbuild(pluginOptions)],
+    plugins: plain ? [...pluginsBefore, ...pluginsAfter] : [...pluginsBefore, new StasisEsbuild(pluginOptions), ...pluginsAfter],
   })
 } finally {
   if (!writeOutput) await rm(dist, { recursive: true, force: true })
