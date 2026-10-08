@@ -681,6 +681,40 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.match(rBare.stderr, /refusing to build 'src\/index\.js' \(the bundle records its Node format, 'module', but not its package\.json "type"/)
   }))
 
+  test('build refuses a "type": "module" default import of a text resource it parses as JavaScript, marked __esModule', withTmp(async (t, tmp) => {
+    // `stasis build` serves a resource's bytes with no loader, so esbuild parses them as js, as a plain build with
+    // loader { '.data': 'js' } does -- whose "type": "module" importer gets Node's interop, the plugin's the bundler's.
+    const proj = join(tmp, 'proj')
+    const files = {
+      'package.json': TYPE_MODULE,
+      'src/marked.data': BABELISH,
+      'src/plain.data': "module.exports = { value: 'plain' }\n",
+      'src/marked.js': "import x from './marked.data'\nconsole.log(JSON.stringify(x))\n",
+      'src/plain.js': "import x from './plain.data'\nconsole.log(JSON.stringify(x))\n",
+    }
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(proj, name)), { recursive: true })
+      writeFileSync(join(proj, name), content)
+    }
+    // Captured as text, which builds the same either way.
+    const capture = (entry, bundleFile) => spawnSync(process.execPath, [join(here, 'esbuild-run.helper.js'), entry], {
+      cwd: proj, encoding: 'utf8', env: {
+        ...cleanEnv, STASIS_TEST_ESBUILD_LOADER: '{ ".data": "text" }',
+        STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ lock: 'none', bundle: 'replace', bundleFile: join(proj, bundleFile), resources: ['data'] }),
+      },
+    })
+    for (const [entry, bundleFile] of [['src/marked.js', 'marked.br'], ['src/plain.js', 'plain.br']]) {
+      const r = capture(entry, bundleFile)
+      t.assert.equal(r.status, 0, r.stderr)
+    }
+    const marked = await runCli(['build', '--output=marked.mjs', 'marked.br'], { cwd: proj })
+    t.assert.notEqual(marked.status, 0)
+    t.assert.match(marked.stderr, /refusing to build 'src\/marked\.js': it imports the default export or namespace of '\.\/marked\.data'/)
+    const plain = await runCli(['build', '--output=plain.mjs', 'plain.br'], { cwd: proj })
+    t.assert.equal(plain.status, 0, plain.stderr)
+    t.assert.equal(runNode(t, join(proj, 'plain.mjs')).trim(), '{"value":"plain"}')
+  }))
+
   test('build of a .mjs importer matches a plain esbuild build byte-for-byte (esbuild types it by extension)', withTmp(async (t, tmp) => {
     await bundleProject(t, tmp, {
       'package.json': TYPE_MODULE,
