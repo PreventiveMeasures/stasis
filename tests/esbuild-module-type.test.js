@@ -31,14 +31,22 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
     "export * as star from './star.cjs'",
     "export * from './all.cjs'",
     "export { b } from './b.cjs'",
+    'console.log(d, ns, dd, a)',
   ].join('\n'))
   const interop = { bindings: true, interop: true }
   const named = { bindings: true, interop: false }
+  const side = { bindings: false, interop: false }
   t.assert.deepStrictEqual(Object.fromEntries(imports), {
     './d.cjs': interop, './ns.cjs': interop, './dd.cjs': interop, './re.cjs': interop, './star.cjs': interop,
-    './a.cjs': named, './all.cjs': named, './b.cjs': named,
-    './side.js': { bindings: false, interop: false },
+    './a.cjs': named, './all.cjs': named, './b.cjs': named, './side.js': side,
   })
+  // A binding the code never reads is dropped by tree shaking: only the import's evaluation stays. JSX, an
+  // `export { local }` and a direct eval read it.
+  const used = (code, loader = 'js') => Object.fromEntries(analyze(code, { path: `f.${loader}`, loader }).imports)
+  t.assert.deepStrictEqual(used("import unused from './u.cjs'\nconst unrelated = 1"), { './u.cjs': side })
+  t.assert.deepStrictEqual(used("import Comp from './c.cjs'\nexport const el = <Comp />", 'jsx'), { './c.cjs': interop })
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport { x }"), { './x.cjs': interop })
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\neval('x')"), { './x.cjs': interop })
 })
 
 test('analyzeModule: whether a require or import() uses its result', (t) => {
@@ -189,6 +197,9 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const B = class { __esModule = true }\nconst A = B\nmodule.exports = new A()').setsEsModule, true)
   t.assert.equal(analyze('module.exports = new (class { static __esModule = true; default = 1 })()').setsEsModule, false)
   t.assert.equal(analyze('class Box { default = 1 }\nmodule.exports = new Box()').setsEsModule, false)
+  // A Proxy can answer `__esModule` from its trap; a local named Proxy is just a class.
+  t.assert.equal(analyze("module.exports = new Proxy({ default: 1 }, { get: (t, k) => k === '__esModule' || t[k] })").setsEsModule, true)
+  t.assert.equal(analyze('class Proxy { default = 1 }\nmodule.exports = new Proxy()').setsEsModule, false)
   // What a constructor returns replaces the instance.
   t.assert.equal(analyze('class Box { constructor() { return { __esModule: true, default: 1 } } }\nmodule.exports = new Box()').setsEsModule, true)
   t.assert.equal(analyze('function Box() { return { __esModule: true, default: 1 } }\nmodule.exports = new Box()').setsEsModule, true)
