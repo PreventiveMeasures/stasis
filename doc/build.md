@@ -242,6 +242,12 @@ string constant that could become a key. Reads, comparisons and falsy values don
 key only the runtime knows, such as a computed key or a `Proxy` trap, counts where it reaches
 the exports.
 
+One case isn't caught: exports taken from part of another module's exports rather than all
+of them. That covers a property (`module.exports = require('./inner').child`), a destructured
+binding, or what another module's function returns. Telling these apart from the common
+Babel shim `module.exports = require('./lib').default`, which builds the same either way,
+would need analysis across modules that the check doesn't do.
+
 Everything else builds as before and behaves as a plain esbuild build does — named
 imports, CommonJS modules that don't carry `__esModule`, files of packages without a
 `type`. The checks parse each served file with [`oxc-parser`](https://www.npmjs.com/package/oxc-parser),

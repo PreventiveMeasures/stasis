@@ -178,14 +178,21 @@ test('analyzeModule: a constant __esModule key marks wherever it may be defined,
   // variable's name aren't definitions -- nor is a part of another string.
   t.assert.equal(marks('module.exports = (m) => m && m.__esModule ? m.default : m'), false)
   t.assert.equal(marks("module.exports = (m) => m['__esModule'] || typeof m.__esModule === 'boolean' || m.__esModule()"), false)
-  t.assert.equal(marks('Object.prototype.hasOwnProperty.call(m, "__esModule")'), false)
-  t.assert.equal(marks("Reflect.has(m, '__esModule') || Object.getOwnPropertyDescriptor(m, '__esModule') || keys.includes('__esModule')"), false)
+  t.assert.equal(marks('Object.prototype.hasOwnProperty.call(m, "__esModule") || ({}).hasOwnProperty.call(m, "__esModule")'), false)
+  t.assert.equal(marks("Reflect.has(m, '__esModule') || Object.getOwnPropertyDescriptor(m, '__esModule') || Object.hasOwn(m, '__esModule')"), false)
   t.assert.equal(marks("for (const k in m) if (k === '__esModule' || '__esModule' in m) continue"), false)
   t.assert.equal(marks("switch (k) { case '__esModule': break }"), false)
   t.assert.equal(marks('const { __esModule, ...rest } = m\nmodule.exports = rest'), false)
   t.assert.equal(marks('delete exports.__esModule'), false)
   t.assert.equal(marks('var __esModule = 1\nmodule.exports = { [__esModule]: 1 }'), false)
   t.assert.equal(marks("exports['__esModule' + suffix] = true"), false)
+  // Only a read builtin is exempt: a function or a method named like one may write the key, and so may a local
+  // `Object`/`Reflect` or a reassigned one.
+  t.assert.equal(marks("function get(o, k) { o[k] = true }\nget(exports, '__esModule')\nexports.default = 1"), true)
+  t.assert.equal(marks("store.has(exports, '__esModule') || m.hasOwnProperty('__esModule')"), true)
+  t.assert.equal(marks("const Reflect = { has(o, k) { o[k] = true } }\nReflect.has(exports, '__esModule')"), true)
+  t.assert.equal(marks("function f(Object) { return Object.prototype.hasOwnProperty.call(exports, '__esModule') }"), true)
+  t.assert.equal(marks("Object = { hasOwn(o, k) { o[k] = true } }\nObject.hasOwn(exports, '__esModule')"), true)
 })
 
 test('analyzeModule: a key only the runtime knows marks where it reaches the exports -- a computed key, a Proxy, a runtime require', (t) => {
