@@ -1526,4 +1526,23 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const ran = await runNode([join(tmp, 'out-capture', 'text.js')], { cwd: tmp })
     t.assert.equal(ran.stdout, '{"a":"export default \'a\'\\n","aText":"export default \'a\'\\n"}\n')
   }))
+
+  // Both: the tagged `@text/a` module of src/a.js (whose tag wins, its import coming first) and a
+  // plugin after StasisEsbuild resolving `@app/a` to src/a.js with its own pluginData. The load carries
+  // the tag, which matches no resolution capture recorded for src/a.js; it can't tell that from the
+  // later plugin answering differently twice, so it refuses rather than serve the JS file.
+  test('a load whose pluginData matches no recorded resolution of its file is refused', withTmp(async (t, tmp) => {
+    const capDir = join(tmp, 'cap')
+    cpSync(rawSuffixFixture, capDir, { recursive: true })
+    const plugins = {
+      STASIS_TEST_ESBUILD_PLUGINS_BEFORE: JSON.stringify(['text-resolve-plugin.js']),
+      STASIS_TEST_ESBUILD_PLUGINS_AFTER: JSON.stringify(['alias-data-plugin.js', 'raw-load-plugin.js']),
+    }
+    const plain = await plainBuild(capDir, join(tmp, 'out-plain'), plugins, 'src/two-tags.js')
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+
+    const capture = await run(['src/two-tags.js'], { cwd: capDir, env: captureEnv(join(capDir, 'snapshot.br'), join(tmp, 'out-capture'), plugins) })
+    t.assert.notEqual(capture.status, 0, 'capture must fail closed')
+    t.assert.match(capture.stderr, /a\.js' loads with pluginData no resolution capture recorded for it/)
+  }))
 })

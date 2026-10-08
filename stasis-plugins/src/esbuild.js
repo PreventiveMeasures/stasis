@@ -1,6 +1,7 @@
 import { isUtf8 } from 'node:buffer'
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
@@ -78,7 +79,7 @@ export class StasisEsbuild {
   // Capture declines its resolutions, so no pluginData reaches onLoad; it finds these by path.
   #targets = new Map()  // path -> 'code' | 'resource', for every file an import or entry resolved to
   #entries = new Set()  // paths of the entry points
-  #dataTargets = new Set()  // paths of the targets a plugin after this one resolved with pluginData
+  #dataTargets = new Map()  // path -> [pluginData] a plugin after this one resolved that target with
 
   // Build starts observed by this instance (across rebuilds and separate build()/context() calls);
   // the second is refused in onStart.
@@ -315,7 +316,7 @@ export class StasisEsbuild {
       if (kind !== 'skip') {
         this.#targets.set(res.path, kind)
         if (isEntry) this.#entries.add(res.path)
-        if (res.pluginData !== undefined) this.#dataTargets.add(res.path)
+        if (res.pluginData !== undefined) this.#dataTargets.set(res.path, [...this.#dataTargets.get(res.path) ?? [], res.pluginData])
       }
       return undefined
     }
@@ -348,19 +349,34 @@ export class StasisEsbuild {
       // What onResolve found for this path: by path at capture, as pluginData at load. Any other module
       // -- one a plugin before this one resolved -- is left to esbuild and that plugin. A path match
       // alone could claim such a module of a recorded file, so at capture: an import capture declined
-      // never loads with a suffix (it refuses one), and with pluginData only if a plugin after this one
-      // set it when resolving it; otherwise the module is another plugin's (say a `?raw` one, or one
-      // tagged for a later loader). A module capture claims it serves itself, as it attested it: a
-      // loader in a plugin after this one never sees it, whatever pluginData its resolver set.
+      // never loads with a suffix (it refuses one), and with pluginData only as a plugin after this one
+      // set it when resolving it -- equal to what capture's build.resolve() got, that plugin answering
+      // the same way twice. pluginData for a file capture recorded without any is another plugin's (say
+      // a `?raw` module, or one tagged for a later loader); pluginData for one recorded only with other
+      // data could be either that or the later plugin answering differently, so it's refused. A module
+      // capture claims it serves itself, as it attested it: a loader in a plugin after this one never
+      // sees it, whatever pluginData its resolver set.
       const { loadBundle } = this.#state.config
       if (!loadBundle && suffix !== '') return undefined
-      const recorded = () => (pluginData === undefined || this.#dataTargets.has(path) ? this.#targets.get(path) : undefined)
+      const recorded = () => {
+        if (pluginData === undefined) return this.#targets.get(path)
+        const data = this.#dataTargets.get(path)
+        if (data === undefined) return undefined
+        return data.some((d) => isDeepStrictEqual(d, pluginData)) ? this.#targets.get(path) : 'mismatch'
+      }
       let kind = loadBundle ? pluginData?.kind : recorded()
       // Not recorded yet: an import that declined as a twin of one still resolving (see onResolve) can
       // load first. Wait out the resolutions in flight -- none waits on a load -- and look again.
-      if (kind === undefined && !loadBundle && this.#resolving.size > 0) {
+      if ((kind === undefined || kind === 'mismatch') && !loadBundle && this.#resolving.size > 0) {
         await Promise.allSettled([...this.#resolving.values()].flatMap((inFlight) => [...inFlight.values()]))
         kind = recorded()
+      }
+      if (kind === 'mismatch') {
+        return {
+          errors: [{
+            text: `StasisEsbuild: '${path}' loads with pluginData no resolution capture recorded for it -- another plugin's module of the same file, or a plugin after StasisEsbuild resolving it differently the second time; capture can't tell which`,
+          }],
+        }
       }
       kind ??= 'skip'
       if (kind === 'skip') return undefined
