@@ -49,6 +49,9 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
   // A lowercase tag is an intrinsic element's string, not a read of the name.
   t.assert.deepStrictEqual(used("import div from './d.cjs'\nexport const el = <div title='x' />", 'jsx'), { './d.cjs': side })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport { x }"), { './x.cjs': interop })
+  // ...but for a type-only export, which esbuild erases.
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport { type x }", 'ts'), { './x.cjs': side })
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport type { x }", 'ts'), { './x.cjs': side })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\neval('x')"), { './x.cjs': interop })
   // A read is resolved by scope: a parameter of the name isn't the import, a closure over it is.
   t.assert.deepStrictEqual(used("import x from './x.cjs'\nfunction f(x) { return x }"), { './x.cjs': side })
