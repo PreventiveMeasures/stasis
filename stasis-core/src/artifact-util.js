@@ -110,16 +110,82 @@ const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   return normalized
 }
 
-// A module bucket record in canonical key order; `ecosystem` and `repo` are omitted (not undefined) when absent.
-export const moduleInfo = ({ name, version, ecosystem, repo, files }) =>
-  ({ name, version, ...(ecosystem === undefined ? {} : { ecosystem }), ...(repo === undefined ? {} : { repo }), files })
+// A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
+export const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
+export const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
+
+// A vendored package's directory in its host's bucket: an in-bucket path in canonical form, through no
+// `node_modules` (a package installed there is a bucket of its own).
+const isVendoredDir = (dir) => typeof dir === 'string' && dir !== '' && !dir.includes('\\') &&
+  dir.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
+
+// The directory of `vendored` a bucket file `rel` is in: the deepest one listed that holds it.
+const vendoredDirOf = (vendored, rel) => {
+  for (let slash = rel.lastIndexOf('/'); slash > 0; slash = rel.lastIndexOf('/', slash - 1)) {
+    if (Object.hasOwn(vendored, rel.slice(0, slash))) return rel.slice(0, slash)
+  }
+  return undefined
+}
+
+// The entries of a `vendored` that hold one of `files`, each file counted for the deepest entry holding
+// it; path-sorted and frozen, undefined if none. An artifact lists the vendored packages it carries a file of.
+function carriedVendored(vendored, files) {
+  if (vendored === undefined) return undefined
+  const carried = new Set()
+  for (const rel of Object.keys(files)) {
+    const dir = vendoredDirOf(vendored, rel)
+    if (dir !== undefined) carried.add(dir)
+  }
+  return carried.size === 0 ? undefined : Object.freeze(fromEntries([...carried].toSorted(sortPaths).map((dir) => [dir, vendored[dir]])))
+}
+
+// A dependency's `vendored`: the packages copied into it, by the directory each one's own package.json is
+// in, with that package.json's `name` (required) and `version`; each holds one of the record's `files`.
+// First-party code carries none.
+const normalizeModuleVendored = (dir, { ecosystem, vendored, files }, what) => {
+  if (vendored === undefined) return undefined
+  if (dependencyEcosystem(dir, ecosystem) === undefined) assert(false, `${what}: '${dir}' is no dependency's bucket, and carries no vendored`)
+  if (!isPlainObject(vendored)) assert(false, `${what} module '${dir}' vendored must be an object`)
+  const normalized = fromEntries(Object.entries(vendored).map(([sub, block]) => {
+    if (!isVendoredDir(sub)) assert(false, `${what} module '${dir}' vendored: invalid directory ${JSON.stringify(sub)}`)
+    const entry = normalizeBlock(block, PACKAGE_BLOCK, `${what} module '${dir}' vendored '${sub}'`)
+    if (entry?.name === undefined) assert(false, `${what} module '${dir}' vendored '${sub}' has no name`)
+    return [sub, entry]
+  }))
+  const carried = carriedVendored(normalized, files)
+  for (const sub of Object.keys(normalized)) {
+    if (!Object.hasOwn(carried ?? {}, sub)) assert(false, `${what} module '${dir}' vendored '${sub}' holds none of its files`)
+  }
+  return carried
+}
+
+// A module bucket record in canonical key order; `ecosystem`, `repo` and `vendored` are omitted (not undefined) when absent.
+export const moduleInfo = ({ name, version, ecosystem, repo, vendored, files }) =>
+  ({ name, version, ...(ecosystem === undefined ? {} : { ecosystem }), ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored }), files })
+
+// `record` with the metadata `other` (of the same bucket) has and it lacks: `repo` where it records none,
+// the `vendored` entries of directories it lists none for. Metadata is held to nothing, so where both
+// record one, `record`'s stands. `record` itself when that adds nothing.
+export function withMetadataOf(record, other) {
+  const repo = record.repo ?? other.repo
+  const adds = other.vendored !== undefined && Object.keys(other.vendored).some((sub) => !Object.hasOwn(record.vendored ?? {}, sub))
+  if (repo === record.repo && !adds) return record
+  const vendored = adds ? Object.freeze(fromEntries([...Object.entries(other.vendored), ...Object.entries(record.vendored ?? {})])) : record.vendored
+  return moduleInfo({ ...record, repo, vendored })
+}
 
 // A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
-// into undefined so identity comparisons and JSON round-trips can't split on it), `repo` is validated,
-// and `files` is null-prototype.
-export function normalizeModule({ name, version, ecosystem, repo, files }, dir, what) {
+// into undefined so identity comparisons and JSON round-trips can't split on it), `repo` and `vendored`
+// are validated, and `files` is null-prototype.
+export function normalizeModule({ name, version, ecosystem, repo, vendored, files }, dir, what) {
   assert(ecosystem === undefined || typeof ecosystem === 'string')
-  return moduleInfo({ name, version: version ?? undefined, ecosystem, repo: normalizeModuleRepo(dir, { ecosystem, repo }, what), files: fromEntries(Object.entries(files)) })
+  files = fromEntries(Object.entries(files))
+  return moduleInfo({
+    name, version: version ?? undefined, ecosystem,
+    repo: normalizeModuleRepo(dir, { ecosystem, repo }, what),
+    vendored: normalizeModuleVendored(dir, { ecosystem, vendored, files }, what),
+    files,
+  })
 }
 
 // The keys a module map records -- the set an artifact's `executable` must be a subset of. `scope` MUST
@@ -360,16 +426,22 @@ export function serializeImports(imports) {
 }
 
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects
-// of a `what` artifact, buckets and files path-sorted so the bytes are canonical. `repo: false`
-// leaves each record's `repo` out: metadata, which a lockfile never carries.
-export function groupModules(modules, { skipEmpty = false, repo = true, what } = {}) {
+// of a `what` artifact, buckets and files path-sorted so the bytes are canonical. Each record's
+// `vendored` keeps the entries holding one of the files it carries. `metadata: false` leaves each
+// record's `repo` and `vendored` out: metadata, which a lockfile never carries.
+export function groupModules(modules, { skipEmpty = false, metadata = true, what } = {}) {
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
     const files = fromEntries(Object.entries(info.files).toSorted(byPath))
-    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({ ...info, repo: repo ? normalizeModuleRepo(dir, info, what) : undefined, files })])
+    grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({
+      ...info,
+      repo: metadata ? normalizeModuleRepo(dir, info, what) : undefined,
+      vendored: metadata ? normalizeModuleVendored(dir, { ecosystem: info.ecosystem, vendored: carriedVendored(info.vendored, files), files }, what) : undefined,
+      files,
+    })])
   }
   return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
 }
@@ -498,8 +570,9 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // `repo` is metadata, held to nothing: either side's, where only one records it, else `a`'s.
-      if (existing.repo === undefined && info.repo !== undefined) out.set(dir, moduleInfo({ ...existing, repo: info.repo }))
+      // `repo` and `vendored` are metadata, held to nothing: either side's, where only one records it, else `a`'s.
+      const merged = withMetadataOf(existing, info)
+      if (merged !== existing) out.set(dir, merged)
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

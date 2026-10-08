@@ -2,9 +2,9 @@ import { isUtf8 } from 'node:buffer'
 import { dirname, join, posix, relative, resolve } from 'node:path'
 
 import { isValidRepoField } from './bundle.js'
-import { posixPathEscapes } from './artifact-util.js'
+import { isPackageString, posixPathEscapes } from './artifact-util.js'
 import { diskHost } from './host.js'
-import { assertRealPathWithinBase, hasNodeModulesSegment, relativeEscapes, toPosix } from './util.js'
+import { assertRealPathWithinBase, hasNodeModulesSegment, relativeEscapes, splitNodeModulesPath, toPosix } from './util.js'
 
 // Text as Node reads a package.json: UTF-8, past a byte order mark.
 const utf8 = new TextDecoder()
@@ -21,13 +21,62 @@ export function packageType(file, host = diskHost) {
   }
 }
 
+// Directories where a package keeps copies of OTHER packages, each under a package.json of its own,
+// by the host package's name (so any install layout or alias matches), package-relative. A package.json
+// below one is a vendored package's: it names that package, not its host, so a file it covers is its
+// host's (State#locateModule holds it to nothing), listed under that package in the host record's
+// `vendored`. Maintained list: add only a confirmed upstream vendoring layout, with its reason.
+const VENDOR_DIRS = {
+  __proto__: null,
+  next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
+}
+const VENDOR_DIR_LIST = Object.values(VENDOR_DIRS).flat()
+
+// Whether a package-relative path is below any package's vendor dir: no need to read whose it is otherwise.
+const inAnyVendorDir = (rel) => VENDOR_DIR_LIST.some((dir) => rel.startsWith(`${dir}/`))
+
+// The vendor dir of the package named `name` that its file `rel` (package-relative, POSIX) is below, or undefined.
+export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
+
+// The package vendored under `vendorDir` (package-relative) that a file `rel` of its host is in: walking
+// up from the file, while below the vendor dir, the first package.json with a `name`, which `read(dir)`
+// gives (null where there is none) -> `vendored` { dir, name, version? }, undefined where none has a name
+// or its name is no package string (a version that is none is left out). `below`: whether any package.json
+// there covers the file at all.
+export function vendoredPackageOf(rel, vendorDir, read) {
+  let below = false
+  for (let dir = posix.dirname(rel); dir.startsWith(`${vendorDir}/`); dir = posix.dirname(dir)) {
+    const pkg = read(dir)
+    if (pkg === null) continue
+    below = true
+    if (pkg?.name === undefined) continue // a `{"type":"module"}` marker inside the vendored package
+    if (!isPackageString(pkg.name)) return { below }
+    return { below, vendored: { dir, name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
+  }
+  return { below }
+}
+
 // Nearest package.json (walking up) that identifies a bucket; pkgDir is relative to baseDir ("."
 // at the root). Inside node_modules both name and version are required; a workspace package
 // outside node_modules may omit version (the name alone claims the bucket, matching
 // State#locateModule), and a node_modules one's `ecosystem` (npm) and `repo`, where its `repository`
 // names a GitHub one (packageRepo). Null if none. A malformed one is walked past, or with `strict` throws
 // (its files would otherwise land in the parent package); `check`, `host`: see readPackageJson.
+// A file in a vendored package (vendorDirOf) is its host's, as State#locateModule has it, with the
+// package as the record's `vendored` would list it, `{ [dir]: { name, version? } }` (vendoredPackageOf).
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
+  const nm = splitNodeModulesPath(toPosix(fileRelPath))
+  if (nm !== null && inAnyVendorDir(nm.rel)) {
+    const read = (rel) => readPackageJson(baseDir, rel, { strict, check, host })
+    const pkg = read(`${nm.dir}/package.json`)
+    const vendorDir = pkg?.name && pkg.version ? vendorDirOf(pkg.name, nm.rel) : undefined
+    const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
+    if (below) {
+      const repo = packageRepo(pkg)
+      const { dir: sub, ...identity } = vendored ?? {}
+      return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
+    }
+  }
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const pkg = readPackageJson(baseDir, toPosix(join(dir, 'package.json')), { strict, check, host })
     const inNodeModules = hasNodeModulesSegment(toPosix(dir))

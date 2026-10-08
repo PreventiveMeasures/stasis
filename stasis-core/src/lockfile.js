@@ -4,8 +4,8 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// A record as a lockfile holds it: without `repo`, metadata a bundle carries and nothing attests.
-const lockRecord = ({ repo: _metadata, ...info }) => info
+// A record as a lockfile holds it: without `repo` and `vendored`, metadata a bundle carries and nothing attests.
+const lockRecord = ({ repo: _repo, vendored: _vendored, ...info }) => info
 
 export class Lockfile {
   static VERSION = VERSION
@@ -81,7 +81,7 @@ export class Lockfile {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { modules, sources } = groupModules(this.modules, { repo: false, what: 'lockfile' })
+    const { modules, sources } = groupModules(this.modules, { metadata: false, what: 'lockfile' })
     const store = { version: this.version, config: this.config }
     if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules
