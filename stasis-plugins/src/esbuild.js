@@ -290,11 +290,16 @@ export class StasisEsbuild {
   // module an ESM file imports (depth 0), an ES module never is: esbuild only wraps CommonJS in __toESM.
   // Past a `module.exports = require(...)`-style re-export it is: a required ES module gets esbuild's
   // __toCommonJS mark. A file that doesn't parse might, as might exports this plugin can't read. Of the
-  // rest, only re-exported JSON can carry one (`{ "__esModule": true }`): esbuild imports JSON as a whole.
+  // rest, re-exported JSON can carry one (`{ "__esModule": true }`: esbuild imports JSON as a whole), as can a
+  // resource the build's `loader` option loads as code or copies for runtime; a string (text, file, dataurl,
+  // base64), bytes or an empty module can't. A resource's loader is the build's, a code file's this plugin's.
   async #mayCarryEsModule(path, depth, seen, build) {
     const facts = await this.#factsOf(path)
     if (facts === null) {
-      if (depth === 0 || this.#loaderFor(path) !== 'json') return false
+      if (depth === 0) return false
+      const resource = classifyExtension(path, this.#resources) === 'resource'
+      const loader = resource ? build.initialOptions.loader?.[extname(path)] : this.#loaderFor(path)
+      if (loader !== 'json') return resource && ['copy', 'js', 'jsx', 'ts', 'tsx'].includes(loader)
       const { contents } = await this.#serve(path)
       try {
         return Boolean(JSON.parse(contents)?.__esModule)
