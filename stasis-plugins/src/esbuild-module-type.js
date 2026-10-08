@@ -211,8 +211,8 @@ const arrayIndex = (key) => (typeof key === 'string' && /^(?:0|[1-9]\d*)$/u.test
 
 // The values an array or object literal holds for what a pattern or property read takes from it: the property
 // `key` names (every one where it's undefined), an array's element at that index (or past one where a spread
-// before it shifts it), a property whose computed key or a spread that may be it, what a getter returns, and
-// what a `__proto__:` prototype holds; a name's are the caller's to follow (out.elements).
+// before it shifts it), a property whose computed key or a spread that may be it, what a getter returns, what a
+// `__proto__:` prototype holds, and a class's static; a name's are the caller's to follow (out.elements).
 function elementsOf(node, out, key) {
   switch (node?.type) {
     case 'ArrayExpression': {
@@ -248,6 +248,15 @@ function elementsOf(node, out, key) {
       })
     case 'ElementOf':
       return elementsOf(node.object, out, node.key).flatMap((element) => elementsOf(element, out, key))
+    case 'ClassExpression':
+    case 'ClassDeclaration':
+      // A class's statics, and its superclass's, which it inherits.
+      return [...node.body.body.flatMap((member) => {
+        if (!member.static || !('key' in member)) return []
+        const name = propKey(member.key, member.computed)
+        if (key !== undefined && name !== undefined && name !== key) return []
+        return member.kind === 'get' ? returnedValues(member.value) : member.kind === 'set' || member.value == null ? [] : [member.value]
+      }), ...elementsOf(node.superClass, out, key)]
     case 'ConditionalExpression':
       return [...elementsOf(node.consequent, out, key), ...elementsOf(node.alternate, out, key)]
     case 'LogicalExpression':
@@ -440,6 +449,12 @@ function scanConstructor(callee, out, returned, direct) {
     if (key === 'Proxy' || (direct && key === undefined)) out.marked = true
     return
   }
+  // What a destructuring took (`const { Proxy: P } = globalThis`): by its key, or the literal value it selects.
+  if (callee.type === 'ElementOf') {
+    if (callee.key === 'Proxy') out.marked = true
+    else for (const value of elementsOf(callee.object, { elements: [] }, callee.key)) for (const leaf of leavesOf(value)) scanConstructor(leaf, out, returned, false)
+    return
+  }
   for (let cls = callee; cls; cls = cls.superClass) {
     if (cls.type === 'Identifier') {
       if (cls.name === 'Proxy') out.proxies.add(cls)
@@ -499,13 +514,30 @@ function leavesOf(node) {
 // The functions or names of functions among them.
 const functionsOf = (node) => leavesOf(node).filter((leaf) => leaf.type === 'Identifier' || FUNCTIONS.has(leaf.type))
 
-// What a call runs: its callee's functions, the function `.call`/`.apply` invoke, and the one `Reflect.apply` is handed.
+// What a call runs: its callee's functions or methods (a MemberExpression), the function `.call`/`.apply` invoke,
+// and the one `Reflect.apply` is handed.
 function calledFunctions(call) {
   const { callee } = call
   const invoked = callee.type === 'MemberExpression' && ['call', 'apply'].includes(staticKey(callee)) ? [callee.object] : []
   if (callee.type === 'MemberExpression' && callee.object.type === 'Identifier' && callee.object.name === 'Reflect' &&
     staticKey(callee) === 'apply' && call.arguments[0]) invoked.push(call.arguments[0])
-  return [callee, ...invoked].flatMap(functionsOf)
+  return [callee, ...invoked].flatMap(leavesOf).filter((leaf) => leaf.type === 'Identifier' || leaf.type === 'MemberExpression' || FUNCTIONS.has(leaf.type))
+}
+
+// What calling `object[key]()` returns: what each function that property may hold returns (a method, a getter's
+// value, a class's static). A function's name is the caller's to follow (out.callees), and so is a name the
+// object may be held by (out.methods).
+function methodReturns(object, key, out) {
+  const sink = { elements: [] }
+  const values = []
+  for (const value of elementsOf(object, sink, key)) {
+    for (const fn of functionsOf(value)) {
+      if (FUNCTIONS.has(fn.type)) values.push(...returnedValues(fn))
+      else out.callees.add(fn.name)
+    }
+  }
+  out.methods.push(...sink.elements)
+  return values
 }
 
 // What can become the value an expression assigns to module.exports (or copies into it): the expression
@@ -583,7 +615,8 @@ function scanValue(node, out) {
         }
         for (const fn of calledFunctions(current)) {
           if (FUNCTIONS.has(fn.type)) stack.push(...returnedValues(fn))
-          else out.callees.add(fn.name)
+          else if (fn.type === 'Identifier') out.callees.add(fn.name)
+          else stack.push(...methodReturns(fn.object, staticKey(fn), out))
         }
         // `Reflect.construct(target, args)` is `new target(...args)`.
         if (current.callee.type === 'MemberExpression' && current.callee.object.type === 'Identifier' && current.callee.object.name === 'Reflect' &&
@@ -682,13 +715,16 @@ export function analyzeModule(source, { path, loader }) {
   // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
   const copies = new Map()  // name -> [argument]
   const assignments = new Map()  // name -> [assigned value]: `out = value` (destructuring: the whole right side)
+  // A property set on a local (`h.load = fn`): what a read or a call of that key gets.
+  const memberWrites = new Map()  // name -> [[key, or undefined for one only the runtime knows, value]]
+  const writtenAt = (name, key) => (memberWrites.get(name) ?? []).filter(([written]) => key === undefined || written === undefined || written === key).map(([, value]) => value)
   const reassigned = new Set()
   // Where a constant `__esModule` key may be defined (see definesEsModule): the properties writes target. A write
   // of a key whose value isn't known doesn't count, unlike a computed key in what becomes the exports: dynamic
   // writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
   const tokenContext = { writeTargets: new Set() }
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
   // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
   const exportWrites = []
@@ -822,6 +858,11 @@ export function analyzeModule(source, { path, loader }) {
       case 'AssignmentExpression':
         // A property it writes (but `= <falsy>`), destructuring targets included (`[exports.__esModule] = [true]`).
         if (!(node.operator === '=' && isFalsy(node.right))) for (const target of patternMembers(node.left)) tokenContext.writeTargets.add(target)
+        if (node.left.type === 'MemberExpression' && node.left.object.type === 'Identifier') {
+          const { name } = node.left.object
+          if (!memberWrites.has(name)) memberWrites.set(name, [])
+          memberWrites.get(name).push([staticKey(node.left), node.right])
+        }
         for (const [name, values] of patternSources(node.left, node.right)) {
           reassigned.add(name)
           assignments.set(name, [...(assignments.get(name) ?? []), ...values])
@@ -968,13 +1009,14 @@ export function analyzeModule(source, { path, loader }) {
     if (!names(name, 'exports')) continue
     for (const value of written) scanValue(value.type === 'SpreadElement' ? value.argument : value, exported)
   }
-  const done = { value: new Set(), call: new Set(), instance: new Set(), elements: new Set() }
+  const done = { value: new Set(), call: new Set(), instance: new Set(), elements: new Set(), method: new Set() }
   const pending = []
   const follow = (found) => {
     for (const identifier of found.identifiers) pending.push(['value', identifier])
     for (const callee of found.callees) pending.push(['call', callee])
     for (const cls of found.instances) pending.push(['instance', cls])
     for (const [name, key] of found.elements) pending.push(['elements', name, key])
+    for (const [name, key] of found.methods) pending.push(['method', name, key])
     if (found.marked) exported.marked = true
     for (const name of found.symbols) exported.symbols.add(name)
     for (const name of found.proxies) exported.proxies.add(name)
@@ -982,17 +1024,26 @@ export function analyzeModule(source, { path, loader }) {
   follow(exported)
   while (pending.length > 0) {
     const [kind, name, key] = pending.pop()
-    const id = kind === 'elements' ? `${name}\u0000${key ?? '*'}` : name
+    const id = kind === 'elements' || kind === 'method' ? `${name}\u0000${key ?? '*'}` : name
     if (done[kind].has(id)) continue
     done[kind].add(id)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') {
       for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found, false)) scanValue(value, found)
     }
-    else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found, key)) scanValue(value, found)
+    else if (kind === 'elements') {
+      for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found, key)) scanValue(value, found)
+      for (const value of writtenAt(name, key)) scanValue(value, found)
+    } else if (kind === 'method') {
+      for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) for (const value of methodReturns(origin, key, found)) scanValue(value, found)
+      for (const fn of writtenAt(name, key).flatMap(functionsOf)) {
+        if (FUNCTIONS.has(fn.type)) for (const value of returnedValues(fn)) scanValue(value, found)
+        else found.callees.add(fn.name)
+      }
+    }
     else {
       for (const fn of [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].flatMap(functionsOf)]) {
         if (FUNCTIONS.has(fn.type)) for (const value of returnedValues(fn)) scanValue(value, found)

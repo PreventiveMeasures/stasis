@@ -226,6 +226,9 @@ test('analyzeModule: a key only the runtime knows marks where it reaches the exp
   t.assert.equal(marks('const P = globalThis.Proxy\nmodule.exports = new P(target, handler)'), true)
   t.assert.equal(marks('const P = Proxy\nmodule.exports = new (0, P)(target, handler)'), true)
   t.assert.equal(marks('module.exports = Reflect.construct(Proxy, [target, handler])'), true)
+  t.assert.equal(marks('const { Proxy: P } = globalThis\nmodule.exports = new P({ default: 1 }, handler)'), true)
+  t.assert.equal(marks('const [P] = [Proxy]\nmodule.exports = new P(target, handler)'), true)
+  t.assert.equal(marks("const { Store } = require('./lib')\nmodule.exports = new Store()"), false)
   t.assert.equal(marks('var Proxy\nmodule.exports = new Proxy(target, handler)'), false)
   t.assert.equal(marks("const EventEmitter = require('events')\nmodule.exports = new EventEmitter()"), false)
   t.assert.equal(marks('module.exports = new lib.Store()'), false)
@@ -263,6 +266,13 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = (0, load)()"), ['./x'])
   t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = Reflect.apply(load, null, [])"), ['./x'])
   t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nconst run = load\nmodule.exports = run()"), ['./x'])
+  // A local object's method, getter or class static, a function set on a local, and a property set on one.
+  t.assert.deepStrictEqual(reexports("const h = { load() { return require('./a') }, other: () => require('./b') }\nmodule.exports = h.load()"), ['./a'])
+  t.assert.deepStrictEqual(reexports("class H { static load() { return require('./a') } }\nmodule.exports = H.load()"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const h = {}\nh.load = function () { return require('./a') }\nmodule.exports = h.load.call(h)"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const h = { load() { return require('./a') } }\nconst g = h\nmodule.exports = g.load()"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const h = {}\nh.lib = require('./a')\nmodule.exports = h.lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const h = { load() { return require('./a') } }\nmodule.exports = { run: h.load }"), [])
   // Nested in the exports isn't the exports; spread into them is.
   t.assert.deepStrictEqual(reexports("module.exports = { a: require('./a'), ...require('./b') }"), ['./b'])
   // An array pattern or an index read takes the element at its position, or past one a spread before it shifts.
