@@ -95,6 +95,12 @@ test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a 
   t.assert.equal(analyze('class A { m() { { function f() {} } } }').blockFunction, false)
 })
 
+test('analyzeModule: top-level `arguments` -- a module wrapper\'s, outside any function of its own', (t) => {
+  t.assert.equal(analyze('console.log(arguments.length)').topArguments, true)
+  t.assert.equal(analyze('const f = () => arguments[0]').topArguments, true)
+  t.assert.equal(analyze('function f() { return arguments }\nconst o = { m() { return () => arguments } }\nx.arguments = 1').topArguments, false)
+})
+
 test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
   t.assert.equal(analyze('exports.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: true })').setsEsModule, true)
@@ -140,6 +146,12 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('class C { static get __esModule() { return true } }\nmodule.exports = C').setsEsModule, true)
   t.assert.equal(analyze("module.exports = class extends require('./base') {}").reexports.has('./base'), true)
   t.assert.equal(analyze('module.exports = class { __esModule = true; static __esModule = false; static x = 1 }').setsEsModule, false)
+  // An instance gets its class's (and superclasses') instance fields and prototype members, not its statics.
+  t.assert.equal(analyze('class Box { __esModule = true; default = 1 }\nmodule.exports = new Box()').setsEsModule, true)
+  t.assert.equal(analyze('class Base { get __esModule() { return true } }\nclass Box extends Base {}\nmodule.exports = new Box()').setsEsModule, true)
+  t.assert.equal(analyze('const B = class { __esModule = true }\nconst A = B\nmodule.exports = new A()').setsEsModule, true)
+  t.assert.equal(analyze('module.exports = new (class { static __esModule = true; default = 1 })()').setsEsModule, false)
+  t.assert.equal(analyze('class Box { default = 1 }\nmodule.exports = new Box()').setsEsModule, false)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })

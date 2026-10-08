@@ -739,6 +739,21 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.match(r.stderr, /refusing to build 'src\/legacy\.js': it has no `export`, `import\.meta` or top-level `await` but uses `module`/)
   }))
 
+  test('build refuses top-level `arguments` in a file the builds wrap differently', withTmp(async (t, tmp) => {
+    // A plain esbuild build wraps a "type": "commonjs" file as CommonJS, so `arguments` is its wrapper's; the
+    // plugin's build sees no CommonJS use, inlines the file, and `arguments` is the output's own.
+    await bundleProject(t, tmp, {
+      'package.json': '{ "name": "mini", "version": "1.0.0", "type": "commonjs" }',
+      'src/args.js': 'console.log(arguments.length)\n',
+      'src/index.mjs': "import './args.js'\n",
+    }, 'src/index.mjs')
+    writeFileSync(join(tmp, 'plain.cjs'), await plainEsbuild(tmp, 'src/index.mjs', 'plain.cjs', 'cjs'))
+    t.assert.equal(runNode(t, join(tmp, 'plain.cjs')).trim(), '2')
+    const r = await runCli(['build', '--output=out.cjs', '--format=cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/args\.js': it reads `arguments` outside any function/)
+  }))
+
   test('build refuses a "type": "commonjs" entry without exports as ESM, and builds it as cjs like plain esbuild', withTmp(async (t, tmp) => {
     // Built as ESM, a plain esbuild build wraps the entry as CommonJS and default-exports its
     // module.exports; the plugin's build exports nothing.
