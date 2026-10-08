@@ -338,7 +338,8 @@ const PROTOTYPE_READS = new Set(['hasOwnProperty', 'propertyIsEnumerable'])
 // Whether a call is a read builtin's with `key` as its key: the `Object`/`Reflect` its callee names, for the caller
 // to resolve as the global (`Object.hasOwn(m, key)`, `Object.prototype.hasOwnProperty.call(m, key)`), null for one
 // off an empty literal (`{}.hasOwnProperty.call(m, key)`), or undefined for any other call -- a local function or a
-// method named like one may write the key.
+// method named like one may write the key. (Handed a Proxy, any of them runs its trap with the key: the caller's to
+// rule out too.)
 function readBuiltin(call, key) {
   const { callee } = call
   if (callee.type !== 'MemberExpression' || call.arguments[1] !== key) return undefined
@@ -1061,7 +1062,11 @@ export function analyzeModule(source, { path, loader }) {
     return mayName(node.name)
   }
   if (unknownSymbol || [...exported.proxies].some(isGlobal) || exported.keys.some(mayNameKey)) exported.marked = true
-  // A read builtin's key is a definition after all where the file binds or reassigns the builtin's name.
-  if (exported.marked || tokenContext.readBuiltins.some((name) => !isGlobal(name) || reassigned.has(name.name))) facts.setsEsModule = true
+  // A read builtin's key is a definition after all where the file binds or reassigns the builtin's name, or where
+  // it may make a Proxy, whose trap the builtin hands the key to (`get(_, key) { exports[key] = true }`).
+  const makesProxy = [...globalRefs.keys()].some((node) => node.name === 'Proxy' && isGlobal(node))
+  const readsDefine = tokenContext.readBuiltins.length > 0 &&
+    (makesProxy || tokenContext.readBuiltins.some((name) => !isGlobal(name) || reassigned.has(name.name)))
+  if (exported.marked || readsDefine) facts.setsEsModule = true
   return facts
 }
