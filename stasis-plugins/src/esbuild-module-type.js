@@ -184,12 +184,15 @@ function patternSources(pattern, value, sources = new Map()) {
         if (element?.type !== 'RestElement') patternSources(element, { type: 'ElementOf', object: value }, sources)
       }
       break
-    case 'ObjectPattern':
+    case 'ObjectPattern': {
+      const keyOf = (prop) => (prop.computed ? stringValue(prop.key) : nameOf(prop.key))
       for (const prop of pattern.properties) {
-        if (prop.type === 'RestElement') patternSources(prop.argument, value, sources)
-        else patternSources(prop.value, { type: 'ElementOf', object: value, key: prop.computed ? stringValue(prop.key) : nameOf(prop.key) }, sources)
+        if (prop.type !== 'RestElement') patternSources(prop.value, { type: 'ElementOf', object: value, key: keyOf(prop) }, sources)
+        // The rest copies the remaining own properties: none named `__esModule` where the pattern took that key.
+        else if (!pattern.properties.some((other) => other.type !== 'RestElement' && keyOf(other) === '__esModule')) patternSources(prop.argument, value, sources)
       }
       break
+    }
   }
   return sources
 }
@@ -299,7 +302,7 @@ function mayNameEsModule(key, out) {
     return false
   }
   if (key.type !== 'Identifier') return true
-  out.keys.add(key.name)
+  out.keys.push(key)
   return false
 }
 
@@ -486,13 +489,15 @@ export function analyzeModule(source, { path, loader }) {
     for (const spec of statement.specifiers) if (spec.importKind !== 'type') scoped.add(spec.local.name)
   }
   const tracked = (name) => scoped.has(name)
+  // Every name a nested scope declares is recorded (a computed key resolves through them); at the module scope,
+  // only the tracked ones.
   const declare = (scope, name, kind) => {
-    if (!tracked(name)) return
     if (scope !== root) {
       scope.names.add(name)
       if (kind === 'param') (scope.params ??= new Set()).add(name)
-    } else (kind === 'var' ? hoistedVar : shadowed).add(name)
+    } else if (tracked(name)) (kind === 'var' ? hoistedVar : shadowed).add(name)
   }
+  const keyRefs = new Map()  // computed key Identifier node -> its scope
   const declarators = new Map()  // name -> [init]: a declarator's, or the class a class declaration binds
   const functionDecls = new Map()  // name -> [FunctionDeclaration]
   // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
@@ -521,7 +526,7 @@ export function analyzeModule(source, { path, loader }) {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: new Set(), symbols: new Set(), proxies: new Set(), requires: [], marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
   // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
   const exportWrites = []
@@ -724,6 +729,7 @@ export function analyzeModule(source, { path, loader }) {
         break
       case 'Identifier':
         if (parent && !isNonReference(parent, key)) {
+          if (key === 'key' && parent.computed) keyRefs.set(node, scope)
           if (binding) count(bindingCounts, node.name)
           else if (tracked(node.name)) {
             references.push([node.name, scope])
@@ -858,7 +864,17 @@ export function analyzeModule(source, { path, loader }) {
     })
   }
   const unknownSymbol = [...exported.symbols].some((name) => !isGlobal(name) || reassigned.has('Symbol'))
-  if (unknownSymbol || [...exported.proxies].some(isGlobal) || [...exported.keys].some(mayName)) exported.marked = true
+  // A computed key named by a parameter is unknown; one any other binding names, judged by the values it's given.
+  const mayNameKey = (node) => {
+    for (let current = keyRefs.get(node); current && current !== root; current = current.parent) {
+      if (current.names.has(node.name)) {
+        if (current.params?.has(node.name)) return true
+        break
+      }
+    }
+    return mayName(node.name)
+  }
+  if (unknownSymbol || [...exported.proxies].some(isGlobal) || exported.keys.some(mayNameKey)) exported.marked = true
   for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {
