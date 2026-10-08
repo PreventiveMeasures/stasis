@@ -346,10 +346,13 @@ export class StasisEsbuild {
     const targetTyped = targetTypes.module || targetTypes.commonjs
     // What the import sees of the target: its exports at all, or its default/namespace (the interop's say).
     let usage = { bindings: kind === 'dynamic-import', interop: kind === 'dynamic-import' }
-    if (kind === 'import-statement' && (importerTypes.module || targetTyped)) {
+    if (kind !== 'require-call' && (importerTypes.module || targetTyped)) {
       const facts = await this.#factsOf(importer)
-      // An importer the check couldn't read sees everything, as far as it can tell.
-      usage = (facts && !facts.parseError && facts.imports.get(specifier)) || { bindings: true, interop: true }
+      // An importer the check couldn't read sees everything, as far as it can tell; an `import()` whose result is
+      // discarded sees nothing.
+      const readable = facts && !facts.parseError
+      if (kind === 'import-statement') usage = (readable && facts.imports.get(specifier)) || { bindings: true, interop: true }
+      else if (readable && facts.dynamicImports.get(specifier)?.consumed === false) usage = { bindings: false, interop: false }
     }
     // A require whose result is discarded (`require('./side.js')` as a statement) sees nothing of the target.
     let required = kind === 'require-call'
@@ -400,9 +403,9 @@ export class StasisEsbuild {
     if (!turnsIntoRequire) return null
     const types = await this.#packageTypes(importer)
     if (!types.module) return null
-    if (kind === 'import-statement') {
-      const facts = await this.#factsOf(importer)
-      if (facts && !facts.parseError && !facts.imports.get(specifier)?.interop) return null
+    const facts = await this.#factsOf(importer)
+    if (facts && !facts.parseError) {
+      if (kind === 'import-statement' ? !facts.imports.get(specifier)?.interop : facts.dynamicImports.get(specifier)?.consumed === false) return null
     }
     return this.#refuse(importer, types, `it ${kind === 'dynamic-import' ? 'dynamically imports' : 'imports the default export or namespace of'} ` +
       `'${specifier}', an external this build turns into a require() whose exports only the runtime knows: a plain esbuild build ` +
