@@ -56,6 +56,9 @@ test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level
   t.assert.equal(analyze('if (x) return\nconsole.log(1)').cjsUsage, 'yes')
   // Not CommonJS: `this` inside a function or class, `module` as a property name.
   t.assert.equal(analyze('function f() { return this }\nclass A { m() { return this } }\nconst o = { module: 1 }\no.exports = 2').cjsUsage, 'no')
+  t.assert.equal(analyze('class A { x = this; static { this.y = 1 } }').cjsUsage, 'no')
+  // A computed class key sees the outer `this`.
+  t.assert.equal(analyze("class C { [this === undefined ? 'esm' : 'cjs']() {} }").cjsDetail, 'top-level `this`')
   // A module-scope import/let/const/function/class binds every reference to the name; esbuild merges a
   // module-scope `var` with the CommonJS binding instead.
   t.assert.equal(analyze("import module from 'pkg'\nmodule.run()").cjsUsage, 'no')
@@ -75,6 +78,11 @@ test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level
   t.assert.equal(analyze('function f(x = exports) { var exports; return x }').cjsUsage, 'yes')
   t.assert.equal(analyze('function f(module, x = module) { return x }').cjsUsage, 'no')
   t.assert.equal(analyze('const f = (module) => { const g = () => module; return g }').cjsUsage, 'no')
+  // Destructuring assignment writes the existing name; destructuring declaration binds a new one.
+  t.assert.equal(analyze('[module] = values').cjsUsage, 'yes')
+  t.assert.equal(analyze('({ a: exports } = values)').cjsUsage, 'yes')
+  t.assert.equal(analyze('const [module] = values\nmodule.run()').cjsUsage, 'no')
+  t.assert.equal(analyze('function f({ module = 1 }) { return module }').cjsUsage, 'no')
 })
 
 test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a block-level function', (t) => {
@@ -99,6 +107,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const metadata = {}\nmetadata.__esModule = true\nmodule.exports = { default: 1 }').setsEsModule, false)
   t.assert.equal(analyze("const o = {}\nObject.defineProperty(o, '__esModule', { value: true })\nmodule.exports = { default: 1 }").setsEsModule, false)
   t.assert.equal(analyze('const out = {}\nout.__esModule = true\nmodule.exports = out').setsEsModule, true)
+  // A value assigned after the declaration becomes the exports too.
+  t.assert.equal(analyze('let out\nout = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('function wrap(e) { e.__esModule = !0 }\nwrap(exports)').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\no = exports\no.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\n;[o] = [exports]\no.__esModule = true').setsEsModule, true)
