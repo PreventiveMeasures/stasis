@@ -96,6 +96,15 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('let o = {}\no = exports\no.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\n;[o] = [exports]\no.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\nfor (o of [exports]) o.__esModule = true').setsEsModule, true)
+  // What a call copies into a local that becomes the exports.
+  t.assert.equal(analyze('const out = {}\nObject.assign(out, { __esModule: true, default: 1 })\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const out = {}\nObject.assign(out, { default: 1 })\nmodule.exports = out').setsEsModule, false)
+  t.assert.equal(analyze('const o = {}\nObject.assign(o, { __esModule: true })\nmodule.exports = { default: 1 }').setsEsModule, false)
+  // A statically falsy __esModule marks nothing.
+  t.assert.equal(analyze('module.exports = { __esModule: false, default: 1 }').setsEsModule, false)
+  t.assert.equal(analyze('exports.__esModule = void 0').setsEsModule, false)
+  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: false })').setsEsModule, false)
+  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { get: () => flag })').setsEsModule, true)
   // A literal that never becomes the exports, or only ends up nested in them, doesn't mark them.
   t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
   t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
