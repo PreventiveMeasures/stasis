@@ -36,6 +36,19 @@ Packages are deduplicated by ecosystem + name + version across all inputs and
 sorted by name then version. Inventory is at the **package** level, not the file
 level. Legacy `version: 0` bundles record no `name`/`version`, so they contribute nothing.
 
+- **Vendored packages**, the copies a dependency keeps of others that a bundle
+  lists in its record's `vendored` (Next.js's `dist/compiled/<dir>`, see
+  `doc/file-formats.md`), are contained in it: nested in its `components` in
+  CycloneDX, each `bom-ref` the host's with the directory as a purl subpath and
+  the directory as its `evidence.occurrences` location; in SPDX, packages after
+  the rest, `SPDXRef-Package-<n>-Vendored-<i>`, which the host `CONTAINS`, the
+  directory as `packageFileName`. Only those a bundled file is in are listed,
+  each under the name its own `package.json` gives, with the `version` it gives
+  if any, and a purl only beside a version: Next.js's copies mostly record
+  none, and a name without one names no release, nor always a registry package
+  (Next.js calls its React `react-builtin`). Across inputs, a host lists the
+  union of its copies. A lockfile records none.
+
 ## Package URLs
 
 Each component carries a [purl](https://github.com/package-url/purl-spec), built
