@@ -216,12 +216,17 @@ const isSymbol = (node) => (node?.type === 'MemberExpression' && node.object.typ
   (node?.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'Symbol')
 
 // Whether a computed key of what becomes the exports may name `__esModule`: a constant compares (`'__es' +
-// 'Module'`), a symbol or other literal can't (`Symbol.iterator`, `0`), a name is the caller's to resolve
-// once every declaration is in (out.keys), and anything else -- `process.env.KEY`, a call -- may.
+// 'Module'`), another literal can't (`0`), nor can a symbol (`Symbol.iterator`) unless the file binds `Symbol`
+// itself (the caller's to tell: out.symbols), a name is the caller's to resolve once every declaration is in
+// (out.keys), and anything else -- `process.env.KEY`, a call -- may.
 function mayNameEsModule(key, out) {
   const string = stringValue(key)
   if (string !== undefined) return string === '__esModule'
-  if (key.type === 'Literal' || isSymbol(key)) return false
+  if (key.type === 'Literal') return false
+  if (isSymbol(key)) {
+    out.symbols = true
+    return false
+  }
   if (key.type !== 'Identifier') return true
   out.keys.add(key.name)
   return false
@@ -393,14 +398,15 @@ export function analyzeModule(source, { path, loader }) {
     else facts.setsEsModule = true
   }
   // A key set on a receiver: `__esModule` marks it; a computed name (`exports[marker] = true`) may, resolved once
-  // every declaration is in.
+  // every declaration is in. A key whose value isn't known doesn't count here, unlike in what becomes the exports:
+  // dynamic writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
   const keyMarks = []  // [key name, receiver]
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
   const markKey = (key, computed, receiver) => {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), keys: new Set(), marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), keys: new Set(), symbols: false, marked: false }
 
   // Iterative: minified code nests deeper than the call stack allows. fnDepth counts every function
   // (return/await scope), thisDepth only what has its own `this` (non-arrow functions, class field values,
@@ -622,6 +628,7 @@ export function analyzeModule(source, { path, loader }) {
     for (const callee of found.callees) pending.push(['call', callee])
     for (const cls of found.instances) pending.push(['instance', cls])
     if (found.marked) exported.marked = true
+    if (found.symbols) exported.symbols = true
   }
   follow(exported)
   while (pending.length > 0) {
@@ -630,7 +637,7 @@ export function analyzeModule(source, { path, loader }) {
     done[kind].add(name)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), keys: exported.keys, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), keys: exported.keys, symbols: false, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') for (const origin of [...inits, ...assigned]) scanInstance(origin, found)
     else {
@@ -641,15 +648,17 @@ export function analyzeModule(source, { path, loader }) {
   }
   facts.reexports = exported.specifiers
   // A computed key of what becomes the exports may name `__esModule` unless every value its name is given is a
-  // constant or a symbol: one with none (a parameter, an import, a global) is unknown.
+  // constant or a symbol: one with none (a parameter, an import, a global) is unknown, and so is a symbol where
+  // the file binds `Symbol` itself.
+  const symbolBound = bindingCounts.has('Symbol') || reassigned.has('Symbol')
   const mayName = (name) => {
     const given = [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])]
     return given.length === 0 || given.some((value) => {
       const string = stringValue(value)
-      return string === undefined ? value.type !== 'Literal' && !isSymbol(value) : string === '__esModule'
+      return string === undefined ? value.type !== 'Literal' && (symbolBound || !isSymbol(value)) : string === '__esModule'
     })
   }
-  if ([...exported.keys].some(mayName)) exported.marked = true
+  if ((exported.symbols && symbolBound) || [...exported.keys].some(mayName)) exported.marked = true
   for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {

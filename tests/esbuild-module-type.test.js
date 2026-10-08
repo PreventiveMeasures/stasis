@@ -149,6 +149,11 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('module.exports = { [process.env.MARKER]: true, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('module.exports = class { static [key()] = 1 }').setsEsModule, true)
   t.assert.equal(analyze("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }").setsEsModule, false)
+  // ...unless the file binds `Symbol` itself.
+  t.assert.equal(analyze("const Symbol = () => '__esModule'\nmodule.exports = { [Symbol()]: true, default: 1 }").setsEsModule, true)
+  t.assert.equal(analyze("const Symbol = () => '__esModule'\nconst s = Symbol()\nmodule.exports = { [s]: true }").setsEsModule, true)
+  // A write through a computed key counts only where the key resolves to `__esModule`: fs-extra's loop isn't a mark.
+  t.assert.equal(analyze("api.forEach((method) => { exports[method] = u(fs[method]) })").setsEsModule, false)
   // A setter alone reads as undefined.
   t.assert.equal(analyze('module.exports = { set __esModule(v) {}, default: 1 }').setsEsModule, false)
   t.assert.equal(analyze('module.exports = class { static set __esModule(v) {} }').setsEsModule, false)
