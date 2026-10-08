@@ -63,6 +63,11 @@ test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level
   t.assert.equal(analyze('{ let module = 1; module += 1 }').cjsUsage, 'no')
   t.assert.equal(analyze('function f(exports) { exports.a = 1 }\nexports.b = 2').cjsUsage, 'yes')
   t.assert.equal(analyze('{ let module = 1 }\nmodule.exports = 2').cjsUsage, 'yes')
+  // A default parameter value sees the parameters, not the body's declarations.
+  t.assert.equal(analyze('function f(x = module) { let module; return x }').cjsUsage, 'yes')
+  t.assert.equal(analyze('function f(x = exports) { var exports; return x }').cjsUsage, 'yes')
+  t.assert.equal(analyze('function f(module, x = module) { return x }').cjsUsage, 'no')
+  t.assert.equal(analyze('const f = (module) => { const g = () => module; return g }').cjsUsage, 'no')
 })
 
 test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a block-level function', (t) => {
