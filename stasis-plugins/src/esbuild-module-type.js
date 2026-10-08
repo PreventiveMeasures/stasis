@@ -148,6 +148,29 @@ function hasUseStrict(statements) {
   return false
 }
 
+// Whether an expression is falsy whatever runs: an `__esModule` set to one marks nothing.
+function isFalsy(node) {
+  switch (node?.type) {
+    case 'Literal':
+      return node.regex === undefined && node.bigint === undefined && !node.value
+    case 'Identifier':
+      return node.name === 'undefined'
+    case 'UnaryExpression':
+      return node.operator === 'void' || (node.operator === '!' && node.argument.type === 'Literal' && node.argument.regex === undefined && Boolean(node.argument.value))
+    default:
+      return false
+  }
+}
+
+// Whether a defineProperty descriptor may define a truthy value: not a literal whose `value` is falsy and has no getter.
+function mayDefineTruthy(descriptor) {
+  if (descriptor?.type !== 'ObjectExpression') return true
+  const key = (prop) => (prop.type === 'Property' && !prop.computed ? nameOf(prop.key) : undefined)
+  if (descriptor.properties.some((prop) => prop.type !== 'Property' || prop.computed || key(prop) === 'get')) return true
+  const value = descriptor.properties.find((prop) => key(prop) === 'value')
+  return value !== undefined && !isFalsy(value.value)
+}
+
 // The values a function returns: its expression body, or each `return` outside nested functions.
 function returnedValues(fn) {
   if (fn.body.type !== 'BlockStatement') return [fn.body]
@@ -196,7 +219,7 @@ function scanValue(node, out) {
       case 'ObjectExpression':
         for (const prop of current.properties) {
           if (prop.type === 'SpreadElement') stack.push(prop.argument)
-          else if ((prop.computed ? stringValue(prop.key) : nameOf(prop.key)) === '__esModule') out.marked = true
+          else if ((prop.computed ? stringValue(prop.key) : nameOf(prop.key)) === '__esModule' && !isFalsy(prop.value)) out.marked = true
         }
         break
       case 'CallExpression': {
@@ -281,6 +304,8 @@ export function analyzeModule(source, { path, loader }) {
   }
   const declarators = new Map()  // name -> [init]
   const functionDecls = new Map()  // name -> [FunctionDeclaration]
+  // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
+  const copies = new Map()  // name -> [argument]
   // A fresh local object (every binding of the name an object-literal declarator, never reassigned): an
   // `__esModule` mark on one only reaches the exports if the object does.
   const bindingCounts = new Map()
@@ -366,7 +391,13 @@ export function analyzeModule(source, { path, loader }) {
       case 'CallExpression':
         if (node.callee.type === 'Identifier' && node.callee.name === 'eval' && !node.optional) cjsCertain ??= 'a direct `eval`'
         // defineProperty-style: (target, '__esModule', descriptor), aliases included (esbuild's __defProp).
-        if (node.arguments.length >= 3 && stringValue(node.arguments[1]) === '__esModule') markReceiver(node.arguments[0])
+        if (node.arguments.length >= 3 && stringValue(node.arguments[1]) === '__esModule' && mayDefineTruthy(node.arguments[2])) {
+          markReceiver(node.arguments[0])
+        }
+        if (node.arguments[0]?.type === 'Identifier' && !isExportsTarget(node.arguments[0]) && node.arguments.length > 1) {
+          const [{ name }, ...rest] = node.arguments
+          copies.set(name, [...(copies.get(name) ?? []), ...rest.map((arg) => (arg.type === 'SpreadElement' ? arg.argument : arg))])
+        }
         // Copying into the exports: Object.assign(module.exports, require(x)), __exportStar(require(x), exports),
         // Object.defineProperties(exports, { __esModule: ... }).
         if (node.arguments.some(isExportsTarget)) {
@@ -374,7 +405,7 @@ export function analyzeModule(source, { path, loader }) {
         }
         break
       case 'AssignmentExpression':
-        if (node.left.type === 'MemberExpression' &&
+        if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right)) &&
           (node.left.computed ? stringValue(node.left.property) : node.left.property.name) === '__esModule') markReceiver(node.left.object)
         for (const name of patternNames(node.left)) reassigned.add(name)
         if (isExportsTarget(node.left)) scanValue(node.right, exported)
@@ -473,7 +504,7 @@ export function analyzeModule(source, { path, loader }) {
     if (done.has(name)) continue
     done.add(name)
     const inits = declarators.get(name) ?? []
-    const sources = kind === 'value' ? inits
+    const sources = kind === 'value' ? [...inits, ...(copies.get(name) ?? [])]
       : [...(functionDecls.get(name) ?? []), ...inits.filter((init) => FUNCTIONS.has(init.type))].flatMap((fn) => returnedValues(fn))
     for (const origin of sources) {
       const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), marked: false }
