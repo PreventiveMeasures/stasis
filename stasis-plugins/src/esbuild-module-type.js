@@ -148,13 +148,12 @@ function hasUseStrict(statements) {
   return false
 }
 
-// Whether an expression is falsy whatever runs: an `__esModule` set to one marks nothing.
+// Whether an expression is falsy whatever runs: an `__esModule` set to one marks nothing. Not the name
+// `undefined`, which a local declaration can rebind; `void 0` can't be.
 function isFalsy(node) {
   switch (node?.type) {
     case 'Literal':
       return node.regex === undefined && node.bigint === undefined && !node.value
-    case 'Identifier':
-      return node.name === 'undefined'
     case 'UnaryExpression':
       return node.operator === 'void' || (node.operator === '!' && node.argument.type === 'Literal' && node.argument.regex === undefined && Boolean(node.argument.value))
     default:
