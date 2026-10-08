@@ -193,6 +193,10 @@ test('analyzeModule: a constant __esModule key marks wherever it may be defined,
   t.assert.equal(marks("const Reflect = { has(o, k) { o[k] = true } }\nReflect.has(exports, '__esModule')"), true)
   t.assert.equal(marks("function f(Object) { return Object.prototype.hasOwnProperty.call(exports, '__esModule') }"), true)
   t.assert.equal(marks("Object = { hasOwn(o, k) { o[k] = true } }\nObject.hasOwn(exports, '__esModule')"), true)
+  // ...nor where the file may make a Proxy, whose trap a read builtin hands the key.
+  t.assert.equal(marks("Reflect.get(new Proxy({}, { get(_, key) { exports[key] = true } }), '__esModule')\nexports.default = 1"), true)
+  t.assert.equal(marks("const p = Proxy.revocable({}, traps).proxy\nObject.hasOwn(p, '__esModule')"), true)
+  t.assert.equal(marks("class Proxy {}\nnew Proxy()\nObject.hasOwn(m, '__esModule')"), false)
 })
 
 test('analyzeModule: a key only the runtime knows marks where it reaches the exports -- a computed key, a Proxy, a runtime require', (t) => {
