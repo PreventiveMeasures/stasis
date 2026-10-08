@@ -4,8 +4,8 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// A record as a lockfile holds it: without `repo` and `vendored`, metadata a bundle carries and nothing attests.
-const lockRecord = ({ repo: _repo, vendored: _vendored, ...info }) => info
+// A record as a lockfile holds it: without `repo`, `vendored` and `subpackages`, metadata a bundle carries and nothing attests.
+const lockRecord = ({ repo: _repo, vendored: _vendored, subpackages: _subpackages, ...info }) => info
 
 export class Lockfile {
   static VERSION = VERSION

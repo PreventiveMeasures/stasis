@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { join, resolve, relative, basename, dirname, extname, isAbsolute } from 'node:path'
+import { join, posix, resolve, relative, basename, dirname, extname, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -11,7 +11,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, withMetadataOf } from './util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -745,7 +745,7 @@ export class State {
 
     // findPackageJSON may land on a `{"type":"module"}` sub-bucket marker lacking name/version.
     const { dir: nmRoot, rel: nmRel } = splitNodeModulesPath(file) ?? {}
-    let pkgAbsolute, name, version, repo, vendored
+    let pkgAbsolute, name, version, repo, vendored, subpackage
     if (nmRoot) {
       pkgAbsolute = resolve(this.root, nmRoot, 'package.json')
       const rootPkg = pkgAbsolute === closestPkgAbsolute ? closestPkg : readPackageJSON(this.#host, pkgAbsolute)
@@ -765,7 +765,9 @@ export class State {
         const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
         // Allow fake module-name subpaths: the real module owns the prefix (npm wouldn't publish this).
         if (closestPkg.name !== undefined && closestPkg.name !== name) assert.ok(closestPkg.name.startsWith(`${name}/`), message)
-        if (closestPkg.version !== undefined) assert.equal(closestPkg.version, version, message)
+        // A subpackage is the package's, its version its own: listed in `subpackages` instead.
+        subpackage = this.#subpackageOf(closestPkgAbsolute, closestPkg, pkgAbsolute, name)
+        if (subpackage === undefined && closestPkg.version !== undefined) assert.equal(closestPkg.version, version, message)
       }
     } else {
       pkgAbsolute = closestPkgAbsolute
@@ -805,7 +807,18 @@ export class State {
     // A dependency's repo is metadata, its package.json's, held to nothing: a record with none gets it.
     if (module.repo === undefined && repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
 
-    return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored }
+    return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored, subpackage }
+  }
+
+  // The subpackage (isSubpackage) of the package `name` at `pkgAbsolute` whose package.json is `manifest`, at
+  // `manifestAbsolute` -> { dir, name, version? }, or undefined. Its directory is taken by real path, as
+  // findPackageJSON resolves a package.json through a symlinked install.
+  #subpackageOf(manifestAbsolute, manifest, pkgAbsolute, name) {
+    if (typeof manifest.name !== 'string' || !manifest.name.startsWith(`${name}/`)) return undefined
+    const realDir = (file) => toPosix(this.#host.realpath(dirname(file)))
+    const dir = posix.relative(realDir(pkgAbsolute), realDir(manifestAbsolute))
+    if (!isSubpackage(manifest.name, name, dir)) return undefined
+    return { dir, name: manifest.name, ...(isPackageString(manifest.version) ? { version: manifest.version } : {}) }
   }
 
   // `resource: true` (legacy alias `isBinary: true`): format derived from bytes. `inferFormat: false`
@@ -833,7 +846,7 @@ export class State {
     if (asResource && isEntry) {
       throw new Error(`addFile: a resource can't be an entry (resource:true + isEntry:true)`)
     }
-    const { absolute, file, dir, module, closestType, vendored } = this.#locateModule(url, { synthetic })
+    const { absolute, file, dir, module, closestType, vendored, subpackage } = this.#locateModule(url, { synthetic })
 
     // Real content supersedes a payload-free stat record: drop it so the noupsert below records the
     // actual format instead of conflicting with 'stat:*'.
@@ -940,11 +953,12 @@ export class State {
 
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
-    // The vendored package this file is in is reached: listed in the host's `vendored` (metadata, the
-    // first identity recorded for its dir standing).
-    if (vendored !== undefined && !Object.hasOwn(module.vendored ?? {}, vendored.dir)) {
-      const { dir: sub, ...identity } = vendored
-      this.modules.set(dir, withMetadataOf(module, { vendored: { [sub]: Object.freeze(identity) } }))
+    // The vendored package or subpackage this file is in is reached: listed in the host's `vendored` or
+    // `subpackages` (metadata, the first identity recorded for its dir standing).
+    for (const [field, entry] of [['vendored', vendored], ['subpackages', subpackage]]) {
+      if (entry === undefined || Object.hasOwn(this.modules.get(dir)[field] ?? {}, entry.dir)) continue
+      const { dir: sub, ...identity } = entry
+      this.modules.set(dir, withMetadataOf(this.modules.get(dir), { [field]: { [sub]: Object.freeze(identity) } }))
     }
 
     if (this.config.bundle) {

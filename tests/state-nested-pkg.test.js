@@ -126,6 +126,58 @@ test('a bundle refuses a vendored entry that holds none of its files, or on firs
     /no dependency's bucket, and carries no vendored/)
 })
 
+// @hookform/resolvers lays its subpath entry points out as microbundle does: zod/package.json, named
+// `@hookform/resolvers/zod`, with a placeholder version of its own (1.0.0; arktype's is 2.0.0).
+const HOOKFORM = join(root, 'node_modules', '@hookform', 'resolvers')
+const hookformFile = (rel) => pathToFileURL(join(HOOKFORM, ...rel.split('/'))).toString()
+
+test('addFile takes a subpackage as its package\'s, its own version held to nothing, and lists it', (t) => {
+  const state = new State(root)
+  state.addFile(hookformFile('zod/dist/zod.js'))
+  state.addFile(hookformFile('ajv/dist/ajv.js')) // a subpackage with no version
+  state.addFile(hookformFile('dist/resolvers.js')) // the package's own
+
+  const module = state.modules.get('node_modules/@hookform/resolvers')
+  t.assert.equal(module.name, '@hookform/resolvers')
+  t.assert.equal(module.version, '5.9.1')
+  t.assert.ok(module.files['zod/dist/zod.js'])
+  t.assert.ok(!state.modules.has('node_modules/@hookform/resolvers/zod'), 'never a bucket of its own')
+  // Only what was reached: arktype is never listed.
+  t.assert.deepStrictEqual({ ...module.subpackages }, {
+    zod: { name: '@hookform/resolvers/zod', version: '1.0.0' },
+    ajv: { name: '@hookform/resolvers/ajv' },
+  })
+  t.assert.equal(module.vendored, undefined, 'its own code, no copy of another package')
+})
+
+test('a package.json named in the package\'s namespace for another directory is still held to its version', (t) => {
+  const state = new State(root)
+  t.assert.throws(() => state.addFile(hookformFile('misplaced/index.js')),
+    /Inconsistent data between node_modules\/@hookform\/resolvers\/misplaced\/package\.json and node_modules\/@hookform\/resolvers\/package\.json/)
+})
+
+test('a bundle lists the subpackages it carries a file of; a lockfile none', (t) => {
+  const state = new State(root, { lock: 'add', bundle: 'add' })
+  state.addFile(hookformFile('zod/dist/zod.js'))
+  const record = (artifact) => JSON.parse(artifact.serialize()).modules['node_modules/@hookform/resolvers']
+  t.assert.deepStrictEqual(record(state.sourceBundle).subpackages, { zod: { name: '@hookform/resolvers/zod', version: '1.0.0' } })
+  t.assert.equal(record(state.lockfile).subpackages, undefined, 'metadata, which a lockfile never records')
+  t.assert.deepStrictEqual({ ...Bundle.parse(state.sourceBundle.serialize()).modules.get('node_modules/@hookform/resolvers').subpackages.zod },
+    { name: '@hookform/resolvers/zod', version: '1.0.0' })
+})
+
+test('a bundle refuses a subpackage named other than its package\'s name for its directory', (t) => {
+  const bundle = (subpackages) => JSON.stringify({
+    version: 1, config: { scope: 'node_modules' }, formats: {}, imports: {},
+    modules: { 'node_modules/@hookform/resolvers': { name: '@hookform/resolvers', version: '5.9.1', ecosystem: 'npm', subpackages, files: { 'zod/dist/zod.js': '' } } },
+  })
+  t.assert.doesNotThrow(() => Bundle.parse(bundle({ zod: { name: '@hookform/resolvers/zod', version: '1.0.0' } })))
+  t.assert.throws(() => Bundle.parse(bundle({ zod: { name: '@hookform/resolvers/yup', version: '1.0.0' } })),
+    /subpackages 'zod' is named '@hookform\/resolvers\/yup', not '@hookform\/resolvers\/zod'/)
+  t.assert.throws(() => Bundle.parse(bundle({ zod: { name: 'zod' } })), /is named 'zod'/)
+  t.assert.throws(() => Bundle.parse(bundle({ yup: { name: '@hookform/resolvers/yup' } })), /subpackages 'yup' holds none of its files/)
+})
+
 test('addFile walks past a workspace type-only marker to find the project package.json', (t) => {
   const state = new State(root)
   const url = pathToFileURL(join(root, 'sub', 'foo.cjs')).toString()

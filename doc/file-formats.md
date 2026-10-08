@@ -135,16 +135,27 @@ attested.
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
   still load.
-- A record carries no `repo` or `vendored`: a dependency's repository, and the
-  packages copied into it, are metadata, which a bundle carries (see `modules`
-  under `stasis.code.br`) and a lockfile neither writes nor reads.
+- A record carries no `repo`, `vendored` or `subpackages`: a dependency's
+  repository, the packages copied into it and its subpath entry points are
+  metadata, which a bundle carries (see `modules` under `stasis.code.br`) and a
+  lockfile neither writes nor reads.
 - A file under a dependency is that dependency's, at the directory its
-  `package.json` is in, and a `package.json` nested inside it must not name
-  another package or version (a stale copy known upstream, `@redis/client`'s
-  `dist/package.json`, aside). A package that keeps copies of others in a
-  directory, each beside a `package.json` naming it, is the exception, listed in
-  `@exodus/stasis-core`'s `bundle-util.js`: Next.js, `dist/compiled`. A file
-  there is still the host's, and a bundle lists the copy it is in (`vendored`).
+  `package.json` is in, and a `package.json` nested inside it, one nothing
+  expects, must not name another package or version: where it came from is the
+  question the check asks. Each answer accepted instead is recorded in the
+  bundle:
+  - A package that keeps copies of others in a directory, each beside a
+    `package.json` naming it, listed in `@exodus/stasis-core`'s
+    `bundle-util.js` (Next.js, `dist/compiled`): a file there is still the
+    host's, and a bundle lists the copy it is in (`vendored`).
+  - A subpackage, a subpath entry point with a `package.json` of its own named
+    in the package's namespace for the very directory it is in
+    (`@hookform/resolvers/zod` at `zod/`, as microbundle lays them out): its
+    files are the package's, its `version` (a placeholder, `1.0.0`) its own,
+    and a bundle lists it (`subpackages`). One named in the namespace for
+    another directory is still held to the package's version.
+  - A stale copy known upstream, `@redis/client`'s `dist/package.json`, is
+    let through, listed in `state.js`.
 - `imports` records observed resolutions (conditions → parent file → specifier →
   resolved project-relative path). Under `lock = frozen`, disk resolutions are
   checked: a divergence from the recorded target is fatal (catching a specifier
@@ -333,6 +344,28 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   for, and a merge takes the union, the existing side's where both list one.
   `stasis sbom` lists each copy as a package contained in its host (see
   `doc/sbom.md`).
+- A dependency record may carry `subpackages`, after `vendored`: its subpath
+  entry points with a `package.json` of their own whose files the bundle
+  carries, by directory, each with that `package.json`'s `name`, which must be
+  the package's name for the directory (`@hookform/resolvers/zod` at `zod/`),
+  and, where it gives one, `version`:
+
+  ```json
+  "node_modules/@hookform/resolvers": {
+    "name": "@hookform/resolvers",
+    "version": "5.9.1",
+    "ecosystem": "npm",
+    "subpackages": { "zod": { "name": "@hookform/resolvers/zod", "version": "1.0.0" } },
+    "files": { "zod/dist/zod.js": "…" }
+  }
+  ```
+
+  A file is in a subpackage when that subpackage's `package.json` is the
+  nearest one above it. The rest is as for `vendored`: only those a bundled
+  file is in are listed, each half of a split layout its own, parse rejects an
+  entry holding none of the record's files (or misnamed, or on first-party
+  code), and it is metadata, held to nothing and merged by union. They are the
+  package's own code, so `stasis sbom` lists none.
 - `formats`: project-relative path → format, same vocabulary as the lockfile's
   `formats`. May be missing per file for code whose format Node infers. TypeScript
   sources are stored verbatim (types intact); Node strips types at load time.

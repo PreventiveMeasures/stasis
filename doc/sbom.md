@@ -47,7 +47,9 @@ level. Legacy `version: 0` bundles record no `name`/`version`, so they contribut
   if any, and a purl only beside a version: Next.js's copies mostly record
   none, and a name without one names no release, nor always a registry package
   (Next.js calls its React `react-builtin`). Across inputs, a host lists the
-  union of its copies. A lockfile records none.
+  union of its copies. A lockfile records none. A dependency's `subpackages`
+  (its own subpath entry points, `@hookform/resolvers/zod`) are its own code,
+  not packages: none is listed.
 
 ## Package URLs
 
