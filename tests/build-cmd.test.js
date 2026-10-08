@@ -446,7 +446,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
           name: 'x',
           version: '0.0.0',
           files: {
-            'src/entry.js': "import ext from 'ext-pkg'\nimport { greet } from './hello.js'\nconsole.log(greet(typeof ext))\n",
+            'src/entry.js': "import { ext } from 'ext-pkg'\nimport { greet } from './hello.js'\nconsole.log(greet(typeof ext))\n",
             'src/hello.js': "export const greet = (n) => 'hello, ' + n\n",
           },
         },
@@ -469,6 +469,17 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const out = readFileSync(join(tmp, 'out.cjs'), 'utf-8')
     t.assert.match(out, /require\(["']ext-pkg["']\)/, 'the external must survive as a runtime require')
     t.assert.match(out, /hello, /, 'the recorded local edge must still be inlined')
+
+    // A default import of it from a "type": "module" file is refused as cjs: a plain esbuild build gives the
+    // require() it becomes Node's interop, on exports only the runtime knows. As ESM it stays an import.
+    bundleObj.sources['.'].files['src/entry.js'] = "import ext from 'ext-pkg'\nconsole.log(typeof ext)\n"
+    writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify(bundleObj)))
+    const refused = await runCli(['build', '--format=cjs', '--external=ext-pkg', '--output=default.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(refused.status, 0)
+    t.assert.match(refused.stderr, /refusing to build 'src\/entry\.js'.*it imports the default export or namespace of 'ext-pkg', an external/)
+    const esm = await runCli(['build', '--format=esm', '--external=ext-pkg', '--output=default.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(esm.status, 0, esm.stderr)
+    t.assert.match(readFileSync(join(tmp, 'default.mjs'), 'utf-8'), /import ext from "ext-pkg"/)
   }))
 
   test('build forwards --loader to enable JSX in a .js file', withTmp(async (t, tmp) => {

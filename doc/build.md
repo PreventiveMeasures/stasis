@@ -40,6 +40,12 @@ esbuild leaves them as runtime imports; it can't un-inline an attested edge.
 stasis build --output=out.cjs --format=cjs --external=better-sqlite3 app.code.br
 ```
 
+In a cjs/iife build an external import becomes a `require()`, and a plain esbuild
+build gives one in a `"type": "module"` file Node's default-import interop, which a
+build through the plugin can't (see [package.json `type`](#packagejson-type-built-as-plain-esbuild-does-or-refused)).
+Since the external's exports are only known at runtime, a default or namespace
+import of one from such a file is refused there; `--format=esm` keeps it an import.
+
 ## Hermes (`--platform=hermes`)
 
 Hermes (React Native's engine) executes a dialect without classes, class fields,
@@ -221,7 +227,8 @@ output that behaves differently from a plain esbuild build of the same tree:
 
 | Refused | A plain esbuild build | Through the plugin | Way out |
 | - | - | - | - |
-| A `"type": "module"` file default- or namespace-imports (or `import()`s) a CommonJS module whose exports may carry `__esModule` (the Babel/TypeScript shape `exports.__esModule = true; exports.default = …`, directly or through a `module.exports = require(…)` re-export) | Node's interop: the default import is the whole `module.exports`, as under Node | The bundler interop: `module.exports.default` | Import named exports, or rename the importer `.mjs` |
+| A `"type": "module"` file default- or namespace-imports (or `import()`s) a CommonJS module whose exports may carry `__esModule` (the Babel/TypeScript shape `exports.__esModule = true; exports.default = …`, directly or through a `module.exports = require(…)` re-export — of an external too, whose exports are unknown) | Node's interop: the default import is the whole `module.exports`, as under Node | The bundler interop: `module.exports.default` | Import named exports, or rename the importer `.mjs` |
+| A `"type": "module"` file default- or namespace-imports a non-builtin [external](#externals) with `--format=cjs`/`iife`, or `import()`s one where esbuild lowers `import()` (a target without it) | The `require()` it becomes gets Node's interop | The bundler interop — on exports only the runtime knows | Import named exports, rename the importer `.mjs`, or `--format=esm` |
 | A `"type": "module"` file with no `export`, `import.meta` or top-level `await` uses `module`/`exports`, top-level `this` or `return`, or a direct `eval` | ESM: `module`/`exports` stay free, `this` is `undefined` | CommonJS | Make the file ESM, or `.cjs` |
 | A `"type": "module"` file with no `import` or `export` at all is required or imported for its exports, or parses differently in strict mode (`with`, a block-level function) | An ES module without exports, strict | CommonJS / sloppy | Add an `export`, or `.cjs` |
 | A `"type": "commonjs"` file with `import`s but no `export` or CommonJS use is required or imported for its exports | CommonJS | ESM | Make it consistently one or the other |
