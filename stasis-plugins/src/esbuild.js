@@ -1,9 +1,11 @@
 import { isUtf8 } from 'node:buffer'
-import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { isBuiltin } from 'node:module'
+import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { PACKAGE_TYPED_EXTENSIONS, analyzeModule } from './esbuild-module-type.js'
 import { resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
@@ -11,6 +13,8 @@ import { State } from '@exodus/stasis-core/state'
 import { realReadFile } from '@exodus/stasis-core/state-util'
 import { EMPTY_MODULE_PATH, classifyExtension } from '@exodus/stasis-core/util'
 
+// esbuild loaders that parse a file as JavaScript or TypeScript.
+const CODE_LOADERS = new Set(['js', 'jsx', 'ts', 'tsx'])
 // The build options esbuild's resolver reads, replayed into the disabled-import probe so it
 // resolves exactly as the build does.
 const RESOLVE_OPTIONS = ['absWorkingDir', 'alias', 'conditions', 'external', 'mainFields', 'nodePaths',
@@ -74,6 +78,9 @@ export class StasisEsbuild {
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
   #probes = new Map()  // [kind, resolveDir, specifier] -> Promise<disabled path | null>
+  #served = new Map()  // path -> Promise<{ contents, loader }>: what esbuild parses for a served code file
+  #facts = new Map()  // path -> Promise<analyzeModule facts | null>
+  #typeScopes = new Map()  // dir -> Promise<'module' | 'commonjs' | null | undefined>: its nearest package.json `type`
 
   // Build starts observed by this instance (across rebuilds and separate build()/context() calls);
   // the second is refused in onStart.
@@ -176,8 +183,314 @@ export class StasisEsbuild {
     return (await this.#probeDisabled(specifier, kind, resolveDir, build)) === res.path
   }
 
+  // ---- package.json `type` checks ----
+  // esbuild gives a .js/.jsx/.ts/.tsx file the module type of its nearest package.json only when its own
+  // resolver resolved the file; a plugin's onResolve result can't carry one, so every file served here
+  // parses as if its package had no `type`. Where that changes what the build does (Node's default-import
+  // interop, whether a file is ESM or CommonJS, strict mode), refuse the build instead of diverging from a
+  // plain esbuild build. Each check returns an error text, or null.
+
+  // What esbuild parses for a code file this plugin serves, read once for onLoad and the checks: load
+  // mode's attested bytes (through any transform), capture's disk bytes.
+  #serve(path) {
+    let served = this.#served.get(path)
+    if (served === undefined) {
+      const loader = this.#loaderFor(path)
+      served = this.#state.config.loadBundle
+        ? (async () => {
+            const { source } = this.#state.getFile(pathToFileURL(path).toString())
+            // A transform that declines (undefined) serves the attested bytes unchanged.
+            return (await this.#transform?.(source, { path, loader })) ?? { contents: source, loader }
+          })()
+        : realReadFile(path).then((contents) => ({ contents, loader }))
+      this.#served.set(path, served)
+    }
+    return served
+  }
+
+  // Whether a file is a resource: in load mode one the bundle attests as such (`stasis build`'s config lists no
+  // `resources`), at capture by its extension against the `resources` config.
+  #isResource(path) {
+    if (!this.#state.config.loadBundle) return classifyExtension(path, this.#resources) === 'resource'
+    const rel = relative(this.#state.root, path)
+    return !rel.startsWith('..') && !isAbsolute(rel) && this.#state.resources.has(rel.split(sep).join('/'))
+  }
+
+  // The loader esbuild applies to a resource: the build's `loader` option's for its extension -- or, in load mode,
+  // where this plugin serves the bundle's bytes as contents and that option names none, esbuild's default for
+  // contents, `js` (`stasis build` passes no `loader` option: its --loader reaches only code files). Bytes that
+  // aren't text (a `resource:base64`) fail esbuild's parse on their own.
+  #resourceLoader(path, build) {
+    const configured = build.initialOptions.loader?.[extname(path)]
+    if (configured || !this.#state.config.loadBundle) return configured
+    return this.#state.getFormat(pathToFileURL(path).toString()) === 'resource' ? 'js' : undefined
+  }
+
+  // analyzeModule facts for a code file this plugin serves, or for a resource esbuild loads as code (`.data: 'js'`),
+  // else null.
+  #factsOf(path, build) {
+    const resourceLoader = build && this.#isResource(path) ? this.#resourceLoader(path, build) : undefined
+    if (CODE_LOADERS.has(resourceLoader)) {
+      const key = `${path}\u0000${resourceLoader}`
+      let facts = this.#facts.get(key)
+      if (facts === undefined) {
+        facts = this.#serve(path).then(({ contents }) => analyzeModule(String(contents), { path, loader: resourceLoader }))
+        this.#facts.set(key, facts)
+      }
+      return facts
+    }
+    let facts = this.#facts.get(path)
+    if (facts === undefined) {
+      let code
+      if (this.#state.config.loadBundle) {
+        // Attested non-resource bytes, whether or not a format is recorded (a plugin capture records none
+        // for .jsx/.tsx); a JSON file or other non-JS loader analyzes to null.
+        code = this.#state.sources.has(this.#state.relative(path).split(sep).join('/')) &&
+          pathToFileURL(path).toString() !== pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
+      } else {
+        code = classifyExtension(path, this.#resources) === 'code'
+      }
+      facts = code ? this.#serve(path).then(({ contents, loader }) => analyzeModule(contents, { path, loader })) : Promise.resolve(null)
+      this.#facts.set(path, facts)
+    }
+    return facts
+  }
+
+  // The `type` of the package.json nearest `dir` (esbuild's enclosing one): 'module', 'commonjs', null for
+  // none, or undefined when no package.json is there at all.
+  #typeScope(dir) {
+    let scope = this.#typeScopes.get(dir)
+    if (scope === undefined) {
+      const parent = () => (dirname(dir) === dir ? undefined : this.#typeScope(dirname(dir)))
+      scope = realReadFile(join(dir, 'package.json'), 'utf8').then((text) => {
+        let pkg
+        try {
+          pkg = JSON.parse(text)
+        } catch {
+          return parent() // malformed: walked past, as esbuild does
+        }
+        return pkg?.type === 'module' || pkg?.type === 'commonjs' ? pkg.type : null
+      }, parent)
+      this.#typeScopes.set(dir, scope)
+    }
+    return scope
+  }
+
+  // Which package.json `type` a plain esbuild build could give this file: { module, commonjs, exact }.
+  // Capture reads it off disk, as esbuild's resolver does. A bundle records only the file's Node format,
+  // which a typeless package's file shares (Node then detects it from syntax): load reads the package.json
+  // a plain build would here where the disk has one the format agrees with (it only decides whether to
+  // refuse, never what is built), and otherwise takes both readings, so a `module` format counts as
+  // "type": "module" and `commonjs` as "type": "commonjs".
+  async #packageTypes(path) {
+    if (!PACKAGE_TYPED_EXTENSIONS.has(extname(path))) return { module: false, commonjs: false, exact: true }
+    const type = await this.#typeScope(dirname(path))
+    if (!this.#state.config.loadBundle) return { module: type === 'module', commonjs: type === 'commonjs', exact: true }
+    const format = this.#state.getFormat(pathToFileURL(path).toString())
+    const module = format === 'module' || format === 'module-typescript'
+    const commonjs = format === 'commonjs' || format === 'commonjs-typescript'
+    if (type !== undefined && (type === null || (!module && !commonjs) || (type === 'module' ? module : commonjs))) {
+      return { module: type === 'module', commonjs: type === 'commonjs', exact: true }
+    }
+    return { module: module || !commonjs, commonjs: commonjs || !module, exact: false, format }
+  }
+
+  // Where `require(specifier)` in `fromPath` leads, as this build resolves it: { path } for a file this
+  // plugin serves, { opaque: true } for exports it can't read (a non-builtin external, one esbuild can't
+  // resolve and leaves for runtime -- a require in a try/catch -- or another plugin's namespace), or null for
+  // nothing to follow (a builtin, a disabled import).
+  async #resolveRequire(fromPath, specifier, build) {
+    if (this.#state.config.loadBundle) {
+      try {
+        return { path: fileURLToPath(this.#state.getImport(pathToFileURL(fromPath).toString(), specifier).url) }
+      } catch (err) {
+        if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err
+        return isBuiltin(specifier) ? null : { opaque: true }
+      }
+    }
+    const res = await build.resolve(specifier, { kind: 'require-call', resolveDir: dirname(fromPath), importer: fromPath, namespace: 'stasis' })
+    if (res.errors.length > 0) return isBuiltin(specifier) ? null : { opaque: true }
+    // An external resolves to no namespace too, so ask before taking that as a disabled import -- which the
+    // build replaces with an empty module, a disabled file included (a `browser` map's `"./x.js": false`).
+    if (res.external) return isBuiltin(specifier) ? null : { opaque: true }
+    if (await this.#isDisabled(res, specifier, { kind: 'require-call', resolveDir: dirname(fromPath) }, build)) return null
+    return res.namespace === 'file' ? { path: res.path } : { opaque: true }
+  }
+
+  // Whether a module this build bundles may have an `__esModule` mark on its module.exports. For the
+  // module an ESM file imports (depth 0), an ES module never is: esbuild only wraps CommonJS in __toESM.
+  // Past a `module.exports = require(...)`-style re-export it is: a required ES module gets esbuild's
+  // __toCommonJS mark. A file that doesn't parse might, as might exports this plugin can't read. Of the
+  // rest, re-exported JSON can carry one (`{ "__esModule": true }`: esbuild imports JSON as a whole), as can a
+  // resource the build's `loader` option copies for runtime (one it loads as code has facts); a string (text, file,
+  // dataurl, base64), bytes or an empty module can't. A resource's loader is the build's, a code file's this plugin's.
+  async #mayCarryEsModule(path, depth, seen, build) {
+    const facts = await this.#factsOf(path, build)
+    if (facts === null) {
+      if (depth === 0) return false
+      const resource = this.#isResource(path)
+      const loader = resource ? this.#resourceLoader(path, build) : this.#loaderFor(path)
+      if (loader !== 'json') return resource && loader === 'copy'
+      const { contents } = await this.#serve(path)
+      try {
+        return Boolean(JSON.parse(contents)?.__esModule)
+      } catch {
+        return true
+      }
+    }
+    if (facts.esmExports || (facts.esmImports && facts.cjsUsage === 'no')) return depth > 0
+    if (facts.setsEsModule || facts.parseError) return true
+    const targets = await Promise.all([...facts.reexports].map((specifier) => this.#resolveRequire(path, specifier, build)))
+    if (targets.some((target) => target?.opaque)) return true
+    const next = [...new Set(targets.map((target) => target?.path).filter((target) => target !== undefined && !seen.has(target)))]
+    for (const target of next) seen.add(target)
+    return (await Promise.all(next.map((target) => this.#mayCarryEsModule(target, depth + 1, seen, build)))).some(Boolean)
+  }
+
+  #refuse(path, types, why, fix) {
+    const file = relative(this.#state.root, path).split(sep).join('/')
+    const assumed = types.exact ? '' : ` (the bundle records its Node format, '${types.format}', but not its package.json "type", and no package.json ` +
+      'on disk agrees with that format, so the "type" the format implies is assumed)'
+    return `StasisEsbuild: refusing to build '${file}'${assumed}: ${why}. esbuild applies a package.json "type" only to files its own resolver ` +
+      `loads, not to ones a plugin serves, so this build would not match a plain esbuild build.${fix ? ` ${fix}.` : ''}`
+  }
+
+  // A file whose own parse depends on its package type.
+  async #checkFile(path) {
+    const types = await this.#packageTypes(path)
+    if (!types.module && !types.commonjs) return null
+    const facts = await this.#factsOf(path)
+    if (facts === null || facts.esmExports) return null
+    // Top-level `arguments` is the wrapper's where a build wraps the file, and the builds wrap differently: a plain
+    // one by the package type (a "type": "module" file as ESM, a "type": "commonjs" one as CommonJS), this
+    // plugin's by syntax, as CommonJS where it sees CommonJS use and no import.
+    const pluginCjs = facts.cjsUsage === 'yes' && !facts.esmImports
+    if (facts.topArguments && ((types.module && !facts.esmImports && !pluginCjs) || (types.commonjs && !pluginCjs))) {
+      return this.#refuse(path, types, 'it reads `arguments` outside any function, where a plain esbuild build and this plugin\'s ' +
+        `build give it different module wrappers (a plain build treats the file as ${types.module ? 'ESM' : 'CommonJS'} by its ` +
+        `package.json "type", this plugin's build as ${pluginCjs ? 'CommonJS' : 'ESM'} by its syntax)`, 'Read `arguments` only inside a function')
+    }
+    if (!types.module) return null
+    if (facts.cjsUsage !== 'no') {
+      return this.#refuse(path, types, `it has no \`export\`, \`import.meta\` or top-level \`await\` but uses ${facts.cjsDetail}, ` +
+        'which a plain esbuild build treats as ESM in a "type": "module" package (no CommonJS `module`/`exports`, `this` undefined) ' +
+        'and this plugin\'s build as CommonJS')
+    }
+    if (!facts.esmImports && (facts.strictOnly || facts.blockFunction)) {
+      return this.#refuse(path, types, 'it has no `import` or `export`, so a plain esbuild build parses it as a strict-mode ES module ' +
+        `in a "type": "module" package and this plugin's build as a sloppy-mode script (${facts.strictOnly ?? 'a block-level function declaration'})`)
+    }
+    return null
+  }
+
+  // An import from `importer` of `target`, which this plugin serves as code.
+  async #checkEdge(importer, specifier, kind, target, build) {
+    if (kind !== 'import-statement' && kind !== 'dynamic-import' && kind !== 'require-call') return null
+    const [importerTypes, targetTypes] = await Promise.all([this.#packageTypes(importer), this.#packageTypes(target)])
+    const targetTyped = targetTypes.module || targetTypes.commonjs
+    // What the import sees of the target: its exports at all, or its default/namespace (the interop's say).
+    let usage = { bindings: kind === 'dynamic-import', interop: kind === 'dynamic-import' }
+    if (kind !== 'require-call' && (importerTypes.module || targetTyped)) {
+      const facts = await this.#factsOf(importer)
+      // An importer the check couldn't read sees everything, as far as it can tell; an `import()` whose result is
+      // discarded sees nothing.
+      const readable = facts && !facts.parseError
+      if (kind === 'import-statement') usage = (readable && facts.imports.get(specifier)) || { bindings: true, interop: true }
+      else if (readable && facts.dynamicImports.get(specifier)?.consumed === false) usage = { bindings: false, interop: false }
+    }
+    // A require whose result is discarded (`require('./side.js')` as a statement) sees nothing of the target.
+    let required = kind === 'require-call'
+    if (required && targetTyped) {
+      const facts = await this.#factsOf(importer)
+      required = !facts || Boolean(facts.parseError) || (facts.requires.get(specifier)?.consumed ?? true)
+    }
+
+    if (usage.interop && importerTypes.module && await this.#mayCarryEsModule(target, 0, new Set([target]), build)) {
+      return this.#refuse(importer, importerTypes, `it ${kind === 'dynamic-import' ? 'dynamically imports' : 'imports the default export or namespace of'} ` +
+        `'${specifier}', a CommonJS module whose exports may carry \`__esModule\`: a plain esbuild build gives a "type": "module" ` +
+        'file Node\'s interop (the default export is the whole module.exports), this plugin\'s build the bundler one (module.exports.default)',
+        'Import its named exports instead, or rename the importer to .mjs, which esbuild types by extension')
+    }
+
+    if (!targetTyped) return null
+    const facts = await this.#factsOf(target)
+    if (facts === null || facts.esmExports) return null
+    const how = kind === 'require-call' ? 'requires' : 'imports'
+    if (targetTypes.module && !facts.esmImports && facts.cjsUsage === 'no' && (usage.bindings || required)) {
+      return this.#refuse(target, targetTypes, `'${relative(this.#state.root, importer).split(sep).join('/')}' ${how} it, and it has no \`import\` or \`export\`: ` +
+        'a plain esbuild build makes it an ES module without exports in a "type": "module" package, this plugin\'s build CommonJS, ' +
+        `so what the ${kind === 'require-call' ? 'require' : 'import'} yields differs`)
+    }
+    // Without an import statement either, esbuild makes an imported file CommonJS anyway.
+    if (targetTypes.commonjs && facts.esmImports && facts.cjsUsage !== 'yes' && (usage.bindings || required)) {
+      return this.#refuse(target, targetTypes, `'${relative(this.#state.root, importer).split(sep).join('/')}' ${how} it, and it has \`import\`s but no ` +
+        '`export` and no CommonJS `module`/`exports` use: a plain esbuild build wraps it as CommonJS in a "type": "commonjs" package, ' +
+        `this plugin's build makes it an ES module, so what the ${kind === 'require-call' ? 'require' : 'import'} yields differs`)
+    }
+    return null
+  }
+
+  // Whether esbuild loads a resource as code, so an import of it gets the importer's interop (esbuild applies no
+  // package `type` to the resource itself: only .js/.jsx/.ts/.tsx take one).
+  #loadsAsCode(path, build) {
+    return this.#isResource(path) && CODE_LOADERS.has(this.#resourceLoader(path, build))
+  }
+
+  // The build's output format, defaulted as esbuild does for a bundle.
+  #outputFormat(build) {
+    const { format, platform } = build.initialOptions
+    return format ?? (platform === 'neutral' ? 'esm' : platform === 'node' ? 'cjs' : 'iife')
+  }
+
+  // An import from `importer` of a non-builtin external. esbuild keeps it for runtime: as an import where the
+  // output is ESM, as a require() where it's CommonJS or an IIFE (and wherever it lowers `import()`), and that
+  // require gets the importer's interop -- on exports only the runtime knows, so this build can't tell whether
+  // they carry `__esModule`.
+  async #checkExternal(importer, specifier, kind, build) {
+    if (isBuiltin(specifier)) return null
+    const turnsIntoRequire = kind === 'import-statement' ? this.#outputFormat(build) !== 'esm'
+      : kind === 'dynamic-import' && await this.#lowersDynamicImport(build)
+    if (!turnsIntoRequire) return null
+    const types = await this.#packageTypes(importer)
+    if (!types.module) return null
+    const facts = await this.#factsOf(importer)
+    if (facts && !facts.parseError) {
+      if (kind === 'import-statement' ? !facts.imports.get(specifier)?.interop : facts.dynamicImports.get(specifier)?.consumed === false) return null
+    }
+    return this.#refuse(importer, types, `it ${kind === 'dynamic-import' ? 'dynamically imports' : 'imports the default export or namespace of'} ` +
+      `'${specifier}', an external this build turns into a require() whose exports only the runtime knows: a plain esbuild build ` +
+      'gives a "type": "module" file Node\'s interop (the default export is the whole module.exports), this plugin\'s build the bundler ' +
+      'one (module.exports.default where the exports carry `__esModule`)',
+      kind === 'dynamic-import' ? 'Rename the importer to .mjs, which esbuild types by extension, or build for a target with dynamic import'
+        : "Import its named exports instead, rename the importer to .mjs, which esbuild types by extension, or build with format 'esm'")
+  }
+
+  // Whether this build lowers `import()` to a require() (a target without dynamic import), asked of esbuild itself.
+  #lowersDynamicImport(build) {
+    const { target, supported, platform } = build.initialOptions
+    build.lowersImport ??= build.esbuild.transform("import('x')", { format: this.#outputFormat(build), target, supported, platform })
+      .then(({ code }) => /\brequire\(/.test(code))
+    return build.lowersImport
+  }
+
+  // An entry point: built as ESM, a "type": "commonjs" entry gains a default export only in a plain build.
+  async #checkEntry(path, build) {
+    if (this.#outputFormat(build) !== 'esm') return null
+    const types = await this.#packageTypes(path)
+    if (!types.commonjs) return null
+    const facts = await this.#factsOf(path)
+    if (facts === null || facts.esmExports || facts.cjsUsage === 'yes') return null
+    return this.#refuse(path, types, 'it is an entry point with no `export` and no CommonJS `module`/`exports` use, built as ESM: a plain esbuild build ' +
+      'wraps it as CommonJS in a "type": "commonjs" package and exports its module.exports as the output\'s default export, this plugin\'s ' +
+      'build exports nothing', "Build it with format 'cjs' or 'iife'")
+  }
+
   setup = ({ onResolve, onLoad, onStart, onEnd, resolve, initialOptions, esbuild }) => {
     if (!this.#state) return  // noop plugin
+    // This build's own: one instance can serve several builds at once (load mode allows it), each with its
+    // own format and resolver, so the checks take it rather than an instance field. lowersImport memoizes
+    // whether it lowers `import()`.
+    const build = { resolve, initialOptions, esbuild, lowersImport: undefined }
 
     // Watch/rebuild capture is unsupported: dedupe is keyed by PATH not content, so a rebuild with
     // changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Rebuilds re-fire
@@ -206,7 +519,7 @@ export class StasisEsbuild {
     // Load mode: resolution comes from the bundle's import map, not esbuild's resolver -- the file
     // may not be on disk. Keep namespace:'file' with the original absolute path (esbuild doesn't stat
     // plugin-returned paths) so output bytes -- banners, asset names, source maps -- match a capture build.
-    onResolve({ filter: /$/ }, ({ path: specifier, importer, kind: resolveKind, with: attrs }) => {
+    onResolve({ filter: /$/ }, async ({ path: specifier, importer, kind: resolveKind, with: attrs }) => {
       if (!this.#state.config.loadBundle) return undefined
       const isEntry = resolveKind === 'entry-point'
       let url
@@ -237,7 +550,12 @@ export class StasisEsbuild {
       const format = this.#state.getFormat(url)
       const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
       const kind = isEmpty ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
-      return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
+      const path = fileURLToPath(url)
+      if (kind === 'code' || (!isEntry && this.#loadsAsCode(path, build))) {
+        const error = isEntry ? await this.#checkEntry(path, build) : await this.#checkEdge(importer, specifier, resolveKind, path, build)
+        if (error) return { errors: [{ text: error }] }
+      }
+      return { path, namespace: 'file', pluginData: { isEntry, kind } }
     })
 
     onResolve({ filter: /$/, namespace: 'file' }, async ({ path: specifier, with: attrs, ...args }) => {
@@ -285,6 +603,13 @@ export class StasisEsbuild {
           this.#state.addImport(parentURL, specifier, url, { importAttributes: attrs })
         }
       }
+      if (kind === 'code' || (kind === 'resource' && !isEntry && this.#loadsAsCode(res.path, build))) {
+        const error = isEntry ? await this.#checkEntry(res.path, build) : await this.#checkEdge(args.importer, specifier, args.kind, res.path, build)
+        if (error) return { errors: [{ text: error }] }
+      } else if (res.external && !isEntry) {
+        const error = await this.#checkExternal(args.importer, specifier, args.kind, build)
+        if (error) return { errors: [{ text: error }] }
+      }
 
       return { ...res, pluginData: { ...res.pluginData, isEntry, kind } }
     })
@@ -300,26 +625,25 @@ export class StasisEsbuild {
       // Load mode: serve bytes the bundle attested. getFile verifies the hash and throws on a file
       // the bundle doesn't carry -- a missing in-scope file is a hard error, not a disk fallback.
       if (this.#state.config.loadBundle) {
+        if (kind === 'code') {
+          const served = await this.#serve(path)
+          const error = await this.#checkFile(path)
+          return error ? { errors: [{ text: error }] } : served
+        }
         const { source } = this.#state.getFile(pathToFileURL(path).toString())
         // A disabled import's stand-in gets esbuild's own loader for disabled modules: `empty` is the
         // one a CSS @import, `composes` or url() accepts, so one empty module serves JS and CSS importers.
         if (kind === 'empty') return { contents: source, loader: 'empty' }
-        if (kind === 'resource') {
-          // Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
-          // per-extension loader only on its own load path), so replay the configured loader from
-          // initialOptions.loader. No configured loader fails symmetrically with a capture build.
-          const loader = initialOptions.loader?.[extname(path)]
-          return loader ? { contents: source, loader } : { contents: source }
-        }
-        const loader = this.#loaderFor(path)
-        // A transform that declines (undefined) serves the attested bytes unchanged.
-        const transformed = await this.#transform?.(source, { path, loader })
-        return transformed ?? { contents: source, loader }
+        // A resource. Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
+        // per-extension loader only on its own load path), so replay the configured loader from
+        // initialOptions.loader. With none configured, esbuild parses them as `js`, as the checks take them
+        // (#resourceLoader).
+        const loader = initialOptions.loader?.[extname(path)]
+        return loader ? { contents: source, loader } : { contents: source }
       }
 
-      const source = await realReadFile(path)
-
       if (kind === 'resource') {
+        const source = await realReadFile(path)
         // Mark as a resource (State picks 'resource' vs 'resource:base64' from bytes). Return no
         // contents/loader: emission is esbuild's job via the build's own `loader` config.
         if (!this.#seen.has(path)) {
@@ -329,6 +653,7 @@ export class StasisEsbuild {
         return undefined
       }
 
+      const { contents: source, loader } = await this.#serve(path)
       // Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
       assert.ok(isUtf8(source), `StasisEsbuild: code-classified file has non-UTF-8 bytes: ${path}`)
 
@@ -337,7 +662,8 @@ export class StasisEsbuild {
         this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, reason: 'esbuild' })
       }
 
-      return { contents: source, loader: this.#loaderFor(path) }
+      const error = await this.#checkFile(path)
+      return error ? { errors: [{ text: error }] } : { contents: source, loader }
     })
   }
 }

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
 
+import * as esbuild from 'esbuild'
+
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
@@ -444,7 +446,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
           name: 'x',
           version: '0.0.0',
           files: {
-            'src/entry.js': "import ext from 'ext-pkg'\nimport { greet } from './hello.js'\nconsole.log(greet(typeof ext))\n",
+            'src/entry.js': "import { ext } from 'ext-pkg'\nimport { greet } from './hello.js'\nconsole.log(greet(typeof ext))\n",
             'src/hello.js': "export const greet = (n) => 'hello, ' + n\n",
           },
         },
@@ -467,6 +469,17 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     const out = readFileSync(join(tmp, 'out.cjs'), 'utf-8')
     t.assert.match(out, /require\(["']ext-pkg["']\)/, 'the external must survive as a runtime require')
     t.assert.match(out, /hello, /, 'the recorded local edge must still be inlined')
+
+    // A default import of it from a "type": "module" file is refused as cjs: a plain esbuild build gives the
+    // require() it becomes Node's interop, on exports only the runtime knows. As ESM it stays an import.
+    bundleObj.sources['.'].files['src/entry.js'] = "import ext from 'ext-pkg'\nconsole.log(typeof ext)\n"
+    writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify(bundleObj)))
+    const refused = await runCli(['build', '--format=cjs', '--external=ext-pkg', '--output=default.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(refused.status, 0)
+    t.assert.match(refused.stderr, /refusing to build 'src\/entry\.js'.*it imports the default export or namespace of 'ext-pkg', an external/)
+    const esm = await runCli(['build', '--format=esm', '--external=ext-pkg', '--output=default.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(esm.status, 0, esm.stderr)
+    t.assert.match(readFileSync(join(tmp, 'default.mjs'), 'utf-8'), /import ext from "ext-pkg"/)
   }))
 
   test('build forwards --loader to enable JSX in a .js file', withTmp(async (t, tmp) => {
@@ -612,59 +625,185 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), '<p>hello, world</p>')
   }))
 
-  // ----- CommonJS default-import interop (known limitation) -----------------------------
+  // ----- package.json `type`: build as plain esbuild does, or refuse ------------------------
+  //
+  // esbuild takes a .js file's module type from its package.json `type` only when its own resolver
+  // loaded the file; `stasis build` serves every file through the plugin, so esbuild never sees one.
+  // Where that would change the build -- Node's default-import interop in a "type": "module" package,
+  // whether a file is ESM or CommonJS -- the build must refuse; otherwise it must behave as a plain
+  // esbuild build of the same tree.
 
-  test('build uses esbuild bundler-convention CJS interop, NOT Node\'s (known limitation)', withTmp(async (t, tmp) => {
-    // CHARACTERIZATION TEST -- pins a known divergence from Node so an esbuild upgrade that
-    // changes it is noticed (and doc/build.md's "CommonJS default-import interop" note can
-    // be revisited). When an ESM module does `import d from 'cjs-dep'` and the CJS dep marks
-    // itself `__esModule`, the two interop conventions disagree:
-    //   * Node (and `stasis run` via the Node loader): d === the whole module.exports, so
-    //     d.default === 'THE-DEFAULT' and d.__esModule === true.   -> 'MODULE-EXPORTS'
-    //   * esbuild's bundler convention: d is unwrapped to module.exports.default.  -> 'THE-DEFAULT'
-    // `stasis build` gets the bundler convention. ROOT CAUSE: the plugin serves every file's
-    // bytes through onLoad, and esbuild's plugin API exposes no way to declare a loaded
-    // file's module type -- so esbuild detects CJS from syntax and emits `__toESM(x)` with no
-    // isNodeMode flag (vs `__toESM(x, 1)` when esbuild reads the file off disk itself and sees
-    // the package.json/extension). This is consistent with how the esbuild/webpack capture
-    // plugins bundle (they serve via onLoad too), so a plugin-captured bundle round-trips
-    // faithfully; it only diverges from Node and from a plain on-disk esbuild build.
-    writeFileSync(join(tmp, 'package.json'), '{ "name": "interop-app", "version": "0.0.0", "private": true, "type": "module" }')
-    const bundleObj = {
-      version: 1,
-      config: { scope: 'full' },
-      entries: ['src/entry.js'],
-      sources: {
-        '.': {
-          name: 'interop-app',
-          version: '0.0.0',
-          files: {
-            'src/entry.js':
-              "import d from 'dep'\n" +
-              "console.log(d && d.__esModule === true && d.default === 'THE-DEFAULT' ? 'MODULE-EXPORTS' : 'UNWRAPPED:' + JSON.stringify(d))\n",
-          },
-        },
-      },
-      modules: {
-        'node_modules/dep': {
-          name: 'dep',
-          version: '1.0.0',
-          files: { 'index.js': "exports.__esModule = true\nexports.default = 'THE-DEFAULT'\n" },
-        },
-      },
-      formats: { 'src/entry.js': 'module', 'node_modules/dep/index.js': 'commonjs' },
-      imports: { '*': { 'src/entry.js': { dep: 'node_modules/dep/index.js' } } },
+  // A project from `files`, bundled with `stasis bundle` as a user would.
+  const bundleProject = async (t, dir, files, entry) => {
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true })
+      writeFileSync(join(dir, name), content)
     }
-    writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify(bundleObj)))
-
-    const r = await runCli(['build', '--output=out.mjs', '--format=esm', 'app.code.br'], { cwd: tmp })
+    const r = await runCli(['bundle', '--output=app.code.br', entry], { cwd: dir })
     t.assert.equal(r.status, 0, r.stderr)
-    // esbuild emits the bundler-convention helper (no isNodeMode arg), so the default import
-    // is unwrapped to module.exports.default -- the documented divergence from Node.
+  }
+  // esbuild straight off disk with the options `stasis build` passes: the build to match.
+  const plainEsbuild = async (dir, entry, outfile, format = 'esm') => {
+    const result = await esbuild.build({
+      entryPoints: [join(dir, entry)], absWorkingDir: dir, bundle: true, write: false, platform: 'node', format,
+      logLevel: 'silent', outfile: join(dir, outfile),
+    })
+    return result.outputFiles[0].text
+  }
+  const TYPE_MODULE = '{ "name": "mini", "version": "1.0.0", "type": "module" }'
+  const BABELISH = "exports.__esModule = true\nexports.default = 'the-default'\nexports.named = 'the-named'\n"
+
+  test('build refuses a "type": "module" default import of a CommonJS module marked __esModule', withTmp(async (t, tmp) => {
+    const proj = join(tmp, 'proj')
+    await bundleProject(t, proj, {
+      'package.json': TYPE_MODULE,
+      'src/babelish.cjs': BABELISH,
+      'src/index.js': "import x from './babelish.cjs'\nconsole.log(JSON.stringify(x))\n",
+    }, 'src/index.js')
+    // Node and a plain esbuild build agree: the default import is the whole module.exports. Through the
+    // plugin it would be module.exports.default.
+    const expected = '{"__esModule":true,"default":"the-default","named":"the-named"}'
+    t.assert.equal(runNode(t, join(proj, 'src', 'index.js')).trim(), expected)
+    writeFileSync(join(proj, 'plain.mjs'), await plainEsbuild(proj, 'src/index.js', 'plain.mjs'))
+    t.assert.equal(runNode(t, join(proj, 'plain.mjs')).trim(), expected)
+
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: proj })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/index\.js': it imports the default export or namespace of '\.\/babelish\.cjs', a CommonJS module whose exports may carry `__esModule`/)
+    t.assert.equal(existsSync(join(proj, 'out.mjs')), false, 'nothing is written')
+
+    // With no package.json on disk, the bundle's recorded 'module' format stands in for the type.
+    const bare = join(tmp, 'bare')
+    mkdirSync(bare)
+    cpSync(join(proj, 'app.code.br'), join(bare, 'app.code.br'))
+    const rBare = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: bare })
+    t.assert.notEqual(rBare.status, 0)
+    t.assert.match(rBare.stderr, /refusing to build 'src\/index\.js' \(the bundle records its Node format, 'module', but not its package\.json "type"/)
+  }))
+
+  test('build refuses a "type": "module" default import of a text resource it parses as JavaScript, marked __esModule', withTmp(async (t, tmp) => {
+    // `stasis build` serves a resource's bytes with no loader, so esbuild parses them as js, as a plain build with
+    // loader { '.data': 'js' } does -- whose "type": "module" importer gets Node's interop, the plugin's the bundler's.
+    const proj = join(tmp, 'proj')
+    const files = {
+      'package.json': TYPE_MODULE,
+      'src/marked.data': BABELISH,
+      'src/plain.data': "module.exports = { value: 'plain' }\n",
+      'src/marked.js': "import x from './marked.data'\nconsole.log(JSON.stringify(x))\n",
+      'src/plain.js': "import x from './plain.data'\nconsole.log(JSON.stringify(x))\n",
+    }
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(proj, name)), { recursive: true })
+      writeFileSync(join(proj, name), content)
+    }
+    // Captured as text, which builds the same either way.
+    const capture = (entry, bundleFile) => spawnSync(process.execPath, [join(here, 'esbuild-run.helper.js'), entry], {
+      cwd: proj, encoding: 'utf8', env: {
+        ...cleanEnv, STASIS_TEST_ESBUILD_LOADER: '{ ".data": "text" }',
+        STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ lock: 'none', bundle: 'replace', bundleFile: join(proj, bundleFile), resources: ['data'] }),
+      },
+    })
+    for (const [entry, bundleFile] of [['src/marked.js', 'marked.br'], ['src/plain.js', 'plain.br']]) {
+      const r = capture(entry, bundleFile)
+      t.assert.equal(r.status, 0, r.stderr)
+    }
+    const marked = await runCli(['build', '--output=marked.mjs', 'marked.br'], { cwd: proj })
+    t.assert.notEqual(marked.status, 0)
+    t.assert.match(marked.stderr, /refusing to build 'src\/marked\.js': it imports the default export or namespace of '\.\/marked\.data'/)
+    const plain = await runCli(['build', '--output=plain.mjs', 'plain.br'], { cwd: proj })
+    t.assert.equal(plain.status, 0, plain.stderr)
+    t.assert.equal(runNode(t, join(proj, 'plain.mjs')).trim(), '{"value":"plain"}')
+  }))
+
+  test('build of a .mjs importer matches a plain esbuild build byte-for-byte (esbuild types it by extension)', withTmp(async (t, tmp) => {
+    await bundleProject(t, tmp, {
+      'package.json': TYPE_MODULE,
+      'src/babelish.cjs': BABELISH,
+      'src/index.mjs': "import x from './babelish.cjs'\nconsole.log(JSON.stringify(x))\n",
+    }, 'src/index.mjs')
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
     const out = readFileSync(join(tmp, 'out.mjs'), 'utf-8')
-    t.assert.match(out, /__toESM\(require_dep\(\)\)/)
-    t.assert.doesNotMatch(out, /__toESM\(require_dep\(\), 1\)/)
-    t.assert.equal(runNode(t, join(tmp, 'out.mjs')).trim(), 'UNWRAPPED:"THE-DEFAULT"')
+    t.assert.equal(out, await plainEsbuild(tmp, 'src/index.mjs', 'out.mjs'))
+    t.assert.match(out, /__toESM\(require_babelish\(\), 1\)/)
+    t.assert.equal(runNode(t, join(tmp, 'out.mjs')).trim(), '{"__esModule":true,"default":"the-default","named":"the-named"}')
+  }))
+
+  test('build passes "type": "module" imports whose value the interop doesn\'t decide, behaving as plain esbuild', withTmp(async (t, tmp) => {
+    // A named import of a module marked __esModule, and a default import of one that isn't.
+    await bundleProject(t, tmp, {
+      'package.json': TYPE_MODULE,
+      'src/babelish.cjs': BABELISH,
+      'src/plain.cjs': "exports.default = 'unmarked'\n",
+      'src/index.js': "import { named } from './babelish.cjs'\nimport plain from './plain.cjs'\nconsole.log(named, JSON.stringify(plain))\n",
+    }, 'src/index.js')
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    writeFileSync(join(tmp, 'plain.mjs'), await plainEsbuild(tmp, 'src/index.js', 'plain.mjs'))
+    const expected = 'the-named {"default":"unmarked"}'
+    t.assert.equal(runNode(t, join(tmp, 'plain.mjs')).trim(), expected)
+    t.assert.equal(runNode(t, join(tmp, 'out.mjs')).trim(), expected)
+  }))
+
+  test('build follows module.exports = require(...) re-exports to an __esModule mark', withTmp(async (t, tmp) => {
+    // The prod/dev switch many packages ship: the entry's exports are another file's.
+    await bundleProject(t, tmp, {
+      'package.json': TYPE_MODULE,
+      'node_modules/dep/package.json': '{ "name": "dep", "version": "1.0.0", "main": "index.js" }',
+      'node_modules/dep/index.js': "module.exports = process.env.DEP_DEV ? require('./dist/dev.js') : require('./dist/prod.js')\n",
+      'node_modules/dep/dist/dev.js': "exports.default = 'dev'\n",
+      'node_modules/dep/dist/prod.js': 'Object.defineProperty(exports, "__esModule", { value: true });\nexports.default = \'prod\';\n',
+      'src/index.js': "import dep from 'dep'\nconsole.log(JSON.stringify(dep))\n",
+    }, 'src/index.js')
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/index\.js': it imports the default export or namespace of 'dep'/)
+  }))
+
+  test('build refuses a "type": "module" file that uses module.exports without an export', withTmp(async (t, tmp) => {
+    // A plain esbuild build leaves `module` free in an ES module (a ReferenceError in Node); the plugin's
+    // build would wrap the file as CommonJS.
+    await bundleProject(t, tmp, {
+      'package.json': TYPE_MODULE,
+      'src/legacy.js': "if (typeof module !== 'undefined') module.exports = { legacy: true }\n",
+      'src/index.js': "import './legacy.js'\nconsole.log('ok')\n",
+    }, 'src/index.js')
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/legacy\.js': it has no `export`, `import\.meta` or top-level `await` but uses `module`/)
+  }))
+
+  test('build refuses top-level `arguments` in a file the builds wrap differently', withTmp(async (t, tmp) => {
+    // A plain esbuild build wraps a "type": "commonjs" file as CommonJS, so `arguments` is its wrapper's; the
+    // plugin's build sees no CommonJS use, inlines the file, and `arguments` is the output's own.
+    await bundleProject(t, tmp, {
+      'package.json': '{ "name": "mini", "version": "1.0.0", "type": "commonjs" }',
+      'src/args.js': 'console.log(String(arguments.length))\n',
+      'src/index.mjs': "import './args.js'\n",
+    }, 'src/index.mjs')
+    writeFileSync(join(tmp, 'plain.cjs'), await plainEsbuild(tmp, 'src/index.mjs', 'plain.cjs', 'cjs'))
+    t.assert.equal(runNode(t, join(tmp, 'plain.cjs')).trim(), '2')
+    const r = await runCli(['build', '--output=out.cjs', '--format=cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/args\.js': it reads `arguments` outside any function/)
+  }))
+
+  test('build refuses a "type": "commonjs" entry without exports as ESM, and builds it as cjs like plain esbuild', withTmp(async (t, tmp) => {
+    // Built as ESM, a plain esbuild build wraps the entry as CommonJS and default-exports its
+    // module.exports; the plugin's build exports nothing.
+    await bundleProject(t, tmp, {
+      'package.json': '{ "name": "mini", "version": "1.0.0", "type": "commonjs" }',
+      'src/greet.js': 'exports.greet = (name) => `hello, ${name}`\n',
+      'src/index.js': "const { greet } = require('./greet.js')\nconsole.log(greet('world'))\n",
+    }, 'src/index.js')
+    const r = await runCli(['build', '--output=out.mjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /refusing to build 'src\/index\.js': it is an entry point with no `export` and no CommonJS `module`\/`exports` use, built as ESM.*Build it with format 'cjs' or 'iife'/)
+
+    const rCjs = await runCli(['build', '--output=out.cjs', '--format=cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(rCjs.status, 0, rCjs.stderr)
+    t.assert.equal(readFileSync(join(tmp, 'out.cjs'), 'utf-8'), await plainEsbuild(tmp, 'src/index.js', 'out.cjs', 'cjs'))
+    t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), 'hello, world')
   }))
 
   test('build rejects an invalid --format', withTmp(async (t, tmp) => {

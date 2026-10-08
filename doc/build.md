@@ -40,6 +40,12 @@ esbuild leaves them as runtime imports; it can't un-inline an attested edge.
 stasis build --output=out.cjs --format=cjs --external=better-sqlite3 app.code.br
 ```
 
+In a cjs/iife build an external import becomes a `require()`, and a plain esbuild
+build gives one in a `"type": "module"` file Node's default-import interop, which a
+build through the plugin can't (see [package.json `type`](#packagejson-type-built-as-plain-esbuild-does-or-refused)).
+Since the external's exports are only known at runtime, a default or namespace
+import of one from such a file is refused there; `--format=esm` keeps it an import.
+
 ## Hermes (`--platform=hermes`)
 
 Hermes (React Native's engine) executes a dialect without classes, class fields,
@@ -92,6 +98,11 @@ stasis build --babel --platform=hermes --output=out.js app.code.br
 `--babel` needs `@babel/core` installed in the project (a dev dependency is
 fine); a missing config or a missing install fails with instructions.
 
+The [package.json `type` checks](#packagejson-type-built-as-plain-esbuild-does-or-refused)
+see Babel's output: a config that compiles ES modules to CommonJS makes the files
+of a `"type": "module"` package CommonJS, which a plain esbuild build would still
+read as ESM, so such a build is refused.
+
 ## esbuild is an optional peer dependency
 
 esbuild is not a hard dependency of `@exodus/stasis`. Install it where stasis can find it:
@@ -125,7 +136,7 @@ stasis build app.stasis.code.br src/worker.js   # build the src/worker.js entry
 | | Bundle (`stasis.code.br`) | Lockfile (`stasis.lock.json`) |
 | - | - | - |
 | Carries | Every reachable source | The graph + per-file digests, no content |
-| Needs on disk | Nothing — not even a `package.json` | Each attested file, read from disk |
+| Needs on disk | Nothing — not even a `package.json` (one there only informs the [`type` check](#packagejson-type-built-as-plain-esbuild-does-or-refused)) | Each attested file, read from disk |
 | Resolution / bytes | `imports` map + `sources` bytes | Reads the file, verifies its `sha512` before use |
 
 A specifier the artifact doesn't record is handed back to esbuild, which
@@ -203,19 +214,63 @@ A resource is carried, not built: `stasis build` (esbuild) still needs a matchin
 asset without a configured loader fails at build time — the bundle/lockfile carries
 the bytes for attestation and for Metro regardless.
 
-## Known limitation: CommonJS default-import interop
+## package.json `type`: built as plain esbuild does, or refused
 
-When an ESM module default-imports a CommonJS dependency that marks itself
-`__esModule` (the Babel/TypeScript shape — `exports.__esModule = true;
-exports.default = …`), `import dep from 'cjs-pkg'` binds differently under the two
-interop conventions:
+esbuild gives a `.js`/`.jsx`/`.ts`/`.tsx` file the module type of its nearest
+`package.json` `type` only when its own resolver loaded the file. `stasis build`
+serves every file through the stasis esbuild plugin, and a plugin's resolve result
+can't carry a module type (esbuild 0.27 and 0.28 alike), so esbuild parses each one as
+if its package had no `type`. (`.mjs`/`.cjs`/`.mts`/`.cts` are typed by extension
+and unaffected.) Where that would change the build, `stasis build` — and the esbuild
+plugin, at capture and at `bundle=load` alike — **refuses it** rather than produce
+output that behaves differently from a plain esbuild build of the same tree:
 
-| | `dep` binds to | Reach the value via |
-| - | - | - |
-| **Node** / `stasis run` (ignores `__esModule`) | the whole `module.exports` | `dep.default` |
-| **esbuild** / `stasis build` (bundler convention) | `module.exports.default` directly | `dep` |
+| Refused | A plain esbuild build | Through the plugin | Way out |
+| - | - | - | - |
+| A `"type": "module"` file default- or namespace-imports (or `import()`s) a CommonJS module whose exports may carry `__esModule` (the Babel/TypeScript shape `exports.__esModule = true; exports.default = …`, directly or through a `module.exports = require(…)` re-export — of an external too, or of a require esbuild can't resolve and leaves for runtime, whose exports are unknown) | Node's interop: the default import is the whole `module.exports`, as under Node | The bundler interop: `module.exports.default` | Import named exports, or rename the importer `.mjs` |
+| A `"type": "module"` file default- or namespace-imports a non-builtin [external](#externals) with `--format=cjs`/`iife`, or `import()`s one where esbuild lowers `import()` (a target without it) | The `require()` it becomes gets Node's interop | The bundler interop — on exports only the runtime knows | Import named exports, rename the importer `.mjs`, or `--format=esm` |
+| A `"type": "module"` file with no `export`, `import.meta` or top-level `await` uses `module`/`exports`, top-level `this` or `return`, or a direct `eval` | ESM: `module`/`exports` stay free, `this` is `undefined` | CommonJS | Make the file ESM, or `.cjs` |
+| A `"type": "module"` file with no `import` or `export` at all is required or imported for its exports, or parses differently in strict mode (`with`, a block-level function) | An ES module without exports, strict | CommonJS / sloppy | Add an `export`, or `.cjs` |
+| A `"type": "commonjs"` file with `import`s but no `export` or CommonJS use is required or imported for its exports | CommonJS | ESM | Make it consistently one or the other |
+| A file of a typed package reads `arguments` outside any function, and the builds wrap it differently (a `"type": "commonjs"` file without CommonJS use, a `"type": "module"` file without `import`/`export`) | The wrapper by its `type`: CommonJS's, or none/ESM's | The wrapper by its syntax | Read `arguments` only inside a function |
+| A `"type": "commonjs"` entry with no `export` or CommonJS use, built with `--format=esm` | Re-exports its `module.exports` as the output's default export | No default export | `--format=cjs` or `--format=iife` |
 
-Only the interop shim differs; the recorded graph is followed exactly. Named
-imports (`import { x } from …`) and CommonJS packages that don't set `__esModule`
-are unaffected. This matches the esbuild/webpack capture plugins, so the
-divergence is only against `stasis run` and a plain on-disk `esbuild` build.
+Whether a CommonJS module's exports may carry `__esModule` is decided fail-safe: any
+`__esModule` key the module defines on anything counts, wherever that value ends up. That
+includes a property write, an object literal or class member, a `defineProperty`, and a
+string constant that could become a key. Property reads, comparisons and falsy values don't
+count. Passing the key to any call does count, whatever the call is meant to do: even a read
+such as `hasOwnProperty`, which a `Proxy` trap can turn into a write, or a `defineProperty` of
+a falsy value. A key only the runtime knows, such as a computed key or a `Proxy` trap, counts
+where it reaches the exports.
+
+These cases aren't caught:
+
+- Exports taken from part of another module's exports rather than all of them: a property
+  (`module.exports = require('./inner').child`), a destructured binding, or what another
+  module's function returns. Telling these apart from the common Babel shim
+  `module.exports = require('./lib').default`, which builds the same either way, would need
+  analysis across modules that the check doesn't do.
+- A `require()` that reaches the exports only through a chain of property reads on a local,
+  such as a method two levels down (`module.exports = h.inner.load()`). The check follows one
+  property of a local, and chains off a literal. Following chains through names multiplies past
+  what a build can wait for in bundled files.
+- A `Proxy` constructed out of the check's sight. It recognizes `new` of the global `Proxy`,
+  also through an alias, a destructuring, a read off an object (`globalThis.Proxy`) or
+  `Reflect.construct`, and `Proxy.revocable(…).proxy`. A constructor reached any other way
+  (`Reflect.get(globalThis, 'Proxy')`, an alias of `Proxy.revocable`) isn't.
+
+Everything else builds as before and behaves as a plain esbuild build does — named
+imports, CommonJS modules that don't carry `__esModule`, files of packages without a
+`type`. The checks parse each served file with [`oxc-parser`](https://www.npmjs.com/package/oxc-parser),
+a dependency of `@exodus/stasis` and an optional peer dependency of
+`@exodus/stasis-plugins`: an esbuild build using the plugin directly needs it
+installed once it serves a file of a typed package.
+
+A bundle records each file's Node format (`module`/`commonjs`), not its package's
+`type`, and a typeless package's file shares those formats (Node detects them from
+syntax). So at load the check reads the `package.json` a plain esbuild build would
+read there, when the disk has one that agrees with the recorded format (it only
+decides whether to refuse, never what is built). With none — a bundle built in a
+bare directory — it takes the `type` the format implies, so it may refuse a build of
+a typeless package's file that a plain build would leave alone; the message says so.
