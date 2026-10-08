@@ -239,9 +239,10 @@ Whether a CommonJS module's exports may carry `__esModule` is decided fail-safe:
 `__esModule` key the module defines on anything counts, wherever that value ends up. That
 includes a property write, an object literal or class member, a `defineProperty`, and a
 string constant that could become a key. Property reads, comparisons and falsy values don't
-count. Passing the key to any call does count, even to a read such as `hasOwnProperty`, since a
-`Proxy` trap can turn that into a write. A key only the runtime knows, such as a computed key
-or a `Proxy` trap, counts where it reaches the exports.
+count. Passing the key to any call does count, whatever the call is meant to do: even a read
+such as `hasOwnProperty`, which a `Proxy` trap can turn into a write, or a `defineProperty` of
+a falsy value. A key only the runtime knows, such as a computed key or a `Proxy` trap, counts
+where it reaches the exports.
 
 One case isn't caught: exports taken from part of another module's exports rather than all
 of them. That covers a property (`module.exports = require('./inner').child`), a destructured

@@ -282,14 +282,6 @@ function isFalsy(node) {
   }
 }
 
-// Whether a defineProperty descriptor may define a truthy value: not a literal whose `value` is falsy and has no getter.
-function mayDefineTruthy(descriptor) {
-  if (descriptor?.type !== 'ObjectExpression') return true
-  const key = (prop) => (prop.type === 'Property' && !prop.computed ? nameOf(prop.key) : undefined)
-  if (descriptor.properties.some((prop) => prop.type !== 'Property' || prop.computed || key(prop) === 'get')) return true
-  const value = descriptor.properties.find((prop) => key(prop) === 'value')
-  return value !== undefined && !isFalsy(value.value)
-}
 
 // The properties an assignment target writes: the target itself, or a destructuring pattern's members.
 function patternMembers(pattern, members = []) {
@@ -332,11 +324,10 @@ function isEsModuleToken(node, parent) {
 
 // Whether a constant `__esModule` key (isEsModuleToken) may define the key on something, wherever that goes (a
 // fail-safe: no value flow is followed): a property write (context.writeTargets), an object literal's or a class's
-// member that isn't falsy or a setter alone, a descriptor map's (context.descriptorMaps) that may define a truthy
-// value, a JSX attribute, a call's argument but a falsy-only descriptor's -- a read builtin's too, as one handed a
-// Proxy runs its trap with the key (`get(_, key) { exports[key] = true }`) -- and a string anywhere it can flow from
-// (`const key = '__esModule'`). A read, a comparison, a `case`, a destructuring pattern's key and a variable's name
-// don't.
+// member that isn't falsy or a setter alone (a descriptor map's included), a JSX attribute, any call's argument --
+// a callee's semantics aren't checked: a read builtin handed a Proxy runs its trap with the key, and a function
+// handed a falsy descriptor may define what it likes -- and a string anywhere it can flow from (`const key =
+// '__esModule'`). A read, a comparison, a `case`, a destructuring pattern's key and a variable's name don't.
 function definesEsModule(node, parent, key, grandparent, context) {
   const string = node.type !== 'Identifier' && node.type !== 'JSXIdentifier'
   switch (parent?.type) {
@@ -346,7 +337,6 @@ function definesEsModule(node, parent, key, grandparent, context) {
       if (key !== 'key') return string
       if (!string && parent.computed) return false
       if (grandparent?.type === 'ObjectPattern') return false
-      if (context.descriptorMaps.has(grandparent)) return mayDefineTruthy(parent.value)
       return parent.kind === 'get' || (parent.kind === 'init' && (parent.method || !isFalsy(parent.value)))
     case 'MethodDefinition':
     case 'PropertyDefinition':
@@ -356,7 +346,7 @@ function definesEsModule(node, parent, key, grandparent, context) {
       return parent.type === 'MethodDefinition' ? parent.kind !== 'set' : parent.value != null && !isFalsy(parent.value)
     case 'CallExpression':
     case 'NewExpression':
-      return key === 'arguments' && !(parent.arguments.length >= 3 && parent.arguments[1] === node && !mayDefineTruthy(parent.arguments[2]))
+      return key === 'arguments'
     case 'JSXAttribute':
     case 'TSEnumMember':
     case 'TSParameterProperty':  // `constructor(public __esModule)` sets it on the instance
@@ -676,11 +666,10 @@ export function analyzeModule(source, { path, loader }) {
   const copies = new Map()  // name -> [argument]
   const assignments = new Map()  // name -> [assigned value]: `out = value` (destructuring: the whole right side)
   const reassigned = new Set()
-  // Where a constant `__esModule` key may be defined (see definesEsModule): property writes, and the descriptor
-  // maps of Object.defineProperties/Object.create. A write of a key whose value isn't known doesn't count, unlike a
-  // computed key in what becomes the exports: dynamic writes run all over CommonJS, the exports included
-  // (fs-extra's `exports[method] = u(fs[method])` loop).
-  const tokenContext = { writeTargets: new Set(), descriptorMaps: new Set() }
+  // Where a constant `__esModule` key may be defined (see definesEsModule): the properties writes target. A write
+  // of a key whose value isn't known doesn't count, unlike a computed key in what becomes the exports: dynamic
+  // writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
+  const tokenContext = { writeTargets: new Set() }
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
   const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
@@ -792,13 +781,9 @@ export function analyzeModule(source, { path, loader }) {
           const consumed = !(parent?.type === 'ExpressionStatement' && key === 'expression')
           facts.requires.set(required, { consumed: consumed || (facts.requires.get(required)?.consumed ?? false) })
         }
-        // Object.defineProperties(target, { key: descriptor, ... }) and Object.create(proto, { … }): the map holds
-        // descriptors, not values (see definesEsModule); defineProperties copies no values in.
-        const mapping = node.callee.type === 'MemberExpression' ? staticKey(node.callee) : undefined
-        if ((mapping === 'defineProperties' || mapping === 'create') && node.arguments[1]?.type === 'ObjectExpression') {
-          tokenContext.descriptorMaps.add(node.arguments[1])
-          if (mapping === 'defineProperties' && node.arguments[1].properties.every((prop) => prop.type === 'Property' && !prop.computed)) break
-        }
+        // Object.defineProperties(target, { key: descriptor, ... }) copies no values in: its map holds descriptors.
+        if (node.callee.type === 'MemberExpression' && staticKey(node.callee) === 'defineProperties' && node.arguments[1]?.type === 'ObjectExpression' &&
+          node.arguments[1].properties.every((prop) => prop.type === 'Property' && !prop.computed)) break
         if (node.arguments[0]?.type === 'Identifier' && !isExportsTarget(node.arguments[0]) && node.arguments.length > 1) {
           const [{ name }, ...rest] = node.arguments
           copies.set(name, [...(copies.get(name) ?? []), ...rest.map((arg) => (arg.type === 'SpreadElement' ? arg.argument : arg))])
