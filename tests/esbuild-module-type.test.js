@@ -47,6 +47,9 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
   t.assert.deepStrictEqual(used("import Comp from './c.cjs'\nexport const el = <Comp />", 'jsx'), { './c.cjs': interop })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport { x }"), { './x.cjs': interop })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\neval('x')"), { './x.cjs': interop })
+  // A read is resolved by scope: a parameter of the name isn't the import, a closure over it is.
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\nfunction f(x) { return x }"), { './x.cjs': side })
+  t.assert.deepStrictEqual(used("import x from './x.cjs'\nfunction f(y) { return () => x }"), { './x.cjs': interop })
 })
 
 test('analyzeModule: whether a require or import() uses its result', (t) => {
@@ -179,6 +182,7 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   // ...unless the file binds `Symbol` itself.
   t.assert.equal(analyze("const Symbol = () => '__esModule'\nmodule.exports = { [Symbol()]: true, default: 1 }").setsEsModule, true)
   t.assert.equal(analyze("const Symbol = () => '__esModule'\nconst s = Symbol()\nmodule.exports = { [s]: true }").setsEsModule, true)
+  t.assert.equal(analyze('function f(Symbol) {}\nmodule.exports = { [Symbol.iterator]: f, default: 1 }').setsEsModule, false)
   // A write through a computed key counts only where the key resolves to `__esModule`: fs-extra's loop isn't a mark.
   t.assert.equal(analyze("api.forEach((method) => { exports[method] = u(fs[method]) })").setsEsModule, false)
   // A setter alone reads as undefined.
@@ -200,6 +204,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   // A Proxy can answer `__esModule` from its trap; a local named Proxy is just a class.
   t.assert.equal(analyze("module.exports = new Proxy({ default: 1 }, { get: (t, k) => k === '__esModule' || t[k] })").setsEsModule, true)
   t.assert.equal(analyze('class Proxy { default = 1 }\nmodule.exports = new Proxy()').setsEsModule, false)
+  // Resolved at the use: a parameter elsewhere named Proxy doesn't shadow the global here.
+  t.assert.equal(analyze('function ignore(Proxy) {}\nmodule.exports = new Proxy(target, handler)').setsEsModule, true)
   // What a constructor returns replaces the instance.
   t.assert.equal(analyze('class Box { constructor() { return { __esModule: true, default: 1 } } }\nmodule.exports = new Box()').setsEsModule, true)
   t.assert.equal(analyze('function Box() { return { __esModule: true, default: 1 } }\nmodule.exports = new Box()').setsEsModule, true)
