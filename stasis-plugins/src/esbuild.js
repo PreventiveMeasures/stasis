@@ -267,8 +267,9 @@ export class StasisEsbuild {
   }
 
   // Where `require(specifier)` in `fromPath` leads, as this build resolves it: { path } for a file this
-  // plugin serves, { opaque: true } for exports it can't read (a non-builtin external, another plugin's
-  // namespace), or null for nothing to follow (a builtin, a disabled or unresolvable import).
+  // plugin serves, { opaque: true } for exports it can't read (a non-builtin external, one esbuild can't
+  // resolve and leaves for runtime -- a require in a try/catch -- or another plugin's namespace), or null for
+  // nothing to follow (a builtin, a disabled import).
   async #resolveRequire(fromPath, specifier) {
     if (this.#state.config.loadBundle) {
       try {
@@ -279,7 +280,7 @@ export class StasisEsbuild {
       }
     }
     const res = await this.#build.resolve(specifier, { kind: 'require-call', resolveDir: dirname(fromPath), importer: fromPath, namespace: 'stasis' })
-    if (res.errors.length > 0) return null
+    if (res.errors.length > 0) return isBuiltin(specifier) ? null : { opaque: true }
     // An external resolves to no namespace too, so ask before taking that as a disabled import.
     if (res.external) return isBuiltin(specifier) ? null : { opaque: true }
     if (res.namespace === '') return null
@@ -313,9 +314,19 @@ export class StasisEsbuild {
   // A file whose own parse depends on its package type.
   async #checkFile(path) {
     const types = await this.#packageTypes(path)
-    if (!types.module) return null
+    if (!types.module && !types.commonjs) return null
     const facts = await this.#factsOf(path)
     if (facts === null || facts.esmExports) return null
+    // Top-level `arguments` is the wrapper's where a build wraps the file, and the builds wrap differently: a plain
+    // one by the package type (a "type": "module" file as ESM, a "type": "commonjs" one as CommonJS), this
+    // plugin's by syntax, as CommonJS where it sees CommonJS use and no import.
+    const pluginCjs = facts.cjsUsage === 'yes' && !facts.esmImports
+    if (facts.topArguments && ((types.module && !facts.esmImports && !pluginCjs) || (types.commonjs && !pluginCjs))) {
+      return this.#refuse(path, types, 'it reads `arguments` outside any function, where a plain esbuild build and this plugin\'s ' +
+        `build give it different module wrappers (a plain build treats the file as ${types.module ? 'ESM' : 'CommonJS'} by its ` +
+        `package.json "type", this plugin's build as ${pluginCjs ? 'CommonJS' : 'ESM'} by its syntax)`, 'Read `arguments` only inside a function')
+    }
+    if (!types.module) return null
     if (facts.cjsUsage !== 'no') {
       return this.#refuse(path, types, `it has no \`export\`, \`import.meta\` or top-level \`await\` but uses ${facts.cjsDetail}, ` +
         'which a plain esbuild build treats as ESM in a "type": "module" package (no CommonJS `module`/`exports`, `this` undefined) ' +

@@ -1409,6 +1409,18 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(readFileSync(join(tmp, 'out-named', 'entry.js'), 'utf-8'), readFileSync(join(tmp, 'out-plain-cjs', 'entry.js'), 'utf-8'))
   }))
 
+  test('capture refuses a "type": "module" default import of a re-export esbuild leaves for runtime (an optional require)', withTmp(async (t, tmp) => {
+    // esbuild tolerates the unresolvable require in a try/catch, and whatever the runtime loads there gets the
+    // importer's interop.
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    writeFileSync(join(tmp, 'package.json'), TYPE_MODULE)
+    writeFileSync(join(tmp, 'src', 'optional.cjs'), "try { module.exports = require('optional-dep') } catch { module.exports = {} }\n")
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './optional.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const capture = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(join(tmp, 'snapshot.br'), join(tmp, 'out'), { EXODUS_STASIS_LOCK: 'none' }) })
+    t.assert.notEqual(capture.status, 0)
+    t.assert.match(capture.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/optional\.cjs'/)
+  }))
+
   test('load refuses a bundle whose "type": "module" importer default-imports a CommonJS module marked __esModule', withTmp(async (t, tmp) => {
     // As `stasis bundle` records it: Node's formats, the importer 'module'.
     const bundle = {

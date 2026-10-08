@@ -197,13 +197,39 @@ function returnedValues(fn) {
   return values
 }
 
+// Whether a class's static (or else instance and prototype) members put `__esModule` on what they define:
+// sets out.marked, or collects a computed key's name for the caller to resolve (out.keys).
+function scanMembers(cls, statics, out) {
+  for (const member of cls.body.body) {
+    if (!('key' in member) || Boolean(member.static) !== statics) continue
+    if (member.type !== 'MethodDefinition' && (member.value == null || isFalsy(member.value))) continue
+    if ((member.computed ? stringValue(member.key) : nameOf(member.key)) === '__esModule') out.marked = true
+    else if (member.computed && member.key.type === 'Identifier') out.keys.add(member.key.name)
+  }
+}
+
+// What an instance of `callee` (`new Box()`) gets from its class and superclasses: instance fields and
+// prototype methods. A class reached by name is the caller's to follow (out.instances); one a require()
+// returns is another module's.
+function scanInstance(callee, out) {
+  for (let cls = callee; cls; cls = cls.superClass) {
+    if (cls.type === 'Identifier') {
+      out.instances.add(cls.name)
+      return
+    }
+    if (cls.type !== 'ClassExpression' && cls.type !== 'ClassDeclaration') return
+    scanMembers(cls, false, out)
+  }
+}
+
 // What can become the value an expression assigns to module.exports (or copies into it): the expression
 // itself, either branch of a conditional or logical, the last of a sequence, the end of an assignment chain,
-// what an IIFE returns, what an object literal spreads, a class's superclass, and what a call is handed (it
-// may return or copy it) -- not an object literal's other property values, which only end up nested in the
-// exports. Collects `require('<literal>')` specifiers, identifiers and callee names (followed through their
-// declarations and function returns by the caller), and whether an object literal's key or a class's static
-// there is `__esModule` (`out.marked`), or a computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
+// what an IIFE returns, what an object literal spreads, a class's superclass, and what a call or `new` is
+// handed (it may return or copy it) -- not an object literal's other property values, which only end up
+// nested in the exports. Collects `require('<literal>')` specifiers, identifiers, callee names and the
+// classes of instances (followed through their declarations and function returns by the caller), and whether
+// an object literal's key, a class's static or an instance's member there is `__esModule` (`out.marked`), or a
+// computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
 function scanValue(node, out) {
   const stack = [node]
   while (stack.length > 0) {
@@ -233,12 +259,12 @@ function scanValue(node, out) {
       case 'ClassExpression':
       case 'ClassDeclaration':
         // Its statics are the exports' own properties, and its superclass's statics inherited ones.
+        scanMembers(current, true, out)
         stack.push(current.superClass)
-        for (const member of current.body.body) {
-          if (!member.static || !('key' in member) || (member.type !== 'MethodDefinition' && (member.value == null || isFalsy(member.value)))) continue
-          if ((member.computed ? stringValue(member.key) : nameOf(member.key)) === '__esModule') out.marked = true
-          else if (member.computed && member.key.type === 'Identifier') out.keys.add(member.key.name)
-        }
+        break
+      case 'NewExpression':
+        scanInstance(current.callee, out)
+        for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
       case 'ObjectExpression':
         for (const prop of current.properties) {
@@ -272,6 +298,7 @@ function scanValue(node, out) {
 //   cjsDetail   what that use is, for messages
 //   strictOnly  why the file is valid only as a sloppy-mode script (null if it parses as a module)
 //   blockFunction  a function declared in a nested block of sloppy-mode code (hoisted differently than in strict)
+//   topArguments  an `arguments` outside any function of its own: a CommonJS wrapper's where the file is wrapped
 //   imports     Map specifier -> { bindings, interop }: whether a static import/re-export of it observes its
 //               exports at all, and whether through its default export or namespace (where interop decides the value)
 //   requires    Map specifier -> { consumed }: whether a `require()` of it uses the result (not a bare statement)
@@ -309,7 +336,7 @@ export function analyzeModule(source, { path, loader }) {
   }
 
   const facts = {
-    esmExports: false, esmImports: false, cjsUsage: 'no', cjsDetail: null, strictOnly, blockFunction: false,
+    esmExports: false, esmImports: false, cjsUsage: 'no', cjsDetail: null, strictOnly, blockFunction: false, topArguments: false,
     imports: new Map(), requires: new Map(), setsEsModule: false, reexports: new Set(), parseError,
   }
   const useImport = (specifier, { bindings = false, interop = false }) => {
@@ -352,7 +379,7 @@ export function analyzeModule(source, { path, loader }) {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), keys: new Set(), marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), keys: new Set(), marked: false }
 
   // Iterative: minified code nests deeper than the call stack allows. fnDepth counts every function
   // (return/await scope), thisDepth only what has its own `this` (non-arrow functions, class field values,
@@ -502,6 +529,7 @@ export function analyzeModule(source, { path, loader }) {
         if (parent && !isNonReference(parent, key)) {
           if (binding) count(bindingCounts, node.name)
           else if (tracked(node.name)) references.push([node.name, scope])
+          else if (node.name === 'arguments' && thisDepth === 0) facts.topArguments = true
         }
         break
     }
@@ -544,26 +572,31 @@ export function analyzeModule(source, { path, loader }) {
   }
 
   // Follow what becomes module.exports through declarations and assignments (`const lib = require('./lib');
-  // module.exports = lib`) and the returns of local functions it calls (`module.exports = load()`), transitively.
-  const values = new Set()
-  const calls = new Set()
-  const pending = [...[...exported.identifiers].map((name) => ['value', name]), ...[...exported.callees].map((name) => ['call', name])]
+  // module.exports = lib`), the returns of local functions it calls (`module.exports = load()`) and the local
+  // classes of instances it constructs (`module.exports = new Box()`), transitively.
+  const done = { value: new Set(), call: new Set(), instance: new Set() }
+  const pending = []
+  const follow = (found) => {
+    for (const identifier of found.identifiers) pending.push(['value', identifier])
+    for (const callee of found.callees) pending.push(['call', callee])
+    for (const cls of found.instances) pending.push(['instance', cls])
+    if (found.marked) exported.marked = true
+  }
+  follow(exported)
   while (pending.length > 0) {
     const [kind, name] = pending.pop()
-    const done = kind === 'value' ? values : calls
-    if (done.has(name)) continue
-    done.add(name)
+    if (done[kind].has(name)) continue
+    done[kind].add(name)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const sources = kind === 'value' ? [...inits, ...assigned, ...(copies.get(name) ?? [])]
-      : [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))].flatMap((fn) => returnedValues(fn))
-    for (const origin of sources) {
-      const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), keys: exported.keys, marked: false }
-      scanValue(origin, found)
-      for (const identifier of found.identifiers) pending.push(['value', identifier])
-      for (const callee of found.callees) pending.push(['call', callee])
-      if (found.marked) exported.marked = true
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), keys: exported.keys, marked: false }
+    if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
+    else if (kind === 'instance') for (const origin of [...inits, ...assigned]) scanInstance(origin, found)
+    else {
+      const fns = [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))]
+      for (const value of fns.flatMap((fn) => returnedValues(fn))) scanValue(value, found)
     }
+    follow(found)
   }
   facts.reexports = exported.specifiers
   // A computed key names `__esModule` where a declaration or assignment of that name gives it the string.
@@ -571,7 +604,7 @@ export function analyzeModule(source, { path, loader }) {
   if ([...exported.keys].some(namesEsModule)) exported.marked = true
   for (const [name, receiver] of keyMarks) if (namesEsModule(name)) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
-  if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || values.has(name) || exported.identifiers.has(name))) {
+  if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {
     facts.setsEsModule = true
   }
   return facts
