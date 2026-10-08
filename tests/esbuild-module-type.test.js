@@ -103,6 +103,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   // A statically falsy __esModule marks nothing.
   t.assert.equal(analyze('module.exports = { __esModule: false, default: 1 }').setsEsModule, false)
   t.assert.equal(analyze('exports.__esModule = void 0').setsEsModule, false)
+  // `undefined` is a name a declaration can rebind.
+  t.assert.equal(analyze('const undefined = true\nmodule.exports = { __esModule: undefined, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: false })').setsEsModule, false)
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { get: () => flag })').setsEsModule, true)
   // A literal that never becomes the exports, or only ends up nested in them, doesn't mark them.
