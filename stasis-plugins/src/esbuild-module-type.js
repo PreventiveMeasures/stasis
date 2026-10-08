@@ -349,7 +349,10 @@ function scanValue(node, out) {
         break
       case 'ObjectExpression':
         for (const prop of current.properties) {
+          // A spread's properties are the object's own; a `__proto__: value` (not computed, shorthand or a method)
+          // sets its prototype, whose properties it inherits.
           if (prop.type === 'SpreadElement') stack.push(prop.argument)
+          else if (!prop.computed && !prop.shorthand && !prop.method && prop.kind === 'init' && nameOf(prop.key) === '__proto__') stack.push(prop.value)
           // A setter alone reads as undefined.
           else if (isFalsy(prop.value) || prop.kind === 'set') continue
           else if (prop.computed ? mayNameEsModule(prop.key, out) : nameOf(prop.key) === '__esModule') out.marked = true

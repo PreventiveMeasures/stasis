@@ -4,7 +4,7 @@ import { once } from 'node:events'
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -1407,6 +1407,29 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     const named = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(join(tmp, 'named.br'), join(tmp, 'out-named'), cjs) })
     t.assert.equal(named.status, 0, `named stderr: ${named.stderr}`)
     t.assert.equal(readFileSync(join(tmp, 'out-named', 'entry.js'), 'utf-8'), readFileSync(join(tmp, 'out-plain-cjs', 'entry.js'), 'utf-8'))
+  }))
+
+  test('one load-mode instance serving concurrent builds checks each against its own format', withTmp(async (t, tmp) => {
+    // The esm build is set up last; were its options the instance's, the cjs build would pass the external default
+    // import it must refuse.
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    writeFileSync(join(tmp, 'package.json'), TYPE_MODULE)
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from 'dep'\nconsole.log(x)\n")
+    const script = `
+      const [esbuildUrl, pluginUrl] = process.argv.slice(1)
+      const esbuild = await import(esbuildUrl)
+      const { StasisEsbuild } = await import(pluginUrl)
+      const options = (format, plugins) => ({ entryPoints: ['src/entry.js'], absWorkingDir: process.cwd(), bundle: true,
+        write: false, format, platform: 'node', external: ['dep'], logLevel: 'silent', plugins })
+      await esbuild.build(options('esm', [new StasisEsbuild({ lock: 'none', bundle: 'replace', bundleFile: 'snapshot.br', scope: 'full' })]))
+      const plugin = new StasisEsbuild({ lock: 'none', bundle: 'load', bundleFile: 'snapshot.br', scope: 'full' })
+      const outcome = (build) => build.then(() => 'built', () => 'refused')
+      const [cjs, esm] = await Promise.all([outcome(esbuild.build(options('cjs', [plugin]))), outcome(esbuild.build(options('esm', [plugin])))])
+      console.log(\`cjs \${cjs}, esm \${esm}\`)
+    `
+    const r = await runNode(['--input-type=module', '-e', script, import.meta.resolve('esbuild'), pathToFileURL(join(here, '..', 'stasis', 'src', 'esbuild.js')).href], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.equal(r.stdout.trim(), 'cjs refused, esm built')
   }))
 
   test('capture refuses a "type": "module" default import of a re-export esbuild leaves for runtime (an optional require)', withTmp(async (t, tmp) => {

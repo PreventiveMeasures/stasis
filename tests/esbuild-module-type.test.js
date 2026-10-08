@@ -146,6 +146,9 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
   t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
   t.assert.equal(analyze('const base = { __esModule: true }\nmodule.exports = { ...base, default: 1 }').setsEsModule, true)
+  // A `__proto__:` key sets the prototype, whose properties the exports inherit; a computed one is an own key.
+  t.assert.equal(analyze('module.exports = { __proto__: { __esModule: true }, default: 1 }').setsEsModule, true)
+  t.assert.equal(analyze("module.exports = { ['__proto__']: { __esModule: true }, default: 1 }").setsEsModule, false)
   // A computed key that names `__esModule`: a constant or a constant concatenation.
   t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: true, default: 1 }").setsEsModule, true)
   t.assert.equal(analyze("module.exports = { ['__es' + 'Module']: true, default: 1 }").setsEsModule, true)
