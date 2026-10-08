@@ -235,6 +235,13 @@ output that behaves differently from a plain esbuild build of the same tree:
 | A file of a typed package reads `arguments` outside any function, and the builds wrap it differently (a `"type": "commonjs"` file without CommonJS use, a `"type": "module"` file without `import`/`export`) | The wrapper by its `type`: CommonJS's, or none/ESM's | The wrapper by its syntax | Read `arguments` only inside a function |
 | A `"type": "commonjs"` entry with no `export` or CommonJS use, built with `--format=esm` | Re-exports its `module.exports` as the output's default export | No default export | `--format=cjs` or `--format=iife` |
 
+Whether a CommonJS module's exports may carry `__esModule` is decided fail-safe: any
+`__esModule` key the module defines on anything counts, wherever that value ends up. That
+includes a property write, an object literal or class member, a `defineProperty`, and a
+string constant that could become a key. Reads, comparisons and falsy values don't count. A
+key only the runtime knows, such as a computed key or a `Proxy` trap, counts where it reaches
+the exports.
+
 Everything else builds as before and behaves as a plain esbuild build does — named
 imports, CommonJS modules that don't carry `__esModule`, files of packages without a
 `type`. The checks parse each served file with [`oxc-parser`](https://www.npmjs.com/package/oxc-parser),

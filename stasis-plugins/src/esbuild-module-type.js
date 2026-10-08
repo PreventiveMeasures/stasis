@@ -56,7 +56,12 @@ const stringValue = (node) => {
   }
   return undefined
 }
-const nameOf = (node) => (node?.type === 'Identifier' ? node.name : stringValue(node))
+// A constant property key: a string, or a number as the string it names (`xs[0]`, `{ 0: x }`).
+const keyValue = (node) => stringValue(node) ?? (node?.type === 'Literal' && typeof node.value === 'number' ? String(node.value) : undefined)
+const nameOf = (node) => (node?.type === 'Identifier' ? node.name : keyValue(node))
+const propKey = (key, computed) => (computed ? keyValue(key) : nameOf(key))
+// The key a property read names, or undefined where only the runtime knows it.
+const staticKey = (member) => propKey(member.property, member.computed)
 const isModuleExports = (node) => node?.type === 'MemberExpression' && node.object.type === 'Identifier' &&
   node.object.name === 'module' && (node.computed ? stringValue(node.property) : node.property.name) === 'exports'
 const isExportsTarget = (node) => (node?.type === 'Identifier' && node.name === 'exports') || isModuleExports(node)
@@ -168,8 +173,8 @@ function patternNames(pattern, names = []) {
 }
 
 // What each name a destructuring pattern binds may get from `value`: the element or property it selects (an
-// ElementOf node, keyed by the property's static name), its default, or, for an object pattern's rest, the
-// value itself less some keys.
+// ElementOf node, keyed by the index or the property's static name), its default, or a rest: an array pattern's
+// holds the elements from its position on (a RestOf node), an object pattern's the value itself less some keys.
 function patternSources(pattern, value, sources = new Map()) {
   switch (pattern?.type) {
     case 'Identifier':
@@ -180,12 +185,13 @@ function patternSources(pattern, value, sources = new Map()) {
       patternSources(pattern.left, pattern.right, sources)
       break
     case 'ArrayPattern':
-      for (const element of pattern.elements) {
-        if (element?.type !== 'RestElement') patternSources(element, { type: 'ElementOf', object: value }, sources)
+      for (const [index, element] of pattern.elements.entries()) {
+        if (element?.type === 'RestElement') patternSources(element.argument, { type: 'RestOf', object: value, from: index }, sources)
+        else if (element) patternSources(element, { type: 'ElementOf', object: value, key: String(index) }, sources)
       }
       break
     case 'ObjectPattern': {
-      const keyOf = (prop) => (prop.computed ? stringValue(prop.key) : nameOf(prop.key))
+      const keyOf = (prop) => propKey(prop.key, prop.computed)
       for (const prop of pattern.properties) {
         if (prop.type !== 'RestElement') patternSources(prop.value, { type: 'ElementOf', object: value, key: keyOf(prop) }, sources)
         // The rest copies the remaining own properties: none named `__esModule` where the pattern took that key.
@@ -197,18 +203,43 @@ function patternSources(pattern, value, sources = new Map()) {
   return sources
 }
 
+// An index past this is any (`[cmd, ...rest] = args` in a loop shifts it each round).
+const MAX_INDEX = 64
+const arrayIndex = (key) => (typeof key === 'string' && /^(?:0|[1-9]\d*)$/u.test(key) ? Number(key) : undefined)
+
 // The values an array or object literal holds for what a pattern or property read takes from it: the property
-// `key` names (every one where it's undefined), an array's elements, a property whose computed key or a spread
-// that may be it, what a getter returns, and what a `__proto__:` prototype holds; a name's are the caller's to
-// follow (out.elements).
+// `key` names (every one where it's undefined), an array's element at that index (or past one where a spread
+// before it shifts it), a property whose computed key or a spread that may be it, what a getter returns, and
+// what a `__proto__:` prototype holds; a name's are the caller's to follow (out.elements).
 function elementsOf(node, out, key) {
   switch (node?.type) {
-    case 'ArrayExpression':
-      return node.elements.flatMap((element) => (element === null ? [] : element.type === 'SpreadElement' ? elementsOf(element.argument, out, key) : [element]))
+    case 'ArrayExpression': {
+      const index = arrayIndex(key)
+      if (key !== undefined && index === undefined) return []  // `length`, a method: not an element
+      const values = []
+      let fixed = 0
+      let spread = false
+      for (const element of node.elements) {
+        if (element?.type === 'SpreadElement') {
+          if (index === undefined || fixed <= index) values.push(...elementsOf(element.argument, out, undefined))
+          spread = true
+          continue
+        }
+        if (element && (index === undefined || (spread ? fixed <= index : fixed === index))) values.push(element)
+        fixed++
+      }
+      return values
+    }
+    case 'RestOf': {
+      // An array pattern's rest holds the source's elements from its position on.
+      const index = arrayIndex(key)
+      if (key !== undefined && index === undefined) return []
+      return elementsOf(node.object, out, index === undefined || node.from + index > MAX_INDEX ? undefined : String(node.from + index))
+    }
     case 'ObjectExpression':
       return node.properties.flatMap((prop) => {
         if (prop.type === 'SpreadElement') return elementsOf(prop.argument, out, key)
-        const name = prop.computed ? stringValue(prop.key) : nameOf(prop.key)
+        const name = propKey(prop.key, prop.computed)
         if (!prop.computed && !prop.shorthand && !prop.method && prop.kind === 'init' && name === '__proto__') return elementsOf(prop.value, out, key)
         if (key !== undefined && name !== undefined && name !== key) return []
         return prop.kind === 'get' ? returnedValues(prop.value) : prop.kind === 'set' ? [] : [prop.value]
@@ -258,6 +289,107 @@ function mayDefineTruthy(descriptor) {
   return value !== undefined && !isFalsy(value.value)
 }
 
+// The properties an assignment target writes: the target itself, or a destructuring pattern's members.
+function patternMembers(pattern, members = []) {
+  switch (pattern?.type) {
+    case 'MemberExpression':
+      members.push(pattern)
+      break
+    case 'ObjectPattern':
+      for (const prop of pattern.properties) patternMembers(prop.type === 'RestElement' ? prop.argument : prop.value, members)
+      break
+    case 'ArrayPattern':
+      for (const element of pattern.elements) patternMembers(element, members)
+      break
+    case 'AssignmentPattern':
+      patternMembers(pattern.left, members)
+      break
+    case 'RestElement':
+      patternMembers(pattern.argument, members)
+      break
+  }
+  return members
+}
+
+// A constant `__esModule` key: a string (`'__es' + 'Module'` folded at the top of the concatenation only, as a
+// part of one names something else), or the name in a property, member or JSX attribute position.
+function isEsModuleToken(node, parent) {
+  switch (node.type) {
+    case 'Identifier':
+    case 'JSXIdentifier':
+      return node.name === '__esModule'
+    case 'Literal':
+    case 'TemplateLiteral':
+    case 'BinaryExpression':
+      return (node.type !== 'BinaryExpression' || node.operator === '+') && !(parent?.type === 'BinaryExpression' && parent.operator === '+') &&
+        stringValue(node) === '__esModule'
+    default:
+      return false
+  }
+}
+
+// Methods whose `'__esModule'` argument reads (or removes) the key.
+const READ_METHODS = new Set(['hasOwnProperty', 'hasOwn', 'getOwnPropertyDescriptor', 'propertyIsEnumerable', 'has', 'get', 'deleteProperty',
+  'includes', 'indexOf', 'lastIndexOf', 'startsWith', 'endsWith'])
+// The name of the method a call runs (`hasOwnProperty.call(m, key)` runs hasOwnProperty).
+const methodName = (callee) => {
+  if (callee.type === 'Identifier') return callee.name
+  if (callee.type !== 'MemberExpression') return undefined
+  const name = staticKey(callee)
+  return (name === 'call' || name === 'apply') && callee.object.type === 'MemberExpression' ? staticKey(callee.object) : name
+}
+
+// Whether a constant `__esModule` key (isEsModuleToken) may define the key on something, wherever that goes (a
+// fail-safe: no value flow is followed): a property write (context.writeTargets), an object literal's or a class's
+// member that isn't falsy or a setter alone, a descriptor map's (context.descriptorMaps) that may define a truthy
+// value, a JSX attribute, a call's argument but a read method's or a falsy-only descriptor's, and a string anywhere
+// it can flow from (`const key = '__esModule'`). A read, a comparison, a `case`, a destructuring pattern's key and a
+// variable's name don't.
+function definesEsModule(node, parent, key, grandparent, context) {
+  const string = node.type !== 'Identifier' && node.type !== 'JSXIdentifier'
+  switch (parent?.type) {
+    case 'MemberExpression':
+      return key === 'property' && (string || !parent.computed) && context.writeTargets.has(parent)
+    case 'Property':
+      if (key !== 'key') return string
+      if (!string && parent.computed) return false
+      if (grandparent?.type === 'ObjectPattern') return false
+      if (context.descriptorMaps.has(grandparent)) return mayDefineTruthy(parent.value)
+      return parent.kind === 'get' || (parent.kind === 'init' && (parent.method || !isFalsy(parent.value)))
+    case 'MethodDefinition':
+    case 'PropertyDefinition':
+    case 'AccessorProperty':
+      if (key !== 'key') return string
+      if (!string && parent.computed) return false
+      return parent.type === 'MethodDefinition' ? parent.kind !== 'set' : parent.value != null && !isFalsy(parent.value)
+    case 'CallExpression':
+    case 'NewExpression':
+      if (key !== 'arguments') return false
+      if (READ_METHODS.has(methodName(parent.callee))) return false
+      return !(parent.arguments.length >= 3 && parent.arguments[1] === node && !mayDefineTruthy(parent.arguments[2]))
+    case 'JSXAttribute':
+    case 'TSEnumMember':
+    case 'TSParameterProperty':  // `constructor(public __esModule)` sets it on the instance
+      return true
+    case 'AssignmentPattern':
+      return key === 'left' && grandparent?.type === 'TSParameterProperty'  // the argument replaces a default
+    case 'BinaryExpression':
+    case 'UnaryExpression':
+    case 'SwitchCase':
+    case 'ExpressionStatement':
+    case 'ImportDeclaration':
+    case 'ImportExpression':
+    case 'ImportSpecifier':
+    case 'ExportNamedDeclaration':
+    case 'ExportAllDeclaration':
+    case 'ExportSpecifier':
+    case 'ImportAttribute':
+      return false
+    default:
+      return string
+  }
+}
+
 // The values a call of a function returns: its expression body, or each `return` outside nested functions --
 // none for an async function or a generator, whose call returns a Promise or an iterator instead.
 function returnedValues(fn) {
@@ -273,13 +405,14 @@ function returnedValues(fn) {
   return values
 }
 
-// Whether a class's static (or else instance and prototype) members put `__esModule` on what they define:
-// sets out.marked, or collects a computed key's name for the caller to resolve (out.keys).
+// Whether a class's static (or else instance and prototype) members' computed keys may put `__esModule` on what
+// they define (a constant one is the token check's): sets out.marked, or collects a key's name for the caller to
+// resolve (out.keys).
 function scanMembers(cls, statics, out) {
   for (const member of cls.body.body) {
     if (!('key' in member) || Boolean(member.static) !== statics || member.kind === 'set') continue
     if (member.type !== 'MethodDefinition' && (member.value == null || isFalsy(member.value))) continue
-    if (member.computed ? mayNameEsModule(member.key, out) : nameOf(member.key) === '__esModule') out.marked = true
+    if (member.computed && mayNameEsModule(member.key, out)) out.marked = true
   }
 }
 
@@ -329,14 +462,65 @@ function scanInstance(callee, out) {
   return returned
 }
 
+// The functions or names of functions an expression may evaluate to, for calling: past a sequence (`(0, fn)`),
+// either branch, a TS wrapper, and a bound function (`fn.bind(…)`) to its target.
+function functionsOf(node) {
+  const found = []
+  const stack = [node]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    switch (current?.type) {
+      case 'Identifier':
+      case 'FunctionDeclaration':
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression':
+        found.push(current)
+        break
+      case 'SequenceExpression':
+        stack.push(current.expressions.at(-1))
+        break
+      case 'ConditionalExpression':
+        stack.push(current.consequent, current.alternate)
+        break
+      case 'LogicalExpression':
+        stack.push(current.left, current.right)
+        break
+      case 'AssignmentExpression':
+        stack.push(current.right)
+        break
+      case 'TSAsExpression':
+      case 'TSSatisfiesExpression':
+      case 'TSNonNullExpression':
+      case 'TSTypeAssertion':
+      case 'ChainExpression':
+        stack.push(current.expression)
+        break
+      case 'CallExpression':
+        if (current.callee.type === 'MemberExpression' && staticKey(current.callee) === 'bind') stack.push(current.callee.object)
+        break
+    }
+  }
+  return found
+}
+
+// What a call runs: its callee's functions, the function `.call`/`.apply` invoke, and the one `Reflect.apply` is handed.
+function calledFunctions(call) {
+  const { callee } = call
+  const invoked = callee.type === 'MemberExpression' && ['call', 'apply'].includes(staticKey(callee)) ? [callee.object] : []
+  if (callee.type === 'MemberExpression' && callee.object.type === 'Identifier' && callee.object.name === 'Reflect' &&
+    staticKey(callee) === 'apply' && call.arguments[0]) invoked.push(call.arguments[0])
+  return [callee, ...invoked].flatMap(functionsOf)
+}
+
 // What can become the value an expression assigns to module.exports (or copies into it): the expression
 // itself, either branch of a conditional or logical, the last of a sequence, the end of an assignment chain,
-// what an IIFE returns, what an object literal spreads, a class's superclass, and what a call or `new` is
-// handed (it may return or copy it) -- not an object literal's other property values, which only end up
-// nested in the exports. Collects `require('<literal>')` specifiers, identifiers, callee names and the
-// classes of instances (followed through their declarations and function returns by the caller), and whether
-// an object literal's key, a class's static or an instance's member there is `__esModule` (`out.marked`), or a
-// computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
+// what a function it calls returns (an IIFE, through `.call`/`.apply`, a bound one), what an object literal
+// spreads, a class's superclass, and what a call or `new` is handed (it may return or copy it) -- not an
+// object literal's other property values, which only end up nested in the exports. Collects
+// `require('<literal>')` specifiers, identifiers, callee names and the classes of instances (followed through
+// their declarations and function returns by the caller), and whether a computed key of an object literal, a
+// class's static or an instance's member there may be `__esModule` (`out.marked`; a constant one is the token
+// check's), or one the caller resolves (`out.keys`: `{ [marker]: true }`).
 function scanValue(node, out) {
   const stack = [node]
   while (stack.length > 0) {
@@ -373,11 +557,9 @@ function scanValue(node, out) {
         stack.push(...elementsOf(current.object, out, current.key))
         break
       // A property read (`obj.selected`) takes the value the object holds there, as destructuring does.
-      case 'MemberExpression': {
-        const key = current.computed ? stringValue(current.property) : current.property.type === 'Identifier' ? current.property.name : undefined
-        stack.push({ type: 'ElementOf', object: current.object, key })
+      case 'MemberExpression':
+        stack.push({ type: 'ElementOf', object: current.object, key: staticKey(current) })
         break
-      }
       case 'ChainExpression':
         stack.push(current.expression)
         break
@@ -396,7 +578,7 @@ function scanValue(node, out) {
           else if (!prop.computed && !prop.shorthand && !prop.method && prop.kind === 'init' && nameOf(prop.key) === '__proto__') stack.push(prop.value)
           // A setter alone reads as undefined.
           else if (isFalsy(prop.value) || prop.kind === 'set') continue
-          else if (prop.computed ? mayNameEsModule(prop.key, out) : nameOf(prop.key) === '__esModule') out.marked = true
+          else if (prop.computed && mayNameEsModule(prop.key, out)) out.marked = true
         }
         break
       case 'CallExpression': {
@@ -405,11 +587,10 @@ function scanValue(node, out) {
           out.requires.push([current.callee, requireSpecifiers(current.arguments[0])])
           break
         }
-        // defineProperty-style (target, '__esModule', descriptor) returns its target with the mark (esbuild's
-        // `__toCommonJS` is `__copyProps(__defProp({}, "__esModule", { value: true }), mod)`).
-        if (current.arguments.length >= 3 && stringValue(current.arguments[1]) === '__esModule' && mayDefineTruthy(current.arguments[2])) out.marked = true
-        if (FUNCTIONS.has(current.callee.type)) stack.push(...returnedValues(current.callee))
-        if (current.callee.type === 'Identifier') out.callees.add(current.callee.name)
+        for (const fn of calledFunctions(current)) {
+          if (FUNCTIONS.has(fn.type)) stack.push(...returnedValues(fn))
+          else out.callees.add(fn.name)
+        }
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
       }
@@ -431,9 +612,10 @@ function scanValue(node, out) {
 //               exports at all, and whether through its default export or namespace (where interop decides the value)
 //   requires    Map specifier -> { consumed }: whether a `require()` of it uses the result (not a bare statement)
 //   dynamicImports  Map specifier -> { consumed }: the same for an `import()` (not a bare or awaited statement)
-//   setsEsModule  something that may mark the exports __esModule: an `__esModule` assignment or defineProperty on
-//               anything but a fresh local object that never becomes them (bundled output names its exports
-//               arbitrarily), or an `__esModule` key in a literal that becomes them
+//   setsEsModule  something that may mark the exports __esModule: a constant `__esModule` key anywhere it may be
+//               defined on something (fail-safe: where the value goes isn't followed; a read, a comparison or a
+//               falsy value doesn't count), or a key in what becomes the exports that may be `__esModule` at
+//               runtime (a computed one, a Proxy's trap, a require() only the runtime resolves)
 //   reexports   require() specifiers whose result can become this file's module.exports
 //   parseError  the parse failed; the facts above are a best effort
 export function analyzeModule(source, { path, loader }) {
@@ -503,29 +685,13 @@ export function analyzeModule(source, { path, loader }) {
   // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
   const copies = new Map()  // name -> [argument]
   const assignments = new Map()  // name -> [assigned value]: `out = value` (destructuring: the whole right side)
-  // A fresh local object (every binding of the name an object-literal declarator, never reassigned): an
-  // `__esModule` mark on one only reaches the exports if the object does.
-  const bindingCounts = new Map()
-  const objectDecls = new Map()
   const reassigned = new Set()
-  const pendingMarks = new Set()
-  const count = (map, name) => map.set(name, (map.get(name) ?? 0) + 1)
-  // A mark on a fresh value (`define({}, '__esModule', …)`) reaches the exports only if the value does, which the
-  // value flow follows; on a name, it depends on what the name holds; on anything else it may be the exports.
-  const FRESH = new Set(['ObjectExpression', 'ArrayExpression', 'FunctionExpression', 'ArrowFunctionExpression', 'ClassExpression', 'NewExpression'])
-  const markReceiver = (receiver) => {
-    if (receiver?.type === 'Identifier') pendingMarks.add(receiver.name)
-    else if (!FRESH.has(receiver?.type)) facts.setsEsModule = true
-  }
-  // A key set on a receiver: `__esModule` marks it; a computed name (`exports[marker] = true`) may, resolved once
-  // every declaration is in. A key whose value isn't known doesn't count here, unlike in what becomes the exports:
-  // dynamic writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
-  const keyMarks = []  // [key name, receiver]
+  // Where a constant `__esModule` key may be defined (see definesEsModule): property writes, and the descriptor
+  // maps of Object.defineProperties/Object.create. A write of a key whose value isn't known doesn't count, unlike a
+  // computed key in what becomes the exports: dynamic writes run all over CommonJS, the exports included
+  // (fs-extra's `exports[method] = u(fs[method])` loop).
+  const tokenContext = { writeTargets: new Set(), descriptorMaps: new Set() }
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
-  const markKey = (key, computed, receiver) => {
-    if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
-    else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
-  }
   const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
   // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
@@ -546,6 +712,7 @@ export function analyzeModule(source, { path, loader }) {
     if (TYPE_ONLY.has(node.type) || node.declare) continue
     let childScope = scope
     let childFnScope = fnScope
+    if (!facts.setsEsModule && isEsModuleToken(node, parent) && definesEsModule(node, parent, key, grandparent, tokenContext)) facts.setsEsModule = true
     switch (node.type) {
       case 'ImportDeclaration':
         if (node.importKind === 'type') continue
@@ -557,7 +724,6 @@ export function analyzeModule(source, { path, loader }) {
           useImport(node.source.value, {})
           importBindings.push([node.source.value, spec.local.name, interop])
           declare(root, spec.local.name, 'import')
-          count(bindingCounts, spec.local.name)
         }
         break
       case 'ExportNamedDeclaration':
@@ -636,16 +802,12 @@ export function analyzeModule(source, { path, loader }) {
           const consumed = !(parent?.type === 'ExpressionStatement' && key === 'expression')
           facts.requires.set(required, { consumed: consumed || (facts.requires.get(required)?.consumed ?? false) })
         }
-        // defineProperty-style: (target, '__esModule', descriptor), aliases included (esbuild's __defProp).
-        if (node.arguments.length >= 3 && mayDefineTruthy(node.arguments[2])) markKey(node.arguments[1], true, node.arguments[0])
-        // Object.defineProperties(target, { key: descriptor, ... }): the map holds descriptors, not values, so only an
-        // `__esModule` one that may define a truthy value marks the target, as defineProperty's does.
-        const descriptors = node.callee.type === 'MemberExpression' && !node.callee.computed && nameOf(node.callee.property) === 'defineProperties' &&
-          node.arguments[1]?.type === 'ObjectExpression' && node.arguments[1].properties.every((prop) => prop.type === 'Property' && !prop.computed)
-          ? node.arguments[1].properties : null
-        if (descriptors) {
-          if (descriptors.some((prop) => nameOf(prop.key) === '__esModule' && mayDefineTruthy(prop.value))) markReceiver(node.arguments[0])
-          break
+        // Object.defineProperties(target, { key: descriptor, ... }) and Object.create(proto, { … }): the map holds
+        // descriptors, not values (see definesEsModule); defineProperties copies no values in.
+        const mapping = node.callee.type === 'MemberExpression' ? staticKey(node.callee) : undefined
+        if ((mapping === 'defineProperties' || mapping === 'create') && node.arguments[1]?.type === 'ObjectExpression') {
+          tokenContext.descriptorMaps.add(node.arguments[1])
+          if (mapping === 'defineProperties' && node.arguments[1].properties.every((prop) => prop.type === 'Property' && !prop.computed)) break
         }
         if (node.arguments[0]?.type === 'Identifier' && !isExportsTarget(node.arguments[0]) && node.arguments.length > 1) {
           const [{ name }, ...rest] = node.arguments
@@ -663,12 +825,11 @@ export function analyzeModule(source, { path, loader }) {
       }
       case 'UpdateExpression':
         // `exports.__esModule++` makes a falsy mark truthy (0 → 1).
-        if (node.argument.type === 'MemberExpression') markKey(node.argument.property, node.argument.computed, node.argument.object)
+        if (node.argument.type === 'MemberExpression') tokenContext.writeTargets.add(node.argument)
         break
       case 'AssignmentExpression':
-        if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right))) {
-          markKey(node.left.property, node.left.computed, node.left.object)
-        }
+        // A property it writes (but `= <falsy>`), destructuring targets included (`[exports.__esModule] = [true]`).
+        if (!(node.operator === '=' && isFalsy(node.right))) for (const target of patternMembers(node.left)) tokenContext.writeTargets.add(target)
         for (const [name, values] of patternSources(node.left, node.right)) {
           reassigned.add(name)
           assignments.set(name, [...(assignments.get(name) ?? []), ...values])
@@ -687,7 +848,6 @@ export function analyzeModule(source, { path, loader }) {
       case 'VariableDeclarator':
         if (node.id.type === 'Identifier' && node.init) {
           declarators.set(node.id.name, [...(declarators.get(node.id.name) ?? []), node.init])
-          if (node.init.type === 'ObjectExpression') count(objectDecls, node.id.name)
         } else if (node.init) {
           for (const [name, values] of patternSources(node.id, node.init)) declarators.set(name, [...(declarators.get(name) ?? []), ...values])
         }
@@ -719,8 +879,11 @@ export function analyzeModule(source, { path, loader }) {
       case 'ForInStatement':
       case 'ForOfStatement':
         if (node.await && fnDepth === 0) facts.esmExports = true
-        // `for (o of xs)` assigns o, as `o = x` does.
-        if (node.left && node.left.type !== 'VariableDeclaration') for (const name of patternNames(node.left)) reassigned.add(name)
+        // `for (o of xs)` assigns o, as `o = x` does (`for (exports.__esModule of [true])` the property).
+        if (node.left && node.left.type !== 'VariableDeclaration') {
+          for (const name of patternNames(node.left)) reassigned.add(name)
+          for (const target of patternMembers(node.left)) tokenContext.writeTargets.add(target)
+        }
         childScope = { names: new Set(), parent: scope }
         break
       case 'SwitchStatement':
@@ -730,8 +893,7 @@ export function analyzeModule(source, { path, loader }) {
       case 'Identifier':
         if (parent && !isNonReference(parent, key)) {
           if (key === 'key' && parent.computed) keyRefs.set(node, scope)
-          if (binding) count(bindingCounts, node.name)
-          else if (tracked(node.name)) {
+          if (!binding && tracked(node.name)) {
             references.push([node.name, scope])
             if (node.name === 'Proxy' || node.name === 'Symbol' || node.name === 'require') globalRefs.set(node, scope)
             if (node.name === 'arguments' && thisDepth === 0) topArguments.push(scope)
@@ -838,8 +1000,10 @@ export function analyzeModule(source, { path, loader }) {
     }
     else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found, key)) scanValue(value, found)
     else {
-      const fns = [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))]
-      for (const value of fns.flatMap((fn) => returnedValues(fn))) scanValue(value, found)
+      for (const fn of [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].flatMap(functionsOf)]) {
+        if (FUNCTIONS.has(fn.type)) for (const value of returnedValues(fn)) scanValue(value, found)
+        else found.callees.add(fn.name)  // an alias (`const load = make`)
+      }
     }
     follow(found)
   }
@@ -875,10 +1039,6 @@ export function analyzeModule(source, { path, loader }) {
     return mayName(node.name)
   }
   if (unknownSymbol || [...exported.proxies].some(isGlobal) || exported.keys.some(mayNameKey)) exported.marked = true
-  for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
-  const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
-  if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {
-    facts.setsEsModule = true
-  }
+  if (exported.marked) facts.setsEsModule = true
   return facts
 }
