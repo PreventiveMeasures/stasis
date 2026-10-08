@@ -206,11 +206,25 @@ function returnedValues(fn) {
 // sets out.marked, or collects a computed key's name for the caller to resolve (out.keys).
 function scanMembers(cls, statics, out) {
   for (const member of cls.body.body) {
-    if (!('key' in member) || Boolean(member.static) !== statics) continue
+    if (!('key' in member) || Boolean(member.static) !== statics || member.kind === 'set') continue
     if (member.type !== 'MethodDefinition' && (member.value == null || isFalsy(member.value))) continue
-    if ((member.computed ? stringValue(member.key) : nameOf(member.key)) === '__esModule') out.marked = true
-    else if (member.computed && member.key.type === 'Identifier') out.keys.add(member.key.name)
+    if (member.computed ? mayNameEsModule(member.key, out) : nameOf(member.key) === '__esModule') out.marked = true
   }
+}
+
+const isSymbol = (node) => (node?.type === 'MemberExpression' && node.object.type === 'Identifier' && node.object.name === 'Symbol') ||
+  (node?.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'Symbol')
+
+// Whether a computed key of what becomes the exports may name `__esModule`: a constant compares (`'__es' +
+// 'Module'`), a symbol or other literal can't (`Symbol.iterator`, `0`), a name is the caller's to resolve
+// once every declaration is in (out.keys), and anything else -- `process.env.KEY`, a call -- may.
+function mayNameEsModule(key, out) {
+  const string = stringValue(key)
+  if (string !== undefined) return string === '__esModule'
+  if (key.type === 'Literal' || isSymbol(key)) return false
+  if (key.type !== 'Identifier') return true
+  out.keys.add(key.name)
+  return false
 }
 
 // What an instance of `callee` (`new Box()`) gets from its class and superclasses: instance fields and
@@ -274,9 +288,9 @@ function scanValue(node, out) {
       case 'ObjectExpression':
         for (const prop of current.properties) {
           if (prop.type === 'SpreadElement') stack.push(prop.argument)
-          else if (isFalsy(prop.value)) continue
-          else if ((prop.computed ? stringValue(prop.key) : nameOf(prop.key)) === '__esModule') out.marked = true
-          else if (prop.computed && prop.key.type === 'Identifier') out.keys.add(prop.key.name)
+          // A setter alone reads as undefined.
+          else if (isFalsy(prop.value) || prop.kind === 'set') continue
+          else if (prop.computed ? mayNameEsModule(prop.key, out) : nameOf(prop.key) === '__esModule') out.marked = true
         }
         break
       case 'CallExpression': {
@@ -307,6 +321,7 @@ function scanValue(node, out) {
 //   imports     Map specifier -> { bindings, interop }: whether a static import/re-export of it observes its
 //               exports at all, and whether through its default export or namespace (where interop decides the value)
 //   requires    Map specifier -> { consumed }: whether a `require()` of it uses the result (not a bare statement)
+//   dynamicImports  Map specifier -> { consumed }: the same for an `import()` (not a bare or awaited statement)
 //   setsEsModule  something that may mark the exports __esModule: an `__esModule` assignment or defineProperty on
 //               anything but a fresh local object that never becomes them (bundled output names its exports
 //               arbitrarily), or an `__esModule` key in a literal that becomes them
@@ -342,7 +357,7 @@ export function analyzeModule(source, { path, loader }) {
 
   const facts = {
     esmExports: false, esmImports: false, cjsUsage: 'no', cjsDetail: null, strictOnly, blockFunction: false, topArguments: false,
-    imports: new Map(), requires: new Map(), setsEsModule: false, reexports: new Set(), parseError,
+    imports: new Map(), requires: new Map(), dynamicImports: new Map(), setsEsModule: false, reexports: new Set(), parseError,
   }
   const useImport = (specifier, { bindings = false, interop = false }) => {
     const prior = facts.imports.get(specifier) ?? { bindings: false, interop: false }
@@ -460,6 +475,15 @@ export function analyzeModule(source, { path, loader }) {
       case 'TSExportAssignment':
         cjsCertain ??= '`export =`'
         break
+      case 'ImportExpression': {
+        const imported = stringValue(node.source)
+        if (imported !== undefined) {
+          const consumed = !(parent?.type === 'ExpressionStatement' && key === 'expression') &&
+            !(parent?.type === 'AwaitExpression' && grandparent?.type === 'ExpressionStatement')
+          facts.dynamicImports.set(imported, { consumed: consumed || (facts.dynamicImports.get(imported)?.consumed ?? false) })
+        }
+        break
+      }
       case 'CallExpression': {
         if (node.callee.type === 'Identifier' && node.callee.name === 'eval' && !node.optional) cjsCertain ??= 'a direct `eval`'
         const required = requireSpecifier(node)
@@ -616,7 +640,16 @@ export function analyzeModule(source, { path, loader }) {
     follow(found)
   }
   facts.reexports = exported.specifiers
-  if ([...exported.keys].some((name) => names(name, '__esModule'))) exported.marked = true
+  // A computed key of what becomes the exports may name `__esModule` unless every value its name is given is a
+  // constant or a symbol: one with none (a parameter, an import, a global) is unknown.
+  const mayName = (name) => {
+    const given = [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])]
+    return given.length === 0 || given.some((value) => {
+      const string = stringValue(value)
+      return string === undefined ? value.type !== 'Literal' && !isSymbol(value) : string === '__esModule'
+    })
+  }
+  if ([...exported.keys].some(mayName)) exported.marked = true
   for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {

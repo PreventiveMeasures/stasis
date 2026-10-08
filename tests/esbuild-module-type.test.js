@@ -41,10 +41,14 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
   })
 })
 
-test('analyzeModule: whether a require uses its result', (t) => {
+test('analyzeModule: whether a require or import() uses its result', (t) => {
   const { requires } = analyze("require('./side.js')\nconst x = require('./used.js')\nrequire('./both.js')\nf(require('./both.js'))")
   t.assert.deepStrictEqual(Object.fromEntries(requires), {
     './side.js': { consumed: false }, './used.js': { consumed: true }, './both.js': { consumed: true },
+  })
+  const { dynamicImports } = analyze("import('./side.js')\nawait import('./awaited.js')\nimport('./then.js').then(f)\nconst m = await import('./used.js')")
+  t.assert.deepStrictEqual(Object.fromEntries(dynamicImports), {
+    './side.js': { consumed: false }, './awaited.js': { consumed: false }, './then.js': { consumed: true }, './used.js': { consumed: true },
   })
 })
 
@@ -140,6 +144,15 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze("const marker = '__es' + 'Module'\nexports[marker] = true").setsEsModule, true)
   t.assert.equal(analyze("const marker = '__esModule'\nObject.defineProperty(exports, marker, { value: true })").setsEsModule, true)
   t.assert.equal(analyze("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true").setsEsModule, false)
+  // A computed key of an exported object whose value isn't known may be `__esModule`; a symbol or a literal isn't.
+  t.assert.equal(analyze('const marker = process.env.MARKER\nmodule.exports = { [marker]: true, default: 1 }').setsEsModule, true)
+  t.assert.equal(analyze('module.exports = { [process.env.MARKER]: true, default: 1 }').setsEsModule, true)
+  t.assert.equal(analyze('module.exports = class { static [key()] = 1 }').setsEsModule, true)
+  t.assert.equal(analyze("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }").setsEsModule, false)
+  // A setter alone reads as undefined.
+  t.assert.equal(analyze('module.exports = { set __esModule(v) {}, default: 1 }').setsEsModule, false)
+  t.assert.equal(analyze('module.exports = class { static set __esModule(v) {} }').setsEsModule, false)
+  t.assert.equal(analyze('module.exports = { get __esModule() { return true }, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: false, default: 1 }").setsEsModule, false)
   // A class's statics are its own properties, its superclass's inherited ones.
   t.assert.equal(analyze('module.exports = class { static __esModule = true; static default = 1 }').setsEsModule, true)
