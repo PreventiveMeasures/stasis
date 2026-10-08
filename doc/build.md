@@ -244,11 +244,16 @@ such as `hasOwnProperty`, which a `Proxy` trap can turn into a write, or a `defi
 a falsy value. A key only the runtime knows, such as a computed key or a `Proxy` trap, counts
 where it reaches the exports.
 
-One case isn't caught: exports taken from part of another module's exports rather than all
-of them. That covers a property (`module.exports = require('./inner').child`), a destructured
-binding, or what another module's function returns. Telling these apart from the common
-Babel shim `module.exports = require('./lib').default`, which builds the same either way,
-would need analysis across modules that the check doesn't do.
+Two cases aren't caught. The first is exports taken from part of another module's exports
+rather than all of them. That covers a property (`module.exports = require('./inner').child`),
+a destructured binding, or what another module's function returns. Telling these apart from
+the common Babel shim `module.exports = require('./lib').default`, which builds the same
+either way, would need analysis across modules that the check doesn't do.
+
+The second is a `require()` that reaches the exports only through a chain of property reads
+on a local, such as a method two levels down (`module.exports = h.inner.load()`). The check
+follows one property of a local, and chains off a literal. Following chains through names
+multiplies past what a build can wait for in bundled files.
 
 Everything else builds as before and behaves as a plain esbuild build does — named
 imports, CommonJS modules that don't carry `__esModule`, files of packages without a

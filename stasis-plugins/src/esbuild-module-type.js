@@ -248,6 +248,11 @@ function elementsOf(node, out, key) {
       })
     case 'ElementOf':
       return elementsOf(node.object, out, node.key).flatMap((element) => elementsOf(element, out, key))
+    // A read off a read (`({ inner: { … } }).inner.load`) resolves where the first one lands on a literal; through a
+    // name (`h.inner.load`) it isn't followed: a name stands for every declaration of it in the file, and a chain of
+    // keys through a bundle's names multiplies past what a build can wait for.
+    case 'MemberExpression':
+      return elementsOf(node.object, { elements: [] }, staticKey(node)).flatMap((element) => elementsOf(element, out, key))
     case 'ClassExpression':
     case 'ClassDeclaration':
       // A class's statics, and its superclass's, which it inherits.
@@ -449,9 +454,10 @@ function scanConstructor(callee, out, returned, direct) {
     if (key === 'Proxy' || (direct && key === undefined)) out.marked = true
     return
   }
-  // What a destructuring took (`const { Proxy: P } = globalThis`): by its key, or the literal value it selects.
+  // What a destructuring took (`const { Proxy: P } = globalThis`): by its key (or one only the runtime knows,
+  // `{ [name]: P }`), or the literal value it selects.
   if (callee.type === 'ElementOf') {
-    if (callee.key === 'Proxy') out.marked = true
+    if (callee.key === 'Proxy' || callee.key === undefined) out.marked = true
     else for (const value of elementsOf(callee.object, { elements: [] }, callee.key)) for (const leaf of leavesOf(value)) scanConstructor(leaf, out, returned, false)
     return
   }
