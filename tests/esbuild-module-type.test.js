@@ -135,6 +135,11 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze("const marker = '__esModule'\nObject.defineProperty(exports, marker, { value: true })").setsEsModule, true)
   t.assert.equal(analyze("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true").setsEsModule, false)
   t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: false, default: 1 }").setsEsModule, false)
+  // A class's statics are its own properties, its superclass's inherited ones.
+  t.assert.equal(analyze('module.exports = class { static __esModule = true; static default = 1 }').setsEsModule, true)
+  t.assert.equal(analyze('class C { static get __esModule() { return true } }\nmodule.exports = C').setsEsModule, true)
+  t.assert.equal(analyze("module.exports = class extends require('./base') {}").reexports.has('./base'), true)
+  t.assert.equal(analyze('module.exports = class { __esModule = true; static __esModule = false; static x = 1 }').setsEsModule, false)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })

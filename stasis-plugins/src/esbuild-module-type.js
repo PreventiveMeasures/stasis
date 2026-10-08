@@ -199,11 +199,11 @@ function returnedValues(fn) {
 
 // What can become the value an expression assigns to module.exports (or copies into it): the expression
 // itself, either branch of a conditional or logical, the last of a sequence, the end of an assignment chain,
-// what an IIFE returns, what an object literal spreads, and what a call is handed (it may return or copy
-// it) -- not an object literal's other property values, which only end up nested in the exports. Collects
-// `require('<literal>')` specifiers, identifiers and callee names (followed through their declarations and
-// function returns by the caller), and whether an object literal there has an `__esModule` key (`out.marked`),
-// or a computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
+// what an IIFE returns, what an object literal spreads, a class's superclass, and what a call is handed (it
+// may return or copy it) -- not an object literal's other property values, which only end up nested in the
+// exports. Collects `require('<literal>')` specifiers, identifiers and callee names (followed through their
+// declarations and function returns by the caller), and whether an object literal's key or a class's static
+// there is `__esModule` (`out.marked`), or a computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
 function scanValue(node, out) {
   const stack = [node]
   while (stack.length > 0) {
@@ -229,6 +229,16 @@ function scanValue(node, out) {
       case 'TSNonNullExpression':
       case 'TSTypeAssertion':
         stack.push(current.expression)
+        break
+      case 'ClassExpression':
+      case 'ClassDeclaration':
+        // Its statics are the exports' own properties, and its superclass's statics inherited ones.
+        stack.push(current.superClass)
+        for (const member of current.body.body) {
+          if (!member.static || !('key' in member) || (member.type !== 'MethodDefinition' && (member.value == null || isFalsy(member.value)))) continue
+          if ((member.computed ? stringValue(member.key) : nameOf(member.key)) === '__esModule') out.marked = true
+          else if (member.computed && member.key.type === 'Identifier') out.keys.add(member.key.name)
+        }
         break
       case 'ObjectExpression':
         for (const prop of current.properties) {
@@ -319,7 +329,7 @@ export function analyzeModule(source, { path, loader }) {
     if (scope !== root) scope.names.add(name)
     else (kind === 'var' ? hoistedVar : shadowed).add(name)
   }
-  const declarators = new Map()  // name -> [init]
+  const declarators = new Map()  // name -> [init]: a declarator's, or the class a class declaration binds
   const functionDecls = new Map()  // name -> [FunctionDeclaration]
   // What a call may copy into a local it's handed first (`Object.assign(out, src)`): it reaches the exports if out does.
   const copies = new Map()  // name -> [argument]
@@ -397,7 +407,10 @@ export function analyzeModule(source, { path, loader }) {
         }
         break
       case 'ClassDeclaration':
-        if (node.id) declare(scope, node.id.name, 'class')
+        if (node.id) {
+          declare(scope, node.id.name, 'class')
+          declarators.set(node.id.name, [...(declarators.get(node.id.name) ?? []), node])
+        }
         break
       case 'ClassExpression':
         if (node.id) {
