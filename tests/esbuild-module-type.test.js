@@ -120,12 +120,17 @@ test('analyzeModule: top-level `arguments` -- a module wrapper\'s, outside any f
   // A local binding of the name is read instead.
   t.assert.equal(analyze('const arguments = [1]\nconsole.log(arguments[0])').topArguments, false)
   t.assert.equal(analyze('const f = (arguments) => arguments[0]').topArguments, false)
+  // A `var` of the name in the wrapper's body is the arguments object itself.
+  t.assert.equal(analyze('console.log(arguments[0])\nvar arguments').topArguments, true)
 })
 
 test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
   t.assert.equal(analyze('exports.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: true })').setsEsModule, true)
   t.assert.equal(analyze('var d=Object.defineProperty;d(e,"__esModule",{value:!0})').setsEsModule, true)
+  // On a fresh value, a mark reaches the exports only if the value does, as esbuild's __toCommonJS output's.
+  t.assert.equal(analyze("report({}, '__esModule', { value: true })\nmodule.exports = { default: 1 }").setsEsModule, false)
+  t.assert.equal(analyze('var __defProp = Object.defineProperty\nvar __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod)\nmodule.exports = __toCommonJS(src_exports)').setsEsModule, true)
   t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('const out = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: true } })').setsEsModule, true)
@@ -227,6 +232,11 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, true)
   // A property read takes a value the object holds; one off a require() is another module's.
   t.assert.equal(analyze('module.exports = ({ selected: { __esModule: true, default: 1 } }).selected').setsEsModule, true)
+  // A static key selects its property, in a read and in a pattern alike.
+  t.assert.equal(analyze('module.exports = ({ other: { __esModule: true }, selected: { default: 1 } }).selected').setsEsModule, false)
+  t.assert.equal(analyze('const lib = { other: { __esModule: true }, sub: { default: 1 } }\nmodule.exports = lib.sub').setsEsModule, false)
+  t.assert.equal(analyze('const { sub } = { other: { __esModule: true }, sub: { default: 1 } }\nmodule.exports = sub').setsEsModule, false)
+  t.assert.equal(analyze('const lib = { get sub() { return { __esModule: true } } }\nmodule.exports = lib.sub').setsEsModule, true)
   t.assert.equal(analyze('const lib = { sub: { __esModule: true } }\nmodule.exports = lib?.sub').setsEsModule, true)
   t.assert.equal(analyze("module.exports = require('./x').default").setsEsModule, false)
   // A require only the runtime resolves may hand over anything; esbuild splits a conditional one. A bundle's own
@@ -235,6 +245,14 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.deepStrictEqual(analyze("module.exports = require(dev ? './a' : './b')").reexports, new Set(['./a', './b']))
   t.assert.equal(analyze('(function (require) { module.exports = require(11) })(r)').setsEsModule, false)
   t.assert.equal(analyze('const load = (mod) => { let exports; exports = require(mod); return exports }\nmodule.exports = { load }').setsEsModule, false)
+  // A parameter of the name is the CommonJS object handed in, as a UMD factory's `module` (@jridgewell's dist).
+  t.assert.equal(analyze([
+    '(function (global, factory) { factory(module) })(this, function (module) {',
+    '  var __defProp = Object.defineProperty',
+    '  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod)',
+    '  module.exports = __toCommonJS(lib_exports)',
+    '})',
+  ].join('\n')).setsEsModule, true)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })
