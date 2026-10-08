@@ -152,6 +152,15 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const B = class { __esModule = true }\nconst A = B\nmodule.exports = new A()').setsEsModule, true)
   t.assert.equal(analyze('module.exports = new (class { static __esModule = true; default = 1 })()').setsEsModule, false)
   t.assert.equal(analyze('class Box { default = 1 }\nmodule.exports = new Box()').setsEsModule, false)
+  // module.exports through a constant computed key.
+  t.assert.equal(analyze("const key = 'exports'\nmodule[key] = { __esModule: true, default: 1 }").setsEsModule, true)
+  t.assert.equal(analyze("const key = 'exports'\nObject.assign(module[key], { __esModule: true })").setsEsModule, true)
+  t.assert.equal(analyze("const key = 'id'\nmodule[key] = { __esModule: true }").setsEsModule, false)
+  // An async function's or a generator's call returns a Promise or an iterator, not what it returns.
+  t.assert.equal(analyze('async function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, false)
+  t.assert.equal(analyze('function* gen() { return { __esModule: true } }\nmodule.exports = gen()').setsEsModule, false)
+  t.assert.equal(analyze('module.exports = (async () => ({ __esModule: true }))()').setsEsModule, false)
+  t.assert.equal(analyze('function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, true)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })

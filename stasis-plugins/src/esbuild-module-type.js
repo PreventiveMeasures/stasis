@@ -60,6 +60,9 @@ const nameOf = (node) => (node?.type === 'Identifier' ? node.name : stringValue(
 const isModuleExports = (node) => node?.type === 'MemberExpression' && node.object.type === 'Identifier' &&
   node.object.name === 'module' && (node.computed ? stringValue(node.property) : node.property.name) === 'exports'
 const isExportsTarget = (node) => (node?.type === 'Identifier' && node.name === 'exports') || isModuleExports(node)
+// `module[key]`: the name of the key, for the caller to resolve once every declaration is in.
+const moduleKeyName = (node) => (node?.type === 'MemberExpression' && node.computed && node.object.type === 'Identifier' &&
+  node.object.name === 'module' && node.property.type === 'Identifier' ? node.property.name : undefined)
 const requireSpecifier = (node) => (node.type === 'CallExpression' && node.callee.type === 'Identifier' &&
   node.callee.name === 'require' && node.arguments.length === 1 ? stringValue(node.arguments[0]) : undefined)
 
@@ -184,8 +187,10 @@ function mayDefineTruthy(descriptor) {
   return value !== undefined && !isFalsy(value.value)
 }
 
-// The values a function returns: its expression body, or each `return` outside nested functions.
+// The values a call of a function returns: its expression body, or each `return` outside nested functions --
+// none for an async function or a generator, whose call returns a Promise or an iterator instead.
 function returnedValues(fn) {
+  if (fn.async || fn.generator) return []
   if (fn.body.type !== 'BlockStatement') return [fn.body]
   const values = []
   const stack = [fn.body]
@@ -375,6 +380,7 @@ export function analyzeModule(source, { path, loader }) {
   // A key set on a receiver: `__esModule` marks it; a computed name (`exports[marker] = true`) may, resolved once
   // every declaration is in.
   const keyMarks = []  // [key name, receiver]
+  const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
   const markKey = (key, computed, receiver) => {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
@@ -472,6 +478,10 @@ export function analyzeModule(source, { path, loader }) {
         if (node.arguments.some(isExportsTarget)) {
           for (const arg of node.arguments) if (!isExportsTarget(arg)) scanValue(arg, exported)
         }
+        for (const arg of node.arguments) {
+          const name = moduleKeyName(arg)
+          if (name !== undefined) keyedWrites.push([name, node.arguments.filter((other) => other !== arg)])
+        }
         break
       }
       case 'AssignmentExpression':
@@ -483,6 +493,7 @@ export function analyzeModule(source, { path, loader }) {
           assignments.set(name, [...(assignments.get(name) ?? []), node.right])
         }
         if (isExportsTarget(node.left)) scanValue(node.right, exported)
+        else if (moduleKeyName(node.left) !== undefined) keyedWrites.push([moduleKeyName(node.left), [node.right]])  // module[key] = value
         break
       case 'VariableDeclarator':
         if (node.id.type === 'Identifier' && node.init) {
@@ -574,6 +585,12 @@ export function analyzeModule(source, { path, loader }) {
   // Follow what becomes module.exports through declarations and assignments (`const lib = require('./lib');
   // module.exports = lib`), the returns of local functions it calls (`module.exports = load()`) and the local
   // classes of instances it constructs (`module.exports = new Box()`), transitively.
+  // A computed key names the string a declaration or assignment of that name gives it.
+  const names = (name, string) => [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])].some((value) => stringValue(value) === string)
+  for (const [name, written] of keyedWrites) {
+    if (!names(name, 'exports')) continue
+    for (const value of written) scanValue(value.type === 'SpreadElement' ? value.argument : value, exported)
+  }
   const done = { value: new Set(), call: new Set(), instance: new Set() }
   const pending = []
   const follow = (found) => {
@@ -599,10 +616,8 @@ export function analyzeModule(source, { path, loader }) {
     follow(found)
   }
   facts.reexports = exported.specifiers
-  // A computed key names `__esModule` where a declaration or assignment of that name gives it the string.
-  const namesEsModule = (name) => [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])].some((value) => stringValue(value) === '__esModule')
-  if ([...exported.keys].some(namesEsModule)) exported.marked = true
-  for (const [name, receiver] of keyMarks) if (namesEsModule(name)) markReceiver(receiver)
+  if ([...exported.keys].some((name) => names(name, '__esModule'))) exported.marked = true
+  for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {
     facts.setsEsModule = true
