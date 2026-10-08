@@ -257,19 +257,22 @@ function scanMembers(cls, statics, out) {
   }
 }
 
-const isSymbol = (node) => (node?.type === 'MemberExpression' && node.object.type === 'Identifier' && node.object.name === 'Symbol') ||
-  (node?.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'Symbol')
+// The `Symbol` a symbol expression names (`Symbol.iterator`, `Symbol('x')`), whose scope the caller resolves.
+const symbolName = (node) => {
+  const name = node?.type === 'MemberExpression' ? node.object : node?.type === 'CallExpression' ? node.callee : undefined
+  return name?.type === 'Identifier' && name.name === 'Symbol' ? name : undefined
+}
 
 // Whether a computed key of what becomes the exports may name `__esModule`: a constant compares (`'__es' +
-// 'Module'`), another literal can't (`0`), nor can a symbol (`Symbol.iterator`) unless the file binds `Symbol`
-// itself (the caller's to tell: out.symbols), a name is the caller's to resolve once every declaration is in
+// 'Module'`), another literal can't (`0`), nor can a symbol (`Symbol.iterator`) where `Symbol` is the global
+// (the caller's to tell: out.symbols), a name is the caller's to resolve once every declaration is in
 // (out.keys), and anything else -- `process.env.KEY`, a call -- may.
 function mayNameEsModule(key, out) {
   const string = stringValue(key)
   if (string !== undefined) return string === '__esModule'
   if (key.type === 'Literal') return false
-  if (isSymbol(key)) {
-    out.symbols = true
+  if (symbolName(key)) {
+    out.symbols.add(symbolName(key))
     return false
   }
   if (key.type !== 'Identifier') return true
@@ -346,7 +349,7 @@ function scanValue(node, out) {
       case 'NewExpression':
         // A Proxy can answer `__esModule` from its trap, which only a bundler-interop read runs: the caller decides
         // whether the name is the global's (out.proxies).
-        if (current.callee.type === 'Identifier' && current.callee.name === 'Proxy') out.proxies = true
+        if (current.callee.type === 'Identifier' && current.callee.name === 'Proxy') out.proxies.add(current.callee)
         stack.push(...scanInstance(current.callee, out))
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
@@ -432,13 +435,21 @@ export function analyzeModule(source, { path, loader }) {
     facts.imports.set(specifier, { bindings: prior.bindings || bindings || interop, interop: prior.interop || interop })
   }
   let cjsCertain = null
-  // Scopes binding `module`/`exports`. At the module scope an import/let/const/function/class shadows the
-  // CommonJS binding for every reference, while a `var` merges with it; a nested scope just binds the name.
+  // Scopes binding the names whose references are resolved: `module`/`exports` (CommonJS use), the globals
+  // `Proxy` and `Symbol`, and imported locals (whether the code reads the import). At the module scope an
+  // import/let/const/function/class shadows the CommonJS binding for every reference, while a `var` merges
+  // with it; a nested scope just binds the name.
   const root = { names: new Set(), parent: null }
   const shadowed = new Set()
   const hoistedVar = new Set()
   const references = []  // [name, scope]
-  const tracked = (name) => name === 'module' || name === 'exports'
+  const globalRefs = new Map()  // Identifier node of `Proxy`/`Symbol` -> its scope
+  const scoped = new Set(['module', 'exports', 'Proxy', 'Symbol'])
+  for (const statement of parsed.program.body) {
+    if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue
+    for (const spec of statement.specifiers) if (spec.importKind !== 'type') scoped.add(spec.local.name)
+  }
+  const tracked = (name) => scoped.has(name)
   const declare = (scope, name, kind) => {
     if (!tracked(name)) return
     if (scope !== root) scope.names.add(name)
@@ -469,10 +480,9 @@ export function analyzeModule(source, { path, loader }) {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: new Set(), symbols: false, proxies: false, marked: false }
-  // Which names the code reads, for which imported bindings are used: an unused one is dropped by tree shaking,
-  // so its value is never observed (the import's evaluation stays).
-  const referenced = new Set()
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: new Set(), symbols: new Set(), proxies: new Set(), marked: false }
+  // Imported bindings, whose references say whether they're used: an unused one is dropped by tree shaking, so
+  // its value is never observed (the import's evaluation stays).
   const importBindings = []  // [specifier, local, interop]
   let directEval = false
 
@@ -503,8 +513,8 @@ export function analyzeModule(source, { path, loader }) {
         break
       case 'ExportNamedDeclaration':
         facts.esmExports = true
-        // `export { local }` reads the local.
-        if (!node.source) for (const spec of node.specifiers) referenced.add(nameOf(spec.local))
+        // `export { local }` reads the local, at the module scope.
+        if (!node.source) for (const spec of node.specifiers) if (tracked(nameOf(spec.local))) references.push([nameOf(spec.local), root])
         if (node.source && node.exportKind !== 'type') {
           for (const spec of node.specifiers) {
             if (spec.exportKind === 'type') continue
@@ -544,7 +554,7 @@ export function analyzeModule(source, { path, loader }) {
         }
         break
       case 'JSXIdentifier':
-        referenced.add(node.name)
+        if (tracked(node.name)) references.push([node.name, scope])
         break
       case 'ThisExpression':
         if (thisDepth === 0) cjsCertain ??= 'top-level `this`'
@@ -668,9 +678,11 @@ export function analyzeModule(source, { path, loader }) {
         break
       case 'Identifier':
         if (parent && !isNonReference(parent, key)) {
-          if (!binding) referenced.add(node.name)
           if (binding) count(bindingCounts, node.name)
-          else if (tracked(node.name)) references.push([node.name, scope])
+          else if (tracked(node.name)) {
+            references.push([node.name, scope])
+            if (node.name === 'Proxy' || node.name === 'Symbol') globalRefs.set(node, scope)
+          }
           else if (node.name === 'arguments' && thisDepth === 0) facts.topArguments = true
         }
         break
@@ -698,13 +710,18 @@ export function analyzeModule(source, { path, loader }) {
     }
   }
 
-  // A reference is CommonJS use unless a scope around it binds the name (all declarations are in by now,
-  // so hoisting is covered); at the module scope only a shadowing declaration does.
-  const isFree = (name, scope) => {
+  // Whether a reference reaches the module scope, no scope around it binding the name (all declarations are in
+  // by now, so hoisting is covered). There, a `module`/`exports` one is CommonJS use unless a shadowing
+  // declaration binds it; a `Proxy`/`Symbol` one is the global's unless any declaration does.
+  const reachesModuleScope = (name, scope) => {
     for (let current = scope; current !== root; current = current.parent) if (current.names.has(name)) return false
-    return !shadowed.has(name)
+    return true
   }
-  const free = references.find(([name, scope]) => isFree(name, scope))?.[0] ?? [...hoistedVar][0]
+  const isGlobal = (node) => globalRefs.has(node) && reachesModuleScope(node.name, globalRefs.get(node)) &&
+    !shadowed.has(node.name) && !hoistedVar.has(node.name)
+  const commonjs = (name) => name === 'module' || name === 'exports'
+  const free = references.find(([name, scope]) => commonjs(name) && reachesModuleScope(name, scope) && !shadowed.has(name))?.[0] ??
+    [...hoistedVar].find(commonjs)
   if (cjsCertain !== null) {
     facts.cjsUsage = 'yes'
     facts.cjsDetail = cjsCertain
@@ -714,8 +731,9 @@ export function analyzeModule(source, { path, loader }) {
   }
 
   // An imported binding the code reads (or every one, past a direct eval) observes the import's value.
+  const read = new Set(references.filter(([name, scope]) => reachesModuleScope(name, scope)).map(([name]) => name))
   for (const [specifier, local, interop] of importBindings) {
-    if (directEval || referenced.has(local)) useImport(specifier, { bindings: true, interop })
+    if (directEval || read.has(local)) useImport(specifier, { bindings: true, interop })
   }
 
   // Follow what becomes module.exports through declarations and assignments (`const lib = require('./lib');
@@ -735,8 +753,8 @@ export function analyzeModule(source, { path, loader }) {
     for (const cls of found.instances) pending.push(['instance', cls])
     for (const name of found.elements) pending.push(['elements', name])
     if (found.marked) exported.marked = true
-    if (found.symbols) exported.symbols = true
-    if (found.proxies) exported.proxies = true
+    for (const name of found.symbols) exported.symbols.add(name)
+    for (const name of found.proxies) exported.proxies.add(name)
   }
   follow(exported)
   while (pending.length > 0) {
@@ -745,7 +763,7 @@ export function analyzeModule(source, { path, loader }) {
     done[kind].add(name)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: exported.keys, symbols: false, proxies: false, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: exported.keys, symbols: new Set(), proxies: new Set(), marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') {
       for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found)) scanValue(value, found)
@@ -761,16 +779,16 @@ export function analyzeModule(source, { path, loader }) {
   // A computed key of what becomes the exports may name `__esModule` unless every value its name is given is a
   // constant or a symbol: one with none (a parameter, an import, a global) is unknown, and so is a symbol where
   // the file binds `Symbol` itself.
-  const symbolBound = bindingCounts.has('Symbol') || reassigned.has('Symbol')
+  const isSymbol = (value) => symbolName(value) !== undefined && isGlobal(symbolName(value)) && !reassigned.has('Symbol')
   const mayName = (name) => {
     const given = [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])]
     return given.length === 0 || given.some((value) => {
       const string = stringValue(value)
-      return string === undefined ? value.type !== 'Literal' && (symbolBound || !isSymbol(value)) : string === '__esModule'
+      return string === undefined ? value.type !== 'Literal' && !isSymbol(value) : string === '__esModule'
     })
   }
-  const proxyBound = bindingCounts.has('Proxy') || reassigned.has('Proxy')
-  if ((exported.symbols && symbolBound) || (exported.proxies && !proxyBound) || [...exported.keys].some(mayName)) exported.marked = true
+  const unknownSymbol = [...exported.symbols].some((name) => !isGlobal(name) || reassigned.has('Symbol'))
+  if (unknownSymbol || [...exported.proxies].some(isGlobal) || [...exported.keys].some(mayName)) exported.marked = true
   for (const [name, receiver] of keyMarks) if (names(name, '__esModule')) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || done.value.has(name) || exported.identifiers.has(name))) {
