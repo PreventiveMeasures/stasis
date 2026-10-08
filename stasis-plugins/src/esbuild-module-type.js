@@ -167,11 +167,10 @@ function patternNames(pattern, names = []) {
   return names
 }
 
-// What each name a destructuring pattern binds may get from `value`: an element of it (`[a] = value`, `{ a } =
-// value`, as an ElementOf node), its default (`[a = fallback] = value`), or, for an object pattern's rest, the
+// What each name a destructuring pattern binds may get from `value`: the element or property it selects (an
+// ElementOf node, keyed by the property's static name), its default, or, for an object pattern's rest, the
 // value itself less some keys.
 function patternSources(pattern, value, sources = new Map()) {
-  const elementOf = { type: 'ElementOf', object: value }
   switch (pattern?.type) {
     case 'Identifier':
       sources.set(pattern.name, [...(sources.get(pattern.name) ?? []), value])
@@ -181,31 +180,44 @@ function patternSources(pattern, value, sources = new Map()) {
       patternSources(pattern.left, pattern.right, sources)
       break
     case 'ArrayPattern':
-      for (const element of pattern.elements) if (element?.type !== 'RestElement') patternSources(element, elementOf, sources)
+      for (const element of pattern.elements) {
+        if (element?.type !== 'RestElement') patternSources(element, { type: 'ElementOf', object: value }, sources)
+      }
       break
     case 'ObjectPattern':
-      for (const prop of pattern.properties) patternSources(prop.type === 'RestElement' ? prop.argument : prop.value, prop.type === 'RestElement' ? value : elementOf, sources)
+      for (const prop of pattern.properties) {
+        if (prop.type === 'RestElement') patternSources(prop.argument, value, sources)
+        else patternSources(prop.value, { type: 'ElementOf', object: value, key: prop.computed ? stringValue(prop.key) : nameOf(prop.key) }, sources)
+      }
       break
   }
   return sources
 }
 
-// The values an array or object literal holds (elements, property values), for what a pattern takes from it;
-// a name's are the caller's to follow (out.elements).
-function elementsOf(node, out) {
+// The values an array or object literal holds for what a pattern or property read takes from it: the property
+// `key` names (every one where it's undefined), an array's elements, a property whose computed key or a spread
+// that may be it, what a getter returns, and what a `__proto__:` prototype holds; a name's are the caller's to
+// follow (out.elements).
+function elementsOf(node, out, key) {
   switch (node?.type) {
     case 'ArrayExpression':
-      return node.elements.flatMap((element) => (element === null ? [] : element.type === 'SpreadElement' ? elementsOf(element.argument, out) : [element]))
+      return node.elements.flatMap((element) => (element === null ? [] : element.type === 'SpreadElement' ? elementsOf(element.argument, out, key) : [element]))
     case 'ObjectExpression':
-      return node.properties.flatMap((prop) => (prop.type === 'SpreadElement' ? elementsOf(prop.argument, out) : [prop.value]))
+      return node.properties.flatMap((prop) => {
+        if (prop.type === 'SpreadElement') return elementsOf(prop.argument, out, key)
+        const name = prop.computed ? stringValue(prop.key) : nameOf(prop.key)
+        if (!prop.computed && !prop.shorthand && !prop.method && prop.kind === 'init' && name === '__proto__') return elementsOf(prop.value, out, key)
+        if (key !== undefined && name !== undefined && name !== key) return []
+        return prop.kind === 'get' ? returnedValues(prop.value) : prop.kind === 'set' ? [] : [prop.value]
+      })
     case 'ElementOf':
-      return elementsOf(node.object, out).flatMap((element) => elementsOf(element, out))
+      return elementsOf(node.object, out, node.key).flatMap((element) => elementsOf(element, out, key))
     case 'ConditionalExpression':
-      return [...elementsOf(node.consequent, out), ...elementsOf(node.alternate, out)]
+      return [...elementsOf(node.consequent, out, key), ...elementsOf(node.alternate, out, key)]
     case 'LogicalExpression':
-      return [...elementsOf(node.left, out), ...elementsOf(node.right, out)]
+      return [...elementsOf(node.left, out, key), ...elementsOf(node.right, out, key)]
     case 'Identifier':
-      out.elements.add(node.name)
+      out.elements.push([node.name, key])
       return []
     default:
       return []
@@ -355,12 +367,14 @@ function scanValue(node, out) {
         stack.push(current.superClass)
         break
       case 'ElementOf':
-        stack.push(...elementsOf(current.object, out))
+        stack.push(...elementsOf(current.object, out, current.key))
         break
-      // A property read (`obj.selected`) takes a value the object holds, as destructuring does.
-      case 'MemberExpression':
-        stack.push({ type: 'ElementOf', object: current.object })
+      // A property read (`obj.selected`) takes the value the object holds there, as destructuring does.
+      case 'MemberExpression': {
+        const key = current.computed ? stringValue(current.property) : current.property.type === 'Identifier' ? current.property.name : undefined
+        stack.push({ type: 'ElementOf', object: current.object, key })
         break
+      }
       case 'ChainExpression':
         stack.push(current.expression)
         break
@@ -388,6 +402,9 @@ function scanValue(node, out) {
           out.requires.push([current.callee, requireSpecifiers(current.arguments[0])])
           break
         }
+        // defineProperty-style (target, '__esModule', descriptor) returns its target with the mark (esbuild's
+        // `__toCommonJS` is `__copyProps(__defProp({}, "__esModule", { value: true }), mod)`).
+        if (current.arguments.length >= 3 && stringValue(current.arguments[1]) === '__esModule' && mayDefineTruthy(current.arguments[2])) out.marked = true
         if (FUNCTIONS.has(current.callee.type)) stack.push(...returnedValues(current.callee))
         if (current.callee.type === 'Identifier') out.callees.add(current.callee.name)
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
@@ -471,8 +488,10 @@ export function analyzeModule(source, { path, loader }) {
   const tracked = (name) => scoped.has(name)
   const declare = (scope, name, kind) => {
     if (!tracked(name)) return
-    if (scope !== root) scope.names.add(name)
-    else (kind === 'var' ? hoistedVar : shadowed).add(name)
+    if (scope !== root) {
+      scope.names.add(name)
+      if (kind === 'param') (scope.params ??= new Set()).add(name)
+    } else (kind === 'var' ? hoistedVar : shadowed).add(name)
   }
   const declarators = new Map()  // name -> [init]: a declarator's, or the class a class declaration binds
   const functionDecls = new Map()  // name -> [FunctionDeclaration]
@@ -486,9 +505,12 @@ export function analyzeModule(source, { path, loader }) {
   const reassigned = new Set()
   const pendingMarks = new Set()
   const count = (map, name) => map.set(name, (map.get(name) ?? 0) + 1)
+  // A mark on a fresh value (`define({}, '__esModule', …)`) reaches the exports only if the value does, which the
+  // value flow follows; on a name, it depends on what the name holds; on anything else it may be the exports.
+  const FRESH = new Set(['ObjectExpression', 'ArrayExpression', 'FunctionExpression', 'ArrowFunctionExpression', 'ClassExpression', 'NewExpression'])
   const markReceiver = (receiver) => {
     if (receiver?.type === 'Identifier') pendingMarks.add(receiver.name)
-    else facts.setsEsModule = true
+    else if (!FRESH.has(receiver?.type)) facts.setsEsModule = true
   }
   // A key set on a receiver: `__esModule` marks it; a computed name (`exports[marker] = true`) may, resolved once
   // every declaration is in. A key whose value isn't known doesn't count here, unlike in what becomes the exports:
@@ -499,9 +521,9 @@ export function analyzeModule(source, { path, loader }) {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: new Set(), symbols: new Set(), proxies: new Set(), requires: [], marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: new Set(), symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
-  // CommonJS's there (a local `let exports` isn't).
+  // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
   const exportWrites = []
   // Imported bindings, whose references say whether they're used: an unused one is dropped by tree shaking, so
   // its value is never observed (the import's evaluation stays).
@@ -744,8 +766,9 @@ export function analyzeModule(source, { path, loader }) {
   const isGlobal = (node) => globalRefs.has(node) && reachesModuleScope(node.name, globalRefs.get(node)) &&
     !shadowed.has(node.name) && !hoistedVar.has(node.name)
   const commonjs = (name) => name === 'module' || name === 'exports'
-  // A top-level `arguments` is the module wrapper's unless a declaration binds the name (`const arguments`).
-  facts.topArguments = topArguments.some((scope) => reachesModuleScope('arguments', scope)) && !shadowed.has('arguments') && !hoistedVar.has('arguments')
+  // A top-level `arguments` is the module wrapper's unless a lexical declaration binds the name (`const
+  // arguments`); a `var` of it in the wrapper's body is the arguments object itself.
+  facts.topArguments = topArguments.some((scope) => reachesModuleScope('arguments', scope)) && !shadowed.has('arguments')
   const free = references.find(([name, scope]) => commonjs(name) && reachesModuleScope(name, scope) && !shadowed.has(name))?.[0] ??
     [...hoistedVar].find(commonjs)
   if (cjsCertain !== null) {
@@ -767,8 +790,16 @@ export function analyzeModule(source, { path, loader }) {
   // classes of instances it constructs (`module.exports = new Box()`), transitively.
   // A computed key names the string a declaration or assignment of that name gives it.
   const names = (name, string) => [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])].some((value) => stringValue(value) === string)
+  // A parameter of the name is taken for the CommonJS object handed in (a UMD factory's `module`), a declaration
+  // for a local of its own (`let exports`).
+  const isCommonJS = (name, scope) => {
+    for (let current = scope; current !== root; current = current.parent) {
+      if (current.names.has(name)) return current.params?.has(name) ?? false
+    }
+    return !shadowed.has(name)
+  }
   for (const [name, at, values] of exportWrites) {
-    if (!reachesModuleScope(name, at) || shadowed.has(name)) continue
+    if (!isCommonJS(name, at)) continue
     for (const value of values) scanValue(value.type === 'SpreadElement' ? value.argument : value, exported)
   }
   for (const [name, written] of keyedWrites) {
@@ -781,24 +812,25 @@ export function analyzeModule(source, { path, loader }) {
     for (const identifier of found.identifiers) pending.push(['value', identifier])
     for (const callee of found.callees) pending.push(['call', callee])
     for (const cls of found.instances) pending.push(['instance', cls])
-    for (const name of found.elements) pending.push(['elements', name])
+    for (const [name, key] of found.elements) pending.push(['elements', name, key])
     if (found.marked) exported.marked = true
     for (const name of found.symbols) exported.symbols.add(name)
     for (const name of found.proxies) exported.proxies.add(name)
   }
   follow(exported)
   while (pending.length > 0) {
-    const [kind, name] = pending.pop()
-    if (done[kind].has(name)) continue
-    done[kind].add(name)
+    const [kind, name, key] = pending.pop()
+    const id = kind === 'elements' ? `${name}\u0000${key ?? '*'}` : name
+    if (done[kind].has(id)) continue
+    done[kind].add(id)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') {
       for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found)) scanValue(value, found)
     }
-    else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found)) scanValue(value, found)
+    else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found, key)) scanValue(value, found)
     else {
       const fns = [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))]
       for (const value of fns.flatMap((fn) => returnedValues(fn))) scanValue(value, found)
