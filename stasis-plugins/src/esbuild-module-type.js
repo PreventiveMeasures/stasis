@@ -402,7 +402,7 @@ export function analyzeModule(source, { path, loader }) {
         for (const name of patternNames(node.param)) declare(childScope, name, 'let')
         break
       case 'BlockStatement':
-        // A function's body shares its scope with the parameters.
+        // A function's body block is the function's body scope, made with its parameters' scope below.
         if (!(FUNCTIONS.has(parent?.type) && key === 'body')) childScope = { names: new Set(), parent: scope }
         break
       case 'StaticBlock':
@@ -427,10 +427,14 @@ export function analyzeModule(source, { path, loader }) {
         }
         break
     }
+    // A function's parameters (and a function expression's own name) get a scope of their own, and its
+    // body one inside that: a default parameter value can't see the body's declarations, `var` included.
+    let bodyScope
     if (FUNCTIONS.has(node.type)) {
       childScope = childFnScope = { names: new Set(), parent: scope }
       if (node.type !== 'FunctionDeclaration' && node.id) declare(childScope, node.id.name, 'function')
       for (const param of node.params) for (const name of patternNames(param)) declare(childScope, name, 'param')
+      bodyScope = { names: new Set(), parent: childScope }
     }
     const ownsThis = node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ClassBody'
     const childFnDepth = FUNCTIONS.has(node.type) ? fnDepth + 1 : fnDepth
@@ -438,7 +442,8 @@ export function analyzeModule(source, { path, loader }) {
     const childStrict = strict || node.type === 'ClassDeclaration' || node.type === 'ClassExpression' ||
       (FUNCTIONS.has(node.type) && node.body?.type === 'BlockStatement' && hasUseStrict(node.body.body))
     for (const [child, childKey] of children(node)) {
-      stack.push([child, node, childKey, parent, childFnDepth, childThisDepth, childStrict, childScope, childFnScope])
+      const [inScope, inFnScope] = bodyScope && childKey === 'body' ? [bodyScope, bodyScope] : [childScope, childFnScope]
+      stack.push([child, node, childKey, parent, childFnDepth, childThisDepth, childStrict, inScope, inFnScope])
     }
   }
 
