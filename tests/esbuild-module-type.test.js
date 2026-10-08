@@ -112,6 +112,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('const out = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: true } })').setsEsModule, true)
+  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: false }, default: { value: 1 } })').setsEsModule, false)
+  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { get: () => flag } })').setsEsModule, true)
   // A mark on a fresh local object counts only if that object becomes the exports; on anything else
   // (a parameter, a reassigned name) it may be the exports under another name.
   t.assert.equal(analyze('const metadata = {}\nmetadata.__esModule = true\nmodule.exports = { default: 1 }').setsEsModule, false)
@@ -151,6 +153,10 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   // A `__proto__:` key sets the prototype, whose properties the exports inherit; a computed one is an own key.
   t.assert.equal(analyze('module.exports = { __proto__: { __esModule: true }, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze("module.exports = { ['__proto__']: { __esModule: true }, default: 1 }").setsEsModule, false)
+  t.assert.equal(analyze('module.exports.default = 1\nmodule.exports.__proto__ = { __esModule: true }').setsEsModule, true)
+  t.assert.equal(analyze("exports['__proto__'] = { __esModule: true }").setsEsModule, true)
+  t.assert.equal(analyze('const out = { default: 1 }\nout.__proto__ = { __esModule: true }\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const other = {}\nother.__proto__ = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
   // A computed key that names `__esModule`: a constant or a constant concatenation.
   t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: true, default: 1 }").setsEsModule, true)
   t.assert.equal(analyze("module.exports = { ['__es' + 'Module']: true, default: 1 }").setsEsModule, true)

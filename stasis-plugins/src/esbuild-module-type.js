@@ -559,6 +559,15 @@ export function analyzeModule(source, { path, loader }) {
         }
         // defineProperty-style: (target, '__esModule', descriptor), aliases included (esbuild's __defProp).
         if (node.arguments.length >= 3 && mayDefineTruthy(node.arguments[2])) markKey(node.arguments[1], true, node.arguments[0])
+        // Object.defineProperties(target, { key: descriptor, ... }): the map holds descriptors, not values, so only an
+        // `__esModule` one that may define a truthy value marks the target, as defineProperty's does.
+        const descriptors = node.callee.type === 'MemberExpression' && !node.callee.computed && nameOf(node.callee.property) === 'defineProperties' &&
+          node.arguments[1]?.type === 'ObjectExpression' && node.arguments[1].properties.every((prop) => prop.type === 'Property' && !prop.computed)
+          ? node.arguments[1].properties : null
+        if (descriptors) {
+          if (descriptors.some((prop) => nameOf(prop.key) === '__esModule' && mayDefineTruthy(prop.value))) markReceiver(node.arguments[0])
+          break
+        }
         if (node.arguments[0]?.type === 'Identifier' && !isExportsTarget(node.arguments[0]) && node.arguments.length > 1) {
           const [{ name }, ...rest] = node.arguments
           copies.set(name, [...(copies.get(name) ?? []), ...rest.map((arg) => (arg.type === 'SpreadElement' ? arg.argument : arg))])
@@ -588,6 +597,14 @@ export function analyzeModule(source, { path, loader }) {
         }
         if (isExportsTarget(node.left)) scanValue(node.right, exported)
         else if (moduleKeyName(node.left) !== undefined) keyedWrites.push([moduleKeyName(node.left), [node.right]])  // module[key] = value
+        // `exports.__proto__ = proto` sets the prototype, whose properties the exports inherit; set on a local, it
+        // reaches the exports if the local does.
+        if (node.operator === '=' && node.left.type === 'MemberExpression' &&
+          (node.left.computed ? stringValue(node.left.property) : nameOf(node.left.property)) === '__proto__') {
+          const { object } = node.left
+          if (isExportsTarget(object)) scanValue(node.right, exported)
+          else if (object.type === 'Identifier') copies.set(object.name, [...(copies.get(object.name) ?? []), node.right])
+        }
         break
       case 'VariableDeclarator':
         if (node.id.type === 'Identifier' && node.init) {

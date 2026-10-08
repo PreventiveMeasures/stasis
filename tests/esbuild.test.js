@@ -1461,6 +1461,26 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
   }))
 
+  test('capture follows a re-export to a resource the build loads as JSON', withTmp(async (t, tmp) => {
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    writeFileSync(join(tmp, 'package.json'), TYPE_MODULE)
+    writeFileSync(join(tmp, 'src', 'marked.data'), '{ "__esModule": true, "default": "value" }')
+    writeFileSync(join(tmp, 'src', 'plain.data'), '{ "default": "value" }')
+    writeFileSync(join(tmp, 'src', 'marked.cjs'), "module.exports = require('./marked.data')\n")
+    writeFileSync(join(tmp, 'src', 'plain.cjs'), "module.exports = require('./plain.data')\n")
+    const env = (name) => ({
+      STASIS_TEST_ESBUILD_LOADER: '{ ".data": "json" }',
+      ...withOpts({ lock: 'none', bundle: 'add', bundleFile: join(tmp, `${name}.br`), resources: ['data'] }),
+    })
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './marked.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const marked = await run(['src/entry.js'], { cwd: tmp, env: env('marked') })
+    t.assert.notEqual(marked.status, 0)
+    t.assert.match(marked.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/marked\.cjs'/)
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './plain.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const plain = await run(['src/entry.js'], { cwd: tmp, env: env('plain') })
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+  }))
+
   test('capture does not follow a re-export to a file the browser map disables: the build serves the empty module', withTmp(async (t, tmp) => {
     mkdirSync(join(tmp, 'src'), { recursive: true })
     writeFileSync(join(tmp, 'package.json'), JSON.stringify({ ...JSON.parse(TYPE_MODULE), browser: { './src/babelish.cjs': false } }))
