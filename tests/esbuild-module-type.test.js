@@ -124,142 +124,105 @@ test('analyzeModule: top-level `arguments` -- a module wrapper\'s, outside any f
   t.assert.equal(analyze('console.log(arguments[0])\nvar arguments').topArguments, true)
 })
 
-test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
-  t.assert.equal(analyze('exports.__esModule = true').setsEsModule, true)
-  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: true })').setsEsModule, true)
-  t.assert.equal(analyze('var d=Object.defineProperty;d(e,"__esModule",{value:!0})').setsEsModule, true)
-  // On a fresh value, a mark reaches the exports only if the value does, as esbuild's __toCommonJS output's.
-  t.assert.equal(analyze("report({}, '__esModule', { value: true })\nmodule.exports = { default: 1 }").setsEsModule, false)
-  t.assert.equal(analyze('var __defProp = Object.defineProperty\nvar __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod)\nmodule.exports = __toCommonJS(src_exports)').setsEsModule, true)
-  t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze('const out = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: true } })').setsEsModule, true)
-  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: false }, default: { value: 1 } })').setsEsModule, false)
-  t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { get: () => flag } })').setsEsModule, true)
-  // A mark on a fresh local object counts only if that object becomes the exports; on anything else
-  // (a parameter, a reassigned name) it may be the exports under another name.
-  t.assert.equal(analyze('const metadata = {}\nmetadata.__esModule = true\nmodule.exports = { default: 1 }').setsEsModule, false)
-  t.assert.equal(analyze("const o = {}\nObject.defineProperty(o, '__esModule', { value: true })\nmodule.exports = { default: 1 }").setsEsModule, false)
-  t.assert.equal(analyze('const out = {}\nout.__esModule = true\nmodule.exports = out').setsEsModule, true)
-  // A value assigned after the declaration becomes the exports too.
-  t.assert.equal(analyze('let out\nout = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
-  // So does what a destructuring pattern takes: an element, a default, an object rest.
-  t.assert.equal(analyze('let out\n;[out] = [{ __esModule: true, default: 1 }]\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const { out } = { out: { __esModule: true, default: 1 } }\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const arr = [{ __esModule: true }]\nconst [[out]] = [arr]\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const [out = { __esModule: true }] = []\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const { a, ...rest } = { a: 1, __esModule: true }\nmodule.exports = rest').setsEsModule, true)
-  // A rest that took `__esModule` out copies none.
-  t.assert.equal(analyze('const { __esModule: ignored, ...out } = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, false)
-  t.assert.equal(analyze('const [out] = [[{ __esModule: true }]]\nmodule.exports = out').setsEsModule, false)
-  t.assert.equal(analyze("const { readFile } = require('fs')\nmodule.exports = readFile").setsEsModule, false)
-  t.assert.equal(analyze('function wrap(e) { e.__esModule = !0 }\nwrap(exports)').setsEsModule, true)
-  t.assert.equal(analyze('let o = {}\no = exports\no.__esModule = true').setsEsModule, true)
-  t.assert.equal(analyze('let o = {}\n;[o] = [exports]\no.__esModule = true').setsEsModule, true)
-  t.assert.equal(analyze('let o = {}\nfor (o of [exports]) o.__esModule = true').setsEsModule, true)
-  // What a call copies into a local that becomes the exports.
-  t.assert.equal(analyze('const out = {}\nObject.assign(out, { __esModule: true, default: 1 })\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const out = {}\nObject.assign(out, { default: 1 })\nmodule.exports = out').setsEsModule, false)
-  t.assert.equal(analyze('const o = {}\nObject.assign(o, { __esModule: true })\nmodule.exports = { default: 1 }').setsEsModule, false)
-  // A statically falsy __esModule marks nothing.
-  t.assert.equal(analyze('module.exports = { __esModule: false, default: 1 }').setsEsModule, false)
-  t.assert.equal(analyze('exports.__esModule = void 0').setsEsModule, false)
-  t.assert.equal(analyze('exports.__esModule = 0\nexports.__esModule++').setsEsModule, true)
-  t.assert.equal(analyze('exports.__esModule = 0\nexports.__esModule += 1').setsEsModule, true)
-  // `undefined` is a name a declaration can rebind.
-  t.assert.equal(analyze('const undefined = true\nmodule.exports = { __esModule: undefined, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: false })').setsEsModule, false)
-  t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { get: () => flag })').setsEsModule, true)
-  // A literal that never becomes the exports, or only ends up nested in them, doesn't mark them.
-  t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
-  t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
-  t.assert.equal(analyze('const base = { __esModule: true }\nmodule.exports = { ...base, default: 1 }').setsEsModule, true)
-  // A `__proto__:` key sets the prototype, whose properties the exports inherit; a computed one is an own key.
-  t.assert.equal(analyze('module.exports = { __proto__: { __esModule: true }, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze("module.exports = { ['__proto__']: { __esModule: true }, default: 1 }").setsEsModule, false)
-  t.assert.equal(analyze('module.exports.default = 1\nmodule.exports.__proto__ = { __esModule: true }').setsEsModule, true)
-  t.assert.equal(analyze("exports['__proto__'] = { __esModule: true }").setsEsModule, true)
-  t.assert.equal(analyze('const out = { default: 1 }\nout.__proto__ = { __esModule: true }\nmodule.exports = out').setsEsModule, true)
-  t.assert.equal(analyze('const other = {}\nother.__proto__ = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
-  // A computed key that names `__esModule`: a constant or a constant concatenation.
-  t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: true, default: 1 }").setsEsModule, true)
-  t.assert.equal(analyze("module.exports = { ['__es' + 'Module']: true, default: 1 }").setsEsModule, true)
-  t.assert.equal(analyze("const marker = '__es' + 'Module'\nexports[marker] = true").setsEsModule, true)
-  t.assert.equal(analyze("const marker = '__esModule'\nObject.defineProperty(exports, marker, { value: true })").setsEsModule, true)
-  t.assert.equal(analyze("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true").setsEsModule, false)
+test('analyzeModule: a constant __esModule key marks wherever it may be defined, as Babel/tsc/esbuild CommonJS output defines it', (t) => {
+  const marks = (source, opts) => analyze(source, opts).setsEsModule
+  t.assert.equal(marks('exports.__esModule = true'), true)
+  t.assert.equal(marks('Object.defineProperty(exports, "__esModule", { value: true })'), true)
+  t.assert.equal(marks('var d=Object.defineProperty;d(e,"__esModule",{value:!0})'), true)
+  t.assert.equal(marks('var __defProp = Object.defineProperty\nvar __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod)\nmodule.exports = __toCommonJS(src_exports)'), true)
+  t.assert.equal(marks('module.exports = { __esModule: true, default: 1 }'), true)
+  t.assert.equal(marks('Object.defineProperties(exports, { __esModule: { value: true } })'), true)
+  t.assert.equal(marks('Object.defineProperties(exports, { __esModule: { get: () => flag } })'), true)
+  t.assert.equal(marks('Object.defineProperty(exports, "__esModule", { get: () => flag })'), true)
+  t.assert.equal(marks('module.exports = { get __esModule() { return true }, default: 1 }'), true)
+  t.assert.equal(marks('module.exports = class { static __esModule = true; static default = 1 }'), true)
+  t.assert.equal(marks('class Box { get __esModule() { return true } }\nmodule.exports = new Box()'), true)
+  // A fail-safe: where the value goes isn't followed, so a key defined on anything counts -- a local that may
+  // become the exports however it gets there (a factory called through `.call`, a property read, a destructuring).
+  t.assert.equal(marks('const metadata = {}\nmetadata.__esModule = true\nmodule.exports = { default: 1 }'), true)
+  t.assert.equal(marks("report({}, '__esModule', { value: true })\nmodule.exports = { default: 1 }"), true)
+  t.assert.equal(marks('function make() { return { __esModule: true, default: 1 } }\nmodule.exports = make.call(null)'), true)
+  t.assert.equal(marks('const o = { make() { return { __esModule: true, default: 1 } } }\nmodule.exports = o.make()'), true)
+  t.assert.equal(marks('const o = {}\no.lib = { __esModule: true, default: 1 }\nmodule.exports = o.lib'), true)
+  t.assert.equal(marks('class Box { constructor() { this.lib = { __esModule: true } } }\nmodule.exports = new Box().lib'), true)
+  t.assert.equal(marks('for (const m of [{ __esModule: true }]) module.exports = m'), true)
+  t.assert.equal(marks('const [out] = [{ default: 1 }, { __esModule: true }]\nmodule.exports = out'), true)
+  t.assert.equal(marks("module.exports = Reflect.defineProperty({}, '__esModule', { value: true })"), true)
+  // Every property write, destructuring and compound assignments included.
+  t.assert.equal(marks('exports.__esModule = 0\nexports.__esModule++'), true)
+  t.assert.equal(marks('exports.__esModule ||= true'), true)
+  t.assert.equal(marks(';[exports.__esModule] = [true]'), true)
+  t.assert.equal(marks('({ a: exports.__esModule } = { a: true })'), true)
+  t.assert.equal(marks('for (exports.__esModule of [true]);'), true)
+  t.assert.equal(marks("exports['__es' + 'Module'] = true"), true)
+  // A string can flow into any key, so one held anywhere counts (`exports[marker] = true`).
+  t.assert.equal(marks("const marker = '__esModule'\nmodule.exports = { [marker]: false, default: 1 }"), true)
+  t.assert.equal(marks("const keys = ['default', '__esModule']"), true)
+  t.assert.equal(marks('Object.create(null, { __esModule: { value: true } })'), true)
+  t.assert.equal(marks('class Box { __esModule = true }'), true)
+  t.assert.equal(marks('<div __esModule />', { path: 'f.jsx', loader: 'jsx' }), true)
+  t.assert.equal(marks('enum E { __esModule = 1 }', { path: 'f.ts', loader: 'ts' }), true)
+  t.assert.equal(marks('class Box { constructor(public __esModule = true) {} }', { path: 'f.ts', loader: 'ts' }), true)
+  // A statically falsy value, a setter alone and a falsy-only descriptor define nothing truthy; `undefined` is a
+  // name a declaration can rebind.
+  t.assert.equal(marks('module.exports = { __esModule: false, default: 1 }'), false)
+  t.assert.equal(marks('exports.__esModule = void 0'), false)
+  t.assert.equal(marks('Object.defineProperty(exports, "__esModule", { value: false })'), false)
+  t.assert.equal(marks('Object.defineProperties(exports, { __esModule: { value: false }, default: { value: 1 } })'), false)
+  t.assert.equal(marks('Object.create(null, { __esModule: { value: false } })'), false)
+  t.assert.equal(marks('module.exports = { set __esModule(v) {}, default: 1 }'), false)
+  t.assert.equal(marks('module.exports = class { static set __esModule(v) {} }'), false)
+  t.assert.equal(marks('class Box { __esModule }'), false)
+  t.assert.equal(marks('const undefined = true\nmodule.exports = { __esModule: undefined, default: 1 }'), true)
+  // Reads, comparisons, a `case`, a destructuring pattern's key, a read method's argument, a removal and a
+  // variable's name aren't definitions -- nor is a part of another string.
+  t.assert.equal(marks('module.exports = (m) => m && m.__esModule ? m.default : m'), false)
+  t.assert.equal(marks("module.exports = (m) => m['__esModule'] || typeof m.__esModule === 'boolean' || m.__esModule()"), false)
+  t.assert.equal(marks('Object.prototype.hasOwnProperty.call(m, "__esModule")'), false)
+  t.assert.equal(marks("Reflect.has(m, '__esModule') || Object.getOwnPropertyDescriptor(m, '__esModule') || keys.includes('__esModule')"), false)
+  t.assert.equal(marks("for (const k in m) if (k === '__esModule' || '__esModule' in m) continue"), false)
+  t.assert.equal(marks("switch (k) { case '__esModule': break }"), false)
+  t.assert.equal(marks('const { __esModule, ...rest } = m\nmodule.exports = rest'), false)
+  t.assert.equal(marks('delete exports.__esModule'), false)
+  t.assert.equal(marks('var __esModule = 1\nmodule.exports = { [__esModule]: 1 }'), false)
+  t.assert.equal(marks("exports['__esModule' + suffix] = true"), false)
+})
+
+test('analyzeModule: a key only the runtime knows marks where it reaches the exports -- a computed key, a Proxy, a runtime require', (t) => {
+  const marks = (source) => analyze(source).setsEsModule
+  t.assert.equal(marks('const marker = process.env.MARKER\nmodule.exports = { [marker]: true, default: 1 }'), true)
+  t.assert.equal(marks('module.exports = { [process.env.MARKER]: true, default: 1 }'), true)
+  t.assert.equal(marks('module.exports = class { static [key()] = 1 }'), true)
+  t.assert.equal(marks("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true"), false)
+  t.assert.equal(marks("function make() { const k = 'name'; return { [k]: 1 } }\nmodule.exports = make()"), false)
+  // Followed through what reaches the exports: a local's values, a function's returns (called through
+  // `.call`/`.apply`, bound, or behind a sequence), an instance's class.
+  t.assert.equal(marks('function make(k) { return { [k]: true } }\nmodule.exports = make.call(null, key)'), true)
+  t.assert.equal(marks('function make(k) { return { [k]: true } }\nmodule.exports = (0, make)(key)'), true)
+  t.assert.equal(marks('function make(k) { return { [k]: true } }\nmodule.exports = make.bind(null)(key)'), true)
+  t.assert.equal(marks('function make(k) { return { [k]: true } }\nmodule.exports = Reflect.apply(make, null, [key])'), true)
+  t.assert.equal(marks('class Box { [key()] = 1 }\nmodule.exports = new Box()'), true)
+  t.assert.equal(marks('class Box { static [key()] = 1 }\nmodule.exports = new Box()'), false)
   // Resolved at the key: a parameter of the name is unknown, whatever an outer declaration of it holds.
-  t.assert.equal(analyze("const marker = 'safe'\nfunction set(marker) { module.exports = { [marker]: true, default: 1 } }\nset('__esModule')").setsEsModule, true)
-  t.assert.equal(analyze("function make() { const k = 'name'; return { [k]: 1 } }\nmodule.exports = make()").setsEsModule, false)
-  // A computed key of an exported object whose value isn't known may be `__esModule`; a symbol or a literal isn't.
-  t.assert.equal(analyze('const marker = process.env.MARKER\nmodule.exports = { [marker]: true, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze('module.exports = { [process.env.MARKER]: true, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze('module.exports = class { static [key()] = 1 }').setsEsModule, true)
-  t.assert.equal(analyze("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }").setsEsModule, false)
-  // ...unless the file binds `Symbol` itself.
-  t.assert.equal(analyze("const Symbol = () => '__esModule'\nmodule.exports = { [Symbol()]: true, default: 1 }").setsEsModule, true)
-  t.assert.equal(analyze("const Symbol = () => '__esModule'\nconst s = Symbol()\nmodule.exports = { [s]: true }").setsEsModule, true)
-  t.assert.equal(analyze('function f(Symbol) {}\nmodule.exports = { [Symbol.iterator]: f, default: 1 }').setsEsModule, false)
-  // A write through a computed key counts only where the key resolves to `__esModule`: fs-extra's loop isn't a mark.
-  t.assert.equal(analyze("api.forEach((method) => { exports[method] = u(fs[method]) })").setsEsModule, false)
-  // A setter alone reads as undefined.
-  t.assert.equal(analyze('module.exports = { set __esModule(v) {}, default: 1 }').setsEsModule, false)
-  t.assert.equal(analyze('module.exports = class { static set __esModule(v) {} }').setsEsModule, false)
-  t.assert.equal(analyze('module.exports = { get __esModule() { return true }, default: 1 }').setsEsModule, true)
-  t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: false, default: 1 }").setsEsModule, false)
-  // A class's statics are its own properties, its superclass's inherited ones.
-  t.assert.equal(analyze('module.exports = class { static __esModule = true; static default = 1 }').setsEsModule, true)
-  t.assert.equal(analyze('class C { static get __esModule() { return true } }\nmodule.exports = C').setsEsModule, true)
-  t.assert.equal(analyze("module.exports = class extends require('./base') {}").reexports.has('./base'), true)
-  t.assert.equal(analyze('module.exports = class { __esModule = true; static __esModule = false; static x = 1 }').setsEsModule, false)
-  // An instance gets its class's (and superclasses') instance fields and prototype members, not its statics.
-  t.assert.equal(analyze('class Box { __esModule = true; default = 1 }\nmodule.exports = new Box()').setsEsModule, true)
-  t.assert.equal(analyze('class Base { get __esModule() { return true } }\nclass Box extends Base {}\nmodule.exports = new Box()').setsEsModule, true)
-  t.assert.equal(analyze('const B = class { __esModule = true }\nconst A = B\nmodule.exports = new A()').setsEsModule, true)
-  t.assert.equal(analyze('module.exports = new (class { static __esModule = true; default = 1 })()').setsEsModule, false)
-  t.assert.equal(analyze('class Box { default = 1 }\nmodule.exports = new Box()').setsEsModule, false)
-  // A Proxy can answer `__esModule` from its trap; a local named Proxy is just a class.
-  t.assert.equal(analyze("module.exports = new Proxy({ default: 1 }, { get: (t, k) => k === '__esModule' || t[k] })").setsEsModule, true)
-  t.assert.equal(analyze('class Proxy { default = 1 }\nmodule.exports = new Proxy()').setsEsModule, false)
-  // Resolved at the use: a parameter elsewhere named Proxy doesn't shadow the global here.
-  t.assert.equal(analyze('function ignore(Proxy) {}\nmodule.exports = new Proxy(target, handler)').setsEsModule, true)
-  // What a constructor returns replaces the instance.
-  t.assert.equal(analyze('class Box { constructor() { return { __esModule: true, default: 1 } } }\nmodule.exports = new Box()').setsEsModule, true)
-  t.assert.equal(analyze('function Box() { return { __esModule: true, default: 1 } }\nmodule.exports = new Box()').setsEsModule, true)
-  t.assert.equal(analyze('class Box { constructor() { this.x = 1 } }\nmodule.exports = new Box()').setsEsModule, false)
-  // module.exports through a constant computed key.
-  t.assert.equal(analyze("const key = 'exports'\nmodule[key] = { __esModule: true, default: 1 }").setsEsModule, true)
-  t.assert.equal(analyze("const key = 'exports'\nObject.assign(module[key], { __esModule: true })").setsEsModule, true)
-  t.assert.equal(analyze("const key = 'id'\nmodule[key] = { __esModule: true }").setsEsModule, false)
-  // An async function's or a generator's call returns a Promise or an iterator, not what it returns.
-  t.assert.equal(analyze('async function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, false)
-  t.assert.equal(analyze('function* gen() { return { __esModule: true } }\nmodule.exports = gen()').setsEsModule, false)
-  t.assert.equal(analyze('module.exports = (async () => ({ __esModule: true }))()').setsEsModule, false)
-  t.assert.equal(analyze('function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, true)
-  // A property read takes a value the object holds; one off a require() is another module's.
-  t.assert.equal(analyze('module.exports = ({ selected: { __esModule: true, default: 1 } }).selected').setsEsModule, true)
-  // A static key selects its property, in a read and in a pattern alike.
-  t.assert.equal(analyze('module.exports = ({ other: { __esModule: true }, selected: { default: 1 } }).selected').setsEsModule, false)
-  t.assert.equal(analyze('const lib = { other: { __esModule: true }, sub: { default: 1 } }\nmodule.exports = lib.sub').setsEsModule, false)
-  t.assert.equal(analyze('const { sub } = { other: { __esModule: true }, sub: { default: 1 } }\nmodule.exports = sub').setsEsModule, false)
-  t.assert.equal(analyze('const lib = { get sub() { return { __esModule: true } } }\nmodule.exports = lib.sub').setsEsModule, true)
-  t.assert.equal(analyze('const lib = { sub: { __esModule: true } }\nmodule.exports = lib?.sub').setsEsModule, true)
-  t.assert.equal(analyze("module.exports = require('./x').default").setsEsModule, false)
+  t.assert.equal(marks("const marker = 'safe'\nfunction set(marker) { module.exports = { [marker]: true, default: 1 } }\nset(x)"), true)
+  // A symbol or a number isn't `__esModule` -- unless the file binds `Symbol` itself.
+  t.assert.equal(marks("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }"), false)
+  t.assert.equal(marks("const Symbol = (x) => x\nmodule.exports = { [Symbol(key)]: true, default: 1 }"), true)
+  t.assert.equal(marks('function f(Symbol) {}\nmodule.exports = { [Symbol.iterator]: f, default: 1 }'), false)
+  // A write through a key whose value isn't known doesn't count: fs-extra's loop isn't a mark.
+  t.assert.equal(marks('api.forEach((method) => { exports[method] = u(fs[method]) })'), false)
+  // A Proxy can answer `__esModule` from its trap; a local named Proxy is just a class, but a parameter elsewhere
+  // named Proxy doesn't shadow the global here.
+  t.assert.equal(marks("module.exports = new Proxy({ default: 1 }, { get: (t, k) => k === '__esModule' || t[k] })"), true)
+  t.assert.equal(marks('class Proxy { default = 1 }\nmodule.exports = new Proxy()'), false)
+  t.assert.equal(marks('function ignore(Proxy) {}\nmodule.exports = new Proxy(target, handler)'), true)
   // A require only the runtime resolves may hand over anything; esbuild splits a conditional one. A bundle's own
   // `require` parameter, and a local named `exports`, aren't CommonJS's.
-  t.assert.equal(analyze('module.exports = require(process.env.DEP)').setsEsModule, true)
+  t.assert.equal(marks('module.exports = require(process.env.DEP)'), true)
   t.assert.deepStrictEqual(analyze("module.exports = require(dev ? './a' : './b')").reexports, new Set(['./a', './b']))
-  t.assert.equal(analyze('(function (require) { module.exports = require(11) })(r)').setsEsModule, false)
-  t.assert.equal(analyze('const load = (mod) => { let exports; exports = require(mod); return exports }\nmodule.exports = { load }').setsEsModule, false)
-  // A parameter of the name is the CommonJS object handed in, as a UMD factory's `module` (@jridgewell's dist).
-  t.assert.equal(analyze([
-    '(function (global, factory) { factory(module) })(this, function (module) {',
-    '  var __defProp = Object.defineProperty',
-    '  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod)',
-    '  module.exports = __toCommonJS(lib_exports)',
-    '})',
-  ].join('\n')).setsEsModule, true)
-  t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
-  t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
+  t.assert.equal(marks('(function (require) { module.exports = require(11) })(r)'), false)
+  t.assert.equal(marks('const load = (mod) => { let exports; exports = require(mod); return exports }\nmodule.exports = { load }'), false)
+  t.assert.equal(marks("module.exports = require('./x').default"), false)
 })
 
 test('analyzeModule: requires whose result can become module.exports', (t) => {
@@ -278,6 +241,21 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   t.assert.deepStrictEqual(reexports("function load() { return require('./babel.cjs') }\nmodule.exports = load()"), ['./babel.cjs'])
   t.assert.deepStrictEqual(reexports("const load = () => require('./x')\nmodule.exports = load()"), ['./x'])
   t.assert.deepStrictEqual(reexports("function a() { return b() }\nfunction b() { return require('./c') }\nmodule.exports = a()"), ['./c'])
+  // Called through `.call`/`.apply`, bound, behind a sequence, by `Reflect.apply`, or through an alias.
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = load.call(null)"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = load.apply(null, [])"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = load.bind(null)()"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = (0, load)()"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nmodule.exports = Reflect.apply(load, null, [])"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function load() { return require('./x') }\nconst run = load\nmodule.exports = run()"), ['./x'])
   // Nested in the exports isn't the exports; spread into them is.
   t.assert.deepStrictEqual(reexports("module.exports = { a: require('./a'), ...require('./b') }"), ['./b'])
+  // An array pattern or an index read takes the element at its position, or past one a spread before it shifts.
+  t.assert.deepStrictEqual(reexports("const [a] = [require('./a'), require('./b')]\nmodule.exports = a"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const [, b] = [require('./a'), require('./b')]\nmodule.exports = b"), ['./b'])
+  t.assert.deepStrictEqual(reexports("module.exports = [require('./a'), require('./b')][1]"), ['./b'])
+  t.assert.deepStrictEqual(reexports("const [, ...rest] = [require('./a'), require('./b')]\nmodule.exports = rest[0]"), ['./b'])
+  t.assert.deepStrictEqual(reexports("const [, b] = [...more, require('./a'), require('./b')]\nmodule.exports = b"), ['./a', './b'])
+  t.assert.deepStrictEqual(reexports("const list = [require('./a'), require('./b')]\nmodule.exports = list[i]"), ['./a', './b'])
+  t.assert.deepStrictEqual(reexports("const list = [require('./a')]\nmodule.exports = list.length"), [])
 })
