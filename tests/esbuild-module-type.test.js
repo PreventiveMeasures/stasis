@@ -149,6 +149,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const arr = [{ __esModule: true }]\nconst [[out]] = [arr]\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('const [out = { __esModule: true }] = []\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('const { a, ...rest } = { a: 1, __esModule: true }\nmodule.exports = rest').setsEsModule, true)
+  // A rest that took `__esModule` out copies none.
+  t.assert.equal(analyze('const { __esModule: ignored, ...out } = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, false)
   t.assert.equal(analyze('const [out] = [[{ __esModule: true }]]\nmodule.exports = out').setsEsModule, false)
   t.assert.equal(analyze("const { readFile } = require('fs')\nmodule.exports = readFile").setsEsModule, false)
   t.assert.equal(analyze('function wrap(e) { e.__esModule = !0 }\nwrap(exports)').setsEsModule, true)
@@ -185,6 +187,9 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze("const marker = '__es' + 'Module'\nexports[marker] = true").setsEsModule, true)
   t.assert.equal(analyze("const marker = '__esModule'\nObject.defineProperty(exports, marker, { value: true })").setsEsModule, true)
   t.assert.equal(analyze("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true").setsEsModule, false)
+  // Resolved at the key: a parameter of the name is unknown, whatever an outer declaration of it holds.
+  t.assert.equal(analyze("const marker = 'safe'\nfunction set(marker) { module.exports = { [marker]: true, default: 1 } }\nset('__esModule')").setsEsModule, true)
+  t.assert.equal(analyze("function make() { const k = 'name'; return { [k]: 1 } }\nmodule.exports = make()").setsEsModule, false)
   // A computed key of an exported object whose value isn't known may be `__esModule`; a symbol or a literal isn't.
   t.assert.equal(analyze('const marker = process.env.MARKER\nmodule.exports = { [marker]: true, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('module.exports = { [process.env.MARKER]: true, default: 1 }').setsEsModule, true)

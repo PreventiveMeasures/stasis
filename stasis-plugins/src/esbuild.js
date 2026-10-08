@@ -13,6 +13,8 @@ import { State } from '@exodus/stasis-core/state'
 import { realReadFile } from '@exodus/stasis-core/state-util'
 import { EMPTY_MODULE_PATH, classifyExtension } from '@exodus/stasis-core/util'
 
+// esbuild loaders that parse a file as JavaScript or TypeScript.
+const CODE_LOADERS = new Set(['js', 'jsx', 'ts', 'tsx'])
 // The build options esbuild's resolver reads, replayed into the disabled-import probe so it
 // resolves exactly as the build does.
 const RESOLVE_OPTIONS = ['absWorkingDir', 'alias', 'conditions', 'external', 'mainFields', 'nodePaths',
@@ -206,8 +208,19 @@ export class StasisEsbuild {
     return served
   }
 
-  // analyzeModule facts for a code file this plugin serves, else null.
-  #factsOf(path) {
+  // analyzeModule facts for a code file this plugin serves, or for a resource the build's `loader` option loads as
+  // code (`.data: 'js'`), else null.
+  #factsOf(path, build) {
+    const resourceLoader = build && classifyExtension(path, this.#resources) === 'resource' ? build.initialOptions.loader?.[extname(path)] : undefined
+    if (CODE_LOADERS.has(resourceLoader)) {
+      const key = `${path}\u0000${resourceLoader}`
+      let facts = this.#facts.get(key)
+      if (facts === undefined) {
+        facts = this.#serve(path).then(({ contents }) => analyzeModule(String(contents), { path, loader: resourceLoader }))
+        this.#facts.set(key, facts)
+      }
+      return facts
+    }
     let facts = this.#facts.get(path)
     if (facts === undefined) {
       let code
@@ -291,15 +304,15 @@ export class StasisEsbuild {
   // Past a `module.exports = require(...)`-style re-export it is: a required ES module gets esbuild's
   // __toCommonJS mark. A file that doesn't parse might, as might exports this plugin can't read. Of the
   // rest, re-exported JSON can carry one (`{ "__esModule": true }`: esbuild imports JSON as a whole), as can a
-  // resource the build's `loader` option loads as code or copies for runtime; a string (text, file, dataurl,
-  // base64), bytes or an empty module can't. A resource's loader is the build's, a code file's this plugin's.
+  // resource the build's `loader` option copies for runtime (one it loads as code has facts); a string (text, file,
+  // dataurl, base64), bytes or an empty module can't. A resource's loader is the build's, a code file's this plugin's.
   async #mayCarryEsModule(path, depth, seen, build) {
-    const facts = await this.#factsOf(path)
+    const facts = await this.#factsOf(path, build)
     if (facts === null) {
       if (depth === 0) return false
       const resource = classifyExtension(path, this.#resources) === 'resource'
       const loader = resource ? build.initialOptions.loader?.[extname(path)] : this.#loaderFor(path)
-      if (loader !== 'json') return resource && ['copy', 'js', 'jsx', 'ts', 'tsx'].includes(loader)
+      if (loader !== 'json') return resource && loader === 'copy'
       const { contents } = await this.#serve(path)
       try {
         return Boolean(JSON.parse(contents)?.__esModule)
@@ -397,6 +410,12 @@ export class StasisEsbuild {
         `this plugin's build makes it an ES module, so what the ${kind === 'require-call' ? 'require' : 'import'} yields differs`)
     }
     return null
+  }
+
+  // Whether the build's `loader` option loads a resource as code, so an import of it gets the importer's interop
+  // (esbuild applies no package `type` to the resource itself: only .js/.jsx/.ts/.tsx take one).
+  #loadsAsCode(path, build) {
+    return classifyExtension(path, this.#resources) === 'resource' && CODE_LOADERS.has(build.initialOptions.loader?.[extname(path)])
   }
 
   // The build's output format, defaulted as esbuild does for a bundle.
@@ -514,7 +533,7 @@ export class StasisEsbuild {
       const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
       const kind = isEmpty ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
       const path = fileURLToPath(url)
-      if (kind === 'code') {
+      if (kind === 'code' || (!isEntry && this.#loadsAsCode(path, build))) {
         const error = isEntry ? await this.#checkEntry(path, build) : await this.#checkEdge(importer, specifier, resolveKind, path, build)
         if (error) return { errors: [{ text: error }] }
       }
@@ -566,7 +585,7 @@ export class StasisEsbuild {
           this.#state.addImport(parentURL, specifier, url, { importAttributes: attrs })
         }
       }
-      if (kind === 'code') {
+      if (kind === 'code' || (kind === 'resource' && !isEntry && this.#loadsAsCode(res.path, build))) {
         const error = isEntry ? await this.#checkEntry(res.path, build) : await this.#checkEdge(args.importer, specifier, args.kind, res.path, build)
         if (error) return { errors: [{ text: error }] }
       } else if (res.external && !isEntry) {
