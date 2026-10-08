@@ -156,6 +156,51 @@ function patternNames(pattern, names = []) {
   return names
 }
 
+// What each name a destructuring pattern binds may get from `value`: an element of it (`[a] = value`, `{ a } =
+// value`, as an ElementOf node), its default (`[a = fallback] = value`), or, for an object pattern's rest, the
+// value itself less some keys.
+function patternSources(pattern, value, sources = new Map()) {
+  const elementOf = { type: 'ElementOf', object: value }
+  switch (pattern?.type) {
+    case 'Identifier':
+      sources.set(pattern.name, [...(sources.get(pattern.name) ?? []), value])
+      break
+    case 'AssignmentPattern':
+      patternSources(pattern.left, value, sources)
+      patternSources(pattern.left, pattern.right, sources)
+      break
+    case 'ArrayPattern':
+      for (const element of pattern.elements) if (element?.type !== 'RestElement') patternSources(element, elementOf, sources)
+      break
+    case 'ObjectPattern':
+      for (const prop of pattern.properties) patternSources(prop.type === 'RestElement' ? prop.argument : prop.value, prop.type === 'RestElement' ? value : elementOf, sources)
+      break
+  }
+  return sources
+}
+
+// The values an array or object literal holds (elements, property values), for what a pattern takes from it;
+// a name's are the caller's to follow (out.elements).
+function elementsOf(node, out) {
+  switch (node?.type) {
+    case 'ArrayExpression':
+      return node.elements.flatMap((element) => (element === null ? [] : element.type === 'SpreadElement' ? elementsOf(element.argument, out) : [element]))
+    case 'ObjectExpression':
+      return node.properties.flatMap((prop) => (prop.type === 'SpreadElement' ? elementsOf(prop.argument, out) : [prop.value]))
+    case 'ElementOf':
+      return elementsOf(node.object, out).flatMap((element) => elementsOf(element, out))
+    case 'ConditionalExpression':
+      return [...elementsOf(node.consequent, out), ...elementsOf(node.alternate, out)]
+    case 'LogicalExpression':
+      return [...elementsOf(node.left, out), ...elementsOf(node.right, out)]
+    case 'Identifier':
+      out.elements.add(node.name)
+      return []
+    default:
+      return []
+  }
+}
+
 // Whether a statement list opens with a "use strict" directive.
 function hasUseStrict(statements) {
   for (const statement of statements) {
@@ -286,6 +331,9 @@ function scanValue(node, out) {
         scanMembers(current, true, out)
         stack.push(current.superClass)
         break
+      case 'ElementOf':
+        stack.push(...elementsOf(current.object, out))
+        break
       case 'NewExpression':
         scanInstance(current.callee, out)
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
@@ -406,7 +454,7 @@ export function analyzeModule(source, { path, loader }) {
     if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
     else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), keys: new Set(), symbols: false, marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: new Set(), symbols: false, marked: false }
 
   // Iterative: minified code nests deeper than the call stack allows. fnDepth counts every function
   // (return/await scope), thisDepth only what has its own `this` (non-arrow functions, class field values,
@@ -518,9 +566,9 @@ export function analyzeModule(source, { path, loader }) {
         if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right))) {
           markKey(node.left.property, node.left.computed, node.left.object)
         }
-        for (const name of patternNames(node.left)) {
+        for (const [name, values] of patternSources(node.left, node.right)) {
           reassigned.add(name)
-          assignments.set(name, [...(assignments.get(name) ?? []), node.right])
+          assignments.set(name, [...(assignments.get(name) ?? []), ...values])
         }
         if (isExportsTarget(node.left)) scanValue(node.right, exported)
         else if (moduleKeyName(node.left) !== undefined) keyedWrites.push([moduleKeyName(node.left), [node.right]])  // module[key] = value
@@ -529,6 +577,8 @@ export function analyzeModule(source, { path, loader }) {
         if (node.id.type === 'Identifier' && node.init) {
           declarators.set(node.id.name, [...(declarators.get(node.id.name) ?? []), node.init])
           if (node.init.type === 'ObjectExpression') count(objectDecls, node.id.name)
+        } else if (node.init) {
+          for (const [name, values] of patternSources(node.id, node.init)) declarators.set(name, [...(declarators.get(name) ?? []), ...values])
         }
         break
       case 'FunctionDeclaration': {
@@ -621,12 +671,13 @@ export function analyzeModule(source, { path, loader }) {
     if (!names(name, 'exports')) continue
     for (const value of written) scanValue(value.type === 'SpreadElement' ? value.argument : value, exported)
   }
-  const done = { value: new Set(), call: new Set(), instance: new Set() }
+  const done = { value: new Set(), call: new Set(), instance: new Set(), elements: new Set() }
   const pending = []
   const follow = (found) => {
     for (const identifier of found.identifiers) pending.push(['value', identifier])
     for (const callee of found.callees) pending.push(['call', callee])
     for (const cls of found.instances) pending.push(['instance', cls])
+    for (const name of found.elements) pending.push(['elements', name])
     if (found.marked) exported.marked = true
     if (found.symbols) exported.symbols = true
   }
@@ -637,9 +688,10 @@ export function analyzeModule(source, { path, loader }) {
     done[kind].add(name)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), keys: exported.keys, symbols: false, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: new Set(), keys: exported.keys, symbols: false, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') for (const origin of [...inits, ...assigned]) scanInstance(origin, found)
+    else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found)) scanValue(value, found)
     else {
       const fns = [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))]
       for (const value of fns.flatMap((fn) => returnedValues(fn))) scanValue(value, found)
