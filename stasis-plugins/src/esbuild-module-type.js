@@ -247,6 +247,7 @@ function scanValue(node, out) {
 //   blockFunction  a function declared in a nested block of sloppy-mode code (hoisted differently than in strict)
 //   imports     Map specifier -> { bindings, interop }: whether a static import/re-export of it observes its
 //               exports at all, and whether through its default export or namespace (where interop decides the value)
+//   requires    Map specifier -> { consumed }: whether a `require()` of it uses the result (not a bare statement)
 //   setsEsModule  something that may mark the exports __esModule: an `__esModule` assignment or defineProperty on
 //               anything but a fresh local object that never becomes them (bundled output names its exports
 //               arbitrarily), or an `__esModule` key in a literal that becomes them
@@ -282,7 +283,7 @@ export function analyzeModule(source, { path, loader }) {
 
   const facts = {
     esmExports: false, esmImports: false, cjsUsage: 'no', cjsDetail: null, strictOnly, blockFunction: false,
-    imports: new Map(), setsEsModule: false, reexports: new Set(), parseError,
+    imports: new Map(), requires: new Map(), setsEsModule: false, reexports: new Set(), parseError,
   }
   const useImport = (specifier, { bindings = false, interop = false }) => {
     const prior = facts.imports.get(specifier) ?? { bindings: false, interop: false }
@@ -387,8 +388,13 @@ export function analyzeModule(source, { path, loader }) {
       case 'TSExportAssignment':
         cjsCertain ??= '`export =`'
         break
-      case 'CallExpression':
+      case 'CallExpression': {
         if (node.callee.type === 'Identifier' && node.callee.name === 'eval' && !node.optional) cjsCertain ??= 'a direct `eval`'
+        const required = requireSpecifier(node)
+        if (required !== undefined) {
+          const consumed = !(parent?.type === 'ExpressionStatement' && key === 'expression')
+          facts.requires.set(required, { consumed: consumed || (facts.requires.get(required)?.consumed ?? false) })
+        }
         // defineProperty-style: (target, '__esModule', descriptor), aliases included (esbuild's __defProp).
         if (node.arguments.length >= 3 && stringValue(node.arguments[1]) === '__esModule' && mayDefineTruthy(node.arguments[2])) {
           markReceiver(node.arguments[0])
@@ -403,6 +409,7 @@ export function analyzeModule(source, { path, loader }) {
           for (const arg of node.arguments) if (!isExportsTarget(arg)) scanValue(arg, exported)
         }
         break
+      }
       case 'AssignmentExpression':
         if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right)) &&
           (node.left.computed ? stringValue(node.left.property) : node.left.property.name) === '__esModule') markReceiver(node.left.object)

@@ -337,6 +337,12 @@ export class StasisEsbuild {
       // An importer the check couldn't read sees everything, as far as it can tell.
       usage = (facts && !facts.parseError && facts.imports.get(specifier)) || { bindings: true, interop: true }
     }
+    // A require whose result is discarded (`require('./side.js')` as a statement) sees nothing of the target.
+    let required = kind === 'require-call'
+    if (required && targetTyped) {
+      const facts = await this.#factsOf(importer)
+      required = !facts || Boolean(facts.parseError) || (facts.requires.get(specifier)?.consumed ?? true)
+    }
 
     if (usage.interop && importerTypes.module && await this.#mayCarryEsModule(target, 0, new Set([target]))) {
       return this.#refuse(importer, importerTypes, `it ${kind === 'dynamic-import' ? 'dynamically imports' : 'imports the default export or namespace of'} ` +
@@ -349,13 +355,13 @@ export class StasisEsbuild {
     const facts = await this.#factsOf(target)
     if (facts === null || facts.esmExports) return null
     const how = kind === 'require-call' ? 'requires' : 'imports'
-    if (targetTypes.module && !facts.esmImports && facts.cjsUsage === 'no' && (usage.bindings || kind === 'require-call')) {
+    if (targetTypes.module && !facts.esmImports && facts.cjsUsage === 'no' && (usage.bindings || required)) {
       return this.#refuse(target, targetTypes, `'${relative(this.#state.root, importer).split(sep).join('/')}' ${how} it, and it has no \`import\` or \`export\`: ` +
         'a plain esbuild build makes it an ES module without exports in a "type": "module" package, this plugin\'s build CommonJS, ' +
         `so what the ${kind === 'require-call' ? 'require' : 'import'} yields differs`)
     }
     // Without an import statement either, esbuild makes an imported file CommonJS anyway.
-    if (targetTypes.commonjs && facts.esmImports && facts.cjsUsage !== 'yes' && (usage.bindings || kind === 'require-call')) {
+    if (targetTypes.commonjs && facts.esmImports && facts.cjsUsage !== 'yes' && (usage.bindings || required)) {
       return this.#refuse(target, targetTypes, `'${relative(this.#state.root, importer).split(sep).join('/')}' ${how} it, and it has \`import\`s but no ` +
         '`export` and no CommonJS `module`/`exports` use: a plain esbuild build wraps it as CommonJS in a "type": "commonjs" package, ' +
         `this plugin's build makes it an ES module, so what the ${kind === 'require-call' ? 'require' : 'import'} yields differs`)
