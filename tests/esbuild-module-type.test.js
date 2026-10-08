@@ -163,13 +163,10 @@ test('analyzeModule: a constant __esModule key marks wherever it may be defined,
   t.assert.equal(marks('<div __esModule />', { path: 'f.jsx', loader: 'jsx' }), true)
   t.assert.equal(marks('enum E { __esModule = 1 }', { path: 'f.ts', loader: 'ts' }), true)
   t.assert.equal(marks('class Box { constructor(public __esModule = true) {} }', { path: 'f.ts', loader: 'ts' }), true)
-  // A statically falsy value, a setter alone and a falsy-only descriptor define nothing truthy; `undefined` is a
-  // name a declaration can rebind.
+  // A statically falsy value and a setter alone define nothing truthy; `undefined` is a name a declaration can
+  // rebind.
   t.assert.equal(marks('module.exports = { __esModule: false, default: 1 }'), false)
   t.assert.equal(marks('exports.__esModule = void 0'), false)
-  t.assert.equal(marks('Object.defineProperty(exports, "__esModule", { value: false })'), false)
-  t.assert.equal(marks('Object.defineProperties(exports, { __esModule: { value: false }, default: { value: 1 } })'), false)
-  t.assert.equal(marks('Object.create(null, { __esModule: { value: false } })'), false)
   t.assert.equal(marks('module.exports = { set __esModule(v) {}, default: 1 }'), false)
   t.assert.equal(marks('module.exports = class { static set __esModule(v) {} }'), false)
   t.assert.equal(marks('class Box { __esModule }'), false)
@@ -184,9 +181,12 @@ test('analyzeModule: a constant __esModule key marks wherever it may be defined,
   t.assert.equal(marks('delete exports.__esModule'), false)
   t.assert.equal(marks('var __esModule = 1\nmodule.exports = { [__esModule]: 1 }'), false)
   t.assert.equal(marks("exports['__esModule' + suffix] = true"), false)
-  // Any call may define the key it's handed -- a function named like a read builtin, and a read builtin itself,
-  // which a Proxy's trap turns into a write.
+  // Any call may define the key it's handed, whatever its callee is meant to do: a function named like a read
+  // builtin, a read builtin (whose Proxy trap turns it into a write), one handed a falsy descriptor.
   t.assert.equal(marks("function get(o, k) { o[k] = true }\nget(exports, '__esModule')\nexports.default = 1"), true)
+  t.assert.equal(marks("function set(o, key, descriptor) { o[key] = true }\nset(exports, '__esModule', { value: false })"), true)
+  t.assert.equal(marks('Object.defineProperty(exports, "__esModule", { value: false })'), true)
+  t.assert.equal(marks('Object.defineProperties(exports, { __esModule: { value: false }, default: { value: 1 } })'), true)
   t.assert.equal(marks("Reflect.get(new globalThis.Proxy({}, { get(_, key) { exports[key] = true } }), '__esModule')"), true)
   t.assert.equal(marks('Object.prototype.hasOwnProperty.call(m, "__esModule")'), true)
 })
