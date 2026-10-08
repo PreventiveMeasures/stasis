@@ -56,8 +56,13 @@ test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level
   t.assert.equal(analyze('function module() {}\nmodule()').cjsUsage, 'no')
   t.assert.equal(analyze('var exports = {}\nexports.a = 1').cjsUsage, 'yes')
   t.assert.equal(analyze('declare const module: any\nmodule.exports = 1', { path: 'f.ts', loader: 'ts' }).cjsUsage, 'yes')
-  // A nested declaration binds only some references: undecided.
-  t.assert.equal(analyze('function f(exports) { exports.a = 1 }\nexports.b = 2').cjsUsage, 'maybe')
+  // Each reference resolves against its own scopes, hoisting included.
+  t.assert.equal(analyze('function use(module) { module.run() }').cjsUsage, 'no')
+  t.assert.equal(analyze('function f() { module.x(); var module = {} }').cjsUsage, 'no')
+  t.assert.equal(analyze('try { g() } catch (exports) { exports.a = 1 }').cjsUsage, 'no')
+  t.assert.equal(analyze('{ let module = 1; module += 1 }').cjsUsage, 'no')
+  t.assert.equal(analyze('function f(exports) { exports.a = 1 }\nexports.b = 2').cjsUsage, 'yes')
+  t.assert.equal(analyze('{ let module = 1 }\nmodule.exports = 2').cjsUsage, 'yes')
 })
 
 test('analyzeModule: strict-mode-only differences -- a sloppy-only construct, a block-level function', (t) => {
@@ -77,6 +82,15 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('module.exports = { __esModule: true, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('const out = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperties(exports, { __esModule: { value: true } })').setsEsModule, true)
+  // A mark on a fresh local object counts only if that object becomes the exports; on anything else
+  // (a parameter, a reassigned name) it may be the exports under another name.
+  t.assert.equal(analyze('const metadata = {}\nmetadata.__esModule = true\nmodule.exports = { default: 1 }').setsEsModule, false)
+  t.assert.equal(analyze("const o = {}\nObject.defineProperty(o, '__esModule', { value: true })\nmodule.exports = { default: 1 }").setsEsModule, false)
+  t.assert.equal(analyze('const out = {}\nout.__esModule = true\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('function wrap(e) { e.__esModule = !0 }\nwrap(exports)').setsEsModule, true)
+  t.assert.equal(analyze('let o = {}\no = exports\no.__esModule = true').setsEsModule, true)
+  t.assert.equal(analyze('let o = {}\n;[o] = [exports]\no.__esModule = true').setsEsModule, true)
+  t.assert.equal(analyze('let o = {}\nfor (o of [exports]) o.__esModule = true').setsEsModule, true)
   // A literal that never becomes the exports, or only ends up nested in them, doesn't mark them.
   t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
   t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
@@ -97,6 +111,10 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   // A require that runs later, inside a function, doesn't produce the exported value.
   t.assert.deepStrictEqual(reexports("module.exports = function () { return require('./later') }"), [])
   t.assert.deepStrictEqual(reexports("module.exports.helper = require('./helper')"), [])
+  // What a local function returns, when the exports are its result.
+  t.assert.deepStrictEqual(reexports("function load() { return require('./babel.cjs') }\nmodule.exports = load()"), ['./babel.cjs'])
+  t.assert.deepStrictEqual(reexports("const load = () => require('./x')\nmodule.exports = load()"), ['./x'])
+  t.assert.deepStrictEqual(reexports("function a() { return b() }\nfunction b() { return require('./c') }\nmodule.exports = a()"), ['./c'])
   // Nested in the exports isn't the exports; spread into them is.
   t.assert.deepStrictEqual(reexports("module.exports = { a: require('./a'), ...require('./b') }"), ['./b'])
 })
