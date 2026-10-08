@@ -208,10 +208,28 @@ export class StasisEsbuild {
     return served
   }
 
-  // analyzeModule facts for a code file this plugin serves, or for a resource the build's `loader` option loads as
-  // code (`.data: 'js'`), else null.
+  // Whether a file is a resource: in load mode one the bundle attests as such (`stasis build`'s config lists no
+  // `resources`), at capture by its extension against the `resources` config.
+  #isResource(path) {
+    if (!this.#state.config.loadBundle) return classifyExtension(path, this.#resources) === 'resource'
+    const rel = relative(this.#state.root, path)
+    return !rel.startsWith('..') && !isAbsolute(rel) && this.#state.resources.has(rel.split(sep).join('/'))
+  }
+
+  // The loader esbuild applies to a resource: the build's `loader` option's for its extension -- or, in load mode,
+  // where this plugin serves the bundle's bytes as contents and that option names none, esbuild's default for
+  // contents, `js` (`stasis build` passes no `loader` option: its --loader reaches only code files). Bytes that
+  // aren't text (a `resource:base64`) fail esbuild's parse on their own.
+  #resourceLoader(path, build) {
+    const configured = build.initialOptions.loader?.[extname(path)]
+    if (configured || !this.#state.config.loadBundle) return configured
+    return this.#state.getFormat(pathToFileURL(path).toString()) === 'resource' ? 'js' : undefined
+  }
+
+  // analyzeModule facts for a code file this plugin serves, or for a resource esbuild loads as code (`.data: 'js'`),
+  // else null.
   #factsOf(path, build) {
-    const resourceLoader = build && classifyExtension(path, this.#resources) === 'resource' ? build.initialOptions.loader?.[extname(path)] : undefined
+    const resourceLoader = build && this.#isResource(path) ? this.#resourceLoader(path, build) : undefined
     if (CODE_LOADERS.has(resourceLoader)) {
       const key = `${path}\u0000${resourceLoader}`
       let facts = this.#facts.get(key)
@@ -310,8 +328,8 @@ export class StasisEsbuild {
     const facts = await this.#factsOf(path, build)
     if (facts === null) {
       if (depth === 0) return false
-      const resource = classifyExtension(path, this.#resources) === 'resource'
-      const loader = resource ? build.initialOptions.loader?.[extname(path)] : this.#loaderFor(path)
+      const resource = this.#isResource(path)
+      const loader = resource ? this.#resourceLoader(path, build) : this.#loaderFor(path)
       if (loader !== 'json') return resource && loader === 'copy'
       const { contents } = await this.#serve(path)
       try {
@@ -412,10 +430,10 @@ export class StasisEsbuild {
     return null
   }
 
-  // Whether the build's `loader` option loads a resource as code, so an import of it gets the importer's interop
-  // (esbuild applies no package `type` to the resource itself: only .js/.jsx/.ts/.tsx take one).
+  // Whether esbuild loads a resource as code, so an import of it gets the importer's interop (esbuild applies no
+  // package `type` to the resource itself: only .js/.jsx/.ts/.tsx take one).
   #loadsAsCode(path, build) {
-    return classifyExtension(path, this.#resources) === 'resource' && CODE_LOADERS.has(build.initialOptions.loader?.[extname(path)])
+    return this.#isResource(path) && CODE_LOADERS.has(this.#resourceLoader(path, build))
   }
 
   // The build's output format, defaulted as esbuild does for a bundle.
@@ -618,7 +636,8 @@ export class StasisEsbuild {
         if (kind === 'empty') return { contents: source, loader: 'empty' }
         // A resource. Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
         // per-extension loader only on its own load path), so replay the configured loader from
-        // initialOptions.loader. No configured loader fails symmetrically with a capture build.
+        // initialOptions.loader. With none configured, esbuild parses them as `js`, as the checks take them
+        // (#resourceLoader).
         const loader = initialOptions.loader?.[extname(path)]
         return loader ? { contents: source, loader } : { contents: source }
       }

@@ -248,6 +248,10 @@ function elementsOf(node, out, key) {
       })
     case 'ElementOf':
       return elementsOf(node.object, out, node.key).flatMap((element) => elementsOf(element, out, key))
+    // `Proxy.revocable(target, handler).proxy` is `new Proxy(target, handler)`.
+    case 'CallExpression':
+      return node.callee.type === 'MemberExpression' && staticKey(node.callee) === 'revocable' && (key === undefined || key === 'proxy')
+        ? [{ type: 'NewExpression', callee: node.callee.object, arguments: node.arguments }] : []
     // A read off a read (`({ inner: { … } }).inner.load`) resolves where the first one lands on a literal; through a
     // name (`h.inner.load`) it isn't followed: a name stands for every declaration of it in the file, and a chain of
     // keys through a bundle's names multiplies past what a build can wait for.
