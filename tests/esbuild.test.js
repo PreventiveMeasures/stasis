@@ -1421,6 +1421,23 @@ describe('StasisEsbuild (spawned, concurrent)', { concurrency: CONCURRENCY }, ()
     t.assert.match(capture.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/optional\.cjs'/)
   }))
 
+  test('capture follows a re-export to JSON, whose object can carry __esModule', withTmp(async (t, tmp) => {
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    writeFileSync(join(tmp, 'package.json'), TYPE_MODULE)
+    writeFileSync(join(tmp, 'src', 'marked.json'), '{ "__esModule": true, "default": "value" }')
+    writeFileSync(join(tmp, 'src', 'plain.json'), '{ "default": "value" }')
+    writeFileSync(join(tmp, 'src', 'marked.cjs'), "module.exports = require('./marked.json')\n")
+    writeFileSync(join(tmp, 'src', 'plain.cjs'), "module.exports = require('./plain.json')\n")
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './marked.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const env = { EXODUS_STASIS_LOCK: 'none' }
+    const marked = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(join(tmp, 'marked.br'), join(tmp, 'out-marked'), env) })
+    t.assert.notEqual(marked.status, 0)
+    t.assert.match(marked.stderr, /refusing to build 'src\/entry\.js': it imports the default export or namespace of '\.\/marked\.cjs'/)
+    writeFileSync(join(tmp, 'src', 'entry.js'), "import x from './plain.cjs'\nconsole.log(JSON.stringify(x))\n")
+    const plain = await run(['src/entry.js'], { cwd: tmp, env: captureEnv(join(tmp, 'plain.br'), join(tmp, 'out-plain'), env) })
+    t.assert.equal(plain.status, 0, `plain stderr: ${plain.stderr}`)
+  }))
+
   test('load refuses a bundle whose "type": "module" importer default-imports a CommonJS module marked __esModule', withTmp(async (t, tmp) => {
     // As `stasis bundle` records it: Node's formats, the importer 'module'.
     const bundle = {

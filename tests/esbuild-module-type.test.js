@@ -119,6 +119,14 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const out = {}\nout.__esModule = true\nmodule.exports = out').setsEsModule, true)
   // A value assigned after the declaration becomes the exports too.
   t.assert.equal(analyze('let out\nout = { __esModule: true, default: 1 }\nmodule.exports = out').setsEsModule, true)
+  // So does what a destructuring pattern takes: an element, a default, an object rest.
+  t.assert.equal(analyze('let out\n;[out] = [{ __esModule: true, default: 1 }]\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const { out } = { out: { __esModule: true, default: 1 } }\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const arr = [{ __esModule: true }]\nconst [[out]] = [arr]\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const [out = { __esModule: true }] = []\nmodule.exports = out').setsEsModule, true)
+  t.assert.equal(analyze('const { a, ...rest } = { a: 1, __esModule: true }\nmodule.exports = rest').setsEsModule, true)
+  t.assert.equal(analyze('const [out] = [[{ __esModule: true }]]\nmodule.exports = out').setsEsModule, false)
+  t.assert.equal(analyze("const { readFile } = require('fs')\nmodule.exports = readFile").setsEsModule, false)
   t.assert.equal(analyze('function wrap(e) { e.__esModule = !0 }\nwrap(exports)').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\no = exports\no.__esModule = true').setsEsModule, true)
   t.assert.equal(analyze('let o = {}\n;[o] = [exports]\no.__esModule = true').setsEsModule, true)

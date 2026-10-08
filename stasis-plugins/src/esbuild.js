@@ -290,10 +290,19 @@ export class StasisEsbuild {
   // Whether a module this build bundles may have an `__esModule` mark on its module.exports. For the
   // module an ESM file imports (depth 0), an ES module never is: esbuild only wraps CommonJS in __toESM.
   // Past a `module.exports = require(...)`-style re-export it is: a required ES module gets esbuild's
-  // __toCommonJS mark. A file that doesn't parse might, as might exports this plugin can't read.
+  // __toCommonJS mark. A file that doesn't parse might, as might exports this plugin can't read. Of the
+  // rest, only re-exported JSON can carry one (`{ "__esModule": true }`): esbuild imports JSON as a whole.
   async #mayCarryEsModule(path, depth, seen) {
     const facts = await this.#factsOf(path)
-    if (facts === null) return false
+    if (facts === null) {
+      if (depth === 0 || this.#loaderFor(path) !== 'json') return false
+      const { contents } = await this.#serve(path)
+      try {
+        return Boolean(JSON.parse(contents)?.__esModule)
+      } catch {
+        return true
+      }
+    }
     if (facts.esmExports || (facts.esmImports && facts.cjsUsage === 'no')) return depth > 0
     if (facts.setsEsModule || facts.parseError) return true
     const targets = await Promise.all([...facts.reexports].map((specifier) => this.#resolveRequire(path, specifier)))
