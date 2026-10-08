@@ -45,6 +45,9 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
   const used = (code, loader = 'js') => Object.fromEntries(analyze(code, { path: `f.${loader}`, loader }).imports)
   t.assert.deepStrictEqual(used("import unused from './u.cjs'\nconst unrelated = 1"), { './u.cjs': side })
   t.assert.deepStrictEqual(used("import Comp from './c.cjs'\nexport const el = <Comp />", 'jsx'), { './c.cjs': interop })
+  t.assert.deepStrictEqual(used("import ui from './ui.cjs'\nexport const el = <ui.Button />", 'jsx'), { './ui.cjs': interop })
+  // A lowercase tag is an intrinsic element's string, not a read of the name.
+  t.assert.deepStrictEqual(used("import div from './d.cjs'\nexport const el = <div title='x' />", 'jsx'), { './d.cjs': side })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\nexport { x }"), { './x.cjs': interop })
   t.assert.deepStrictEqual(used("import x from './x.cjs'\neval('x')"), { './x.cjs': interop })
   // A read is resolved by scope: a parameter of the name isn't the import, a closure over it is.
@@ -114,6 +117,9 @@ test('analyzeModule: top-level `arguments` -- a module wrapper\'s, outside any f
   t.assert.equal(analyze('console.log(arguments.length)').topArguments, true)
   t.assert.equal(analyze('const f = () => arguments[0]').topArguments, true)
   t.assert.equal(analyze('function f() { return arguments }\nconst o = { m() { return () => arguments } }\nx.arguments = 1').topArguments, false)
+  // A local binding of the name is read instead.
+  t.assert.equal(analyze('const arguments = [1]\nconsole.log(arguments[0])').topArguments, false)
+  t.assert.equal(analyze('const f = (arguments) => arguments[0]').topArguments, false)
 })
 
 test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets them; reads are not marks', (t) => {
@@ -219,6 +225,16 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('function* gen() { return { __esModule: true } }\nmodule.exports = gen()').setsEsModule, false)
   t.assert.equal(analyze('module.exports = (async () => ({ __esModule: true }))()').setsEsModule, false)
   t.assert.equal(analyze('function load() { return { __esModule: true, default: 1 } }\nmodule.exports = load()').setsEsModule, true)
+  // A property read takes a value the object holds; one off a require() is another module's.
+  t.assert.equal(analyze('module.exports = ({ selected: { __esModule: true, default: 1 } }).selected').setsEsModule, true)
+  t.assert.equal(analyze('const lib = { sub: { __esModule: true } }\nmodule.exports = lib?.sub').setsEsModule, true)
+  t.assert.equal(analyze("module.exports = require('./x').default").setsEsModule, false)
+  // A require only the runtime resolves may hand over anything; esbuild splits a conditional one. A bundle's own
+  // `require` parameter, and a local named `exports`, aren't CommonJS's.
+  t.assert.equal(analyze('module.exports = require(process.env.DEP)').setsEsModule, true)
+  t.assert.deepStrictEqual(analyze("module.exports = require(dev ? './a' : './b')").reexports, new Set(['./a', './b']))
+  t.assert.equal(analyze('(function (require) { module.exports = require(11) })(r)').setsEsModule, false)
+  t.assert.equal(analyze('const load = (mod) => { let exports; exports = require(mod); return exports }\nmodule.exports = { load }').setsEsModule, false)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })
