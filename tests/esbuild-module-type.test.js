@@ -41,6 +41,13 @@ test('analyzeModule: how each import observes its target -- default/namespace (i
   })
 })
 
+test('analyzeModule: whether a require uses its result', (t) => {
+  const { requires } = analyze("require('./side.js')\nconst x = require('./used.js')\nrequire('./both.js')\nf(require('./both.js'))")
+  t.assert.deepStrictEqual(Object.fromEntries(requires), {
+    './side.js': { consumed: false }, './used.js': { consumed: true }, './both.js': { consumed: true },
+  })
+})
+
 test('analyzeModule: CommonJS use esbuild sees -- free module/exports, top-level this/return, direct eval', (t) => {
   t.assert.equal(analyze('module.exports = 1').cjsUsage, 'yes')
   t.assert.equal(analyze("if (typeof exports === 'object') exports.a = 1").cjsUsage, 'yes')
