@@ -68,6 +68,8 @@ const external = externalRaw ? JSON.parse(externalRaw) : undefined
 // STASIS_TEST_ESBUILD_PLATFORM -- esbuild `platform` (default node), e.g. browser so
 // package.json `browser` maps apply.
 const platform = process.env.STASIS_TEST_ESBUILD_PLATFORM ?? 'node'
+// STASIS_TEST_ESBUILD_FORMAT -- esbuild `format` (default esm), e.g. cjs so externals become require() calls.
+const format = process.env.STASIS_TEST_ESBUILD_FORMAT ?? 'esm'
 // STASIS_TEST_ESBUILD_PLAIN=1 -- build without the plugin: the plain-esbuild baseline a
 // capture build's output must match byte-for-byte. Combine with STASIS_TEST_PRELOAD=0.
 const plain = process.env.STASIS_TEST_ESBUILD_PLAIN === '1'
@@ -77,7 +79,7 @@ try {
     bundle: true,
     outdir: dist,
     platform,
-    format: 'esm',
+    format,
     write: writeOutput,
     logLevel: 'silent',
     ...(loader ? { loader } : {}),

@@ -128,6 +128,13 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const metadata = { __esModule: true }\nmodule.exports = { default: 1 }').setsEsModule, false)
   t.assert.equal(analyze("const metadata = { __esModule: true }\nmodule.exports = { default: 'd', metadata }").setsEsModule, false)
   t.assert.equal(analyze('const base = { __esModule: true }\nmodule.exports = { ...base, default: 1 }').setsEsModule, true)
+  // A computed key that names `__esModule`: a constant or a constant concatenation.
+  t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: true, default: 1 }").setsEsModule, true)
+  t.assert.equal(analyze("module.exports = { ['__es' + 'Module']: true, default: 1 }").setsEsModule, true)
+  t.assert.equal(analyze("const marker = '__es' + 'Module'\nexports[marker] = true").setsEsModule, true)
+  t.assert.equal(analyze("const marker = '__esModule'\nObject.defineProperty(exports, marker, { value: true })").setsEsModule, true)
+  t.assert.equal(analyze("const key = 'name'\nmodule.exports = { [key]: true, default: 1 }\nexports[key] = true").setsEsModule, false)
+  t.assert.equal(analyze("const marker = '__esModule'\nmodule.exports = { [marker]: false, default: 1 }").setsEsModule, false)
   t.assert.equal(analyze('module.exports = (m) => m && m.__esModule ? m.default : m').setsEsModule, false)
   t.assert.equal(analyze('Object.prototype.hasOwnProperty.call(m, "__esModule")').setsEsModule, false)
 })

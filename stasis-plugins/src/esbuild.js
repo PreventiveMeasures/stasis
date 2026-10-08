@@ -79,7 +79,8 @@ export class StasisEsbuild {
   #served = new Map()  // path -> Promise<{ contents, loader }>: what esbuild parses for a served code file
   #facts = new Map()  // path -> Promise<analyzeModule facts | null>
   #typeScopes = new Map()  // dir -> Promise<'module' | 'commonjs' | null | undefined>: its nearest package.json `type`
-  #build  // { resolve, initialOptions } of the build being set up
+  #build  // { resolve, initialOptions, esbuild } of the build being set up
+  #lowersImport  // Promise<boolean>: whether the build turns `import()` into a require()
 
   // Build starts observed by this instance (across rebuilds and separate build()/context() calls);
   // the second is refused in onStart.
@@ -278,8 +279,10 @@ export class StasisEsbuild {
       }
     }
     const res = await this.#build.resolve(specifier, { kind: 'require-call', resolveDir: dirname(fromPath), importer: fromPath, namespace: 'stasis' })
-    if (res.errors.length > 0 || res.namespace === '') return null
+    if (res.errors.length > 0) return null
+    // An external resolves to no namespace too, so ask before taking that as a disabled import.
     if (res.external) return isBuiltin(specifier) ? null : { opaque: true }
+    if (res.namespace === '') return null
     return res.namespace === 'file' ? { path: res.path } : { opaque: true }
   }
 
@@ -369,10 +372,46 @@ export class StasisEsbuild {
     return null
   }
 
+  // The build's output format, defaulted as esbuild does for a bundle.
+  #outputFormat() {
+    const { format, platform } = this.#build.initialOptions
+    return format ?? (platform === 'neutral' ? 'esm' : platform === 'node' ? 'cjs' : 'iife')
+  }
+
+  // An import from `importer` of a non-builtin external. esbuild keeps it for runtime: as an import where the
+  // output is ESM, as a require() where it's CommonJS or an IIFE (and wherever it lowers `import()`), and that
+  // require gets the importer's interop -- on exports only the runtime knows, so this build can't tell whether
+  // they carry `__esModule`.
+  async #checkExternal(importer, specifier, kind) {
+    if (isBuiltin(specifier)) return null
+    const turnsIntoRequire = kind === 'import-statement' ? this.#outputFormat() !== 'esm'
+      : kind === 'dynamic-import' && await this.#lowersDynamicImport()
+    if (!turnsIntoRequire) return null
+    const types = await this.#packageTypes(importer)
+    if (!types.module) return null
+    if (kind === 'import-statement') {
+      const facts = await this.#factsOf(importer)
+      if (facts && !facts.parseError && !facts.imports.get(specifier)?.interop) return null
+    }
+    return this.#refuse(importer, types, `it ${kind === 'dynamic-import' ? 'dynamically imports' : 'imports the default export or namespace of'} ` +
+      `'${specifier}', an external this build turns into a require() whose exports only the runtime knows: a plain esbuild build ` +
+      'gives a "type": "module" file Node\'s interop (the default export is the whole module.exports), this plugin\'s build the bundler ' +
+      'one (module.exports.default where the exports carry `__esModule`)',
+      kind === 'dynamic-import' ? 'Rename the importer to .mjs, which esbuild types by extension, or build for a target with dynamic import'
+        : "Import its named exports instead, rename the importer to .mjs, which esbuild types by extension, or build with format 'esm'")
+  }
+
+  // Whether this build lowers `import()` to a require() (a target without dynamic import), asked of esbuild itself.
+  #lowersDynamicImport() {
+    const { target, supported, platform } = this.#build.initialOptions
+    this.#lowersImport ??= this.#build.esbuild.transform("import('x')", { format: this.#outputFormat(), target, supported, platform })
+      .then(({ code }) => /\brequire\(/.test(code))
+    return this.#lowersImport
+  }
+
   // An entry point: built as ESM, a "type": "commonjs" entry gains a default export only in a plain build.
   async #checkEntry(path) {
-    const { format, platform } = this.#build.initialOptions
-    if ((format ?? (platform === 'neutral' ? 'esm' : undefined)) !== 'esm') return null
+    if (this.#outputFormat() !== 'esm') return null
     const types = await this.#packageTypes(path)
     if (!types.commonjs) return null
     const facts = await this.#factsOf(path)
@@ -384,7 +423,8 @@ export class StasisEsbuild {
 
   setup = ({ onResolve, onLoad, onStart, onEnd, resolve, initialOptions, esbuild }) => {
     if (!this.#state) return  // noop plugin
-    this.#build = { resolve, initialOptions }
+    this.#build = { resolve, initialOptions, esbuild }
+    this.#lowersImport = undefined
 
     // Watch/rebuild capture is unsupported: dedupe is keyed by PATH not content, so a rebuild with
     // changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Rebuilds re-fire
@@ -499,6 +539,9 @@ export class StasisEsbuild {
       }
       if (kind === 'code') {
         const error = isEntry ? await this.#checkEntry(res.path) : await this.#checkEdge(args.importer, specifier, args.kind, res.path)
+        if (error) return { errors: [{ text: error }] }
+      } else if (res.external && !isEntry) {
+        const error = await this.#checkExternal(args.importer, specifier, args.kind)
         if (error) return { errors: [{ text: error }] }
       }
 

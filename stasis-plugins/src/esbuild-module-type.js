@@ -41,6 +41,19 @@ const SKIP_KEYS = new Set(['type', 'start', 'end', 'range', 'loc', ...TYPE_KEYS]
 const stringValue = (node) => {
   if (node?.type === 'Literal' && typeof node.value === 'string') return node.value
   if (node?.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis.length === 1) return node.quasis[0].value.cooked
+  if (node?.type === 'BinaryExpression' && node.operator === '+') {
+    // Constant concatenation (`'__es' + 'Module'`), folded as esbuild does; the left spine iteratively, as
+    // minified concatenations run long.
+    const parts = []
+    let current = node
+    for (; current.type === 'BinaryExpression' && current.operator === '+'; current = current.left) parts.push(current.right)
+    let value = stringValue(current)
+    for (const part of parts.toReversed()) {
+      const next = value === undefined ? undefined : stringValue(part)
+      value = next === undefined ? undefined : value + next
+    }
+    return value
+  }
   return undefined
 }
 const nameOf = (node) => (node?.type === 'Identifier' ? node.name : stringValue(node))
@@ -189,7 +202,8 @@ function returnedValues(fn) {
 // what an IIFE returns, what an object literal spreads, and what a call is handed (it may return or copy
 // it) -- not an object literal's other property values, which only end up nested in the exports. Collects
 // `require('<literal>')` specifiers, identifiers and callee names (followed through their declarations and
-// function returns by the caller), and whether an object literal there has an `__esModule` key (`out.marked`).
+// function returns by the caller), and whether an object literal there has an `__esModule` key (`out.marked`),
+// or a computed key the caller resolves (`out.keys`: `{ [marker]: true }`).
 function scanValue(node, out) {
   const stack = [node]
   while (stack.length > 0) {
@@ -219,7 +233,9 @@ function scanValue(node, out) {
       case 'ObjectExpression':
         for (const prop of current.properties) {
           if (prop.type === 'SpreadElement') stack.push(prop.argument)
-          else if ((prop.computed ? stringValue(prop.key) : nameOf(prop.key)) === '__esModule' && !isFalsy(prop.value)) out.marked = true
+          else if (isFalsy(prop.value)) continue
+          else if ((prop.computed ? stringValue(prop.key) : nameOf(prop.key)) === '__esModule') out.marked = true
+          else if (prop.computed && prop.key.type === 'Identifier') out.keys.add(prop.key.name)
         }
         break
       case 'CallExpression': {
@@ -319,7 +335,14 @@ export function analyzeModule(source, { path, loader }) {
     if (receiver?.type === 'Identifier') pendingMarks.add(receiver.name)
     else facts.setsEsModule = true
   }
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), marked: false }
+  // A key set on a receiver: `__esModule` marks it; a computed name (`exports[marker] = true`) may, resolved once
+  // every declaration is in.
+  const keyMarks = []  // [key name, receiver]
+  const markKey = (key, computed, receiver) => {
+    if ((computed ? stringValue(key) : nameOf(key)) === '__esModule') markReceiver(receiver)
+    else if (computed && key?.type === 'Identifier') keyMarks.push([key.name, receiver])
+  }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), keys: new Set(), marked: false }
 
   // Iterative: minified code nests deeper than the call stack allows. fnDepth counts every function
   // (return/await scope), thisDepth only what has its own `this` (non-arrow functions, class field values,
@@ -399,9 +422,7 @@ export function analyzeModule(source, { path, loader }) {
           facts.requires.set(required, { consumed: consumed || (facts.requires.get(required)?.consumed ?? false) })
         }
         // defineProperty-style: (target, '__esModule', descriptor), aliases included (esbuild's __defProp).
-        if (node.arguments.length >= 3 && stringValue(node.arguments[1]) === '__esModule' && mayDefineTruthy(node.arguments[2])) {
-          markReceiver(node.arguments[0])
-        }
+        if (node.arguments.length >= 3 && mayDefineTruthy(node.arguments[2])) markKey(node.arguments[1], true, node.arguments[0])
         if (node.arguments[0]?.type === 'Identifier' && !isExportsTarget(node.arguments[0]) && node.arguments.length > 1) {
           const [{ name }, ...rest] = node.arguments
           copies.set(name, [...(copies.get(name) ?? []), ...rest.map((arg) => (arg.type === 'SpreadElement' ? arg.argument : arg))])
@@ -414,8 +435,9 @@ export function analyzeModule(source, { path, loader }) {
         break
       }
       case 'AssignmentExpression':
-        if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right)) &&
-          (node.left.computed ? stringValue(node.left.property) : node.left.property.name) === '__esModule') markReceiver(node.left.object)
+        if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right))) {
+          markKey(node.left.property, node.left.computed, node.left.object)
+        }
         for (const name of patternNames(node.left)) {
           reassigned.add(name)
           assignments.set(name, [...(assignments.get(name) ?? []), node.right])
@@ -523,7 +545,7 @@ export function analyzeModule(source, { path, loader }) {
     const sources = kind === 'value' ? [...inits, ...assigned, ...(copies.get(name) ?? [])]
       : [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].filter((init) => FUNCTIONS.has(init.type))].flatMap((fn) => returnedValues(fn))
     for (const origin of sources) {
-      const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), marked: false }
+      const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), keys: exported.keys, marked: false }
       scanValue(origin, found)
       for (const identifier of found.identifiers) pending.push(['value', identifier])
       for (const callee of found.callees) pending.push(['call', callee])
@@ -531,6 +553,10 @@ export function analyzeModule(source, { path, loader }) {
     }
   }
   facts.reexports = exported.specifiers
+  // A computed key names `__esModule` where a declaration or assignment of that name gives it the string.
+  const namesEsModule = (name) => [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])].some((value) => stringValue(value) === '__esModule')
+  if ([...exported.keys].some(namesEsModule)) exported.marked = true
+  for (const [name, receiver] of keyMarks) if (namesEsModule(name)) markReceiver(receiver)
   const fresh = (name) => (objectDecls.get(name) ?? 0) > 0 && objectDecls.get(name) === bindingCounts.get(name) && !reassigned.has(name)
   if (exported.marked || [...pendingMarks].some((name) => !fresh(name) || values.has(name) || exported.identifiers.has(name))) {
     facts.setsEsModule = true
