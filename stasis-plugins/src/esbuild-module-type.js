@@ -33,6 +33,8 @@ function getParser() {
 const errorsOf = (parsed) => parsed.errors.filter((e) => e.severity !== 'Warning' && e.severity !== 'Advice')
 
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'])
+// The globals whose references are resolved by scope.
+const GLOBALS = new Set(['Proxy', 'Symbol', 'Object', 'Reflect', 'require'])
 // Whole type-level declarations: nothing in them runs, so nothing in them is a reference.
 const TYPE_ONLY = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSDeclareFunction'])
 const TYPE_KEYS = new Set(['typeAnnotation', 'returnType', 'typeParameters', 'typeArguments', 'superTypeArguments', 'implements'])
@@ -328,23 +330,37 @@ function isEsModuleToken(node, parent) {
   }
 }
 
-// Methods whose `'__esModule'` argument reads (or removes) the key.
-const READ_METHODS = new Set(['hasOwnProperty', 'hasOwn', 'getOwnPropertyDescriptor', 'propertyIsEnumerable', 'has', 'get', 'deleteProperty',
-  'includes', 'indexOf', 'lastIndexOf', 'startsWith', 'endsWith'])
-// The name of the method a call runs (`hasOwnProperty.call(m, key)` runs hasOwnProperty).
-const methodName = (callee) => {
-  if (callee.type === 'Identifier') return callee.name
-  if (callee.type !== 'MemberExpression') return undefined
-  const name = staticKey(callee)
-  return (name === 'call' || name === 'apply') && callee.object.type === 'MemberExpression' ? staticKey(callee.object) : name
+// Builtins that read (or remove) the key they're handed second: Object's and Reflect's, and Object.prototype's
+// through `.call`.
+const OBJECT_READS = new Set(['hasOwn', 'getOwnPropertyDescriptor'])
+const REFLECT_READS = new Set(['has', 'get', 'getOwnPropertyDescriptor', 'deleteProperty'])
+const PROTOTYPE_READS = new Set(['hasOwnProperty', 'propertyIsEnumerable'])
+// Whether a call is a read builtin's with `key` as its key: the `Object`/`Reflect` its callee names, for the caller
+// to resolve as the global (`Object.hasOwn(m, key)`, `Object.prototype.hasOwnProperty.call(m, key)`), null for one
+// off an empty literal (`{}.hasOwnProperty.call(m, key)`), or undefined for any other call -- a local function or a
+// method named like one may write the key.
+function readBuiltin(call, key) {
+  const { callee } = call
+  if (callee.type !== 'MemberExpression' || call.arguments[1] !== key) return undefined
+  const method = staticKey(callee)
+  const { object } = callee
+  if (object.type === 'Identifier') {
+    return (object.name === 'Object' && OBJECT_READS.has(method)) || (object.name === 'Reflect' && REFLECT_READS.has(method)) ? object : undefined
+  }
+  if (method !== 'call' || object.type !== 'MemberExpression' || !PROTOTYPE_READS.has(staticKey(object))) return undefined
+  const owner = object.object
+  if (owner.type === 'ObjectExpression' && owner.properties.length === 0) return null
+  return owner.type === 'MemberExpression' && staticKey(owner) === 'prototype' && owner.object.type === 'Identifier' &&
+    owner.object.name === 'Object' ? owner.object : undefined
 }
 
 // Whether a constant `__esModule` key (isEsModuleToken) may define the key on something, wherever that goes (a
 // fail-safe: no value flow is followed): a property write (context.writeTargets), an object literal's or a class's
 // member that isn't falsy or a setter alone, a descriptor map's (context.descriptorMaps) that may define a truthy
-// value, a JSX attribute, a call's argument but a read method's or a falsy-only descriptor's, and a string anywhere
-// it can flow from (`const key = '__esModule'`). A read, a comparison, a `case`, a destructuring pattern's key and a
-// variable's name don't.
+// value, a JSX attribute, a call's argument but a falsy-only descriptor's, and a string anywhere it can flow from
+// (`const key = '__esModule'`). A read, a comparison, a `case`, a destructuring pattern's key and a variable's name
+// don't; nor does a read builtin's argument, where the builtin's global is the caller's to resolve (an Identifier
+// returned instead of true).
 function definesEsModule(node, parent, key, grandparent, context) {
   const string = node.type !== 'Identifier' && node.type !== 'JSXIdentifier'
   switch (parent?.type) {
@@ -363,10 +379,12 @@ function definesEsModule(node, parent, key, grandparent, context) {
       if (!string && parent.computed) return false
       return parent.type === 'MethodDefinition' ? parent.kind !== 'set' : parent.value != null && !isFalsy(parent.value)
     case 'CallExpression':
-    case 'NewExpression':
+    case 'NewExpression': {
       if (key !== 'arguments') return false
-      if (READ_METHODS.has(methodName(parent.callee))) return false
-      return !(parent.arguments.length >= 3 && parent.arguments[1] === node && !mayDefineTruthy(parent.arguments[2]))
+      if (parent.arguments.length >= 3 && parent.arguments[1] === node && !mayDefineTruthy(parent.arguments[2])) return false
+      const builtin = parent.type === 'CallExpression' ? readBuiltin(parent, node) : undefined
+      return builtin === undefined ? true : builtin ?? false
+    }
     case 'JSXAttribute':
     case 'TSEnumMember':
     case 'TSParameterProperty':  // `constructor(public __esModule)` sets it on the instance
@@ -655,16 +673,16 @@ export function analyzeModule(source, { path, loader }) {
     facts.imports.set(specifier, { bindings: prior.bindings || bindings || interop, interop: prior.interop || interop })
   }
   let cjsCertain = null
-  // Scopes binding the names whose references are resolved: `module`/`exports` (CommonJS use), the globals
-  // `Proxy` and `Symbol`, and imported locals (whether the code reads the import). At the module scope an
+  // Scopes binding the names whose references are resolved: `module`/`exports` (CommonJS use), the GLOBALS,
+  // and imported locals (whether the code reads the import). At the module scope an
   // import/let/const/function/class shadows the CommonJS binding for every reference, while a `var` merges
   // with it; a nested scope just binds the name.
   const root = { names: new Set(), parent: null }
   const shadowed = new Set()
   const hoistedVar = new Set()
   const references = []  // [name, scope]
-  const globalRefs = new Map()  // Identifier node of `Proxy`/`Symbol`/`require` -> its scope
-  const scoped = new Set(['module', 'exports', 'require', 'Proxy', 'Symbol', 'arguments'])
+  const globalRefs = new Map()  // Identifier node of one of the GLOBALS -> its scope
+  const scoped = new Set(['module', 'exports', 'require', 'Proxy', 'Symbol', 'Object', 'Reflect', 'arguments'])
   const topArguments = []  // scopes of `arguments` references outside any function of their own
   for (const statement of parsed.program.body) {
     if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue
@@ -690,7 +708,7 @@ export function analyzeModule(source, { path, loader }) {
   // maps of Object.defineProperties/Object.create. A write of a key whose value isn't known doesn't count, unlike a
   // computed key in what becomes the exports: dynamic writes run all over CommonJS, the exports included
   // (fs-extra's `exports[method] = u(fs[method])` loop).
-  const tokenContext = { writeTargets: new Set(), descriptorMaps: new Set() }
+  const tokenContext = { writeTargets: new Set(), descriptorMaps: new Set(), readBuiltins: [] }
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
   const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
@@ -712,7 +730,11 @@ export function analyzeModule(source, { path, loader }) {
     if (TYPE_ONLY.has(node.type) || node.declare) continue
     let childScope = scope
     let childFnScope = fnScope
-    if (!facts.setsEsModule && isEsModuleToken(node, parent) && definesEsModule(node, parent, key, grandparent, tokenContext)) facts.setsEsModule = true
+    if (!facts.setsEsModule && isEsModuleToken(node, parent)) {
+      const defines = definesEsModule(node, parent, key, grandparent, tokenContext)
+      if (defines === true) facts.setsEsModule = true
+      else if (defines) tokenContext.readBuiltins.push(defines)
+    }
     switch (node.type) {
       case 'ImportDeclaration':
         if (node.importKind === 'type') continue
@@ -895,7 +917,7 @@ export function analyzeModule(source, { path, loader }) {
           if (key === 'key' && parent.computed) keyRefs.set(node, scope)
           if (!binding && tracked(node.name)) {
             references.push([node.name, scope])
-            if (node.name === 'Proxy' || node.name === 'Symbol' || node.name === 'require') globalRefs.set(node, scope)
+            if (GLOBALS.has(node.name)) globalRefs.set(node, scope)
             if (node.name === 'arguments' && thisDepth === 0) topArguments.push(scope)
           }
         }
@@ -926,7 +948,7 @@ export function analyzeModule(source, { path, loader }) {
 
   // Whether a reference reaches the module scope, no scope around it binding the name (all declarations are in
   // by now, so hoisting is covered). There, a `module`/`exports` one is CommonJS use unless a shadowing
-  // declaration binds it; a `Proxy`/`Symbol` one is the global's unless any declaration does.
+  // declaration binds it; one of the GLOBALS is the global's unless any declaration does.
   const reachesModuleScope = (name, scope) => {
     for (let current = scope; current !== root; current = current.parent) if (current.names.has(name)) return false
     return true
@@ -1039,6 +1061,7 @@ export function analyzeModule(source, { path, loader }) {
     return mayName(node.name)
   }
   if (unknownSymbol || [...exported.proxies].some(isGlobal) || exported.keys.some(mayNameKey)) exported.marked = true
-  if (exported.marked) facts.setsEsModule = true
+  // A read builtin's key is a definition after all where the file binds or reassigns the builtin's name.
+  if (exported.marked || tokenContext.readBuiltins.some((name) => !isGlobal(name) || reassigned.has(name.name))) facts.setsEsModule = true
   return facts
 }
