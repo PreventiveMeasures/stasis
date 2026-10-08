@@ -138,6 +138,8 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   // A statically falsy __esModule marks nothing.
   t.assert.equal(analyze('module.exports = { __esModule: false, default: 1 }').setsEsModule, false)
   t.assert.equal(analyze('exports.__esModule = void 0').setsEsModule, false)
+  t.assert.equal(analyze('exports.__esModule = 0\nexports.__esModule++').setsEsModule, true)
+  t.assert.equal(analyze('exports.__esModule = 0\nexports.__esModule += 1').setsEsModule, true)
   // `undefined` is a name a declaration can rebind.
   t.assert.equal(analyze('const undefined = true\nmodule.exports = { __esModule: undefined, default: 1 }').setsEsModule, true)
   t.assert.equal(analyze('Object.defineProperty(exports, "__esModule", { value: false })').setsEsModule, false)

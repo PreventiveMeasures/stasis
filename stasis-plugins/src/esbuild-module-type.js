@@ -574,6 +574,10 @@ export function analyzeModule(source, { path, loader }) {
         }
         break
       }
+      case 'UpdateExpression':
+        // `exports.__esModule++` makes a falsy mark truthy (0 → 1).
+        if (node.argument.type === 'MemberExpression') markKey(node.argument.property, node.argument.computed, node.argument.object)
+        break
       case 'AssignmentExpression':
         if (node.left.type === 'MemberExpression' && !(node.operator === '=' && isFalsy(node.right))) {
           markKey(node.left.property, node.left.computed, node.left.object)
