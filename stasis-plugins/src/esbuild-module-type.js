@@ -770,8 +770,10 @@ export function analyzeModule(source, { path, loader }) {
         break
       case 'ExportNamedDeclaration':
         facts.esmExports = true
-        // `export { local }` reads the local, at the module scope.
-        if (!node.source) for (const spec of node.specifiers) if (tracked(nameOf(spec.local))) references.push([nameOf(spec.local), root])
+        // `export { local }` reads the local, at the module scope -- but for a type-only export, which esbuild erases.
+        if (!node.source && node.exportKind !== 'type') {
+          for (const spec of node.specifiers) if (spec.exportKind !== 'type' && tracked(nameOf(spec.local))) references.push([nameOf(spec.local), root])
+        }
         if (node.source && node.exportKind !== 'type') {
           for (const spec of node.specifiers) {
             if (spec.exportKind === 'type') continue
