@@ -219,11 +219,23 @@ test('analyzeModule: a key only the runtime knows marks where it reaches the exp
   t.assert.equal(marks("module.exports = new Proxy({ default: 1 }, { get: (t, k) => k === '__esModule' || t[k] })"), true)
   t.assert.equal(marks('class Proxy { default = 1 }\nmodule.exports = new Proxy()'), false)
   t.assert.equal(marks('function ignore(Proxy) {}\nmodule.exports = new Proxy(target, handler)'), true)
+  // ...however the constructor is reached: read off an object (by name or a key only the runtime knows), an alias,
+  // `Reflect.construct`.
+  t.assert.equal(marks('module.exports = new globalThis.Proxy({ default: 1 }, handler)'), true)
+  t.assert.equal(marks("module.exports = new globalThis['Pro' + 'xy'](target, handler)"), true)
+  t.assert.equal(marks('const P = globalThis.Proxy\nmodule.exports = new P(target, handler)'), true)
+  t.assert.equal(marks('const P = Proxy\nmodule.exports = new (0, P)(target, handler)'), true)
+  t.assert.equal(marks('module.exports = Reflect.construct(Proxy, [target, handler])'), true)
+  t.assert.equal(marks('var Proxy\nmodule.exports = new Proxy(target, handler)'), false)
+  t.assert.equal(marks("const EventEmitter = require('events')\nmodule.exports = new EventEmitter()"), false)
+  t.assert.equal(marks('module.exports = new lib.Store()'), false)
   // A require only the runtime resolves may hand over anything; esbuild splits a conditional one. A bundle's own
   // `require` parameter, and a local named `exports`, aren't CommonJS's.
   t.assert.equal(marks('module.exports = require(process.env.DEP)'), true)
   t.assert.deepStrictEqual(analyze("module.exports = require(dev ? './a' : './b')").reexports, new Set(['./a', './b']))
   t.assert.equal(marks('(function (require) { module.exports = require(11) })(r)'), false)
+  // esbuild renames a module-scope `var require` (`require2`) and bundles no call of it, initialized or not.
+  t.assert.deepStrictEqual(analyze("var require\nmodule.exports = require('./inner.cjs')").reexports, new Set())
   t.assert.equal(marks('const load = (mod) => { let exports; exports = require(mod); return exports }\nmodule.exports = { load }'), false)
   t.assert.equal(marks("module.exports = require('./x').default"), false)
 })

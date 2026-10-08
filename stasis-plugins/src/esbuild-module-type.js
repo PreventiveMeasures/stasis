@@ -423,10 +423,26 @@ function mayNameEsModule(key, out) {
 // prototype members, and what a constructor returns, which replaces the instance (returned, for the caller to
 // scan as values). A class reached by name is the caller's to follow (out.instances); one a require() returns
 // is another module's.
-function scanInstance(callee, out) {
+// `direct` where callee is what `new` is handed, not a value a name it's handed was given.
+function scanInstance(callee, out, direct = true) {
   const returned = []
+  for (const leaf of leavesOf(callee)) scanConstructor(leaf, out, returned, direct)
+  return returned
+}
+// One constructor `new` may run: a class and its superclasses, a function, a name to follow -- or the global Proxy,
+// whose trap can answer `__esModule`: by its name (the caller decides whether it's the global's: out.proxies), or
+// read off an object as `Proxy` (`globalThis.Proxy`), or right at the `new` by a key only the runtime knows. (A name
+// is followed into every declaration of it, unrelated ones in a bundle's other scopes included: a runtime key
+// there is no sign of a Proxy.)
+function scanConstructor(callee, out, returned, direct) {
+  if (callee.type === 'MemberExpression') {
+    const key = staticKey(callee)
+    if (key === 'Proxy' || (direct && key === undefined)) out.marked = true
+    return
+  }
   for (let cls = callee; cls; cls = cls.superClass) {
     if (cls.type === 'Identifier') {
+      if (cls.name === 'Proxy') out.proxies.add(cls)
       out.instances.add(cls.name)
       break
     }
@@ -439,22 +455,17 @@ function scanInstance(callee, out) {
     const constructor = cls.body.body.find((member) => member.type === 'MethodDefinition' && member.kind === 'constructor')
     if (constructor) returned.push(...returnedValues(constructor.value))
   }
-  return returned
 }
 
-// The functions or names of functions an expression may evaluate to, for calling: past a sequence (`(0, fn)`),
-// either branch, a TS wrapper, and a bound function (`fn.bind(…)`) to its target.
-function functionsOf(node) {
+// What an expression may evaluate to, for calling or constructing: past a sequence (`(0, fn)`), either branch, a TS
+// wrapper, and a bound function (`fn.bind(…)`) to its target.
+function leavesOf(node) {
   const found = []
   const stack = [node]
   while (stack.length > 0) {
     const current = stack.pop()
     switch (current?.type) {
-      case 'Identifier':
-      case 'FunctionDeclaration':
-      case 'FunctionExpression':
-      case 'ArrowFunctionExpression':
-        found.push(current)
+      case undefined:
         break
       case 'SequenceExpression':
         stack.push(current.expressions.at(-1))
@@ -477,11 +488,16 @@ function functionsOf(node) {
         break
       case 'CallExpression':
         if (current.callee.type === 'MemberExpression' && staticKey(current.callee) === 'bind') stack.push(current.callee.object)
+        else found.push(current)
         break
+      default:
+        found.push(current)
     }
   }
   return found
 }
+// The functions or names of functions among them.
+const functionsOf = (node) => leavesOf(node).filter((leaf) => leaf.type === 'Identifier' || FUNCTIONS.has(leaf.type))
 
 // What a call runs: its callee's functions, the function `.call`/`.apply` invoke, and the one `Reflect.apply` is handed.
 function calledFunctions(call) {
@@ -544,9 +560,7 @@ function scanValue(node, out) {
         stack.push(current.expression)
         break
       case 'NewExpression':
-        // A Proxy can answer `__esModule` from its trap, which only a bundler-interop read runs: the caller decides
-        // whether the name is the global's (out.proxies).
-        if (current.callee.type === 'Identifier' && current.callee.name === 'Proxy') out.proxies.add(current.callee)
+        // A Proxy can answer `__esModule` from its trap, which only a bundler-interop read runs (see scanConstructor).
         stack.push(...scanInstance(current.callee, out))
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
@@ -571,6 +585,9 @@ function scanValue(node, out) {
           if (FUNCTIONS.has(fn.type)) stack.push(...returnedValues(fn))
           else out.callees.add(fn.name)
         }
+        // `Reflect.construct(target, args)` is `new target(...args)`.
+        if (current.callee.type === 'MemberExpression' && current.callee.object.type === 'Identifier' && current.callee.object.name === 'Reflect' &&
+          staticKey(current.callee) === 'construct' && current.arguments[0]) stack.push(...scanInstance(current.arguments[0], out))
         for (const arg of current.arguments) stack.push(arg.type === 'SpreadElement' ? arg.argument : arg)
         break
       }
@@ -906,6 +923,8 @@ export function analyzeModule(source, { path, loader }) {
     for (let current = scope; current !== root; current = current.parent) if (current.names.has(name)) return false
     return true
   }
+  // A module-scope `var` of the name binds its own, `require` included: esbuild renames that one (`require2`, undefined
+  // without a value) and bundles no call of it.
   const isGlobal = (node) => globalRefs.has(node) && reachesModuleScope(node.name, globalRefs.get(node)) &&
     !shadowed.has(node.name) && !hoistedVar.has(node.name)
   const commonjs = (name) => name === 'module' || name === 'exports'
@@ -971,7 +990,7 @@ export function analyzeModule(source, { path, loader }) {
     const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') {
-      for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found)) scanValue(value, found)
+      for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found, false)) scanValue(value, found)
     }
     else if (kind === 'elements') for (const origin of [...inits, ...assigned]) for (const value of elementsOf(origin, found, key)) scanValue(value, found)
     else {
