@@ -178,6 +178,10 @@ test('analyzeModule: __esModule marks, as Babel/tsc/esbuild CommonJS output sets
   t.assert.equal(analyze('const B = class { __esModule = true }\nconst A = B\nmodule.exports = new A()').setsEsModule, true)
   t.assert.equal(analyze('module.exports = new (class { static __esModule = true; default = 1 })()').setsEsModule, false)
   t.assert.equal(analyze('class Box { default = 1 }\nmodule.exports = new Box()').setsEsModule, false)
+  // What a constructor returns replaces the instance.
+  t.assert.equal(analyze('class Box { constructor() { return { __esModule: true, default: 1 } } }\nmodule.exports = new Box()').setsEsModule, true)
+  t.assert.equal(analyze('function Box() { return { __esModule: true, default: 1 } }\nmodule.exports = new Box()').setsEsModule, true)
+  t.assert.equal(analyze('class Box { constructor() { this.x = 1 } }\nmodule.exports = new Box()').setsEsModule, false)
   // module.exports through a constant computed key.
   t.assert.equal(analyze("const key = 'exports'\nmodule[key] = { __esModule: true, default: 1 }").setsEsModule, true)
   t.assert.equal(analyze("const key = 'exports'\nObject.assign(module[key], { __esModule: true })").setsEsModule, true)

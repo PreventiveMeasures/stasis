@@ -281,9 +281,10 @@ export class StasisEsbuild {
     }
     const res = await this.#build.resolve(specifier, { kind: 'require-call', resolveDir: dirname(fromPath), importer: fromPath, namespace: 'stasis' })
     if (res.errors.length > 0) return isBuiltin(specifier) ? null : { opaque: true }
-    // An external resolves to no namespace too, so ask before taking that as a disabled import.
+    // An external resolves to no namespace too, so ask before taking that as a disabled import -- which the
+    // build replaces with an empty module, a disabled file included (a `browser` map's `"./x.js": false`).
     if (res.external) return isBuiltin(specifier) ? null : { opaque: true }
-    if (res.namespace === '') return null
+    if (await this.#isDisabled(res, specifier, { kind: 'require-call', resolveDir: dirname(fromPath) }, this.#build)) return null
     return res.namespace === 'file' ? { path: res.path } : { opaque: true }
   }
 
