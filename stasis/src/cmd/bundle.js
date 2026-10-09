@@ -520,7 +520,8 @@ export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
 // includes as the preprocessor searches for them, and each bundled header's implementation file
 // (collectCBundle). `includeDirs` are `-I` directories for every unit; `compileCommands` names a
 // compilation database (compile_commands.json, or its directory) giving each unit it lists its own
-// search path. A quoted include found nowhere that the tree holds below a directory above its
+// search path; a unit it doesn't list, in a known project (Node.js, V8, OpenSSL, ...), takes that
+// project's, after `includeDirs` (detectProjects). A quoted include found nowhere that the tree holds below a directory above its
 // includer's is fatal (the search path lacks a directory), as is an include the bundle refuses (a
 // symlink out of the root, a `.env`), where every configuration compiles it; another quoted one
 // found nowhere is reported, and an angle-bracket one is a system header. Nothing outside the root
@@ -542,7 +543,12 @@ export async function buildCBundle({ cwd = process.cwd(), entries, includeDirs =
     if (unlisted.length > 0) console.warn(`[stasis] Not in the compilation database, resolved with --include-dirs alone: ${unlisted.join(', ')}`)
   }
 
-  const { sources, formats, resolutions, missing, unfound, computed, conflicts, hints } = collectCBundle(baseDir, normalized, { includeDirs, commands })
+  const { sources, formats, resolutions, missing, unfound, computed, conflicts, hints, projects } = collectCBundle(baseDir, normalized, { includeDirs, commands })
+  // Where the search paths came from, when not (all) from the compilation database.
+  if (projects.length > 0 && (commands === null || normalized.some((e) => !commands.has(e)))) {
+    const shown = projects.slice(0, 10).map((p) => `${p.name} (${p.root || '.'})`).join(', ')
+    console.warn(`[stasis] Include directories of ${projects.length} known project${projects.length === 1 ? '' : 's'}: ${shown}${projects.length > 10 ? `, ... and ${projects.length - 10} more` : ''}`)
+  }
 
   const hint = hints.size > 0
     ? `Their includers may be built with -I ${[...hints].join(', ')}: pass --include-dirs=${[...hints].join(',')}, or the build's compile_commands.json with --compile-commands. A generated header has to be generated first.`

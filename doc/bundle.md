@@ -268,16 +268,20 @@ A C/C++ bundle follows each entry's `#include`s as GCC and Clang search for
 them, and each bundled header's implementation file (`foo.h` to the `foo.c` or
 `foo.cpp` beside it, or in the `src/` mirroring its `include/`, and the known
 links of libraries named otherwise: Node.js, V8, OpenSSL, libuv, ICU, ...): what
-the entries link comes along with what they include, through the header. Without
-`--include-dirs` or `--compile-commands`, a quoted include is looked up beside
-its includer alone. One the tree holds below a directory above its includer
-stops the build, naming the `--include-dirs` it needs; one found nowhere (a
-system header written in quotes, a header the build generates) is reported,
-and `<x>` found nowhere is a system header. See
+the entries link comes along with what they include, through the header. The
+include directories of known projects (Node.js and its `deps/`, V8 and its
+`third_party/`, OpenSSL, libuv, ICU, zlib, ...) are found with no flag, each
+project's sources searched as its build searches them; `--include-dirs` and
+`--compile-commands` give the rest, or override them. Otherwise a quoted
+include is looked up beside its includer alone. One the tree holds below a
+directory above its includer stops the build, naming the `--include-dirs` it
+needs; one found nowhere (a system header written in quotes, a header the
+build generates) is reported, and `<x>` found nowhere is a system header. See
 [C/C++ bundles](file-formats.md#cc-bundles).
 
 ```sh
-stasis bundle --include-dirs=src,deps/v8/include,deps/uv/include src/crypto/*.cc
+stasis bundle src/node_main.cc                       # a Node.js checkout: known projects, no flag
+stasis bundle --include-dirs=include src/main.cpp
 stasis bundle --compile-commands=build src/main.cpp
 ```
 

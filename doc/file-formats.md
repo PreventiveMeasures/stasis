@@ -1259,8 +1259,29 @@ includer was found in (from the start of its form's list where it wasn't found
 through one), never landing on the includer. `#embed` searches the includer's
 directory for `"x"`, then the `--embed-dir` directories. The search path is:
 
-- `--include-dirs=a,b`: `-I` directories for every translation unit, after a
-  compile command's own `-I`s.
+- A known project's: with no flag, a tree vendoring projects stasis knows
+  (`KNOWN_PROJECTS` in the loader) is searched as their builds search it. A
+  directory holding a project's marker files is its root (`src/node.h` and
+  `src/node_main.cc` for Node.js, `include/v8.h` and `src/api/api.cc` for V8);
+  each project has its own `-I` directories and those it exports to the
+  projects using it. A translation unit's search path is its innermost
+  project's own directories, then the exports of every other project but those
+  around it, nearest first: those it holds, by depth, then those of the project
+  around it, and so on out. So Node.js's sources find `deps/zlib`'s `zlib.h`,
+  and V8's find its own `third_party/zlib`; ICU's `"util.h"` is ICU's, never
+  Node.js's `src/util.h`; and a vendored project's private directories are
+  never searched from outside it. Known: Node.js, V8 and its `third_party/`
+  (Abseil, Highway, simdutf, FP16, Dragonbox, fast_float, LLVM libc, zlib),
+  OpenSSL (Node.js's `deps/openssl` wraps OpenSSL's tree with its own
+  directories), libuv, uvwasi, zlib, ICU, c-ares, nghttp2, nghttp3, ngtcp2,
+  Brotli, Zstandard, llhttp, Ada, simdjson, SQLite, HdrHistogram, nbytes,
+  ncrypto, merve, GoogleTest, inspector_protocol, Perfetto, libffi, postject
+  and LIEF. Where one holds configurations for several platforms (c-ares's
+  `config/<os>`, Node.js's OpenSSL `config/archs/<arch>`), Linux x86-64's is
+  taken. `stasis bundle` lists the projects it found. The walk skips dot-,
+  `node_modules`, example and test-scaffolding directories.
+- `--include-dirs=a,b`: `-I` directories for every translation unit, ahead of
+  a known project's directories, after a compile command's own `-I`s.
 - `--compile-commands=path`: the build's compilation database
   (`compile_commands.json`, or the directory holding it; CMake writes one with
   `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
@@ -1270,9 +1291,10 @@ directory for `"x"`, then the `--embed-dir` directories. The search path is:
   `/external:I` and `/FI` too), each relative to the command's `directory`; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it. A `-include` is the unit's first include, looked up in the
-  command's directory first. An entry the database doesn't list is resolved
-  with `--include-dirs` alone, said so. The database is read wherever it is,
-  never bundled.
+  command's directory first. It takes the place of a known project's search
+  path for the units it lists; an entry it doesn't list is resolved with its
+  known project's and `--include-dirs`, said so. The database is read wherever
+  it is, never bundled.
 
 A header is walked under the search path of each unit it is reached from. An
 include that resolves to other files in other units (a `<config.h>` per

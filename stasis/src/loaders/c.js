@@ -389,6 +389,129 @@ export function loadCompileCommands(baseDir, file) {
   return commands
 }
 
+// --- Known projects ---------------------------------------------------------------------------
+
+// Known projects' include directories, so a tree vendoring them (Node.js and its deps/, V8 and its
+// third_party/) is searched as its build searches it, with no -I given. A directory holding every
+// `marker` file is such a project's root; `include` are the -I directories its own sources are
+// built with, `exports` those it gives the projects using it, all from its root (one that isn't
+// there is skipped). `wraps` names a directory holding another known project that this one builds
+// with its own include directories (Node.js's deps/openssl around OpenSSL's tree), which is then
+// this one's. Where a project carries configurations for several platforms, Linux's is taken.
+export const KNOWN_PROJECTS = [
+  { name: 'Node.js', marker: ['src/node.h', 'src/node_main.cc'], include: ['src'], exports: ['src'] },
+  { name: 'V8', marker: ['include/v8.h', 'src/api/api.cc'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'Abseil', marker: ['absl/base/config.h'], include: ['.'], exports: ['.'] },
+  { name: 'Highway', marker: ['hwy/highway.h'], include: ['.'], exports: ['.'] },
+  { name: 'simdutf', marker: ['simdutf.h', 'simdutf.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'FP16', marker: ['src/include/fp16.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'Dragonbox', marker: ['src/include/dragonbox/dragonbox.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'fast_float', marker: ['src/include/fast_float/fast_float.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'LLVM libc', marker: ['src/__support/common.h', 'shared/math.h'], include: ['.'], exports: ['.'] },
+  {
+    name: 'OpenSSL (Node.js)',
+    marker: ['openssl/crypto/cryptlib.c', 'config/bn_conf.h'],
+    include: [
+      'openssl', 'openssl/include', 'openssl/crypto', 'openssl/crypto/include', 'openssl/crypto/modes', 'openssl/crypto/ec/curve448', 'openssl/crypto/ec/curve448/arch_32',
+      'openssl/providers/common/include', 'openssl/providers/fips/include', 'openssl/providers/implementations/include', 'config',
+      'config/archs/linux-x86_64/no-asm/include', 'config/archs/linux-x86_64/no-asm/crypto', 'config/archs/linux-x86_64/no-asm/providers/common/include',
+    ],
+    exports: ['openssl/include'],
+    wraps: ['openssl'],
+  },
+  {
+    name: 'OpenSSL',
+    marker: ['include/openssl/opensslv.h', 'crypto/cryptlib.c'],
+    include: ['.', 'include', 'crypto/modes', 'crypto/ec/curve448', 'crypto/ec/curve448/arch_32', 'providers/common/include', 'providers/fips/include', 'providers/implementations/include'],
+    exports: ['include'],
+  },
+  { name: 'libuv', marker: ['include/uv.h', 'src/uv-common.c'], include: ['include', 'src'], exports: ['include'] },
+  { name: 'uvwasi', marker: ['include/uvwasi.h'], include: ['include'], exports: ['include'] },
+  { name: 'zlib', marker: ['zlib.h', 'deflate.c'], include: ['.'], exports: ['.'] },
+  { name: 'ICU', marker: ['source/common/unicode/utypes.h'], include: ['source/common', 'source/i18n'], exports: ['source/common', 'source/i18n'] },
+  { name: 'c-ares', marker: ['include/ares.h', 'src/lib/ares_init.c'], include: ['include', 'src/lib', 'src/lib/include', 'config/linux'], exports: ['include'] },
+  { name: 'nghttp2', marker: ['lib/includes/nghttp2/nghttp2.h'], include: ['lib/includes', 'lib'], exports: ['lib/includes'] },
+  { name: 'nghttp3', marker: ['lib/includes/nghttp3/nghttp3.h'], include: ['lib/includes', 'lib'], exports: ['lib/includes'] },
+  { name: 'ngtcp2', marker: ['lib/includes/ngtcp2/ngtcp2.h'], include: ['lib/includes', 'lib', 'crypto/includes', 'crypto'], exports: ['lib/includes', 'crypto/includes'] },
+  { name: 'Brotli', marker: ['c/include/brotli/decode.h'], include: ['c/include'], exports: ['c/include'] },
+  { name: 'Zstandard', marker: ['lib/zstd.h'], include: ['lib'], exports: ['lib'] },
+  { name: 'llhttp', marker: ['include/llhttp.h'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'Ada', marker: ['ada.h', 'ada.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'simdjson', marker: ['simdjson.h', 'simdjson.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'SQLite', marker: ['sqlite3.h', 'sqlite3.c'], include: ['.'], exports: ['.'] },
+  { name: 'HdrHistogram', marker: ['include/hdr/hdr_histogram.h'], include: ['src', 'include'], exports: ['src', 'include'] },
+  { name: 'nbytes', marker: ['include/nbytes.h'], include: ['include'], exports: ['include'] },
+  { name: 'ncrypto', marker: ['ncrypto.h', 'ncrypto.cc'], include: ['.'], exports: ['.'] },
+  { name: 'merve', marker: ['merve.h', 'merve.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'GoogleTest', marker: ['include/gtest/gtest.h'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'inspector_protocol', marker: ['crdtp/json.h'], include: ['.'], exports: ['.'] },
+  { name: 'Perfetto', marker: ['sdk/perfetto.h'], include: ['sdk'], exports: ['sdk'] },
+  { name: 'libffi', marker: ['include/ffi_common.h', 'src/prep_cif.c'], include: ['include', 'src'], exports: ['include'] },
+  { name: 'postject', marker: ['postject-api.h'], include: ['.'], exports: ['.'] },
+  {
+    name: 'LIEF',
+    marker: ['include/LIEF/LIEF.hpp'],
+    include: ['.', 'include', 'src', 'third-party/mbedtls/include', 'third-party/mbedtls/library', 'third-party/spdlog/include', 'third-party/frozen/include'],
+    exports: ['include'],
+  },
+]
+
+// The KNOWN_PROJECTS (`known`) in the tree at `baseDir`, found by a walk of its directories (dot-,
+// node_modules, example and test-scaffolding ones aside), as `{ projects, of }`: each project its
+// table entry with its `root` (project-relative, '' for the bundle root) and `searchPath`, the
+// directories its sources are searched in -- its own `include`, then the `exports` of every other
+// project but those it lies in, nearest first: those it holds, by depth, then those of the project
+// around it, and so on out (Node.js's deps/zlib before V8's third_party/zlib for Node.js's sources,
+// V8's own copy first for V8's). `of(file)` is the innermost project a file lies in, or null.
+export function detectProjects(baseDir, known = KNOWN_PROJECTS) {
+  const found = []
+  const walk = (rel) => {
+    let dirents
+    try {
+      dirents = readdirSync(join(baseDir, rel), { withFileTypes: true })
+    } catch {
+      return
+    }
+    const names = new Set(dirents.map((d) => d.name))
+    for (const project of known) {
+      if (found.some((p) => p.root === rel)) break // one known project to a root: the first listed
+      if (project.marker.every((m) => names.has(m.split('/')[0]) && isFile(join(baseDir, rel, m)))) found.push({ ...project, root: rel })
+    }
+    for (const d of dirents.toSorted((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules' && !isAutoExcludedDir(d.name)) walk(rel === '' ? d.name : `${rel}/${d.name}`)
+    }
+  }
+  walk('')
+  const wrapped = new Set(found.flatMap((p) => (p.wraps ?? []).map((w) => joinRel(p.root, w))))
+  const projects = found.filter((p) => !wrapped.has(p.root))
+  const within = (root, path) => root === '' || path === root || path.startsWith(`${root}/`)
+  // Each project's enclosing ones, innermost first.
+  const around = new Map()
+  for (const p of projects) around.set(p, projects.filter((q) => q !== p && within(q.root, p.root)).toSorted((a, b) => b.root.length - a.root.length))
+  const dirs = (p, list) => list.map((d) => joinRel(p.root, d)).filter((rel) => rel !== null && isDir(join(baseDir, rel || '.')))
+  for (const p of projects) {
+    const chain = [p, ...around.get(p)]
+    // Distance from p to q: steps out to the nearest project holding both (chain.length past the
+    // outermost: the bundle root), then steps in to q.
+    const distance = (q) => {
+      const common = chain.findIndex((a) => around.get(q).includes(a))
+      const outward = common === -1 ? chain.length : common
+      const inward = around.get(q).filter((a) => !chain.slice(outward).includes(a)).length + 1
+      return [outward, inward]
+    }
+    const others = projects.filter((q) => !chain.includes(q)).map((q) => ({ q, d: distance(q) }))
+    others.sort((a, b) => a.d[0] - b.d[0] || a.d[1] - b.d[1] || (a.q.root < b.q.root ? -1 : 1))
+    p.searchPath = [...new Set([...dirs(p, p.include), ...others.flatMap(({ q }) => dirs(q, q.exports))])].map((rel) => ({ rel }))
+  }
+  const byDir = new Map()
+  const of = (file) => {
+    const dir = dirOf(file)
+    if (!byDir.has(dir)) byDir.set(dir, projects.filter((p) => within(p.root, file)).toSorted((a, b) => b.root.length - a.root.length)[0] ?? null)
+    return byDir.get(dir)
+  }
+  return { projects, of }
+}
+
 // --- Walk -------------------------------------------------------------------------------------
 
 // `rel` (a project-relative dir, '' for the root) joined with an include's path, `.`/`..` resolved;
@@ -464,7 +587,9 @@ export const KNOWN_IMPLEMENTATIONS = [
 // Walk the include graph from `entries` (project-relative), reading each file once per search
 // context it is reached in. `includeDirs` are `-I` directories (relative to `baseDir`) for every
 // translation unit; `commands` (loadCompileCommands') gives a unit its own search path, the entries'
-// and the implementation files' alike, and a header the one of the unit it is reached from. `knownLinks`
+// and the implementation files' alike, and a header the one of the unit it is reached from; a unit
+// it doesn't list, inside a known project (`knownProjects`, KNOWN_PROJECTS), that project's search
+// path after `includeDirs` (detectProjects). `knownLinks`
 // are the known implementation links (KNOWN_IMPLEMENTATIONS). Returns:
 //   sources      Map<path, text> -- C/C++ text, or an `#embed`ed resource (base64 if not UTF-8)
 //   formats      Map<path, format> -- c, cpp, c-header, cpp-header, resource, resource:base64
@@ -483,7 +608,9 @@ export const KNOWN_IMPLEMENTATIONS = [
 //   conflicts    [{ spec, from, targets }] -- an include resolving to other files in other units;
 //                the edge keeps the first, every file is carried
 //   hints        Set<dir> -- directories that, as `-I`, would resolve the `missing` quoted includes
-export function collectCBundle(baseDir, entries, { includeDirs = [], commands = null, knownLinks = KNOWN_IMPLEMENTATIONS } = {}) {
+//   projects     the known projects found (detectProjects), whose search paths units outside the
+//                compilation database take
+export function collectCBundle(baseDir, entries, { includeDirs = [], commands = null, knownLinks = KNOWN_IMPLEMENTATIONS, knownProjects = KNOWN_PROJECTS } = {}) {
   const realBase = realpathSync(baseDir)
   const extraDirs = includeDirs.map((d) => makeDir(baseDir, realBase, resolve(baseDir, d)))
   for (const [k, d] of extraDirs.entries()) {
@@ -495,7 +622,14 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     return contexts.get(ctx.id)
   }
   const defaultCtx = intern(makeContext({}, extraDirs))
-  const contextOf = (file, fallback) => (commands?.has(file) ? intern(makeContext(commands.get(file), extraDirs)) : fallback)
+  // A unit's search path: its compile command's, else its known project's (after --include-dirs),
+  // else `fallback`'s.
+  const projects = detectProjects(baseDir, knownProjects)
+  const contextOf = (file, fallback) => {
+    if (commands?.has(file)) return intern(makeContext(commands.get(file), extraDirs))
+    const project = projects.of(file)
+    return project === null ? fallback : intern(makeContext({ I: [...extraDirs, ...project.searchPath] }))
+  }
 
   const sources = new Map()
   const formats = new Map()
@@ -778,5 +912,5 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     }
   }
 
-  return { sources, formats, resolutions, missing, unfound, computed, conflicts, hints }
+  return { sources, formats, resolutions, missing, unfound, computed, conflicts, hints, projects: projects.projects }
 }

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { cFormatOf, collectCBundle, includeSpec, isCEntry, loadCompileCommands, scanIncludes, splitCommand } from '../stasis/src/loaders/c.js'
+import { cFormatOf, collectCBundle, detectProjects, includeSpec, isCEntry, loadCompileCommands, scanIncludes, splitCommand } from '../stasis/src/loaders/c.js'
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-c-loader-'))
@@ -309,6 +309,68 @@ test('collectCBundle follows Node.js\'s known links: its bindings, by the macro 
   ])
   t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/node_binding.h')), { 'impl node_os.cc': 'src/node_os.cc', 'impl quic/quic.cc': 'src/quic/quic.cc' })
   t.assert.equal(resolutions.get('src/node.h').get('impl api/environment.cc'), 'src/api/environment.cc')
+}))
+
+// A Node.js-shaped tree: its own zlib in deps/, V8 with another copy in its third_party/, OpenSSL
+// inside Node.js's wrapper of it.
+const nodeLike = {
+  'src/node.h': '',
+  'src/node_main.cc': '#include "node.h"\n',
+  'src/node_zlib.cc': '#include "zlib.h"\n#include <v8.h>\n#include <openssl/evp.h>\n',
+  'deps/zlib/zlib.h': '#include "zconf.h"\n',
+  'deps/zlib/zconf.h': '',
+  'deps/zlib/deflate.c': '',
+  'deps/v8/include/v8.h': '',
+  'deps/v8/src/api/api.cc': '',
+  'deps/v8/src/compress.cc': '#include "zlib.h"\n#include "src/base/macros.h"\n',
+  'deps/v8/src/base/macros.h': '',
+  'deps/v8/third_party/zlib/zlib.h': '',
+  'deps/v8/third_party/zlib/deflate.c': '',
+  'deps/openssl/config/bn_conf.h': '',
+  'deps/openssl/openssl/crypto/cryptlib.c': '',
+  'deps/openssl/openssl/crypto/evp/digest.c': '#include "crypto/bn_conf.h"\n',
+  'deps/openssl/openssl/include/openssl/opensslv.h': '',
+  'deps/openssl/openssl/include/openssl/evp.h': '',
+  'deps/openssl/openssl/include/crypto/bn_conf.h': '#include "../../../config/bn_conf.h"\n',
+}
+
+test('detectProjects finds known projects and gives each its build\'s search path, nearest projects first', withTmp((t, tmp) => {
+  tree(tmp, nodeLike)
+  const { projects, of } = detectProjects(tmp)
+  t.assert.deepStrictEqual(projects.map((p) => `${p.name} ${p.root || '.'}`), [
+    'Node.js .',
+    'OpenSSL (Node.js) deps/openssl', // OpenSSL's own tree inside it is the wrapper's
+    'V8 deps/v8',
+    'zlib deps/v8/third_party/zlib',
+    'zlib deps/zlib',
+  ])
+  const path = (file) => of(file).searchPath.map((d) => d.rel)
+  // Node.js's sources: its own, then its deps by depth -- its zlib before V8's.
+  t.assert.deepStrictEqual(path('src/node_zlib.cc'), ['src', 'deps/openssl/openssl/include', 'deps/v8/include', 'deps/zlib', 'deps/v8/third_party/zlib'])
+  // V8's: its own, then what it holds, then its siblings -- never Node.js's src.
+  t.assert.deepStrictEqual(path('deps/v8/src/compress.cc'), ['deps/v8', 'deps/v8/include', 'deps/v8/third_party/zlib', 'deps/openssl/openssl/include', 'deps/zlib'])
+  t.assert.equal(of('deps/openssl/openssl/crypto/evp/digest.c').name, 'OpenSSL (Node.js)')
+  t.assert.equal(of('README.md').name, 'Node.js')
+}))
+
+test('collectCBundle searches each unit as its known project builds it, with no -I given', withTmp((t, tmp) => {
+  tree(tmp, nodeLike)
+  const { sources, resolutions, missing } = collectCBundle(tmp, ['src/node_zlib.cc', 'deps/v8/src/compress.cc', 'deps/openssl/openssl/crypto/evp/digest.c'])
+  t.assert.deepStrictEqual(missing, [])
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/node_zlib.cc')), {
+    'include "zlib.h"': 'deps/zlib/zlib.h',
+    'include <v8.h>': 'deps/v8/include/v8.h',
+    'include <openssl/evp.h>': 'deps/openssl/openssl/include/openssl/evp.h',
+  })
+  t.assert.equal(resolutions.get('deps/v8/src/compress.cc').get('include "zlib.h"'), 'deps/v8/third_party/zlib/zlib.h')
+  t.assert.equal(resolutions.get('deps/v8/src/compress.cc').get('include "src/base/macros.h"'), 'deps/v8/src/base/macros.h')
+  t.assert.equal(resolutions.get('deps/openssl/openssl/crypto/evp/digest.c').get('include "crypto/bn_conf.h"'), 'deps/openssl/openssl/include/crypto/bn_conf.h')
+  t.assert.ok(sources.has('deps/openssl/config/bn_conf.h'))
+  // --include-dirs come first; with no known projects, only they apply.
+  t.assert.equal(collectCBundle(tmp, ['src/node_zlib.cc'], { includeDirs: ['deps/v8/third_party/zlib'] }).resolutions.get('src/node_zlib.cc').get('include "zlib.h"'), 'deps/v8/third_party/zlib/zlib.h')
+  const plain = collectCBundle(tmp, ['src/node_zlib.cc'], { knownProjects: [] })
+  t.assert.deepStrictEqual(Object.fromEntries(plain.resolutions.get('src/node_zlib.cc') ?? []), {})
+  t.assert.deepStrictEqual(plain.projects, [])
 }))
 
 test('collectCBundle: a quoted include the tree holds above its includer is missing; one found nowhere is unfound', withTmp((t, tmp) => {
