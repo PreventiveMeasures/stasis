@@ -9,10 +9,10 @@
 // mirroring an `include/` -- so what a program links is bundled along with what it includes.
 
 import { isUtf8 } from 'node:buffer'
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 
-import { assertRealPathWithinBase, classifyFormat, isDotEnvFile, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, classifyFormat, isAutoExcludedDir, isDotEnvFile, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
 
 export const C_SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.c++'])
@@ -426,14 +426,50 @@ function implementationCandidates(header) {
   return places.map((dir) => [...C_SOURCE_EXTS].map((e) => joinRel(dir, `${stem}${e}`)))
 }
 
+// Known implementation links, for libraries whose sources aren't named after their headers, which
+// implementationCandidates can't find. A bundled header whose project-relative path matches `header`
+// pulls in what `impl` names, the pattern's first group being the library's root ('' or a path
+// ending in `/`): each a path from that root, `$n` the pattern's group n, ending in `/*` for every
+// C/C++ source in that directory, or `/**` for those below it too (`/x_*` for those whose name
+// starts with `x_`). `registers` takes instead every
+// C/C++ source below its `dir` (from the root) whose text matches its `pattern`: what registers
+// itself through a macro, linked by the registry and named by nothing. Walked as implementation
+// files are: what isn't there is nothing missing.
+export const KNOWN_IMPLEMENTATIONS = [
+  // Node.js: the embedder API node.h declares, the bindings that register themselves, the headers
+  // implemented across files of other names, and the FFI trampolines, one per architecture.
+  { header: /^(.*\/)?src\/node\.h$/u, impl: ['src/api/*'] },
+  { header: /^(.*\/)?src\/node_binding\.h$/u, registers: { dir: 'src', pattern: /^\s*NODE_BINDING_(?:CONTEXT_AWARE_INTERNAL|PER_ISOLATE_INIT)\s*\(/mu } },
+  { header: /^(.*\/)?src\/node_process\.h$/u, impl: ['src/node_process_*', 'src/node_env_var.cc'] },
+  { header: /^(.*\/)?src\/node_report\.h$/u, impl: ['src/node_report_*'] },
+  { header: /^(.*\/)?src\/ffi\/fast\.h$/u, impl: ['src/ffi/platforms/*'] },
+  // V8's public API, implemented in src/api.
+  { header: /^(.*\/)?include\/v8[\w-]*\.h$/u, impl: ['src/api/*'] },
+  // OpenSSL: a header's subsystem, the library's core, TLS, the built-in providers.
+  { header: /^(.*\/)?include\/openssl\/(\w+)\.h$/u, impl: ['crypto/$2/*'] },
+  { header: /^(.*\/)?include\/openssl\/crypto\.h$/u, impl: ['crypto/*'] },
+  { header: /^(.*\/)?include\/openssl\/(?:ssl|ssl3|tls1|dtls1)\.h$/u, impl: ['ssl/**'] },
+  { header: /^(.*\/)?include\/openssl\/provider\.h$/u, impl: ['providers/**'] },
+  { header: /^(.*\/)?include\/uv\.h$/u, impl: ['src/**'] }, // libuv
+  { header: /^(.*\/)?include\/uvwasi\.h$/u, impl: ['src/*'] },
+  { header: /^(.*\/)?include\/ares\.h$/u, impl: ['src/lib/**'] }, // c-ares
+  { header: /^(.*\/)?include\/llhttp\.h$/u, impl: ['src/*'] },
+  { header: /^(.*\/)?lib\/includes\/(nghttp2|nghttp3|ngtcp2)\/\2\.h$/u, impl: ['lib/*'] },
+  { header: /^(.*\/)?c\/include\/brotli\/(dec|enc)ode\.h$/u, impl: ['c/common/*', 'c/$2/*'] },
+  { header: /^(.*\/)?lib\/zstd\.h$/u, impl: ['lib/common/*', 'lib/compress/*', 'lib/decompress/*'] },
+  { header: /^(.*\/)?zlib\.h$/u, impl: ['*'] },
+  { header: /^(.*\/)?(common|i18n)\/unicode\/(\w+)\.h$/u, impl: ['$2/$3.cpp'] }, // ICU
+]
+
 // Walk the include graph from `entries` (project-relative), reading each file once per search
 // context it is reached in. `includeDirs` are `-I` directories (relative to `baseDir`) for every
 // translation unit; `commands` (loadCompileCommands') gives a unit its own search path, the entries'
-// and the implementation files' alike, and a header the one of the unit it is reached from. Returns:
+// and the implementation files' alike, and a header the one of the unit it is reached from. `knownLinks`
+// are the known implementation links (KNOWN_IMPLEMENTATIONS). Returns:
 //   sources      Map<path, text> -- C/C++ text, or an `#embed`ed resource (base64 if not UTF-8)
 //   formats      Map<path, format> -- c, cpp, c-header, cpp-header, resource, resource:base64
-//   resolutions  Map<path, Map<spec, path>> -- each include's file (includeSpec), and `impl x.cpp`
-//                for a header's implementation file
+//   resolutions  Map<path, Map<spec, path>> -- each include's file (includeSpec), and for a header's
+//                implementation file `impl <its path from the header's directory>`
 //   missing      [{ spec, from, reason? }] -- what makes the bundle incomplete, where every
 //                configuration compiles it (in a file every configuration reaches, not through a
 //                conditional include or an implementation file's guess): an include of a file the
@@ -447,7 +483,7 @@ function implementationCandidates(header) {
 //   conflicts    [{ spec, from, targets }] -- an include resolving to other files in other units;
 //                the edge keeps the first, every file is carried
 //   hints        Set<dir> -- directories that, as `-I`, would resolve the `missing` quoted includes
-export function collectCBundle(baseDir, entries, { includeDirs = [], commands = null } = {}) {
+export function collectCBundle(baseDir, entries, { includeDirs = [], commands = null, knownLinks = KNOWN_IMPLEMENTATIONS } = {}) {
   const realBase = realpathSync(baseDir)
   const extraDirs = includeDirs.map((d) => makeDir(baseDir, realBase, resolve(baseDir, d)))
   for (const [k, d] of extraDirs.entries()) {
@@ -485,6 +521,68 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   }
 
   const exists = (rel) => isFile(join(baseDir, rel))
+
+  // The C/C++ sources in `dir` (project-relative), path-sorted; below it too where `deep`, skipping
+  // dot-directories, what no walk descends into (isAutoExcludedDir) and symlinked directories.
+  const listings = new Map()
+  const sourcesIn = (dir, deep) => {
+    const key = `${deep ? '**' : '*'}\0${dir}`
+    if (listings.has(key)) return listings.get(key)
+    const found = []
+    const walk = (rel) => {
+      let dirents
+      try {
+        dirents = readdirSync(join(baseDir, rel), { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const d of dirents.toSorted((a, b) => (a.name < b.name ? -1 : 1))) {
+        const path = rel === '' ? d.name : `${rel}/${d.name}`
+        if (d.isDirectory()) {
+          if (deep && !d.name.startsWith('.') && !isAutoExcludedDir(d.name)) walk(path)
+        } else if (C_SOURCE_EXTS.has(extname(d.name))) {
+          found.push(path)
+        }
+      }
+    }
+    walk(dir)
+    listings.set(key, found)
+    return found
+  }
+  // Whether the C/C++ source `rel` holds `pattern`; a file the bundle refuses, or that isn't UTF-8,
+  // doesn't.
+  const holds = (rel, pattern) => {
+    if (sources.has(rel)) return pattern.test(sources.get(rel))
+    if (probe({ rel: '' }, rel)?.target === undefined) return false
+    const buf = readFileSync(join(baseDir, rel))
+    return isUtf8(buf) && pattern.test(buf.toString('utf8'))
+  }
+  // The files KNOWN_IMPLEMENTATIONS links `header` to, project-relative.
+  const knownImplementations = (header) => {
+    const out = []
+    for (const link of knownLinks) {
+      const m = link.header.exec(header)
+      if (m === null) continue
+      const root = m[1] ?? ''
+      if (link.registers !== undefined) {
+        for (const rel of sourcesIn(joinRel(root, link.registers.dir) ?? '', true)) if (holds(rel, link.registers.pattern)) out.push(rel)
+        continue
+      }
+      for (const impl of link.impl) {
+        const path = impl.replaceAll(/\$(\d)/gu, (_, n) => m[Number(n)] ?? '')
+        const glob = /(?:^|\/)([^/*]*)(\*\*?)$/u.exec(path)
+        if (glob === null) {
+          const rel = joinRel(root, path)
+          if (rel !== null && exists(rel)) out.push(rel)
+        } else {
+          const [, prefix, stars] = glob
+          const dir = joinRel(root, path.slice(0, -(prefix.length + stars.length)))
+          if (dir !== null) out.push(...sourcesIn(dir, stars === '**').filter((rel) => posix.basename(rel).startsWith(prefix)))
+        }
+      }
+    }
+    return out
+  }
   // The nearest directory above `file`'s own holding `path` ('.' for the root), else null.
   const ancestorHolding = (file, path) => {
     for (let dir = dirOf(file); dir !== '';) {
@@ -624,16 +722,23 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       addEdge(node, edge)
     }
 
+    // A header's implementation files: by name, then the known links. Each is a translation unit of
+    // its own, keyed by its path from the header's directory.
+    const linked = new Set([file])
+    const link = (rel) => {
+      if (linked.has(rel)) return
+      linked.add(rel)
+      const result = probe({ rel: '' }, rel)
+      const edge = { spec: `impl ${posix.relative(dirOf(file) || '.', rel)}`, live: false, result, target: undefined }
+      if (result?.target !== undefined) edge.target = visit(rel, contextOf(rel, ctx), { primary: commands?.has(rel), format: cFormatOf(rel) })
+      addEdge(node, edge)
+    }
     for (const candidates of implementationCandidates(file)) {
       const found = candidates.filter((rel) => rel !== null && rel !== file && exists(rel))
-      for (const rel of found) {
-        const result = probe({ rel: '' }, rel)
-        const edge = { spec: `impl ${posix.basename(rel)}`, live: false, result, target: undefined }
-        if (result?.target !== undefined) edge.target = visit(rel, contextOf(rel, ctx), { primary: commands?.has(rel), format: cFormatOf(rel) })
-        addEdge(node, edge)
-      }
+      for (const rel of found) link(rel)
       if (found.length > 0) break
     }
+    if (C_HEADER_EXTS.has(extname(file))) for (const rel of knownImplementations(file)) link(rel)
   }
 
   // What every configuration builds: the entries, and what they reach through includes every

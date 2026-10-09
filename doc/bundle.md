@@ -266,8 +266,9 @@ why).
 
 A C/C++ bundle follows each entry's `#include`s as GCC and Clang search for
 them, and each bundled header's implementation file (`foo.h` to the `foo.c` or
-`foo.cpp` beside it, or in the `src/` mirroring its `include/`): what the
-entries link comes along with what they include, through the header. Without
+`foo.cpp` beside it, or in the `src/` mirroring its `include/`, and the known
+links of libraries named otherwise: Node.js, V8, OpenSSL, libuv, ICU, ...): what
+the entries link comes along with what they include, through the header. Without
 `--include-dirs` or `--compile-commands`, a quoted include is looked up beside
 its includer alone. One the tree holds below a directory above its includer
 stops the build, naming the `--include-dirs` it needs; one found nowhere (a

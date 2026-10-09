@@ -230,11 +230,85 @@ test('collectCBundle follows a header to its implementation file, beside it or i
   const { sources, formats, resolutions, missing } = collectCBundle(tmp, ['app/main.cpp'], { includeDirs: ['include'] })
   t.assert.deepStrictEqual([...sources.keys()].toSorted(), ['app/main.cpp', 'include/mylib/api.hpp', 'lib/util.c', 'lib/util.h', 'src/api.cpp'])
   t.assert.equal(resolutions.get('lib/util.h').get('impl util.c'), 'lib/util.c')
-  t.assert.equal(resolutions.get('include/mylib/api.hpp').get('impl api.cpp'), 'src/api.cpp')
+  t.assert.equal(resolutions.get('include/mylib/api.hpp').get('impl ../../src/api.cpp'), 'src/api.cpp')
   t.assert.equal(formats.get('lib/util.c'), 'c')
   t.assert.equal(formats.get('include/mylib/api.hpp'), 'cpp-header')
   // An implementation file is a guess: what it lacks doesn't make the bundle incomplete.
   t.assert.deepStrictEqual(missing, [])
+}))
+
+test('collectCBundle follows the known links of libraries whose sources aren\'t named after their headers', withTmp((t, tmp) => {
+  tree(tmp, {
+    'main.cc': '#include <v8.h>\n#include <uv.h>\n#include <openssl/evp.h>\n',
+    'deps/v8/include/v8.h': '',
+    'deps/v8/src/api/api.cc': '',
+    'deps/v8/src/api/api-natives.cc': '',
+    'deps/v8/src/other/unrelated.cc': '',
+    'deps/uv/include/uv.h': '',
+    'deps/uv/src/uv-common.c': '',
+    'deps/uv/src/unix/fs.c': '',
+    'deps/uv/src/win/fs.c': '',
+    'deps/uv/src/.hidden/x.c': '',
+    'deps/uv/test/test-fs.c': '',
+    'deps/openssl/include/openssl/evp.h': '',
+    'deps/openssl/crypto/evp/digest.c': '',
+    'deps/openssl/crypto/bn/bn_add.c': '',
+  })
+  const includeDirs = ['deps/v8/include', 'deps/uv/include', 'deps/openssl/include']
+  const { sources, resolutions } = collectCBundle(tmp, ['main.cc'], { includeDirs })
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), [
+    'deps/openssl/crypto/evp/digest.c',
+    'deps/openssl/include/openssl/evp.h',
+    'deps/uv/include/uv.h',
+    'deps/uv/src/unix/fs.c',
+    'deps/uv/src/uv-common.c',
+    'deps/uv/src/win/fs.c',
+    'deps/v8/include/v8.h',
+    'deps/v8/src/api/api-natives.cc',
+    'deps/v8/src/api/api.cc',
+    'main.cc',
+  ])
+  // Keyed by the path from the header's directory: two fs.c are two edges.
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('deps/uv/include/uv.h')), {
+    'impl ../src/unix/fs.c': 'deps/uv/src/unix/fs.c',
+    'impl ../src/uv-common.c': 'deps/uv/src/uv-common.c',
+    'impl ../src/win/fs.c': 'deps/uv/src/win/fs.c',
+  })
+  t.assert.equal(resolutions.get('deps/v8/include/v8.h').get('impl ../src/api/api.cc'), 'deps/v8/src/api/api.cc')
+  t.assert.equal(resolutions.get('deps/openssl/include/openssl/evp.h').get('impl ../../crypto/evp/digest.c'), 'deps/openssl/crypto/evp/digest.c')
+  // No known links, none followed.
+  const plain = collectCBundle(tmp, ['main.cc'], { includeDirs, knownLinks: [] })
+  t.assert.deepStrictEqual([...plain.sources.keys()].toSorted(), ['deps/openssl/include/openssl/evp.h', 'deps/uv/include/uv.h', 'deps/v8/include/v8.h', 'main.cc'])
+}))
+
+test('collectCBundle follows Node.js\'s known links: its bindings, by the macro registering them, and headers implemented across files', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/node_main.cc': '#include "node.h"\n',
+    'src/node.h': '#include "node_binding.h"\n#include "node_process.h"\n',
+    'src/node_binding.h': '',
+    'src/node_process.h': '',
+    'src/node_process_object.cc': '',
+    'src/node_env_var.cc': '',
+    'src/api/environment.cc': '',
+    'src/node_os.cc': 'namespace node {}\nNODE_BINDING_CONTEXT_AWARE_INTERNAL(os, node::os::Initialize)\n',
+    'src/quic/quic.cc': '  NODE_BINDING_PER_ISOLATE_INIT(quic, node::quic::CreatePerIsolateProperties)\n',
+    'src/commented.cc': '// NODE_BINDING_CONTEXT_AWARE_INTERNAL(no, ...)\n',
+    'src/plain.cc': '',
+  })
+  const { sources, resolutions } = collectCBundle(tmp, ['src/node_main.cc'])
+  t.assert.deepStrictEqual([...sources.keys()].toSorted(), [
+    'src/api/environment.cc',
+    'src/node.h',
+    'src/node_binding.h',
+    'src/node_env_var.cc',
+    'src/node_main.cc',
+    'src/node_os.cc',
+    'src/node_process.h',
+    'src/node_process_object.cc',
+    'src/quic/quic.cc',
+  ])
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/node_binding.h')), { 'impl node_os.cc': 'src/node_os.cc', 'impl quic/quic.cc': 'src/quic/quic.cc' })
+  t.assert.equal(resolutions.get('src/node.h').get('impl api/environment.cc'), 'src/api/environment.cc')
 }))
 
 test('collectCBundle: a quoted include the tree holds above its includer is missing; one found nowhere is unfound', withTmp((t, tmp) => {

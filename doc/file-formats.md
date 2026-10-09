@@ -1293,10 +1293,38 @@ through the header: `main.c` → `util.h` → `util.c`, walked like a translatio
 unit of its own. The match is by name, so it is a guess: what an implementation
 file reaches is carried, but nothing it lacks is fatal.
 
+Libraries whose sources aren't named after their headers have known links
+(`KNOWN_IMPLEMENTATIONS` in the loader), wherever they are vendored (a header's
+path is matched from its library's root, `deps/v8/` or none):
+
+| Header | Implementation |
+| --- | --- |
+| Node.js `src/node.h` | `src/api/*` |
+| Node.js `src/node_binding.h` | every source below `src/` registering a binding (`NODE_BINDING_CONTEXT_AWARE_INTERNAL(`, `NODE_BINDING_PER_ISOLATE_INIT(` first on a line) |
+| Node.js `src/node_process.h`, `src/node_report.h`, `src/ffi/fast.h` | `src/node_process_*` and `src/node_env_var.cc`, `src/node_report_*`, `src/ffi/platforms/*` |
+| V8 `include/v8*.h` | `src/api/*` |
+| OpenSSL `include/openssl/<x>.h` | `crypto/<x>/*`; `crypto.h` `crypto/*` too, `ssl.h`/`ssl3.h`/`tls1.h`/`dtls1.h` `ssl/**`, `provider.h` `providers/**` |
+| libuv `include/uv.h`, uvwasi `include/uvwasi.h` | `src/**`, `src/*` |
+| c-ares `include/ares.h`, llhttp `include/llhttp.h` | `src/lib/**`, `src/*` |
+| nghttp2, nghttp3, ngtcp2 `lib/includes/<x>/<x>.h` | `lib/*` |
+| brotli `c/include/brotli/decode.h`, `encode.h` | `c/common/*` and `c/dec/*`, `c/enc/*` |
+| zstd `lib/zstd.h` | `lib/common/*`, `lib/compress/*`, `lib/decompress/*` |
+| zlib `zlib.h` | the sources beside it |
+| ICU `common/unicode/<x>.h`, `i18n/unicode/<x>.h` | `common/<x>.cpp`, `i18n/<x>.cpp` |
+
+`dir/*` is every C/C++ source in it, `dir/**` below it too (skipping dot-,
+example and test-scaffolding directories, and symlinked ones), `dir/x_*` those
+named `x_…`. They are implementation files like any other: walked as guesses,
+under every architecture and OS a directory holds. What the build alone picks
+(Node.js's `node_snapshot_stub.cc` and `node_postmortem_metadata.cc`, a
+separate executable's sources, a long tail of V8's and OpenSSL's) only its
+compile commands name.
+
 **Edges** are keyed under `c` (C's and C++'s alike: the preprocessor's) by the
 directive as written, `include "util.h"`, `include <vector>`, `include_next
-<stdio.h>`, `embed "logo.bin"`, `-include build/pch.h`, and `impl util.c` for a
-header's implementation file. Only an include landing on a bundled file is an
+<stdio.h>`, `embed "logo.bin"`, `-include build/pch.h`, and for a header's
+implementation file `impl` and its path from the header's directory (`impl
+util.c`, `impl ../src/api/api.cc`). Only an include landing on a bundled file is an
 edge. **Formats** are `c`, `cpp`, `c-header` and `cpp-header` by extension; any
 other included file (`.inl`, `.inc`, Eigen's extensionless `Core`) is a header
 of its includer's language.

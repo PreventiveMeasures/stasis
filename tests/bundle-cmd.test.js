@@ -4514,7 +4514,7 @@ test('buildCBundle resolves <x> through --include-dirs, and names a C++ bundle c
   t.assert.equal(bundle.modules.get('.').name, 'cpp-bundle')
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['app/main.cpp', 'include/mylib/api.hpp', 'src/api.cpp', 'src/detail.hpp'])
   t.assert.equal(bundle.imports.get('c').get('app/main.cpp').get('include <mylib/api.hpp>'), 'include/mylib/api.hpp')
-  t.assert.equal(bundle.imports.get('c').get('include/mylib/api.hpp').get('impl api.cpp'), 'src/api.cpp')
+  t.assert.equal(bundle.imports.get('c').get('include/mylib/api.hpp').get('impl ../../src/api.cpp'), 'src/api.cpp')
   t.assert.equal(bundle.formats.get('include/mylib/api.hpp'), 'cpp-header')
   // Without it, <mylib/api.hpp> is a system header: not bundled, and not an error.
   const alone = await buildCBundle({ cwd, entries: ['app/main.cpp'] })
