@@ -16,6 +16,8 @@ export function sbomCommand({ cwd = process.cwd(), files, format, output, now, u
 
   const dest = writeOutput(cwd, output ?? '-', text)
   const n = components.length
-  console.warn(`[stasis] Wrote ${format} SBOM with ${n} component${n === 1 ? '' : 's'} to ${dest}`)
+  const vendored = components.reduce((sum, c) => sum + (c.vendored?.length ?? 0), 0)
+  const inThem = vendored === 0 ? '' : ` (and ${vendored} vendored in them)`
+  console.warn(`[stasis] Wrote ${format} SBOM with ${n} component${n === 1 ? '' : 's'}${inThem} to ${dest}`)
   return { components, doc }
 }

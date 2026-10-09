@@ -85,6 +85,10 @@ function compareComponents(a, b) {
 // dropping it would silently lose the document's own first-party subject. Dedup is by
 // ecosystem+name+version; a package seen as workspace in any artifact stays workspace regardless
 // of argument order, so output doesn't depend on how artifacts are listed.
+// A dependency's `vendored` packages (those copied into it whose files a bundle carries) ride on its
+// component as `vendored`, sorted by `dir`: each its `name`, the `version` its package.json gives if
+// any, and a purl only beside one -- a vendored package.json without a version names no release, and
+// may not name a registry package at all (Next.js calls its React copy `react-builtin`).
 export function collectComponents(artifacts) {
   const seen = new Map()
   for (const artifact of artifacts) {
@@ -93,7 +97,7 @@ export function collectComponents(artifacts) {
     // if no bucket carries it, the artifact predates the field and we use the heuristic for everything.
     const tagged = records.some(([, m]) => m.ecosystem !== undefined)
     const fileEcosystem = detectEcosystem(artifact)
-    for (const [dir, { name, version, ecosystem }] of records) {
+    for (const [dir, { name, version, ecosystem, vendored }] of records) {
       if (!name) continue
       let scope, eco
       if (ecosystem !== undefined) {
@@ -109,13 +113,22 @@ export function collectComponents(artifacts) {
       }
       if (!version && scope !== 'workspace') continue
       const key = `${eco} ${name} ${version ?? ''}`
-      const existing = seen.get(key)
-      if (existing) {
-        if (scope === 'workspace') existing.scope = 'workspace'
-        continue
+      let component = seen.get(key)
+      if (component) {
+        if (scope === 'workspace') component.scope = 'workspace'
+      } else {
+        seen.set(key, component = { name, version: version ?? undefined, scope, ecosystem: eco, purl: buildPurl(eco, name, version) })
       }
-      seen.set(key, { name, version: version ?? undefined, scope, ecosystem: eco, purl: buildPurl(eco, name, version) })
+      // Across artifacts, the union by directory; the first to list one names its package.
+      for (const [sub, v] of Object.entries(vendored ?? {})) {
+        component.vendored ??= new Map()
+        if (component.vendored.has(sub)) continue
+        component.vendored.set(sub, { dir: sub, name: v.name, version: v.version, ecosystem: eco, purl: v.version === undefined ? null : buildPurl(eco, v.name, v.version) })
+      }
     }
+  }
+  for (const component of seen.values()) {
+    if (component.vendored) component.vendored = [...component.vendored.values()].toSorted((a, b) => (a.dir < b.dir ? -1 : 1))
   }
   return [...seen.values()].toSorted(compareComponents)
 }
@@ -138,7 +151,8 @@ const bomRef = (c) => c.purl ?? `${c.ecosystem}:${c.name}${c.version == null ? '
 
 // Render an SPDX 2.3 document. It DESCRIBES its primary component, which DEPENDS_ON each installed
 // dependency (flat graph). With no single primary, the document DESCRIBES the workspace packages,
-// or every package when there are none.
+// or every package when there are none. A package vendored into a dependency is a package of its own,
+// after the rest, which that dependency CONTAINS, its directory there its `packageFileName`.
 export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
   const ordered = primary ? [primary, ...rest] : components
@@ -156,6 +170,21 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
     }),
     primaryPackagePurpose: c.scope === 'workspace' ? 'APPLICATION' : 'LIBRARY',
   }))
+  const vendored = ordered.flatMap((c) => (c.vendored ?? []).map((v, i) => ({ host: c, v, id: `${ids.get(c)}-Vendored-${i}` })))
+  for (const { v, id } of vendored) {
+    packages.push({
+      SPDXID: id,
+      name: v.name,
+      ...(v.version == null ? {} : { versionInfo: v.version }),
+      packageFileName: v.dir,
+      downloadLocation: 'NOASSERTION',
+      filesAnalyzed: false,
+      ...(v.purl && {
+        externalRefs: [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: v.purl }],
+      }),
+      primaryPackagePurpose: 'LIBRARY',
+    })
+  }
 
   const relationships = []
   if (primary) {
@@ -170,6 +199,9 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
     for (const c of workspace.length > 0 ? workspace : ordered) {
       relationships.push({ spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElement: ids.get(c), relationshipType: 'DESCRIBES' })
     }
+  }
+  for (const { host, id } of vendored) {
+    relationships.push({ spdxElementId: ids.get(host), relatedSpdxElement: id, relationshipType: 'CONTAINS' })
   }
 
   const docName = primary
@@ -192,6 +224,8 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
 
 // Render a CycloneDX 1.5 document. The primary (workspace root) becomes metadata.component; the
 // rest go in `components`, with a flat `dependencies` edge from primary to each installed dependency.
+// A package vendored into a dependency is nested in that dependency's `components`, its directory
+// there the location of its one occurrence.
 export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
   const toComponent = (c) => {
@@ -204,6 +238,21 @@ export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(),
       // CycloneDX 1.5 `version` is optional; omit it for a versionless workspace package.
       ...(c.version == null ? {} : { version: c.version }),
       ...(c.purl && { purl: c.purl }),
+      ...(c.vendored && { components: c.vendored.map((v) => toVendoredComponent(c, v)) }),
+    }
+  }
+  // Its bom-ref the host's with the directory as a purl subpath: two copies of one package (Next.js
+  // has loader-utils2 and loader-utils3, both `loader-utils`) stay apart.
+  const toVendoredComponent = (host, v) => {
+    const { group, name } = splitName(v.ecosystem, v.name)
+    return {
+      type: 'library',
+      'bom-ref': `${bomRef(host)}#${v.dir}`,
+      ...(group && { group }),
+      name,
+      ...(v.version == null ? {} : { version: v.version }),
+      ...(v.purl && { purl: v.purl }),
+      evidence: { occurrences: [{ location: v.dir }] },
     }
   }
 
