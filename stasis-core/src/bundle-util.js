@@ -56,6 +56,17 @@ export function vendoredPackageOf(rel, vendorDir, read) {
   return { below }
 }
 
+// The nearest package.json with a `name` above a file `rel` of a package (package-relative, POSIX), below the
+// package's own, walking past `{"type":"module"}` markers, each read by `read(dir)` (null where there is
+// none) -> { dir, pkg }, or undefined where there is none.
+export function namedManifestOf(rel, read) {
+  for (let dir = posix.dirname(rel); dir !== '.'; dir = posix.dirname(dir)) {
+    const pkg = read(dir)
+    if (pkg?.name !== undefined) return { dir, pkg }
+  }
+  return undefined
+}
+
 // Nearest package.json (walking up) that identifies a bucket; pkgDir is relative to baseDir ("."
 // at the root). Inside node_modules both name and version are required; a workspace package
 // outside node_modules may omit version (the name alone claims the bucket, matching
@@ -78,7 +89,8 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
     }
   }
-  // The subpackage the file is in, where its nearest package.json is one's, as the record's `subpackages` would list it.
+  // The subpackage the file is in, where its nearest package.json with a name (past `{"type":"module"}`
+  // markers, as namedManifestOf walks) is one's, as the record's `subpackages` would list it.
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
@@ -90,7 +102,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       nearest = false
       continue
     }
-    if (pkg !== null) nearest = false
+    if (pkg?.name) nearest = false
     if (pkg?.name && (pkg.version || !inNodeModules)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
       const own = toPosix(dir) === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it

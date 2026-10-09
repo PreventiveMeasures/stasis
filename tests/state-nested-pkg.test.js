@@ -135,6 +135,8 @@ test('addFile takes a subpackage as its package\'s, its own version held to noth
   const state = new State(root)
   state.addFile(hookformFile('zod/dist/zod.js'))
   state.addFile(hookformFile('ajv/dist/ajv.js')) // a subpackage with no version
+  // Below a `{"type":"module"}` marker: the subpackage is the nearest package.json with a name.
+  state.addFile(hookformFile('yup/dist/esm/yup.js'))
   state.addFile(hookformFile('dist/resolvers.js')) // the package's own
 
   const module = state.modules.get('node_modules/@hookform/resolvers')
@@ -146,8 +148,17 @@ test('addFile takes a subpackage as its package\'s, its own version held to noth
   t.assert.deepStrictEqual({ ...module.subpackages }, {
     zod: { name: '@hookform/resolvers/zod', version: '1.0.0' },
     ajv: { name: '@hookform/resolvers/ajv' },
+    yup: { name: '@hookform/resolvers/yup', version: '1.0.0' },
   })
+  t.assert.equal(state.formats.get('node_modules/@hookform/resolvers/yup/dist/esm/yup.js'), 'module', 'the marker still decides the format')
   t.assert.equal(module.vendored, undefined, 'its own code, no copy of another package')
+})
+
+test('a package.json below a subpackage\'s, not its own, is still held to the package\'s version', (t) => {
+  // yup/dist/cjs/package.json gives a version and no name: no subpackage's, whatever is above it.
+  const state = new State(root)
+  t.assert.throws(() => state.addFile(hookformFile('yup/dist/cjs/yup.js')),
+    /Inconsistent data between node_modules\/@hookform\/resolvers\/yup\/dist\/cjs\/package\.json and node_modules\/@hookform\/resolvers\/package\.json/)
 })
 
 test('a package.json named in the package\'s namespace for another directory is still held to its version', (t) => {

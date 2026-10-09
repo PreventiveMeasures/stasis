@@ -361,7 +361,7 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   ```
 
   A file is in a subpackage when that subpackage's `package.json` is the
-  nearest one above it. The rest is as for `vendored`: only those a bundled
+  nearest one with a name above it, past `{"type":"module"}` markers. The rest is as for `vendored`: only those a bundled
   file is in are listed, each half of a split layout its own, parse rejects an
   entry holding none of the record's files (or misnamed, or on first-party
   code), and it is metadata, held to nothing and merged by union. They are the

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { join, posix, resolve, relative, basename, dirname, extname, isAbsolute } from 'node:path'
+import { join, resolve, relative, basename, dirname, extname, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -11,8 +11,8 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
-import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, withMetadataOf } from './util.js'
+import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -765,9 +765,11 @@ export class State {
         const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
         // Allow fake module-name subpaths: the real module owns the prefix (npm wouldn't publish this).
         if (closestPkg.name !== undefined && closestPkg.name !== name) assert.ok(closestPkg.name.startsWith(`${name}/`), message)
-        // A subpackage is the package's, its version its own: listed in `subpackages` instead.
-        subpackage = this.#subpackageOf(closestPkgAbsolute, closestPkg, pkgAbsolute, name)
-        if (subpackage === undefined && closestPkg.version !== undefined) assert.equal(closestPkg.version, version, message)
+        // A subpackage is the package's, listed in `subpackages`; where the closest package.json is its
+        // own (no marker below it), its version is its own too.
+        subpackage = this.#subpackageOf(nmRoot, nmRel, closestPkg, name)
+        const ownVersion = subpackage !== undefined && closestPkg.name !== undefined
+        if (closestPkg.version !== undefined && !ownVersion) assert.equal(closestPkg.version, version, message)
       }
     } else {
       pkgAbsolute = closestPkgAbsolute
@@ -810,15 +812,19 @@ export class State {
     return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored, subpackage }
   }
 
-  // The subpackage (isSubpackage) of the package `name` at `pkgAbsolute` whose package.json is `manifest`, at
-  // `manifestAbsolute` -> { dir, name, version? }, or undefined. Its directory is taken by real path, as
-  // findPackageJSON resolves a package.json through a symlinked install.
-  #subpackageOf(manifestAbsolute, manifest, pkgAbsolute, name) {
-    if (typeof manifest.name !== 'string' || !manifest.name.startsWith(`${name}/`)) return undefined
-    const realDir = (file) => toPosix(this.#host.realpath(dirname(file)))
-    const dir = posix.relative(realDir(pkgAbsolute), realDir(manifestAbsolute))
-    if (!isSubpackage(manifest.name, name, dir)) return undefined
-    return { dir, name: manifest.name, ...(isPackageString(manifest.version) ? { version: manifest.version } : {}) }
+  // The subpackage (isSubpackage) of the package `name` at `nmRoot` that its file `nmRel` is in: the nearest
+  // package.json above the file with a name, past `{"type":"module"}` markers (namedManifestOf), walked by
+  // the file's own path, not the real one findPackageJSON resolves through a symlinked install -> { dir, name,
+  // version? }, or undefined. Looked for only where the closest package.json, `closest`, is such a marker or
+  // names a subpath.
+  #subpackageOf(nmRoot, nmRel, closest, name) {
+    if (closest.name !== undefined && !(typeof closest.name === 'string' && closest.name.startsWith(`${name}/`))) return undefined
+    const found = namedManifestOf(nmRel, (sub) => {
+      const candidate = resolve(this.root, nmRoot, sub, 'package.json')
+      return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
+    })
+    if (found === undefined || !isSubpackage(found.pkg.name, name, found.dir)) return undefined
+    return { dir: found.dir, name: found.pkg.name, ...(isPackageString(found.pkg.version) ? { version: found.pkg.version } : {}) }
   }
 
   // `resource: true` (legacy alias `isBinary: true`): format derived from bytes. `inferFormat: false`

@@ -71,7 +71,20 @@ test('stasis bundle takes a subpackage as its package\'s and lists those it reac
   t.assert.deepStrictEqual(collectComponents([bundle]).map((c) => c.name), ['@hookform/resolvers', 'app'])
 }))
 
-test('a subpackage\'s directory is taken by real path in a symlinked install', withTmp(async (t, tmp) => {
+test('stasis bundle finds a subpackage past a `{"type":"commonjs"}` marker below its package.json, through a State and through the field resolver', withTmp(async (t, tmp) => {
+  writeProject(tmp)
+  const yup = join(tmp, 'node_modules', '@hookform', 'resolvers', 'yup')
+  write(join(yup, 'package.json'), JSON.stringify({ name: '@hookform/resolvers/yup', version: '1.0.0', private: true, main: 'dist/cjs/yup.js' }))
+  write(join(yup, 'dist', 'cjs', 'package.json'), JSON.stringify({ type: 'commonjs' }))
+  write(join(yup, 'dist', 'cjs', 'yup.js'), 'module.exports = {}\n')
+  write(join(tmp, 'index.js'), "require('@hookform/resolvers/zod')\nrequire('@hookform/resolvers/yup')\n")
+  for (const { label, modules } of await build(tmp)) {
+    t.assert.deepStrictEqual(modules['node_modules/@hookform/resolvers'].subpackages,
+      { yup: { name: '@hookform/resolvers/yup', version: '1.0.0' }, zod: ZOD }, label)
+  }
+}))
+
+test('a symlinked install finds a subpackage by the file\'s own path, not the real one findPackageJSON resolves', withTmp(async (t, tmp) => {
   // As pnpm lays one out: the package in its store, linked into node_modules.
   const store = join(tmp, 'node_modules', '.pnpm', '@hookform+resolvers@5.9.1', 'node_modules', '@hookform', 'resolvers')
   writeProject(tmp, store)
