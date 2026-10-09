@@ -25,8 +25,9 @@ import {
   discoverSolidityConfig,
   expandSolidityEntries,
 } from '../loaders/solidity.js'
-import { decodeUtf8 } from '../loaders/solidity-ownership.js'
+import { decodeUtf8, readGitmodules } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
+import { C_SOURCE_EXTS, collectCBundle, isCEntry, loadCompileCommands } from '../loaders/c.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
 import { createCargoContext } from '../loaders/cargo.js'
 import {
@@ -58,6 +59,11 @@ const RUST_FORMAT = 'rust'
 const PHP_WORKSPACE_NAME = 'php-bundle'
 const PHP_WORKSPACE_VERSION = '0.0.0'
 const PHP_FORMAT = 'php'
+
+// A C/C++ bundle's edges are the preprocessor's, C's and C++'s alike: keyed under "c" whatever each
+// file's format (c, cpp, c-header, cpp-header).
+const C_WORKSPACE_VERSION = '0.0.0'
+const C_CONDITION_KEY = 'c'
 
 // Deepest common parent dir of `paths`, relative to `cwd`; starts with `..` when entries
 // escape cwd (e.g. via remapping), or "." when it is cwd itself.
@@ -157,14 +163,8 @@ function soldeerGitRepos(baseDir, ownership, host) {
 // for installed: a folder left at another commit since the lockfile changed, or no checkout, records
 // none.
 function makeSolidityClassifier(baseDir, ownership, host) {
-  const submodules = githubSubmodules(ownership.submodules)
-  const check = ownership.assert
-  const versions = new Map() // a submodule's package.json version, read once
-  const commits = new Map() // a bucket's checkout's commit, read once
-  const commitOf = (dir) => {
-    if (!commits.has(dir)) commits.set(dir, checkoutCommit(join(baseDir, dir), host))
-    return commits.get(dir)
-  }
+  const commitOf = checkoutCommits(baseDir, host)
+  const inSubmodule = makeSubmoduleClassifier(baseDir, ownership.submodules, { check: ownership.assert, commitOf, host })
   let soldeer // soldeerGitRepos, read at the first Soldeer file
   return (path) => {
     if (path.startsWith('dependencies/')) {
@@ -178,7 +178,28 @@ function makeSolidityClassifier(baseDir, ownership, host) {
         return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
       }
     }
-    for (const [sub, { name, branch }] of submodules) {
+    return inSubmodule(path)
+  }
+}
+
+// The commit a directory's checkout's HEAD is at (checkoutCommit), read once per directory.
+function checkoutCommits(baseDir, host) {
+  const commits = new Map()
+  return (dir) => {
+    if (!commits.has(dir)) commits.set(dir, checkoutCommit(join(baseDir, dir), host))
+    return commits.get(dir)
+  }
+}
+
+// Classify a file inside a GitHub git submodule of `submodules` (readGitmodules') into the
+// submodule's `github` bucket, named by its repository, versioned by its package.json (`check(rel)`
+// vets that path before it is read), else its branch, else 0.0.0, with the commit its checkout is at
+// (`commitOf`); null for any other file, deferring to the package.json/workspace logic.
+function makeSubmoduleClassifier(baseDir, submodules, { check, commitOf, host }) {
+  const byPath = githubSubmodules(submodules)
+  const versions = new Map() // a submodule's package.json version, read once
+  return (path) => {
+    for (const [sub, { name, branch }] of byPath) {
       if (path === sub || path.startsWith(`${sub}/`)) {
         if (!versions.has(sub)) versions.set(sub, readPackageJson(baseDir, moduleFileKey(sub, 'package.json'), { strict: true, check, host })?.version)
         const repo = repoRootAt(name, commitOf(sub))
@@ -243,8 +264,9 @@ function executableSources(baseDir, sources, host) {
 }
 
 // Bundles must be self-contained: throw on a missing entry or an unresolved `noun` (import, script,
-// module) of a `lang` bundle -- `missing`'s { spec, from }, with the `reason` it was refused if given.
-function assertSelfContained(lang, noun, entries, sources, missing) {
+// module) of a `lang` bundle -- `missing`'s { spec, from }, with the `reason` it was refused if given,
+// and a closing `hint` line if given.
+function assertSelfContained(lang, noun, entries, sources, missing, hint) {
   const issues = []
   for (const entry of entries) {
     if (!sources.has(entry)) issues.push(`Missing entry: ${entry}`)
@@ -253,7 +275,7 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
     issues.push(`Unresolved ${noun}: ${spec} from ${from}${reason ? ` (refused: ${reason})` : ''}`)
   }
   if (issues.length > 0) {
-    throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}`)
+    throw new Error(`${lang} bundle has unresolved ${noun}s:\n${issues.map((s) => `  ${s}`).join('\n')}${hint ? `\n${hint}` : ''}`)
   }
 }
 
@@ -491,6 +513,71 @@ export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
     workspaceVersion: BASH_WORKSPACE_VERSION,
     format: SHELL_FORMAT,
     conditionKey: SHELL_FORMAT,
+  })
+}
+
+// Build an in-memory Bundle from entry C/C++ files (translation units, or headers) by walking their
+// includes as the preprocessor searches for them, and each bundled header's implementation file
+// (collectCBundle). `includeDirs` are `-I` directories for every unit; `compileCommands` names a
+// compilation database (compile_commands.json, or its directory) giving each unit it lists its own
+// search path. A quoted include found nowhere that the tree holds below a directory above its
+// includer's is fatal (the search path lacks a directory), as is an include the bundle refuses (a
+// symlink out of the root, a `.env`), where every configuration compiles it; another quoted one
+// found nowhere is reported, and an angle-bracket one is a system header. Nothing outside the root
+// is bundled. Files are bucketed by GitHub git submodule, else by nearest package.json, else into
+// the `c-bundle`/`cpp-bundle` placeholder.
+export async function buildCBundle({ cwd = process.cwd(), entries, includeDirs = [], compileCommands } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('buildCBundle: at least one entry C/C++ file is required')
+  }
+  for (const e of entries) {
+    if (!isCEntry(e)) throw new Error(`buildCBundle: not a C/C++ source or header file: ${e}`)
+  }
+
+  const baseDir = resolve(cwd)
+  const normalized = normalizeEntries(entries, cwd)
+  const commands = compileCommands === undefined ? null : loadCompileCommands(baseDir, compileCommands)
+  if (commands !== null) {
+    const unlisted = normalized.filter((e) => C_SOURCE_EXTS.has(extname(e)) && !commands.has(e))
+    if (unlisted.length > 0) console.warn(`[stasis] Not in the compilation database, resolved with --include-dirs alone: ${unlisted.join(', ')}`)
+  }
+
+  const { sources, formats, resolutions, missing, unfound, computed, conflicts, hints } = collectCBundle(baseDir, normalized, { includeDirs, commands })
+
+  const hint = hints.size > 0
+    ? `Their includers may be built with -I ${[...hints].join(', ')}: pass --include-dirs=${[...hints].join(',')}, or the build's compile_commands.json with --compile-commands. A generated header has to be generated first.`
+    : undefined
+  assertSelfContained('C/C++', 'include', normalized, sources, missing, hint)
+
+  // What the bundle doesn't hold, said, at most ten of each.
+  const listed = (list) => list.slice(0, 10).map(({ spec, from }) => `${spec} (${from})`).join(', ') + (list.length > 10 ? `, ... and ${list.length - 10} more` : '')
+  if (unfound.length > 0) {
+    console.warn(`[stasis] ${unfound.length} quoted include${unfound.length === 1 ? '' : 's'} found nowhere, not in the bundle (system headers, or generated by the build): ${listed(unfound)}`)
+  }
+  if (computed.length > 0) {
+    console.warn(`[stasis] ${computed.length} computed include${computed.length === 1 ? '' : 's'} not followed: ${listed(computed)}`)
+  }
+  for (const { spec, from, targets } of conflicts) {
+    console.warn(`[stasis] ${spec} from ${from} resolves to ${targets.join(' and ')} in different translation units; the edge records ${targets[0]}, each file is bundled`)
+  }
+
+  const realBase = realpathSync(baseDir)
+  const cpp = normalized.some((e) => formats.get(e) === 'cpp' || formats.get(e) === 'cpp-header')
+  return assembleCodeBundle({
+    baseDir,
+    entries: normalized,
+    sources,
+    resolutions,
+    workspaceName: cpp ? 'cpp-bundle' : 'c-bundle',
+    workspaceVersion: C_WORKSPACE_VERSION,
+    format: 'c',
+    formats,
+    conditionKey: C_CONDITION_KEY,
+    classifyDep: makeSubmoduleClassifier(baseDir, readGitmodules(baseDir, diskHost, { who: 'loader.c' }), {
+      check: (rel) => assertRealPathWithinBase(realBase, baseDir, rel),
+      commitOf: checkoutCommits(baseDir, diskHost),
+      host: diskHost,
+    }),
   })
 }
 
@@ -1250,7 +1337,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
 // errors. A directory entry (resolved against `cwd`, on `host`) stands for the .sol files under it: Solidity only.
-function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched }) {
+function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, includeDirs, compileCommands, host = diskHost, fetched }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error(`${name}: at least one entry file is required`)
   }
@@ -1262,8 +1349,14 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   else if (entries.every((e) => JS_EXTS.has(extname(e)))) kind = 'js'
   else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
   else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
+  else if (entries.every((e) => isCEntry(e))) kind = 'c'
   else {
-    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs (no mixing)`)
+    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be C/C++ (.c/.cc/.cpp/.cxx/.c++/.h/.hh/.hpp/.hxx/.h++) (no mixing)`)
+  }
+  // --include-dirs and --compile-commands give C/C++ includes their search path; nothing else has one.
+  if (kind !== 'c') {
+    if (Array.isArray(includeDirs) && includeDirs.length > 0) throw new Error(`${name}: --include-dirs is only valid for C/C++ bundles`)
+    if (compileCommands !== undefined) throw new Error(`${name}: --compile-commands is only valid for C/C++ bundles`)
   }
   if (mappingFile && kind !== 'sol') {
     throw new Error(`${name}: --mapping is only valid for .sol bundles`)
@@ -1316,7 +1409,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (jsx && kind !== 'js') {
     throw new Error(`${name}: --jsx is only valid for JS bundles`)
   }
-  // --package-json folds each bundled module's npm package.json in; JS-only (the sol/php/bash/rust
+  // --package-json folds each bundled module's npm package.json in; JS-only (the sol/php/bash/rust/c
   // bucketizers group by their own ecosystems' manifests, not an npm package.json).
   if (packageJSON && kind !== 'js') {
     throw new Error(`${name}: --package-json is only valid for JS bundles`)
@@ -1379,11 +1472,12 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, innermostR
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk: a JS bundle's
 // git dependencies at the commits their package managers' records name (pinInstalledCommits).
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) {
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, includeDirs, compileCommands }) {
   if (kind === 'sol') return { bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }
   if (kind === 'php') return { bundle: await buildPhpBundle({ cwd, entries }) }
   if (kind === 'bash') return { bundle: await buildBashBundle({ cwd, entries }) }
   if (kind === 'rust') return { bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }
+  if (kind === 'c') return { bundle: await buildCBundle({ cwd, entries, includeDirs, compileCommands }) }
   const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON })
   pinInstalledCommits(built.bundle, built.root)
   return built
@@ -1458,9 +1552,10 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
 // writing to disk. Files are attributed to the `bundle` consumer. Option applicability
-// (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|--flow|--typescript/JS) is enforced by classifyEntries.
-export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+// (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|--flow|--typescript/JS,
+// --include-dirs|--compile-commands/C/C++) is enforced by classifyEntries.
+export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, includeDirs = [], compileCommands } = {}) {
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, includeDirs, compileCommands }
   return (await buildOfKind(classifyEntries('buildBundle', options), options)).bundle
 }
 
@@ -1471,8 +1566,8 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // `stasis run --lock=frozen` (which doesn't replay them) fails closed -- pair it with
 // `--bundle=load` or replay the conditions. `add` unions the fresh build into the bundle
 // already on disk (strict; a conflicting file throws) and can't target stdout.
-export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, includeDirs = [], compileCommands, brotliQuality, add = false } = {}) {
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, includeDirs, compileCommands }
   const kind = classifyEntries('bundleCommand', { ...options, lockfile })
 
   // --add has nothing to merge into on stdout (write-only).

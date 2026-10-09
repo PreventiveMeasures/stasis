@@ -65,6 +65,7 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis bundle --mainFields=react-native,browser,main app.js` | statically bundle honoring legacy package `mainFields` |
 | `stasis bundle --metro --platforms=ios,android app.js` | statically bundle the way Metro resolves, all platforms at once |
 | `stasis bundle --typescript src/index.ts` | statically bundle TS sources, resolving `./x.js` imports to `./x.ts` as tsc does |
+| `stasis bundle --include-dirs=include src/main.cpp` | statically bundle C/C++ sources: their includes, and each header's implementation file |
 | `stasis add src assets` | add files to the project's bundles as-is, with no dependency resolution |
 | `stasis github-bundle --github=owner/name --sha=<commit> src/index.js` | statically bundle a GitHub repo at a commit, with nothing installed |
 | `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly |
@@ -87,7 +88,7 @@ Each command's options are documented in [doc/](https://github.com/PreventiveMea
 [`prune`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/prune.md),
 [`audit`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/audit.md),
 [`sbom`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/sbom.md).
-`stasis bundle` also bundles Solidity, PHP, Bash and Rust sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust).
+`stasis bundle` also bundles Solidity, PHP, Bash, Rust and C/C++ sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust).
 
 ## Runtime
 

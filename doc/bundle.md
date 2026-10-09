@@ -11,8 +11,8 @@ stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFi
 stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 ```
 
-This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
-and Rust bundles, see [Other languages](#other-languages).
+This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash,
+Rust and C/C++ bundles, see [Other languages](#other-languages).
 
 | Flag | Meaning |
 | - | - |
@@ -222,9 +222,11 @@ every dependency's manifest. It is the `packageJSON` key of
 
 ## Other languages
 
-`stasis bundle` also builds Solidity, PHP, Bash and Rust bundles, from `.sol`,
-`.php`, `.sh`/`.bash` and `.rs` entries, all the entries of one invocation in
-one language. How each is resolved and what the bundle carries is in
+`stasis bundle` also builds Solidity, PHP, Bash, Rust and C/C++ bundles, from
+`.sol`, `.php`, `.sh`/`.bash`, `.rs` and C/C++ (`.c`, `.cc`, `.cpp`, `.cxx`,
+`.c++`, or a header: `.h`, `.hh`, `.hpp`, `.hxx`, `.h++`) entries, all the
+entries of one invocation in one language. How each is resolved and what the
+bundle carries is in
 [file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust).
 
 ```sh
@@ -232,6 +234,7 @@ stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [
 stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
 stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
 stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
+stasis bundle [--include-dirs=dir,dir] [--compile-commands=path/to/compile_commands.json] [--add] [--output=(path|-)] path/to/file.(c|cc|cpp|cxx|c++|h|hh|hpp|hxx|h++) ...
 ```
 
 A Solidity directory entry stands for every `.sol` file under it (a missing or
@@ -251,6 +254,8 @@ dependencies' files.
 | `--cargo-features=a,b,pkg/c`, `--cargo-no-default-features`, `--cargo-all-features` | Rust: cargo's `--features`, `--no-default-features` and `--all-features` for the entries' packages. |
 | `--cargo-target=(triple\|host)` | Rust: ask rustc for the target's cfgs, so `#[cfg(unix)]`-style code for other targets stays out too; otherwise it is all kept. |
 | `--cargo-manifests` | Rust: also bundle each bundled package's `Cargo.toml` and build script (a vendored crate's `.cargo-checksum.json` too), the workspace `Cargo.toml`, `Cargo.lock` and cargo configs, as written: tokens and URL credentials in them included. |
+| `--include-dirs=a,b` | C/C++: `-I` directories for every translation unit, relative to the cwd. Repeatable and/or comma-separated. |
+| `--compile-commands=path` | C/C++: the build's compilation database (`compile_commands.json`, or the directory holding it). Each unit it lists is resolved with its own command's `-I`, `-iquote`, `-isystem`, `-idirafter`, `--embed-dir` and `-include`. |
 
 A Rust bundle resolves each crate's Cargo features from `Cargo.toml` and
 `Cargo.lock` like `cargo build` of the entries' packages, so `#[cfg(feature =
@@ -258,6 +263,22 @@ A Rust bundle resolves each crate's Cargo features from `Cargo.toml` and
 `Cargo.lock` (version 3 or 4; an older one stops the build), `--cargo-target`
 and every locked package in-tree, else by replaying the manifests (said, with
 why).
+
+A C/C++ bundle follows each entry's `#include`s as GCC and Clang search for
+them, and each bundled header's implementation file (`foo.h` to the `foo.c` or
+`foo.cpp` beside it, or in the `src/` mirroring its `include/`): what the
+entries link comes along with what they include, through the header. Without
+`--include-dirs` or `--compile-commands`, a quoted include is looked up beside
+its includer alone. One the tree holds below a directory above its includer
+stops the build, naming the `--include-dirs` it needs; one found nowhere (a
+system header written in quotes, a header the build generates) is reported,
+and `<x>` found nowhere is a system header. See
+[C/C++ bundles](file-formats.md#cc-bundles).
+
+```sh
+stasis bundle --include-dirs=src,deps/v8/include,deps/uv/include src/crypto/*.cc
+stasis bundle --compile-commands=build src/main.cpp
+```
 
 ## `stasis add`
 
