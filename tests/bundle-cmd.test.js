@@ -13,6 +13,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import {
   buildBashBundle,
   buildBundle,
+  buildCBundle,
   buildPhpBundle,
   buildRustBundle,
   buildSolidityBundle,
@@ -28,6 +29,7 @@ const fixtures = join(here, 'fixtures', 'solidity-bundle')
 const bashFixtures = join(here, 'fixtures', 'bash-bundle')
 const rustFixtures = join(here, 'fixtures', 'rust-bundle')
 const phpFixtures = join(here, 'fixtures', 'php-bundle')
+const cFixtures = join(here, 'fixtures', 'c-bundle')
 const conditionsFixture = join(here, 'fixtures', 'bundle-conditions')
 const fieldsFixture = join(here, 'fixtures', 'resolve-fields')
 
@@ -4477,6 +4479,167 @@ cliTest('CLI: bundle rejects --scope for a .sh bundle', async (t) => {
   t.assert.match(r.stderr, /--scope is only valid for JS bundles/)
 })
 
+// --- C/C++ bundles ---
+
+test('buildCBundle produces a Bundle of the include graph, each header\'s implementation file included', async (t) => {
+  const cwd = join(cFixtures, 'basic')
+  const bundle = await buildCBundle({ cwd, entries: ['main.c'] })
+
+  t.assert.ok(bundle instanceof Bundle)
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+  t.assert.deepStrictEqual([...bundle.entries], ['main.c'])
+
+  // No package.json → fallback "." bucket with the placeholder identity; unused.c is never reached.
+  t.assert.deepStrictEqual([...bundle.modules.keys()], ['.'])
+  const workspace = bundle.modules.get('.')
+  t.assert.equal(workspace.name, 'c-bundle')
+  t.assert.equal(workspace.version, '0.0.0')
+  t.assert.deepStrictEqual(Object.keys(workspace.files).toSorted(), ['main.c', 'types.h', 'util.c', 'util.h'])
+  t.assert.equal(workspace.files['util.h'], readFileSync(join(cwd, 'util.h'), 'utf8'))
+
+  t.assert.equal(bundle.formats.get('main.c'), 'c')
+  t.assert.equal(bundle.formats.get('util.h'), 'c-header')
+
+  // Edges under "c", through the header: main.c -> util.h -> util.c.
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['c'])
+  const edges = bundle.imports.get('c')
+  t.assert.deepStrictEqual(Object.fromEntries(edges.get('main.c')), { 'include "util.h"': 'util.h' })
+  t.assert.deepStrictEqual(Object.fromEntries(edges.get('util.h')), { 'include "types.h"': 'types.h', 'impl util.c': 'util.c' })
+  t.assert.deepStrictEqual(Object.fromEntries(edges.get('util.c')), { 'include "util.h"': 'util.h' })
+})
+
+test('buildCBundle resolves <x> through --include-dirs, and names a C++ bundle cpp-bundle', async (t) => {
+  const cwd = join(cFixtures, 'layout')
+  const bundle = await buildCBundle({ cwd, entries: ['app/main.cpp'], includeDirs: ['include'] })
+  t.assert.equal(bundle.modules.get('.').name, 'cpp-bundle')
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['app/main.cpp', 'include/mylib/api.hpp', 'src/api.cpp', 'src/detail.hpp'])
+  t.assert.equal(bundle.imports.get('c').get('app/main.cpp').get('include <mylib/api.hpp>'), 'include/mylib/api.hpp')
+  t.assert.equal(bundle.imports.get('c').get('include/mylib/api.hpp').get('impl ../../src/api.cpp'), 'src/api.cpp')
+  t.assert.equal(bundle.formats.get('include/mylib/api.hpp'), 'cpp-header')
+  // Without it, <mylib/api.hpp> is a system header: not bundled, and not an error.
+  const alone = await buildCBundle({ cwd, entries: ['app/main.cpp'] })
+  t.assert.deepStrictEqual([...alone.sources.keys()], ['app/main.cpp'])
+})
+
+test('buildCBundle leaves #if 0 code, comments and strings out, and bundles conditional includes it finds', async (t) => {
+  const bundle = await buildCBundle({ cwd: join(cFixtures, 'conditional'), entries: ['main.c'] })
+  // win32.h isn't there: under #ifdef, not missing. dead.h and commented.h are never reached.
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['alive.h', 'always.h', 'extra.h', 'main.c'])
+})
+
+test('buildCBundle fails on a quoted include the tree holds above its includer, naming the -I it needs', async (t) => {
+  const cwd = join(cFixtures, 'needs-dir')
+  await t.assert.rejects(
+    () => buildCBundle({ cwd, entries: ['src/net/socket.c'] }),
+    { message: 'C/C++ bundle has unresolved includes:\n  Unresolved include: include "net/socket.h" from src/net/socket.c\nTheir includers may be built with -I src: pass --include-dirs=src, or the build\'s compile_commands.json with --compile-commands. A generated header has to be generated first.' },
+  )
+  const bundle = await buildCBundle({ cwd, entries: ['src/net/socket.c'], includeDirs: ['src'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/net/socket.c', 'src/net/socket.h'])
+})
+
+test('buildCBundle reports a quoted include found nowhere, and a computed one, without failing', withTmp(async (t, tmp) => {
+  writeFileSync(join(tmp, 'main.c'), '#include "math.h"\n#include CONFIG_H\n')
+  const warnings = []
+  const original = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    await buildCBundle({ cwd: tmp, entries: ['main.c'] })
+  } finally {
+    console.warn = original
+  }
+  t.assert.deepStrictEqual(warnings, [
+    '[stasis] 1 quoted include found nowhere, not in the bundle (system headers, or generated by the build): include "math.h" (main.c)',
+    '[stasis] 1 computed include not followed: include CONFIG_H (main.c)',
+  ])
+}))
+
+test('buildCBundle carries #embed files as resources', async (t) => {
+  const bundle = await buildCBundle({ cwd: join(cFixtures, 'embed'), entries: ['main.c'] })
+  t.assert.equal(bundle.formats.get('banner.txt'), 'resource')
+  t.assert.equal(bundle.formats.get('logo.bin'), 'resource:base64')
+  t.assert.equal(bundle.sources.get('logo.bin'), readFileSync(join(cFixtures, 'embed', 'logo.bin')).toString('base64'))
+  t.assert.equal(bundle.imports.get('c').get('main.c').get('embed "logo.bin"'), 'logo.bin')
+})
+
+test('buildCBundle takes each unit\'s search path from --compile-commands', withTmp(async (t, tmp) => {
+  mkdirSync(join(tmp, 'src'))
+  mkdirSync(join(tmp, 'include'))
+  mkdirSync(join(tmp, 'build'))
+  writeFileSync(join(tmp, 'src', 'main.c'), '#include <api.h>\n')
+  writeFileSync(join(tmp, 'include', 'api.h'), '')
+  writeFileSync(join(tmp, 'build', 'compile_commands.json'), JSON.stringify([{ directory: join(tmp, 'build'), command: 'cc -I../include -c ../src/main.c', file: '../src/main.c' }]))
+  const bundle = await buildCBundle({ cwd: tmp, entries: ['src/main.c'], compileCommands: 'build' })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['include/api.h', 'src/main.c'])
+}))
+
+test('buildCBundle buckets a GitHub submodule\'s files as a `github` dependency', withTmp(async (t, tmp) => {
+  mkdirSync(join(tmp, 'third_party', 'fmt', 'include', 'fmt'), { recursive: true })
+  writeFileSync(join(tmp, '.gitmodules'), '[submodule "third_party/fmt"]\n\tpath = third_party/fmt\n\turl = https://github.com/fmtlib/fmt.git\n\tbranch = 11.x\n')
+  writeFileSync(join(tmp, 'main.cpp'), '#include <fmt/core.h>\n')
+  writeFileSync(join(tmp, 'third_party', 'fmt', 'include', 'fmt', 'core.h'), '')
+  const bundle = await buildCBundle({ cwd: tmp, entries: ['main.cpp'], includeDirs: ['third_party/fmt/include'] })
+  t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(), ['.', 'third_party/fmt'])
+  const fmt = bundle.modules.get('third_party/fmt')
+  t.assert.equal(fmt.name, 'fmtlib/fmt')
+  t.assert.equal(fmt.version, '11.x')
+  t.assert.equal(fmt.ecosystem, 'github')
+  t.assert.deepStrictEqual(Object.keys(fmt.files), ['include/fmt/core.h'])
+}))
+
+test('buildCBundle rejects an empty entry list, a non-C/C++ entry, and a missing entry', async (t) => {
+  const cwd = join(cFixtures, 'basic')
+  await t.assert.rejects(() => buildCBundle({ cwd, entries: [] }), /at least one entry/)
+  await t.assert.rejects(() => buildCBundle({ cwd, entries: ['main.js'] }), /not a C\/C\+\+ source or header file: main\.js/)
+  await t.assert.rejects(() => buildCBundle({ cwd, entries: ['nope.c'] }), /C\/C\+\+ bundle has unresolved includes:\n {2}Missing entry: nope\.c/)
+})
+
+test('buildBundle refuses --include-dirs and --compile-commands for other languages, and other languages\' flags for C/C++', async (t) => {
+  await t.assert.rejects(() => buildBundle({ cwd: join(bashFixtures, 'basic'), entries: ['main.sh'], includeDirs: ['x'] }), /--include-dirs is only valid for C\/C\+\+ bundles/)
+  await t.assert.rejects(() => buildBundle({ cwd: join(bashFixtures, 'basic'), entries: ['main.sh'], compileCommands: 'x' }), /--compile-commands is only valid for C\/C\+\+ bundles/)
+  await t.assert.rejects(() => buildBundle({ cwd: join(cFixtures, 'basic'), entries: ['main.c'], scope: 'full' }), /--scope is only valid for JS bundles/)
+  await t.assert.rejects(() => buildBundle({ cwd: join(cFixtures, 'basic'), entries: ['main.c', 'x.rs'] }), /all be C\/C\+\+/)
+  const bundle = await buildBundle({ cwd: join(cFixtures, 'basic'), entries: ['main.c', 'util.h'] })
+  t.assert.deepStrictEqual([...bundle.entries], ['main.c', 'util.h'])
+})
+
+test('bundleCommand writes a C/C++ Bundle that round-trips through Bundle.parse', withTmp(async (t, tmp) => {
+  const outPath = join(tmp, 'out.stasis.code.br')
+  await bundleCommand({ cwd: join(cFixtures, 'layout'), entries: ['app/main.cpp'], includeDirs: ['include'], output: outPath })
+  const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...parsed.entries], ['app/main.cpp'])
+  t.assert.equal(parsed.formats.get('src/api.cpp'), 'cpp')
+  t.assert.equal(parsed.imports.get('c').get('src/api.cpp').get('include "detail.hpp"'), 'src/detail.hpp')
+}))
+
+cliTest('CLI: bundle writes a C/C++ bundle with --include-dirs', withTmp(async (t, tmp) => {
+  const outPath = join(tmp, 'out.stasis.code.br')
+  const r = await runCli(['bundle', '--include-dirs=include', '-o', outPath, 'app/main.cpp'], { cwd: join(cFixtures, 'layout') })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const parsed = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...parsed.sources.keys()].toSorted(), ['app/main.cpp', 'include/mylib/api.hpp', 'src/api.cpp', 'src/detail.hpp'])
+}))
+
+cliTest('CLI: bundle (C/C++) exits non-zero and writes no output on an unresolved include', withTmp(async (t, tmp) => {
+  const outPath = join(tmp, 'out.stasis.code.br')
+  const r = await runCli(['bundle', '-o', outPath, 'src/net/socket.c'], { cwd: join(cFixtures, 'needs-dir') })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /Unresolved include: include "net\/socket\.h" from src\/net\/socket\.c/)
+  t.assert.match(r.stderr, /--include-dirs=src/)
+  t.assert.ok(!existsSync(outPath), 'output must not be written when bundling fails')
+}))
+
+cliTest('CLI: bundle rejects C/C++ flags elsewhere, and mixing C/C++ with other entries', async (t) => {
+  let r = await runCli(['bundle', '--include-dirs=include', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
+  t.assert.equal(r.status, 1)
+  t.assert.match(r.stderr, /--include-dirs is only valid for C\/C\+\+ bundles/)
+  r = await runCli(['bundle', '--compile-commands=build', 'main.sh'], { cwd: join(bashFixtures, 'basic') })
+  t.assert.equal(r.status, 1)
+  t.assert.match(r.stderr, /--compile-commands is only valid for C\/C\+\+ bundles/)
+  r = await runCli(['bundle', 'main.c', 'main.js'])
+  t.assert.equal(r.status, 1)
+  t.assert.match(r.stderr, /or all be C\/C\+\+/)
+})
+
 // --- Rust bundles ---
 
 test('buildRustBundle produces a Bundle with sources, formats, imports, entries', async (t) => {
@@ -5049,7 +5212,7 @@ test('buildBundle rejects an empty entry list', async (t) => {
 test('buildBundle rejects mixed-language entries', async (t) => {
   await t.assert.rejects(
     () => buildBundle({ cwd: fixtures, entries: ['a.sol', 'b.js'] }),
-    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts\/\.jsx\/\.tsx, all be \.sh\/\.bash, or all be \.rs/,
+    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts\/\.jsx\/\.tsx, all be \.sh\/\.bash, all be \.rs, or all be C\/C\+\+/,
   )
 })
 

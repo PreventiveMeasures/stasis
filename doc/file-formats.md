@@ -299,7 +299,7 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   sources are stored verbatim (types intact); Node strips types at load time.
 - `imports`: conditions → parent file → specifier → resolved project-relative
   path. The conditions key is `"*"`, a comma-joined list (e.g. `"node, import"`),
-  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`).
+  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`/`c`).
   Statically built JS bundles use `"*"` per edge, except that a
   `(parent, specifier)` resolving differently under the require() and import()
   contexts keeps each target under its real condition key.
@@ -479,8 +479,9 @@ invocation; a directory entry is Solidity's, see below):
 | `.php` | PHP | literal `require`/`include` paths + Composer-autoloaded class references (PSR-4/PSR-0/classmap/files) | `php` |
 | `.sh` `.bash` | Shell | `source`/`.`, `bash`/`sh` exec, direct `./x.sh`, `# Depends on:`, `# shellcheck source=` | `shell` |
 | `.rs` | Rust | `mod` declarations (incl. `#[path = …]` / `#[cfg_attr(…, path = …)]`, inside inline modules too) + `use`/`extern crate` of a crate whose source is in-tree | `rust` |
+| `.c` `.cc` `.cpp` `.cxx` `.c++` (or a header: `.h` `.hh` `.hpp` `.hxx` `.h++`) | C / C++ | `#include`/`#import`/`#include_next`/`#embed`, searched as GCC does, + each bundled header's implementation file (see [C/C++ bundles](#cc-bundles)) | `c`, `cpp`, `c-header`, `cpp-header` / `c` |
 
-These four are **`scope = full`, produce-only artifacts** in the same
+These five are **`scope = full`, produce-only artifacts** in the same
 `stasis.code.br` shape as a JS bundle, tagged with a language `format` and keyed
 under a language `imports` condition. They are for external static analysis —
 **not** `stasis run --bundle=load`, which executes JavaScript and rejects a non-JS
@@ -495,8 +496,10 @@ except PHP, which buckets by the nearest `composer.json`
 lockfile's install exactly, or the build stops), and
 Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
 is its own bucket; `version.workspace = true` resolves through the workspace
-root). With no manifest above a file, the workspace bucket gets a placeholder
-identity (`solidity-bundle`/`php-bundle`/`bash-bundle`/`rust-bundle` at `0.0.0`).
+root), and C/C++, which buckets a file of a GitHub git submodule as Solidity
+does, as that `github` dependency. With no manifest above a file, the workspace
+bucket gets a placeholder identity (`solidity-bundle`/`php-bundle`/`bash-bundle`/
+`rust-bundle`, `c-bundle` or `cpp-bundle` when an entry is C++, at `0.0.0`).
 
 Solidity entries are `.sol` files or directories: a directory stands for every
 `.sol` file under it, imported or not — `stasis bundle src test script` is what
@@ -882,6 +885,7 @@ file resolves out of:
 | Rust | `use <crate>` → `cargo vendor`'s `vendor/<crate>/`, a registry's copy | `cargo` (name/version from `Cargo.toml`) |
 | Rust | the same, a git checkout's copy | `cargo-git` (name/version from `Cargo.toml`) |
 | Rust | the same, a copy with no `.cargo-checksum.json` | `cargo-unknown` (name/version from `Cargo.toml`) |
+| C/C++ | git submodule (`third_party/<dir>/`, wherever `.gitmodules` puts it) | `github` (`owner/repo` from `.gitmodules` URL) |
 
 A dep under `node_modules` is `npm` whatever the language. A git submodule is
 `github` only where its `.gitmodules` url is GitHub's: `https`, `ssh`, `git` or
@@ -915,6 +919,8 @@ What counts as a fatal unresolved reference differs by language:
 | PHP | every literal `require`/`include` path | Composer-autoloaded class refs (unresolved ones usually built-in/extension classes); a dynamic include with a static dir prefix pulls in that dir's `.php` files as candidates |
 | Bash | every in-root `.sh`/`.bash` reference | PATH commands, `$VAR`/absolute/system paths, `../`-escaping sources (external); dynamic `source "${VAR}/x.sh"` followed via `# shellcheck source=` when present |
 | Rust | every `mod foo;` not gated on an undecidable cfg (see the cfg rules below), incl. one whose `#[path]` names no file, or escapes the bundle root | a `mod` gated on a cfg the loader can't decide (`unix`, a feature of a package outside the resolved build, …); a `mod` inside a macro invocation body (`cfg_if! { … }` emits real ones, other macros may not — followed when the file exists); every path edge (`crate::`/`self::`/`super::`/relative `use`s, recorded best-effort and never widening the walk); crates not in-tree (see above); an `include!`/`include_str!`/`include_bytes!` whose literal path names no file, or whose argument is no literal the loader can read (a `concat!` of anything but `env!("CARGO_MANIFEST_DIR")` and literals, a macro variable) -- both warned; a vendored crate's include, `#[path]` or build script that reaches outside its own package (refused and warned; a `mod` so refused is missing) |
+
+| C/C++ | an include every configuration compiles, from a file every configuration reaches, of a file the bundle refuses (a symlink out of the root, a `.env`), or quoted (or `-include`d) and found nowhere while the tree holds it below a directory above its includer's (the search path lacks a `-I`: the error names it) | a quoted include found nowhere else (a system header in quotes, a generated header: reported); `<x>` found nowhere (a system header); whatever is under a conditional the scan can't decide (`#ifdef`), or reached only through one or through an implementation file; `#include MACRO` (reported, not followed) |
 
 A missing entry is always fatal.
 
@@ -1227,6 +1233,127 @@ skipped whole -- unless the package defines a `macro_rules!` of that name
 itself, in whichever of its files (syn's `parse_quote!`), when it is that
 macro's input like any other -- while reading the files from disk too, so a
 `mod` such a body declares is found whichever file the walk meets first.
+
+### C/C++ bundles
+
+A C/C++ bundle's entries are translation units (`.c`, `.cc`, `.cpp`, `.cxx`,
+`.c++`) or headers (`.h`, `.hh`, `.hpp`, `.hxx`, `.h++`, a header-only
+library's). Nothing is compiled or preprocessed: the graph is the include
+graph, as the preprocessor would follow it, plus each header's implementation.
+
+**Directives.** `#include`, `#import`, `#include_next` and `#embed` are found as
+translation phases 1 to 4 find them: lines spliced by a backslash joined, comments
+and string and character literals skipped (C++ raw strings and digit separators
+included), a directive being `#` (or `%:`) first on its line. Macros aren't
+expanded, so `#include MACRO` is reported and not followed, and conditionals
+aren't evaluated, past an integer literal: `#if 0` code (and the `#else` of an
+`#if 1`) is never followed, and an include under any other condition (`#ifdef
+_WIN32`, `#if defined(X)`) is followed when found, every configuration's alike,
+but not required. A file's include guard (`#ifndef X` then `#define X` as its
+first directives, `#pragma once` aside) isn't a condition.
+
+**Search.** As GCC and Clang search: `"x"` in the includer's directory, then the
+`-iquote` directories, then those `<x>` searches -- `-I`, `-isystem`, then
+`-idirafter`, in order. `#include_next` carries on from after the directory its
+includer was found in (from the start of its form's list where it wasn't found
+through one), never landing on the includer. `#embed` searches the includer's
+directory for `"x"`, then the `--embed-dir` directories. The search path is:
+
+- A known project's: with no flag, a tree vendoring projects stasis knows
+  (`KNOWN_PROJECTS` in the loader) is searched as their builds search it. A
+  directory holding a project's marker files is its root (`src/node.h` and
+  `src/node_main.cc` for Node.js, `include/v8.h` and `src/api/api.cc` for V8);
+  each project has its own `-I` directories and those it exports to the
+  projects using it. A translation unit's search path is its innermost
+  project's own directories, then the exports of every other project but those
+  around it, nearest first: those it holds, by depth, then those of the project
+  around it, and so on out. So Node.js's sources find `deps/zlib`'s `zlib.h`,
+  and V8's find its own `third_party/zlib`; ICU's `"util.h"` is ICU's, never
+  Node.js's `src/util.h`; and a vendored project's private directories are
+  never searched from outside it. Known: Node.js, V8 and its `third_party/`
+  (Abseil, Highway, simdutf, FP16, Dragonbox, fast_float, LLVM libc, zlib),
+  OpenSSL (Node.js's `deps/openssl` wraps OpenSSL's tree with its own
+  directories), libuv, uvwasi, zlib, ICU, c-ares, nghttp2, nghttp3, ngtcp2,
+  Brotli, Zstandard, llhttp, Ada, simdjson, SQLite, HdrHistogram, nbytes,
+  ncrypto, merve, GoogleTest, inspector_protocol, Perfetto, libffi, postject
+  and LIEF. Where one holds configurations for several platforms (c-ares's
+  `config/<os>`, Node.js's OpenSSL `config/archs/<arch>`), Linux x86-64's is
+  taken. `stasis bundle` lists the projects it found. The walk skips dot-,
+  `node_modules`, example and test-scaffolding directories.
+- `--include-dirs=a,b`: `-I` directories for every translation unit, ahead of
+  a known project's directories, after a compile command's own `-I`s.
+- `--compile-commands=path`: the build's compilation database
+  (`compile_commands.json`, or the directory holding it; CMake writes one with
+  `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
+  unit it lists -- an entry, or an implementation file -- is resolved with its
+  first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`), `-idirafter`,
+  `--embed-dir`, `-include` and `-imacros` (clang-cl's and cl's `/I`,
+  `/external:I` and `/FI` too), each relative to the command's `directory`; an
+  `arguments` array is taken as it is, a `command` string split as a POSIX
+  shell splits it. A `-include` is the unit's first include, looked up in the
+  command's directory first. It takes the place of a known project's search
+  path for the units it lists; an entry it doesn't list is resolved with its
+  known project's and `--include-dirs`, said so. The database is read wherever
+  it is, never bundled.
+
+A header is walked under the search path of each unit it is reached from. An
+include that resolves to other files in other units (a `<config.h>` per
+target) records the first unit's file as its edge, and is reported; every file
+is bundled. Nothing is read outside the bundle root: a header found in a
+directory outside it, or through a `../` past it, is a system or out-of-tree
+header, neither bundled nor missing. An include of a symlink leading out of the
+root, or of a `.env` file, is refused; a source that isn't UTF-8 stops the
+build (an `#embed`ed file is a resource, base64 where it isn't UTF-8).
+
+**Implementations.** Headers hold code (inline functions, templates, macros),
+so an include lands on the header itself, and a bundled header (`.h`, `.hh`,
+`.hpp`, `.hxx`, `.h++`) pulls in its implementation: the C/C++ sources of its
+name beside it (`util.h` → `util.c`, `util.cpp`), else in the `src/` mirroring
+the `include/` it lies in (`include/lib/api.hpp` → `src/lib/api.cpp`, else
+`src/api.cpp`). What the entries link comes along with what they include,
+through the header: `main.c` → `util.h` → `util.c`, walked like a translation
+unit of its own. The match is by name, so it is a guess: what an implementation
+file reaches is carried, but nothing it lacks is fatal.
+
+Libraries whose sources aren't named after their headers have known links
+(`KNOWN_IMPLEMENTATIONS` in the loader), wherever they are vendored (a header's
+path is matched from its library's root, `deps/v8/` or none):
+
+| Header | Implementation |
+| --- | --- |
+| Node.js `src/node.h` | `src/api/*` |
+| Node.js `src/node_binding.h` | every source below `src/` registering a binding (`NODE_BINDING_CONTEXT_AWARE_INTERNAL(`, `NODE_BINDING_PER_ISOLATE_INIT(` first on a line) |
+| Node.js `src/node_process.h`, `src/node_report.h`, `src/ffi/fast.h` | `src/node_process_*` and `src/node_env_var.cc`, `src/node_report_*`, `src/ffi/platforms/*` |
+| V8 `include/v8*.h` | `src/api/*` |
+| OpenSSL `include/openssl/<x>.h` | `crypto/<x>/*`; `crypto.h` `crypto/*` too, `ssl.h`/`ssl3.h`/`tls1.h`/`dtls1.h` `ssl/**`, `provider.h` `providers/**` |
+| libuv `include/uv.h`, uvwasi `include/uvwasi.h` | `src/**`, `src/*` |
+| c-ares `include/ares.h`, llhttp `include/llhttp.h` | `src/lib/**`, `src/*` |
+| nghttp2, nghttp3, ngtcp2 `lib/includes/<x>/<x>.h` | `lib/*` |
+| brotli `c/include/brotli/decode.h`, `encode.h` | `c/common/*` and `c/dec/*`, `c/enc/*` |
+| zstd `lib/zstd.h` | `lib/common/*`, `lib/compress/*`, `lib/decompress/*` |
+| zlib `zlib.h` | the sources beside it |
+| ICU `common/unicode/<x>.h`, `i18n/unicode/<x>.h` | `common/<x>.cpp`, `i18n/<x>.cpp` |
+
+`dir/*` is every C/C++ source in it, `dir/**` below it too (skipping dot-,
+example and test-scaffolding directories, and symlinked ones), `dir/x_*` those
+named `x_…`. They are implementation files like any other: walked as guesses,
+under every architecture and OS a directory holds. What the build alone picks
+(Node.js's `node_snapshot_stub.cc` and `node_postmortem_metadata.cc`, a
+separate executable's sources, a long tail of V8's and OpenSSL's) only its
+compile commands name.
+
+**Edges** are keyed under `c` (C's and C++'s alike: the preprocessor's) by the
+directive as written, `include "util.h"`, `include <vector>`, `include_next
+<stdio.h>`, `embed "logo.bin"`, `-include build/pch.h`, and for a header's
+implementation file `impl` and its path from the header's directory (`impl
+util.c`, `impl ../src/api/api.cc`). Only an include landing on a bundled file is an
+edge. **Formats** are `c`, `cpp`, `c-header` and `cpp-header` by extension; any
+other included file (`.inl`, `.inc`, Eigen's extensionless `Core`) is a header
+of its includer's language.
+
+Not supported: Objective-C (`.m`, `.mm`) entries, C++20 modules' `import`,
+`-D`/`-U` (no macro is evaluated), and cl's search of every includer's directory
+for a quoted include.
 
 ## Resources in the bundle
 
