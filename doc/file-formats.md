@@ -154,6 +154,29 @@ attested.
   platforms. Bundle and companion lockfile share this shape. Such artifacts are for
   analysis/attestation: plain `stasis run --bundle=load` has no platform context
   and fails closed on a per-platform edge (`ERR_STASIS_PLATFORM_SPECIFIC`).
+- Java edges (the Metro native capture: `stasis bundle --metro` and the
+  StasisMetro plugin): the `java` files a capture carries, each dependency's
+  `android/` sources and react-native's own, record their edges among
+  themselves under the `java` conditions key. The specifier is the canonical
+  name of a type the file names (`com.facebook.react.bridge.ReactMethod`; a
+  nested type's top-level type, whose file holds it), and the target the file
+  that declares it, found by its `package` and top-level type declarations
+  wherever it sits. Names resolve as javac scopes them, after translating
+  `\uXXXX` escapes: the types the file declares, its single-type imports, its
+  own package's types, its on-demand (`.*`) imports, else a fully qualified
+  name; a single-type or static import of a type in the capture is an edge
+  whether or not the code uses it. A name nothing in the capture declares
+  (`java.util.List`, a Maven dependency's class, `R` or `BuildConfig`, which
+  the Android build generates) has no edge, and nothing is ever unresolved:
+  the edges say which carried file uses which. Where several files declare the
+  type, the edge is the one in the asking file's own source root, else its
+  Gradle module's (`<module>/src/<set>/java`) `main` one, else the target is a
+  `{ "<set>": "<file>" }` object of its module's copies (a library's
+  `newarch`/`oldarch` spec, flavors, build types), or failing those every copy,
+  `*` for a file outside a `src/<set>/java` root and a second under one name
+  numbered (`main#2`). Kotlin sources carry no edges. An artifact captured
+  before Java edges were recorded has none: a `lock = frozen` run against it
+  rejects them as unattested, so recapture it.
 - `formats` records each file's format. Values:
   Node loader (`module`, `commonjs`, `json`, `module-typescript`,
   `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`);
@@ -299,7 +322,8 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   sources are stored verbatim (types intact); Node strips types at load time.
 - `imports`: conditions → parent file → specifier → resolved project-relative
   path. The conditions key is `"*"`, a comma-joined list (e.g. `"node, import"`),
-  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`).
+  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`),
+  as for the Java edges of a `--metro` bundle (`java`, see the lockfile's `imports`).
   Statically built JS bundles use `"*"` per edge, except that a
   `(parent, specifier)` resolving differently under the require() and import()
   contexts keeps each target under its real condition key.

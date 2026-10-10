@@ -15,6 +15,7 @@
     "./host": "./src/host.js",
     "./lockfile": "./src/lockfile.js",
     "./util": "./src/util.js",
+    "./java": "./src/java.js",
     "./brotli": "./src/brotli.js",
     "./state-util": "./src/state-util.js",
     "./prune": "./src/prune.js"
@@ -31,6 +32,7 @@
     "src/fs.js",
     "src/hooks.js",
     "src/host.js",
+    "src/java.js",
     "src/loader.js",
     "src/lockfile.js",
     "src/package.cjs",

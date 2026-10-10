@@ -143,7 +143,11 @@ That includes a workspace package linked, under any name, into a
 there is the project's own source.
 A package reached only for an asset through `--resources` is not a linked
 native dependency and contributes none. Build output (`build`, `.gradle`,
-`.cxx`, `Pods`, `DerivedData`, nested `node_modules`) is skipped.
+`.cxx`, `Pods`, `DerivedData`, nested `node_modules`) is skipped. The Java
+sources among them record their edges to each other under the `java`
+conditions key, each type a file names to the file declaring it (a library's
+`newarch`/`oldarch` copies of one as a map of both); see
+[file formats](file-formats.md#stasislockjson).
 
 `--metro-resolver` resolves through the project's own installed
 `metro-resolver` (it ships with `react-native`/`metro`) for byte-for-byte

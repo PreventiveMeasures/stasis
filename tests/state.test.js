@@ -582,6 +582,38 @@ test('mergeShard carries a child-recorded module format (imported .js in a no-ty
   }
 })
 
+test('addImport takes a Map of targets (a Java edge per source set), and mergeShard replays it', (t) => {
+  // StasisMetro records a type both source sets of a library declare (newarch/oldarch) as one edge
+  // to each set's file; under --child-process that edge reaches the root in the child's shard.
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-mergeshard-java-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    const files = {
+      'src/main/java/a/M.java': 'package a;\nclass M extends S {}\n',
+      'src/newarch/java/a/S.java': 'package a;\nclass S {}\n',
+      'src/oldarch/java/a/S.java': 'package a;\nclass S extends Object {}\n',
+    }
+    const url = (rel) => pathToFileURL(join(dir, rel)).toString()
+    const child = new State(dir, { scope: 'full', lock: 'add', childProcess: true })
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true })
+      writeFileSync(join(dir, rel), text)
+      child.addFile(url(rel), { source: Buffer.from(text), format: 'java' })
+    }
+    const targets = new Map([['newarch', url('src/newarch/java/a/S.java')], ['oldarch', url('src/oldarch/java/a/S.java')]])
+    child.addImport(url('src/main/java/a/M.java'), 'a.S', targets, { conditions: ['java'] })
+    const expected = { 'src/main/java/a/M.java': { 'a.S': { newarch: 'src/newarch/java/a/S.java', oldarch: 'src/oldarch/java/a/S.java' } } }
+    t.assert.deepStrictEqual(JSON.parse(child.lockData).imports.java, expected)
+    t.assert.throws(() => child.addImport(url('src/main/java/a/M.java'), 'a.S', targets, { conditions: ['java'], format: 'java' }), /no format with a Map/u)
+
+    const rootState = new State(dir, { scope: 'full', lock: 'add' })
+    rootState.mergeShard(child.shardSnapshot())
+    t.assert.deepStrictEqual(JSON.parse(rootState.lockData).imports.java, expected)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('shardSnapshot forwards only this-session observations, not the seeded lockfile baseline', (t) => {
   // A forked child seeds the existing lockfile at construction; its shard must carry only what IT
   // observed (child-only files), NOT re-ship the whole baseline -- which would bloat every worker's

@@ -1181,8 +1181,12 @@ export class State {
     return rel.startsWith('.') ? rel : `./${rel}`
   }
 
+  // `url` is the file the specifier resolves to, or a Map<key, url> of the files it may (a Java edge
+  // to a type several source sets declare, keyed as a --metro edge keys its platforms); no `format`
+  // goes with a Map.
   addImport(parentURL, specifier, url, { conditions = '*', format, importAttributes } = {}) {
     if (conditions !== '*') assert.ok(Array.isArray(conditions))
+    assert.ok(!(url instanceof Map && format), 'addImport takes no format with a Map of targets')
     // Capture Node's require-condition set on the first require()-context edge (see #requireConditions).
     if (this.#requireConditions === null && Array.isArray(conditions) &&
         conditions.includes('require') && !conditions.includes('import')) {
@@ -1190,7 +1194,7 @@ export class State {
     }
     assert.ok(parentURL, 'addImport requires a parent (entries go through addFile)')
     const parent = this.#canonicalFile(parentURL)
-    const file = this.#canonicalFile(url)
+    const file = url instanceof Map ? new Map([...url].map(([k, u]) => [k, this.#canonicalFile(u)])) : this.#canonicalFile(url)
     specifier = this.#canonicalSpecifier(parentURL, specifier)
     const key = this.#conditionsKey(conditions, importAttributes)
 
@@ -1693,10 +1697,12 @@ export class State {
         try { importAttributes = JSON.parse(conditions.slice(withAt + ' (with: '.length, -1)) } catch { /* leave undefined */ }
       }
       const cond = condStr === '*' ? '*' : condStr.split(', ')
+      const toURL = (file) => pathToFileURL(resolve(this.root, file)).toString()
       for (const [parent, specs] of byParent) {
-        const parentURL = pathToFileURL(resolve(this.root, parent)).toString()
+        const parentURL = toURL(parent)
         for (const [specifier, file] of specs) {
-          const url = pathToFileURL(resolve(this.root, file)).toString()
+          // A target may be a Map of files (a Java edge's source-set variants), each replayed alike.
+          const url = file instanceof Map ? new Map([...file].map(([k, f]) => [k, toURL(f)])) : toURL(file)
           // Same best-effort stance as addFile above.
           try { this.addImport(parentURL, specifier, url, { conditions: cond, importAttributes }) } catch { /* skipped */ }
         }

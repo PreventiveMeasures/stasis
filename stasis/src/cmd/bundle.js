@@ -16,6 +16,7 @@ import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
+import { JAVA_CONDITION, javaImportEdges } from '@exodus/stasis-core/java'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -264,9 +265,10 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
 // (packageLookup by default, which walks past a malformed one). `classifyDep(path)` optionally
 // places a file directly (non-node_modules ecosystems like Soldeer/github); null defers. `format` tags
 // every file; `formats` (Map<path,format>) overrides it per file. `resolutions` values are
-// a flat target string or a Map<platform,target>; both round-trip untouched.
+// a flat target string or a Map<platform,target>; both round-trip untouched. `moreImports`
+// (Map<conditionKey, Map<parent, specMap>>) adds edges under keys of their own.
 function assembleCodeBundle({
-  baseDir, entries, sources, resolutions, workspaceName, workspaceVersion, format, formats, conditionKey, classifyDep, host,
+  baseDir, entries, sources, resolutions, workspaceName, workspaceVersion, format, formats, conditionKey, moreImports, classifyDep, host,
   packageOf = packageLookup(baseDir, { host }),
 }) {
   const modules = new Map()
@@ -295,18 +297,20 @@ function assembleCodeBundle({
     }
   }
 
-  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host })
+  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, moreImports, host })
 }
 
 // A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
-// (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`.
-function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host }) {
+// (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`,
+// `moreImports`' (Map<conditionKey, Map<parent, specMap>>) under each of theirs where there are any.
+function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, moreImports = new Map(), host }) {
   const formatsMap = new Map()
   for (const path of sources.keys()) formatsMap.set(path, formats?.get(path) ?? format)
 
   const importsForKey = new Map()
   for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
   const imports = new Map([[conditionKey, importsForKey]])
+  for (const [key, byParent] of moreImports) if (byParent.size > 0) imports.set(key, byParent)
 
   // Executable bits, straight off disk (a synthetic source with no file there is simply not
   // executable). Shell bundles lean on this most: `stasis extract` puts the +x back on the scripts.
@@ -1214,6 +1218,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     resolutions.set(parent, specMap)
   }
 
+  // The edges among the Java sources the bundle carries (the --metro native capture's): each type a
+  // file names that another declares, keyed under their own condition (javaImportEdges).
+  const javaSources = new Map([...sources].filter(([rel]) => formatsByRel.get(rel) === 'java'))
+
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
   const bundle = assembleCodeBundle({
     baseDir,
@@ -1224,6 +1232,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     workspaceName: rootPkg.name ?? 'workspace',
     workspaceVersion: rootPkg.version ?? '0.0.0',
     conditionKey: '*',
+    moreImports: new Map([[JAVA_CONDITION, javaImportEdges(javaSources)]]),
     host,
     packageOf,
   })

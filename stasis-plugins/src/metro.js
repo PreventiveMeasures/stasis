@@ -7,9 +7,10 @@ import { isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
+import { JAVA_CONDITION, javaImportEdges } from '@exodus/stasis-core/java'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync, realReaddirSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -125,6 +126,10 @@ export class StasisMetro {
   #state
   #resources
 
+  // The Java sources the native walk captured (absolute path -> text), whose edges #recordJavaEdges
+  // records once the walk is done.
+  #javaSources = new Map()
+
   // Base dir for resolution; snapshotted at construction so a later chdir can't skew capture.
   #projectDir = process.cwd()
 
@@ -239,6 +244,8 @@ export class StasisMetro {
     // AFTER the graph + auto-includes (same dedupe reason): the native pass only adds the native
     // build-input surface (podspec/gradle/sources) that no module graph carries.
     this.#captureNativeModules()
+    // AFTER the native pass: a Java file's edges land on the others it captured.
+    this.#recordJavaEdges()
   }
 
   // Shared epilogue for the classify-driven capture paths: record under the given format/resource.
@@ -394,6 +401,29 @@ export class StasisMetro {
       if (action === 'skip') continue
       this.#seen.add(full)
       this.#recordCapture(full, source, { format, resource: action === 'resource' })
+      // recordCapture held a code file to UTF-8 already.
+      if (action === 'code' && format === 'java') this.#javaSources.set(full, source.toString('utf8'))
+    }
+  }
+
+  // Record the edges among the captured Java sources (javaImportEdges: each type a file names that
+  // another captured file declares), keyed under JAVA_CONDITION, a type several source sets declare
+  // (`newarch`/`oldarch`) as a Map of each set's file.
+  #recordJavaEdges() {
+    if (this.#javaSources.size === 0) return
+    const absolute = new Map() // project-relative path -> absolute path
+    const sources = new Map()
+    for (const [full, text] of this.#javaSources) {
+      const rel = toPosix(this.#state.relative(full))
+      absolute.set(rel, full)
+      sources.set(rel, text)
+    }
+    const url = (rel) => pathToFileURL(absolute.get(rel)).toString()
+    for (const [parent, specs] of javaImportEdges(sources)) {
+      for (const [type, target] of specs) {
+        const to = typeof target === 'string' ? url(target) : new Map([...target].map(([key, rel]) => [key, url(rel)]))
+        this.#state.addImport(url(parent), type, to, { conditions: [JAVA_CONDITION] })
+      }
     }
   }
 
