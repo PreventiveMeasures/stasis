@@ -1403,9 +1403,9 @@ is:
   command, as clang's tooling splits one), a response file (`@file`, from the command's `directory`,
   nested ones too) read in where it is named, split as GCC splits one (as cl
   does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
-  `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what `-Xclang` and
-  `-Xpreprocessor` pass on read after the driver's own options, as the compiler
-  gets them. A `-include` is the unit's first include, looked up in the
+  `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what `-Xpreprocessor` and
+  `-Wp,` pass on read after the driver's own options, then what `-Xclang` does,
+  as the compiler gets them. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
   after the working directory, as clang-cl looks it up. GCC's `-I-` (to cl and clang-cl, `/I -`) makes the `-I` directories

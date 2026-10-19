@@ -470,15 +470,19 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
 // cl's too where `cl` says the driver is one), each dir resolved against `directory`.
 function includeFlags(argv, directory, toDir, cl) {
-  // -Xclang and -Xpreprocessor hand the argument after them to the compiler proper, after the
-  // driver's own options (as clang -v and gcc -v list the directories they add): read last, in order.
+  // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
+  // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
+  // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
   const own = []
-  const passed = []
+  const preprocessor = []
+  const compiler = []
   for (let k = 1; k < argv.length; k++) {
-    if ((argv[k] === '-Xclang' || argv[k] === '-Xpreprocessor') && k + 1 < argv.length) passed.push(argv[++k])
+    if (argv[k] === '-Xpreprocessor' && k + 1 < argv.length) preprocessor.push(argv[++k])
+    else if (argv[k].startsWith('-Wp,')) preprocessor.push(...argv[k].slice(4).split(','))
+    else if (argv[k] === '-Xclang' && k + 1 < argv.length) compiler.push(argv[++k])
     else own.push(argv[k])
   }
-  const args = [argv[0], ...own, ...passed]
+  const args = [argv[0], ...own, ...preprocessor, ...compiler]
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them

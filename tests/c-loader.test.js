@@ -709,14 +709,15 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
   t.assert.deepStrictEqual(commands.get('c.c').I, [{ rel: 'inc' }])
 }))
 
-test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, after the driver\'s own', withTmp((t, tmp) => {
+test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass on, after the driver\'s own', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '' })
-  const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-c', 'a.c']
+  const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Wp,-I,w', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-Wp,-isystem,t', '-c', 'a.c']
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
-  // clang 18's -v (and gcc 13's, for -Xpreprocessor) lists y, then x, z.
+  // clang 18's -v lists y, then w (-Wp), x, z (-Xclang, last); s, t. gcc 13's puts -Xpreprocessor's
+  // and -Wp's after its own the same way.
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
-  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'x' }, { rel: 'z' }])
-  t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
+  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }])
+  t.assert.deepStrictEqual(flags.system, [{ rel: 's' }, { rel: 't' }])
 }))
 
 test('loadCompileCommands splits a cl or clang-cl command string by Windows rules, others as a shell does', withTmp((t, tmp) => {
