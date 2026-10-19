@@ -821,6 +821,21 @@ test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ uni
   t.assert.deepStrictEqual(commands.get('i.c').system, [])
 }))
 
+test('loadCompileCommands reads the -internal-isystem directories -Wp, and -Xclang pass, where clang searches them', withTmp((t, tmp) => {
+  tree(tmp, { 'a.cpp': '', 'b.c': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.cpp', ['clang++', '-Xclang', '-internal-externc-isystem', '-Xclang', 'ext', '-Wp,-internal-isystem,inc', '-isystem', 'sys', '-idirafter', 'after', '-cxx-isystem', 'cxxs', '-stdlib++-isystem', 'stdl']),
+    unit('b.c', ['clang', '-Xclang', '-internal-isystem', '-Xclang', 'x', '-Xpreprocessor', '-internal-isystem', '-Xpreprocessor', 'p', '-iframework', 'fw', '-isystem', 'sys']),
+  ]))
+  // clang 18's -v for a.cpp lists sys, cxxs, inc, stdl, its own system directories, ext; after. For
+  // b.c, sys, fw, p, its own, x.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.cpp').system, [{ rel: 'sys' }, { rel: 'cxxs' }, { rel: 'inc' }, { rel: 'stdl' }, { rel: 'ext' }])
+  t.assert.deepStrictEqual(commands.get('a.cpp').after, [{ rel: 'after' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'sys' }, { rel: 'fw', framework: true }, { rel: 'p' }, { rel: 'x' }])
+}))
+
 test('collectCBundle takes a Clang command\'s relative paths from its -working-directory', withTmp((t, tmp) => {
   tree(tmp, { 'root/src/a.c': '#include <x.h>\n', 'root/include/x.h': '', 'include/x.h': '', 'root/build/f.h': '' })
   const args = ['clang', `-working-directory=${join(tmp, 'root/build')}`, '-I', '../include', '-include', 'f.h', '-c', 'src/a.c']
@@ -842,6 +857,32 @@ test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s opti
   t.assert.equal(commands.get('a.c').msvc, true)
   t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'inc' }])
   t.assert.equal(commands.get('b.c').msvc, undefined)
+}))
+
+test('loadCompileCommands reads the compiler behind env and a shell\'s NAME=VALUE, in env -C\'s directory', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.c': '', 'e.cpp': '', 'f.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', command: 'env SDK=x clang-cl /Iinc /c a.c' },
+    { directory: tmp, file: 'b.c', command: 'SDK=x INCLUDE=y clang-cl /Iinc /c b.c' },
+    { directory: tmp, file: 'c.c', arguments: ['/usr/bin/env', '-i', '-u', 'CL', '--unset=LIB', '--', '-', 'A=1', 'ccache', 'clang-cl', '/Iinc', '/c', 'c.c'] },
+    { directory: tmp, file: 'd.c', arguments: ['env', '-C', 'build', 'clang-cl', '/Iinc', '/FIpch.h', '/c', '../d.c'] },
+    { directory: tmp, file: 'e.cpp', arguments: ['env', 'CCACHE_DIR=/c', 'ccache', 'env', '--chdir=build', 'g++', '-cxx-isystem', 'cx', '-Iinc', '-c', '../e.cpp'] },
+    { directory: tmp, file: 'f.c', arguments: ['env', '-S', 'clang-cl /Iinc', '/c', 'f.c'] },
+  ]))
+  // Each runs the clang-cl (g++) after env's options and settings, as GNU env does: d.c's and e.cpp's
+  // in build.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  for (const unit of ['a.c', 'b.c', 'c.c']) {
+    t.assert.deepStrictEqual(commands.get(unit).I, [{ rel: 'inc' }], unit)
+    t.assert.equal(commands.get(unit).msvc, true, unit)
+  }
+  t.assert.deepStrictEqual(commands.get('d.c').I, [{ rel: 'build/inc' }])
+  t.assert.equal(commands.get('d.c').msvc, true)
+  t.assert.deepStrictEqual(commands.get('d.c').forced, [{ flag: '/FI', path: 'pch.h', dir: { rel: 'build' } }])
+  t.assert.deepStrictEqual(commands.get('e.cpp').I, [{ rel: 'build/inc' }])
+  t.assert.deepStrictEqual(commands.get('e.cpp').system, [{ rel: 'build/cx' }])
+  // An env option this doesn't know leaves env the command, which is no cl.
+  t.assert.equal(commands.get('f.c').msvc, undefined)
 }))
 
 test('collectCBundle searches Clang\'s framework directories, -F with the -I ones, -iframework after the -isystem ones', withTmp((t, tmp) => {

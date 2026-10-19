@@ -492,6 +492,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
     else own.push(driver[k])
   }
   const args = [driver[0], ...own, ...preprocessor, ...compiler]
+  const compilerFrom = 1 + own.length + preprocessor.length // where the -Xclang ones begin
   // Clang's -working-directory (the last): what relative paths are taken from, itself taken from the
   // command's directory.
   let directory = commandDirectory
@@ -504,6 +505,8 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
   const cxxSystem = [] // -cxx-isystem's, after those, a C++ unit's only
   const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
+  const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
+  const compilerSystem = [] // and -Xclang's, after all the driver's own
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -589,6 +592,11 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       } else if ((v = take('-stdlib++-isystem')) !== undefined) {
         if (cxx) dir(v, standardLibrary)
       }
+      // Clang's -internal-isystem and -internal-externc-isystem, which only -Xclang, -Wp, and
+      // -Xpreprocessor pass (the driver rejects them), searched where the compiler gets them: the
+      // preprocessor's with the driver's options, ahead of the -internal-isystem a -stdlib++-isystem
+      // becomes, and -Xclang's after every one the driver adds (as clang -v lists them).
+      else if ((v = take('-internal-isystem')) !== undefined || (v = take('-internal-externc-isystem')) !== undefined) dir(v, k < compilerFrom ? passedSystem : compilerSystem)
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).
       else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
@@ -606,7 +614,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
     }
   }
   flags.quote.unshift(...preBarrier)
-  flags.system.push(...systemFrameworks, ...cxxSystem, ...standardLibrary)
+  flags.system.push(...systemFrameworks, ...cxxSystem, ...passedSystem, ...standardLibrary, ...compilerSystem)
   if (cl) flags.msvc = true
   return flags
 }
@@ -671,13 +679,45 @@ function splitWindowsCommand(text) {
 
 // Compiler launchers, which run the compiler named after them with its arguments.
 const LAUNCHERS = /^(?:ccache|sccache|distcc|icecc|buildcache)(?:\.exe)?$/iu
+// A `NAME=VALUE` a shell or env sets for the command after it.
+const ASSIGNMENT = /^[A-Za-z_]\w*=/u
+// env's options that take no value.
+const ENV_FLAG = /^(?:-[0iv]+|--(?:ignore-environment|null|debug|list-signal-handling|(?:block|default|ignore)-signal(?:=.*)?))$/su
 // A command's program's name, wherever it lies, by either separator.
 const programName = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
-// Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`).
+// Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`), any
+// `NAME=VALUE` a shell sets, and `env` with its options and settings (`env [OPTION]... [NAME=VALUE]...
+// COMMAND`); `chdir` is the last `env -C DIR`, which the compiler runs in. An env option this doesn't
+// know (`-S`, a string it splits) leaves env the command.
 function compilerAt(args) {
-  let first = 0
-  while (first < args.length - 1 && LAUNCHERS.test(programName(args[first]))) first++
-  return first
+  let at = 0
+  let chdir
+  while (at < args.length - 1) {
+    const name = programName(args[at])
+    if (ASSIGNMENT.test(args[at]) || LAUNCHERS.test(name)) {
+      at++
+      continue
+    }
+    if (!/^env(?:\.exe)?$/iu.test(name)) break
+    let k = at + 1
+    let dir = chdir
+    for (; k < args.length - 1 && args[k].startsWith('-'); k++) {
+      const a = args[k]
+      let m
+      // `-` (env -i) ends its options, as does `--`, which a `-` may follow.
+      if (a === '-' || a === '--') {
+        k += a === '--' && args[k + 1] === '-' ? 2 : 1
+        break
+      }
+      if (a === '-C' || a === '--chdir') dir = args[++k]
+      else if ((m = /^(?:-C|--chdir=)(.+)$/su.exec(a)) !== null) dir = m[1]
+      else if (a === '-u' || a === '--unset') k++
+      else if (!ENV_FLAG.test(a) && !/^(?:-u|--unset=)./su.test(a)) return { at, chdir }
+    }
+    at = k
+    chdir = dir
+  }
+  return { at, chdir }
 }
 // Whether `arg` runs cl, or clang-cl under any name clang reads as one (`clang-cl-20`,
 // `<target>-clang-cl`).
@@ -710,7 +750,7 @@ function driverMode(args) {
 // its compiler's name.
 function isClCommand(args) {
   const mode = driverMode(args)
-  return mode === undefined ? isCl(args[compilerAt(args)]) : mode === 'cl'
+  return mode === undefined ? isCl(args[compilerAt(args).at]) : mode === 'cl'
 }
 
 // A compilation database's `command` string split as clang's tooling splits one: by Windows rules on
@@ -786,9 +826,11 @@ export function loadCompileCommands(baseDir, file) {
     if (unit.rel === undefined || commands.has(unit.rel)) continue
     // As clang does: response files split by the mode the command shows, the mode then taken from
     // what they hold too (a `--driver-mode=cl` in one).
-    const command = expandResponseFiles(args.slice(compilerAt(args)), directory, isClCommand(args))
+    const { at, chdir } = compilerAt(args)
+    const runs = chdir === undefined ? directory : resolve(directory, chdir)
+    const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
     const cl = isClCommand(command)
-    commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file, cl)))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, entry.file, cl)))
   }
   return commands
 }
