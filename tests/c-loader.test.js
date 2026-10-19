@@ -554,3 +554,8 @@ test('loadCompileCommands reads GCC\'s long spellings and prefix options, the -I
 test('scanIncludes ends a line at a lone carriage return, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('#include "a.h"\r#include "b.h"\r#inc\\\rlude "c.h"\r'), ['include "a.h" live', 'include "b.h" live', 'include "c.h" live'])
 })
+
+test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
+  t.assert.deepStrictEqual(specs('﻿#include "a.h"\n'), ['include "a.h" live'])
+  t.assert.deepStrictEqual(specs('﻿#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n'), ['include "b.h" live'])
+})

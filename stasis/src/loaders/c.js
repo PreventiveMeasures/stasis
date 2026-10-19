@@ -84,8 +84,9 @@ function guardName(name, expr) {
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
 // backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
 export function scanIncludes(source) {
-  // Lines end at CR LF, LF or a lone CR, as GCC reads them; a backslash before one splices it.
-  const s = source.replaceAll(/\r\n?/gu, '\n').replaceAll(/\\\n/gu, '')
+  // A byte order mark opens no line; lines end at CR LF, LF or a lone CR, as GCC reads them; a
+  // backslash before one splices it.
+  const s = source.replace(/^\uFEFF/u, '').replaceAll(/\r\n?/gu, '\n').replaceAll(/\\\n/gu, '')
   const n = s.length
   const out = []
   const stack = []

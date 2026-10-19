@@ -1314,10 +1314,10 @@ library's). Nothing is compiled or preprocessed: the graph is the include
 graph, as the preprocessor would follow it, plus each header's implementation.
 
 **Directives.** `#include`, `#import`, `#include_next` and `#embed` are found as
-translation phases 1 to 4 find them: a line ending at CR LF, LF or a lone CR,
-lines spliced by a backslash joined, comments and string and character literals
-skipped (C++ raw strings and digit separators included), a directive being `#`
-(or `%:`) first on its line. Macros aren't
+translation phases 1 to 4 find them: a leading byte order mark skipped, a line
+ending at CR LF, LF or a lone CR, lines spliced by a backslash joined, comments
+and string and character literals skipped (C++ raw strings and digit separators
+included), a directive being `#` (or `%:`) first on its line. Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and conditionals
 aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
 code (and the `#else` of an `#if 1`) is never followed, and an include under any
