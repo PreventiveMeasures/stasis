@@ -771,6 +771,60 @@ test('loadCompileCommands searches GCC\'s -B prefixes\' include directories firs
   t.assert.deepStrictEqual(commands.get('c.c').system, [])
 }))
 
+test('loadCompileCommands applies the include path variables a command sets, as env leaves them', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.cpp': '', 'c.c': '', 'd.c': '', 'e.c': '', 'f.c': '', 'g.c': '', 'h.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', command: 'CPATH=cp1::cp2 C_INCLUDE_PATH=ci CPLUS_INCLUDE_PATH=cxi gcc -I ii -isystem sy -idirafter af -c a.c' },
+    { directory: tmp, file: 'b.cpp', command: 'env CPATH=cp1 C_INCLUDE_PATH=ci CPLUS_INCLUDE_PATH=cxi clang++ -Xclang -cxx-isystem -Xclang xc -cxx-isystem cx -c b.cpp' },
+    { directory: tmp, file: 'g.c', command: 'CPATH=cp1 gcc -I ii -iprefix pfx/ -iwithprefixbefore wb -c g.c' },
+    { directory: tmp, file: 'h.c', command: 'CPATH=cp1 clang -I ii -iprefix pfx/ -iwithprefixbefore wb -Xclang -I -Xclang xi -c h.c' },
+    { directory: tmp, file: 'c.c', command: 'CPATH=cp1 env -u CPATH clang -c c.c' },
+    { directory: tmp, file: 'd.c', command: 'CPATH=cp1 env -i C_INCLUDE_PATH=ci clang -c d.c' },
+    { directory: tmp, file: 'e.c', arguments: ['env', 'INCLUDE=ci;cxi', 'EXTERNAL_INCLUDE=ext', 'clang-cl', '/imsvc', 'ms', '/c', 'e.c'] },
+    { directory: tmp, file: 'f.c', arguments: ['env', 'INCLUDE=ci', 'CPATH=cp1', 'clang-cl', '/X', '/c', 'f.c'] },
+  ]))
+  // gcc 13 and clang 18 -v list ii, cp1, . (the empty element), cp2, then sy, ci, then af for a.c;
+  // clang 18 cp1, then cx, cxi, xc (-Xclang's last) for b.cpp. CPATH's is GCC's last -I directory
+  // (ii, wb, cp1 for g.c), but clang's before -Xclang's and -iwithprefixbefore's (ii, cp1, xi, wb
+  // for h.c). env -u CPATH drops it, env -i what came before it. clang-cl 18 lists ms, then
+  // INCLUDE's ci, cxi and EXTERNAL_INCLUDE's ext for e.c; /X drops them (not CPATH) for f.c.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'ii' }, { rel: 'cp1' }, { rel: '' }, { rel: 'cp2' }])
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'sy' }, { rel: 'ci' }])
+  t.assert.deepStrictEqual(commands.get('a.c').after, [{ rel: 'af' }])
+  t.assert.deepStrictEqual(commands.get('b.cpp').I, [{ rel: 'cp1' }])
+  t.assert.deepStrictEqual(commands.get('b.cpp').system, [{ rel: 'cx' }, { rel: 'cxi' }, { rel: 'xc' }])
+  t.assert.deepStrictEqual(commands.get('g.c').I, [{ rel: 'ii' }, { rel: 'pfx/wb' }, { rel: 'cp1' }])
+  t.assert.deepStrictEqual(commands.get('h.c').I, [{ rel: 'ii' }, { rel: 'cp1' }, { rel: 'xi' }, { rel: 'pfx/wb' }])
+  t.assert.deepStrictEqual(commands.get('c.c').I, [])
+  t.assert.deepStrictEqual(commands.get('d.c').I, [])
+  t.assert.deepStrictEqual(commands.get('d.c').system, [{ rel: 'ci' }])
+  t.assert.deepStrictEqual(commands.get('e.c').after, [{ rel: 'ms' }, { rel: 'ci' }, { rel: 'cxi' }, { rel: 'ext' }])
+  t.assert.deepStrictEqual(commands.get('f.c').after, [])
+  t.assert.deepStrictEqual(commands.get('f.c').I, [{ rel: 'cp1' }])
+}))
+
+test('loadCompileCommands searches a Clang -resource-dir\'s include, after the -stdlib++-isystem directories', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.cpp': '', 'c.c': '', 'd.c': '', 'e.c': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.c', ['clang', '-resource-dir=res', '-isystem', 'sy', '-Xclang', '-internal-isystem', '-Xclang', 'xc']),
+    unit('b.cpp', ['clang++', '-resource-dir', 'res', '-stdlib++-isystem', 'stdl', '-isystem', 'sy']),
+    unit('c.c', ['clang', '-resource-dir', 'res', '-nobuiltininc']),
+    unit('d.c', ['clang', '-resource-dir', 'res', '-nostdinc']),
+    unit('e.c', ['clang-cl', '-resource-dir', 'res', '/imsvc', 'ms', '/external:Isy']),
+  ]))
+  // clang 18 -v lists sy, res/include, xc for a.c; sy, stdl, res/include for b.cpp; no res/include
+  // with -nobuiltininc or -nostdinc; clang-cl 18 sy, res/include, then ms.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'sy' }, { rel: 'res/include' }, { rel: 'xc' }])
+  t.assert.deepStrictEqual(commands.get('b.cpp').system, [{ rel: 'sy' }, { rel: 'stdl' }, { rel: 'res/include' }])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [])
+  t.assert.deepStrictEqual(commands.get('d.c').system, [])
+  t.assert.deepStrictEqual(commands.get('e.c').system, [{ rel: 'sy' }, { rel: 'res/include' }])
+  t.assert.deepStrictEqual(commands.get('e.c').after, [{ rel: 'ms' }])
+}))
+
 test('loadCompileCommands leaves out what -Xlinker, -Xassembler and the like hand other tools', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '#include <stdio.h>\n', 'vendor/stdio.h': '', 'sr/inc/.keep': '' })
   const other = ['-Xlinker', '-Ivendor', '-Xassembler', '-Iv2', '-Xanalyzer', '-Iv3', '-Xopenmp-target=x86_64-pc-linux-gnu', '-Iv4', '-Xoffload-linker-x86_64', '-Iv5', '-Xlinker', '--sysroot=sr']

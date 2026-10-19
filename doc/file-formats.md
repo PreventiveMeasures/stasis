@@ -1399,7 +1399,9 @@ is:
   the `-stdlib++-isystem` ones; through `-Xclang`, after them) and
   `-internal-iframework` (after all those), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, GCC's `-B` (`--prefix`, whose
-  `include` is a system directory ahead of the others; Clang adds none), and `-iprefix` with the
+  `include` is a system directory ahead of the others; Clang adds none), Clang's
+  `-resource-dir` (whose `include` comes after the `-stdlib++-isystem` ones, but
+  under `-nostdinc` or `-nobuiltininc`), and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
   `--include-barrier`, ...), Clang's framework directories -- `-F` (with the
@@ -1417,7 +1419,11 @@ is:
   does, under cl and clang-cl; a `--driver-mode=` in one counts after), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`), a shell's `NAME=VALUE`s and
   `env` with its options and settings skipped (`env -C dir` running the
-  compiler in `dir`, nested ones in turn), and what clang-cl's `/clang:`
+  compiler in `dir`, nested ones in turn; the include path variables they set,
+  `env -u` and `-i` aside, searched as GCC and Clang search them: `CPATH`'s
+  directories after the `-I` ones, `C_INCLUDE_PATH`'s or `CPLUS_INCLUDE_PATH`'s
+  after the `-c-isystem` or `-cxx-isystem` ones, and cl's `INCLUDE` and
+  `EXTERNAL_INCLUDE` after the `/imsvc` ones, but under `/X`), and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
   and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,
   as the compiler gets them (what `-Xlinker`, `-Xassembler` and the like hand

@@ -10,7 +10,7 @@
 
 import { isUtf8 } from 'node:buffer'
 import { readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { basename, delimiter, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 
 import { assertRealPathWithinBase, classifyFormat, isAutoExcludedDir, isDotEnvFile, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isDir, isFile } from '../resolve-typescript.js'
@@ -514,8 +514,8 @@ const OTHER_TOOL = /^-X(?:linker|assembler|analyzer|cuda-ptxas|cuda-fatbinary|of
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
 // cl's too where `cl` says the driver is one), each dir resolved against `commandDirectory` (or its
 // -working-directory); `cxx` says the command compiles C++, where -cxx-isystem and -stdlib++-isystem
-// count.
-function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
+// count; `vars` the environment variables the command sets the compiler (CPATH and the like).
+function includeFlags(argv, commandDirectory, toDir, cl, cxx = false, vars = new Map()) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
@@ -553,6 +553,8 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
   const languageSystem = [] // -cxx-isystem's (a C++ unit's) or Clang's -c-isystem's (a C one's), after those
+  const compilerLanguage = [] // and -Xclang's, after C_INCLUDE_PATH's or CPLUS_INCLUDE_PATH's
+  let ownI = 0 // how many -I (and -F) directories precede -Xclang's, Clang's CPATH ones going there
   const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
   const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
   const compilerSystem = [] // and -Xclang's, after all the driver's own
@@ -560,6 +562,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   // GCC's -B prefixes' `include` directories, ahead of every other system one (Clang adds none).
   const gcc = !cl && driverMode(argv) === undefined && !/clang/iu.test(programName(argv[0]))
   const prefixSystem = []
+  let resourceDir // Clang's -resource-dir (the last), whose `include` it searches after those
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -625,13 +628,19 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
         continue
       }
       if ((v = long('--include-directory')) !== undefined || (v = take('-I')) !== undefined || (cl && (v = take('/I')) !== undefined)) {
-        if (pass === '-I') dir(v, flags.I)
+        if (pass === '-I') {
+          dir(v, flags.I)
+          if (k < compilerFrom) ownI = flags.I.length
+        }
         continue
       }
       // Clang's -F framework directories go with the -I ones, in order (cl's own -F options are
       // others; what /clang: passes the clang driver is Clang's).
       if ((!cl || k >= clangFrom) && (v = take('-F')) !== undefined) {
-        if (pass === '-I') dir(v, flags.I, true)
+        if (pass === '-I') {
+          dir(v, flags.I, true)
+          if (k < compilerFrom) ownI = flags.I.length
+        }
         continue
       }
       if (pass === '-I' || a.startsWith('-include-pch')) continue
@@ -642,9 +651,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
       else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
       else if ((v = take('-cxx-isystem')) !== undefined) {
-        if (cxx) dir(v, languageSystem)
+        if (cxx) dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
       } else if ((v = take('-c-isystem')) !== undefined) {
-        if (!cxx) dir(v, languageSystem)
+        if (!cxx) dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
       } else if ((v = take('-stdlib++-isystem')) !== undefined) {
         if (cxx) dir(v, standardLibrary)
       }
@@ -656,6 +665,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       // -internal-iframework (newer Clang's), which the compiler adds after all those.
       else if ((v = take('-internal-iframework')) !== undefined) dir(v, internalFrameworks, true)
       // GCC's -B (--prefix): `<prefix>include`, a directory's slash added, as gcc 13 -v lists it.
+      else if (!gcc && (v = long('-resource-dir')) !== undefined) resourceDir = v
       else if ((v = long('--prefix')) !== undefined || (v = take('-B')) !== undefined) {
         if (gcc && v !== undefined && v !== '') {
           const path = resolve(directory, v)
@@ -678,9 +688,23 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v?.replaceAll('\\', '/'))
     }
   }
+  // The include path variables the command sets, as gcc 13 and clang 18 -v list them: CPATH's
+  // directories after every -I one (to Clang, every one but -Xclang's), C_INCLUDE_PATH's (a C
+  // unit's) or CPLUS_INCLUDE_PATH's (a C++ one's) after the -c-isystem or -cxx-isystem ones (but
+  // -Xclang's), and under cl and clang-cl, INCLUDE's and EXTERNAL_INCLUDE's (`;`-separated, as cl
+  // splits them) after /imsvc's, unless /X; an empty element is the working directory.
+  const envDirs = (name, separator = delimiter) => (vars.get(name) ? vars.get(name).split(separator).map((d) => (d === '' ? '.' : d)) : [])
+  const cpath = []
+  for (const d of envDirs('CPATH')) dir(d, cpath)
+  flags.I.splice(gcc ? flags.I.length : ownI, 0, ...cpath)
+  for (const d of envDirs(cxx ? 'CPLUS_INCLUDE_PATH' : 'C_INCLUDE_PATH')) dir(d, languageSystem)
+  if (cl && !args.some((a) => /^[/-]X$/u.test(a))) for (const d of [...envDirs('INCLUDE', ';'), ...envDirs('EXTERNAL_INCLUDE', ';')]) dir(d, flags.after)
+  // Clang's -resource-dir: its `include`, which -nostdinc and -nobuiltininc leave out.
+  const resource = []
+  if (resourceDir !== undefined && resourceDir !== '' && !args.includes('-nostdinc') && !args.includes('-nobuiltininc')) dir(`${resourceDir}/include`, resource)
   flags.quote.unshift(...preBarrier)
   flags.system.unshift(...prefixSystem)
-  flags.system.push(...systemFrameworks, ...languageSystem, ...passedSystem, ...standardLibrary, ...compilerSystem, ...internalFrameworks)
+  flags.system.push(...systemFrameworks, ...languageSystem, ...compilerLanguage, ...passedSystem, ...standardLibrary, ...resource, ...compilerSystem, ...internalFrameworks)
   if (cl) flags.msvc = true
   return flags
 }
@@ -782,37 +806,53 @@ const ENV_FLAG = /^(?:-[0iv]+|--(?:ignore-environment|null|debug|list-signal-han
 const programName = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
 // Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`), any
 // `NAME=VALUE` a shell sets, and `env` with its options and settings (`env [OPTION]... [NAME=VALUE]...
-// COMMAND`); `chdir` holds each env's last `-C DIR`, the compiler running in them in turn. An env
+// COMMAND`); `chdir` holds each env's last `-C DIR`, the compiler running in them in turn, and
+// `vars` the variables the command sets it (env's `-i` and `-` clearing them, `-u NAME` one). An env
 // option this doesn't know (`-S`, a string it splits) leaves env the command.
 function compilerAt(args) {
   let at = 0
   const chdir = []
+  const vars = new Map()
   while (at < args.length - 1) {
     const name = programName(args[at])
-    if (ASSIGNMENT.test(args[at]) || LAUNCHERS.test(name)) {
+    if (ASSIGNMENT.test(args[at])) {
+      const eq = args[at].indexOf('=')
+      vars.set(args[at].slice(0, eq), args[at].slice(eq + 1))
+      at++
+      continue
+    }
+    if (LAUNCHERS.test(name)) {
       at++
       continue
     }
     if (!/^env(?:\.exe)?$/iu.test(name)) break
     let k = at + 1
     let dir
+    let clear = false
+    const unset = []
     for (; k < args.length - 1 && args[k].startsWith('-'); k++) {
       const a = args[k]
       let m
       // `-` (env -i) ends its options, as does `--`, which a `-` may follow.
       if (a === '-' || a === '--') {
-        k += a === '--' && args[k + 1] === '-' ? 2 : 1
+        const dash = a === '-' || args[k + 1] === '-'
+        clear ||= dash
+        k += a === '--' && dash ? 2 : 1
         break
       }
       if (a === '-C' || a === '--chdir') dir = args[++k]
       else if ((m = /^(?:-C|--chdir=)(.+)$/su.exec(a)) !== null) dir = m[1]
-      else if (a === '-u' || a === '--unset') k++
-      else if (!ENV_FLAG.test(a) && !/^(?:-u|--unset=)./su.test(a)) return { at, chdir }
+      else if (a === '-u' || a === '--unset') unset.push(args[++k])
+      else if ((m = /^(?:-u|--unset=)(.+)$/su.exec(a)) !== null) unset.push(m[1])
+      else if (ENV_FLAG.test(a)) clear ||= /^-[0v]*i|^--ignore-environment$/u.test(a)
+      else return { at, chdir, vars }
     }
+    if (clear) vars.clear()
+    for (const n of unset) vars.delete(n)
     at = k
     if (dir !== undefined) chdir.push(dir)
   }
-  return { at, chdir }
+  return { at, chdir, vars }
 }
 // Whether `arg` runs cl, or clang-cl under any name clang reads as one (`clang-cl-20`,
 // `<target>-clang-cl`).
@@ -932,11 +972,11 @@ export function loadCompileCommands(baseDir, file) {
     if (unit.rel === undefined || commands.has(unit.rel)) continue
     // As clang does: response files split by the mode the command shows, the mode then taken from
     // what they hold too (a `--driver-mode=cl` in one).
-    const { at, chdir } = compilerAt(args)
+    const { at, chdir, vars } = compilerAt(args)
     const runs = resolve(directory, ...chdir)
     const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
     const cl = isClCommand(command)
-    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, resolve(directory, entry.file), cl, runs)))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, resolve(directory, entry.file), cl, runs), vars))
   }
   return commands
 }
