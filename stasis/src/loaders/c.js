@@ -285,6 +285,7 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 // and cl's too where `cl` says the driver is one), each dir resolved against `directory`.
 function includeFlags(args, directory, toDir, cl) {
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
+  const preBarrier = [] // the -I directories before a `-I-`
   const dir = (value, list) => {
     // `-I=dir` is relative to the sysroot: a system directory.
     if (value !== undefined && value !== '' && value !== '-' && !value.startsWith('=')) list.push(toDir(resolve(directory, value)))
@@ -301,9 +302,10 @@ function includeFlags(args, directory, toDir, cl) {
       continue
     }
     // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes only,
-    // and none is looked up beside its includer.
+    // ahead of every -iquote one whatever the order given (as `gcc -v` lists them), and none is
+    // looked up beside its includer.
     if (a === '-I-') {
-      flags.quote.push(...flags.I)
+      preBarrier.push(...flags.I)
       flags.I = []
       flags.split = true
       continue
@@ -327,6 +329,7 @@ function includeFlags(args, directory, toDir, cl) {
     else if (cl && (v = take('/I')) !== undefined) dir(v, flags.I)
     else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v)
   }
+  flags.quote.unshift(...preBarrier)
   return flags
 }
 

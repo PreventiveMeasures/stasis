@@ -478,10 +478,16 @@ test('loadCompileCommands and collectCBundle honor GCC\'s -I-: quote-only direct
     'quote/q.h': '',
     'post/x.h': '',
   })
-  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/a.c', arguments: ['gcc', '-Iquote', '-I-', '-Ipost', '-c', 'src/a.c'] }]))
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'src/a.c', arguments: ['gcc', '-Iquote', '-I-', '-Ipost', '-c', 'src/a.c'] },
+    { directory: tmp, file: 'src/b.c', arguments: ['gcc', '-iquote', 'q', '-Ipre', '-Ipre2', '-I-', '-iquote', 'q2', '-Ipost', '-c', 'src/b.c'] },
+  ]))
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
   t.assert.deepStrictEqual(commands.get('src/a.c').quote, [{ rel: 'quote' }])
   t.assert.deepStrictEqual(commands.get('src/a.c').I, [{ rel: 'post' }])
+  // The -I directories before -I- come ahead of every -iquote one, as GCC 13's `gcc -v -E` lists them.
+  t.assert.deepStrictEqual(commands.get('src/b.c').quote, [{ rel: 'pre' }, { rel: 'pre2' }, { rel: 'q' }, { rel: 'q2' }])
+  t.assert.deepStrictEqual(commands.get('src/b.c').I, [{ rel: 'post' }])
   const { resolutions } = collectCBundle(tmp, ['src/a.c'], { commands })
   // Not src/x.h beside the unit, and <q.h> isn't searched for in the quote-only directory.
   t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/a.c')), { 'include "x.h"': 'post/x.h', 'include "q.h"': 'quote/q.h' })

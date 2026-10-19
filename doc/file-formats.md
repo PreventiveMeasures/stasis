@@ -1365,8 +1365,8 @@ directory for `"x"`, then the `--embed-dir` directories. The search path is:
   shell splits it. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up. GCC's `-I-` makes the `-I` directories
-  before it quote-only, and no quoted include is then looked up beside its
-  includer. The database takes the place of a known project's search path for
+  before it quote-only, searched ahead of every `-iquote` one, and no quoted
+  include is then looked up beside its includer. The database takes the place of a known project's search path for
   the units it lists; an entry it doesn't list is resolved with its known
   project's and `--include-dirs`, said so. The database is read wherever it
   is, never bundled.
