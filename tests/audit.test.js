@@ -917,6 +917,10 @@ test('audit() lists only the installed versions a range covers, and drops ranges
 
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 
+// A fake @preventive/upstream/github.js client answering `listRepoAdvisories`, over repos neither
+// renamed nor transferred (getRepo).
+const githubClient = (listRepoAdvisories) => ({ listRepoAdvisories, getRepo: async ({ repo }) => ({ full_name: repo }) })
+
 // npm's, OSV's and Soldeer's answers for ECOSYSTEMS_BUNDLE: an advisory on the crate serde alone.
 const ecosystemsFetch = ({ url, opts }) => {
   if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
@@ -938,13 +942,11 @@ test('audit() asks npm for npm packages, OSV for crates and Composer packages, a
     const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
     try {
       const asked = []
-      const github = {
-        async listRepoAdvisories({ repo }) {
-          asked.push(repo)
-          if (repo !== 'OpenZeppelin/openzeppelin-contracts') return []
-          return [{ ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'oz bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 5.0.0', package: { ecosystem: 'npm', name: '@openzeppelin/contracts' } }] }]
-        },
-      }
+      const github = githubClient(async ({ repo }) => {
+        asked.push(repo)
+        if (repo !== 'OpenZeppelin/openzeppelin-contracts') return []
+        return [{ ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'oz bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 5.0.0', package: { ecosystem: 'npm', name: '@openzeppelin/contracts' } }] }]
+      })
       const report = await audit([writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)], { github })
       const body = (url) => JSON.parse(calls.find((call) => call.url === url).opts.body)
       t.assert.deepStrictEqual(body('https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'), { foo: ['2.0.0'], serde: ['1.0.100'] })
@@ -1040,7 +1042,7 @@ test('audit(--why --reason) keeps the advisories of other ecosystems by the cons
     try {
       // webpack recorded the crate, run the npm packages: collectWhy follows npm's import graph alone.
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, reason: { webpack: ['vendor/serde/src/lib.rs'], run: ['node_modules/foo/index.js'] } })
-      const github = { listRepoAdvisories: async () => [] }
+      const github = githubClient(async () => [])
       const kept = await audit([bundle], { github, why: true, reason: 'webpack' })
       t.assert.deepStrictEqual(kept.rows.map(({ ecosystem, package: pkg, reason }) => ({ ecosystem, package: pkg, reason })), [{ ecosystem: 'cargo', package: 'serde', reason: 'webpack' }])
       t.assert.deepStrictEqual((await audit([bundle], { github, why: true, reason: 'run' })).rows, [], 'run recorded none of it')
@@ -1069,7 +1071,7 @@ test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` a
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources, modules: {} })
       t.assert.deepStrictEqual(collectPackages([bundle]).map(({ name, version }) => `${name}@${version}`), ['acme/a@0.0.0', 'acme/b@main'])
       const advisory = { ghsa_id: 'GHSA-9999-8888-7777', state: 'published', summary: 'bug', severity: 'high', vulnerabilities: [{ vulnerable_version_range: '< 2.0.0' }] }
-      const report = await audit([bundle], { github: { listRepoAdvisories: async () => [advisory] } })
+      const report = await audit([bundle], { github: githubClient(async () => [advisory]) })
       t.assert.deepStrictEqual(report.rows.map(({ package: pkg, installed }) => `${pkg}@${installed}`), ['acme/a@0.0.0', 'acme/b@main'])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -1089,7 +1091,7 @@ const registry = (named) => ({ url }) => {
   if (Object.hasOwn(named, name)) return json({ name, version, repository: named[name] })
   throw new Error(`unexpected request: ${url}`)
 }
-const listing = (asked) => ({ listRepoAdvisories: async ({ repo }) => { asked.push(repo); return [] } })
+const listing = (asked) => githubClient(async ({ repo }) => { asked.push(repo); return [] })
 const lookedUp = (calls) => calls.map((call) => call.url).filter((url) => VERSION_DOCUMENT.test(url)).toSorted()
 
 test('audit() asks the repo an artifact records for a dependency instead of looking one up', withFetch(
