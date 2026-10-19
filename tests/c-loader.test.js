@@ -136,6 +136,7 @@ test('scanIncludes takes a file\'s include guard for no condition', (t) => {
   t.assert.deepStrictEqual(specs('#ifndef USE_X\n#define USE_X\n#include "x.h"\n#endif\n#include "y.h"\n'), ['include "x.h" maybe', 'include "y.h" live'])
   t.assert.deepStrictEqual(specs('#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\nint after;\n'), ['include "x.h" maybe'])
   t.assert.deepStrictEqual(specs('int before;\n#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\n'), ['include "x.h" maybe'])
+  t.assert.deepStrictEqual(specs('#ifndef A_H\nint between;\n#define A_H\n#include "x.h"\n#endif\n'), ['include "x.h" maybe'])
   // Another pragma first: the conditional may be a feature's, set apart from the file by it.
   t.assert.deepStrictEqual(specs('#pragma GCC system_header\n#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\n'), ['include "x.h" maybe'])
   t.assert.deepStrictEqual(specs('#pragma  once \n#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\n'), ['include "x.h" live'])

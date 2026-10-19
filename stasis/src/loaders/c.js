@@ -391,7 +391,9 @@ function scanText(source) {
       i = directive(i + (c === '#' ? 1 : 2))
     } else {
       atLineStart = false
+      // Code: before any #ifndef, there is no guard; between one and its #define, it isn't one.
       code = true
+      guard = null
       if (closedGuard !== null) {
         unguard(closedGuard.from, closedGuard.to)
         closedGuard = null
