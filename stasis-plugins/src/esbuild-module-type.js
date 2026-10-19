@@ -214,7 +214,9 @@ const arrayIndex = (key) => (typeof key === 'string' && /^(?:0|[1-9]\d*)$/u.test
 // The values an array or object literal holds for what a pattern or property read takes from it: the property
 // `key` names (every one where it's undefined), an array's element at that index (or past one where a spread
 // before it shifts it), a property whose computed key or a spread that may be it, what a getter returns, what a
-// `__proto__:` prototype holds, and a class's static; a name's are the caller's to follow (out.elements).
+// `__proto__:` prototype holds, and a class's static; a name's are the caller's to follow (out.elements). A call's
+// result holds what its function returns holds there (`load().lib`, `const [lib] = load()`): an inline one's or a
+// literal's method's, and a named one's for the caller to follow (out.returned).
 function elementsOf(node, out, key) {
   switch (node?.type) {
     case 'ArrayExpression': {
@@ -250,10 +252,21 @@ function elementsOf(node, out, key) {
       })
     case 'ElementOf':
       return elementsOf(node.object, out, node.key).flatMap((element) => elementsOf(element, out, key))
-    // `Proxy.revocable(target, handler).proxy` is `new Proxy(target, handler)`.
-    case 'CallExpression':
-      return node.callee.type === 'MemberExpression' && staticKey(node.callee) === 'revocable' && (key === undefined || key === 'proxy')
-        ? [{ type: 'NewExpression', callee: node.callee.object, arguments: node.arguments }] : []
+    case 'CallExpression': {
+      // `Proxy.revocable(target, handler).proxy` is `new Proxy(target, handler)`.
+      if (node.callee.type === 'MemberExpression' && staticKey(node.callee) === 'revocable') {
+        return key === undefined || key === 'proxy' ? [{ type: 'NewExpression', callee: node.callee.object, arguments: node.arguments }] : []
+      }
+      // Part of another module's exports isn't followed (see the docs' limits).
+      if (isRequire(node)) return []
+      const values = []
+      for (const fn of calledFunctions(node)) {
+        if (FUNCTIONS.has(fn.type)) values.push(...returnedValues(fn))
+        else if (fn.type === 'Identifier') out.returned?.push([fn.name, key])
+        else values.push(...methodReturns(fn.object, staticKey(fn), { callees: new Set(), methods: [] }))
+      }
+      return values.flatMap((value) => elementsOf(value, out, key))
+    }
     // A read off a read (`({ inner: { … } }).inner.load`) resolves where the first one lands on a literal; through a
     // name (`h.inner.load`) it isn't followed: a name stands for every declaration of it in the file, and a chain of
     // keys through a bundle's names multiplies past what a build can wait for.
@@ -391,10 +404,13 @@ function definesEsModule(node, parent, key, grandparent, context) {
 }
 
 // The values a call of a function returns: its expression body, or each `return` outside nested functions --
-// none for an async function or a generator, whose call returns a Promise or an iterator instead.
+// none for an async function or a generator, whose call returns a Promise or an iterator instead. Cached: a
+// bundle's function is followed for each key it's read under.
+const returnedCache = new WeakMap()
 function returnedValues(fn) {
   if (fn.async || fn.generator) return []
   if (fn.body.type !== 'BlockStatement') return [fn.body]
+  if (returnedCache.has(fn)) return returnedCache.get(fn)
   const values = []
   const stack = [fn.body]
   while (stack.length > 0) {
@@ -402,6 +418,7 @@ function returnedValues(fn) {
     if (current.type === 'ReturnStatement') values.push(current.argument)
     for (const [child] of children(current)) if (!FUNCTIONS.has(child.type) && child.type !== 'ClassBody') stack.push(child)
   }
+  returnedCache.set(fn, values)
   return values
 }
 
@@ -744,7 +761,7 @@ export function analyzeModule(source, { path, loader }) {
   // writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
   const tokenContext = { writeTargets: new Set() }
   const keyedWrites = []  // [key name, values]: written to (or copied into) `module[key]`, the exports where key is 'exports'
-  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
+  const exported = { specifiers: new Set(), identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], returned: [], keys: [], symbols: new Set(), proxies: new Set(), requires: [], marked: false }
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
   // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
   const exportWrites = []
@@ -1047,7 +1064,7 @@ export function analyzeModule(source, { path, loader }) {
     if (!names(name, 'exports')) continue
     for (const value of written) scanValue(value.type === 'SpreadElement' ? value.argument : value, exported)
   }
-  const done = { value: new Set(), call: new Set(), instance: new Set(), elements: new Set(), method: new Set() }
+  const done = { value: new Set(), call: new Set(), instance: new Set(), elements: new Set(), method: new Set(), returned: new Set() }
   const pending = []
   const follow = (found) => {
     for (const identifier of found.identifiers) pending.push(['value', identifier])
@@ -1055,6 +1072,7 @@ export function analyzeModule(source, { path, loader }) {
     for (const cls of found.instances) pending.push(['instance', cls])
     for (const [name, key] of found.elements) pending.push(['elements', name, key])
     for (const [name, key] of found.methods) pending.push(['method', name, key])
+    for (const [name, key] of found.returned) pending.push(['returned', name, key])
     if (found.marked) exported.marked = true
     for (const name of found.symbols) exported.symbols.add(name)
     for (const name of found.proxies) exported.proxies.add(name)
@@ -1063,10 +1081,10 @@ export function analyzeModule(source, { path, loader }) {
   // A name read under more keys than this is followed for every key (undefined) instead: a superset of what each
   // key gets. A bundle's minified names (`e`, `t`) are read under nearly every key in it (jiti's Babel: ~1,000).
   const MAX_KEYS = 16
-  const keysOf = { elements: new Map(), method: new Map() }  // name -> the keys it's been followed under
+  const keysOf = { elements: new Map(), method: new Map(), returned: new Map() }  // name -> the keys it's been followed under
   while (pending.length > 0) {
     let [kind, name, key] = pending.pop()
-    if (kind === 'elements' || kind === 'method') {
+    if (kind in keysOf) {
       if (done[kind].has(name)) continue  // followed for every key
       if (key !== undefined) {
         const keys = keysOf[kind].get(name) ?? new Set()
@@ -1080,7 +1098,7 @@ export function analyzeModule(source, { path, loader }) {
     done[kind].add(id)
     const inits = declarators.get(name) ?? []
     const assigned = assignments.get(name) ?? []
-    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
+    const found = { specifiers: exported.specifiers, identifiers: new Set(), callees: new Set(), instances: new Set(), elements: [], methods: [], returned: [], keys: exported.keys, symbols: new Set(), proxies: new Set(), requires: exported.requires, marked: false }
     if (kind === 'value') for (const origin of [...inits, ...assigned, ...(copies.get(name) ?? [])]) scanValue(origin, found)
     else if (kind === 'instance') {
       for (const origin of [...(functionDecls.get(name) ?? []), ...inits, ...assigned]) for (const value of scanInstance(origin, found, false)) scanValue(value, found)
@@ -1093,6 +1111,12 @@ export function analyzeModule(source, { path, loader }) {
       for (const fn of writtenAt(name, key).flatMap(functionsOf)) {
         if (FUNCTIONS.has(fn.type)) for (const value of returnedValues(fn)) scanValue(value, found)
         else found.callees.add(fn.name)
+      }
+    } else if (kind === 'returned') {
+      // What the function a name holds returns, at the key (`load().lib`).
+      for (const fn of [...(functionDecls.get(name) ?? []), ...[...inits, ...assigned].flatMap(functionsOf)]) {
+        if (FUNCTIONS.has(fn.type)) for (const value of returnedValues(fn)) for (const element of elementsOf(value, found, key)) scanValue(element, found)
+        else found.returned.push([fn.name, key])  // an alias (`const load = make`)
       }
     }
     else {

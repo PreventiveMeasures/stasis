@@ -252,9 +252,11 @@ These cases aren't caught:
   `module.exports = require('./lib').default`, which builds the same either way, would need
   analysis across modules that the check doesn't do.
 - A `require()` that reaches the exports only through a chain of property reads on a local,
-  such as a method two levels down (`module.exports = h.inner.load()`). The check follows one
-  property of a local, and chains off a literal. Following chains through names multiplies past
-  what a build can wait for in bundled files.
+  such as a method two levels down (`module.exports = h.inner.load()`) or a property of what a
+  local's method returns (`h.make().lib`), or through a property of a constructed instance
+  (`new Box().lib`). The check follows one property of a local or of what a local function
+  returns, and chains off a literal. Following chains through names multiplies past what a
+  build can wait for in bundled files.
 - A `Proxy` constructed out of the check's sight. It recognizes `new` of the global `Proxy`,
   also through an alias, a destructuring, a read off an object (`globalThis.Proxy`) or
   `Reflect.construct`, and `Proxy.revocable(…).proxy`. A constructor reached any other way

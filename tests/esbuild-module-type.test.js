@@ -310,6 +310,14 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   t.assert.deepStrictEqual(reexports("let lib\nfor (lib of [require('./a')]);\nmodule.exports = lib"), ['./a'])
   t.assert.deepStrictEqual(reexports("for (const [lib] of [[require('./a')]]) module.exports = lib"), ['./a'])
   t.assert.deepStrictEqual(reexports("for (const key in { a: require('./a') }) module.exports = key"), [])
+  // A property or element of what a local function returns, inline or by name (an alias, `.call`), a for-of over it.
+  t.assert.deepStrictEqual(reexports("function values() { return [require('./a')] }\nfor (module.exports of values());"), ['./a'])
+  t.assert.deepStrictEqual(reexports("function load() { return { lib: require('./a'), other: require('./b') } }\nmodule.exports = load().lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("const load = () => [require('./a'), require('./b')]\nconst [, lib] = load()\nmodule.exports = lib"), ['./b'])
+  t.assert.deepStrictEqual(reexports("module.exports = (() => ({ lib: require('./a') }))().lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("function load() { return { lib: require('./a') } }\nconst run = load\nmodule.exports = run.call(null).lib"), ['./a'])
+  // Part of another module's exports isn't followed (documented).
+  t.assert.deepStrictEqual(reexports("module.exports = require('./a').lib"), [])
   // A name read under more keys than a bundle's names need is followed for every key: none it's read under is lost.
   const keys = Array.from({ length: 20 }, (_, i) => `k${i}`)
   const many = `const h = { ${keys.map((k) => `${k}: require('./${k}')`).join(', ')}, other: require('./other') }\nmodule.exports = [${keys.map((k) => `h.${k}`).join(', ')}][i]`
