@@ -196,10 +196,11 @@ function guardName(name, expr) {
 // 'macro' (a computed include, `path` the macro's name), `state` 'live' where every configuration
 // compiles it, 'maybe' inside a conditional the scan can't decide (`#ifdef _WIN32`). Ones in code
 // no configuration compiles (`#if 0`, its `#else` of an `#if 1`) are left out. A file's include
-// guard (`#ifndef X` then `#define X` as its first directives, before any code, closed by an
-// `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
-// and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
-// backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
+// guard (`#ifndef X` then `#define X` as its first directives, `#pragma once` aside, before any
+// code, closed by an `#endif` with nothing after it and no `#else` or `#elif` between) isn't a
+// condition. Comments, string and character literals (C++ raw strings, digit separators) are
+// skipped, lines spliced with a backslash joined, and a directive is `#` (or `%:`) first on its
+// line, as in translation phase 4.
 // With trigraphs on (-trigraphs, an ISO -std), `??=` is a `#`, `??/` a backslash (which can splice a
 // line or escape a quote), `??-` a `~` and so on, in a header name too; GNU modes leave them be. A
 // file holding one is read both ways, and an include only one reading finds (or finds unconditional)
@@ -302,8 +303,8 @@ function scanText(source) {
       unguard(closedGuard.from, closedGuard.to)
       closedGuard = null
     }
-    // `#pragma once` before a guard leaves it the file's first directive.
-    if (name !== 'pragma') directives++
+    // `#pragma once` before a guard leaves it the file's first directive; any other pragma doesn't.
+    if (name !== 'pragma' || !/^\s*once\s*$/u.test(restOfLine(i).text)) directives++
     const guarding = guard
     guard = null
     if (INCLUDE_DIRECTIVES.has(name)) {
