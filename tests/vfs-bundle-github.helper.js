@@ -1,5 +1,5 @@
-import { compress } from '@preventive/archive/compression.js'
-import { pack } from '@preventive/archive/tar.js'
+import { compress, decompress } from '@preventive/archive/compression.js'
+import { ArchiveError, pack, unpack } from '@preventive/archive/tar.js'
 
 // A fake @preventive/upstream/github.js client over a repo held in memory, for the buildGitHubBundle
 // tests (vfs-bundle-github.test.js, and the child it spawns to watch the disk): nothing is fetched.
@@ -16,7 +16,8 @@ const encoder = new TextEncoder()
 
 // A gzipped tarball of `files` under `dir`, as GitHub's: one top directory named for the tree, an
 // entry for each directory before what it holds, as git archive writes them, and the modes its
-// tar.umask 0002 gives. A `{ symlink }` value is a link to that target.
+// tar.umask 0002 gives. A `{ symlink }` value is a link to that target, wherever it leads, as git
+// keeps it.
 export const tarballOf = (files, dir = '') => {
   const prefix = dir ? `${dir}/` : ''
   const entries = [{ name: 'tree-id/', type: 'directory', mode: 0o775 }]
@@ -34,7 +35,20 @@ export const tarballOf = (files, dir = '') => {
     const name = `tree-id/${rel}`
     entries.push(typeof value === 'string' ? { name, data: encoder.encode(value), mode: 0o664 } : { name, type: 'symlink', linkname: value.symlink })
   }
-  return compress(pack(entries), 'gzip')
+  return compress(pack(entries, { symlinksAbove: Number.MAX_SAFE_INTEGER }), 'gzip')
+}
+
+// A tarball as upstream holds it to the tree it is of: refused, with no ArchiveError, where a
+// symlink climbs further above its root than `symlinksAbove` lets it, none unless given.
+async function verified(method, tarball, symlinksAbove = 0) {
+  const bytes = await tarball
+  try {
+    unpack(await decompress(bytes, 'gzip'), { symlinksAbove })
+  } catch (error) {
+    if (error instanceof ArchiveError) throw new Error(`${method}: integrity mismatch: no tree: ${error.message}`, { cause: error })
+    throw error
+  }
+  return bytes
 }
 
 // `tags` maps each tag to the commit it names.
@@ -42,6 +56,11 @@ export const fakeClient = (files, { tags = {} } = {}) => {
   const calls = []
   return {
     calls,
+    // A repo neither renamed nor transferred.
+    async getRepo({ repo }) {
+      calls.push(['getRepo', repo])
+      return { full_name: repo }
+    },
     async getRepoHead({ repo, branch }) {
       calls.push(['getRepoHead', repo, branch])
       return { branch: branch ?? 'main', oid: HEAD }
@@ -64,13 +83,13 @@ export const fakeClient = (files, { tags = {} } = {}) => {
       if (!Object.keys(files).some((f) => f.startsWith(`${directory}/`))) throw new Error(`getRepoTreeId: ${repo}@${sha} has no directory at ${directory}`)
       return `tree:${directory}`
     },
-    async getRepoTreeTarball({ repo, tree }) {
+    async getRepoTreeTarball({ repo, tree, symlinksAbove }) {
       calls.push(['getRepoTreeTarball', repo, tree])
-      return tarballOf(files, tree.slice('tree:'.length))
+      return verified('getRepoTreeTarball', tarballOf(files, tree.slice('tree:'.length)), symlinksAbove)
     },
-    async getRepoTarball({ repo, sha }) {
+    async getRepoTarball({ repo, sha, symlinksAbove }) {
       calls.push(['getRepoTarball', repo, sha])
-      return tarballOf(files)
+      return verified('getRepoTarball', tarballOf(files), symlinksAbove)
     },
   }
 }

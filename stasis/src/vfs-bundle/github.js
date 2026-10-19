@@ -57,11 +57,13 @@ function ancestorsOf(directory) {
   return [...out, undefined]
 }
 
-// The files of the subtree `tree`, or null where one is a symlink out of it.
-async function treeFiles(client, { github, tree, where }) {
+// The files of the subtree `tree` at `directory`, or null where one is a symlink out of it. Upstream
+// refuses a tarball whose symlinks climb above its root, unless told how far they may: as far as the
+// repo's root, as many levels as `directory` is deep, less one (its tarball's top directory).
+async function treeFiles(client, { github, tree, directory, where }) {
   let files
   try {
-    files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree }), where)
+    files = await treeEntries(await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory.split('/').length - 1 }), where)
   } catch (error) {
     if (error instanceof ArchiveError) return null // e.g. a symlink out of the subtree
     throw error
@@ -129,7 +131,7 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), () => Promise.all(above.map(names))))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
   const tree = (await list(above[0])).find((entry) => entry.path === posix.basename(directory) && entry.type === 'tree')?.sha
-  const files = tree === undefined ? null : await treeFiles(client, { github, tree, where })
+  const files = tree === undefined ? null : await treeFiles(client, { github, tree, directory, where })
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
