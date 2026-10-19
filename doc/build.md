@@ -257,6 +257,11 @@ These cases aren't caught:
   (`new Box().lib`). The check follows one property of a local or of what a local function
   returns, and chains off a literal. Following chains through names multiplies past what a
   build can wait for in bundled files.
+- A `require()` whose value a local function hands back in a way the check doesn't follow:
+  picked out of an argument (`module.exports = pick({ lib: require('./lib') })`), yielded by a
+  generator, or returned by a function that another call returns (`make()()`). The check
+  follows what local functions return, and a call's arguments as a whole, but not values bound
+  to a function's parameters.
 - A `Proxy` constructed out of the check's sight. It recognizes `new` of the global `Proxy`,
   also through an alias, a destructuring, a read off an object (`globalThis.Proxy`) or
   `Reflect.construct`, and `Proxy.revocable(…).proxy`. A constructor reached any other way
