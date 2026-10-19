@@ -1337,8 +1337,9 @@ includer was found in (from the start of its form's list where it wasn't found
 through one), never landing on the includer. Under a cl or clang-cl command, a
 quoted include not beside its includer is then looked up beside each file
 including that one, nearest first, before the `/I` directories (MSVC's rule,
-which clang-cl follows): along the first path the walk reaches the includer by,
-where another path could find another file. `#embed` searches the includer's
+which clang-cl follows): a header reached through includers in other
+directories is walked again under them, where its quoted includes can find
+other files. `#embed` searches the includer's
 directory for `"x"`, then the `--embed-dir` directories. A directory given twice
 (spelled either way: its real path tells, as GCC tells it by inode) is searched
 once, where GCC keeps it: a system one (`-isystem`, then
@@ -1396,8 +1397,8 @@ is:
 
 A header is walked under the search path of each unit it is reached from. An
 include that resolves to other files in other units (a `<config.h>` per
-target) records the first unit's file as its edge, and is reported; every file
-is bundled. Nothing is read outside the bundle root: a header found in a
+target), or under cl through other includers, records the first file as its
+edge, and is reported; every file is bundled. Nothing is read outside the bundle root: a header found in a
 directory outside it, or through a `../` past it, is a system or out-of-tree
 header, neither bundled nor missing. An include of a symlink leading out of the
 root, or of a `.env` file, is refused; a source that isn't UTF-8 stops the

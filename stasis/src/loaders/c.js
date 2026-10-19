@@ -719,20 +719,20 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   const sources = new Map()
   const formats = new Map()
   const scans = new Map() // file -> scanIncludes
-  const nodes = new Map() // `${ctx.id}\0${file}` -> { file, ctx, at, primary, edges }
+  const nodes = new Map() // keyOf(file, ctx, stack) -> { file, ctx, at, primary, edges, stack }
   const resolutions = new Map()
   const computed = []
   const conflicts = []
   const queue = []
-  const keyOf = (file, ctx) => `${ctx.id}\0${file}`
+  const keyOf = (file, ctx, stack = []) => [ctx.id, file, ...stack].join('\0')
 
   // `at` is where in the context's [...quote, ...angle] list the file was found, -1 where it wasn't
   // found through the search path (an entry, a quoted include beside its includer): where an
   // `#include_next` in it carries on from. `primary` marks a unit its own compile command names.
-  // `stack` is the directories of the files including it, nearest first, along the first path that
-  // reaches it: where MSVC looks a quoted include up after the includer's own directory.
+  // `stack` is the directories of the files including it, nearest first (pruned: stackBelow): where
+  // MSVC looks a quoted include up after the includer's own directory.
   const visit = (file, ctx, { at = -1, primary = false, format, stack = [] }) => {
-    const key = keyOf(file, ctx)
+    const key = keyOf(file, ctx, stack)
     if (!nodes.has(key)) {
       nodes.set(key, { file, ctx, at, primary, edges: [], stack })
       queue.push(key)
@@ -741,9 +741,52 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     return key
   }
 
-  // The `stack` of what `node` includes: its own directory, then its stack, each directory once.
-  // Only MSVC looks there, so only its contexts keep one.
-  const stackBelow = (node) => (node.ctx.msvc ? [...new Set([dirOf(node.file), ...node.stack])] : [])
+  // MSVC looks a quoted include not beside its includer up beside each file including that one,
+  // nearest first. Of those directories, a `stack` keeps the ones that can change what an include
+  // finds: those holding a path quoted includes are looked up by there (`lookedUp`) that no nearer
+  // one holds. A file is walked once for each such stack it is reached with.
+  const lookedUp = []
+  const lookedUpSet = new Set()
+  const held = new Map() // dir -> { upTo, names, paths }: the paths of lookedUp[0, upTo) found in dir
+  const heldIn = (dir) => {
+    let entry = held.get(dir)
+    if (entry === undefined) {
+      let names = []
+      try {
+        names = readdirSync(join(baseDir, dir))
+      } catch {
+        // Nothing found there.
+      }
+      entry = { upTo: 0, names: new Set(names), paths: new Set() }
+      held.set(dir, entry)
+    }
+    for (; entry.upTo < lookedUp.length; entry.upTo++) {
+      const path = lookedUp[entry.upTo]
+      const first = path.split('/', 1)[0]
+      if ((first === '.' || first === '..' || entry.names.has(first)) && probe({ rel: dir }, path) !== null) entry.paths.add(path)
+    }
+    return entry.paths
+  }
+  // The directories left out of a stack, with how many paths they held then.
+  const dropped = new Map()
+  const prune = (dirs) => {
+    const covered = new Set()
+    const kept = []
+    for (const dir of dirs) {
+      const paths = heldIn(dir)
+      const before = covered.size
+      for (const path of paths) covered.add(path)
+      if (covered.size > before) kept.push(dir)
+      else if (!dropped.has(dir)) dropped.set(dir, paths.size)
+    }
+    return kept
+  }
+  // The `stack` of what `node` includes: its own directory, then its stack, pruned. Only MSVC looks
+  // there, so only its contexts keep one.
+  const stackBelow = (node) => {
+    if (node.ctx.msvc) node.below ??= prune([dirOf(node.file), ...node.stack])
+    return node.below ?? []
+  }
 
   const exists = (rel) => isFile(join(baseDir, rel))
 
@@ -835,6 +878,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
 
   // An include of `inc` from `node`, resolved as GCC searches: { target, at } | { external } |
   // { refused } | null.
+  const chainHits = new Map() // ctx -> `${first}\0${path}` -> what the chain from `first` finds
   const resolveInclude = (node, inc) => {
     const { file, ctx } = node
     if (isAbsolute(inc.path)) {
@@ -861,17 +905,31 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       return null
     }
     if (inc.form === 'quote' && !ctx.split) {
-      // MSVC's: beside the includer, then beside each file including it, nearest first.
-      for (const dir of ctx.msvc ? [dirOf(file), ...node.stack] : [dirOf(file)]) {
-        const hit = probe({ rel: dir }, inc.path)
-        if (hit !== null) return { ...hit, at: -1 }
+      const hit = probe({ rel: dirOf(file) }, inc.path)
+      if (hit !== null) return { ...hit, at: -1 }
+      if (ctx.msvc && !lookedUpSet.has(inc.path)) {
+        lookedUpSet.add(inc.path)
+        lookedUp.push(inc.path)
+      }
+      // MSVC's: then beside each file including it, nearest first.
+      for (const dir of ctx.msvc ? node.stack : []) {
+        const above = probe({ rel: dir }, inc.path)
+        if (above !== null) return { ...above, at: -1 }
       }
     }
-    for (let k = first; k < chain.length; k++) {
-      const hit = probe(chain[k], inc.path)
-      if (hit !== null) return { ...hit, at: k }
+    // The chain finds the same for every includer: looked along once.
+    if (!chainHits.has(ctx)) chainHits.set(ctx, new Map())
+    const hits = chainHits.get(ctx)
+    const searched = `${first}\0${inc.path}`
+    if (!hits.has(searched)) {
+      let found = null
+      for (let k = first; found === null && k < chain.length; k++) {
+        const hit = probe(chain[k], inc.path)
+        if (hit !== null) found = { ...hit, at: k }
+      }
+      hits.set(searched, found)
     }
-    return null
+    return hits.get(searched)
   }
 
   // A reached file's text (an entry's too, which may be missing: null then).
@@ -908,73 +966,80 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     }
   }
 
-  for (const entry of entries) visit(entry, contextOf(entry, defaultCtx), { primary: commands?.has(entry), format: cFormatOf(entry) })
+  // The walk, over again while a stack left out a directory that has come to hold a path looked
+  // up under it.
+  do {
+    for (const map of [nodes, sources, formats, resolutions, dropped]) map.clear()
+    computed.length = 0
+    conflicts.length = 0
+    for (const entry of entries) visit(entry, contextOf(entry, defaultCtx), { primary: commands?.has(entry), format: cFormatOf(entry) })
 
-  while (queue.length > 0) {
-    const node = nodes.get(queue.shift())
-    const { file, ctx } = node
-    const resource = formats.get(file)?.startsWith('resource') ?? false
-    if (!sources.has(file)) {
-      const text = read(file, resource)
-      if (text === null) continue
-      sources.set(file, text)
-    }
-    if (resource) continue
-    if (!scans.has(file)) scans.set(file, scanIncludes(sources.get(file)))
-    const format = formats.get(file)
+    while (queue.length > 0) {
+      const node = nodes.get(queue.shift())
+      const { file, ctx } = node
+      const resource = formats.get(file)?.startsWith('resource') ?? false
+      if (!sources.has(file)) {
+        const text = read(file, resource)
+        if (text === null) continue
+        sources.set(file, text)
+      }
+      if (resource) continue
+      if (!scans.has(file)) scans.set(file, scanIncludes(sources.get(file)))
+      const format = formats.get(file)
 
-    // A unit's -include/-imacros files, read as if included first: looked up in the command's
-    // directory instead of the unit's own, then along the rest of the quote chain, as GCC does.
-    if (node.primary) {
-      for (const { flag, path, dir } of ctx.forced) {
-        const spec = `${flag} ${path}`
-        let result = isAbsolute(path) ? probe(makeDir(baseDir, realBase, path), '.') : probe(dir, path)
-        // cl's /FI is a quoted #include of the unit's: beside it next, as clang-cl looks it up.
-        if (result === null && flag === '/FI' && !isAbsolute(path)) result = probe({ rel: dirOf(file) }, path)
-        const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
-        for (let k = 0; result === null && k < chain.length; k++) {
-          const hit = probe(chain[k], path)
-          if (hit !== null) result = { ...hit, at: k }
+      // A unit's -include/-imacros files, read as if included first: looked up in the command's
+      // directory instead of the unit's own, then along the rest of the quote chain, as GCC does.
+      if (node.primary) {
+        for (const { flag, path, dir } of ctx.forced) {
+          const spec = `${flag} ${path}`
+          let result = isAbsolute(path) ? probe(makeDir(baseDir, realBase, path), '.') : probe(dir, path)
+          // cl's /FI is a quoted #include of the unit's: beside it next, as clang-cl looks it up.
+          if (result === null && flag === '/FI' && !isAbsolute(path)) result = probe({ rel: dirOf(file) }, path)
+          const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
+          for (let k = 0; result === null && k < chain.length; k++) {
+            const hit = probe(chain[k], path)
+            if (hit !== null) result = { ...hit, at: k }
+          }
+          const edge = { spec, live: true, forced: true, result, target: undefined }
+          if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format), stack: stackBelow(node) })
+          addEdge(node, edge)
         }
-        const edge = { spec, live: true, forced: true, result, target: undefined }
-        if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format), stack: stackBelow(node) })
+      }
+
+      for (const inc of scans.get(file)) {
+        const spec = includeSpec(inc)
+        if (inc.form === 'macro') {
+          if (!computed.some((c) => c.spec === spec && c.from === file)) computed.push({ spec, from: file })
+          continue
+        }
+        const result = resolveInclude(node, inc)
+        const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
+        if (result?.target !== undefined) {
+          const embed = inc.directive === 'embed'
+          edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node) })
+        }
         addEdge(node, edge)
       }
-    }
 
-    for (const inc of scans.get(file)) {
-      const spec = includeSpec(inc)
-      if (inc.form === 'macro') {
-        if (!computed.some((c) => c.spec === spec && c.from === file)) computed.push({ spec, from: file })
-        continue
+      // A header's implementation files: by name, then the known links. Each is a translation unit of
+      // its own, keyed by its path from the header's directory.
+      const linked = new Set([file])
+      const link = (rel) => {
+        if (linked.has(rel)) return
+        linked.add(rel)
+        const result = probe({ rel: '' }, rel)
+        const edge = { spec: `impl ${posix.relative(dirOf(file) || '.', rel)}`, live: false, result, target: undefined }
+        if (result?.target !== undefined) edge.target = visit(rel, contextOf(rel, ctx), { primary: commands?.has(rel), format: cFormatOf(rel) })
+        addEdge(node, edge)
       }
-      const result = resolveInclude(node, inc)
-      const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
-      if (result?.target !== undefined) {
-        const embed = inc.directive === 'embed'
-        edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node) })
+      for (const candidates of implementationCandidates(file)) {
+        const found = candidates.filter((rel) => rel !== null && rel !== file && exists(rel))
+        for (const rel of found) link(rel)
+        if (found.length > 0) break
       }
-      addEdge(node, edge)
+      if (C_HEADER_EXTS.has(extname(file))) for (const rel of knownImplementations(file)) link(rel)
     }
-
-    // A header's implementation files: by name, then the known links. Each is a translation unit of
-    // its own, keyed by its path from the header's directory.
-    const linked = new Set([file])
-    const link = (rel) => {
-      if (linked.has(rel)) return
-      linked.add(rel)
-      const result = probe({ rel: '' }, rel)
-      const edge = { spec: `impl ${posix.relative(dirOf(file) || '.', rel)}`, live: false, result, target: undefined }
-      if (result?.target !== undefined) edge.target = visit(rel, contextOf(rel, ctx), { primary: commands?.has(rel), format: cFormatOf(rel) })
-      addEdge(node, edge)
-    }
-    for (const candidates of implementationCandidates(file)) {
-      const found = candidates.filter((rel) => rel !== null && rel !== file && exists(rel))
-      for (const rel of found) link(rel)
-      if (found.length > 0) break
-    }
-    if (C_HEADER_EXTS.has(extname(file))) for (const rel of knownImplementations(file)) link(rel)
-  }
+  } while ([...dropped].some(([dir, size]) => heldIn(dir).size > size))
 
   // What every configuration builds: the entries, and what they reach through includes every
   // configuration compiles. An include missing from those is what the bundle lacks.

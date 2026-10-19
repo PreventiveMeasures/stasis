@@ -566,7 +566,7 @@ export async function buildCBundle({ cwd = process.cwd(), entries, includeDirs =
     console.warn(`[stasis] ${computed.length} computed include${computed.length === 1 ? '' : 's'} not followed: ${listed(computed)}`)
   }
   for (const { spec, from, targets } of conflicts) {
-    console.warn(`[stasis] ${spec} from ${from} resolves to ${targets.join(' and ')} in different translation units; the edge records ${targets[0]}, each file is bundled`)
+    console.warn(`[stasis] ${spec} from ${from} resolves to ${targets.join(' and ')} in different translation units, or through different includers; the edge records ${targets[0]}, each file is bundled`)
   }
 
   const realBase = realpathSync(baseDir)

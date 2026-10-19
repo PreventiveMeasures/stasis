@@ -597,3 +597,37 @@ test('collectCBundle looks an MSVC quoted include up beside each file including 
   t.assert.equal(gcc.get('other/c.h').get('include "config.h"'), 'sys/config.h')
   t.assert.equal(gcc.get('src/deep/m.c').get('-include pch.h'), undefined)
 }))
+
+test('collectCBundle walks a header MSVC reaches through two includers under each, its quoted includes finding other files beside them', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/u.c': '#include <a.h>\n#include <b.h>\n',
+    'p1/a.h': '#include <common.h>\n',
+    'p2/b.h': '#include <common.h>\n',
+    'inc/common.h': '#include "config.h"\n',
+    'p1/config.h': '',
+    'p2/config.h': '',
+  })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/u.c', arguments: ['clang-cl', '/Ip1', '/Ip2', '/Iinc', '/c', 'src/u.c'] }]))
+  // clang-cl -E opens p1/config.h through a.h, then p2/config.h through b.h.
+  const { sources, conflicts } = collectCBundle(tmp, ['src/u.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.ok(sources.has('p1/config.h'))
+  t.assert.ok(sources.has('p2/config.h'))
+  t.assert.deepStrictEqual(conflicts, [{ spec: 'include "config.h"', from: 'inc/common.h', targets: ['p1/config.h', 'p2/config.h'] }])
+}))
+
+test('collectCBundle finds the stdafx.h beside each MSVC unit a shared header reaches it from', withTmp((t, tmp) => {
+  tree(tmp, {
+    'a/x.cpp': '#include <util.h>\n',
+    'b/y.cpp': '#include <util.h>\n',
+    'shared/util.h': '#include "detail/d.h"\n',
+    'shared/detail/d.h': '#include "stdafx.h"\n',
+    'a/stdafx.h': '#include "targetver.h"\n',
+    'a/targetver.h': '',
+    'b/stdafx.h': '',
+  })
+  const units = ['a/x.cpp', 'b/y.cpp']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify(units.map((file) => ({ directory: tmp, file, arguments: ['clang-cl', '/Ishared', '/c', file] }))))
+  // clang-cl -E opens a/stdafx.h (and its targetver.h) for x.cpp, b/stdafx.h for y.cpp.
+  const { sources } = collectCBundle(tmp, units, { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.deepStrictEqual([...sources.keys()].filter((f) => f.endsWith('.h')).toSorted(), ['a/stdafx.h', 'a/targetver.h', 'b/stdafx.h', 'shared/detail/d.h', 'shared/util.h'])
+}))
