@@ -719,25 +719,29 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   const sources = new Map()
   const formats = new Map()
   const scans = new Map() // file -> scanIncludes
-  const nodes = new Map() // keyOf(file, ctx, stack) -> { file, ctx, at, primary, edges, stack }
+  const nodes = new Map() // keyOf(file, ctx, ...) -> { file, ctx, at, primary, edges, stack, embed }
   const resolutions = new Map()
   const computed = []
   const conflicts = []
   const queue = []
-  const keyOf = (file, ctx, stack = []) => [ctx.id, file, ...stack].join('\0')
+  const bytesRead = new Set() // files `sources` holds as an #embed's bytes
+  // A file is walked once per context, place it was found at and MSVC stack; an #embed's file is
+  // bytes, however it was found.
+  const keyOf = (file, ctx, { at = -1, stack = [], embed = false } = {}) => [ctx.id, file, embed ? 'embed' : at, ...stack].join('\0')
 
   // `at` is where in the context's [...quote, ...angle] list the file was found, -1 where it wasn't
   // found through the search path (an entry, a quoted include beside its includer): where an
   // `#include_next` in it carries on from. `primary` marks a unit its own compile command names.
   // `stack` is the directories of the files including it, nearest first (pruned: stackBelow): where
-  // MSVC looks a quoted include up after the includer's own directory.
-  const visit = (file, ctx, { at = -1, primary = false, format, stack = [] }) => {
-    const key = keyOf(file, ctx, stack)
+  // MSVC looks a quoted include up after the includer's own directory. `embed` marks an #embed's.
+  const visit = (file, ctx, { at = -1, primary = false, format, stack = [], embed = false }) => {
+    const key = keyOf(file, ctx, { at, stack, embed })
     if (!nodes.has(key)) {
-      nodes.set(key, { file, ctx, at, primary, edges: [], stack })
+      nodes.set(key, { file, ctx, at, primary, edges: [], stack, embed })
       queue.push(key)
     }
-    if (!formats.has(file)) formats.set(file, format)
+    // A file something includes is a source, whatever #embeds it too.
+    if (!formats.has(file) || (!embed && formats.get(file).startsWith('resource'))) formats.set(file, format)
     return key
   }
 
@@ -969,7 +973,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   // The walk, over again while a stack left out a directory that has come to hold a path looked
   // up under it.
   do {
-    for (const map of [nodes, sources, formats, resolutions, dropped]) map.clear()
+    for (const map of [nodes, sources, formats, resolutions, dropped, bytesRead]) map.clear()
     computed.length = 0
     conflicts.length = 0
     for (const entry of entries) visit(entry, contextOf(entry, defaultCtx), { primary: commands?.has(entry), format: cFormatOf(entry) })
@@ -977,13 +981,22 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     while (queue.length > 0) {
       const node = nodes.get(queue.shift())
       const { file, ctx } = node
-      const resource = formats.get(file)?.startsWith('resource') ?? false
-      if (!sources.has(file)) {
-        const text = read(file, resource)
+      // An #embed's file is bytes, unless something includes it too: then its source is read.
+      if (node.embed) {
+        if (formats.get(file).startsWith('resource') && !sources.has(file)) {
+          const bytes = read(file, true)
+          if (bytes === null) continue
+          sources.set(file, bytes)
+          bytesRead.add(file)
+        }
+        continue
+      }
+      if (!sources.has(file) || bytesRead.has(file)) {
+        const text = read(file, false)
         if (text === null) continue
         sources.set(file, text)
+        bytesRead.delete(file)
       }
-      if (resource) continue
       if (!scans.has(file)) scans.set(file, scanIncludes(sources.get(file)))
       const format = formats.get(file)
 
@@ -1016,7 +1029,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
         const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
         if (result?.target !== undefined) {
           const embed = inc.directive === 'embed'
-          edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node) })
+          edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node), embed })
         }
         addEdge(node, edge)
       }

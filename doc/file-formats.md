@@ -1395,14 +1395,16 @@ is:
   project's and `--include-dirs`, said so. The database is read wherever it
   is, never bundled.
 
-A header is walked under the search path of each unit it is reached from. An
-include that resolves to other files in other units (a `<config.h>` per
+A header is walked under the search path of each unit it is reached from, and
+from each place on it it is found in (where its `#include_next` carries on
+from). An include that resolves to other files in other units (a `<config.h>` per
 target), or under cl through other includers, records the first file as its
 edge, and is reported; every file is bundled. Nothing is read outside the bundle root: a header found in a
 directory outside it, or through a `../` past it, is a system or out-of-tree
 header, neither bundled nor missing. An include of a symlink leading out of the
 root, or of a `.env` file, is refused; a source that isn't UTF-8 stops the
-build (an `#embed`ed file is a resource, base64 where it isn't UTF-8).
+build (an `#embed`ed file is a resource, base64 where it isn't UTF-8, and a
+source where something includes it too).
 
 **Implementations.** Headers hold code (inline functions, templates, macros),
 so an include lands on the header itself, and a bundled header (`.h`, `.hh`,

@@ -464,6 +464,16 @@ test('collectCBundle looks a -include up in the command\'s directory instead of 
   t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('-include config.h'), 'build/config.h')
 }))
 
+test('collectCBundle reads a file both #embedded and #included as a source, whichever comes first', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '#embed "meta.h"\n#include "meta.h"\n', 'b.c': '#include "meta.h"\n#embed "meta.h"\n', 'meta.h': '#include "dep.h"\n', 'dep.h': '' })
+  for (const unit of ['a.c', 'b.c']) {
+    const { sources, formats } = collectCBundle(tmp, [unit])
+    t.assert.equal(formats.get('meta.h'), 'c-header', unit)
+    t.assert.equal(sources.get('meta.h'), '#include "dep.h"\n', unit)
+    t.assert.ok(sources.has('dep.h'), unit)
+  }
+}))
+
 test('collectCBundle: an #embed found nowhere is missing, where every configuration compiles it', withTmp((t, tmp) => {
   tree(tmp, { 'main.c': 'const char a[] = {\n#embed "gone.bin"\n};\n#if __has_embed(<maybe.bin>)\n#embed <maybe.bin>\n#endif\n' })
   const { missing, unfound } = collectCBundle(tmp, ['main.c'])
@@ -596,6 +606,15 @@ test('collectCBundle looks an MSVC quoted include up beside each file including 
   const gcc = resolve(['gcc', '-I../sys', '-include', 'pch.h', '-c'])
   t.assert.equal(gcc.get('other/c.h').get('include "config.h"'), 'sys/config.h')
   t.assert.equal(gcc.get('src/deep/m.c').get('-include pch.h'), undefined)
+}))
+
+test('collectCBundle walks a header found in two places on the search path from each, its #include_next carrying on from there', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '#include "inc1/x.h"\n#include <x.h>\n', 'inc1/x.h': '#include_next <config.h>\n', 'inc1/config.h': '', 'inc2/config.h': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/a.c', arguments: ['gcc', '-I.', '-Iinc1', '-Iinc2', '-c', 'src/a.c'] }]))
+  // GCC 13 opens inc1/config.h after ./inc1/x.h (found in .), inc2/config.h after inc1/x.h (in inc1).
+  const { sources } = collectCBundle(tmp, ['src/a.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.ok(sources.has('inc1/config.h'))
+  t.assert.ok(sources.has('inc2/config.h'))
 }))
 
 test('collectCBundle walks a header MSVC reaches through two includers under each, its quoted includes finding other files beside them', withTmp((t, tmp) => {
