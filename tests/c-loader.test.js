@@ -630,6 +630,17 @@ test('collectCBundle carries a cl #import\'s type library as bytes, where GCC\'s
   t.assert.ok(gcc.sources.has('lib/dep.h'))
 }))
 
+test('collectCBundle takes no -I- for a barrier under clang-cl, which reads it as /I -', withTmp((t, tmp) => {
+  tree(tmp, { 'src/main.c': '#include "x.h"\n', 'src/x.h': '', 'a/x.h': '' })
+  const resolve = (argv) => {
+    writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/main.c', arguments: [...argv, 'src/main.c'] }]))
+    return collectCBundle(tmp, ['src/main.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') }).resolutions.get('src/main.c').get('include "x.h"')
+  }
+  // clang-cl 18 /E takes src/x.h, beside the unit; GCC 13, past its barrier, a/x.h.
+  t.assert.equal(resolve(['clang-cl', '/Ia', '-I-', '/Ib', '/c']), 'src/x.h')
+  t.assert.equal(resolve(['gcc', '-Ia', '-I-', '-Ib', '-c']), 'a/x.h')
+}))
+
 test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, after the driver\'s own', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '' })
   const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-c', 'a.c']

@@ -1399,7 +1399,7 @@ is:
   gets them. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
-  after the working directory, as clang-cl looks it up. GCC's `-I-` makes the `-I` directories
+  after the working directory, as clang-cl looks it up. GCC's `-I-` (to cl and clang-cl, `/I -`) makes the `-I` directories
   before it quote-only, searched ahead of every `-iquote` one, and no quoted
   include is then looked up beside its includer. An include directory spelled
   `=dir` or `$SYSROOT/dir` lies in the command's `-isysroot`, else its

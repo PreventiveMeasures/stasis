@@ -419,8 +419,8 @@ function includeFlags(argv, directory, toDir, cl) {
       let v
       // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes
       // only, ahead of every -iquote one whatever the order given (as `gcc -v` lists them), and
-      // none is looked up beside its includer.
-      if (a === '-I-' || a === '--include-barrier') {
+      // none is looked up beside its includer. To cl and clang-cl it is `/I -`, no barrier.
+      if (!cl && (a === '-I-' || a === '--include-barrier')) {
         if (pass === '-I') {
           preBarrier.push(...flags.I)
           flags.I = []
