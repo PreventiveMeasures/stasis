@@ -559,3 +559,16 @@ test('scanIncludes reads a first-line directive after a byte order mark, as GCC 
   t.assert.deepStrictEqual(specs('﻿#include "a.h"\n'), ['include "a.h" live'])
   t.assert.deepStrictEqual(specs('﻿#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n'), ['include "b.h" live'])
 })
+
+test('loadCompileCommands reads clang-cl\'s include options, /imsvc after the other system directories', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '' })
+  const args = ['clang-cl', '/Iinc', '/imsvc', 'sys', '-imsvcsys2', '/external:Iext', '/FIpch.h', '/c', 'a.c']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
+  const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
+  // clang-cl -v lists inc, ext, its own headers, then sys, sys2.
+  const rels = (dirs) => dirs.map((d) => d.rel)
+  t.assert.deepStrictEqual(rels(flags.I), ['inc'])
+  t.assert.deepStrictEqual(rels(flags.system), ['ext'])
+  t.assert.deepStrictEqual(rels(flags.after), ['sys', 'sys2'])
+  t.assert.deepStrictEqual(flags.forced.map((f) => f.path), ['pch.h'])
+}))

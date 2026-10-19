@@ -1368,8 +1368,8 @@ is:
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
-  `--include-barrier`, ...) and clang-cl's and cl's `/I`, `/external:I` and
-  `/FI` too, each relative to the command's `directory`, the `-I` ones read
+  `--include-barrier`, ...) and clang-cl's and cl's `/I`, `/external:I`,
+  `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it. A `-include` is the unit's first include, looked up in the

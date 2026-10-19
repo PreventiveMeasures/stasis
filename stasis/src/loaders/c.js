@@ -377,6 +377,8 @@ function includeFlags(args, directory, toDir, cl) {
       else if ((v = take('-imacros')) !== undefined) file('-imacros', v)
       else if ((v = long('--include')) !== undefined || (v = take('-include')) !== undefined) file('-include', v)
       else if (cl && ((v = take('/external:I')) !== undefined || (v = take('-external:I')) !== undefined)) dir(v, flags.system)
+      // clang-cl's /imsvc: a system directory "as if in %INCLUDE%", after the others (as clang-cl -v lists it).
+      else if (cl && ((v = take('/imsvc')) !== undefined || (v = take('-imsvc')) !== undefined)) dir(v, flags.after)
       else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v)
     }
   }
