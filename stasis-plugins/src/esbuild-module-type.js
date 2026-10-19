@@ -174,35 +174,37 @@ function patternNames(pattern, names = []) {
   return names
 }
 
-// What each name a destructuring pattern binds may get from `value`: the element or property it selects (an
-// ElementOf node, keyed by the index or the property's static name), its default, or a rest: an array pattern's
-// holds the elements from its position on (a RestOf node), an object pattern's the value itself less some keys.
-function patternSources(pattern, value, sources = new Map()) {
+// What each target of a destructuring pattern (a name, or in an assignment a property: `[module.exports] = [x]`)
+// may get from `value`, as [target, value] pairs: the element or property it selects (an ElementOf node, keyed by
+// the index or the property's static name), its default, or a rest: an array pattern's holds the elements from its
+// position on (a RestOf node), an object pattern's the value itself less some keys.
+function patternTargets(pattern, value, targets = []) {
   switch (pattern?.type) {
     case 'Identifier':
-      sources.set(pattern.name, [...(sources.get(pattern.name) ?? []), value])
+    case 'MemberExpression':
+      targets.push([pattern, value])
       break
     case 'AssignmentPattern':
-      patternSources(pattern.left, value, sources)
-      patternSources(pattern.left, pattern.right, sources)
+      patternTargets(pattern.left, value, targets)
+      patternTargets(pattern.left, pattern.right, targets)
       break
     case 'ArrayPattern':
       for (const [index, element] of pattern.elements.entries()) {
-        if (element?.type === 'RestElement') patternSources(element.argument, { type: 'RestOf', object: value, from: index }, sources)
-        else if (element) patternSources(element, { type: 'ElementOf', object: value, key: String(index) }, sources)
+        if (element?.type === 'RestElement') patternTargets(element.argument, { type: 'RestOf', object: value, from: index }, targets)
+        else if (element) patternTargets(element, { type: 'ElementOf', object: value, key: String(index) }, targets)
       }
       break
     case 'ObjectPattern': {
       const keyOf = (prop) => propKey(prop.key, prop.computed)
       for (const prop of pattern.properties) {
-        if (prop.type !== 'RestElement') patternSources(prop.value, { type: 'ElementOf', object: value, key: keyOf(prop) }, sources)
+        if (prop.type !== 'RestElement') patternTargets(prop.value, { type: 'ElementOf', object: value, key: keyOf(prop) }, targets)
         // The rest copies the remaining own properties: none named `__esModule` where the pattern took that key.
-        else if (!pattern.properties.some((other) => other.type !== 'RestElement' && keyOf(other) === '__esModule')) patternSources(prop.argument, value, sources)
+        else if (!pattern.properties.some((other) => other.type !== 'RestElement' && keyOf(other) === '__esModule')) patternTargets(prop.argument, value, targets)
       }
       break
     }
   }
-  return sources
+  return targets
 }
 
 // An index past this is any (`[cmd, ...rest] = args` in a loop shifts it each round).
@@ -746,6 +748,15 @@ export function analyzeModule(source, { path, loader }) {
   // Writes to the exports: [`exports` or `module`, the scope of the write, the values], counted where the name is
   // CommonJS's there or a parameter (a UMD factory's `module`), not a local of its own (`let exports`).
   const exportWrites = []
+  // What assigning `value` to a target does: a name gets it, the exports or `module[key]` are written.
+  const assign = (target, value, scope) => {
+    if (target.type === 'Identifier') {
+      reassigned.add(target.name)
+      assignments.set(target.name, [...(assignments.get(target.name) ?? []), value])
+    }
+    if (isExportsTarget(target)) exportWrites.push([target.type === 'Identifier' ? 'exports' : 'module', scope, [value]])
+    else if (moduleKeyName(target) !== undefined) keyedWrites.push([moduleKeyName(target), [value]])  // module[key] = value
+  }
   // Imported bindings, whose references say whether they're used: an unused one is dropped by tree shaking, so
   // its value is never observed (the import's evaluation stays).
   const importBindings = []  // [specifier, local, interop]
@@ -885,12 +896,8 @@ export function analyzeModule(source, { path, loader }) {
           if (!memberWrites.has(name)) memberWrites.set(name, [])
           memberWrites.get(name).push([staticKey(node.left), node.right])
         }
-        for (const [name, values] of patternSources(node.left, node.right)) {
-          reassigned.add(name)
-          assignments.set(name, [...(assignments.get(name) ?? []), ...values])
-        }
-        if (isExportsTarget(node.left)) exportWrites.push([node.left.type === 'Identifier' ? 'exports' : 'module', scope, [node.right]])
-        else if (moduleKeyName(node.left) !== undefined) keyedWrites.push([moduleKeyName(node.left), [node.right]])  // module[key] = value
+        // Destructuring included: `[module.exports] = [require('./lib')]` exports the element.
+        for (const [target, value] of patternTargets(node.left, node.right)) assign(target, value, scope)
         // `exports.__proto__ = proto` sets the prototype, whose properties the exports inherit; set on a local, it
         // reaches the exports if the local does.
         if (node.operator === '=' && node.left.type === 'MemberExpression' &&
@@ -904,7 +911,7 @@ export function analyzeModule(source, { path, loader }) {
         if (node.id.type === 'Identifier' && node.init) {
           declarators.set(node.id.name, [...(declarators.get(node.id.name) ?? []), node.init])
         } else if (node.init) {
-          for (const [name, values] of patternSources(node.id, node.init)) declarators.set(name, [...(declarators.get(name) ?? []), ...values])
+          for (const [{ name }, value] of patternTargets(node.id, node.init)) declarators.set(name, [...(declarators.get(name) ?? []), value])
         }
         break
       case 'FunctionDeclaration': {
@@ -934,13 +941,19 @@ export function analyzeModule(source, { path, loader }) {
       case 'ForInStatement':
       case 'ForOfStatement':
         if (node.await && fnDepth === 0) facts.esmExports = true
-        // `for (o of xs)` assigns o, as `o = x` does (`for (exports.__esModule of [true])` the property).
+        // `for (o of xs)` assigns o, as `o = x` does (`for (exports.__esModule of [true])` the property); each round
+        // of a for-of an element of xs (`for (module.exports of [require('./lib')])` exports it).
         if (node.left && node.left.type !== 'VariableDeclaration') {
           for (const name of patternNames(node.left)) {
             reassigned.add(name)
             loopAssigned.add(name)
           }
           for (const target of patternMembers(node.left)) tokenContext.writeTargets.add(target)
+          if (node.type === 'ForOfStatement') for (const [target, value] of patternTargets(node.left, { type: 'ElementOf', object: node.right })) assign(target, value, scope)
+        } else if (node.type === 'ForOfStatement') {
+          for (const declarator of node.left.declarations) {
+            for (const [{ name }, value] of patternTargets(declarator.id, { type: 'ElementOf', object: node.right })) declarators.set(name, [...(declarators.get(name) ?? []), value])
+          }
         }
         childScope = { names: new Set(), parent: scope }
         break
@@ -1047,9 +1060,22 @@ export function analyzeModule(source, { path, loader }) {
     for (const name of found.proxies) exported.proxies.add(name)
   }
   follow(exported)
+  // A name read under more keys than this is followed for every key (undefined) instead: a superset of what each
+  // key gets. A bundle's minified names (`e`, `t`) are read under nearly every key in it (jiti's Babel: ~1,000).
+  const MAX_KEYS = 16
+  const keysOf = { elements: new Map(), method: new Map() }  // name -> the keys it's been followed under
   while (pending.length > 0) {
-    const [kind, name, key] = pending.pop()
-    const id = kind === 'elements' || kind === 'method' ? `${name}\u0000${key ?? '*'}` : name
+    let [kind, name, key] = pending.pop()
+    if (kind === 'elements' || kind === 'method') {
+      if (done[kind].has(name)) continue  // followed for every key
+      if (key !== undefined) {
+        const keys = keysOf[kind].get(name) ?? new Set()
+        keysOf[kind].set(name, keys)
+        if (keys.size >= MAX_KEYS && !keys.has(key)) key = undefined
+        else keys.add(key)
+      }
+    }
+    const id = key === undefined ? name : `${name}\u0000${key}`
     if (done[kind].has(id)) continue
     done[kind].add(id)
     const inits = declarators.get(name) ?? []

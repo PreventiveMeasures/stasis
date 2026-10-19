@@ -302,4 +302,16 @@ test('analyzeModule: requires whose result can become module.exports', (t) => {
   t.assert.deepStrictEqual(reexports("const [, b] = [...more, require('./a'), require('./b')]\nmodule.exports = b"), ['./a', './b'])
   t.assert.deepStrictEqual(reexports("const list = [require('./a'), require('./b')]\nmodule.exports = list[i]"), ['./a', './b'])
   t.assert.deepStrictEqual(reexports("const list = [require('./a')]\nmodule.exports = list.length"), [])
+  // Assigned through a destructuring target, or a for-of loop's each round.
+  t.assert.deepStrictEqual(reexports("[module.exports] = [require('./a'), require('./b')]"), ['./a'])
+  t.assert.deepStrictEqual(reexports("({ lib: module.exports } = { lib: require('./a'), other: require('./b') })"), ['./a'])
+  t.assert.deepStrictEqual(reexports("let lib\n[lib = require('./a')] = []\nmodule.exports = lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("for (module.exports of [require('./a')]);"), ['./a'])
+  t.assert.deepStrictEqual(reexports("let lib\nfor (lib of [require('./a')]);\nmodule.exports = lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("for (const [lib] of [[require('./a')]]) module.exports = lib"), ['./a'])
+  t.assert.deepStrictEqual(reexports("for (const key in { a: require('./a') }) module.exports = key"), [])
+  // A name read under more keys than a bundle's names need is followed for every key: none it's read under is lost.
+  const keys = Array.from({ length: 20 }, (_, i) => `k${i}`)
+  const many = `const h = { ${keys.map((k) => `${k}: require('./${k}')`).join(', ')}, other: require('./other') }\nmodule.exports = [${keys.map((k) => `h.${k}`).join(', ')}][i]`
+  t.assert.deepStrictEqual(reexports(many), [...keys.map((k) => `./${k}`), './other'].toSorted())
 })
