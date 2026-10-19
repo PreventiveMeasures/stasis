@@ -344,6 +344,73 @@ test('toCyclonedx bom-ref falls back to ecosystem:name@version when a dep has no
 
 // ── generateSbom / sbom ──────────────────────────────────────────────────────
 
+// A bundle whose `next` carries files of three packages Next.js vendors into dist/compiled: one with
+// no version in its package.json, one scoped with one, and a second directory of one name.
+const nextBundle = (vendored) => codeOf({
+  version: 1,
+  config: { scope: 'full' },
+  entries: ['index.js'],
+  formats: {},
+  imports: {},
+  sources: { '.': { name: 'app', version: '1.0.0', files: { 'index.js': '' } } },
+  modules: {
+    'node_modules/next': {
+      name: 'next', version: '16.4.0', ecosystem: 'npm', vendored,
+      files: Object.fromEntries(Object.keys(vendored).map((dir) => [`${dir}/index.js`, ''])),
+    },
+  },
+})
+const NEXT_VENDORED = {
+  'dist/compiled/@babel/runtime': { name: '@babel/runtime', version: '7.27.0' },
+  'dist/compiled/loader-utils2': { name: 'loader-utils' },
+  'dist/compiled/ua-parser-js': { name: 'ua-parser-js' },
+}
+
+test('collectComponents carries a dependency\'s vendored packages, a purl beside a version only', (t) => {
+  const next = collectComponents([nextBundle(NEXT_VENDORED)]).find((c) => c.name === 'next')
+  t.assert.deepStrictEqual(next.vendored, [
+    { dir: 'dist/compiled/@babel/runtime', name: '@babel/runtime', version: '7.27.0', ecosystem: 'npm', purl: 'pkg:npm/%40babel/runtime@7.27.0' },
+    { dir: 'dist/compiled/loader-utils2', name: 'loader-utils', version: undefined, ecosystem: 'npm', purl: null },
+    { dir: 'dist/compiled/ua-parser-js', name: 'ua-parser-js', version: undefined, ecosystem: 'npm', purl: null },
+  ])
+  // Across artifacts of one next, the union of what each carries.
+  const [a, b] = [{ 'dist/compiled/ua-parser-js': NEXT_VENDORED['dist/compiled/ua-parser-js'] }, { 'dist/compiled/loader-utils2': NEXT_VENDORED['dist/compiled/loader-utils2'] }]
+  const union = collectComponents([nextBundle(a), nextBundle(b)]).find((c) => c.name === 'next')
+  t.assert.deepStrictEqual(union.vendored.map((v) => v.dir), ['dist/compiled/loader-utils2', 'dist/compiled/ua-parser-js'])
+  // A lockfile records none: metadata, which only a bundle carries.
+  t.assert.equal(collectComponents([lockOf(LOCK)]).find((c) => c.name === 'foo').vendored, undefined)
+})
+
+test('toCyclonedx nests vendored packages in their host\'s components', (t) => {
+  const doc = toCyclonedx(collectComponents([nextBundle(NEXT_VENDORED)]), fixed)
+  const next = doc.components.find((c) => c.name === 'next')
+  t.assert.deepStrictEqual(next.components, [
+    {
+      type: 'library', 'bom-ref': 'pkg:npm/next@16.4.0#dist/compiled/@babel/runtime', group: '@babel', name: 'runtime', version: '7.27.0',
+      purl: 'pkg:npm/%40babel/runtime@7.27.0', evidence: { occurrences: [{ location: 'dist/compiled/@babel/runtime' }] },
+    },
+    { type: 'library', 'bom-ref': 'pkg:npm/next@16.4.0#dist/compiled/loader-utils2', name: 'loader-utils', evidence: { occurrences: [{ location: 'dist/compiled/loader-utils2' }] } },
+    { type: 'library', 'bom-ref': 'pkg:npm/next@16.4.0#dist/compiled/ua-parser-js', name: 'ua-parser-js', evidence: { occurrences: [{ location: 'dist/compiled/ua-parser-js' }] } },
+  ])
+  // Contained, not depended on: the graph is unchanged.
+  t.assert.deepStrictEqual(doc.dependencies, [{ ref: 'pkg:npm/app@1.0.0', dependsOn: ['pkg:npm/next@16.4.0'] }])
+})
+
+test('toSpdx lists vendored packages after the rest, each CONTAINed by its host', (t) => {
+  const doc = toSpdx(collectComponents([nextBundle(NEXT_VENDORED)]), fixed)
+  t.assert.deepStrictEqual(doc.packages.map((p) => [p.SPDXID, p.name, p.versionInfo, p.packageFileName]), [
+    ['SPDXRef-Package-0', 'app', '1.0.0', undefined],
+    ['SPDXRef-Package-1', 'next', '16.4.0', undefined],
+    ['SPDXRef-Package-1-Vendored-0', '@babel/runtime', '7.27.0', 'dist/compiled/@babel/runtime'],
+    ['SPDXRef-Package-1-Vendored-1', 'loader-utils', undefined, 'dist/compiled/loader-utils2'],
+    ['SPDXRef-Package-1-Vendored-2', 'ua-parser-js', undefined, 'dist/compiled/ua-parser-js'],
+  ])
+  t.assert.deepStrictEqual(doc.packages[2].externalRefs, [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: 'pkg:npm/%40babel/runtime@7.27.0' }])
+  t.assert.equal(doc.packages[4].externalRefs, undefined, 'no version, no purl')
+  t.assert.deepStrictEqual(doc.relationships.filter((r) => r.relationshipType === 'CONTAINS'), [0, 1, 2].map((i) => (
+    { spdxElementId: 'SPDXRef-Package-1', relatedSpdxElement: `SPDXRef-Package-1-Vendored-${i}`, relationshipType: 'CONTAINS' })))
+})
+
 test('generateSbom dispatches on format and rejects unknown ones', (t) => {
   t.assert.equal(generateSbom('spdx', []).spdxVersion, 'SPDX-2.3')
   t.assert.equal(generateSbom('cyclonedx', []).bomFormat, 'CycloneDX')
