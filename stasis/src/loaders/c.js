@@ -83,14 +83,14 @@ function guardName(name, expr) {
 // guard (`#ifndef X` then `#define X` as its first directives, before any code, closed by an
 // `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
-// backslash joined, and a directive is `#` (or `%:`, or `??=`) first on its line, as in translation
-// phase 4. With trigraphs on (-trigraphs, an ISO -std), `??/` is a backslash, which can splice a line
-// or escape a quote; GNU modes leave it be. A file holding one is read both ways, and an include
-// only one reading finds is one only some builds read.
+// backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
+// With trigraphs on (-trigraphs, an ISO -std), `??=` is a `#` and `??/` a backslash, which can splice
+// a line or escape a quote; GNU modes leave both be. A file holding one is read both ways, and an
+// include only one reading finds (or finds unconditional) is one only some builds read.
 export function scanIncludes(source) {
   const plain = scanText(source)
-  if (!source.includes('??/')) return plain
-  const trigraphs = scanText(source.replaceAll('??/', '\\'))
+  if (!/\?\?[=/]/u.test(source)) return plain
+  const trigraphs = scanText(source.replaceAll('??=', '#').replaceAll('??/', '\\'))
   const key = (inc) => `${inc.directive}\0${inc.form}\0${inc.path}`
   const surest = (incs) => {
     const states = new Map()
@@ -266,10 +266,8 @@ function scanText(source) {
       i = skipBlockComment(i)
     } else if (s.startsWith('//', i)) {
       i = lineEnd(i)
-    } else if (atLineStart && (c === '#' || s.startsWith('%:', i) || s.startsWith('??=', i))) {
-      // `#`, its digraph `%:`, or its trigraph `??=`: where trigraphs are off (GNU modes), GCC
-      // ignores that line, so a directive found there may be one no build reads.
-      i = directive(i + (c === '#' ? 1 : c === '%' ? 2 : 3))
+    } else if (atLineStart && (c === '#' || s.startsWith('%:', i))) {
+      i = directive(i + (c === '#' ? 1 : 2))
     } else {
       atLineStart = false
       code = true
@@ -378,7 +376,7 @@ function includeFlags(argv, directory, toDir, cl) {
   }
   const headerSysroot = isysroot ?? sysroot
   const dir = (value, list, framework = false) => {
-    if (value === undefined || value === '' || value === '-') return
+    if (value === undefined || value === '') return
     const inSysroot = /^(?:=|\$SYSROOT)(.*)$/su.exec(value)
     let path
     if (inSysroot === null) path = resolve(directory, value)
@@ -457,7 +455,7 @@ function includeFlags(argv, directory, toDir, cl) {
       else if (cl && ((v = take('/external:I')) !== undefined || (v = take('-external:I')) !== undefined)) dir(v, flags.system)
       // clang-cl's /imsvc: a system directory "as if in %INCLUDE%", after the others (as clang-cl -v lists it).
       else if (cl && ((v = take('/imsvc')) !== undefined || (v = take('-imsvc')) !== undefined)) dir(v, flags.after)
-      else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v)
+      else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v?.replaceAll('\\', '/'))
     }
   }
   flags.quote.unshift(...preBarrier)
@@ -1113,8 +1111,10 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
         }
       }
 
-      for (const inc of scans.get(file)) {
-        const spec = includeSpec(inc)
+      for (const scanned of scans.get(file)) {
+        const spec = includeSpec(scanned)
+        // cl and clang-cl read a backslash in a header name as a separator (`"sub\x.h"`).
+        const inc = ctx.msvc && scanned.path.includes('\\') ? { ...scanned, path: scanned.path.replaceAll('\\', '/') } : scanned
         if (inc.form === 'macro') {
           if (!computed.some((c) => c.spec === spec && c.from === file)) computed.push({ spec, from: file })
           continue

@@ -589,10 +589,11 @@ test('scanIncludes ends a line at a lone carriage return, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('#include "a.h"\r#include "b.h"\r#inc\\\rlude "c.h"\r'), ['include "a.h" live', 'include "b.h" live', 'include "c.h" live'])
 })
 
-test('scanIncludes reads a directive introduced by the trigraph ??=, as GCC does with trigraphs on', (t) => {
-  t.assert.deepStrictEqual(specs('??=include "a.h"\n  ??=  include "b.h"\n??=if 0\n#include "c.h"\n??=endif\n'), ['include "a.h" live', 'include "b.h" live'])
+test('scanIncludes reads a file holding trigraphs with them off and on, what one reading finds some build reads', (t) => {
+  // `??=` is a `#` only with trigraphs on: GCC 13 opens a.h and b.h with -trigraphs, c.h without.
+  t.assert.deepStrictEqual(specs('??=include "a.h"\n  ??=  include "b.h"\n??=if 0\n#include "c.h"\n??=endif\n'), ['include "c.h" maybe', 'include "a.h" maybe', 'include "b.h" maybe'])
   // `??/` is a backslash only with trigraphs on: GCC 13 opens next.h without -trigraphs, required.h
-  // with them. Each is what some build reads.
+  // with them.
   t.assert.deepStrictEqual(specs('??=include "requi??/\nred.h"\n// comment??/\n#include "next.h"\n'), ['include "next.h" maybe', 'include "required.h" maybe'])
   t.assert.deepStrictEqual(specs('#include "a.h"\nconst char *s = "??/n";\n'), ['include "a.h" live'])
 })
@@ -628,6 +629,34 @@ test('collectCBundle carries a cl #import\'s type library as bytes, where GCC\'s
   const gcc = bundle('b.c', ['gcc', '-c'])
   t.assert.equal(gcc.formats.get('lib/h.h'), 'c-header')
   t.assert.ok(gcc.sources.has('lib/dep.h'))
+}))
+
+test('collectCBundle reads a backslash in a header name as a separator under clang-cl, as GCC doesn\'t', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/main.c': '#include "sub\\x.h"\n#include <deep\\y.h>\n#include <z.h>\n',
+    'src/sub/x.h': '#include "w.h"\n',
+    'src/sub/w.h': '',
+    'inc/deep/y.h': '',
+    'src/fi/p.h': '',
+    '-/z.h': '',
+    'later/z.h': '',
+  })
+  const bundle = (argv) => {
+    writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/main.c', arguments: [...argv, 'src/main.c'] }]))
+    return collectCBundle(tmp, ['src/main.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  }
+  // clang-cl 18 /E opens src/sub/x.h (and the w.h beside it), inc/deep/y.h, src/fi/p.h, and -/z.h:
+  // its -I- is the directory `-`, ahead of later.
+  const cl = bundle(['clang-cl', '/Iinc', '-I-', '/Ilater', '/FIsrc\\fi\\p.h', '/c'])
+  t.assert.deepStrictEqual(Object.fromEntries(cl.resolutions.get('src/main.c')), {
+    '/FI src/fi/p.h': 'src/fi/p.h',
+    'include "sub\\x.h"': 'src/sub/x.h',
+    'include <deep\\y.h>': 'inc/deep/y.h',
+    'include <z.h>': '-/z.h',
+  })
+  t.assert.ok(cl.sources.has('src/sub/w.h'))
+  // GCC looks for a file named sub\x.h, and finds none.
+  t.assert.equal(bundle(['gcc', '-Iinc', '-c']).resolutions.get('src/main.c')?.get('include "sub\\x.h"'), undefined)
 }))
 
 test('collectCBundle takes no -I- for a barrier under clang-cl, which reads it as /I -', withTmp((t, tmp) => {

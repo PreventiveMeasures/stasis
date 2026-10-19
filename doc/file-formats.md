@@ -1322,11 +1322,11 @@ graph, as the preprocessor would follow it, plus each header's implementation.
 translation phases 1 to 4 find them: a leading byte order mark skipped, a line
 ending at CR LF, LF or a lone CR, lines spliced by a backslash joined, comments
 and string and character literals skipped (C++ raw strings and digit separators
-included), a directive being `#` (or `%:`, or `??=`, the trigraph a build
-with trigraphs on reads as `#`) first on its line. A file holding `??/` -- a
-backslash with trigraphs on, which can splice a line, and nothing in GNU modes
--- is read both ways, an include only one reading finds taken as one some
-builds read. Macros aren't
+included), a directive being `#` (or `%:`) first on its line. A file holding
+the trigraph `??=` or `??/` -- a `#` and a backslash (which can splice a line)
+with trigraphs on, and nothing in GNU modes -- is read both ways, an include
+only one reading finds, or finds unconditional, taken as one some builds read.
+Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and conditionals
 aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
 code (and the `#else` of an `#if 1`) is never followed, and an include under any
@@ -1342,6 +1342,7 @@ carried as a resource as an `#embed`'s file is.
 `-idirafter`, in order. `#include_next` carries on from after the directory its
 includer was found in (from the start of its form's list where it wasn't found
 through one), never landing on the includer. Under a cl or clang-cl command, a
+backslash in a header name (`"sub\x.h"`, a `/FI` one too) is a separator, and a
 quoted include not beside its includer is then looked up beside each file
 including that one, nearest first, before the `/I` directories (MSVC's rule,
 which clang-cl follows): a header reached through includers in other
