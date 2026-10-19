@@ -377,8 +377,14 @@ test('collectComponents carries a dependency\'s vendored packages, a purl beside
   const [a, b] = [{ 'dist/compiled/ua-parser-js': NEXT_VENDORED['dist/compiled/ua-parser-js'] }, { 'dist/compiled/loader-utils2': NEXT_VENDORED['dist/compiled/loader-utils2'] }]
   const union = collectComponents([nextBundle(a), nextBundle(b)]).find((c) => c.name === 'next')
   t.assert.deepStrictEqual(union.vendored.map((v) => v.dir), ['dist/compiled/loader-utils2', 'dist/compiled/ua-parser-js'])
-  // A lockfile records none: metadata, which only a bundle carries.
+  // A record with none carries none.
   t.assert.equal(collectComponents([lockOf(LOCK)]).find((c) => c.name === 'foo').vendored, undefined)
+  // A lockfile records them as a bundle does.
+  const lock = lockOf({
+    version: 0, config: { scope: 'node_modules' },
+    modules: { 'node_modules/next': { name: 'next', version: '16.4.0', ecosystem: 'npm', vendored: NEXT_VENDORED, files: Object.fromEntries(Object.keys(NEXT_VENDORED).map((dir) => [`${dir}/index.js`, 'sha512-x'])) } },
+  })
+  t.assert.deepStrictEqual(collectComponents([lock]).find((c) => c.name === 'next').vendored, next.vendored)
 })
 
 test('toCyclonedx nests vendored packages in their host\'s components', (t) => {

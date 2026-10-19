@@ -4,8 +4,10 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// A record as a lockfile holds it: without `repo`, `vendored` and `subpackages`, metadata a bundle carries and nothing attests.
-const lockRecord = ({ repo: _repo, vendored: _vendored, subpackages: _subpackages, ...info }) => info
+// A record as a lockfile holds it: without `repo` and `subpackages`, metadata a bundle carries and nothing attests.
+// `vendored` it keeps, unattested too, so the copies a dependency ships can be audited from a lockfile alone.
+const LOCK_METADATA = ['vendored']
+const lockRecord = ({ repo: _repo, subpackages: _subpackages, ...info }) => info
 
 export class Lockfile {
   static VERSION = VERSION
@@ -81,7 +83,7 @@ export class Lockfile {
   serialize() {
     // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { modules, sources } = groupModules(this.modules, { metadata: false, what: 'lockfile' })
+    const { modules, sources } = groupModules(this.modules, { metadata: LOCK_METADATA, what: 'lockfile' })
     const store = { version: this.version, config: this.config }
     if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
     store.modules = modules

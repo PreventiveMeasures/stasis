@@ -44,6 +44,17 @@ artifact tags it with (see [file formats](file-formats.md)):
 | `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV, whose crate of that name may be another |
 
+A copy of a package that a dependency ships inside itself, which the
+artifact lists in the dependency's `vendored` (Next.js compiles about 140 into
+`dist/compiled`, see [file formats](file-formats.md)), is audited as the
+package it is, by the same rule over the files the copy holds, and its host is
+audited as before. The `installed` cell says where it is
+(`19.3.0 (vendored in next@16.4.0)`, or `also vendored in` where the package
+is installed on its own too), a bundle consumer that recorded one of its files
+is a reason for both, and `--why` chains end at the copy (`next -> react-is`).
+A copy whose `package.json` gives no version, as most of Next.js's don't,
+can't be matched to an advisory: it is listed as not audited, naming its host.
+
 GitHub is asked with `GITHUB_TOKEN` where it is set. Each flagged advisory is
 one row: severity, ecosystem (when not all npm), package, installed and
 vulnerable versions, title and id, plus a `reason` column where the artifacts

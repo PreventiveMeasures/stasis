@@ -11,7 +11,7 @@ import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
 // Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json of its
 // own, which names it rather than next. They are next's files, and a bundle lists the vendored packages
-// among them it carries a file of: `vendored`, on next's record, metadata a lockfile never holds.
+// among them it carries a file of: `vendored`, on next's record, metadata its lockfile holds too, unattested.
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-vendored-'))
@@ -59,7 +59,8 @@ test('stasis bundle bundles the packages next vendors that it reaches, listing t
     t.assert.ok(next.files['dist/compiled/ua-parser-js/index.js'], label)
     t.assert.deepStrictEqual(next.vendored, { 'dist/compiled/react-is': REACT_IS, 'dist/compiled/ua-parser-js': UA }, `${label}: bundle`)
     const lock = JSON.parse(readFileSync(join(tmp, `${label}.lock.json`), 'utf8'))
-    t.assert.equal(lock.modules['node_modules/next'].vendored, undefined, `${label}: lockfile`)
+    // A lockfile lists them too, so a lockfile alone can be audited for them.
+    t.assert.deepStrictEqual(lock.modules['node_modules/next'].vendored, next.vendored, `${label}: lockfile`)
   }
 }))
 
