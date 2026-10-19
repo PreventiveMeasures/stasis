@@ -1327,11 +1327,13 @@ the trigraph `??=` or `??/` -- a `#` and a backslash (which can splice a line)
 with trigraphs on, and nothing in GNU modes -- is read both ways, an include
 only one reading finds, or finds unconditional, taken as one some builds read.
 Macros aren't
-expanded, so `#include MACRO` is reported and not followed, and conditionals
-aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
-code (and the `#else` of an `#if 1`) is never followed, and an include under any
-other condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found,
-every configuration's alike, but not required. A file's include guard (`#ifndef X` then `#define X` as its
+expanded, so `#include MACRO` is reported and not followed, and a condition
+is evaluated as far as its integer literals (in any base) and the operators
+over them go, a macro unknown but where the rest decides: `#if 0` code (and the
+`#else` of an `#if 1`; `#if 1 + 0`, `#if !0`, `#if 1 || X` and
+`#if 0 && defined(X)` alike) is never followed, and an include under any other
+condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found, every
+configuration's alike, but not required. A file's include guard (`#ifndef X` then `#define X` as its
 first directives, `#pragma once` aside, before any code, closed by an `#endif`
 with nothing after it and no `#else` or `#elif` in it) isn't a condition. Under
 a cl or clang-cl command, an `#import` names a type library (`.tlb`, `.dll`),
@@ -1394,7 +1396,9 @@ is:
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
-  shell splits it, a compiler launcher in front of the compiler (`ccache`,
+  shell splits it, a response file (`@file`, from the command's `directory`,
+  nested ones too) read in where it is named, split as GCC splits one (as cl
+  does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what `-Xclang` and
   `-Xpreprocessor` pass on read after the driver's own options, as the compiler
   gets them. A `-include` is the unit's first include, looked up in the

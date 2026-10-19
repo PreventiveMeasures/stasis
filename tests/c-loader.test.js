@@ -598,6 +598,16 @@ test('scanIncludes reads a file holding trigraphs with them off and on, what one
   t.assert.deepStrictEqual(specs('#include "a.h"\nconst char *s = "??/n";\n'), ['include "a.h" live'])
 })
 
+test('scanIncludes evaluates a condition\'s literals and operators, a macro unknown but where the rest decides', (t) => {
+  const src = [
+    ['1 || FEATURE', 'a'], ['0 && defined(X)', 'b'], ['1 + 0', 'c'], ['!0', 'd'], ['X ? 1 : 1', 'e'],
+    ['__has_include(<x.h>) || 2 > 1', 'f'], ['(0x10 >> 4) == 1 && -1 < 0', 'h'], ['defined X', 'i'], ['-1U < 0', 'j'], ['08', 'k'],
+  ].map(([cond, name]) => `#if ${cond}\n#include "${name}.h"\n#endif\n`).join('')
+  // GCC 13 opens a, c, d, e, f and h, never b; i hangs on X; -1U < 0 wraps (C's is false), and 08
+  // is no literal.
+  t.assert.deepStrictEqual(specs(src), ['include "a.h" live', 'include "c.h" live', 'include "d.h" live', 'include "e.h" live', 'include "f.h" live', 'include "h.h" live', 'include "i.h" maybe', 'include "j.h" maybe', 'include "k.h" maybe'])
+})
+
 test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('﻿#include "a.h"\n'), ['include "a.h" live'])
   t.assert.deepStrictEqual(specs('﻿#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n'), ['include "b.h" live'])
@@ -668,6 +678,28 @@ test('collectCBundle takes no -I- for a barrier under clang-cl, which reads it a
   // clang-cl 18 /E takes src/x.h, beside the unit; GCC 13, past its barrier, a/x.h.
   t.assert.equal(resolve(['clang-cl', '/Ia', '-I-', '/Ib', '/c']), 'src/x.h')
   t.assert.equal(resolve(['gcc', '-Ia', '-I-', '-Ib', '-c']), 'a/x.h')
+}))
+
+test('loadCompileCommands reads response files, nested ones too, split as each driver splits them', withTmp((t, tmp) => {
+  tree(tmp, {
+    'flags.rsp': '-I inc\n@b/nested.rsp\n',
+    'b/nested.rsp': "-isystem 'sys dir'\n",
+    'cl.rsp': '/I"inc dir" /FIsub\\pch.h\n',
+    'u16.rsp': Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('/Iu16\r\n', 'utf16le')]),
+  })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['gcc', '@flags.rsp', '-c', 'a.c'] },
+    { directory: tmp, file: 'b.c', arguments: ['clang-cl', '@cl.rsp', '@u16.rsp', '/c', 'b.c'] },
+    { directory: tmp, file: 'c.c', arguments: ['gcc', '@missing.rsp', '-Iinc', '-c', 'c.c'] },
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  // gcc 13 -v lists inc, then sys dir (the nested file's path from the working directory); clang-cl
+  // 18 -v lists inc dir, u16, and keeps the backslash in sub\pch.h (no escape to it), a separator.
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'inc' }])
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'sys dir' }])
+  t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'inc dir' }, { rel: 'u16' }])
+  t.assert.deepStrictEqual(commands.get('b.c').forced.map((f) => f.path), ['sub/pch.h'])
+  t.assert.deepStrictEqual(commands.get('c.c').I, [{ rel: 'inc' }])
 }))
 
 test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, after the driver\'s own', withTmp((t, tmp) => {

@@ -60,12 +60,123 @@ function nextTaken(taken, cond) {
   return taken
 }
 
-// An `#if`/`#elif` condition's value where it is an integer literal in any base, digit separators
-// and suffixes included (`#if 0`, `#if 1`, `#if 0x0`, `#if 0b1`, `#if 1'000L`), else undefined:
-// macros aren't evaluated, so whatever names one could go either way.
+// An `#if`/`#elif` condition's integer literals (in any base, digit separators and suffixes
+// included), and the operators over them, as the preprocessor evaluates them.
+const CONDITION_NUMBER = /(?:0[xX]([\da-fA-F']+)|0[bB]([01']+)|(0[0-7']*)|([1-9][\d']*))((?:[uUlLzZ]|wb|WB)*)(?![\w.])/uy
+const CONDITION_NAME = /[A-Za-z_]\w*/uy
+const CONDITION_OPERATOR = /\|\||&&|==|!=|<=|>=|<<|>>|[-+*/%<>&|^!~?:()]/uy
+const CONDITION_LEVELS = [['||'], ['&&'], ['|'], ['^'], ['&'], ['==', '!='], ['<', '>', '<=', '>='], ['<<', '>>'], ['+', '-'], ['*', '/', '%']]
+
+// The value of `a op b`, either undefined where it hangs on a macro: unknown, but where the known
+// side decides (`1 || X`, `0 && X`).
+function conditionOperator(op, a, b) {
+  if (op === '||') return a === undefined ? (b !== undefined && b !== 0n ? 1n : undefined) : a !== 0n ? 1n : b === undefined ? undefined : BigInt(b !== 0n)
+  if (op === '&&') return a === 0n || b === 0n ? 0n : a === undefined || b === undefined ? undefined : 1n
+  if (a === undefined || b === undefined) return undefined
+  switch (op) {
+    case '|': return a | b
+    case '^': return a ^ b
+    case '&': return a & b
+    case '==': return BigInt(a === b)
+    case '!=': return BigInt(a !== b)
+    case '<': return BigInt(a < b)
+    case '>': return BigInt(a > b)
+    case '<=': return BigInt(a <= b)
+    case '>=': return BigInt(a >= b)
+    case '<<': return a << b
+    case '>>': return a >> b
+    case '+': return a + b
+    case '-': return a - b
+    case '*': return a * b
+    default: return b === 0n ? undefined : op === '/' ? a / b : a % b
+  }
+}
+
+// An `#if`/`#elif` condition's value: true, false, or undefined where it hangs on a macro. Integer
+// literals and the operators over them are evaluated (`#if 0`, `#if 0x1`, `#if 1 + 0`, `#if !0`);
+// a name, `defined X` and a macro call (`__has_include(<x.h>)`) are unknown, as is what they take
+// part in, but where the rest decides (`#if 1 || X`, `#if 0 && defined(X)`). Macros aren't expanded.
+// Where an unsigned literal (`1u`) takes part, a negative value is unknown: C's would wrap.
 function evalCondition(expr) {
-  const m = /^\(*\s*(?:0[xX]([\da-fA-F']+)|0[bB]([01']+)|(\d[\d']*))(?:[uUlLzZ]|wb|WB)*\s*\)*$/u.exec(expr.trim())
-  return m ? /[^0']/u.test(m[1] ?? m[2] ?? m[3]) : undefined
+  const tokens = []
+  let unsigned = false
+  for (let i = 0; i < expr.length;) {
+    if (/\s/u.test(expr[i])) {
+      i++
+      continue
+    }
+    let m
+    if (((CONDITION_NUMBER.lastIndex = i), (m = CONDITION_NUMBER.exec(expr))) !== null) {
+      const [, hex, binary, octal, decimal, suffix] = m
+      if (/u/iu.test(suffix)) unsigned = true
+      const digits = (hex ?? binary ?? octal ?? decimal).replaceAll("'", '')
+      tokens.push({ value: BigInt(hex ? `0x${digits}` : binary ? `0b${digits}` : octal ? `0o${digits}` : digits) })
+      i = CONDITION_NUMBER.lastIndex
+    } else if (((CONDITION_NAME.lastIndex = i), (m = CONDITION_NAME.exec(expr))) !== null) {
+      i = CONDITION_NAME.lastIndex
+      // `defined X`, `defined(X)`; a name with arguments, all of them up to its closing parenthesis.
+      const rest = m[0] === 'defined' ? /\s*(?:\(\s*\w+\s*\)|\w+)/uy : /\s*\(/uy
+      rest.lastIndex = i
+      if (rest.exec(expr) !== null) {
+        i = rest.lastIndex
+        for (let depth = m[0] === 'defined' ? 0 : 1; depth > 0; i++) {
+          if (i >= expr.length) return undefined
+          depth += expr[i] === '(' ? 1 : expr[i] === ')' ? -1 : 0
+        }
+      } else if (m[0] === 'defined') {
+        return undefined
+      }
+      tokens.push({ value: undefined })
+    } else if (((CONDITION_OPERATOR.lastIndex = i), (m = CONDITION_OPERATOR.exec(expr))) !== null) {
+      tokens.push({ op: m[0] })
+      i = CONDITION_OPERATOR.lastIndex
+    } else {
+      return undefined
+    }
+  }
+  let k = 0
+  const malformed = new SyntaxError('malformed condition')
+  const checked = (value) => (unsigned && value < 0n ? undefined : value)
+  const unary = () => {
+    const token = tokens[k++]
+    if (token === undefined) throw malformed
+    if ('value' in token) return token.value
+    if (token.op === '(') {
+      const value = ternary()
+      if (tokens[k++]?.op !== ')') throw malformed
+      return value
+    }
+    if (!['!', '~', '-', '+'].includes(token.op)) throw malformed
+    const value = unary()
+    if (value === undefined) return undefined
+    return checked(token.op === '!' ? BigInt(value === 0n) : token.op === '~' ? ~value : token.op === '-' ? -value : value)
+  }
+  const binary = (level) => {
+    if (level === CONDITION_LEVELS.length) return unary()
+    let value = binary(level + 1)
+    while (CONDITION_LEVELS[level].includes(tokens[k]?.op)) {
+      const { op } = tokens[k++]
+      value = checked(conditionOperator(op, value, binary(level + 1)))
+    }
+    return value
+  }
+  const ternary = () => {
+    const cond = binary(0)
+    if (tokens[k]?.op !== '?') return cond
+    k++
+    const a = ternary()
+    if (tokens[k++]?.op !== ':') throw malformed
+    const b = ternary()
+    if (cond !== undefined) return cond === 0n ? b : a
+    return a === b ? a : undefined
+  }
+  try {
+    const value = ternary()
+    return k === tokens.length && value !== undefined ? value !== 0n : undefined
+  } catch (error) {
+    if (error === malformed) return undefined
+    throw error
+  }
 }
 
 // `#ifndef X` / `#if !defined(X)`: the macro name, the candidate include guard.
@@ -464,6 +575,64 @@ function includeFlags(argv, directory, toDir, cl) {
   return flags
 }
 
+// `args` with each `@file` (a response file, relative to `directory`) replaced by the arguments it
+// holds, its own `@file`s too: split as GCC and Clang split one, or as cl and clang-cl do where `cl`
+// says the driver is one. One that can't be read stays as it is, as the compilers keep it.
+function expandResponseFiles(args, directory, cl, depth = 0) {
+  const out = []
+  for (const arg of args) {
+    let buf = null
+    if (arg.length > 1 && arg.startsWith('@') && depth < 16) {
+      try {
+        buf = readFileSync(resolve(directory, arg.slice(1)))
+      } catch {
+        // Unreadable: an argument like any other.
+      }
+    }
+    if (buf === null) {
+      out.push(arg)
+      continue
+    }
+    // cl's may be UTF-16, with its byte order mark.
+    const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.toString('utf16le', 2) : buf.toString('utf8').replace(/^\uFEFF/u, '')
+    out.push(...expandResponseFiles(cl ? splitWindowsCommand(text) : splitCommand(text), directory, cl, depth + 1))
+  }
+  return out
+}
+
+// A command line split into its arguments as cl splits one (and clang-cl a response file): words
+// apart where unquoted space is, double quotes around spaces, a backslash literal but before a quote
+// (2n of them then a quote: n backslashes, and the quote opens or closes; 2n+1: n and a literal one).
+function splitWindowsCommand(text) {
+  const args = []
+  let word = null
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\') {
+      let n = 0
+      while (text[i] === '\\') {
+        n++
+        i++
+      }
+      word = (word ?? '') + '\\'.repeat(text[i] === '"' ? n >> 1 : n)
+      if (text[i] !== '"') i--
+      else if (n % 2 === 1) word += '"'
+      else quoted = !quoted
+    } else if (c === '"') {
+      word ??= ''
+      quoted = !quoted
+    } else if (!quoted && /\s/u.test(c)) {
+      if (word !== null) args.push(word)
+      word = null
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== null) args.push(word)
+  return args
+}
+
 // Compiler launchers, which run the compiler named after them with its arguments.
 const LAUNCHERS = /^(?:ccache|sccache|distcc|icecc|buildcache)(?:\.exe)?$/iu
 
@@ -535,7 +704,7 @@ export function loadCompileCommands(baseDir, file) {
     let first = 0
     while (first < args.length - 1 && LAUNCHERS.test(program(args[first]))) first++
     const cl = /^(?:clang-)?cl(?:\.exe)?$/iu.test(program(args[first]))
-    commands.set(unit.rel, includeFlags(args.slice(first), directory, toDir, cl))
+    commands.set(unit.rel, includeFlags(expandResponseFiles(args.slice(first), directory, cl), directory, toDir, cl))
   }
   return commands
 }
