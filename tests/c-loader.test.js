@@ -544,6 +544,17 @@ test('collectCBundle tells one directory spelled two ways by its real path', wit
   t.assert.equal(resolutions.get('src/a.c').get('include <x.h>'), 'b/x.h')
 }))
 
+test('collectCBundle searches an include directory outside the root that is a symlink into it as the one inside', withTmp((t, tmp) => {
+  tree(tmp, { 'root/src/a.c': '#include <x.h>\n', 'root/src/b.c': '#include <y.h>\n', 'root/include/x.h': '', 'root/include/y.h': '' })
+  symlinkSync(join(tmp, 'root/include'), join(tmp, 'alias'))
+  const root = join(tmp, 'root')
+  writeFileSync(join(root, 'compile_commands.json'), JSON.stringify([{ directory: root, file: 'src/b.c', arguments: ['gcc', `-I${join(tmp, 'alias')}`, '-c', 'src/b.c'] }]))
+  const { sources, resolutions } = collectCBundle(root, ['src/a.c', 'src/b.c'], { includeDirs: [join(tmp, 'alias')], commands: loadCompileCommands(root, 'compile_commands.json') })
+  t.assert.equal(resolutions.get('src/a.c').get('include <x.h>'), 'include/x.h')
+  t.assert.equal(resolutions.get('src/b.c').get('include <y.h>'), 'include/y.h')
+  t.assert.ok(sources.has('include/x.h') && sources.has('include/y.h'))
+}))
+
 test('loadCompileCommands puts =dir and $SYSROOT/dir in the sysroot, -isysroot\'s over --sysroot\'s', withTmp((t, tmp) => {
   tree(tmp, { 'src/a.c': '#include <x.h>\n', 'sr/usr/include/x.h': '', 'hsr/inc/y.h': '' })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
@@ -703,12 +714,14 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
     'cl.rsp': '/I"inc dir" /FIsub\\pch.h\n',
     'u16.rsp': Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('/Iu16\r\n', 'utf16le')]),
     'mode.rsp': '--driver-mode=cl /Imode\n',
+    'esc.rsp': String.raw`-I"inc\ dir" -I'a\b' -Ic\"d -I"x\"y" -I'q\'r' -Ip\ q` + '\n',
   })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     { directory: tmp, file: 'a.c', arguments: ['gcc', '@flags.rsp', '-c', 'a.c'] },
     { directory: tmp, file: 'b.c', arguments: ['clang-cl', '@cl.rsp', '@u16.rsp', '/c', 'b.c'] },
     { directory: tmp, file: 'c.c', arguments: ['gcc', '@missing.rsp', '-Iinc', '-c', 'c.c'] },
     { directory: tmp, file: 'd.c', arguments: ['clang', '@mode.rsp', '/c', 'd.c'] },
+    { directory: tmp, file: 'e.c', arguments: ['gcc', '@esc.rsp', '-c', 'e.c'] },
   ]))
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
   // gcc 13 -v lists inc, then sys dir (the nested file's path from the working directory); clang-cl
@@ -721,6 +734,9 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
   // A --driver-mode=cl in one makes the command clang-cl's, as clang 18 takes it.
   t.assert.deepStrictEqual(commands.get('d.c').I, [{ rel: 'mode' }])
   t.assert.equal(commands.get('d.c').msvc, true)
+  // A backslash escapes any character in a GNU response file, in quotes too, as gcc 13 and clang 18
+  // -v both list these.
+  t.assert.deepStrictEqual(commands.get('e.c').I, ['inc dir', 'ab', 'c"d', 'x"y', "q'r", 'p q'].map((rel) => ({ rel })))
 }))
 
 test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass on, after the driver\'s own', withTmp((t, tmp) => {

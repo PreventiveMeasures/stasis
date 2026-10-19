@@ -1435,7 +1435,8 @@ from). An include that resolves to other files in other units (a `<config.h>` pe
 target), or under cl through other includers, records the first file as its
 edge, and is reported; every file is bundled. Nothing is read outside the bundle root: a header found in a
 directory outside it, or through a `../` past it, is a system or out-of-tree
-header, neither bundled nor missing. An include of a symlink leading out of the
+header, neither bundled nor missing (a directory outside it that is a symlink
+into it is the one inside, by its real path). An include of a symlink leading out of the
 root, or of a `.env` file, is refused; a source that isn't UTF-8 stops the
 build (an `#embed`ed file is a resource, base64 where it isn't UTF-8, and a
 source where something includes it too).

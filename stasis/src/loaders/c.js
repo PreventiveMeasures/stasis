@@ -442,7 +442,15 @@ function makeDir(baseDir, realBase, abs) {
     const rel = toPosix(relative(root, abs))
     if (!relativeEscapes(rel)) return { rel: rel === '.' ? '' : rel }
   }
-  return { abs }
+  // One outside it that is a symlink into it (a workspace's include alias): inside, by its real path.
+  let real
+  try {
+    real = realpathSync(abs)
+  } catch {
+    return { abs }
+  }
+  const rel = toPosix(relative(realBase, real))
+  return relativeEscapes(rel) ? { abs } : { rel: rel === '.' ? '' : rel }
 }
 
 // A translation unit's search context: `quote` the -iquote dirs, `angle` the -I, -isystem and
@@ -639,9 +647,38 @@ function expandResponseFiles(args, directory, cl, depth = 0) {
     }
     // cl's may be UTF-16, with its byte order mark.
     const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.toString('utf16le', 2) : buf.toString('utf8').replace(/^\uFEFF/u, '')
-    out.push(...expandResponseFiles(cl ? splitWindowsCommand(text) : splitCommand(text), directory, cl, depth + 1))
+    out.push(...expandResponseFiles(cl ? splitWindowsCommand(text) : splitResponseFile(text), directory, cl, depth + 1))
   }
   return out
+}
+
+// A GNU response file's arguments, as GCC (libiberty's buildargv) and Clang split one: by whitespace
+// outside single and double quotes, a backslash escaping the next character anywhere, in either
+// quotes too (`-I'a\b'` is `-Iab`, as a shell wouldn't have it). An empty `""` is an argument, as
+// GCC keeps it.
+function splitResponseFile(text) {
+  const args = []
+  let word = null
+  let quote = null
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\' && i + 1 < text.length) {
+      word = (word ?? '') + text[++i]
+    } else if (quote !== null) {
+      if (c === quote) quote = null
+      else word += c
+    } else if (c === '"' || c === "'") {
+      word ??= ''
+      quote = c
+    } else if (/\s/u.test(c)) {
+      if (word !== null) args.push(word)
+      word = null
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== null) args.push(word)
+  return args
 }
 
 // A command line split into its arguments as cl splits one (and clang-cl a response file): words
