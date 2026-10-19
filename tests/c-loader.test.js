@@ -591,6 +591,10 @@ test('scanIncludes ends a line at a lone carriage return, as GCC does', (t) => {
 
 test('scanIncludes reads a directive introduced by the trigraph ??=, as GCC does with trigraphs on', (t) => {
   t.assert.deepStrictEqual(specs('??=include "a.h"\n  ??=  include "b.h"\n??=if 0\n#include "c.h"\n??=endif\n'), ['include "a.h" live', 'include "b.h" live'])
+  // `??/` is a backslash only with trigraphs on: GCC 13 opens next.h without -trigraphs, required.h
+  // with them. Each is what some build reads.
+  t.assert.deepStrictEqual(specs('??=include "requi??/\nred.h"\n// comment??/\n#include "next.h"\n'), ['include "next.h" maybe', 'include "required.h" maybe'])
+  t.assert.deepStrictEqual(specs('#include "a.h"\nconst char *s = "??/n";\n'), ['include "a.h" live'])
 })
 
 test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
@@ -624,6 +628,16 @@ test('collectCBundle carries a cl #import\'s type library as bytes, where GCC\'s
   const gcc = bundle('b.c', ['gcc', '-c'])
   t.assert.equal(gcc.formats.get('lib/h.h'), 'c-header')
   t.assert.ok(gcc.sources.has('lib/dep.h'))
+}))
+
+test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, after the driver\'s own', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '' })
+  const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-c', 'a.c']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
+  // clang 18's -v (and gcc 13's, for -Xpreprocessor) lists y, then x, z.
+  const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
+  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'x' }, { rel: 'z' }])
+  t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

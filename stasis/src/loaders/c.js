@@ -84,8 +84,27 @@ function guardName(name, expr) {
 // `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
 // backslash joined, and a directive is `#` (or `%:`, or `??=`) first on its line, as in translation
-// phase 4.
+// phase 4. With trigraphs on (-trigraphs, an ISO -std), `??/` is a backslash, which can splice a line
+// or escape a quote; GNU modes leave it be. A file holding one is read both ways, and an include
+// only one reading finds is one only some builds read.
 export function scanIncludes(source) {
+  const plain = scanText(source)
+  if (!source.includes('??/')) return plain
+  const trigraphs = scanText(source.replaceAll('??/', '\\'))
+  const key = (inc) => `${inc.directive}\0${inc.form}\0${inc.path}`
+  const surest = (incs) => {
+    const states = new Map()
+    for (const inc of incs) if (RANK[inc.state] > RANK[states.get(key(inc)) ?? 'dead']) states.set(key(inc), inc.state)
+    return states
+  }
+  const [a, b] = [surest(plain), surest(trigraphs)]
+  const out = new Map()
+  for (const inc of [...plain, ...trigraphs]) if (!out.has(key(inc))) out.set(key(inc), { ...inc, state: meet(a.get(key(inc)) ?? 'maybe', b.get(key(inc)) ?? 'maybe') })
+  return [...out.values()]
+}
+
+// One reading of `source` (scanIncludes).
+function scanText(source) {
   // A byte order mark opens no line; lines end at CR LF, LF or a lone CR, as GCC reads them; a
   // backslash before one splices it.
   const s = source.replace(/^\uFEFF/u, '').replaceAll(/\r\n?/gu, '\n').replaceAll(/\\\n/gu, '')
@@ -330,9 +349,18 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
   return ctx
 }
 
-// `args` (a compile command's argv) read for its include search flags, GCC's and Clang's (clang-cl's
-// and cl's too where `cl` says the driver is one), each dir resolved against `directory`.
-function includeFlags(args, directory, toDir, cl) {
+// `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
+// cl's too where `cl` says the driver is one), each dir resolved against `directory`.
+function includeFlags(argv, directory, toDir, cl) {
+  // -Xclang and -Xpreprocessor hand the argument after them to the compiler proper, after the
+  // driver's own options (as clang -v and gcc -v list the directories they add): read last, in order.
+  const own = []
+  const passed = []
+  for (let k = 1; k < argv.length; k++) {
+    if ((argv[k] === '-Xclang' || argv[k] === '-Xpreprocessor') && k + 1 < argv.length) passed.push(argv[++k])
+    else own.push(argv[k])
+  }
+  const args = [argv[0], ...own, ...passed]
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
@@ -365,7 +393,7 @@ function includeFlags(args, directory, toDir, cl) {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
   }
   // Options whose value is the next argument, which is never a flag of its own.
-  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-Xclang', '-Xpreprocessor', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib'])
+  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib'])
   let prefix // -iprefix's, for the -iwithprefix ones after it; with none, they name no directory
   // GCC's driver hands its compiler the -I options (and -I-) ahead of the others, so they are read
   // first, in order (`-iwithprefixbefore wb -I a` searches a, then wb), then the rest, in order.
