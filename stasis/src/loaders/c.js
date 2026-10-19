@@ -506,6 +506,8 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
   return ctx
 }
 
+// Options Clang takes and GCC 13 rejects ("unrecognized command-line option"), in any spelling.
+const CLANG_ONLY = /^(?:-resource-dir|-Xclang|-working-directory|-cxx-isystem|-stdlib\+\+-isystem|-iframework|-iwithsysroot)/u
 // Options handing the argument after them to a tool other than the compiler (gcc's and clang's
 // linker and assembler, clang's analyzer, CUDA and offloading tools), which clang 18 and gcc 13 leave
 // out of the compile. (clang's -Xarch_host hands its argument to the host compile.)
@@ -531,8 +533,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, language = 'c', vars = 
   const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
   const compilerSystem = [] // and -Xclang's, after all the driver's own
   const internalFrameworks = [] // -internal-iframework's, after every -internal-isystem one
-  // GCC's -B prefixes' `include` directories, ahead of every other system one (Clang adds none).
-  const gcc = !cl && driverMode(argv) === undefined && !/clang/iu.test(programName(argv[0]))
+  // GCC's -B prefixes' `include` directories, ahead of every other system one (Clang adds none). The
+  // driver is Clang's by its name or mode, or by an option GCC rejects (a `cc` may be clang).
+  const gcc = !cl && driverMode(argv) === undefined && !/clang/iu.test(programName(argv[0])) && !argv.some((a) => CLANG_ONLY.test(a))
   const prefixSystem = []
   let resourceDir // Clang's -resource-dir (the last), whose `include` it searches after those
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,

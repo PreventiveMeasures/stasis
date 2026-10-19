@@ -1400,7 +1400,9 @@ is:
   the `-stdlib++-isystem` ones; through `-Xclang`, after them) and
   `-internal-iframework` (after all those), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, GCC's `-B` (`--prefix`, whose
-  `include` is a system directory ahead of the others; Clang adds none), Clang's
+  `include` is a system directory ahead of the others; Clang adds none, a command
+  being Clang's by its driver's name or mode, or by an option GCC rejects, like
+  `-resource-dir` or `-Xclang`, so a `cc` may be either), Clang's
   `-resource-dir` (whose `include` comes after the `-stdlib++-isystem` ones, but
   under `-nostdinc` or `-nobuiltininc`), and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)

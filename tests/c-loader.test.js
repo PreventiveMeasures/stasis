@@ -863,6 +863,22 @@ test('loadCompileCommands searches a Clang -resource-dir\'s include, after the -
   t.assert.deepStrictEqual(commands.get('e.c').after, [{ rel: 'ms' }])
 }))
 
+test('loadCompileCommands takes a cc with an option only Clang takes for clang', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'tc/include/.keep': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.c', ['cc', '-resource-dir', 'res', '-isystem', 'sy']),
+    unit('b.c', ['cc', '-B', 'tc', '-iframework', 'fw']),
+    unit('c.c', ['cc', '-B', 'tc']),
+  ]))
+  // gcc 13 rejects -resource-dir and -iframework, so a cc taking them is clang (a symlink to clang 18
+  // named cc lists sy, res/include for a.c, and no tc/include for b.c); a plain cc stays GCC's.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'sy' }, { rel: 'res/include' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'fw', framework: true }])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'tc/include' }])
+}))
+
 test('loadCompileCommands leaves out what -Xlinker, -Xassembler and the like hand other tools', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '#include <stdio.h>\n', 'vendor/stdio.h': '', 'sr/inc/.keep': '' })
   const other = ['-Xlinker', '-Ivendor', '-Xassembler', '-Iv2', '-Xanalyzer', '-Iv3', '-Xopenmp-target=x86_64-pc-linux-gnu', '-Iv4', '-Xoffload-linker-x86_64', '-Iv5', '-Xlinker', '--sysroot=sr']
