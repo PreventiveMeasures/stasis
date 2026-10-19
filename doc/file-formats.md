@@ -1389,8 +1389,8 @@ is:
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (Clang's `-iwithsysroot`),
   Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
-  directories, a C++ unit's only: by cl's `/Tp` or `/Tc` naming it, else its
-  `-x` (but `-x none`) or cl's last `/TP` or `/TC`, else a C++ driver (`--driver-mode=g++` too) or its extension), Clang's
+  directories, a C++ unit's only: by cl's `/Tp` or `/Tc` naming it, else the
+  `-x` before its own argument (but `-x none`) or cl's last `/TP` or `/TC`, else a C++ driver (`--driver-mode=g++` too) or its extension), Clang's
   `-internal-isystem` and `-internal-externc-isystem` (through `-Wp,` or
   `-Xpreprocessor`, ahead of the `-stdlib++-isystem` ones; through `-Xclang`,
   after them), `-idirafter`,

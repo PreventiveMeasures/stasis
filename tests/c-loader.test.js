@@ -887,6 +887,24 @@ test('loadCompileCommands reads the compiler behind env and a shell\'s NAME=VALU
   t.assert.equal(commands.get('f.c').msvc, undefined)
 }))
 
+test('loadCompileCommands takes the -x before a unit\'s own argument for it', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'src/d.c': '', 'e.c': '' })
+  const lib = ['-stdlib++-isystem', 'lib', '-c']
+  const both = ['clang', '-x', 'c++', 'a.c', '-x', 'c', 'b.c', ...lib]
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: both },
+    { directory: tmp, file: 'b.c', arguments: both },
+    { directory: tmp, file: 'src/d.c', arguments: ['clang', '-xc++', 'src/../src/d.c', '-x', 'c', 'e.c', ...lib] },
+    { directory: tmp, file: 'e.c', arguments: ['clang', 'e.c', '-x', 'c++', ...lib] },
+  ]))
+  // clang 18 and gcc 13 compile a.c and d.c as C++, b.c as C, and e.c as C (a -x after the last
+  // input has no effect).
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  for (const [file, cxx] of [['a.c', true], ['b.c', false], ['src/d.c', true], ['e.c', false]]) {
+    t.assert.deepStrictEqual(commands.get(file).system, cxx ? [{ rel: 'lib' }] : [], file)
+  }
+}))
+
 test('loadCompileCommands takes clang-cl\'s /Tp and /Tc for the unit they name, /TP and /TC for every one', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '', 'b.c': '', 'd.c': '', 'e.c': '', 'src/f.c': '' })
   const lib = ['/clang:-stdlib++-isystem', '/clang:lib', '/c']

@@ -724,23 +724,26 @@ function compilerAt(args) {
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
 // Whether a command (run in `directory`) compiles its unit `file` as C++: by cl's `/Tp` or `/Tc` naming
-// it, else by its last `-x` (cl's last `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by
-// a C++ driver (`clang++`, `g++`, `--driver-mode=g++`), else by the unit's extension.
+// it, else by the `-x` before the unit's own argument (the last one where it is none of them; cl's
+// last `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by a C++ driver (`clang++`, `g++`,
+// `--driver-mode=g++`), else by the unit's extension.
 function isCxx(args, file, cl, directory) {
   let language
   let global
   let own
+  let input // [the -x before the unit's argument]
   for (let k = 1; k < args.length; k++) {
     let m
     if (args[k] === '-x') language = args[++k]
     else if (args[k].startsWith('-x') && args[k].length > 2) language = args[k].slice(2)
+    else if (!cl && input === undefined && resolve(directory, args[k]) === file) input = [language]
     else if (cl && /^[/-]T[PC]$/u.test(args[k])) global = args[k][2] === 'P' ? 'c++' : 'c'
     else if (cl && (m = /^[/-]T([pc])(.*)$/su.exec(args[k])) !== null) {
       const named = m[2] === '' ? args[++k] : m[2]
       if (named !== undefined && resolve(directory, named.replaceAll('\\', '/')) === file) own = m[1] === 'p' ? 'c++' : 'c'
     }
   }
-  language = own ?? global ?? language
+  language = own ?? global ?? (input === undefined ? language : input[0])
   // `-x none` gives the extension back the say.
   if (language !== undefined && language !== 'none') return language.startsWith('c++')
   const mode = driverMode(args)
