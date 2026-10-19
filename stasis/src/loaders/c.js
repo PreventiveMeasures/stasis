@@ -83,8 +83,9 @@ function conditionOperator(op, a, b) {
     case '>': return BigInt(a > b)
     case '<=': return BigInt(a <= b)
     case '>=': return BigInt(a >= b)
-    case '<<': return a << b
-    case '>>': return a >> b
+    // Past the width, a shift is undefined in C.
+    case '<<': return b < 0n || b >= 64n ? undefined : a << b
+    case '>>': return b < 0n || b >= 64n ? undefined : a >> b
     case '+': return a + b
     case '-': return a - b
     case '*': return a * b
@@ -707,7 +708,8 @@ export function loadCompileCommands(baseDir, file) {
     const program = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
     let first = 0
     while (first < args.length - 1 && LAUNCHERS.test(program(args[first]))) first++
-    const cl = /^(?:clang-)?cl(?:\.exe)?$/iu.test(program(args[first]))
+    // cl, or clang-cl under any name clang reads as one: `clang-cl-20`, `<target>-clang-cl`.
+    const cl = /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(program(args[first]))
     commands.set(unit.rel, includeFlags(expandResponseFiles(args.slice(first), directory, cl), directory, toDir, cl))
   }
   return commands
@@ -981,9 +983,9 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   const conflicts = []
   const queue = []
   const bytesRead = new Set() // files `sources` holds as an #embed's bytes
-  // A file is walked once per context, place it was found at and MSVC stack; an #embed's file is
-  // bytes, however it was found.
-  const keyOf = (file, ctx, { at = -1, stack = [], embed = false } = {}) => [ctx.id, file, embed ? 'embed' : at, ...stack].join('\0')
+  // A file is walked once per context, place it was found at and MSVC stack, and as a unit (with
+  // its forced includes) apart from as an include; an #embed's file is bytes, however it was found.
+  const keyOf = (file, ctx, { at = -1, stack = [], embed = false, primary = false } = {}) => [ctx.id, file, embed ? 'embed' : at, primary ? 'unit' : '', ...stack].join('\0')
 
   // `at` is where in the context's [...quote, ...angle] list the file was found, -1 where it wasn't
   // found through the search path (an entry, a quoted include beside its includer): where an
@@ -991,7 +993,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   // `stack` is the directories of the files including it, nearest first (pruned: stackBelow): where
   // MSVC looks a quoted include up after the includer's own directory. `embed` marks an #embed's.
   const visit = (file, ctx, { at = -1, primary = false, format, stack = [], embed = false }) => {
-    const key = keyOf(file, ctx, { at, stack, embed })
+    const key = keyOf(file, ctx, { at, stack, embed, primary })
     if (!nodes.has(key)) {
       nodes.set(key, { file, ctx, at, primary, edges: [], stack, embed })
       queue.push(key)
@@ -1325,7 +1327,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   // What every configuration builds: the entries, and what they reach through includes every
   // configuration compiles. An include missing from those is what the bundle lacks.
   const definite = new Set()
-  const pending = entries.map((entry) => keyOf(entry, contextOf(entry, defaultCtx)))
+  const pending = entries.map((entry) => keyOf(entry, contextOf(entry, defaultCtx), { primary: Boolean(commands?.has(entry)) }))
   while (pending.length > 0) {
     const key = pending.pop()
     if (definite.has(key) || !nodes.has(key)) continue

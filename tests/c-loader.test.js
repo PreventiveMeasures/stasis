@@ -602,13 +602,14 @@ test('scanIncludes evaluates a condition\'s literals and operators, a macro unkn
   const src = [
     ['1 || FEATURE', 'a'], ['0 && defined(X)', 'b'], ['1 + 0', 'c'], ['!0', 'd'], ['X ? 1 : 1', 'e'],
     ['__has_include(<x.h>) || 2 > 1', 'f'], ['(0x10 >> 4) == 1 && -1 < 0', 'h'], ['defined X', 'i'], ['-1U < 0', 'j'], ['08', 'k'],
-    ['0xffffffffffffffffULL + 1 == 0', 'l'], ['1 << 63', 'm'], ['-9223372036854775807 - 1 < 0', 'n'],
+    ['0xffffffffffffffffULL + 1 == 0', 'l'], ['1 << 63', 'm'], ['-9223372036854775807 - 1 < 0', 'n'], ['1 << 4000000000', 'o'],
   ].map(([cond, name]) => `#if ${cond}\n#include "${name}.h"\n#endif\n`).join('')
   // GCC 13 opens a, c, d, e, f, h and n, never b; i hangs on X; j, l and m wrap at 64 bits (GCC's
-  // -1U < 0 is false, its l and m true), and 08 is no literal.
+  // -1U < 0 is false, its l and m true), 08 is no literal, and o shifts past the width.
   t.assert.deepStrictEqual(specs(src), [
     'include "a.h" live', 'include "c.h" live', 'include "d.h" live', 'include "e.h" live', 'include "f.h" live', 'include "h.h" live',
     'include "i.h" maybe', 'include "j.h" maybe', 'include "k.h" maybe', 'include "l.h" maybe', 'include "m.h" maybe', 'include "n.h" live',
+    'include "o.h" maybe',
   ])
 })
 
@@ -714,6 +715,37 @@ test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, 
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
   t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'x' }, { rel: 'z' }])
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
+}))
+
+test('loadCompileCommands takes clang-cl under a version or target name for clang-cl', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['/usr/bin/clang-cl-20', '/Iinc', '/c', 'a.c'] },
+    { directory: tmp, file: 'b.c', arguments: ['x86_64-pc-windows-msvc-clang-cl.exe', '/Iinc', '/c', 'b.c'] },
+    { directory: tmp, file: 'c.c', arguments: ['clang-20', '-Iinc', '-c', 'c.c'] },
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  for (const unit of ['a.c', 'b.c']) {
+    t.assert.deepStrictEqual(commands.get(unit).I, [{ rel: 'inc' }], unit)
+    t.assert.equal(commands.get(unit).msvc, true, unit)
+  }
+  t.assert.equal(commands.get('c.c').msvc, undefined)
+}))
+
+test('collectCBundle reads a unit\'s forced includes though an #include reached it first', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/main.c': '#include "../lib/util.c"\n#include "../lib/util.h"\n',
+    'lib/util.h': '',
+    'lib/util.c': '',
+    'src/pch.h': '',
+    'lib/pch.h': '',
+  })
+  const unit = (file) => ({ directory: tmp, file, arguments: ['clang-cl', '/FIpch.h', '/c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([unit('src/main.c'), unit('lib/util.c')]))
+  // util.c, compiled on its own, takes lib/pch.h beside it, as clang-cl looks a /FI up.
+  const { sources, resolutions } = collectCBundle(tmp, ['src/main.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.equal(resolutions.get('lib/util.c')?.get('/FI pch.h'), 'lib/pch.h')
+  t.assert.ok(sources.has('lib/pch.h'))
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

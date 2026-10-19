@@ -1330,7 +1330,7 @@ Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and a condition
 is evaluated as far as its integer literals (in any base) and the operators
 over them go, a macro unknown but where the rest decides, and so is a value past
-the preprocessor's 64 bits, which would wrap: `#if 0` code (and the
+the preprocessor's 64 bits, which would wrap (or a shift past them): `#if 0` code (and the
 `#else` of an `#if 1`; `#if 1 + 0`, `#if !0`, `#if 1 || X` and
 `#if 0 && defined(X)` alike) is never followed, and an include under any other
 condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found, every
@@ -1393,7 +1393,8 @@ is:
   `--include-barrier`, ...), Clang's framework directories -- `-F` (with the
   `-I` ones, in order) and `-iframework` (after the `-isystem` ones), where
   `<Foo/Bar.h>` is `Foo.framework/Headers/Bar.h`, else
-  `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's and cl's `/I`, `/external:I`,
+  `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's (`clang-cl-20` and
+  `<target>-clang-cl` too) and cl's `/I`, `/external:I`,
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
