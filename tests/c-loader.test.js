@@ -719,12 +719,12 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
 
 test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass on, after the driver\'s own', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '' })
-  const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Wp,-I,w', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-Wp,-isystem,t', '-c', 'a.c']
+  const args = ['clang', '-Xclang', '-I', '-Xclang', 'x', '-Iy', '-Wp,-I,w', '-Xclang', '-Iz', '-Xpreprocessor', '-isystem', '-Xpreprocessor', 's', '-Wp,-isystem,t', '-Xclang=-I', '-Xclang=v', '-c', 'a.c']
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
-  // clang 18's -v lists y, then w (-Wp), x, z (-Xclang, last); s, t. gcc 13's puts -Xpreprocessor's
-  // and -Wp's after its own the same way.
+  // clang 18's -v lists y, then w (-Wp), x, z, v (-Xclang, -Xclang=, last); s, t. gcc 13's puts
+  // -Xpreprocessor's and -Wp's after its own the same way.
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
-  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }])
+  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }, { rel: 'v' }])
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }, { rel: 't' }])
 }))
 
@@ -781,6 +781,23 @@ test('loadCompileCommands reads what clang-cl\'s /clang: passes the clang driver
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
   t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }])
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
+}))
+
+test('loadCompileCommands reads -stdlib++-isystem for a C++ unit, after the other system directories', withTmp((t, tmp) => {
+  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.cpp', ['clang', '-stdlib++-isystem', 'lib', '-isystem', 's', '-iframework', 'f', '-Iy']),
+    unit('b.c', ['clang', '-stdlib++-isystem', 'lib']),
+    unit('c.c', ['clang++', '-stdlib++-isystemlib']),
+    unit('d.cpp', ['clang', '-x', 'c', '-stdlib++-isystem', 'lib']),
+  ]))
+  // clang 18's -v for a.cpp lists y, then s, f (a framework directory), lib; for C, no lib.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.cpp').system, [{ rel: 's' }, { rel: 'f', framework: true }, { rel: 'lib' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'lib' }])
+  t.assert.deepStrictEqual(commands.get('d.cpp').system, [])
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

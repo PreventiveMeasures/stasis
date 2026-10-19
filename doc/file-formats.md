@@ -1388,7 +1388,8 @@ is:
   `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`, Clang's
-  `-iwithsysroot`), `-idirafter`,
+  `-iwithsysroot`), Clang's `-stdlib++-isystem` (after the other system
+  directories, a C++ unit's only), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
@@ -1406,8 +1407,8 @@ is:
   does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
-  and `-Wp,` pass on after the driver's, then what `-Xclang` does, as the
-  compiler gets them. A `-include` is the unit's first include, looked up in the
+  and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,
+  as the compiler gets them. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
   after the working directory, as clang-cl looks it up. GCC's `-I-` (to cl and clang-cl, `/I -`) makes the `-I` directories

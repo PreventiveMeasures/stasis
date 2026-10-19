@@ -469,8 +469,9 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 }
 
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
-// cl's too where `cl` says the driver is one), each dir resolved against `directory`.
-function includeFlags(argv, directory, toDir, cl) {
+// cl's too where `cl` says the driver is one), each dir resolved against `directory`; `cxx` says the
+// command compiles C++, where -stdlib++-isystem counts.
+function includeFlags(argv, directory, toDir, cl, cxx = false) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
@@ -484,12 +485,14 @@ function includeFlags(argv, directory, toDir, cl) {
     if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
     else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
     else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
+    else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
     else own.push(driver[k])
   }
   const args = [driver[0], ...own, ...preprocessor, ...compiler]
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
+  const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -570,6 +573,9 @@ function includeFlags(argv, directory, toDir, cl) {
       else if ((v = take('-iwithsysroot')) !== undefined) dir(withSysroot(v), flags.system)
       else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
       else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
+      else if ((v = take('-stdlib++-isystem')) !== undefined) {
+        if (cxx) dir(v, standardLibrary)
+      }
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).
       else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
@@ -587,7 +593,7 @@ function includeFlags(argv, directory, toDir, cl) {
     }
   }
   flags.quote.unshift(...preBarrier)
-  flags.system.push(...systemFrameworks)
+  flags.system.push(...systemFrameworks, ...standardLibrary)
   if (cl) flags.msvc = true
   return flags
 }
@@ -664,6 +670,18 @@ function compilerAt(args) {
 // `<target>-clang-cl`).
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
+// Whether a command compiles its unit as C++: by its last `-x`, else by a C++ driver's name (`clang++`,
+// `g++`), else by the unit's extension.
+function isCxx(args, file) {
+  let language
+  for (let k = 1; k < args.length; k++) {
+    if (args[k] === '-x') language = args[++k]
+    else if (args[k].startsWith('-x') && args[k].length > 2) language = args[k].slice(2)
+  }
+  if (language !== undefined) return language.startsWith('c++')
+  return programName(args[0]).includes('++') || CPP_FORMATS.has(cFormatOf(file))
+}
+
 // A compilation database's `command` string split as clang's tooling splits one: by Windows rules on
 // Windows, and for a cl or clang-cl command anywhere (`"C:\Program Files\LLVM\bin\clang-cl.exe"
 // /Iinc ...`, whose backslashes a shell would take for escapes); else as a POSIX shell splits it.
@@ -737,7 +755,8 @@ export function loadCompileCommands(baseDir, file) {
     if (unit.rel === undefined || commands.has(unit.rel)) continue
     const first = compilerAt(args)
     const cl = isCl(args[first])
-    commands.set(unit.rel, includeFlags(expandResponseFiles(args.slice(first), directory, cl), directory, toDir, cl))
+    const command = expandResponseFiles(args.slice(first), directory, cl)
+    commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file)))
   }
   return commands
 }
