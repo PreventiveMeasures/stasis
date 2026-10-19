@@ -992,7 +992,7 @@ What counts as a fatal unresolved reference differs by language:
 | Bash | every in-root `.sh`/`.bash` reference | PATH commands, `$VAR`/absolute/system paths, `../`-escaping sources (external); dynamic `source "${VAR}/x.sh"` followed via `# shellcheck source=` when present |
 | Rust | every `mod foo;` not gated on an undecidable cfg (see the cfg rules below), incl. one whose `#[path]` names no file, or escapes the bundle root | a `mod` gated on a cfg the loader can't decide (`unix`, a feature of a package outside the resolved build, …); a `mod` inside a macro invocation body (`cfg_if! { … }` emits real ones, other macros may not — followed when the file exists); every path edge (`crate::`/`self::`/`super::`/relative `use`s, recorded best-effort and never widening the walk); crates not in-tree (see above); an `include!`/`include_str!`/`include_bytes!` whose literal path names no file, or whose argument is no literal the loader can read (a `concat!` of anything but `env!("CARGO_MANIFEST_DIR")` and literals, a macro variable) -- both warned; a vendored crate's include, `#[path]` or build script that reaches outside its own package (refused and warned; a `mod` so refused is missing) |
 
-| C/C++ | an include every configuration compiles, from a file every configuration reaches, of a file the bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere (it has no system fallback), or quoted (or `-include`d) and found nowhere while the tree holds it below a directory above its includer's (the search path lacks a `-I`: the error names it) | a quoted include found nowhere else (a system header in quotes, a generated header: reported); `<x>` found nowhere (a system header); whatever is under a conditional the scan can't decide (`#ifdef`), or reached only through one or through an implementation file; `#include MACRO` (reported, not followed) |
+| C/C++ | an include every configuration compiles, from a file every configuration reaches, of a file the bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere or outside the bundle root (it has no system fallback, and the bundle would lack its bytes), or quoted (or `-include`d) and found nowhere while the tree holds it below a directory above its includer's (the search path lacks a `-I`: the error names it) | a quoted include found nowhere else (a system header in quotes, a generated header: reported); `<x>` found nowhere (a system header); whatever is under a conditional the scan can't decide (`#ifdef`), or reached only through one or through an implementation file; `#include MACRO` (reported, not followed) |
 
 A missing entry is always fatal.
 
@@ -1329,7 +1329,11 @@ first directives, `#pragma once` aside) isn't a condition.
 `-idirafter`, in order. `#include_next` carries on from after the directory its
 includer was found in (from the start of its form's list where it wasn't found
 through one), never landing on the includer. `#embed` searches the includer's
-directory for `"x"`, then the `--embed-dir` directories. The search path is:
+directory for `"x"`, then the `--embed-dir` directories. A directory given twice
+is searched once, where GCC keeps it: a system one (`-isystem`, then
+`-idirafter`) at its first place, an `-I` or `-iquote` one that is also a system
+one only there, other `-I` and `-iquote` ones at their first. The search path
+is:
 
 - A known project's: with no flag, a tree vendoring projects stasis knows
   (`KNOWN_PROJECTS` in the loader) is searched as their builds search it. A

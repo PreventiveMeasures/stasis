@@ -273,10 +273,21 @@ function makeDir(baseDir, realBase, abs) {
 // A translation unit's search context: `quote` the -iquote dirs, `angle` the -I, -isystem and
 // -idirafter ones in that order (what both forms search after the quote ones), `embed` the
 // --embed-dir ones, `forced` the -include/-imacros files, as `{ flag, path, dir }`, `split` set by
-// GCC's `-I-`, after which a quoted include isn't looked up beside its includer. `id` tells
-// contexts apart: a header is walked once per context it is reached in.
+// GCC's `-I-`, after which a quoted include isn't looked up beside its includer. A directory given
+// twice is searched once, as GCC merges its chains: the system ones (-isystem, then -idirafter)
+// keep their first place, and an -I or -iquote one that is also a system one is searched only
+// there; the -I ones keep their first, as do the -iquote ones, the last of which goes where it is
+// the first one after them. `id` tells contexts apart: a header is walked once per context it is
+// reached in.
 function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false } = {}, includeDirs = []) {
-  const ctx = { quote, angle: [...I, ...includeDirs, ...system, ...after], embed, forced, split }
+  const key = (dir) => JSON.stringify(dir)
+  const unique = (dirs, taken = new Set()) => dirs.filter((dir) => !taken.has(key(dir)) && taken.add(key(dir)))
+  const systemDirs = unique([...system, ...after])
+  const systemKeys = new Set(systemDirs.map(key))
+  const angle = [...unique([...I, ...includeDirs], new Set(systemKeys)), ...systemDirs]
+  const quoteDirs = unique(quote, new Set(systemKeys))
+  if (quoteDirs.length > 0 && angle.length > 0 && key(quoteDirs.at(-1)) === key(angle[0])) quoteDirs.pop()
+  const ctx = { quote: quoteDirs, angle, embed, forced, split }
   ctx.id = JSON.stringify(ctx)
   return ctx
 }
@@ -611,9 +622,10 @@ export const KNOWN_IMPLEMENTATIONS = [
 //   missing      [{ spec, from, reason? }] -- what makes the bundle incomplete, where every
 //                configuration compiles it (in a file every configuration reaches, not through a
 //                conditional include or an implementation file's guess): an include of a file the
-//                bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere,
-//                or a quoted (or forced) one found nowhere that a directory above its includer's
-//                holds -- the search path lacks the -I the file is built with (`hints`)
+//                bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere
+//                or outside the root, or a quoted (or forced) one found nowhere that a directory
+//                above its includer's holds -- the search path lacks the -I the file is built
+//                with (`hints`)
 //   unfound      [{ spec, from }] -- such a quoted include found nowhere else: a system header
 //                written in quotes (`"math.h"`), or one the build generates. `<x>` found nowhere is
 //                a system header, never reported.
@@ -915,9 +927,11 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       if (edge.result?.refused !== undefined) {
         missing.push({ spec: edge.spec, from: node.file, reason: edge.result.refused })
         seen.add(id)
-      } else if (edge.result === null && edge.inc?.directive === 'embed') {
-        // An #embed has no system file to fall back on: found nowhere, the build fails.
-        missing.push({ spec: edge.spec, from: node.file })
+      } else if (edge.inc?.directive === 'embed' && (edge.result === null || edge.result.external)) {
+        // An #embed has no system file to fall back on: found nowhere, the build fails; found
+        // outside the bundle root (an absolute path, a `../`, an --embed-dir there), the build
+        // takes bytes the bundle lacks.
+        missing.push({ spec: edge.spec, from: node.file, ...(edge.result === null ? {} : { reason: 'outside the bundle root' }) })
         seen.add(id)
       } else if (edge.result === null && (edge.forced || (edge.inc.form === 'quote' && edge.inc.directive !== 'include_next'))) {
         seen.add(id)

@@ -492,3 +492,23 @@ test('loadCompileCommands and collectCBundle honor GCC\'s -I-: quote-only direct
   // Not src/x.h beside the unit, and <q.h> isn't searched for in the quote-only directory.
   t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/a.c')), { 'include "x.h"': 'post/x.h', 'include "q.h"': 'quote/q.h' })
 }))
+
+test('collectCBundle searches a directory given twice once, where GCC keeps it', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '#include <x.h>\n#include "y.h"\n', 'a/x.h': '', 'b/x.h': '', 'a/y.h': '', 'b/y.h': '' })
+  const resolve = (args) => {
+    writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/a.c', arguments: ['gcc', ...args, '-c', 'src/a.c'] }]))
+    return Object.fromEntries(collectCBundle(tmp, ['src/a.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') }).resolutions.get('src/a.c'))
+  }
+  // An -I (or -iquote) directory that is also a system one is searched at the system one's place:
+  // GCC 13's `gcc -v -E -I a -isystem a -I b` lists b, then a.
+  t.assert.deepStrictEqual(resolve(['-Ia', '-isystem', 'a', '-Ib']), { 'include <x.h>': 'b/x.h', 'include "y.h"': 'b/y.h' })
+  t.assert.deepStrictEqual(resolve(['-iquote', 'a', '-isystem', 'a', '-Ib']), { 'include <x.h>': 'b/x.h', 'include "y.h"': 'b/y.h' })
+  // Otherwise the first place holds.
+  t.assert.deepStrictEqual(resolve(['-Ia', '-Ib', '-Ia']), { 'include <x.h>': 'a/x.h', 'include "y.h"': 'a/y.h' })
+}))
+
+test('collectCBundle: an #embed found outside the bundle root is missing', withTmp((t, tmp) => {
+  tree(tmp, { 'outside/logo.bin': 'x', 'root/main.c': '#embed "../outside/logo.bin"\n' })
+  const { missing } = collectCBundle(join(tmp, 'root'), ['main.c'])
+  t.assert.deepStrictEqual(missing, [{ spec: 'embed "../outside/logo.bin"', from: 'main.c', reason: 'outside the bundle root' }])
+}))
