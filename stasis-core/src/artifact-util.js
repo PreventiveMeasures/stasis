@@ -481,8 +481,10 @@ export function serializeImports(imports) {
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects
 // of a `what` artifact, buckets and files path-sorted so the bytes are canonical. Each record's
 // `vendored` and `subpackages` keep the entries holding one of the files it carries. `metadata` names the
-// metadata fields written: a lockfile carries `vendored` alone, so it can be audited on its own.
-export function groupModules(modules, { skipEmpty = false, metadata = ['repo', 'vendored', 'subpackages'], what } = {}) {
+// metadata fields written (a lockfile carries `vendored` alone, so it can be audited on its own), or is
+// `true` for every one and `false` for none, as the option once was.
+export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
+  const metadata = written === true ? ['repo', ...Object.keys(DIR_METADATA)] : written === false ? [] : written
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
