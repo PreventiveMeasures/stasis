@@ -38,7 +38,7 @@ importers:
         specifier: 1.0.0-rc.116
         version: 1.0.0-rc.116(patch_hash=91700ea042ce1ab37dd135b5344f098bb4c862d12dd9cd2c053bc006aaa5be94)
       '@preventive/archive':
-        specifier: 1.2.0
+        specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@prisma/client-generator-ts':
         specifier: 7.10.0
@@ -86,16 +86,16 @@ importers:
         specifier: 1.0.0-beta.9
         version: link:../stasis-plugins
       '@preventive/archive':
-        specifier: 1.2.0
+        specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: 1.0.1
+        specifier: ^1.0.1
         version: 1.0.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/lockfile':
-        specifier: 1.2.0
+        specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/upstream':
-        specifier: 1.3.0
+        specifier: ^1.3.0
         version: 1.3.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
         specifier: 1.0.0-beta.4
