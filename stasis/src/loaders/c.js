@@ -471,9 +471,10 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 }
 
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
-// cl's too where `cl` says the driver is one), each dir resolved against `directory`; `cxx` says the
-// command compiles C++, where -cxx-isystem and -stdlib++-isystem count.
-function includeFlags(argv, directory, toDir, cl, cxx = false) {
+// cl's too where `cl` says the driver is one), each dir resolved against `commandDirectory` (or its
+// -working-directory); `cxx` says the command compiles C++, where -cxx-isystem and -stdlib++-isystem
+// count.
+function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
@@ -491,6 +492,13 @@ function includeFlags(argv, directory, toDir, cl, cxx = false) {
     else own.push(driver[k])
   }
   const args = [driver[0], ...own, ...preprocessor, ...compiler]
+  // Clang's -working-directory (the last): what relative paths are taken from, itself taken from the
+  // command's directory.
+  let directory = commandDirectory
+  for (let k = 1; k < args.length; k++) {
+    if (args[k] === '-working-directory' && k + 1 < args.length) directory = resolve(commandDirectory, args[++k])
+    else if (args[k].startsWith('-working-directory=')) directory = resolve(commandDirectory, args[k].slice('-working-directory='.length))
+  }
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
@@ -525,7 +533,7 @@ function includeFlags(argv, directory, toDir, cl, cxx = false) {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
   }
   // Options whose value is the next argument, which is never a flag of its own.
-  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib'])
+  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib', '-working-directory'])
   let prefix // -iprefix's, for the -iwithprefix ones after it; with none, they name no directory
   // GCC's driver hands its compiler the -I options (and -I-) ahead of the others, so they are read
   // first, in order (`-iwithprefixbefore wb -I a` searches a, then wb), then the rest, in order.

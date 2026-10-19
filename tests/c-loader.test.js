@@ -821,6 +821,15 @@ test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ uni
   t.assert.deepStrictEqual(commands.get('i.c').system, [])
 }))
 
+test('collectCBundle takes a Clang command\'s relative paths from its -working-directory', withTmp((t, tmp) => {
+  tree(tmp, { 'root/src/a.c': '#include <x.h>\n', 'root/include/x.h': '', 'include/x.h': '', 'root/build/f.h': '' })
+  const args = ['clang', `-working-directory=${join(tmp, 'root/build')}`, '-I', '../include', '-include', 'f.h', '-c', 'src/a.c']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: join(tmp, 'root'), file: 'src/a.c', arguments: args }]))
+  // clang 18 -E opens root/build/f.h and root/include/x.h, both taken from root/build.
+  const { resolutions } = collectCBundle(tmp, ['root/src/a.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('root/src/a.c')), { '-include f.h': 'root/build/f.h', 'include <x.h>': 'root/include/x.h' })
+}))
+
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '', 'b.c': '' })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
