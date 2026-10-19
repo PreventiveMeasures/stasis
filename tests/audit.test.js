@@ -1183,3 +1183,84 @@ test('audit() looks up a name two artifacts record different repos for, whatever
     }
   }
 ))
+
+// ── vendored copies ──────────────────────────────────────────────────────────
+// Next.js ships copies of other packages in dist/compiled, its record listing those an artifact carries a
+// file of as `vendored`: one with a version of its own (react-is), one without (ua-parser-js).
+const REACT_IS = '19.3.0-canary-278794d7-20261002'
+const NEXT_VENDORED = {
+  'dist/compiled/react-is': { name: 'react-is', version: REACT_IS },
+  'dist/compiled/ua-parser-js': { name: 'ua-parser-js' },
+}
+const nextRecord = (files) => ({ name: 'next', version: '16.4.0', ecosystem: 'npm', vendored: NEXT_VENDORED, files })
+const NEXT_FILES = {
+  'dist/server/next.js': 'require("../compiled/react-is")\n',
+  'dist/compiled/react-is/index.js': '// react-is\n',
+  'dist/compiled/react-is/package.json': '{}',
+  'dist/compiled/ua-parser-js/ua-parser.js': '// ua\n',
+}
+const writeNextBundle = (dir, extra = {}) => writeBundle(dir, 'next.br', {
+  formats: {},
+  modules: { 'node_modules/next': nextRecord(NEXT_FILES) },
+  imports: {
+    '*': {
+      'src/entry.js': { next: 'node_modules/next/dist/server/next.js' },
+      'node_modules/next/dist/server/next.js': { '../compiled/react-is': 'node_modules/next/dist/compiled/react-is/index.js' },
+    },
+  },
+  reason: { run: ['src/entry.js', ...Object.keys(NEXT_FILES).map((rel) => `node_modules/next/${rel}`)], webpack: ['src/entry.js'] },
+  ...extra,
+})
+const VENDORED_PACKAGES = [
+  { ecosystem: 'npm', name: 'next', version: '16.4.0' },
+  { ecosystem: 'npm', name: 'react-is', version: REACT_IS, vendoredIn: ['next@16.4.0'], vendoredOnly: true },
+  { ecosystem: 'npm', name: 'ua-parser-js', version: undefined, vendoredIn: ['next@16.4.0'], vendoredOnly: true },
+]
+
+test('collectPackages audits the copies a dependency ships, from a bundle and from a lockfile alike', withTmp((t, tmp) => {
+  t.assert.deepStrictEqual(collectPackages([writeNextBundle(tmp)]), VENDORED_PACKAGES)
+  const hashed = Object.fromEntries(Object.entries(NEXT_FILES).map(([rel, text]) => [rel, sha512integrity(text)]))
+  const lock = writeLock(tmp, 'stasis.lock.json', { modules: { 'node_modules/next': nextRecord(hashed) } })
+  t.assert.deepStrictEqual(collectPackages([lock]), VENDORED_PACKAGES)
+}))
+
+test('collectPackages audits a copy by its real code alone, and says where else it is installed', withTmp((t, tmp) => {
+  // react-is shipped only as its package.json: no copy of it is present.
+  const manifestOnly = writeBundle(tmp, 'manifest.br', {
+    formats: {},
+    modules: { 'node_modules/next': { ...nextRecord({ 'dist/server/next.js': '', 'dist/compiled/react-is/package.json': '{}' }), vendored: { 'dist/compiled/react-is': NEXT_VENDORED['dist/compiled/react-is'] } } },
+  })
+  t.assert.deepStrictEqual(collectPackages([manifestOnly]).map((pkg) => pkg.name), ['next'])
+  // Installed in a bucket of its own as well: no longer vendored only.
+  const both = writeBundle(tmp, 'both.br', {
+    formats: {},
+    modules: { 'node_modules/next': nextRecord(NEXT_FILES), 'node_modules/react-is': { name: 'react-is', version: REACT_IS, files: { 'index.js': '' } } },
+  })
+  t.assert.deepStrictEqual(collectPackages([both]).find((pkg) => pkg.name === 'react-is'),
+    { ecosystem: 'npm', name: 'react-is', version: REACT_IS, vendoredIn: ['next@16.4.0'], vendoredOnly: false })
+}))
+
+test('audit() asks about a versioned copy, says it is vendored, attributes it, and lists a versionless one as not audited', withFetch(
+  () => new Response(JSON.stringify({
+    'react-is': [{ id: 7, severity: 'high', title: 'bug', url: 'https://x', vulnerable_versions: '*' }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const report = await audit([writeNextBundle(tmp)])
+      t.assert.deepStrictEqual(JSON.parse(calls[0].opts.body), { next: ['16.4.0'], 'react-is': [REACT_IS] }, 'a copy with no version is never asked about')
+      t.assert.deepStrictEqual(report.rows.map(({ package: name, installed, reason }) => ({ name, installed, reason })),
+        [{ name: 'react-is', installed: `${REACT_IS} (vendored in next@16.4.0)`, reason: 'run' }])
+      t.assert.deepStrictEqual(report.skipped.map(({ name, because }) => [name, because]),
+        [['ua-parser-js', 'a copy vendored in next@16.4.0 whose package.json gives no version, so no advisory can be matched to it']])
+      const err = []
+      printAuditReport(report, { out: { write() {} }, err: { write: (s) => err.push(s) } })
+      t.assert.ok(err.includes('Not audited: npm ua-parser-js, a copy vendored in next@16.4.0 whose package.json gives no version, so no advisory can be matched to it\n'), err.join(''))
+      // --why follows the import graph into the copy.
+      const why = await audit([writeNextBundle(tmp)], { why: true })
+      t.assert.equal(why.rows[0].reason, 'run: next -> react-is')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))

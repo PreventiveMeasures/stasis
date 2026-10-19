@@ -197,9 +197,34 @@ export function withMetadataOf(record, other) {
   return moduleInfo({ ...record, repo, ...merged })
 }
 
-// A record's `vendored` and `subpackages` as `what` writes them: the entries holding one of `files`, validated.
-const carriedDirMetadata = (dir, info, files, what) => fromEntries(Object.keys(DIR_METADATA).map((field) =>
-  [field, normalizeDirMetadata(field, dir, { ...info, files, [field]: carriedEntries(info[field], files) }, what)]))
+// A record's `vendored` and `subpackages` as `what` writes them: the entries holding one of `files`, validated;
+// a field not in `fields` left out.
+const carriedDirMetadata = (dir, info, files, what, fields) => fromEntries(Object.keys(DIR_METADATA).map((field) =>
+  [field, fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, files, [field]: carriedEntries(info[field], files) }, what) : undefined]))
+
+// The packages a module map records, for what looks at each of them (`stasis audit`): every record, as it is,
+// and after a dependency's, each `vendored` copy in it as a record of its own, at the copy's directory in the
+// project (`node_modules/next/dist/compiled/react-is`): its `name` and `version`, its host's `ecosystem`,
+// `vendoredIn` its host's dir, and `files`, those the copy holds (each counted for the deepest entry holding
+// it), relative to that directory. A host keeps all its files, the copies' too: they are shipped as its.
+// File values are carried over as they are (a contents-free bundle's locked ones unread).
+export function* packageRecords(modules) {
+  for (const [dir, record] of modules) {
+    yield [dir, record]
+    if (record.vendored === undefined) continue
+    const held = new Map()
+    for (const rel of Object.keys(record.files)) {
+      const sub = entryDirOf(record.vendored, rel)
+      if (sub === undefined) continue
+      if (!held.has(sub)) held.set(sub, Object.create(null))
+      Object.defineProperty(held.get(sub), rel.slice(sub.length + 1), Object.getOwnPropertyDescriptor(record.files, rel))
+    }
+    for (const [sub, files] of held) {
+      const { name, version } = record.vendored[sub]
+      yield [moduleFileKey(dir, sub), { name, version, ecosystem: record.ecosystem, vendoredIn: dir, files }]
+    }
+  }
+}
 
 // A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
 // into undefined so identity comparisons and JSON round-trips can't split on it), `repo`, `vendored` and
@@ -455,9 +480,11 @@ export function serializeImports(imports) {
 
 // A module map as the serialized `modules` (node_modules buckets) and `sources` (the rest) objects
 // of a `what` artifact, buckets and files path-sorted so the bytes are canonical. Each record's
-// `vendored` and `subpackages` keep the entries holding one of the files it carries. `metadata: false`
-// leaves each record's `repo`, `vendored` and `subpackages` out: metadata, which a lockfile never carries.
-export function groupModules(modules, { skipEmpty = false, metadata = true, what } = {}) {
+// `vendored` and `subpackages` keep the entries holding one of the files it carries. `metadata` names the
+// metadata fields written (a lockfile carries `vendored` alone, so it can be audited on its own), or is
+// `true` for every one and `false` for none, as the option once was.
+export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
+  const metadata = written === true ? ['repo', ...Object.keys(DIR_METADATA)] : written === false ? [] : written
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
@@ -466,8 +493,8 @@ export function groupModules(modules, { skipEmpty = false, metadata = true, what
     const files = fromEntries(Object.entries(info.files).toSorted(byPath))
     grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({
       ...info,
-      repo: metadata ? normalizeModuleRepo(dir, info, what) : undefined,
-      ...(metadata ? carriedDirMetadata(dir, info, files, what) : { vendored: undefined, subpackages: undefined }),
+      repo: metadata.includes('repo') ? normalizeModuleRepo(dir, info, what) : undefined,
+      ...carriedDirMetadata(dir, info, files, what, metadata),
       files,
     })])
   }

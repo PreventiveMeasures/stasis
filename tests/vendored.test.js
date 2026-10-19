@@ -6,12 +6,13 @@ import { pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { groupModules } from '@exodus/stasis-core/util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 
 // Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json of its
 // own, which names it rather than next. They are next's files, and a bundle lists the vendored packages
-// among them it carries a file of: `vendored`, on next's record, metadata a lockfile never holds.
+// among them it carries a file of: `vendored`, on next's record, metadata its lockfile holds too, unattested.
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-vendored-'))
@@ -59,7 +60,8 @@ test('stasis bundle bundles the packages next vendors that it reaches, listing t
     t.assert.ok(next.files['dist/compiled/ua-parser-js/index.js'], label)
     t.assert.deepStrictEqual(next.vendored, { 'dist/compiled/react-is': REACT_IS, 'dist/compiled/ua-parser-js': UA }, `${label}: bundle`)
     const lock = JSON.parse(readFileSync(join(tmp, `${label}.lock.json`), 'utf8'))
-    t.assert.equal(lock.modules['node_modules/next'].vendored, undefined, `${label}: lockfile`)
+    // A lockfile lists them too, so a lockfile alone can be audited for them.
+    t.assert.deepStrictEqual(lock.modules['node_modules/next'].vendored, next.vendored, `${label}: lockfile`)
   }
 }))
 
@@ -89,4 +91,18 @@ test('merging bundles takes the union of their vendored packages, the existing s
     { 'dist/compiled/react-is': REACT_IS, 'dist/compiled/ua-parser-js': UA })
   t.assert.deepStrictEqual(merged({ 'dist/compiled/ua-parser-js': UA }, { 'dist/compiled/ua-parser-js': { name: 'other' } }),
     { 'dist/compiled/ua-parser-js': UA }, "metadata: the existing side's, no mismatch")
+})
+
+test('groupModules writes the metadata fields named, every one for `true` and none for `false`', (t) => {
+  const record = {
+    name: 'next', version: '16.4.0', ecosystem: 'npm', repo: { github: 'vercel/next.js' },
+    vendored: { 'dist/compiled/ua-parser-js': UA }, subpackages: { sub: { name: 'next/sub' } },
+    files: { 'dist/compiled/ua-parser-js/index.js': '', 'sub/index.js': '' },
+  }
+  const keys = (metadata) => Object.keys(groupModules(new Map([['node_modules/next', record]]), { metadata, what: 'test' }).modules['node_modules/next'])
+  const all = ['name', 'version', 'ecosystem', 'repo', 'vendored', 'subpackages', 'files']
+  t.assert.deepStrictEqual(keys(undefined), all)
+  t.assert.deepStrictEqual(keys(true), all)
+  t.assert.deepStrictEqual(keys(false), ['name', 'version', 'ecosystem', 'files'])
+  t.assert.deepStrictEqual(keys(['vendored']), ['name', 'version', 'ecosystem', 'vendored', 'files'], 'as a lockfile writes it')
 })

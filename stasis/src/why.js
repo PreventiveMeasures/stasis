@@ -1,4 +1,4 @@
-import { hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, moduleFileKey, packageRecords } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
@@ -54,12 +54,14 @@ const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
 // `fileToDir` is complete; `dirFiles` only holds files that count as real code of
 // the dir (see audit-corrections.js) -- a consumer that recorded nothing of a
 // package but a corrected file / its package.json manifest is not one of its
-// reasons, exactly as in collectReasons.
+// reasons, exactly as in collectReasons. A copy a dependency ships (packageRecords) is a module of its
+// own here, so a chain can end at it (`next -> react-is`): its files are its node's, while its host's
+// evidence keeps them too, the host's reasons being those of all its files, as in collectReasons.
 function moduleIndex(artifact) {
   const fileToDir = new Map()
   const dirInfo = new Map()
   const dirFiles = new Map()
-  for (const [dir, { name, version, files }] of artifact.modules) {
+  for (const [dir, { name, version, files }] of packageRecords(artifact.modules)) {
     dirInfo.set(dir, { name: name ?? null, version: version ?? null, dep: hasNodeModulesSegment(dir) })
     const list = []
     for (const rel of Object.keys(files)) {
