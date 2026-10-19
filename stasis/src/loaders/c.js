@@ -96,7 +96,8 @@ function conditionOperator(op, a, b) {
 // literals and the operators over them are evaluated (`#if 0`, `#if 0x1`, `#if 1 + 0`, `#if !0`);
 // a name, `defined X` and a macro call (`__has_include(<x.h>)`) are unknown, as is what they take
 // part in, but where the rest decides (`#if 1 || X`, `#if 0 && defined(X)`). Macros aren't expanded.
-// Where an unsigned literal (`1u`) takes part, a negative value is unknown: C's would wrap.
+// Values are the preprocessor's 64-bit integers: one past their range (a negative one, where an
+// unsigned literal like `1u` takes part) is unknown, as C's would wrap.
 function evalCondition(expr) {
   const tokens = []
   let unsigned = false
@@ -110,7 +111,10 @@ function evalCondition(expr) {
       const [, hex, binary, octal, decimal, suffix] = m
       if (/u/iu.test(suffix)) unsigned = true
       const digits = (hex ?? binary ?? octal ?? decimal).replaceAll("'", '')
-      tokens.push({ value: BigInt(hex ? `0x${digits}` : binary ? `0b${digits}` : octal ? `0o${digits}` : digits) })
+      const value = BigInt(hex ? `0x${digits}` : binary ? `0b${digits}` : octal ? `0o${digits}` : digits)
+      // Too large for a signed one, a literal is unsigned (GCC says so).
+      if (value >= 1n << 63n) unsigned = true
+      tokens.push({ value })
       i = CONDITION_NUMBER.lastIndex
     } else if (((CONDITION_NAME.lastIndex = i), (m = CONDITION_NAME.exec(expr))) !== null) {
       i = CONDITION_NAME.lastIndex
@@ -136,11 +140,11 @@ function evalCondition(expr) {
   }
   let k = 0
   const malformed = new SyntaxError('malformed condition')
-  const checked = (value) => (unsigned && value < 0n ? undefined : value)
+  const checked = (value) => (value === undefined || (unsigned ? value < 0n || value >= 1n << 64n : value < -(1n << 63n) || value >= 1n << 63n) ? undefined : value)
   const unary = () => {
     const token = tokens[k++]
     if (token === undefined) throw malformed
-    if ('value' in token) return token.value
+    if ('value' in token) return checked(token.value)
     if (token.op === '(') {
       const value = ternary()
       if (tokens[k++]?.op !== ')') throw malformed

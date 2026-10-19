@@ -602,10 +602,14 @@ test('scanIncludes evaluates a condition\'s literals and operators, a macro unkn
   const src = [
     ['1 || FEATURE', 'a'], ['0 && defined(X)', 'b'], ['1 + 0', 'c'], ['!0', 'd'], ['X ? 1 : 1', 'e'],
     ['__has_include(<x.h>) || 2 > 1', 'f'], ['(0x10 >> 4) == 1 && -1 < 0', 'h'], ['defined X', 'i'], ['-1U < 0', 'j'], ['08', 'k'],
+    ['0xffffffffffffffffULL + 1 == 0', 'l'], ['1 << 63', 'm'], ['-9223372036854775807 - 1 < 0', 'n'],
   ].map(([cond, name]) => `#if ${cond}\n#include "${name}.h"\n#endif\n`).join('')
-  // GCC 13 opens a, c, d, e, f and h, never b; i hangs on X; -1U < 0 wraps (C's is false), and 08
-  // is no literal.
-  t.assert.deepStrictEqual(specs(src), ['include "a.h" live', 'include "c.h" live', 'include "d.h" live', 'include "e.h" live', 'include "f.h" live', 'include "h.h" live', 'include "i.h" maybe', 'include "j.h" maybe', 'include "k.h" maybe'])
+  // GCC 13 opens a, c, d, e, f, h and n, never b; i hangs on X; j, l and m wrap at 64 bits (GCC's
+  // -1U < 0 is false, its l and m true), and 08 is no literal.
+  t.assert.deepStrictEqual(specs(src), [
+    'include "a.h" live', 'include "c.h" live', 'include "d.h" live', 'include "e.h" live', 'include "f.h" live', 'include "h.h" live',
+    'include "i.h" maybe', 'include "j.h" maybe', 'include "k.h" maybe', 'include "l.h" maybe', 'include "m.h" maybe', 'include "n.h" live',
+  ])
 })
 
 test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
