@@ -701,11 +701,13 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
     'b/nested.rsp': "-isystem 'sys dir'\n",
     'cl.rsp': '/I"inc dir" /FIsub\\pch.h\n',
     'u16.rsp': Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('/Iu16\r\n', 'utf16le')]),
+    'mode.rsp': '--driver-mode=cl /Imode\n',
   })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     { directory: tmp, file: 'a.c', arguments: ['gcc', '@flags.rsp', '-c', 'a.c'] },
     { directory: tmp, file: 'b.c', arguments: ['clang-cl', '@cl.rsp', '@u16.rsp', '/c', 'b.c'] },
     { directory: tmp, file: 'c.c', arguments: ['gcc', '@missing.rsp', '-Iinc', '-c', 'c.c'] },
+    { directory: tmp, file: 'd.c', arguments: ['clang', '@mode.rsp', '/c', 'd.c'] },
   ]))
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
   // gcc 13 -v lists inc, then sys dir (the nested file's path from the working directory); clang-cl
@@ -715,6 +717,9 @@ test('loadCompileCommands reads response files, nested ones too, split as each d
   t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'inc dir' }, { rel: 'u16' }])
   t.assert.deepStrictEqual(commands.get('b.c').forced.map((f) => f.path), ['sub/pch.h'])
   t.assert.deepStrictEqual(commands.get('c.c').I, [{ rel: 'inc' }])
+  // A --driver-mode=cl in one makes the command clang-cl's, as clang 18 takes it.
+  t.assert.deepStrictEqual(commands.get('d.c').I, [{ rel: 'mode' }])
+  t.assert.equal(commands.get('d.c').msvc, true)
 }))
 
 test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass on, after the driver\'s own', withTmp((t, tmp) => {

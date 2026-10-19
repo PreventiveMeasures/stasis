@@ -1405,7 +1405,7 @@ is:
   shell splits it (by Windows rules on Windows, and for a cl or clang-cl
   command, as clang's tooling splits one), a response file (`@file`, from the command's `directory`,
   nested ones too) read in where it is named, split as GCC splits one (as cl
-  does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
+  does, under cl and clang-cl; a `--driver-mode=` in one counts after), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
   and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,

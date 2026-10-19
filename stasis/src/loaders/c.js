@@ -774,9 +774,10 @@ export function loadCompileCommands(baseDir, file) {
     const directory = resolve(dirname(path), entry.directory)
     const unit = toDir(resolve(directory, entry.file))
     if (unit.rel === undefined || commands.has(unit.rel)) continue
-    const first = compilerAt(args)
-    const cl = isClCommand(args)
-    const command = expandResponseFiles(args.slice(first), directory, cl)
+    // As clang does: response files split by the mode the command shows, the mode then taken from
+    // what they hold too (a `--driver-mode=cl` in one).
+    const command = expandResponseFiles(args.slice(compilerAt(args)), directory, isClCommand(args))
+    const cl = isClCommand(command)
     commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file, cl)))
   }
   return commands
