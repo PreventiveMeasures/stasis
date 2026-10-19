@@ -1322,9 +1322,10 @@ graph, as the preprocessor would follow it, plus each header's implementation.
 translation phases 1 to 4 find them: a leading byte order mark skipped, a line
 ending at CR LF, LF or a lone CR, lines spliced by a backslash joined, comments
 and string and character literals skipped (C++ raw strings and digit separators
-included), a directive being `#` (or `%:`) first on its line. A file holding
-the trigraph `??=` or `??/` -- a `#` and a backslash (which can splice a line)
-with trigraphs on, and nothing in GNU modes -- is read both ways, an include
+included), a directive being `#` (or `%:`) first on its line. A file holding a
+trigraph -- with trigraphs on, `??=` a `#`, `??/` a backslash (which can splice
+a line), `??-` a `~` and so on, a header name's too; in GNU modes, nothing --
+is read both ways, an include
 only one reading finds, or finds unconditional, taken as one some builds read.
 Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and a condition
@@ -1398,7 +1399,8 @@ is:
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
-  shell splits it, a response file (`@file`, from the command's `directory`,
+  shell splits it (by Windows rules on Windows, and for a cl or clang-cl
+  command, as clang's tooling splits one), a response file (`@file`, from the command's `directory`,
   nested ones too) read in where it is named, split as GCC splits one (as cl
   does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what `-Xclang` and

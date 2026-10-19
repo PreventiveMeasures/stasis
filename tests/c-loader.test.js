@@ -596,6 +596,8 @@ test('scanIncludes reads a file holding trigraphs with them off and on, what one
   // with them.
   t.assert.deepStrictEqual(specs('??=include "requi??/\nred.h"\n// comment??/\n#include "next.h"\n'), ['include "next.h" maybe', 'include "required.h" maybe'])
   t.assert.deepStrictEqual(specs('#include "a.h"\nconst char *s = "??/n";\n'), ['include "a.h" live'])
+  // The other seven too, in a header name: with -trigraphs, GCC 13 opens foo~bar.h.
+  t.assert.deepStrictEqual(specs('#include "foo??-bar.h"\n'), ['include "foo??-bar.h" maybe', 'include "foo~bar.h" maybe'])
 })
 
 test('scanIncludes evaluates a condition\'s literals and operators, a macro unknown but where the rest decides', (t) => {
@@ -715,6 +717,21 @@ test('loadCompileCommands reads the options -Xclang and -Xpreprocessor pass on, 
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
   t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'x' }, { rel: 'z' }])
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
+}))
+
+test('loadCompileCommands splits a cl or clang-cl command string by Windows rules, others as a shell does', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', command: 'C:\\LLVM\\bin\\clang-cl.exe /Iinc /FIsub\\pch.h /c a.c' },
+    { directory: tmp, file: 'b.c', command: 'gcc -DX=\\"1\\" -I"a b" -c b.c' },
+    { directory: tmp, file: 'c.c', command: '"C:\\Program Files\\LLVM\\bin\\clang-cl.exe" /I"inc dir" /c c.c' },
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'inc' }])
+  t.assert.equal(commands.get('a.c').msvc, true)
+  t.assert.deepStrictEqual(commands.get('a.c').forced.map((f) => f.path), ['sub/pch.h'])
+  t.assert.deepStrictEqual(commands.get('c.c').I, [{ rel: 'inc dir' }])
+  t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'a b' }])
 }))
 
 test('loadCompileCommands takes clang-cl under a version or target name for clang-cl', withTmp((t, tmp) => {

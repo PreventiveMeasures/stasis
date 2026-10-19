@@ -200,13 +200,14 @@ function guardName(name, expr) {
 // `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
 // backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
-// With trigraphs on (-trigraphs, an ISO -std), `??=` is a `#` and `??/` a backslash, which can splice
-// a line or escape a quote; GNU modes leave both be. A file holding one is read both ways, and an
-// include only one reading finds (or finds unconditional) is one only some builds read.
+// With trigraphs on (-trigraphs, an ISO -std), `??=` is a `#`, `??/` a backslash (which can splice a
+// line or escape a quote), `??-` a `~` and so on, in a header name too; GNU modes leave them be. A
+// file holding one is read both ways, and an include only one reading finds (or finds unconditional)
+// is one only some builds read.
 export function scanIncludes(source) {
   const plain = scanText(source)
-  if (!/\?\?[=/]/u.test(source)) return plain
-  const trigraphs = scanText(source.replaceAll('??=', '#').replaceAll('??/', '\\'))
+  if (!TRIGRAPH.test(source)) return plain
+  const trigraphs = scanText(source.replaceAll(new RegExp(TRIGRAPH, 'gu'), (_, c) => TRIGRAPHS[c]))
   const key = (inc) => `${inc.directive}\0${inc.form}\0${inc.path}`
   const surest = (incs) => {
     const states = new Map()
@@ -218,6 +219,9 @@ export function scanIncludes(source) {
   for (const inc of [...plain, ...trigraphs]) if (!out.has(key(inc))) out.set(key(inc), { ...inc, state: meet(a.get(key(inc)) ?? 'maybe', b.get(key(inc)) ?? 'maybe') })
   return [...out.values()]
 }
+
+const TRIGRAPH = /\?\?([=/'()!<>-])/u
+const TRIGRAPHS = { '=': '#', '/': '\\', "'": '^', '(': '[', ')': ']', '!': '|', '<': '{', '>': '}', '-': '~' }
 
 // One reading of `source` (scanIncludes).
 function scanText(source) {
@@ -640,6 +644,25 @@ function splitWindowsCommand(text) {
 
 // Compiler launchers, which run the compiler named after them with its arguments.
 const LAUNCHERS = /^(?:ccache|sccache|distcc|icecc|buildcache)(?:\.exe)?$/iu
+// A command's program's name, wherever it lies, by either separator.
+const programName = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
+// Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`).
+function compilerAt(args) {
+  let first = 0
+  while (first < args.length - 1 && LAUNCHERS.test(programName(args[first]))) first++
+  return first
+}
+// Whether `arg` runs cl, or clang-cl under any name clang reads as one (`clang-cl-20`,
+// `<target>-clang-cl`).
+const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
+
+// A compilation database's `command` string split as clang's tooling splits one: by Windows rules on
+// Windows, and for a cl or clang-cl command anywhere (`"C:\Program Files\LLVM\bin\clang-cl.exe"
+// /Iinc ...`, whose backslashes a shell would take for escapes); else as a POSIX shell splits it.
+function splitCompileCommand(command) {
+  const windows = splitWindowsCommand(command)
+  return process.platform === 'win32' || isCl(windows[compilerAt(windows)]) ? windows : splitCommand(command)
+}
 
 // A compile command string split into its arguments as a POSIX shell splits words: quotes, and a
 // backslash escaping the next character (inside double quotes, only `"`, `\`, `$` and a backquote).
@@ -699,17 +722,13 @@ export function loadCompileCommands(baseDir, file) {
     const bad = (why) => new Error(`Compilation database ${file}: command ${index} ${why}`)
     if (entry === null || typeof entry !== 'object') throw bad('is not an object')
     if (typeof entry.directory !== 'string' || typeof entry.file !== 'string') throw bad('has no `directory` and `file` strings')
-    const args = Array.isArray(entry.arguments) ? entry.arguments : typeof entry.command === 'string' ? splitCommand(entry.command) : null
+    const args = Array.isArray(entry.arguments) ? entry.arguments : typeof entry.command === 'string' ? splitCompileCommand(entry.command) : null
     if (args === null || !args.every((a) => typeof a === 'string')) throw bad('has neither an `arguments` array of strings nor a `command` string')
     const directory = resolve(dirname(path), entry.directory)
     const unit = toDir(resolve(directory, entry.file))
     if (unit.rel === undefined || commands.has(unit.rel)) continue
-    // A compiler launcher (`ccache gcc ...`, `sccache clang-cl ...`) runs the compiler after it.
-    const program = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
-    let first = 0
-    while (first < args.length - 1 && LAUNCHERS.test(program(args[first]))) first++
-    // cl, or clang-cl under any name clang reads as one: `clang-cl-20`, `<target>-clang-cl`.
-    const cl = /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(program(args[first]))
+    const first = compilerAt(args)
+    const cl = isCl(args[first])
     commands.set(unit.rel, includeFlags(expandResponseFiles(args.slice(first), directory, cl), directory, toDir, cl))
   }
   return commands
