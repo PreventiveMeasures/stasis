@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS } from './artifact-util.js'
 import { diskHost } from './host.js'
+import { shebangFormat } from './shebang.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
 // observation and CLI parsing. The pure artifact data model lives in artifact-util.js, re-exported
@@ -174,14 +175,6 @@ const CODE_NAME_FORMATS = new Map([
   ['apple-app-site-association', 'json'],
 ])
 
-const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
-function isShellShebang(content) {
-  if (!Buffer.isBuffer(content) || !isUtf8(content)) return false
-  const head = content.subarray(0, 256).toString('utf8')
-  const nl = head.indexOf('\n')
-  return SHELL_SHEBANG.test(nl === -1 ? head : head.slice(0, nl))
-}
-
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
 // sidecars), excluded from the Metro native capture. `flow` covers the `*.js.flow` sidecars.
 const NATIVE_EXCLUDE_EXTS = new Set(['md', 'log', 'map', 'flow', 'swiftdoc'])
@@ -280,7 +273,7 @@ export function classifyFormat(name, { content } = {}) {
   if (JS_UNRESOLVED_EXTS.has(ext)) return null
   const byExt = NODE_EXT_FORMATS.get(ext) ?? CODE_EXT_FORMATS.get(ext)
   if (byExt !== undefined) return byExt
-  if (ext === '' && isShellShebang(content)) return 'shell'
+  if (ext === '') return shebangFormat(content)
   return undefined
 }
 
@@ -301,10 +294,16 @@ export function classifyNativeCapture(name, { win32 = process.platform === 'win3
 }
 
 // The byte-level half of the native classification, refining what classifyNativeCapture derived from the
-// NAME. Both rules only ever demote. A 'resource' carries no format: storage derives base64 from bytes.
+// NAME: the binary rules demote, and a resource whose bytes name a format (an extensionless script's
+// shebang) is promoted to code, as classifyFormat tags it. A 'resource' carries no format: storage
+// derives base64 from bytes.
 export function refineNativeCapture(classified, name, content, resources = new Set()) {
   if (isExtensionlessBinary(name, content)) return { action: 'skip' }
   if (isBinaryPlist(name, content)) return { action: resources.has('plist') ? 'resource' : 'skip' }
+  if (classified.action === 'resource') {
+    const format = classifyFormat(name, { content })
+    if (format != null) return { action: 'code', format }
+  }
   return classified
 }
 

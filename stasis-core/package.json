@@ -36,6 +36,7 @@
     "src/package.cjs",
     "src/prune.js",
     "src/shard.js",
+    "src/shebang.js",
     "src/state.js",
     "src/state-util.js",
     "src/util.js"

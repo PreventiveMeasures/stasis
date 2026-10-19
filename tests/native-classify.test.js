@@ -146,6 +146,13 @@ test('refineNativeCapture: the byte-level half both native walks share', (t) => 
   t.assert.deepStrictEqual(refineNativeCapture({ action: 'code', format: 'c-header' }, 'RNThing.h', text),
     { action: 'code', format: 'c-header' })
   t.assert.deepStrictEqual(refineNativeCapture({ action: 'resource' }, 'logo.png', elf), { action: 'resource' })
+  // The walks classify by NAME before reading, so an extensionless script is a resource until its bytes
+  // are seen: its shebang then promotes it to code, as classifyFormat tags it given the content.
+  const promote = (name, script) => refineNativeCapture(classifyNativeCapture(name, NOT_WIN), name, Buffer.from(script))
+  t.assert.deepStrictEqual(promote('gen-headers', '#!/usr/bin/env python3\nprint(1)\n'), { action: 'code', format: 'python' })
+  t.assert.deepStrictEqual(promote('build-phase', '#!/bin/sh\nexit 0\n'), { action: 'code', format: 'shell' })
+  t.assert.deepStrictEqual(promote('run-node', '#!/usr/bin/env node\n'), { action: 'resource' })
+  t.assert.deepStrictEqual(promote('notes.txt', '#!/usr/bin/env python3\n'), { action: 'resource' }, 'only an extensionless name')
 })
 
 test('classifyNativeCapture: TypeScript source (.ts/.tsx/.d.ts) is skipped -- Metro owns the JS graph', (t) => {
