@@ -355,6 +355,9 @@ function includeFlags(args, directory, toDir, cl) {
     else return
     list.push(framework ? { ...toDir(path), framework } : toDir(path))
   }
+  // Clang's -iwithsysroot and -iframeworkwithsysroot: an absolute directory lies in the sysroot,
+  // when there is one; a relative one is where it is.
+  const withSysroot = (value) => (value?.startsWith('/') && headerSysroot !== undefined ? resolve(directory, headerSysroot) + value : value)
   const file = (flag, value) => {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
   }
@@ -407,7 +410,8 @@ function includeFlags(args, directory, toDir, cl) {
       if ((v = long('--include-directory-after')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
       else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
       else if ((v = take('-cxx-isystem')) !== undefined || (v = take('-isystem')) !== undefined) dir(v, flags.system)
-      else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(v === undefined ? v : `=${v}`, systemFrameworks, true)
+      else if ((v = take('-iwithsysroot')) !== undefined) dir(withSysroot(v), flags.system)
+      else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
       else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).

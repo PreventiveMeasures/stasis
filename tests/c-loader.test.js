@@ -554,6 +554,22 @@ test('loadCompileCommands puts =dir and $SYSROOT/dir in the sysroot, -isysroot\'
   t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('include <x.h>'), 'sr/usr/include/x.h')
 }))
 
+test('loadCompileCommands reads Clang\'s -iwithsysroot with the -isystem ones, an absolute one in the sysroot', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '#include <x.h>\n#include <y.h>\n', 'sdk/include/x.h': '', 's/x.h': '', 'rel/y.h': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: ['clang', ...args, '-c', file] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('src/a.c', ['-isysroot', 'sdk', '-iwithsysroot', '/include', '-isystem', 's', '-iwithsysroot', 'rel']),
+    unit('src/b.c', ['-isysroot', 'sdk', '-isystem', 's', '-iwithsysroot', '/include']),
+    unit('src/c.c', ['--sysroot=sdk', '-iframeworkwithsysroot', '/include']),
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  // clang 18's -v for these: sdk/include, s, rel; then s, sdk/include.
+  t.assert.deepStrictEqual(commands.get('src/a.c').system, [{ rel: 'sdk/include' }, { rel: 's' }, { rel: 'rel' }])
+  t.assert.deepStrictEqual(commands.get('src/b.c').system, [{ rel: 's' }, { rel: 'sdk/include' }])
+  t.assert.deepStrictEqual(commands.get('src/c.c').system, [{ rel: 'sdk/include', framework: true }])
+  t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('include <x.h>'), 'sdk/include/x.h')
+}))
+
 test('loadCompileCommands reads GCC\'s long spellings and prefix options, the -I ones first, as its driver orders them', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '' })
   const args = ['gcc', '-iprefix', 'p/', '-iwithprefixbefore', 'wb', '-I', 'j', '--include-directory', 'i', '--include-barrier', '--include-directory=k', '--include-directory-after', 'af', '--include-with-prefix', 'w', '--include-prefix', 'q/', '--include-with-prefix-before=v', '--include', 'f.h', '-c', 'a.c']

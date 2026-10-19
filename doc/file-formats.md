@@ -1377,7 +1377,8 @@ is:
   (`compile_commands.json`, or the directory holding it; CMake writes one with
   `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
   unit it lists -- an entry, or an implementation file -- is resolved with its
-  first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`), `-idirafter`,
+  first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`, Clang's
+  `-iwithsysroot`), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
@@ -1396,7 +1397,8 @@ is:
   include is then looked up beside its includer. An include directory spelled
   `=dir` or `$SYSROOT/dir` lies in the command's `-isysroot`, else its
   `--sysroot` (relative to its `directory`); with neither, it is no directory,
-  as to GCC. The database takes the place of a known project's search path for
+  as to GCC; an absolute `-iwithsysroot` or `-iframeworkwithsysroot` one lies
+  in that sysroot where there is one, as to Clang. The database takes the place of a known project's search path for
   the units it lists; an entry it doesn't list is resolved with its known
   project's and `--include-dirs`, said so. The database is read wherever it
   is, never bundled.
