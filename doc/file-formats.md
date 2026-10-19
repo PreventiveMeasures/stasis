@@ -1389,16 +1389,16 @@ is:
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (Clang's `-iwithsysroot`),
   Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
-  directories, a C++ unit's only: by its `-x`, cl's `/TP`, a C++ driver or its
-  extension), `-idirafter`,
+  directories, a C++ unit's only: by its `-x` (but `-x none`), cl's `/TP`, a
+  C++ driver (`--driver-mode=g++` too) or its extension), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
   `--include-barrier`, ...), Clang's framework directories -- `-F` (with the
   `-I` ones, in order) and `-iframework` (after the `-isystem` ones), where
   `<Foo/Bar.h>` is `Foo.framework/Headers/Bar.h`, else
-  `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's (`clang-cl-20` and
-  `<target>-clang-cl` too) and cl's `/I`, `/external:I`,
+  `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's (`clang-cl-20`,
+  `<target>-clang-cl` and `--driver-mode=cl` too) and cl's `/I`, `/external:I`,
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX

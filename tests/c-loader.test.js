@@ -743,15 +743,18 @@ test('loadCompileCommands splits a cl or clang-cl command string by Windows rule
   t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'a b' }])
 }))
 
-test('loadCompileCommands takes clang-cl under a version or target name for clang-cl', withTmp((t, tmp) => {
-  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '' })
+test('loadCompileCommands takes clang-cl under a version or target name, or --driver-mode=cl, for clang-cl', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.c': '', 'e.c': '' })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     { directory: tmp, file: 'a.c', arguments: ['/usr/bin/clang-cl-20', '/Iinc', '/c', 'a.c'] },
     { directory: tmp, file: 'b.c', arguments: ['x86_64-pc-windows-msvc-clang-cl.exe', '/Iinc', '/c', 'b.c'] },
     { directory: tmp, file: 'c.c', arguments: ['clang-20', '-Iinc', '-c', 'c.c'] },
+    { directory: tmp, file: 'd.c', arguments: ['clang', '--driver-mode=cl', '/Iinc', '/c', 'd.c'] },
+    { directory: tmp, file: 'e.c', command: 'C:\\LLVM\\bin\\clang.exe --driver-mode=cl /Iinc /c e.c' },
   ]))
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
-  for (const unit of ['a.c', 'b.c']) {
+  // --driver-mode=cl makes clang clang-cl, as it says.
+  for (const unit of ['a.c', 'b.c', 'd.c', 'e.c']) {
     t.assert.deepStrictEqual(commands.get(unit).I, [{ rel: 'inc' }], unit)
     t.assert.equal(commands.get(unit).msvc, true, unit)
   }
@@ -784,7 +787,7 @@ test('loadCompileCommands reads what clang-cl\'s /clang: passes the clang driver
 }))
 
 test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ unit, after the other system directories', withTmp((t, tmp) => {
-  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '', 'e.c': '', 'f.c': '' })
+  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '', 'e.c': '', 'f.c': '', 'g.cpp': '', 'h.c': '', 'i.c': '' })
   const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     unit('a.cpp', ['clang', '-stdlib++-isystem', 'lib', '-cxx-isystem', 'a', '-isystem', 's', '-iframework', 'f', '-Iy']),
@@ -793,6 +796,9 @@ test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ uni
     unit('d.cpp', ['clang', '-x', 'c', '-stdlib++-isystem', 'lib']),
     unit('e.c', ['clang-cl', '/TP', '/clang:-stdlib++-isystem', '/clang:lib']),
     unit('f.c', ['clang-cl', '/TP', '/TC', '/clang:-stdlib++-isystem', '/clang:lib']),
+    unit('g.cpp', ['clang', '-x', 'c', '-x', 'none', '-cxx-isystem', 'a']),
+    unit('h.c', ['clang', '--driver-mode=g++', '-cxx-isystem', 'a']),
+    unit('i.c', ['clang++', '--driver-mode=gcc', '-cxx-isystem', 'a']),
   ]))
   // clang 18's -v for a.cpp lists y, then s, f (a framework directory), a, lib; for C, neither a nor
   // lib. clang-cl's /TP makes e.c C++, /TC after it f.c C again.
@@ -803,6 +809,10 @@ test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ uni
   t.assert.deepStrictEqual(commands.get('d.cpp').system, [])
   t.assert.deepStrictEqual(commands.get('e.c').system, [{ rel: 'lib' }])
   t.assert.deepStrictEqual(commands.get('f.c').system, [])
+  // -x none gives the extension back the say; --driver-mode= outdoes the driver's name.
+  t.assert.deepStrictEqual(commands.get('g.cpp').system, [{ rel: 'a' }])
+  t.assert.deepStrictEqual(commands.get('h.c').system, [{ rel: 'a' }])
+  t.assert.deepStrictEqual(commands.get('i.c').system, [])
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

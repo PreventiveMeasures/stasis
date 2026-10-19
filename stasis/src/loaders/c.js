@@ -674,7 +674,7 @@ function compilerAt(args) {
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
 // Whether a command compiles its unit as C++: by its last `-x` (cl's `/TP`, `/Tp<file>`, `/TC`, `/Tc`),
-// else by a C++ driver's name (`clang++`, `g++`), else by the unit's extension.
+// else by a C++ driver (`clang++`, `g++`, `--driver-mode=g++`), else by the unit's extension.
 function isCxx(args, file, cl) {
   let language
   for (let k = 1; k < args.length; k++) {
@@ -683,8 +683,24 @@ function isCxx(args, file, cl) {
     else if (cl && /^[/-]T[Pp]/u.test(args[k])) language = 'c++'
     else if (cl && /^[/-]T(?:C$|c.)/u.test(args[k])) language = 'c'
   }
-  if (language !== undefined) return language.startsWith('c++')
-  return programName(args[0]).includes('++') || CPP_FORMATS.has(cFormatOf(file))
+  // `-x none` gives the extension back the say.
+  if (language !== undefined && language !== 'none') return language.startsWith('c++')
+  const mode = driverMode(args)
+  return (mode === undefined ? programName(args[0]).includes('++') : mode === 'g++') || CPP_FORMATS.has(cFormatOf(file))
+}
+
+// A clang command's `--driver-mode=` (the last), which overrides what its program's name says.
+function driverMode(args) {
+  let mode
+  for (const arg of args) if (arg.startsWith('--driver-mode=')) mode = arg.slice('--driver-mode='.length)
+  return mode
+}
+
+// Whether a command (`args`, launchers and all) runs cl or clang-cl: by its `--driver-mode=`, else by
+// its compiler's name.
+function isClCommand(args) {
+  const mode = driverMode(args)
+  return mode === undefined ? isCl(args[compilerAt(args)]) : mode === 'cl'
 }
 
 // A compilation database's `command` string split as clang's tooling splits one: by Windows rules on
@@ -692,7 +708,7 @@ function isCxx(args, file, cl) {
 // /Iinc ...`, whose backslashes a shell would take for escapes); else as a POSIX shell splits it.
 function splitCompileCommand(command) {
   const windows = splitWindowsCommand(command)
-  return process.platform === 'win32' || isCl(windows[compilerAt(windows)]) ? windows : splitCommand(command)
+  return process.platform === 'win32' || isClCommand(windows) ? windows : splitCommand(command)
 }
 
 // A compile command string split into its arguments as a POSIX shell splits words: quotes, and a
@@ -759,7 +775,7 @@ export function loadCompileCommands(baseDir, file) {
     const unit = toDir(resolve(directory, entry.file))
     if (unit.rel === undefined || commands.has(unit.rel)) continue
     const first = compilerAt(args)
-    const cl = isCl(args[first])
+    const cl = isClCommand(args)
     const command = expandResponseFiles(args.slice(first), directory, cl)
     commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file, cl)))
   }
