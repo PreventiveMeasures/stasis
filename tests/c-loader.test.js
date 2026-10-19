@@ -56,8 +56,12 @@ test('scanIncludes reads directives as translation phase 4 does: spacing, commen
   t.assert.deepStrictEqual(specs('#include \\\r\n "e.h"\n'), ['include "e.h" live'])
   // A comment before the `#` is a space: still first on its line.
   t.assert.deepStrictEqual(specs('/* one\n two */ #include "f.h"\n'), ['include "f.h" live'])
-  // Code before it is not.
+  // Code before it is not, though a comment after the code runs over a line: the comment is one space
+  // (GCC 13's and clang 18's -E keep `int x; #include "h.h"` as text). The line after the comment's is
+  // a line of its own.
   t.assert.deepStrictEqual(specs('int x; #include "g.h"\n'), [])
+  t.assert.deepStrictEqual(specs('int x; /* comment\n */ #include "h.h"\n'), [])
+  t.assert.deepStrictEqual(specs('int x; /* comment\n */\n#include "i.h"\n'), ['include "i.h" live'])
 })
 
 test('scanIncludes skips comments and literals', (t) => {
