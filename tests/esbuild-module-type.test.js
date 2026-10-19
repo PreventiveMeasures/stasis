@@ -215,6 +215,11 @@ test('analyzeModule: a key only the runtime knows marks where it reaches the exp
   t.assert.equal(marks("const key = 'safe'\ntry { throw process.env.KEY } catch (key) { module.exports = { [key]: true, default: 1 } }"), true)
   t.assert.equal(marks("const key = 'safe'\nfor (const key of keys) module.exports = { [key]: true, default: 1 }"), true)
   t.assert.equal(marks("var key = 'safe'\nfor (var key in source);\nmodule.exports = { [key]: true, default: 1 }"), true)
+  // A loop assigning a declared name gives it the runtime's values too.
+  t.assert.equal(marks("let key = 'safe'\nfor (key of [process.env.KEY]) module.exports = { [key]: true, default: 1 }"), true)
+  t.assert.equal(marks("let key = 'safe'\nfor (key in source);\nmodule.exports = { [key]: true, default: 1 }"), true)
+  t.assert.equal(marks("let key = 'safe'\nfor ([key] of pairs);\nmodule.exports = { [key]: true, default: 1 }"), true)
+  t.assert.equal(marks("let key = 'safe', other\nfor (other of keys);\nmodule.exports = { [key]: true, default: 1 }"), false)
   t.assert.equal(marks("const key = 'safe'\nfunction f() { const key = 'name'; module.exports = { [key]: true, default: 1 } }"), false)
   // A symbol or a number isn't `__esModule` -- unless the file binds `Symbol` itself.
   t.assert.equal(marks("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }"), false)

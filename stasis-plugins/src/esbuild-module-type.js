@@ -735,6 +735,8 @@ export function analyzeModule(source, { path, loader }) {
   const memberWrites = new Map()  // name -> [[key, or undefined for one only the runtime knows, value]]
   const writtenAt = (name, key) => (memberWrites.get(name) ?? []).filter(([written]) => key === undefined || written === undefined || written === key).map(([, value]) => value)
   const reassigned = new Set()
+  // Names a for-in/of loop assigns without declaring them (`for (key of keys)`): what they hold is the runtime's.
+  const loopAssigned = new Set()
   // Where a constant `__esModule` key may be defined (see definesEsModule): the properties writes target. A write
   // of a key whose value isn't known doesn't count, unlike a computed key in what becomes the exports: dynamic
   // writes run all over CommonJS, the exports included (fs-extra's `exports[method] = u(fs[method])` loop).
@@ -934,7 +936,10 @@ export function analyzeModule(source, { path, loader }) {
         if (node.await && fnDepth === 0) facts.esmExports = true
         // `for (o of xs)` assigns o, as `o = x` does (`for (exports.__esModule of [true])` the property).
         if (node.left && node.left.type !== 'VariableDeclaration') {
-          for (const name of patternNames(node.left)) reassigned.add(name)
+          for (const name of patternNames(node.left)) {
+            reassigned.add(name)
+            loopAssigned.add(name)
+          }
           for (const target of patternMembers(node.left)) tokenContext.writeTargets.add(target)
         }
         childScope = { names: new Set(), parent: scope }
@@ -1082,10 +1087,11 @@ export function analyzeModule(source, { path, loader }) {
   }
   facts.reexports = exported.specifiers
   // A computed key of what becomes the exports may name `__esModule` unless every value its name is given is a
-  // constant or a symbol: one with none (a parameter, an import, a global) is unknown, and so is a symbol where
-  // the file binds `Symbol` itself.
+  // constant or a symbol: one with none (a parameter, an import, a global) or one a loop assigns is unknown, and
+  // so is a symbol where the file binds `Symbol` itself.
   const isSymbol = (value) => symbolName(value) !== undefined && isGlobal(symbolName(value)) && !reassigned.has('Symbol')
   const mayName = (name) => {
+    if (loopAssigned.has(name)) return true
     const given = [...(declarators.get(name) ?? []), ...(assignments.get(name) ?? [])]
     return given.length === 0 || given.some((value) => {
       const string = stringValue(value)
