@@ -1378,7 +1378,10 @@ is:
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
-  `--include-barrier`, ...) and clang-cl's and cl's `/I`, `/external:I`,
+  `--include-barrier`, ...), Clang's framework directories -- `-F` (with the
+  `-I` ones, in order) and `-iframework` (after the `-isystem` ones), where
+  `<Foo/Bar.h>` is `Foo.framework/Headers/Bar.h`, else
+  `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's and cl's `/I`, `/external:I`,
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX

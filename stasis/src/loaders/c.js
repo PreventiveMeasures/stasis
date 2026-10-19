@@ -263,7 +263,8 @@ export const includeSpec = ({ directive, form, path }) => `${directive} ${form =
 
 // A search directory: `{ rel }` inside the bundle root (POSIX, '' for the root itself), or `{ abs }`
 // outside it, where headers are only ever looked up -- a hit there is a system or out-of-tree header,
-// never read or bundled.
+// never read or bundled. `framework` marks Clang's framework directories (-F, -iframework), where
+// `<Foo/Bar.h>` is Foo.framework/Headers/Bar.h, else Foo.framework/PrivateHeaders/Bar.h.
 function makeDir(baseDir, realBase, abs) {
   for (const root of [baseDir, realBase]) {
     const rel = toPosix(relative(root, abs))
@@ -302,6 +303,7 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 function includeFlags(args, directory, toDir, cl) {
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
+  const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -315,11 +317,14 @@ function includeFlags(args, directory, toDir, cl) {
     else if (a.startsWith('-isysroot')) isysroot = a.slice('-isysroot'.length)
   }
   const headerSysroot = isysroot ?? sysroot
-  const dir = (value, list) => {
+  const dir = (value, list, framework = false) => {
     if (value === undefined || value === '' || value === '-') return
     const inSysroot = /^(?:=|\$SYSROOT)(.*)$/su.exec(value)
-    if (inSysroot === null) list.push(toDir(resolve(directory, value)))
-    else if (headerSysroot !== undefined) list.push(toDir(resolve(directory, headerSysroot + inSysroot[1])))
+    let path
+    if (inSysroot === null) path = resolve(directory, value)
+    else if (headerSysroot !== undefined) path = resolve(directory, headerSysroot + inSysroot[1])
+    else return
+    list.push(framework ? { ...toDir(path), framework } : toDir(path))
   }
   const file = (flag, value) => {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
@@ -364,10 +369,17 @@ function includeFlags(args, directory, toDir, cl) {
         if (pass === '-I') dir(v, flags.I)
         continue
       }
+      // Clang's -F framework directories go with the -I ones, in order (cl's -F options are others).
+      if (!cl && (v = take('-F')) !== undefined) {
+        if (pass === '-I') dir(v, flags.I, true)
+        continue
+      }
       if (pass === '-I' || a.startsWith('-include-pch')) continue
       if ((v = long('--include-directory-after')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
       else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
       else if ((v = take('-cxx-isystem')) !== undefined || (v = take('-isystem')) !== undefined) dir(v, flags.system)
+      else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(v === undefined ? v : `=${v}`, systemFrameworks, true)
+      else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).
       else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
@@ -385,6 +397,7 @@ function includeFlags(args, directory, toDir, cl) {
     }
   }
   flags.quote.unshift(...preBarrier)
+  flags.system.push(...systemFrameworks)
   if (cl) flags.msvc = true
   return flags
 }
@@ -702,7 +715,8 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       } catch {
         // Nothing there: only its spelling tells it apart.
       }
-      identities.set(spelled, real)
+      // A framework directory is another directory to Clang than the same one searched plainly.
+      identities.set(spelled, dir.framework ? `${real}\0framework` : real)
     }
     return identities.get(spelled)
   }
@@ -880,6 +894,15 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     return { target: rel }
   }
 
+  // The file `path` names in the search directory `dir`, a framework one's as Clang finds it.
+  const probeDir = (dir, path) => {
+    if (!dir.framework) return probe(dir, path)
+    const slash = path.indexOf('/')
+    if (slash <= 0) return null
+    const name = `${path.slice(0, slash)}.framework`
+    return probe(dir, `${name}/Headers/${path.slice(slash + 1)}`) ?? probe(dir, `${name}/PrivateHeaders/${path.slice(slash + 1)}`)
+  }
+
   // An include of `inc` from `node`, resolved as GCC searches: { target, at } | { external } |
   // { refused } | null.
   const chainHits = new Map() // ctx -> `${first}\0${path}` -> what the chain from `first` finds
@@ -903,7 +926,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       // On from after the directory the includer was found in; from the start of its form's chain
       // where it wasn't found through one, never landing on the includer itself.
       for (let k = Math.max(first, node.at + 1); k < chain.length; k++) {
-        const hit = probe(chain[k], inc.path)
+        const hit = probeDir(chain[k], inc.path)
         if (hit !== null && hit.target !== file) return { ...hit, at: k }
       }
       return null
@@ -928,7 +951,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     if (!hits.has(searched)) {
       let found = null
       for (let k = first; found === null && k < chain.length; k++) {
-        const hit = probe(chain[k], inc.path)
+        const hit = probeDir(chain[k], inc.path)
         if (hit !== null) found = { ...hit, at: k }
       }
       hits.set(searched, found)
@@ -1010,7 +1033,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
           if (result === null && flag === '/FI' && !isAbsolute(path)) result = probe({ rel: dirOf(file) }, path)
           const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
           for (let k = 0; result === null && k < chain.length; k++) {
-            const hit = probe(chain[k], path)
+            const hit = probeDir(chain[k], path)
             if (hit !== null) result = { ...hit, at: k }
           }
           const edge = { spec, live: true, forced: true, result, target: undefined }

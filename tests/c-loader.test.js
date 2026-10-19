@@ -572,7 +572,7 @@ test('scanIncludes reads a first-line directive after a byte order mark, as GCC 
 
 test('loadCompileCommands reads clang-cl\'s include options, /imsvc after the other system directories', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '' })
-  const args = ['clang-cl', '/Iinc', '/imsvc', 'sys', '-imsvcsys2', '/external:Iext', '/FIpch.h', '/c', 'a.c']
+  const args = ['clang-cl', '/Iinc', '/imsvc', 'sys', '-imsvcsys2', '/external:Iext', '/FIpch.h', '-Foa.obj', '/c', 'a.c']
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
   // clang-cl -v lists inc, ext, its own headers, then sys, sys2.
@@ -581,6 +581,30 @@ test('loadCompileCommands reads clang-cl\'s include options, /imsvc after the ot
   t.assert.deepStrictEqual(rels(flags.system), ['ext'])
   t.assert.deepStrictEqual(rels(flags.after), ['sys', 'sys2'])
   t.assert.deepStrictEqual(flags.forced.map((f) => f.path), ['pch.h'])
+}))
+
+test('collectCBundle searches Clang\'s framework directories, -F with the -I ones, -iframework after the -isystem ones', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/main.cpp': '#include <Foo/Foo.h>\n#include <Foo/Priv.h>\n#include <Bar/Bar.h>\n#include <Baz/Baz.h>\n',
+    'vendor/Foo.framework/Headers/Foo.h': '#include "Inner.h"\n',
+    'vendor/Foo.framework/Headers/Inner.h': '',
+    'vendor/Foo.framework/PrivateHeaders/Priv.h': '',
+    'i/Foo/Foo.h': '',
+    'i/Baz.framework/Headers/Baz.h': '',
+    'sf/Bar.framework/Headers/Bar.h': '',
+    's/Bar/Bar.h': '',
+  })
+  const args = ['clang++', '-F', 'vendor', '-Ii', '-Fi', '-iframework', 'sf', '-isystem', 's', '-c', 'src/main.cpp']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/main.cpp', arguments: args }]))
+  // clang 18's -E for these: i is searched both plainly and as a framework directory.
+  const { resolutions } = collectCBundle(tmp, ['src/main.cpp'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/main.cpp')), {
+    'include <Foo/Foo.h>': 'vendor/Foo.framework/Headers/Foo.h',
+    'include <Foo/Priv.h>': 'vendor/Foo.framework/PrivateHeaders/Priv.h',
+    'include <Bar/Bar.h>': 's/Bar/Bar.h',
+    'include <Baz/Baz.h>': 'i/Baz.framework/Headers/Baz.h',
+  })
+  t.assert.equal(resolutions.get('vendor/Foo.framework/Headers/Foo.h').get('include "Inner.h"'), 'vendor/Foo.framework/Headers/Inner.h')
 }))
 
 test('collectCBundle looks an MSVC quoted include up beside each file including its includer, and /FI beside the unit', withTmp((t, tmp) => {
