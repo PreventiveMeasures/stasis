@@ -879,6 +879,22 @@ test('loadCompileCommands takes a cc with an option only Clang takes for clang',
   t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'tc/include' }])
 }))
 
+test('loadCompileCommands leaves out what clang-cl\'s /link hands the linker', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '' })
+  const unit = (file, args) => ({ directory: tmp, file, arguments: ['clang-cl', '/imsvcsys', '/c', file, ...args] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.c', ['/link', '/INCREMENTAL', '/clang:-Iinc']),
+    unit('b.c', ['-link', '/INCREMENTAL']),
+    unit('c.c', ['/linkfoo', '/INCREMENTAL']),
+  ]))
+  // clang-cl 18 -v lists sys alone for each: no /I NCREMENTAL, and no inc from the /clang: after /link.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  for (const file of ['a.c', 'b.c', 'c.c']) {
+    t.assert.deepStrictEqual(commands.get(file).I, [], file)
+    t.assert.deepStrictEqual(commands.get(file).after, [{ rel: 'sys' }], file)
+  }
+}))
+
 test('loadCompileCommands leaves out what -Xlinker, -Xassembler and the like hand other tools', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '#include <stdio.h>\n', 'vendor/stdio.h': '', 'sr/inc/.keep': '' })
   const other = ['-Xlinker', '-Ivendor', '-Xassembler', '-Iv2', '-Xanalyzer', '-Iv3', '-Xopenmp-target=x86_64-pc-linux-gnu', '-Iv4', '-Xoffload-linker-x86_64', '-Iv5', '-Xlinker', '--sysroot=sr']

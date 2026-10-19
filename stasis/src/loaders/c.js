@@ -1012,8 +1012,11 @@ export function loadCompileCommands(baseDir, file) {
     // what they hold too (a `--driver-mode=cl` in one).
     const { at, chdir, vars } = compilerAt(args)
     const runs = resolve(directory, ...chdir)
-    const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
-    const cl = isClCommand(command)
+    const expanded = expandResponseFiles(args.slice(at), runs, isClCommand(args))
+    const cl = isClCommand(expanded)
+    // cl's /link (-link, /link<arg>) hands the rest to the linker, /clang: ones too, as clang-cl 18 does.
+    const link = cl ? expanded.findIndex((a, k) => k > 0 && /^[/-]link/u.test(a)) : -1
+    const command = link === -1 ? expanded : expanded.slice(0, link)
     // The unit's own argument is the driver's, from its working directory.
     const options = compileOptions(command, cl)
     const language = languageOf(command, resolve(directory, entry.file), cl, workingDirectory(options, runs, options.preprocessorFrom))
