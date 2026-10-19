@@ -110,7 +110,8 @@ export function readUtf8OrNull(file, label, host = diskHost) {
 // doesn't check (`update = none`, `active`, a `[core]` section) -- never fails the bundle: it's
 // warned about and read submodule by submodule (gitmodulesLeniently). One git itself refuses is an
 // error: read past what git can't, a submodule's section would be lost, and its directory with it.
-export function readGitmodules(baseDir, host = diskHost) {
+// `who` names the loader in those warnings.
+export function readGitmodules(baseDir, host = diskHost, { who = 'loader.solidity' } = {}) {
   const text = readUtf8OrNull(join(baseDir, '.gitmodules'), '.gitmodules', host)
   if (text === null) return []
   try {
@@ -119,7 +120,7 @@ export function readGitmodules(baseDir, host = diskHost) {
     if (!(err instanceof LockfileError)) throw err
     const { submodules, notes } = gitmodulesLeniently(text)
     if (!notes.some((note) => note.startsWith(`${err.message};`))) notes.unshift(`${err.message}; reading it submodule by submodule`)
-    for (const note of notes) console.warn(`[loader.solidity] .gitmodules: ${note}`)
+    for (const note of notes) console.warn(`[${who}] .gitmodules: ${note}`)
     return submodules
   }
 }

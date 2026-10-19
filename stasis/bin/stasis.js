@@ -24,6 +24,7 @@ const HELP = `Usage:
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
+ stasis bundle [--include-dirs=dir,dir] [--compile-commands=path/to/compile_commands.json] [--add] [--output=(path|-)] path/to/file.(c|cc|cpp|cxx|c++|h|hh|hpp|hxx|h++) ...
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
@@ -212,11 +213,13 @@ if (command === '-v' || command === '--version') {
     'cargo-all-features': { type: 'boolean' },
     'cargo-target': { type: 'string' },
     'cargo-manifests': { type: 'boolean' },
+    'include-dirs': { type: 'string', multiple: true },
+    'compile-commands': { type: 'string' },
     'brotli-quality': { type: 'string' },
     add: { type: 'boolean' },
   }
   const values = parseLeadingOptions(argv, options, {
-    valueFlags: ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--brotli-quality', '-o'],
+    valueFlags: ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--include-dirs', '--compile-commands', '--brotli-quality', '-o'],
     onError: fail,
   })
   if (argv.length === 0) fail('Nothing to bundle: no entry file given')
@@ -230,9 +233,20 @@ if (command === '-v' || command === '--version') {
   const allJs = argv.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f))
   const allBash = argv.every((f) => /\.(?:sh|bash)$/u.test(f))
   const allRust = argv.every((f) => f.endsWith('.rs'))
-  if (!allSol && !allPhp && !allJs && !allBash && !allRust) {
-    fail('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
+  const allC = argv.every((f) => /\.(?:c|cc|cpp|cxx|c\+\+|h|hh|hpp|hxx|h\+\+)$/u.test(f))
+  if (!allSol && !allPhp && !allJs && !allBash && !allRust && !allC) {
+    fail('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be C/C++ (.c/.cc/.cpp/.cxx/.c++/.h/.hh/.hpp/.hxx/.h++)')
   }
+  // --include-dirs: `-I` directories for every C/C++ translation unit, repeatable and/or comma-separated.
+  // --compile-commands: a compilation database (or its directory), each unit's own search path.
+  const includeDirs = [...new Set((values['include-dirs'] ?? []).flatMap((d) => d.split(',')).map((s) => s.trim()).filter(Boolean))]
+  if (values['include-dirs'] !== undefined && includeDirs.length === 0) {
+    fail('Error: --include-dirs must list at least one directory (e.g. --include-dirs=include,src)')
+  }
+  if (includeDirs.length > 0 && !allC) fail('Error: --include-dirs is only valid for C/C++ bundles')
+  const compileCommands = values['compile-commands']
+  if (compileCommands !== undefined && !allC) fail('Error: --compile-commands is only valid for C/C++ bundles')
+  if (compileCommands === '') fail('Error: --compile-commands requires a path (e.g. --compile-commands=build/compile_commands.json)')
   if (values.mapping && !allSol) fail('Error: --mapping is only valid for .sol bundles')
   // --manifests: carry the Solidity build's description files (foundry.toml, remappings.txt, ...).
   const manifests = Boolean(values.manifests)
@@ -317,7 +331,7 @@ if (command === '-v' || command === '--version') {
   const jsx = Boolean(values.jsx)
   if (jsx && !allJs) fail('Error: --jsx is only valid for JS bundles')
   // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
-  // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).
+  // modules carry an npm package.json; the sol/php/bash/rust/c bucketizers have no such manifest).
   const packageJSON = Boolean(values['package-json'])
   if (packageJSON && !allJs) fail('Error: --package-json is only valid for JS bundles')
   // --resources: comma-separated extension/filename allowlist for assets reached through the graph
@@ -383,6 +397,8 @@ if (command === '-v' || command === '--version') {
     cargoAllFeatures,
     cargoTarget,
     cargoManifests,
+    includeDirs,
+    compileCommands,
     brotliQuality,
     add,
   })

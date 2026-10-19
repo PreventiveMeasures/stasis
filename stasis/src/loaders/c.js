@@ -1,0 +1,1681 @@
+// C/C++ loader: the preprocessor's include graph of a set of translation units (or headers), as
+// `{ sources, formats, resolutions, missing, computed, conflicts }`. Nothing is compiled or
+// preprocessed: `#include`/`#import`/`#include_next`/`#embed` lines are found by a scan that skips
+// comments and literals, and resolved the way GCC and Clang search for them -- the includer's
+// directory for a quoted name, then the `-iquote`, `-I`, `-isystem` and `-idirafter` directories of
+// the translation unit's compile command (compile_commands.json) or `--include-dirs`. Headers hold
+// code too (inline functions, templates, macros), so an include lands on the header itself, and a
+// header pulls in its implementation file -- the source of the same name beside it, or in the `src/`
+// mirroring an `include/` -- so what a program links is bundled along with what it includes.
+
+import { isUtf8 } from 'node:buffer'
+import { readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { basename, delimiter, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+
+import { assertRealPathWithinBase, classifyFormat, isAutoExcludedDir, isDotEnvFile, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { isDir, isFile } from '../resolve-typescript.js'
+
+export const C_SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.c++'])
+export const C_HEADER_EXTS = new Set(['.h', '.hh', '.hpp', '.hxx', '.h++'])
+
+// A C/C++ bundle's entry: a translation unit, or a header (a header-only library's).
+export const isCEntry = (path) => C_SOURCE_EXTS.has(extname(path)) || C_HEADER_EXTS.has(extname(path))
+
+const C_FAMILY_FORMATS = new Set(['c', 'cpp', 'c-header', 'cpp-header'])
+const CPP_FORMATS = new Set(['cpp', 'cpp-header'])
+
+// A file's format: by its extension when that names a C/C++ one, else (`.inl`, `.inc`, Eigen's
+// extensionless `Core`) a header of its includer's language.
+export function cFormatOf(path, includerFormat) {
+  const format = classifyFormat(path)
+  if (C_FAMILY_FORMATS.has(format)) return format
+  return CPP_FORMATS.has(includerFormat) ? 'cpp-header' : 'c-header'
+}
+
+// --- Scanning ---------------------------------------------------------------------------------
+
+const INCLUDE_DIRECTIVES = new Set(['include', 'import', 'include_next', 'embed'])
+const RAW_STRING_PREFIXES = new Set(['R', 'LR', 'uR', 'UR', 'u8R'])
+const IDENTIFIER = /[A-Za-z_$][\w$]*/uy
+// A pp-number, digit separators (`1'000`) and exponent signs included.
+const PP_NUMBER = /\.?\d(?:[eEpP][+-]|['\w.])*/uy
+const HSPACE = new Set([' ', '\t', '\r', '\f', '\v'])
+
+// Region states, from surest to deadest: code always compiled, code some configuration compiles,
+// code none does (`#if 0`).
+const RANK = { dead: 0, maybe: 1, live: 2 }
+const meet = (a, b) => (RANK[a] <= RANK[b] ? a : b)
+
+// The state of a conditional branch whose condition is `cond` (true, false or undefined: not
+// decidable), `taken` telling whether an earlier branch of its group was ('yes', 'no', 'maybe').
+function branchState(parent, taken, cond) {
+  if (taken === 'yes' || cond === false) return 'dead'
+  if (cond === true && taken === 'no') return parent
+  return meet(parent, 'maybe')
+}
+
+function nextTaken(taken, cond) {
+  if (cond === true) return 'yes'
+  if (cond === undefined && taken === 'no') return 'maybe'
+  return taken
+}
+
+// An `#if`/`#elif` condition's integer literals (in any base, digit separators and suffixes
+// included), and the operators over them, as the preprocessor evaluates them.
+const CONDITION_NUMBER = /(?:0[xX]([\da-fA-F']+)|0[bB]([01']+)|(0[0-7']*)|([1-9][\d']*))((?:[uUlLzZ]|wb|WB)*)(?![\w.])/uy
+const CONDITION_NAME = /[A-Za-z_]\w*/uy
+const CONDITION_OPERATOR = /\|\||&&|==|!=|<=|>=|<<|>>|[-+*/%<>&|^!~?:()]/uy
+const CONDITION_LEVELS = [['||'], ['&&'], ['|'], ['^'], ['&'], ['==', '!='], ['<', '>', '<=', '>='], ['<<', '>>'], ['+', '-'], ['*', '/', '%']]
+
+// A preprocessor value: `{ v, u }`, `v` a BigInt in its type's range, `u` whether that type is
+// unsigned (undefined where it hangs on an unknown operand's, as in `1 ? -1 : X`); undefined itself
+// where the value hangs on a macro.
+const ONE = { v: 1n, u: false }
+const ZERO = { v: 0n, u: false }
+// `v` as a value of the type `u` says: an unsigned one wraps, as C's do; a signed one past its range
+// is unknown, C leaving it undefined.
+const typed = (v, u) => (u ? { v: BigInt.asUintN(64, v), u } : v >= -(1n << 63n) && v < 1n << 63n ? { v, u } : undefined)
+// `f` over `values`, where one's signedness is unknown: what it gives either way, where they agree.
+function either(f, ...values) {
+  const at = values.findIndex((x) => x !== undefined && x.u === undefined)
+  if (at === -1) return f(...values)
+  const [s, u] = [false, true].map((sign) => either(f, ...values.map((x, i) => (i === at ? typed(x.v, sign) : x))))
+  if (s === undefined || u === undefined || s.v !== u.v) return undefined
+  return { v: s.v, u: s.u === u.u ? s.u : undefined }
+}
+
+// The value of `a op b`, either undefined where it hangs on a macro: unknown, but where the known
+// side decides (`1 || X`, `0 && X`). Both sides take the usual arithmetic conversions, unsigned
+// where either is (`-1 < 0u` is false), but a shift's type is its left side's; a comparison or a
+// logical operator gives a signed 0 or 1.
+function conditionOperator(op, a, b) {
+  const truth = (x) => (x === undefined ? undefined : x.v !== 0n)
+  if (op === '||') return truth(a) === true || truth(b) === true ? ONE : truth(a) === false && truth(b) === false ? ZERO : undefined
+  if (op === '&&') return truth(a) === false || truth(b) === false ? ZERO : truth(a) && truth(b) ? ONE : undefined
+  if (a === undefined || b === undefined) return undefined
+  return either((l, r) => {
+    // Past the width, a shift is undefined in C.
+    if (op === '<<' || op === '>>') return r.v < 0n || r.v >= 64n ? undefined : typed(op === '<<' ? l.v << r.v : l.v >> r.v, l.u)
+    const u = l.u || r.u
+    const [x, y] = [typed(l.v, u).v, typed(r.v, u).v]
+    switch (op) {
+      case '|': return typed(x | y, u)
+      case '^': return typed(x ^ y, u)
+      case '&': return typed(x & y, u)
+      case '==': return x === y ? ONE : ZERO
+      case '!=': return x !== y ? ONE : ZERO
+      case '<': return x < y ? ONE : ZERO
+      case '>': return x > y ? ONE : ZERO
+      case '<=': return x <= y ? ONE : ZERO
+      case '>=': return x >= y ? ONE : ZERO
+      case '+': return typed(x + y, u)
+      case '-': return typed(x - y, u)
+      case '*': return typed(x * y, u)
+      default: return y === 0n ? undefined : typed(op === '/' ? x / y : x % y, u)
+    }
+  }, a, b)
+}
+
+// An `#if`/`#elif` condition's value: true, false, or undefined where it hangs on a macro. Integer
+// literals and the operators over them are evaluated (`#if 0`, `#if 0x1`, `#if 1 + 0`, `#if !0`);
+// a name, `defined X` and a macro call (`__has_include(<x.h>)`) are unknown, as is what they take
+// part in, but where the rest decides (`#if 1 || X`, `#if 0 && defined(X)`). Macros aren't expanded.
+// Values are the preprocessor's 64-bit integers, each signed or unsigned as C types it (a literal
+// with a `u` suffix, or too large for a signed one, is unsigned): an unsigned one wraps, and a
+// signed one past its range is unknown, as C leaves it undefined.
+function evalCondition(expr) {
+  const tokens = []
+  for (let i = 0; i < expr.length;) {
+    if (/\s/u.test(expr[i])) {
+      i++
+      continue
+    }
+    let m
+    if (((CONDITION_NUMBER.lastIndex = i), (m = CONDITION_NUMBER.exec(expr))) !== null) {
+      const [, hex, binary, octal, decimal, suffix] = m
+      const digits = (hex ?? binary ?? octal ?? decimal).replaceAll("'", '')
+      const value = BigInt(hex ? `0x${digits}` : binary ? `0b${digits}` : octal ? `0o${digits}` : digits)
+      // Too large for a signed one, a literal is unsigned (GCC says so); past 64 bits, none.
+      tokens.push({ value: value >= 1n << 64n ? undefined : { v: value, u: /u/iu.test(suffix) || value >= 1n << 63n } })
+      i = CONDITION_NUMBER.lastIndex
+    } else if (((CONDITION_NAME.lastIndex = i), (m = CONDITION_NAME.exec(expr))) !== null) {
+      i = CONDITION_NAME.lastIndex
+      // `defined X`, `defined(X)`; a name with arguments, all of them up to its closing parenthesis.
+      const rest = m[0] === 'defined' ? /\s*(?:\(\s*\w+\s*\)|\w+)/uy : /\s*\(/uy
+      rest.lastIndex = i
+      if (rest.exec(expr) !== null) {
+        i = rest.lastIndex
+        for (let depth = m[0] === 'defined' ? 0 : 1; depth > 0; i++) {
+          if (i >= expr.length) return undefined
+          depth += expr[i] === '(' ? 1 : expr[i] === ')' ? -1 : 0
+        }
+      } else if (m[0] === 'defined') {
+        return undefined
+      }
+      tokens.push({ value: undefined })
+    } else if (((CONDITION_OPERATOR.lastIndex = i), (m = CONDITION_OPERATOR.exec(expr))) !== null) {
+      tokens.push({ op: m[0] })
+      i = CONDITION_OPERATOR.lastIndex
+    } else {
+      return undefined
+    }
+  }
+  let k = 0
+  const malformed = new SyntaxError('malformed condition')
+  const unary = () => {
+    const token = tokens[k++]
+    if (token === undefined) throw malformed
+    if ('value' in token) return token.value
+    if (token.op === '(') {
+      const value = ternary()
+      if (tokens[k++]?.op !== ')') throw malformed
+      return value
+    }
+    if (!['!', '~', '-', '+'].includes(token.op)) throw malformed
+    const value = unary()
+    if (value === undefined) return undefined
+    return either((x) => (token.op === '!' ? (x.v === 0n ? ONE : ZERO) : token.op === '~' ? typed(~x.v, x.u) : token.op === '-' ? typed(-x.v, x.u) : x), value)
+  }
+  const binary = (level) => {
+    if (level === CONDITION_LEVELS.length) return unary()
+    let value = binary(level + 1)
+    while (CONDITION_LEVELS[level].includes(tokens[k]?.op)) {
+      const { op } = tokens[k++]
+      value = conditionOperator(op, value, binary(level + 1))
+    }
+    return value
+  }
+  // `c ? a : b` is typed by both branches, whichever is taken (`1 ? -1 : 0u` is unsigned): where the
+  // other is unknown, so is its signedness, unless the taken one is unsigned already.
+  const branch = (taken, other) => {
+    if (taken === undefined) return undefined
+    if (other === undefined) return taken.u === true ? taken : { v: taken.v, u: undefined }
+    return either((x, y) => typed(x.v, x.u || y.u), taken, other)
+  }
+  const ternary = () => {
+    const cond = binary(0)
+    if (tokens[k]?.op !== '?') return cond
+    k++
+    const a = ternary()
+    if (tokens[k++]?.op !== ':') throw malformed
+    const b = ternary()
+    if (cond !== undefined) return cond.v !== 0n ? branch(a, b) : branch(b, a)
+    const [x, y] = [branch(a, b), branch(b, a)]
+    return x !== undefined && y !== undefined && x.v === y.v && x.u === y.u ? x : undefined
+  }
+  try {
+    const value = ternary()
+    return k === tokens.length && value !== undefined ? value.v !== 0n : undefined
+  } catch (error) {
+    if (error === malformed) return undefined
+    throw error
+  }
+}
+
+// `#ifndef X` / `#if !defined(X)`: the macro name, the candidate include guard.
+function guardName(name, expr) {
+  if (name === 'ifndef') return /^\s*(\w+)\s*$/u.exec(expr)?.[1]
+  if (name === 'if') return /^\s*!\s*defined\s*(?:\(\s*(\w+)\s*\)|(\w+))\s*$/u.exec(expr)?.slice(1).find(Boolean)
+  return undefined
+}
+
+// The include-like directives of C/C++ source `text`, each `{ directive, form, path, state }`:
+// `directive` one of include/import/include_next/embed, `form` 'quote' ("x"), 'angle' (<x>) or
+// 'macro' (a computed include, `path` the macro's name), `state` 'live' where every configuration
+// compiles it, 'maybe' inside a conditional the scan can't decide (`#ifdef _WIN32`). Ones in code
+// no configuration compiles (`#if 0`, its `#else` of an `#if 1`) are left out. A file's include
+// guard (`#ifndef X` then `#define X` as its first directives, `#pragma once` aside, before any
+// code, closed by an `#endif` with nothing after it and no `#else` or `#elif` between) isn't a
+// condition. Comments, string and character literals (C++ raw strings, digit separators) are
+// skipped, lines spliced with a backslash joined, and a directive is `#` (or `%:`) first on its
+// line, as in translation phase 4.
+// With trigraphs on (-trigraphs, an ISO -std), `??=` is a `#`, `??/` a backslash (which can splice a
+// line or escape a quote), `??-` a `~` and so on, in a header name too; GNU modes leave them be. A
+// file holding one is read both ways, and an include only one reading finds (or finds unconditional)
+// is one only some builds read.
+export function scanIncludes(source) {
+  const plain = scanText(source)
+  if (!TRIGRAPH.test(source)) return plain
+  const trigraphs = scanText(source.replaceAll(new RegExp(TRIGRAPH, 'gu'), (_, c) => TRIGRAPHS[c]))
+  const key = (inc) => `${inc.directive}\0${inc.form}\0${inc.path}`
+  const surest = (incs) => {
+    const states = new Map()
+    for (const inc of incs) if (RANK[inc.state] > RANK[states.get(key(inc)) ?? 'dead']) states.set(key(inc), inc.state)
+    return states
+  }
+  const [a, b] = [surest(plain), surest(trigraphs)]
+  const out = new Map()
+  for (const inc of [...plain, ...trigraphs]) if (!out.has(key(inc))) out.set(key(inc), { ...inc, state: meet(a.get(key(inc)) ?? 'maybe', b.get(key(inc)) ?? 'maybe') })
+  return [...out.values()]
+}
+
+const TRIGRAPH = /\?\?([=/'()!<>-])/u
+const TRIGRAPHS = { '=': '#', '/': '\\', "'": '^', '(': '[', ')': ']', '!': '|', '<': '{', '>': '}', '-': '~' }
+
+// One reading of `source` (scanIncludes).
+function scanText(source) {
+  // A byte order mark opens no line; lines end at CR LF, LF or a lone CR, as GCC reads them; a
+  // backslash before one splices it, though spaces come between (as GCC and Clang splice, warning).
+  const s = source.replace(/^\uFEFF/u, '').replaceAll(/\r\n?/gu, '\n').replaceAll(/\\[ \t\f\v]*\n/gu, '')
+  const n = s.length
+  const out = []
+  const stack = []
+  let state = 'live'
+  let directives = 0
+  let guard = null // { frame, name } of the first directive, an #ifndef, until the next one
+  let code = false // whether a token has been seen outside a directive
+  let closedGuard = null // { from, to }: the includes of a guard just closed, nothing after it yet
+  // The includes out[from, to) under what was taken for an include guard and isn't one: under a
+  // condition, like any other.
+  const unguard = (from, to) => {
+    for (let k = from; k < to; k++) if (out[k].state === 'live') out[k].state = 'maybe'
+  }
+
+  const skipBlockComment = (i) => {
+    const end = s.indexOf('*/', i + 2)
+    return end === -1 ? n : end + 2
+  }
+  const lineEnd = (i) => {
+    const end = s.indexOf('\n', i)
+    return end === -1 ? n : end
+  }
+  // Past a quoted literal starting at `i`; an unterminated one (an apostrophe in prose under
+  // `#if 0`) ends at its line.
+  const skipQuoted = (i) => {
+    const q = s[i]
+    for (let j = i + 1; j < n; j++) {
+      const c = s[j]
+      if (c === '\\') j++
+      else if (c === q) return j + 1
+      else if (c === '\n') return j
+    }
+    return n
+  }
+  // Horizontal space and comments inside a directive (a block comment may run over lines).
+  const skipSpace = (i) => {
+    for (;;) {
+      if (HSPACE.has(s[i])) i++
+      else if (s.startsWith('/*', i)) i = skipBlockComment(i)
+      else return i
+    }
+  }
+  // The rest of a directive's line from `i`, comments replaced by a space; ends at its newline,
+  // which a block comment may push past.
+  const restOfLine = (i) => {
+    let text = ''
+    while (i < n && s[i] !== '\n') {
+      if (s.startsWith('/*', i)) {
+        i = skipBlockComment(i)
+        text += ' '
+      } else if (s.startsWith('//', i)) {
+        i = lineEnd(i)
+      } else if (s[i] === '"' || s[i] === "'") {
+        const end = skipQuoted(i)
+        text += s.slice(i, end)
+        i = end
+      } else {
+        text += s[i++]
+      }
+    }
+    return { text, end: i }
+  }
+
+  const directive = (i) => {
+    i = skipSpace(i)
+    IDENTIFIER.lastIndex = i
+    const name = IDENTIFIER.exec(s)?.[0]
+    if (name === undefined) return lineEnd(i) // a null directive, or `# 12 "file"` line markers
+    i += name.length
+    // Anything after a guard's #endif: it encloses less than the file.
+    if (closedGuard !== null) {
+      unguard(closedGuard.from, closedGuard.to)
+      closedGuard = null
+    }
+    // `#pragma once` before a guard leaves it the file's first directive; any other pragma doesn't.
+    if (name !== 'pragma' || !/^\s*once\s*$/u.test(restOfLine(i).text)) directives++
+    const guarding = guard
+    guard = null
+    if (INCLUDE_DIRECTIVES.has(name)) {
+      i = skipSpace(i)
+      const open = s[i]
+      const close = open === '"' ? '"' : open === '<' ? '>' : null
+      if (close !== null) {
+        const end = s.indexOf(close, i + 1)
+        if (end !== -1 && end < lineEnd(i) && end > i + 1) {
+          if (state !== 'dead') out.push({ directive: name, form: open === '"' ? 'quote' : 'angle', path: s.slice(i + 1, end), state })
+          return restOfLine(end + 1).end
+        }
+      } else {
+        IDENTIFIER.lastIndex = i
+        const macro = IDENTIFIER.exec(s)?.[0]
+        if (macro !== undefined && state !== 'dead') out.push({ directive: name, form: 'macro', path: macro, state })
+      }
+      return restOfLine(i).end
+    }
+    const { text, end } = restOfLine(i)
+    switch (name) {
+      case 'if':
+      case 'ifdef':
+      case 'ifndef': {
+        const cond = name === 'if' ? evalCondition(text) : undefined
+        const frame = { parent: state, taken: nextTaken('no', cond) }
+        stack.push(frame)
+        state = branchState(frame.parent, 'no', cond)
+        const macro = directives === 1 && !code ? guardName(name, text) : undefined
+        if (macro !== undefined) guard = { frame, name: macro }
+        break
+      }
+      case 'elif':
+      case 'elifdef':
+      case 'elifndef':
+      case 'else': {
+        const frame = stack.at(-1)
+        if (frame === undefined) break
+        // An #else or #elif of an include guard: it was a condition, its first branch undecided.
+        if (frame.guard !== undefined) {
+          unguard(frame.guard, out.length)
+          frame.taken = nextTaken('no', undefined)
+          delete frame.guard
+        }
+        const cond = name === 'else' ? true : name === 'elif' ? evalCondition(text) : undefined
+        state = branchState(frame.parent, frame.taken, cond)
+        frame.taken = nextTaken(frame.taken, cond)
+        break
+      }
+      case 'endif': {
+        const frame = stack.pop()
+        if (frame === undefined) break
+        state = frame.parent
+        if (frame.guard !== undefined) closedGuard = { from: frame.guard, to: out.length }
+        break
+      }
+      case 'define':
+        // `#define X` right after a first `#ifndef X`: the include guard, whose body is the file.
+        if (guarding !== null && stack.at(-1) === guarding.frame && /^\s*(\w+)/u.exec(text)?.[1] === guarding.name) {
+          guarding.frame.taken = 'yes'
+          guarding.frame.guard = out.length
+          state = guarding.frame.parent
+        }
+        break
+      default:
+    }
+    return end
+  }
+
+  let atLineStart = true
+  let i = 0
+  while (i < n) {
+    const c = s[i]
+    if (c === '\n') {
+      atLineStart = true
+      i++
+    } else if (HSPACE.has(c)) {
+      i++
+    } else if (s.startsWith('/*', i)) {
+      i = skipBlockComment(i)
+    } else if (s.startsWith('//', i)) {
+      i = lineEnd(i)
+    } else if (atLineStart && (c === '#' || s.startsWith('%:', i))) {
+      i = directive(i + (c === '#' ? 1 : 2))
+    } else {
+      atLineStart = false
+      // Code: before any #ifndef, there is no guard; between one and its #define, it isn't one.
+      code = true
+      guard = null
+      if (closedGuard !== null) {
+        unguard(closedGuard.from, closedGuard.to)
+        closedGuard = null
+      }
+      if (c === '"' || c === "'") {
+        i = skipQuoted(i)
+        continue
+      }
+      PP_NUMBER.lastIndex = i
+      const number = PP_NUMBER.exec(s)
+      if (number !== null) {
+        i += number[0].length
+        continue
+      }
+      IDENTIFIER.lastIndex = i
+      const word = IDENTIFIER.exec(s)?.[0]
+      if (word === undefined) {
+        i++
+      } else if (s[i + word.length] === '"' && RAW_STRING_PREFIXES.has(word)) {
+        // R"delim( ... )delim": nothing in it is a comment, a quote or a directive.
+        const open = i + word.length + 1
+        const paren = s.indexOf('(', open)
+        const delim = paren === -1 ? null : s.slice(open, paren)
+        const end = delim === null || delim.length > 16 || /[\s()\\]/u.test(delim) ? -1 : s.indexOf(`)${delim}"`, paren + 1)
+        i = end === -1 ? open : end + delim.length + 2
+      } else {
+        i += word.length
+      }
+    }
+  }
+  return out
+}
+
+// An include's key in the bundle's import map: the directive as written, `include "x.h"`,
+// `include <x.h>`, `include_next <x.h>`, `embed "x.bin"`; a computed one by its macro.
+export const includeSpec = ({ directive, form, path }) => `${directive} ${form === 'quote' ? `"${path}"` : form === 'angle' ? `<${path}>` : path}`
+
+// --- Search paths -----------------------------------------------------------------------------
+
+// A search directory: `{ rel }` inside the bundle root (POSIX, '' for the root itself), or `{ abs }`
+// outside it, where headers are only ever looked up -- a hit there is a system or out-of-tree header,
+// never read or bundled. `framework` marks Clang's framework directories (-F, -iframework), where
+// `<Foo/Bar.h>` is Foo.framework/Headers/Bar.h, else Foo.framework/PrivateHeaders/Bar.h.
+function makeDir(baseDir, realBase, abs) {
+  for (const root of [baseDir, realBase]) {
+    const rel = toPosix(relative(root, abs))
+    if (!relativeEscapes(rel)) return { rel: rel === '.' ? '' : rel }
+  }
+  // One outside it that is a symlink into it (a workspace's include alias): inside, by its real path.
+  let real
+  try {
+    real = realpathSync(abs)
+  } catch {
+    return { abs }
+  }
+  const rel = toPosix(relative(realBase, real))
+  return relativeEscapes(rel) ? { abs } : { rel: rel === '.' ? '' : rel }
+}
+
+// A translation unit's search context: `quote` the -iquote dirs, `angle` the -I, -isystem and
+// -idirafter ones in that order (what both forms search after the quote ones), `embed` the
+// --embed-dir ones, `forced` the -include/-imacros files, as `{ flag, path, dir }`, `split` set by
+// GCC's `-I-`, after which a quoted include isn't looked up beside its includer, `msvc` set by a cl or
+// clang-cl command, whose quoted includes are also looked up beside the files including the
+// includer, and whose /FI files beside the unit too. A directory given
+// twice is searched once, as GCC merges its chains: the system ones (-isystem, then -idirafter)
+// keep their first place, and an -I or -iquote one that is also a system one is searched only
+// there; the -I ones keep their first, as do the -iquote ones, the last of which goes where it is
+// the first one after them. Which directories are one is `identity`'s to tell (the real path, as
+// GCC tells them by inode); each is searched as first spelled. `id` tells contexts apart: a header
+// is walked once per context it is reached in.
+function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false, msvc = false } = {}, includeDirs = [], identity = (dir) => JSON.stringify(dir)) {
+  const key = identity
+  const unique = (dirs, taken = new Set()) => dirs.filter((dir) => !taken.has(key(dir)) && taken.add(key(dir)))
+  const systemDirs = unique([...system, ...after])
+  const systemKeys = new Set(systemDirs.map(key))
+  const angle = [...unique([...I, ...includeDirs], new Set(systemKeys)), ...systemDirs]
+  const quoteDirs = unique(quote, new Set(systemKeys))
+  if (quoteDirs.length > 0 && angle.length > 0 && key(quoteDirs.at(-1)) === key(angle[0])) quoteDirs.pop()
+  const ctx = { quote: quoteDirs, angle, embed, forced, split, msvc }
+  ctx.id = JSON.stringify(ctx)
+  return ctx
+}
+
+// Options Clang takes and GCC 13 rejects ("unrecognized command-line option"), in any spelling.
+const CLANG_ONLY = /^(?:-resource-dir|-Xclang|-working-directory|-cxx-isystem|-stdlib\+\+-isystem|-iframework|-iwithsysroot)/u
+// Options handing the argument after them to a tool other than the compiler (gcc's and clang's
+// linker and assembler, clang's analyzer, CUDA and offloading tools), which clang 18 and gcc 13 leave
+// out of the compile. (clang's -Xarch_host hands its argument to the host compile.)
+const OTHER_TOOL = /^-X(?:linker|assembler|analyzer|cuda-ptxas|cuda-fatbinary|offload-linker(?:-.+)?|openmp-target(?:=.+)?)$/su
+
+// `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
+// cl's too where `cl` says the driver is one), each dir resolved against `commandDirectory` (or its
+// -working-directory); `language` is what it compiles the unit as (languageOf), the C++ ones where
+// -cxx-isystem and -stdlib++-isystem count; `vars` the environment variables the command sets the
+// compiler (CPATH and the like).
+function includeFlags(argv, commandDirectory, toDir, cl, language = 'c', vars = new Map()) {
+  const cxx = language === 'c++' || language === 'objective-c++'
+  const options = compileOptions(argv, cl)
+  const { args, clangFrom, compilerFrom } = options
+  const directory = workingDirectory(options, commandDirectory)
+  const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
+  const preBarrier = [] // the -I directories before a `-I-`
+  const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
+  const languageSystem = [] // -cxx-isystem's (a C++ unit's) or Clang's -c-isystem's (a C one's), after those
+  const compilerLanguage = [] // and -Xclang's, after C_INCLUDE_PATH's or CPLUS_INCLUDE_PATH's
+  let ownI = 0 // how many -I (and -F) directories precede -Xclang's, Clang's CPATH ones going there
+  const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
+  const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
+  const compilerSystem = [] // and -Xclang's, after all the driver's own
+  const internalFrameworks = [] // -internal-iframework's, after every -internal-isystem one
+  // GCC's -B prefixes' `include` directories, ahead of every other system one (Clang adds none). The
+  // driver is Clang's by its name or mode, or by an option GCC rejects (a `cc` may be clang).
+  const gcc = !cl && driverMode(argv) === undefined && !/clang/iu.test(programName(argv[0])) && !argv.some((a) => CLANG_ONLY.test(a))
+  const prefixSystem = []
+  let resourceDir // Clang's -resource-dir (the last), whose `include` it searches after those
+  // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
+  // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
+  // for `=dir` itself, which isn't there).
+  let sysroot
+  let isysroot
+  for (let k = 1; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--sysroot') sysroot = args[++k]
+    else if (a === '-isysroot') isysroot = args[++k]
+    else if (a.startsWith('--sysroot=')) sysroot = a.slice('--sysroot='.length)
+    else if (a.startsWith('-isysroot')) isysroot = a.slice('-isysroot'.length)
+  }
+  const headerSysroot = isysroot ?? sysroot
+  const dir = (value, list, framework = false) => {
+    if (value === undefined || value === '') return
+    const inSysroot = /^(?:=|\$SYSROOT)(.*)$/su.exec(value)
+    let path
+    if (inSysroot === null) path = resolve(directory, value)
+    else if (headerSysroot !== undefined) path = resolve(directory, headerSysroot + inSysroot[1])
+    else return
+    list.push(framework ? { ...toDir(path), framework } : toDir(path))
+  }
+  // Clang's -iwithsysroot and -iframeworkwithsysroot: an absolute directory lies in the sysroot,
+  // when there is one; a relative one is where it is.
+  const withSysroot = (value) => (value?.startsWith('/') && headerSysroot !== undefined ? resolve(directory, headerSysroot) + value : value)
+  const file = (flag, value) => {
+    if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
+  }
+  // Options whose value is the next argument, which is never a flag of its own.
+  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib', '-working-directory'])
+  let prefix // -iprefix's, for the -iwithprefix ones after it; with none, they name no directory
+  // GCC's driver hands its compiler the -I options (and -I-) ahead of the others, so they are read
+  // first, in order (`-iwithprefixbefore wb -I a` searches a, then wb), then the rest, in order.
+  for (const pass of ['-I', 'rest']) {
+    for (let k = 1; k < args.length; k++) {
+      const a = args[k]
+      if (SEPARATE.has(a)) {
+        k++
+        continue
+      }
+      // A short option's value follows it, joined or as the next argument; a long option's is
+      // the next argument or follows its `=`, and the option is only ever itself
+      // (`--include-directory-after` is no `--include-directory`). Longest flag first:
+      // `-isystem-after` before `-isystem`, `-iwithprefixbefore` before `-iwithprefix`.
+      const take = (flag) => {
+        if (a === flag) return args[++k]
+        return a.startsWith(flag) ? a.slice(flag.length) : undefined
+      }
+      const long = (flag) => {
+        if (a === flag) return args[++k]
+        return a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : undefined
+      }
+      let v
+      // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes
+      // only, ahead of every -iquote one whatever the order given (as `gcc -v` lists them), and
+      // none is looked up beside its includer. To cl and clang-cl it is `/I -`, no barrier.
+      if (!cl && (a === '-I-' || a === '--include-barrier')) {
+        if (pass === '-I') {
+          preBarrier.push(...flags.I)
+          flags.I = []
+          flags.split = true
+        }
+        continue
+      }
+      if ((v = long('--include-directory')) !== undefined || (v = take('-I')) !== undefined || (cl && (v = take('/I')) !== undefined)) {
+        if (pass === '-I') {
+          dir(v, flags.I)
+          if (k < compilerFrom) ownI = flags.I.length
+        }
+        continue
+      }
+      // Clang's -F framework directories go with the -I ones, in order (cl's own -F options are
+      // others; what /clang: passes the clang driver is Clang's).
+      if ((!cl || k >= clangFrom) && (v = take('-F')) !== undefined) {
+        if (pass === '-I') {
+          dir(v, flags.I, true)
+          if (k < compilerFrom) ownI = flags.I.length
+        }
+        continue
+      }
+      if (pass === '-I' || a.startsWith('-include-pch')) continue
+      if ((v = long('--include-directory-after')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
+      else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
+      else if ((v = take('-isystem')) !== undefined) dir(v, flags.system)
+      else if ((v = take('-iwithsysroot')) !== undefined) dir(withSysroot(v), flags.system)
+      else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
+      else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
+      else if ((v = take('-cxx-isystem')) !== undefined) {
+        if (cxx) dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
+      } else if ((v = take('-c-isystem')) !== undefined) {
+        if (language === 'c') dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
+      } else if ((v = take('-stdlib++-isystem')) !== undefined) {
+        if (cxx && !args.includes('-nostdinc++')) dir(v, standardLibrary)
+      }
+      // Clang's -internal-isystem and -internal-externc-isystem, which only -Xclang, -Wp, and
+      // -Xpreprocessor pass (the driver rejects them), searched where the compiler gets them: the
+      // preprocessor's with the driver's options, ahead of the -internal-isystem a -stdlib++-isystem
+      // becomes, and -Xclang's after every one the driver adds (as clang -v lists them).
+      else if ((v = take('-internal-isystem')) !== undefined || (v = take('-internal-externc-isystem')) !== undefined) dir(v, k < compilerFrom ? passedSystem : compilerSystem)
+      // -internal-iframework (newer Clang's), which the compiler adds after all those.
+      else if ((v = take('-internal-iframework')) !== undefined) dir(v, internalFrameworks, true)
+      // GCC's -B (--prefix): `<prefix>include`, a directory's slash added, as gcc 13 -v lists it.
+      else if (!gcc && (v = long('-resource-dir')) !== undefined) resourceDir = v
+      else if ((v = long('--prefix')) !== undefined || (v = take('-B')) !== undefined) {
+        if (gcc && v !== undefined && v !== '') {
+          const path = resolve(directory, v)
+          prefixSystem.push(toDir(/[/\\]$/u.test(v) || isDir(path) ? join(path, 'include') : `${path}include`))
+        }
+      }
+      // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
+      // GCC 13 places it, not after -idirafter as its manual says).
+      else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
+      else if ((v = long('--include-with-prefix-before')) !== undefined || (v = take('-iwithprefixbefore')) !== undefined) {
+        if (prefix !== undefined && v !== undefined) dir(prefix + v, flags.I)
+      } else if ((v = long('--include-with-prefix-after')) !== undefined || (v = long('--include-with-prefix')) !== undefined || (v = take('-iwithprefix')) !== undefined) {
+        if (prefix !== undefined && v !== undefined) dir(prefix + v, flags.system)
+      } else if ((v = long('--embed-dir')) !== undefined) dir(v, flags.embed)
+      else if ((v = take('-imacros')) !== undefined) file('-imacros', v)
+      else if ((v = long('--include')) !== undefined || (v = take('-include')) !== undefined) file('-include', v)
+      else if (cl && ((v = take('/external:I')) !== undefined || (v = take('-external:I')) !== undefined)) dir(v, flags.system)
+      // clang-cl's /imsvc: a system directory "as if in %INCLUDE%", after the others (as clang-cl -v lists it).
+      else if (cl && ((v = take('/imsvc')) !== undefined || (v = take('-imsvc')) !== undefined)) dir(v, flags.after)
+      else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v?.replaceAll('\\', '/'))
+    }
+  }
+  // The include path variables the command sets, as gcc 13 and clang 18 -v list them: CPATH's
+  // directories after every -I one (to Clang, every one but -Xclang's), C_INCLUDE_PATH's (a C
+  // unit's) or CPLUS_INCLUDE_PATH's (a C++ one's, and to Clang an Objective-C++ one's) after the
+  // -c-isystem or -cxx-isystem ones (but -Xclang's), OBJC_INCLUDE_PATH's or OBJCPLUS_INCLUDE_PATH's
+  // (an Objective-C or Objective-C++ unit's, which GCC reads alone) after those, and under cl and
+  // clang-cl, INCLUDE's and EXTERNAL_INCLUDE's (`;`-separated, as cl splits them) after /imsvc's,
+  // unless /X; an empty element is the working directory.
+  const envDirs = (name, separator = delimiter) => (vars.get(name) ? vars.get(name).split(separator).map((d) => (d === '' ? '.' : d)) : [])
+  const cpath = []
+  for (const d of envDirs('CPATH')) dir(d, cpath)
+  flags.I.splice(gcc ? flags.I.length : ownI, 0, ...cpath)
+  const [languageVar, objcVar] = {
+    c: ['C_INCLUDE_PATH'],
+    'c++': ['CPLUS_INCLUDE_PATH'],
+    'objective-c': [undefined, 'OBJC_INCLUDE_PATH'],
+    'objective-c++': [gcc ? undefined : 'CPLUS_INCLUDE_PATH', 'OBJCPLUS_INCLUDE_PATH'],
+  }[language]
+  for (const d of envDirs(languageVar)) dir(d, languageSystem)
+  const objcSystem = []
+  for (const d of envDirs(objcVar)) dir(d, objcSystem)
+  if (cl && !args.some((a) => /^[/-]X$/u.test(a))) for (const d of [...envDirs('INCLUDE', ';'), ...envDirs('EXTERNAL_INCLUDE', ';')]) dir(d, flags.after)
+  // Clang's -resource-dir: its `include`, which -nostdinc and -nobuiltininc leave out.
+  const resource = []
+  if (resourceDir !== undefined && resourceDir !== '' && !args.includes('-nostdinc') && !args.includes('-nobuiltininc')) dir(`${resourceDir}/include`, resource)
+  flags.quote.unshift(...preBarrier)
+  flags.system.unshift(...prefixSystem)
+  flags.system.push(...systemFrameworks, ...languageSystem, ...compilerLanguage, ...objcSystem, ...passedSystem, ...standardLibrary, ...resource, ...compilerSystem, ...internalFrameworks)
+  if (cl) flags.msvc = true
+  return flags
+}
+
+// A compile command's options as its compiler gets them. -Xpreprocessor hands the argument after it
+// to the preprocessor, -Wp,a,b its comma-separated ones, and Clang's -Xclang the one after it to the
+// compiler proper: after the driver's own options, the -Xclang ones last (as clang -v and gcc -v list
+// the directories they add), each in order. clang-cl's /clang:arg hands `arg` to the clang driver,
+// after its own arguments. What -Xlinker, -Xassembler and the like hand another tool is no compile's
+// option. `args` are the program and the options in that order; clang's own begin at `clangFrom`
+// (under cl and clang-cl, what /clang: passes), the preprocessor's at `preprocessorFrom`, -Xclang's at
+// `compilerFrom`.
+function compileOptions(argv, cl) {
+  const forwarded = /^[/-]clang:/u
+  const native = cl ? argv.filter((a) => !forwarded.test(a)) : argv
+  const driver = cl ? [...native, ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
+  const own = []
+  const preprocessor = []
+  const compiler = []
+  let clOwn = 0 // how many of `own` are cl's, ahead of what /clang: passes the clang driver
+  for (let k = 1; k < driver.length; k++) {
+    if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
+    else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
+    else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
+    else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
+    else if (OTHER_TOOL.test(driver[k]) && k + 1 < driver.length) k++
+    else {
+      own.push(driver[k])
+      if (cl && k < native.length) clOwn++
+    }
+  }
+  return {
+    args: [driver[0], ...own, ...preprocessor, ...compiler],
+    clangFrom: 1 + clOwn,
+    preprocessorFrom: 1 + own.length,
+    compilerFrom: 1 + own.length + preprocessor.length,
+  }
+}
+
+// Clang's -working-directory (the last, of the options before `to`): what a command's relative paths
+// are taken from, itself taken from `directory`. Under cl and clang-cl only clang's own counts (what
+// /clang: passes), cl reading its own spelling as other options; the driver takes its inputs from
+// its own options' (`to` the preprocessor's).
+function workingDirectory({ args, clangFrom }, directory, to = args.length) {
+  let dir = directory
+  for (let k = clangFrom; k < to; k++) {
+    if (args[k] === '-working-directory' && k + 1 < to) dir = resolve(directory, args[++k])
+    else if (args[k].startsWith('-working-directory=')) dir = resolve(directory, args[k].slice('-working-directory='.length))
+  }
+  return dir
+}
+
+// `args` with each `@file` (a response file, relative to `directory`) replaced by the arguments it
+// holds, its own `@file`s too: split as GCC and Clang split one, or as cl and clang-cl do where `cl`
+// says the driver is one. One that can't be read stays as it is, as the compilers keep it.
+function expandResponseFiles(args, directory, cl, depth = 0) {
+  const out = []
+  for (const arg of args) {
+    let buf = null
+    if (arg.length > 1 && arg.startsWith('@') && depth < 16) {
+      try {
+        buf = readFileSync(resolve(directory, arg.slice(1)))
+      } catch {
+        // Unreadable: an argument like any other.
+      }
+    }
+    if (buf === null) {
+      out.push(arg)
+      continue
+    }
+    // cl's may be UTF-16, with its byte order mark.
+    const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.toString('utf16le', 2) : buf.toString('utf8').replace(/^\uFEFF/u, '')
+    out.push(...expandResponseFiles(cl ? splitWindowsCommand(text) : splitResponseFile(text), directory, cl, depth + 1))
+  }
+  return out
+}
+
+// A GNU response file's arguments, as GCC (libiberty's buildargv) and Clang split one: by whitespace
+// outside single and double quotes, a backslash escaping the next character anywhere, in either
+// quotes too (`-I'a\b'` is `-Iab`, as a shell wouldn't have it). An empty `""` is an argument, as
+// GCC keeps it.
+function splitResponseFile(text) {
+  const args = []
+  let word = null
+  let quote = null
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\' && i + 1 < text.length) {
+      word = (word ?? '') + text[++i]
+    } else if (quote !== null) {
+      if (c === quote) quote = null
+      else word += c
+    } else if (c === '"' || c === "'") {
+      word ??= ''
+      quote = c
+    } else if (/\s/u.test(c)) {
+      if (word !== null) args.push(word)
+      word = null
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== null) args.push(word)
+  return args
+}
+
+// A command line split into its arguments as cl splits one (and clang-cl a response file): words
+// apart where unquoted space is, double quotes around spaces, a backslash literal but before a quote
+// (2n of them then a quote: n backslashes, and the quote opens or closes; 2n+1: n and a literal one).
+function splitWindowsCommand(text) {
+  const args = []
+  let word = null
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\') {
+      let n = 0
+      while (text[i] === '\\') {
+        n++
+        i++
+      }
+      word = (word ?? '') + '\\'.repeat(text[i] === '"' ? n >> 1 : n)
+      if (text[i] !== '"') i--
+      else if (n % 2 === 1) word += '"'
+      else quoted = !quoted
+    } else if (c === '"') {
+      word ??= ''
+      quoted = !quoted
+    } else if (!quoted && /\s/u.test(c)) {
+      if (word !== null) args.push(word)
+      word = null
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== null) args.push(word)
+  return args
+}
+
+// Compiler launchers, which run the compiler named after them with its arguments.
+const LAUNCHERS = /^(?:ccache|sccache|distcc|icecc|buildcache)(?:\.exe)?$/iu
+// A `NAME=VALUE` a shell or env sets for the command after it.
+const ASSIGNMENT = /^[A-Za-z_]\w*=/u
+// env's options that take no value.
+const ENV_FLAG = /^(?:-[0iv]+|--(?:ignore-environment|null|debug|list-signal-handling|(?:block|default|ignore)-signal(?:=.*)?))$/su
+// A command's program's name, wherever it lies, by either separator.
+const programName = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
+// Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`), any
+// `NAME=VALUE` a shell sets, and `env` with its options and settings (`env [OPTION]... [NAME=VALUE]...
+// COMMAND`); `chdir` holds each env's last `-C DIR`, the compiler running in them in turn, and
+// `vars` the variables the command sets it (env's `-i` and `-` clearing them, `-u NAME` one). An env
+// option this doesn't know (`-S`, a string it splits) leaves env the command.
+function compilerAt(args) {
+  let at = 0
+  const chdir = []
+  const vars = new Map()
+  while (at < args.length - 1) {
+    const name = programName(args[at])
+    if (ASSIGNMENT.test(args[at])) {
+      const eq = args[at].indexOf('=')
+      vars.set(args[at].slice(0, eq), args[at].slice(eq + 1))
+      at++
+      continue
+    }
+    if (LAUNCHERS.test(name)) {
+      at++
+      continue
+    }
+    if (!/^env(?:\.exe)?$/iu.test(name)) break
+    let k = at + 1
+    let dir
+    let clear = false
+    const unset = []
+    for (; k < args.length - 1 && args[k].startsWith('-'); k++) {
+      const a = args[k]
+      let m
+      // `-` (env -i) ends its options, as does `--`, which a `-` may follow.
+      if (a === '-' || a === '--') {
+        const dash = a === '-' || args[k + 1] === '-'
+        clear ||= dash
+        k += a === '--' && dash ? 2 : 1
+        break
+      }
+      if (a === '-C' || a === '--chdir') dir = args[++k]
+      else if ((m = /^(?:-C|--chdir=)(.+)$/su.exec(a)) !== null) dir = m[1]
+      else if (a === '-u' || a === '--unset') unset.push(args[++k])
+      else if ((m = /^(?:-u|--unset=)(.+)$/su.exec(a)) !== null) unset.push(m[1])
+      else if (ENV_FLAG.test(a)) clear ||= /^-[0v]*i|^--ignore-environment$/u.test(a)
+      else return { at, chdir, vars }
+    }
+    if (clear) vars.clear()
+    for (const n of unset) vars.delete(n)
+    at = k
+    if (dir !== undefined) chdir.push(dir)
+  }
+  return { at, chdir, vars }
+}
+// Whether `arg` runs cl, or clang-cl under any name clang reads as one (`clang-cl-20`,
+// `<target>-clang-cl`).
+const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
+
+// What a command (run in `directory`) compiles its unit `file` as: 'c', 'c++', 'objective-c' or
+// 'objective-c++' (an `-x` naming another language counts as C), by cl's `/Tp` or `/Tc` naming it,
+// else by the `-x` before the unit's own argument (the last one where it is none of them; cl's last
+// `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by a C++ driver (`clang++`, `g++`,
+// `--driver-mode=g++`), else by the unit's extension.
+function languageOf(args, file, cl, directory) {
+  let language
+  let global
+  let own
+  let input // [the -x before the unit's argument]
+  for (let k = 1; k < args.length; k++) {
+    let m
+    if (args[k] === '-x') language = args[++k]
+    else if (args[k].startsWith('-x') && args[k].length > 2) language = args[k].slice(2)
+    else if (!cl && input === undefined && resolve(directory, args[k]) === file) input = [language]
+    else if (cl && /^[/-]T[PC]$/u.test(args[k])) global = args[k][2] === 'P' ? 'c++' : 'c'
+    else if (cl && (m = /^[/-]T([pc])(.*)$/su.exec(args[k])) !== null) {
+      const named = m[2] === '' ? args[++k] : m[2]
+      if (named !== undefined && resolve(directory, named.replaceAll('\\', '/')) === file) own = m[1] === 'p' ? 'c++' : 'c'
+    }
+  }
+  language = own ?? global ?? (input === undefined ? language : input[0])
+  // `-x none` gives the extension back the say.
+  if (language !== undefined && language !== 'none') {
+    const objc = /^(?:objective-c|objc)/u.test(language)
+    const plus = /^(?:objective-c|objc|c)\+\+/u.test(language)
+    return `${objc ? 'objective-' : ''}c${plus ? '++' : ''}`
+  }
+  const mode = driverMode(args)
+  return (mode === undefined ? programName(args[0]).includes('++') : mode === 'g++') || CPP_FORMATS.has(cFormatOf(file)) ? 'c++' : 'c'
+}
+
+// A clang command's `--driver-mode=` (the last), which overrides what its program's name says.
+function driverMode(args) {
+  let mode
+  for (const arg of args) if (arg.startsWith('--driver-mode=')) mode = arg.slice('--driver-mode='.length)
+  return mode
+}
+
+// Whether a command (`args`, launchers and all) runs cl or clang-cl: by its `--driver-mode=`, else by
+// its compiler's name.
+function isClCommand(args) {
+  const mode = driverMode(args)
+  return mode === undefined ? isCl(args[compilerAt(args).at]) : mode === 'cl'
+}
+
+// A compilation database's `command` string split as clang's tooling splits one: by Windows rules on
+// Windows, and for a cl or clang-cl command anywhere (`"C:\Program Files\LLVM\bin\clang-cl.exe"
+// /Iinc ...`, whose backslashes a shell would take for escapes); else as a POSIX shell splits it.
+function splitCompileCommand(command) {
+  const windows = splitWindowsCommand(command)
+  return process.platform === 'win32' || isClCommand(windows) ? windows : splitCommand(command)
+}
+
+// A compile command string split into its arguments as a POSIX shell splits words: quotes, and a
+// backslash escaping the next character (inside double quotes, only `"`, `\`, `$` and a backquote).
+export function splitCommand(command) {
+  const args = []
+  let word = null
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    if (c === "'") {
+      const end = command.indexOf("'", i + 1)
+      word = (word ?? '') + command.slice(i + 1, end === -1 ? command.length : end)
+      i = end === -1 ? command.length : end
+    } else if (c === '"') {
+      word ??= ''
+      for (i++; i < command.length && command[i] !== '"'; i++) {
+        if (command[i] === '\\' && '"\\$`'.includes(command[i + 1] ?? '')) i++
+        word += command[i]
+      }
+    } else if (c === '\\') {
+      word = (word ?? '') + (command[++i] ?? '')
+    } else if (/\s/u.test(c)) {
+      if (word !== null) args.push(word)
+      word = null
+    } else {
+      word = (word ?? '') + c
+    }
+  }
+  if (word !== null) args.push(word)
+  return args
+}
+
+// The compilation database at `file` (a compile_commands.json, or the directory holding one),
+// relative to `baseDir`: each translation unit inside the bundle root, by project-relative path, to
+// its include search flags (includeFlags). The first command of a file counts, as clangd takes it.
+// The database is configuration, read wherever it is, never bundled.
+export function loadCompileCommands(baseDir, file) {
+  let path = resolve(baseDir, file)
+  if (isDir(path)) path = join(path, 'compile_commands.json')
+  let text
+  try {
+    text = readFileSync(path)
+  } catch (cause) {
+    throw new Error(`Can't read the compilation database ${file}: ${cause.code ?? cause.message}`, { cause })
+  }
+  if (!isUtf8(text)) throw new Error(`Compilation database is not valid UTF-8: ${file}`)
+  let json
+  try {
+    json = JSON.parse(text.toString('utf8'))
+  } catch {
+    throw new Error(`Compilation database is not valid JSON: ${file}`)
+  }
+  if (!Array.isArray(json)) throw new Error(`Compilation database is not an array of commands: ${file}`)
+  const realBase = realpathSync(baseDir)
+  const toDir = (abs) => makeDir(baseDir, realBase, abs)
+  const commands = new Map()
+  for (const [index, entry] of json.entries()) {
+    const bad = (why) => new Error(`Compilation database ${file}: command ${index} ${why}`)
+    if (entry === null || typeof entry !== 'object') throw bad('is not an object')
+    if (typeof entry.directory !== 'string' || typeof entry.file !== 'string') throw bad('has no `directory` and `file` strings')
+    const args = Array.isArray(entry.arguments) ? entry.arguments : typeof entry.command === 'string' ? splitCompileCommand(entry.command) : null
+    if (args === null || !args.every((a) => typeof a === 'string')) throw bad('has neither an `arguments` array of strings nor a `command` string')
+    const directory = resolve(dirname(path), entry.directory)
+    const unit = toDir(resolve(directory, entry.file))
+    if (unit.rel === undefined || commands.has(unit.rel)) continue
+    // As clang does: response files split by the mode the command shows, the mode then taken from
+    // what they hold too (a `--driver-mode=cl` in one).
+    const { at, chdir, vars } = compilerAt(args)
+    const runs = resolve(directory, ...chdir)
+    const expanded = expandResponseFiles(args.slice(at), runs, isClCommand(args))
+    const cl = isClCommand(expanded)
+    // cl's /link (-link, /link<arg>) hands the rest to the linker, /clang: ones too, as clang-cl 18 does.
+    const link = cl ? expanded.findIndex((a, k) => k > 0 && /^[/-]link/u.test(a)) : -1
+    const command = link === -1 ? expanded : expanded.slice(0, link)
+    // The unit's own argument is the driver's, from its working directory.
+    const options = compileOptions(command, cl)
+    const language = languageOf(command, resolve(directory, entry.file), cl, workingDirectory(options, runs, options.preprocessorFrom))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, language, vars))
+  }
+  return commands
+}
+
+// --- Known projects ---------------------------------------------------------------------------
+
+// Known projects' include directories, so a tree vendoring them (Node.js and its deps/, V8 and its
+// third_party/) is searched as its build searches it, with no -I given. A directory holding every
+// `marker` file is such a project's root; `include` are the -I directories its own sources are
+// built with, `exports` those it gives the projects using it, all from its root (one that isn't
+// there is skipped). `wraps` names a directory holding another known project that this one builds
+// with its own include directories (Node.js's deps/openssl around OpenSSL's tree), which is then
+// this one's. Where a project carries configurations for several platforms, Linux's is taken.
+export const KNOWN_PROJECTS = [
+  { name: 'Node.js', marker: ['src/node.h', 'src/node_main.cc'], include: ['src'], exports: ['src'] },
+  { name: 'V8', marker: ['include/v8.h', 'src/api/api.cc'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'Abseil', marker: ['absl/base/config.h'], include: ['.'], exports: ['.'] },
+  { name: 'Highway', marker: ['hwy/highway.h'], include: ['.'], exports: ['.'] },
+  { name: 'simdutf', marker: ['simdutf.h', 'simdutf.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'FP16', marker: ['src/include/fp16.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'Dragonbox', marker: ['src/include/dragonbox/dragonbox.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'fast_float', marker: ['src/include/fast_float/fast_float.h'], include: ['src/include'], exports: ['src/include'] },
+  { name: 'LLVM libc', marker: ['src/__support/common.h', 'shared/math.h'], include: ['.'], exports: ['.'] },
+  {
+    name: 'OpenSSL (Node.js)',
+    marker: ['openssl/crypto/cryptlib.c', 'config/bn_conf.h'],
+    include: [
+      'openssl', 'openssl/include', 'openssl/crypto', 'openssl/crypto/include', 'openssl/crypto/modes', 'openssl/crypto/ec/curve448', 'openssl/crypto/ec/curve448/arch_32',
+      'openssl/providers/common/include', 'openssl/providers/fips/include', 'openssl/providers/implementations/include', 'config',
+      'config/archs/linux-x86_64/no-asm/include', 'config/archs/linux-x86_64/no-asm/crypto', 'config/archs/linux-x86_64/no-asm/providers/common/include',
+    ],
+    exports: ['openssl/include'],
+    wraps: ['openssl'],
+  },
+  {
+    name: 'OpenSSL',
+    marker: ['include/openssl/opensslv.h', 'crypto/cryptlib.c'],
+    include: ['.', 'include', 'crypto/modes', 'crypto/ec/curve448', 'crypto/ec/curve448/arch_32', 'providers/common/include', 'providers/fips/include', 'providers/implementations/include'],
+    exports: ['include'],
+  },
+  { name: 'libuv', marker: ['include/uv.h', 'src/uv-common.c'], include: ['include', 'src'], exports: ['include'] },
+  { name: 'uvwasi', marker: ['include/uvwasi.h'], include: ['include'], exports: ['include'] },
+  { name: 'zlib', marker: ['zlib.h', 'deflate.c'], include: ['.'], exports: ['.'] },
+  { name: 'ICU', marker: ['source/common/unicode/utypes.h'], include: ['source/common', 'source/i18n'], exports: ['source/common', 'source/i18n'] },
+  { name: 'c-ares', marker: ['include/ares.h', 'src/lib/ares_init.c'], include: ['include', 'src/lib', 'src/lib/include', 'config/linux'], exports: ['include'] },
+  { name: 'nghttp2', marker: ['lib/includes/nghttp2/nghttp2.h'], include: ['lib/includes', 'lib'], exports: ['lib/includes'] },
+  { name: 'nghttp3', marker: ['lib/includes/nghttp3/nghttp3.h'], include: ['lib/includes', 'lib'], exports: ['lib/includes'] },
+  { name: 'ngtcp2', marker: ['lib/includes/ngtcp2/ngtcp2.h'], include: ['lib/includes', 'lib', 'crypto/includes', 'crypto'], exports: ['lib/includes', 'crypto/includes'] },
+  { name: 'Brotli', marker: ['c/include/brotli/decode.h'], include: ['c/include'], exports: ['c/include'] },
+  { name: 'Zstandard', marker: ['lib/zstd.h'], include: ['lib'], exports: ['lib'] },
+  { name: 'llhttp', marker: ['include/llhttp.h'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'Ada', marker: ['ada.h', 'ada.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'simdjson', marker: ['simdjson.h', 'simdjson.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'SQLite', marker: ['sqlite3.h', 'sqlite3.c'], include: ['.'], exports: ['.'] },
+  { name: 'HdrHistogram', marker: ['include/hdr/hdr_histogram.h'], include: ['src', 'include'], exports: ['src', 'include'] },
+  { name: 'nbytes', marker: ['include/nbytes.h'], include: ['include'], exports: ['include'] },
+  { name: 'ncrypto', marker: ['ncrypto.h', 'ncrypto.cc'], include: ['.'], exports: ['.'] },
+  { name: 'merve', marker: ['merve.h', 'merve.cpp'], include: ['.'], exports: ['.'] },
+  { name: 'GoogleTest', marker: ['include/gtest/gtest.h'], include: ['.', 'include'], exports: ['include'] },
+  { name: 'inspector_protocol', marker: ['crdtp/json.h'], include: ['.'], exports: ['.'] },
+  { name: 'Perfetto', marker: ['sdk/perfetto.h'], include: ['sdk'], exports: ['sdk'] },
+  { name: 'libffi', marker: ['include/ffi_common.h', 'src/prep_cif.c'], include: ['include', 'src'], exports: ['include'] },
+  { name: 'postject', marker: ['postject-api.h'], include: ['.'], exports: ['.'] },
+  {
+    name: 'LIEF',
+    marker: ['include/LIEF/LIEF.hpp'],
+    include: ['.', 'include', 'src', 'third-party/mbedtls/include', 'third-party/mbedtls/library', 'third-party/spdlog/include', 'third-party/frozen/include'],
+    exports: ['include'],
+  },
+]
+
+// The KNOWN_PROJECTS (`known`) in the tree at `baseDir`, found by a walk of its directories (dot-,
+// node_modules, example and test-scaffolding ones aside), as `{ projects, of }`: each project its
+// table entry with its `root` (project-relative, '' for the bundle root) and `searchPath`, the
+// directories its sources are searched in -- its own `include`, then the `exports` of every other
+// project but those it lies in, nearest first: those it holds, by depth, then those of the project
+// around it, and so on out (Node.js's deps/zlib before V8's third_party/zlib for Node.js's sources,
+// V8's own copy first for V8's). `of(file)` is the innermost project a file lies in, or null.
+export function detectProjects(baseDir, known = KNOWN_PROJECTS) {
+  const found = []
+  const walk = (rel) => {
+    let dirents
+    try {
+      dirents = readdirSync(join(baseDir, rel), { withFileTypes: true })
+    } catch {
+      return
+    }
+    const names = new Set(dirents.map((d) => d.name))
+    for (const project of known) {
+      if (found.some((p) => p.root === rel)) break // one known project to a root: the first listed
+      if (project.marker.every((m) => names.has(m.split('/')[0]) && isFile(join(baseDir, rel, m)))) found.push({ ...project, root: rel })
+    }
+    for (const d of dirents.toSorted((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules' && !isAutoExcludedDir(d.name)) walk(rel === '' ? d.name : `${rel}/${d.name}`)
+    }
+  }
+  walk('')
+  const wrapped = new Set(found.flatMap((p) => (p.wraps ?? []).map((w) => joinRel(p.root, w))))
+  const projects = found.filter((p) => !wrapped.has(p.root))
+  const within = (root, path) => root === '' || path === root || path.startsWith(`${root}/`)
+  // Each project's enclosing ones, innermost first.
+  const around = new Map()
+  for (const p of projects) around.set(p, projects.filter((q) => q !== p && within(q.root, p.root)).toSorted((a, b) => b.root.length - a.root.length))
+  const dirs = (p, list) => list.map((d) => joinRel(p.root, d)).filter((rel) => rel !== null && isDir(join(baseDir, rel || '.')))
+  for (const p of projects) {
+    const chain = [p, ...around.get(p)]
+    // Distance from p to q: steps out to the nearest project holding both (chain.length past the
+    // outermost: the bundle root), then steps in to q.
+    const distance = (q) => {
+      const common = chain.findIndex((a) => around.get(q).includes(a))
+      const outward = common === -1 ? chain.length : common
+      const inward = around.get(q).filter((a) => !chain.slice(outward).includes(a)).length + 1
+      return [outward, inward]
+    }
+    const others = projects.filter((q) => !chain.includes(q)).map((q) => ({ q, d: distance(q) }))
+    others.sort((a, b) => a.d[0] - b.d[0] || a.d[1] - b.d[1] || (a.q.root < b.q.root ? -1 : 1))
+    p.searchPath = [...new Set([...dirs(p, p.include), ...others.flatMap(({ q }) => dirs(q, q.exports))])].map((rel) => ({ rel }))
+  }
+  const byDir = new Map()
+  const of = (file) => {
+    const dir = dirOf(file)
+    if (!byDir.has(dir)) byDir.set(dir, projects.filter((p) => within(p.root, file)).toSorted((a, b) => b.root.length - a.root.length)[0] ?? null)
+    return byDir.get(dir)
+  }
+  return { projects, of }
+}
+
+// --- Walk -------------------------------------------------------------------------------------
+
+// `rel` (a project-relative dir, '' for the root) joined with an include's path, `.`/`..` resolved;
+// null when that climbs above the root.
+function joinRel(rel, path) {
+  const parts = []
+  for (const part of [...rel.split('/'), ...path.split('/')]) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (parts.length === 0) return null
+      parts.pop()
+    } else {
+      parts.push(part)
+    }
+  }
+  return parts.join('/')
+}
+
+const dirOf = (file) => (file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '')
+
+// A header's implementation files: the C/C++ sources of its name beside it, else in the `src/` that
+// mirrors the `include/` it lies in (`include/lib/x.h` -> `src/lib/x.cpp`, `src/x.cpp`), the first
+// place holding any. Probing is by name, so it is a guess, and walked as one (a `maybe` edge).
+function implementationCandidates(header) {
+  const ext = extname(header)
+  if (!C_HEADER_EXTS.has(ext)) return []
+  const stem = posix.basename(header, ext)
+  const places = [dirOf(header)]
+  const parts = dirOf(header).split('/')
+  const at = parts.lastIndexOf('include')
+  if (at !== -1) {
+    const under = parts.slice(at + 1)
+    for (let k = 0; k <= under.length; k++) places.push([...parts.slice(0, at), 'src', ...under.slice(k)].join('/'))
+  }
+  return places.map((dir) => [...C_SOURCE_EXTS].map((e) => joinRel(dir, `${stem}${e}`)))
+}
+
+// Known implementation links, for libraries whose sources aren't named after their headers, which
+// implementationCandidates can't find. A bundled header whose project-relative path matches `header`
+// pulls in what `impl` names, the pattern's first group being the library's root ('' or a path
+// ending in `/`): each a path from that root, `$n` the pattern's group n, ending in `/*` for every
+// C/C++ source in that directory, or `/**` for those below it too (`/x_*` for those whose name
+// starts with `x_`). `registers` takes instead every
+// C/C++ source below its `dir` (from the root) whose text matches its `pattern`: what registers
+// itself through a macro, linked by the registry and named by nothing. Walked as implementation
+// files are: what isn't there is nothing missing.
+export const KNOWN_IMPLEMENTATIONS = [
+  // Node.js: the embedder API node.h declares, the bindings that register themselves, the headers
+  // implemented across files of other names, and the FFI trampolines, one per architecture.
+  { header: /^(.*\/)?src\/node\.h$/u, impl: ['src/api/*'] },
+  { header: /^(.*\/)?src\/node_binding\.h$/u, registers: { dir: 'src', pattern: /^\s*NODE_BINDING_(?:CONTEXT_AWARE_INTERNAL|PER_ISOLATE_INIT)\s*\(/mu } },
+  { header: /^(.*\/)?src\/node_process\.h$/u, impl: ['src/node_process_*', 'src/node_env_var.cc'] },
+  { header: /^(.*\/)?src\/node_report\.h$/u, impl: ['src/node_report_*'] },
+  { header: /^(.*\/)?src\/ffi\/fast\.h$/u, impl: ['src/ffi/platforms/*'] },
+  // V8's public API, implemented in src/api.
+  { header: /^(.*\/)?include\/v8[\w-]*\.h$/u, impl: ['src/api/*'] },
+  // OpenSSL: a header's subsystem, the library's core, TLS, the built-in providers.
+  { header: /^(.*\/)?include\/openssl\/(\w+)\.h$/u, impl: ['crypto/$2/*'] },
+  { header: /^(.*\/)?include\/openssl\/crypto\.h$/u, impl: ['crypto/*'] },
+  { header: /^(.*\/)?include\/openssl\/(?:ssl|ssl3|tls1|dtls1)\.h$/u, impl: ['ssl/**'] },
+  { header: /^(.*\/)?include\/openssl\/provider\.h$/u, impl: ['providers/**'] },
+  { header: /^(.*\/)?include\/uv\.h$/u, impl: ['src/**'] }, // libuv
+  { header: /^(.*\/)?include\/uvwasi\.h$/u, impl: ['src/*'] },
+  { header: /^(.*\/)?include\/ares\.h$/u, impl: ['src/lib/**'] }, // c-ares
+  { header: /^(.*\/)?include\/llhttp\.h$/u, impl: ['src/*'] },
+  { header: /^(.*\/)?lib\/includes\/(nghttp2|nghttp3|ngtcp2)\/\2\.h$/u, impl: ['lib/*'] },
+  { header: /^(.*\/)?c\/include\/brotli\/(dec|enc)ode\.h$/u, impl: ['c/common/*', 'c/$2/*'] },
+  { header: /^(.*\/)?lib\/zstd\.h$/u, impl: ['lib/common/*', 'lib/compress/*', 'lib/decompress/*'] },
+  { header: /^(.*\/)?zlib\.h$/u, impl: ['*'] },
+  { header: /^(.*\/)?(common|i18n)\/unicode\/(\w+)\.h$/u, impl: ['$2/$3.cpp'] }, // ICU
+]
+
+// Walk the include graph from `entries` (project-relative), reading each file once per search
+// context it is reached in. `includeDirs` are `-I` directories (relative to `baseDir`) for every
+// translation unit; `commands` (loadCompileCommands') gives a unit its own search path, the entries'
+// and the implementation files' alike, and a header the one of the unit it is reached from; a unit
+// it doesn't list, inside a known project (`knownProjects`, KNOWN_PROJECTS), that project's search
+// path after `includeDirs` (detectProjects). `knownLinks`
+// are the known implementation links (KNOWN_IMPLEMENTATIONS). Returns:
+//   sources      Map<path, text> -- C/C++ text, or an `#embed`ed resource (base64 if not UTF-8)
+//   formats      Map<path, format> -- c, cpp, c-header, cpp-header, resource, resource:base64
+//   resolutions  Map<path, Map<spec, path>> -- each include's file (includeSpec), and for a header's
+//                implementation file `impl <its path from the header's directory>`
+//   missing      [{ spec, from, reason? }] -- what makes the bundle incomplete, where every
+//                configuration compiles it (in a file every configuration reaches, not through a
+//                conditional include or an implementation file's guess): an include of a file the
+//                bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere
+//                or outside the root, or a quoted (or forced) one found nowhere that a directory
+//                above its includer's holds -- the search path lacks the -I the file is built
+//                with (`hints`)
+//   unfound      [{ spec, from }] -- such a quoted include found nowhere else: a system header
+//                written in quotes (`"math.h"`), or one the build generates. `<x>` found nowhere is
+//                a system header, never reported.
+//   computed     [{ spec, from }] -- `#include MACRO`: not followed
+//   conflicts    [{ spec, from, targets }] -- an include resolving to other files in other units;
+//                the edge keeps the first, every file is carried
+//   hints        Set<dir> -- directories that, as `-I`, would resolve the `missing` quoted includes
+//   projects     the known projects found (detectProjects), whose search paths units outside the
+//                compilation database take
+export function collectCBundle(baseDir, entries, { includeDirs = [], commands = null, knownLinks = KNOWN_IMPLEMENTATIONS, knownProjects = KNOWN_PROJECTS } = {}) {
+  const realBase = realpathSync(baseDir)
+  const extraDirs = includeDirs.map((d) => makeDir(baseDir, realBase, resolve(baseDir, d)))
+  for (const [k, d] of extraDirs.entries()) {
+    if (!isDir(d.abs ?? join(baseDir, d.rel))) console.warn(`[loader.c] --include-dirs: no such directory: ${includeDirs[k]}`)
+  }
+  const contexts = new Map()
+  const intern = (ctx) => {
+    if (!contexts.has(ctx.id)) contexts.set(ctx.id, ctx)
+    return contexts.get(ctx.id)
+  }
+  // A search directory's identity, for telling two spellings of one apart: its real path.
+  const identities = new Map()
+  const identity = (dir) => {
+    const spelled = JSON.stringify(dir)
+    if (!identities.has(spelled)) {
+      let real = spelled
+      try {
+        real = realpathSync(dir.abs ?? join(baseDir, dir.rel || '.'))
+      } catch {
+        // Nothing there: only its spelling tells it apart.
+      }
+      // A framework directory is another directory to Clang than the same one searched plainly.
+      identities.set(spelled, dir.framework ? `${real}\0framework` : real)
+    }
+    return identities.get(spelled)
+  }
+  const defaultCtx = intern(makeContext({}, extraDirs, identity))
+  // A unit's search path: its compile command's, else its known project's (after --include-dirs),
+  // else `fallback`'s.
+  const projects = detectProjects(baseDir, knownProjects)
+  const contextOf = (file, fallback) => {
+    if (commands?.has(file)) return intern(makeContext(commands.get(file), extraDirs, identity))
+    const project = projects.of(file)
+    return project === null ? fallback : intern(makeContext({ I: [...extraDirs, ...project.searchPath] }, [], identity))
+  }
+
+  const sources = new Map()
+  const formats = new Map()
+  const scans = new Map() // file -> scanIncludes
+  const nodes = new Map() // keyOf(file, ctx, ...) -> { file, ctx, at, primary, edges, stack, embed }
+  const resolutions = new Map()
+  const computed = []
+  const conflicts = []
+  const queue = []
+  const bytesRead = new Set() // files `sources` holds as an #embed's bytes
+  // A file is walked once per context, place it was found at and MSVC stack, and as a unit (with
+  // its forced includes) apart from as an include; an #embed's file is bytes, however it was found.
+  const keyOf = (file, ctx, { at = -1, stack = [], embed = false, primary = false } = {}) => [ctx.id, file, embed ? 'embed' : at, primary ? 'unit' : '', ...stack].join('\0')
+
+  // `at` is where in the context's [...quote, ...angle] list the file was found, -1 where it wasn't
+  // found through the search path (an entry, a quoted include beside its includer): where an
+  // `#include_next` in it carries on from. `primary` marks a unit its own compile command names.
+  // `stack` is the directories of the files including it, nearest first (pruned: stackBelow): where
+  // MSVC looks a quoted include up after the includer's own directory. `embed` marks an #embed's.
+  const visit = (file, ctx, { at = -1, primary = false, format, stack = [], embed = false }) => {
+    const key = keyOf(file, ctx, { at, stack, embed, primary })
+    if (!nodes.has(key)) {
+      nodes.set(key, { file, ctx, at, primary, edges: [], stack, embed })
+      queue.push(key)
+    }
+    // A file something includes is a source, whatever #embeds it too.
+    if (!formats.has(file) || (!embed && formats.get(file).startsWith('resource'))) formats.set(file, format)
+    return key
+  }
+
+  // MSVC looks a quoted include not beside its includer up beside each file including that one,
+  // nearest first. Of those directories, a `stack` keeps the ones that can change what an include
+  // finds: those holding a path quoted includes are looked up by there (`lookedUp`) that no nearer
+  // one holds. A file is walked once for each such stack it is reached with.
+  const lookedUp = []
+  const lookedUpSet = new Set()
+  const held = new Map() // dir -> { upTo, names, paths }: the paths of lookedUp[0, upTo) found in dir
+  const heldIn = (dir) => {
+    let entry = held.get(dir)
+    if (entry === undefined) {
+      let names = []
+      try {
+        names = readdirSync(join(baseDir, dir))
+      } catch {
+        // Nothing found there.
+      }
+      entry = { upTo: 0, names: new Set(names), paths: new Set() }
+      held.set(dir, entry)
+    }
+    for (; entry.upTo < lookedUp.length; entry.upTo++) {
+      const path = lookedUp[entry.upTo]
+      const first = path.split('/', 1)[0]
+      if ((first === '.' || first === '..' || entry.names.has(first)) && probe({ rel: dir }, path) !== null) entry.paths.add(path)
+    }
+    return entry.paths
+  }
+  // The directories left out of a stack, with how many paths they held then.
+  const dropped = new Map()
+  const prune = (dirs) => {
+    const covered = new Set()
+    const kept = []
+    for (const dir of dirs) {
+      const paths = heldIn(dir)
+      const before = covered.size
+      for (const path of paths) covered.add(path)
+      if (covered.size > before) kept.push(dir)
+      else if (!dropped.has(dir)) dropped.set(dir, paths.size)
+    }
+    return kept
+  }
+  // The `stack` of what `node` includes: its own directory, then its stack, pruned. Only MSVC looks
+  // there, so only its contexts keep one.
+  const stackBelow = (node) => {
+    if (node.ctx.msvc) node.below ??= prune([dirOf(node.file), ...node.stack])
+    return node.below ?? []
+  }
+
+  const exists = (rel) => isFile(join(baseDir, rel))
+
+  // The C/C++ sources in `dir` (project-relative), path-sorted; below it too where `deep`, skipping
+  // dot-directories, what no walk descends into (isAutoExcludedDir) and symlinked directories.
+  const listings = new Map()
+  const sourcesIn = (dir, deep) => {
+    const key = `${deep ? '**' : '*'}\0${dir}`
+    if (listings.has(key)) return listings.get(key)
+    const found = []
+    const walk = (rel) => {
+      let dirents
+      try {
+        dirents = readdirSync(join(baseDir, rel), { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const d of dirents.toSorted((a, b) => (a.name < b.name ? -1 : 1))) {
+        const path = rel === '' ? d.name : `${rel}/${d.name}`
+        if (d.isDirectory()) {
+          if (deep && !d.name.startsWith('.') && !isAutoExcludedDir(d.name)) walk(path)
+        } else if (C_SOURCE_EXTS.has(extname(d.name))) {
+          found.push(path)
+        }
+      }
+    }
+    walk(dir)
+    listings.set(key, found)
+    return found
+  }
+  // Whether the C/C++ source `rel` holds `pattern`; a file the bundle refuses, or that isn't UTF-8,
+  // doesn't.
+  const holds = (rel, pattern) => {
+    if (sources.has(rel)) return pattern.test(sources.get(rel))
+    if (probe({ rel: '' }, rel)?.target === undefined) return false
+    const buf = readFileSync(join(baseDir, rel))
+    return isUtf8(buf) && pattern.test(buf.toString('utf8'))
+  }
+  // The files KNOWN_IMPLEMENTATIONS links `header` to, project-relative.
+  const knownImplementations = (header) => {
+    const out = []
+    for (const link of knownLinks) {
+      const m = link.header.exec(header)
+      if (m === null) continue
+      const root = m[1] ?? ''
+      if (link.registers !== undefined) {
+        for (const rel of sourcesIn(joinRel(root, link.registers.dir) ?? '', true)) if (holds(rel, link.registers.pattern)) out.push(rel)
+        continue
+      }
+      for (const impl of link.impl) {
+        const path = impl.replaceAll(/\$(\d)/gu, (_, n) => m[Number(n)] ?? '')
+        const glob = /(?:^|\/)([^/*]*)(\*\*?)$/u.exec(path)
+        if (glob === null) {
+          const rel = joinRel(root, path)
+          if (rel !== null && exists(rel)) out.push(rel)
+        } else {
+          const [, prefix, stars] = glob
+          const dir = joinRel(root, path.slice(0, -(prefix.length + stars.length)))
+          if (dir !== null) out.push(...sourcesIn(dir, stars === '**').filter((rel) => posix.basename(rel).startsWith(prefix)))
+        }
+      }
+    }
+    return out
+  }
+  // The nearest directory above `file`'s own holding `path` ('.' for the root), else null.
+  const ancestorHolding = (file, path) => {
+    for (let dir = dirOf(file); dir !== '';) {
+      dir = dirOf(dir)
+      const rel = joinRel(dir, path)
+      if (rel !== null && rel !== '' && exists(rel)) return dir === '' ? '.' : dir
+    }
+    return null
+  }
+  // The file `path` names in `dir`: { target } inside the root, { external } outside it (or past it),
+  // { refused } for one the bundle won't carry, null where nothing is.
+  const probe = (dir, path) => {
+    if (dir.abs !== undefined) return isFile(resolve(dir.abs, path)) ? { external: true } : null
+    const rel = joinRel(dir.rel, path)
+    if (rel === null) return isFile(resolve(baseDir, dir.rel, path)) ? { external: true } : null
+    if (rel === '' || !exists(rel)) return null
+    try {
+      assertRealPathWithinBase(realBase, baseDir, rel)
+    } catch {
+      return { refused: `${rel} is a symlink escaping the bundle root` }
+    }
+    if (isDotEnvFile(rel)) return { refused: `${rel} is a .env file, never carried` }
+    return { target: rel }
+  }
+
+  // The file `path` names in the search directory `dir`, a framework one's as Clang finds it.
+  const probeDir = (dir, path) => {
+    if (!dir.framework) return probe(dir, path)
+    const slash = path.indexOf('/')
+    if (slash <= 0) return null
+    const name = `${path.slice(0, slash)}.framework`
+    return probe(dir, `${name}/Headers/${path.slice(slash + 1)}`) ?? probe(dir, `${name}/PrivateHeaders/${path.slice(slash + 1)}`)
+  }
+
+  // An include of `inc` from `node`, resolved as GCC searches: { target, at } | { external } |
+  // { refused } | null.
+  const chainHits = new Map() // ctx -> `${first}\0${path}` -> what the chain from `first` finds
+  const resolveInclude = (node, inc) => {
+    const { file, ctx } = node
+    if (isAbsolute(inc.path)) {
+      const hit = probe(makeDir(baseDir, realBase, inc.path), '.')
+      return hit ?? null
+    }
+    if (inc.directive === 'embed') {
+      const dirs = inc.form === 'quote' ? [{ rel: dirOf(file) }, ...ctx.embed] : ctx.embed
+      for (const dir of dirs) {
+        const hit = probe(dir, inc.path)
+        if (hit !== null) return hit
+      }
+      return null
+    }
+    const chain = [...ctx.quote, ...ctx.angle]
+    const first = inc.form === 'angle' ? ctx.quote.length : 0
+    if (inc.directive === 'include_next') {
+      // On from after the directory the includer was found in; from the start of its form's chain
+      // where it wasn't found through one, never landing on the includer itself.
+      for (let k = Math.max(first, node.at + 1); k < chain.length; k++) {
+        const hit = probeDir(chain[k], inc.path)
+        if (hit !== null && hit.target !== file) return { ...hit, at: k }
+      }
+      return null
+    }
+    if (inc.form === 'quote' && !ctx.split) {
+      const hit = probe({ rel: dirOf(file) }, inc.path)
+      if (hit !== null) return { ...hit, at: -1 }
+      if (ctx.msvc && !lookedUpSet.has(inc.path)) {
+        lookedUpSet.add(inc.path)
+        lookedUp.push(inc.path)
+      }
+      // MSVC's: then beside each file including it, nearest first.
+      for (const dir of ctx.msvc ? node.stack : []) {
+        const above = probe({ rel: dir }, inc.path)
+        if (above !== null) return { ...above, at: -1 }
+      }
+    }
+    // The chain finds the same for every includer: looked along once.
+    if (!chainHits.has(ctx)) chainHits.set(ctx, new Map())
+    const hits = chainHits.get(ctx)
+    const searched = `${first}\0${inc.path}`
+    if (!hits.has(searched)) {
+      let found = null
+      for (let k = first; found === null && k < chain.length; k++) {
+        const hit = probeDir(chain[k], inc.path)
+        if (hit !== null) found = { ...hit, at: k }
+      }
+      hits.set(searched, found)
+    }
+    return hits.get(searched)
+  }
+
+  // A reached file's text (an entry's too, which may be missing: null then).
+  const read = (file, resource) => {
+    let buf
+    try {
+      assertRealPathWithinBase(realBase, baseDir, file)
+      if (!isFile(join(baseDir, file))) return null
+      buf = readFileSync(join(baseDir, file))
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'EISDIR' || err.code === 'ENOTDIR') return null
+      throw err
+    }
+    const utf8 = isUtf8(buf)
+    if (resource) {
+      formats.set(file, utf8 ? 'resource' : 'resource:base64')
+      return utf8 ? buf.toString('utf8') : buf.toString('base64')
+    }
+    if (!utf8) throw new Error(`C/C++ source is not valid UTF-8: ${file}`)
+    return buf.toString('utf8')
+  }
+
+  const addEdge = (node, edge) => {
+    node.edges.push(edge)
+    if (edge.result?.target === undefined) return
+    if (!resolutions.has(node.file)) resolutions.set(node.file, new Map())
+    const specs = resolutions.get(node.file)
+    const had = specs.get(edge.spec)
+    if (had === undefined) specs.set(edge.spec, edge.result.target)
+    else if (had !== edge.result.target) {
+      const known = conflicts.find((c) => c.from === node.file && c.spec === edge.spec)
+      if (known === undefined) conflicts.push({ spec: edge.spec, from: node.file, targets: [had, edge.result.target] })
+      else if (!known.targets.includes(edge.result.target)) known.targets.push(edge.result.target)
+    }
+  }
+
+  // The walk, over again while a stack left out a directory that has come to hold a path looked
+  // up under it.
+  do {
+    for (const map of [nodes, sources, formats, resolutions, dropped, bytesRead]) map.clear()
+    computed.length = 0
+    conflicts.length = 0
+    for (const entry of entries) visit(entry, contextOf(entry, defaultCtx), { primary: commands?.has(entry), format: cFormatOf(entry) })
+
+    while (queue.length > 0) {
+      const node = nodes.get(queue.shift())
+      const { file, ctx } = node
+      // An #embed's file is bytes, unless something includes it too: then its source is read.
+      if (node.embed) {
+        if (formats.get(file).startsWith('resource') && !sources.has(file)) {
+          const bytes = read(file, true)
+          if (bytes === null) continue
+          sources.set(file, bytes)
+          bytesRead.add(file)
+        }
+        continue
+      }
+      if (!sources.has(file) || bytesRead.has(file)) {
+        const text = read(file, false)
+        if (text === null) continue
+        sources.set(file, text)
+        bytesRead.delete(file)
+      }
+      if (!scans.has(file)) scans.set(file, scanIncludes(sources.get(file)))
+      const format = formats.get(file)
+
+      // A unit's -include/-imacros files, read as if included first: looked up in the command's
+      // directory instead of the unit's own, then along the rest of the quote chain, as GCC does.
+      if (node.primary) {
+        for (const { flag, path, dir } of ctx.forced) {
+          const spec = `${flag} ${path}`
+          let result = isAbsolute(path) ? probe(makeDir(baseDir, realBase, path), '.') : probe(dir, path)
+          // cl's /FI is a quoted #include of the unit's: beside it next, as clang-cl looks it up.
+          if (result === null && flag === '/FI' && !isAbsolute(path)) result = probe({ rel: dirOf(file) }, path)
+          const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
+          for (let k = 0; result === null && k < chain.length; k++) {
+            const hit = probeDir(chain[k], path)
+            if (hit !== null) result = { ...hit, at: k }
+          }
+          const edge = { spec, live: true, forced: true, result, target: undefined }
+          if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format), stack: stackBelow(node) })
+          addEdge(node, edge)
+        }
+      }
+
+      for (const scanned of scans.get(file)) {
+        const spec = includeSpec(scanned)
+        // cl and clang-cl read a backslash in a header name as a separator (`"sub\x.h"`).
+        const inc = ctx.msvc && scanned.path.includes('\\') ? { ...scanned, path: scanned.path.replaceAll('\\', '/') } : scanned
+        if (inc.form === 'macro') {
+          if (!computed.some((c) => c.spec === spec && c.from === file)) computed.push({ spec, from: file })
+          continue
+        }
+        const result = resolveInclude(node, inc)
+        const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
+        if (result?.target !== undefined) {
+          // An #embed's file is bytes, and so is a cl #import's: a type library (.tlb, .dll).
+          const bytes = inc.directive === 'embed' || (ctx.msvc && inc.directive === 'import')
+          edge.target = visit(result.target, ctx, { at: result.at, format: bytes ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node), embed: bytes })
+        }
+        addEdge(node, edge)
+      }
+
+      // A header's implementation files: by name, then the known links. Each is a translation unit of
+      // its own, keyed by its path from the header's directory.
+      const linked = new Set([file])
+      const link = (rel) => {
+        if (linked.has(rel)) return
+        linked.add(rel)
+        const result = probe({ rel: '' }, rel)
+        const edge = { spec: `impl ${posix.relative(dirOf(file) || '.', rel)}`, live: false, result, target: undefined }
+        if (result?.target !== undefined) edge.target = visit(rel, contextOf(rel, ctx), { primary: commands?.has(rel), format: cFormatOf(rel) })
+        addEdge(node, edge)
+      }
+      for (const candidates of implementationCandidates(file)) {
+        const found = candidates.filter((rel) => rel !== null && rel !== file && exists(rel))
+        for (const rel of found) link(rel)
+        if (found.length > 0) break
+      }
+      if (C_HEADER_EXTS.has(extname(file))) for (const rel of knownImplementations(file)) link(rel)
+    }
+  } while ([...dropped].some(([dir, size]) => heldIn(dir).size > size))
+
+  // What every configuration builds: the entries, and what they reach through includes every
+  // configuration compiles. An include missing from those is what the bundle lacks.
+  const definite = new Set()
+  const pending = entries.map((entry) => keyOf(entry, contextOf(entry, defaultCtx), { primary: Boolean(commands?.has(entry)) }))
+  while (pending.length > 0) {
+    const key = pending.pop()
+    if (definite.has(key) || !nodes.has(key)) continue
+    definite.add(key)
+    for (const edge of nodes.get(key).edges) if (edge.live && edge.target !== undefined) pending.push(edge.target)
+  }
+  const missing = []
+  const unfound = []
+  const hints = new Set()
+  const seen = new Set()
+  for (const key of definite) {
+    const node = nodes.get(key)
+    for (const edge of node.edges) {
+      const id = `${node.file}\0${edge.spec}`
+      if (!edge.live || seen.has(id)) continue
+      if (edge.result?.refused !== undefined) {
+        missing.push({ spec: edge.spec, from: node.file, reason: edge.result.refused })
+        seen.add(id)
+      } else if (edge.inc?.directive === 'embed' && (edge.result === null || edge.result.external)) {
+        // An #embed has no system file to fall back on: found nowhere, the build fails; found
+        // outside the bundle root (an absolute path, a `../`, an --embed-dir there), the build
+        // takes bytes the bundle lacks.
+        missing.push({ spec: edge.spec, from: node.file, ...(edge.result === null ? {} : { reason: 'outside the bundle root' }) })
+        seen.add(id)
+      } else if (edge.result === null && (edge.forced || (edge.inc.form === 'quote' && edge.inc.directive !== 'include_next'))) {
+        seen.add(id)
+        // Below a directory above the includer's, the tree holds the path: the search path lacks
+        // the -I it is built with. Found nowhere, it is a system header, or one the build generates.
+        const hint = ancestorHolding(node.file, edge.inc?.path ?? edge.spec.slice(edge.spec.indexOf(' ') + 1))
+        if (hint === null) {
+          unfound.push({ spec: edge.spec, from: node.file })
+        } else {
+          missing.push({ spec: edge.spec, from: node.file })
+          hints.add(hint)
+        }
+      }
+    }
+  }
+
+  return { sources, formats, resolutions, missing, unfound, computed, conflicts, hints, projects: projects.projects }
+}
