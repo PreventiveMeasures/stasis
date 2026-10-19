@@ -589,6 +589,10 @@ test('scanIncludes ends a line at a lone carriage return, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('#include "a.h"\r#include "b.h"\r#inc\\\rlude "c.h"\r'), ['include "a.h" live', 'include "b.h" live', 'include "c.h" live'])
 })
 
+test('scanIncludes reads a directive introduced by the trigraph ??=, as GCC does with trigraphs on', (t) => {
+  t.assert.deepStrictEqual(specs('??=include "a.h"\n  ??=  include "b.h"\n??=if 0\n#include "c.h"\n??=endif\n'), ['include "a.h" live', 'include "b.h" live'])
+})
+
 test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('﻿#include "a.h"\n'), ['include "a.h" live'])
   t.assert.deepStrictEqual(specs('﻿#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n'), ['include "b.h" live'])
@@ -620,6 +624,20 @@ test('collectCBundle carries a cl #import\'s type library as bytes, where GCC\'s
   const gcc = bundle('b.c', ['gcc', '-c'])
   t.assert.equal(gcc.formats.get('lib/h.h'), 'c-header')
   t.assert.ok(gcc.sources.has('lib/dep.h'))
+}))
+
+test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['/usr/bin/sccache', 'clang-cl', '/Iinc', '/FIpch.h', '/c', 'a.c'] },
+    { directory: tmp, file: 'b.c', command: 'ccache cc -Iinc -c b.c' },
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'inc' }])
+  t.assert.deepStrictEqual(commands.get('a.c').forced.map((f) => f.path), ['pch.h'])
+  t.assert.equal(commands.get('a.c').msvc, true)
+  t.assert.deepStrictEqual(commands.get('b.c').I, [{ rel: 'inc' }])
+  t.assert.equal(commands.get('b.c').msvc, undefined)
 }))
 
 test('collectCBundle searches Clang\'s framework directories, -F with the -I ones, -iframework after the -isystem ones', withTmp((t, tmp) => {

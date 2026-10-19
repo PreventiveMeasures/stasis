@@ -83,7 +83,8 @@ function guardName(name, expr) {
 // guard (`#ifndef X` then `#define X` as its first directives, before any code, closed by an
 // `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
-// backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
+// backslash joined, and a directive is `#` (or `%:`, or `??=`) first on its line, as in translation
+// phase 4.
 export function scanIncludes(source) {
   // A byte order mark opens no line; lines end at CR LF, LF or a lone CR, as GCC reads them; a
   // backslash before one splices it.
@@ -246,8 +247,10 @@ export function scanIncludes(source) {
       i = skipBlockComment(i)
     } else if (s.startsWith('//', i)) {
       i = lineEnd(i)
-    } else if (atLineStart && (c === '#' || s.startsWith('%:', i))) {
-      i = directive(i + (c === '#' ? 1 : 2))
+    } else if (atLineStart && (c === '#' || s.startsWith('%:', i) || s.startsWith('??=', i))) {
+      // `#`, its digraph `%:`, or its trigraph `??=`: where trigraphs are off (GNU modes), GCC
+      // ignores that line, so a directive found there may be one no build reads.
+      i = directive(i + (c === '#' ? 1 : c === '%' ? 2 : 3))
     } else {
       atLineStart = false
       code = true
@@ -435,6 +438,9 @@ function includeFlags(args, directory, toDir, cl) {
   return flags
 }
 
+// Compiler launchers, which run the compiler named after them with its arguments.
+const LAUNCHERS = /^(?:ccache|sccache|distcc|icecc|buildcache)(?:\.exe)?$/iu
+
 // A compile command string split into its arguments as a POSIX shell splits words: quotes, and a
 // backslash escaping the next character (inside double quotes, only `"`, `\`, `$` and a backquote).
 export function splitCommand(command) {
@@ -498,8 +504,12 @@ export function loadCompileCommands(baseDir, file) {
     const directory = resolve(dirname(path), entry.directory)
     const unit = toDir(resolve(directory, entry.file))
     if (unit.rel === undefined || commands.has(unit.rel)) continue
-    const cl = /^(?:clang-)?cl(?:\.exe)?$/iu.test(basename(args[0] ?? '').replaceAll('\\', '/').split('/').at(-1))
-    commands.set(unit.rel, includeFlags(args, directory, toDir, cl))
+    // A compiler launcher (`ccache gcc ...`, `sccache clang-cl ...`) runs the compiler after it.
+    const program = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
+    let first = 0
+    while (first < args.length - 1 && LAUNCHERS.test(program(args[first]))) first++
+    const cl = /^(?:clang-)?cl(?:\.exe)?$/iu.test(program(args[first]))
+    commands.set(unit.rel, includeFlags(args.slice(first), directory, toDir, cl))
   }
   return commands
 }

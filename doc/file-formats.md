@@ -1322,7 +1322,9 @@ graph, as the preprocessor would follow it, plus each header's implementation.
 translation phases 1 to 4 find them: a leading byte order mark skipped, a line
 ending at CR LF, LF or a lone CR, lines spliced by a backslash joined, comments
 and string and character literals skipped (C++ raw strings and digit separators
-included), a directive being `#` (or `%:`) first on its line. Macros aren't
+included), a directive being `#` (or `%:`, or `??=`, the trigraph a build
+with trigraphs on reads as `#`; the others aren't translated, as GNU modes
+leave them be) first on its line. Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and conditionals
 aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
 code (and the `#else` of an `#if 1`) is never followed, and an include under any
@@ -1389,7 +1391,8 @@ is:
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory`, the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
-  shell splits it. A `-include` is the unit's first include, looked up in the
+  shell splits it, a compiler launcher in front of the compiler (`ccache`,
+  `sccache`, `distcc`, `icecc`, `buildcache`) skipped. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
   after the working directory, as clang-cl looks it up. GCC's `-I-` makes the `-I` directories
