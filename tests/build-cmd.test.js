@@ -691,6 +691,9 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
       'src/plain.data': "module.exports = { value: 'plain' }\n",
       'src/marked.js': "import x from './marked.data'\nconsole.log(JSON.stringify(x))\n",
       'src/plain.js': "import x from './plain.data'\nconsole.log(JSON.stringify(x))\n",
+      // A name at the root that starts with two dots is still inside the project.
+      '..dotted.data': BABELISH,
+      'src/dotted.js': "import x from '../..dotted.data'\nconsole.log(JSON.stringify(x))\n",
     }
     for (const [name, content] of Object.entries(files)) {
       mkdirSync(dirname(join(proj, name)), { recursive: true })
@@ -703,13 +706,16 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
         STASIS_TEST_PLUGIN_OPTIONS: JSON.stringify({ lock: 'none', bundle: 'replace', bundleFile: join(proj, bundleFile), resources: ['data'] }),
       },
     })
-    for (const [entry, bundleFile] of [['src/marked.js', 'marked.br'], ['src/plain.js', 'plain.br']]) {
+    for (const [entry, bundleFile] of [['src/marked.js', 'marked.br'], ['src/plain.js', 'plain.br'], ['src/dotted.js', 'dotted.br']]) {
       const r = capture(entry, bundleFile)
       t.assert.equal(r.status, 0, r.stderr)
     }
     const marked = await runCli(['build', '--output=marked.mjs', 'marked.br'], { cwd: proj })
     t.assert.notEqual(marked.status, 0)
     t.assert.match(marked.stderr, /refusing to build 'src\/marked\.js': it imports the default export or namespace of '\.\/marked\.data'/)
+    const dotted = await runCli(['build', '--output=dotted.mjs', 'dotted.br'], { cwd: proj })
+    t.assert.notEqual(dotted.status, 0)
+    t.assert.match(dotted.stderr, /refusing to build 'src\/dotted\.js': it imports the default export or namespace of '\.\.\/\.\.dotted\.data'/)
     const plain = await runCli(['build', '--output=plain.mjs', 'plain.br'], { cwd: proj })
     t.assert.equal(plain.status, 0, plain.stderr)
     t.assert.equal(runNode(t, join(proj, 'plain.mjs')).trim(), '{"value":"plain"}')

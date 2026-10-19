@@ -213,7 +213,7 @@ export class StasisEsbuild {
   #isResource(path) {
     if (!this.#state.config.loadBundle) return classifyExtension(path, this.#resources) === 'resource'
     const rel = relative(this.#state.root, path)
-    return !rel.startsWith('..') && !isAbsolute(rel) && this.#state.resources.has(rel.split(sep).join('/'))
+    return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) && this.#state.resources.has(rel.split(sep).join('/'))
   }
 
   // The loader esbuild applies to a resource: the build's `loader` option's for its extension -- or, in load mode,

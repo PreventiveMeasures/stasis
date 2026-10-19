@@ -211,6 +211,11 @@ test('analyzeModule: a key only the runtime knows marks where it reaches the exp
   t.assert.equal(marks('class Box { static [key()] = 1 }\nmodule.exports = new Box()'), false)
   // Resolved at the key: a parameter of the name is unknown, whatever an outer declaration of it holds.
   t.assert.equal(marks("const marker = 'safe'\nfunction set(marker) { module.exports = { [marker]: true, default: 1 } }\nset(x)"), true)
+  // So is one a catch or a for-in/of loop binds.
+  t.assert.equal(marks("const key = 'safe'\ntry { throw process.env.KEY } catch (key) { module.exports = { [key]: true, default: 1 } }"), true)
+  t.assert.equal(marks("const key = 'safe'\nfor (const key of keys) module.exports = { [key]: true, default: 1 }"), true)
+  t.assert.equal(marks("var key = 'safe'\nfor (var key in source);\nmodule.exports = { [key]: true, default: 1 }"), true)
+  t.assert.equal(marks("const key = 'safe'\nfunction f() { const key = 'name'; module.exports = { [key]: true, default: 1 } }"), false)
   // A symbol or a number isn't `__esModule` -- unless the file binds `Symbol` itself.
   t.assert.equal(marks("const s = Symbol('s')\nmodule.exports = { [Symbol.iterator]: f, [s]: 1, [0]: 1, default: 1 }"), false)
   t.assert.equal(marks("const Symbol = (x) => x\nmodule.exports = { [Symbol(key)]: true, default: 1 }"), true)

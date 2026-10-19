@@ -712,12 +712,18 @@ export function analyzeModule(source, { path, loader }) {
   }
   const tracked = (name) => scoped.has(name)
   // Every name a nested scope declares is recorded (a computed key resolves through them); at the module scope,
-  // only the tracked ones.
-  const declare = (scope, name, kind) => {
+  // only the tracked ones. A binding only the runtime gives its value (a parameter, a catch binding, a for-in/of
+  // loop's) is recorded as such, at the module scope too (moduleRuntime): no declaration elsewhere tells its value.
+  const moduleRuntime = new Set()
+  const declare = (scope, name, kind, runtime = kind === 'param') => {
     if (scope !== root) {
       scope.names.add(name)
       if (kind === 'param') (scope.params ??= new Set()).add(name)
-    } else if (tracked(name)) (kind === 'var' ? hoistedVar : shadowed).add(name)
+      if (runtime) (scope.runtime ??= new Set()).add(name)
+    } else {
+      if (tracked(name)) (kind === 'var' ? hoistedVar : shadowed).add(name)
+      if (runtime) moduleRuntime.add(name)
+    }
   }
   const keyRefs = new Map()  // computed key Identifier node -> its scope
   const declarators = new Map()  // name -> [init]: a declarator's, or the class a class declaration binds
@@ -797,7 +803,9 @@ export function analyzeModule(source, { path, loader }) {
       case 'VariableDeclaration':
         if (node.kind === 'await using' && fnDepth === 0) facts.esmExports = true
         for (const declarator of node.declarations) {
-          for (const name of patternNames(declarator.id)) declare(node.kind === 'var' ? fnScope : scope, name, node.kind)
+          for (const name of patternNames(declarator.id)) {
+            declare(node.kind === 'var' ? fnScope : scope, name, node.kind, (parent?.type === 'ForInStatement' || parent?.type === 'ForOfStatement') && key === 'left')
+          }
         }
         break
       case 'ClassDeclaration':
@@ -911,7 +919,7 @@ export function analyzeModule(source, { path, loader }) {
       }
       case 'CatchClause':
         childScope = { names: new Set(), parent: scope }
-        for (const name of patternNames(node.param)) declare(childScope, name, 'let')
+        for (const name of patternNames(node.param)) declare(childScope, name, 'let', true)
         break
       case 'BlockStatement':
         // A function's body block is the function's body scope, made with its parameters' scope below.
@@ -1085,14 +1093,18 @@ export function analyzeModule(source, { path, loader }) {
     })
   }
   const unknownSymbol = [...exported.symbols].some((name) => !isGlobal(name) || reassigned.has('Symbol'))
-  // A computed key named by a parameter is unknown; one any other binding names, judged by the values it's given.
+  // A computed key named by a binding only the runtime gives its value (a parameter, a catch binding, a loop's) is
+  // unknown, whatever an outer declaration of the name holds; one any other binding names, judged by the values
+  // it's given.
   const mayNameKey = (node) => {
-    for (let current = keyRefs.get(node); current && current !== root; current = current.parent) {
+    let current = keyRefs.get(node)
+    for (; current && current !== root; current = current.parent) {
       if (current.names.has(node.name)) {
-        if (current.params?.has(node.name)) return true
+        if (current.runtime?.has(node.name)) return true
         break
       }
     }
+    if (current === root && moduleRuntime.has(node.name)) return true
     return mayName(node.name)
   }
   if (unknownSymbol || [...exported.proxies].some(isGlobal) || exported.keys.some(mayNameKey)) exported.marked = true
