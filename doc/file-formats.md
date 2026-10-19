@@ -1411,7 +1411,8 @@ is:
   `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's (`clang-cl-20`,
   `<target>-clang-cl` and `--driver-mode=cl` too) and cl's `/I`, `/external:I`,
   `/imsvc` (after the other system directories) and `/FI` too, each relative to the command's `directory` (or Clang's
-  `-working-directory`, itself from there), the `-I` ones read
+  `-working-directory`, itself from there, clang-cl's through `/clang:` alone;
+  the unit's own argument, which `-x` and `/Tp` go by, too), the `-I` ones read
   first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it (by Windows rules on Windows, and for a cl or clang-cl

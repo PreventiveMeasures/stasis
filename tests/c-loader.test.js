@@ -804,6 +804,24 @@ test('loadCompileCommands applies the include path variables a command sets, as 
   t.assert.deepStrictEqual(commands.get('f.c').I, [{ rel: 'cp1' }])
 }))
 
+test('loadCompileCommands matches a unit\'s argument from Clang\'s -working-directory, clang-cl\'s through /clang: alone', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'build/.keep': '' })
+  const build = join(tmp, 'build')
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['clang', `-working-directory=${build}`, '-x', 'c++', '../a.c', '-x', 'c', '-cxx-isystem', '../cx', '-c'] },
+    { directory: tmp, file: 'b.c', arguments: ['clang-cl', `/clang:-working-directory=${build}`, '/Tp../b.c', '/TC', '/clang:-cxx-isystem', '/clang:../cx', '/c'] },
+    { directory: tmp, file: 'c.c', arguments: ['clang-cl', '-working-directory', build, '/Tp../c.c', '/TC', '/Iinc', '/clang:-cxx-isystem', '/clang:cx', '/c', 'c.c'] },
+  ]))
+  // clang 18 compiles build/../a.c as C++ (the -x c after it has no effect), clang-cl 18 build/../b.c
+  // as C++ (its /Tp over /TC); clang-cl's own -working-directory is none (it reads the directory as
+  // an input), so c.c's /Tp names another file and /Iinc is the command directory's.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'cx' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'cx' }])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [])
+  t.assert.deepStrictEqual(commands.get('c.c').I, [{ rel: 'inc' }])
+}))
+
 test('loadCompileCommands takes Objective-C++ for C++, Objective-C for neither, and -nostdinc++ out of -stdlib++-isystem', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.cpp': '' })
   const vars = 'CPLUS_INCLUDE_PATH=cxi C_INCLUDE_PATH=ci OBJCPLUS_INCLUDE_PATH=op OBJC_INCLUDE_PATH=oc'

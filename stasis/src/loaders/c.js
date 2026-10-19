@@ -518,39 +518,9 @@ const OTHER_TOOL = /^-X(?:linker|assembler|analyzer|cuda-ptxas|cuda-fatbinary|of
 // compiler (CPATH and the like).
 function includeFlags(argv, commandDirectory, toDir, cl, language = 'c', vars = new Map()) {
   const cxx = language === 'c++' || language === 'objective-c++'
-  // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
-  // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
-  // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
-  // clang-cl's /clang:arg hands `arg` to the clang driver, after its own arguments. What -Xlinker,
-  // -Xassembler and the like hand another tool is no compile's option.
-  const forwarded = /^[/-]clang:/u
-  const native = cl ? argv.filter((a) => !forwarded.test(a)) : argv
-  const driver = cl ? [...native, ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
-  const own = []
-  const preprocessor = []
-  const compiler = []
-  let clOwn = 0 // how many of `own` are cl's, ahead of what /clang: passes the clang driver
-  for (let k = 1; k < driver.length; k++) {
-    if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
-    else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
-    else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
-    else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
-    else if (OTHER_TOOL.test(driver[k]) && k + 1 < driver.length) k++
-    else {
-      own.push(driver[k])
-      if (cl && k < native.length) clOwn++
-    }
-  }
-  const args = [driver[0], ...own, ...preprocessor, ...compiler]
-  const clangFrom = 1 + clOwn // where clang's own options begin, under cl and clang-cl
-  const compilerFrom = 1 + own.length + preprocessor.length // where the -Xclang ones begin
-  // Clang's -working-directory (the last): what relative paths are taken from, itself taken from the
-  // command's directory.
-  let directory = commandDirectory
-  for (let k = 1; k < args.length; k++) {
-    if (args[k] === '-working-directory' && k + 1 < args.length) directory = resolve(commandDirectory, args[++k])
-    else if (args[k].startsWith('-working-directory=')) directory = resolve(commandDirectory, args[k].slice('-working-directory='.length))
-  }
+  const options = compileOptions(argv, cl)
+  const { args, clangFrom, compilerFrom } = options
+  const directory = workingDirectory(options, commandDirectory)
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
@@ -719,6 +689,54 @@ function includeFlags(argv, commandDirectory, toDir, cl, language = 'c', vars = 
   flags.system.push(...systemFrameworks, ...languageSystem, ...compilerLanguage, ...objcSystem, ...passedSystem, ...standardLibrary, ...resource, ...compilerSystem, ...internalFrameworks)
   if (cl) flags.msvc = true
   return flags
+}
+
+// A compile command's options as its compiler gets them. -Xpreprocessor hands the argument after it
+// to the preprocessor, -Wp,a,b its comma-separated ones, and Clang's -Xclang the one after it to the
+// compiler proper: after the driver's own options, the -Xclang ones last (as clang -v and gcc -v list
+// the directories they add), each in order. clang-cl's /clang:arg hands `arg` to the clang driver,
+// after its own arguments. What -Xlinker, -Xassembler and the like hand another tool is no compile's
+// option. `args` are the program and the options in that order; clang's own begin at `clangFrom`
+// (under cl and clang-cl, what /clang: passes), the preprocessor's at `preprocessorFrom`, -Xclang's at
+// `compilerFrom`.
+function compileOptions(argv, cl) {
+  const forwarded = /^[/-]clang:/u
+  const native = cl ? argv.filter((a) => !forwarded.test(a)) : argv
+  const driver = cl ? [...native, ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
+  const own = []
+  const preprocessor = []
+  const compiler = []
+  let clOwn = 0 // how many of `own` are cl's, ahead of what /clang: passes the clang driver
+  for (let k = 1; k < driver.length; k++) {
+    if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
+    else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
+    else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
+    else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
+    else if (OTHER_TOOL.test(driver[k]) && k + 1 < driver.length) k++
+    else {
+      own.push(driver[k])
+      if (cl && k < native.length) clOwn++
+    }
+  }
+  return {
+    args: [driver[0], ...own, ...preprocessor, ...compiler],
+    clangFrom: 1 + clOwn,
+    preprocessorFrom: 1 + own.length,
+    compilerFrom: 1 + own.length + preprocessor.length,
+  }
+}
+
+// Clang's -working-directory (the last, of the options before `to`): what a command's relative paths
+// are taken from, itself taken from `directory`. Under cl and clang-cl only clang's own counts (what
+// /clang: passes), cl reading its own spelling as other options; the driver takes its inputs from
+// its own options' (`to` the preprocessor's).
+function workingDirectory({ args, clangFrom }, directory, to = args.length) {
+  let dir = directory
+  for (let k = clangFrom; k < to; k++) {
+    if (args[k] === '-working-directory' && k + 1 < to) dir = resolve(directory, args[++k])
+    else if (args[k].startsWith('-working-directory=')) dir = resolve(directory, args[k].slice('-working-directory='.length))
+  }
+  return dir
 }
 
 // `args` with each `@file` (a response file, relative to `directory`) replaced by the arguments it
@@ -993,7 +1011,10 @@ export function loadCompileCommands(baseDir, file) {
     const runs = resolve(directory, ...chdir)
     const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
     const cl = isClCommand(command)
-    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, languageOf(command, resolve(directory, entry.file), cl, runs), vars))
+    // The unit's own argument is the driver's, from its working directory.
+    const options = compileOptions(command, cl)
+    const language = languageOf(command, resolve(directory, entry.file), cl, workingDirectory(options, runs, options.preprocessorFrom))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, language, vars))
   }
   return commands
 }
