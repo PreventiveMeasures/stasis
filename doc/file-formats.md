@@ -1389,8 +1389,8 @@ is:
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (Clang's `-iwithsysroot`),
   Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
-  directories, a C++ unit's only: by its `-x` (but `-x none`), cl's `/TP`, a
-  C++ driver (`--driver-mode=g++` too) or its extension), Clang's
+  directories, a C++ unit's only: by cl's `/Tp` or `/Tc` naming it, else its
+  `-x` (but `-x none`) or cl's last `/TP` or `/TC`, else a C++ driver (`--driver-mode=g++` too) or its extension), Clang's
   `-internal-isystem` and `-internal-externc-isystem` (through `-Wp,` or
   `-Xpreprocessor`, ahead of the `-stdlib++-isystem` ones; through `-Xclang`,
   after them), `-idirafter`,
@@ -1412,7 +1412,7 @@ is:
   does, under cl and clang-cl; a `--driver-mode=` in one counts after), a compiler launcher in front of the compiler (`ccache`,
   `sccache`, `distcc`, `icecc`, `buildcache`), a shell's `NAME=VALUE`s and
   `env` with its options and settings skipped (`env -C dir` running the
-  compiler in `dir`), and what clang-cl's `/clang:`
+  compiler in `dir`, nested ones in turn), and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
   and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,
   as the compiler gets them. A `-include` is the unit's first include, looked up in the

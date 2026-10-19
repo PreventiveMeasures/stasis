@@ -860,7 +860,7 @@ test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s opti
 }))
 
 test('loadCompileCommands reads the compiler behind env and a shell\'s NAME=VALUE, in env -C\'s directory', withTmp((t, tmp) => {
-  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.c': '', 'e.cpp': '', 'f.c': '' })
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.c': '', 'e.cpp': '', 'f.c': '', 'g.c': '' })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     { directory: tmp, file: 'a.c', command: 'env SDK=x clang-cl /Iinc /c a.c' },
     { directory: tmp, file: 'b.c', command: 'SDK=x INCLUDE=y clang-cl /Iinc /c b.c' },
@@ -868,9 +868,10 @@ test('loadCompileCommands reads the compiler behind env and a shell\'s NAME=VALU
     { directory: tmp, file: 'd.c', arguments: ['env', '-C', 'build', 'clang-cl', '/Iinc', '/FIpch.h', '/c', '../d.c'] },
     { directory: tmp, file: 'e.cpp', arguments: ['env', 'CCACHE_DIR=/c', 'ccache', 'env', '--chdir=build', 'g++', '-cxx-isystem', 'cx', '-Iinc', '-c', '../e.cpp'] },
     { directory: tmp, file: 'f.c', arguments: ['env', '-S', 'clang-cl /Iinc', '/c', 'f.c'] },
+    { directory: tmp, file: 'g.c', arguments: ['env', '-C', 'one', 'env', '-C', 'x', '-C', 'two', 'clang', '-Iinc', '-c', '../../g.c'] },
   ]))
   // Each runs the clang-cl (g++) after env's options and settings, as GNU env does: d.c's and e.cpp's
-  // in build.
+  // in build, g.c's in one/two (each env's last -C, in turn).
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
   for (const unit of ['a.c', 'b.c', 'c.c']) {
     t.assert.deepStrictEqual(commands.get(unit).I, [{ rel: 'inc' }], unit)
@@ -881,8 +882,28 @@ test('loadCompileCommands reads the compiler behind env and a shell\'s NAME=VALU
   t.assert.deepStrictEqual(commands.get('d.c').forced, [{ flag: '/FI', path: 'pch.h', dir: { rel: 'build' } }])
   t.assert.deepStrictEqual(commands.get('e.cpp').I, [{ rel: 'build/inc' }])
   t.assert.deepStrictEqual(commands.get('e.cpp').system, [{ rel: 'build/cx' }])
+  t.assert.deepStrictEqual(commands.get('g.c').I, [{ rel: 'one/two/inc' }])
   // An env option this doesn't know leaves env the command, which is no cl.
   t.assert.equal(commands.get('f.c').msvc, undefined)
+}))
+
+test('loadCompileCommands takes clang-cl\'s /Tp and /Tc for the unit they name, /TP and /TC for every one', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'd.c': '', 'e.c': '', 'src/f.c': '' })
+  const lib = ['/clang:-stdlib++-isystem', '/clang:lib', '/c']
+  const unit = (file, args) => ({ directory: tmp, file, arguments: ['clang-cl', ...args, ...lib] })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    unit('a.c', ['/Tpa.c', '/Tc', 'b.c']),
+    unit('b.c', ['/Tpa.c', '/Tc', 'b.c']),
+    unit('d.c', ['/Tpa.c', 'd.c']),
+    unit('e.c', ['/TP', '/Tcd.c', 'e.c']),
+    unit('src/f.c', ['/Tpsrc\\f.c', '/TC']),
+  ]))
+  // clang-cl 18 compiles a.c as C++, b.c and d.c as C; e.c as C++ (the last /TP or /TC, wherever it
+  // is, for a file no /Tp or /Tc names), f.c as C++ (its /Tp, before or after a /TC).
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  for (const [file, cxx] of [['a.c', true], ['b.c', false], ['d.c', false], ['e.c', true], ['src/f.c', true]]) {
+    t.assert.deepStrictEqual(commands.get(file).system, cxx ? [{ rel: 'lib' }] : [], file)
+  }
 }))
 
 test('collectCBundle searches Clang\'s framework directories, -F with the -I ones, -iframework after the -isystem ones', withTmp((t, tmp) => {

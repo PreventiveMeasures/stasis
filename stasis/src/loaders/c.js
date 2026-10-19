@@ -687,11 +687,11 @@ const ENV_FLAG = /^(?:-[0iv]+|--(?:ignore-environment|null|debug|list-signal-han
 const programName = (arg) => basename(arg ?? '').replaceAll('\\', '/').split('/').at(-1)
 // Where a command's compiler is: after any launcher (`ccache gcc ...`, `sccache clang-cl ...`), any
 // `NAME=VALUE` a shell sets, and `env` with its options and settings (`env [OPTION]... [NAME=VALUE]...
-// COMMAND`); `chdir` is the last `env -C DIR`, which the compiler runs in. An env option this doesn't
-// know (`-S`, a string it splits) leaves env the command.
+// COMMAND`); `chdir` holds each env's last `-C DIR`, the compiler running in them in turn. An env
+// option this doesn't know (`-S`, a string it splits) leaves env the command.
 function compilerAt(args) {
   let at = 0
-  let chdir
+  const chdir = []
   while (at < args.length - 1) {
     const name = programName(args[at])
     if (ASSIGNMENT.test(args[at]) || LAUNCHERS.test(name)) {
@@ -700,7 +700,7 @@ function compilerAt(args) {
     }
     if (!/^env(?:\.exe)?$/iu.test(name)) break
     let k = at + 1
-    let dir = chdir
+    let dir
     for (; k < args.length - 1 && args[k].startsWith('-'); k++) {
       const a = args[k]
       let m
@@ -715,7 +715,7 @@ function compilerAt(args) {
       else if (!ENV_FLAG.test(a) && !/^(?:-u|--unset=)./su.test(a)) return { at, chdir }
     }
     at = k
-    chdir = dir
+    if (dir !== undefined) chdir.push(dir)
   }
   return { at, chdir }
 }
@@ -723,16 +723,24 @@ function compilerAt(args) {
 // `<target>-clang-cl`).
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
-// Whether a command compiles its unit as C++: by its last `-x` (cl's `/TP`, `/Tp<file>`, `/TC`, `/Tc`),
-// else by a C++ driver (`clang++`, `g++`, `--driver-mode=g++`), else by the unit's extension.
-function isCxx(args, file, cl) {
+// Whether a command (run in `directory`) compiles its unit `file` as C++: by cl's `/Tp` or `/Tc` naming
+// it, else by its last `-x` (cl's last `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by
+// a C++ driver (`clang++`, `g++`, `--driver-mode=g++`), else by the unit's extension.
+function isCxx(args, file, cl, directory) {
   let language
+  let global
+  let own
   for (let k = 1; k < args.length; k++) {
+    let m
     if (args[k] === '-x') language = args[++k]
     else if (args[k].startsWith('-x') && args[k].length > 2) language = args[k].slice(2)
-    else if (cl && /^[/-]T[Pp]/u.test(args[k])) language = 'c++'
-    else if (cl && /^[/-]T(?:C$|c.)/u.test(args[k])) language = 'c'
+    else if (cl && /^[/-]T[PC]$/u.test(args[k])) global = args[k][2] === 'P' ? 'c++' : 'c'
+    else if (cl && (m = /^[/-]T([pc])(.*)$/su.exec(args[k])) !== null) {
+      const named = m[2] === '' ? args[++k] : m[2]
+      if (named !== undefined && resolve(directory, named.replaceAll('\\', '/')) === file) own = m[1] === 'p' ? 'c++' : 'c'
+    }
   }
+  language = own ?? global ?? language
   // `-x none` gives the extension back the say.
   if (language !== undefined && language !== 'none') return language.startsWith('c++')
   const mode = driverMode(args)
@@ -827,10 +835,10 @@ export function loadCompileCommands(baseDir, file) {
     // As clang does: response files split by the mode the command shows, the mode then taken from
     // what they hold too (a `--driver-mode=cl` in one).
     const { at, chdir } = compilerAt(args)
-    const runs = chdir === undefined ? directory : resolve(directory, chdir)
+    const runs = resolve(directory, ...chdir)
     const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
     const cl = isClCommand(command)
-    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, entry.file, cl)))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, resolve(directory, entry.file), cl, runs)))
   }
   return commands
 }
