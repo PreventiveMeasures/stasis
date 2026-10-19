@@ -8,7 +8,7 @@ import { Lockfile } from './lockfile.js'
 import { brotliOptions } from './brotli.js'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson } from './bundle-util.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix } from './util.js'
+import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 const CONFIG_FILE = 'stasis.config.json'
 const LOCK_FILE = 'stasis.lock.json'
@@ -61,9 +61,11 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
-  // `identity`'s name, version, ecosystem and repo (moduleInfo takes those alone).
+  // `identity`'s name, version, ecosystem, repo and vendored (moduleInfo takes those alone); a later
+  // file's adds the vendored package it is in.
   const bucketFiles = (dir, identity) => {
-    if (!modules.has(dir)) modules.set(dir, moduleInfo({ ...identity, files: Object.create(null) }))
+    const bucket = modules.get(dir)
+    modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
     return modules.get(dir).files
   }
   // findPackageMetadata's result depends only on the file's directory.

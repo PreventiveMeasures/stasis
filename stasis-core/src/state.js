@@ -11,8 +11,8 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPathWithin, isStatFormat, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath } from './util.js'
-import { detectRepo, packageJSONStat, packageJSONText, packageRepo, readModuleManifest } from './bundle-util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, withMetadataOf } from './util.js'
+import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -449,8 +449,9 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // `repo` is metadata, which a lockfile never records: the bundle's is taken, to be written again.
-        if (lockModule.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...lockModule, repo: info.repo }))
+        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to be written again.
+        const withMetadata = withMetadataOf(lockModule, info)
+        if (withMetadata !== lockModule) this.modules.set(dir, withMetadata)
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -498,8 +499,9 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          // `repo` is metadata, held to nothing: the first half's that records one.
-          if (existing.repo === undefined && info.repo !== undefined) this.modules.set(dir, moduleInfo({ ...existing, repo: info.repo }))
+          // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
+          const withMetadata = withMetadataOf(existing, info)
+          if (withMetadata !== existing) this.modules.set(dir, withMetadata)
         }
       }
     }
@@ -742,8 +744,8 @@ export class State {
     assert.ok(closestType === undefined || closestType === 'module' || closestType === 'commonjs')
 
     // findPackageJSON may land on a `{"type":"module"}` sub-bucket marker lacking name/version.
-    const nmRoot = splitNodeModulesPath(file)?.dir
-    let pkgAbsolute, name, version, repo
+    const { dir: nmRoot, rel: nmRel } = splitNodeModulesPath(file) ?? {}
+    let pkgAbsolute, name, version, repo, vendored, subpackage
     if (nmRoot) {
       pkgAbsolute = resolve(this.root, nmRoot, 'package.json')
       const rootPkg = pkgAbsolute === closestPkgAbsolute ? closestPkg : readPackageJSON(this.#host, pkgAbsolute)
@@ -751,11 +753,23 @@ export class State {
       repo = packageRepo(rootPkg)
       assert.ok(name, `Missing name in ${this.relative(pkgAbsolute)}`)
       assert.ok(version, `Missing version in ${this.relative(pkgAbsolute)}`)
-      if (closestPkgAbsolute !== pkgAbsolute && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {
+      // A package.json in a package vendored into this one (bundle-util's vendor dirs) names that
+      // package: the file is this one's, listed as that package's in `vendored`.
+      const vendorDir = vendorDirOf(name, nmRel)
+      const vendor = vendorDir === undefined ? undefined : vendoredPackageOf(nmRel, vendorDir, (sub) => {
+        const candidate = resolve(this.root, nmRoot, sub, 'package.json')
+        return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
+      })
+      vendored = vendor?.vendored
+      if (closestPkgAbsolute !== pkgAbsolute && !vendor?.below && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {
         const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
         // Allow fake module-name subpaths: the real module owns the prefix (npm wouldn't publish this).
         if (closestPkg.name !== undefined && closestPkg.name !== name) assert.ok(closestPkg.name.startsWith(`${name}/`), message)
-        if (closestPkg.version !== undefined) assert.equal(closestPkg.version, version, message)
+        // A subpackage is the package's, listed in `subpackages`; where the closest package.json is its
+        // own (no marker below it), its version is its own too.
+        subpackage = this.#subpackageOf(nmRoot, nmRel, closestPkg, name)
+        const ownVersion = subpackage !== undefined && closestPkg.name !== undefined
+        if (closestPkg.version !== undefined && !ownVersion) assert.equal(closestPkg.version, version, message)
       }
     } else {
       pkgAbsolute = closestPkgAbsolute
@@ -795,7 +809,22 @@ export class State {
     // A dependency's repo is metadata, its package.json's, held to nothing: a record with none gets it.
     if (module.repo === undefined && repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
 
-    return { absolute, file, dir, module, closestType }
+    return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored, subpackage }
+  }
+
+  // The subpackage (isSubpackage) of the package `name` at `nmRoot` that its file `nmRel` is in: the nearest
+  // package.json above the file with a name, past `{"type":"module"}` markers (namedManifestOf), walked by
+  // the file's own path, not the real one findPackageJSON resolves through a symlinked install -> { dir, name,
+  // version? }, or undefined. Looked for only where the closest package.json, `closest`, is such a marker or
+  // names a subpath.
+  #subpackageOf(nmRoot, nmRel, closest, name) {
+    if (closest.name !== undefined && !(typeof closest.name === 'string' && closest.name.startsWith(`${name}/`))) return undefined
+    const found = namedManifestOf(nmRel, (sub) => {
+      const candidate = resolve(this.root, nmRoot, sub, 'package.json')
+      return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
+    })
+    if (found === undefined || !isSubpackage(found.pkg.name, name, found.dir)) return undefined
+    return { dir: found.dir, name: found.pkg.name, ...(isPackageString(found.pkg.version) ? { version: found.pkg.version } : {}) }
   }
 
   // `resource: true` (legacy alias `isBinary: true`): format derived from bytes. `inferFormat: false`
@@ -823,7 +852,7 @@ export class State {
     if (asResource && isEntry) {
       throw new Error(`addFile: a resource can't be an entry (resource:true + isEntry:true)`)
     }
-    const { absolute, file, dir, module, closestType } = this.#locateModule(url, { synthetic })
+    const { absolute, file, dir, module, closestType, vendored, subpackage } = this.#locateModule(url, { synthetic })
 
     // Real content supersedes a payload-free stat record: drop it so the noupsert below records the
     // actual format instead of conflicting with 'stat:*'.
@@ -930,6 +959,13 @@ export class State {
 
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
+    // The vendored package or subpackage this file is in is reached: listed in the host's `vendored` or
+    // `subpackages` (metadata, the first identity recorded for its dir standing).
+    for (const [field, entry] of [['vendored', vendored], ['subpackages', subpackage]]) {
+      if (entry === undefined || Object.hasOwn(this.modules.get(dir)[field] ?? {}, entry.dir)) continue
+      const { dir: sub, ...identity } = entry
+      this.modules.set(dir, withMetadataOf(this.modules.get(dir), { [field]: { [sub]: Object.freeze(identity) } }))
+    }
 
     if (this.config.bundle) {
       if (asResource) noupsert(this.resources, file, buf.toString(format === 'resource:base64' ? 'base64' : 'utf8'))

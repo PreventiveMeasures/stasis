@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'state-nested-pkg')
@@ -51,6 +52,141 @@ test('addFile tolerates the listed upstream mismatch: @redis/client dist/package
     t.assert.equal(module.version, version)
     t.assert.ok(module.files['dist/index.js'])
   }
+})
+
+// Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json naming
+// it (most with no version, some under a dir that isn't their name: loader-utils2 is `loader-utils`).
+const NEXT = join(root, 'node_modules', 'next')
+const nextFile = (rel) => pathToFileURL(join(NEXT, ...rel.split('/'))).toString()
+
+test('addFile takes a package vendored in a listed vendor dir as its host\'s, and lists it as vendored', (t) => {
+  const state = new State(root)
+  state.addFile(nextFile('dist/compiled/ua-parser-js/ua-parser.js'))
+  state.addFile(nextFile('dist/compiled/react-is/index.js'))
+  // Below a nameless `{"type":"module"}` marker: the vendored package is the nearest one named.
+  state.addFile(nextFile('dist/compiled/@babel/runtime/helpers/esm/extends.js'))
+  state.addFile(nextFile('dist/compiled/loader-utils2/index.js'))
+  // In the vendor dir, but in no vendored package: the host's own.
+  state.addFile(nextFile('dist/compiled/raw.js'))
+
+  const module = state.modules.get('node_modules/next')
+  t.assert.equal(module.name, 'next')
+  t.assert.equal(module.version, '16.4.0')
+  t.assert.ok(module.files['dist/compiled/ua-parser-js/ua-parser.js'])
+  t.assert.ok(!state.modules.has('node_modules/next/dist/compiled/ua-parser-js'), 'never a bucket of its own')
+  // The marker's `type` still decides the format.
+  t.assert.equal(state.formats.get('node_modules/next/dist/compiled/@babel/runtime/helpers/esm/extends.js'), 'module')
+  // Only what was reached: dist/compiled/unreached is never listed.
+  t.assert.deepStrictEqual({ ...module.vendored }, {
+    'dist/compiled/ua-parser-js': { name: 'ua-parser-js' },
+    'dist/compiled/react-is': { name: 'react-is', version: '19.3.0-canary-278794d7-20261002' },
+    'dist/compiled/@babel/runtime': { name: '@babel/runtime', version: '7.27.0' },
+    'dist/compiled/loader-utils2': { name: 'loader-utils' },
+  })
+})
+
+test('a nested package.json outside the vendor dir is still held to its host\'s identity', (t) => {
+  const state = new State(root)
+  t.assert.throws(() => state.addFile(nextFile('dist/server/next.js')),
+    /Inconsistent data between node_modules\/next\/dist\/server\/package\.json and node_modules\/next\/package\.json/)
+})
+
+test('a bundle lists the vendored packages it carries a file of; a lockfile none', (t) => {
+  const state = new State(root, { lock: 'add', bundle: 'add' })
+  state.addFile(nextFile('dist/compiled/ua-parser-js/ua-parser.js'))
+  state.addFile(nextFile('dist/compiled/react-is/LICENSE'), { resource: true })
+
+  const record = (artifact) => JSON.parse(artifact.serialize()).modules['node_modules/next']
+  t.assert.deepStrictEqual(record(state.sourceBundle).vendored, {
+    'dist/compiled/react-is': { name: 'react-is', version: '19.3.0-canary-278794d7-20261002' },
+    'dist/compiled/ua-parser-js': { name: 'ua-parser-js' },
+  })
+  // Each half of a split bundle lists the vendored packages of the files it carries.
+  t.assert.deepStrictEqual(record(state.codeBundle).vendored, { 'dist/compiled/ua-parser-js': { name: 'ua-parser-js' } })
+  t.assert.deepStrictEqual(record(state.resourcesBundle).vendored, {
+    'dist/compiled/react-is': { name: 'react-is', version: '19.3.0-canary-278794d7-20261002' },
+  })
+  t.assert.equal(record(state.lockfile).vendored, undefined, 'metadata, which a lockfile never records')
+
+  const parsed = Bundle.parse(state.sourceBundle.serialize())
+  t.assert.deepStrictEqual(Object.keys(parsed.modules.get('node_modules/next').vendored), ['dist/compiled/react-is', 'dist/compiled/ua-parser-js'])
+})
+
+test('a bundle refuses a vendored entry that holds none of its files, or on first-party code', (t) => {
+  const bundle = (modules, sources = { '.': { name: 'app', files: { 'index.js': '' } } }) => JSON.stringify({
+    version: 1, config: { scope: 'full' }, entries: ['index.js'], formats: {}, imports: {}, sources, modules,
+  })
+  const next = (vendored) => ({ 'node_modules/next': { name: 'next', version: '16.4.0', ecosystem: 'npm', vendored, files: { 'dist/compiled/a/index.js': '' } } })
+  t.assert.doesNotThrow(() => Bundle.parse(bundle(next({ 'dist/compiled/a': { name: 'a' } }))))
+  t.assert.throws(() => Bundle.parse(bundle(next({ 'dist/compiled/b': { name: 'b' } }))), /vendored 'dist\/compiled\/b' holds none of its files/)
+  t.assert.throws(() => Bundle.parse(bundle(next({ 'dist/compiled/a': { version: '1.0.0' } }))), /has no name/)
+  t.assert.throws(() => Bundle.parse(bundle(next({ 'dist/compiled/a': { name: 'a', path: 'x' } }))), /unknown .* key 'path'/)
+  t.assert.throws(() => Bundle.parse(bundle(next({ 'dist/../a': { name: 'a' } }))), /invalid directory/)
+  t.assert.throws(() => Bundle.parse(bundle({}, { '.': { name: 'app', vendored: { lib: { name: 'x' } }, files: { 'lib/index.js': '' } } })),
+    /no dependency's bucket, and carries no vendored/)
+})
+
+// @hookform/resolvers lays its subpath entry points out as microbundle does: zod/package.json, named
+// `@hookform/resolvers/zod`, with a placeholder version of its own (1.0.0; arktype's is 2.0.0).
+const HOOKFORM = join(root, 'node_modules', '@hookform', 'resolvers')
+const hookformFile = (rel) => pathToFileURL(join(HOOKFORM, ...rel.split('/'))).toString()
+
+test('addFile takes a subpackage as its package\'s, its own version held to nothing, and lists it', (t) => {
+  const state = new State(root)
+  state.addFile(hookformFile('zod/dist/zod.js'))
+  state.addFile(hookformFile('ajv/dist/ajv.js')) // a subpackage with no version
+  // Below a `{"type":"module"}` marker: the subpackage is the nearest package.json with a name.
+  state.addFile(hookformFile('yup/dist/esm/yup.js'))
+  state.addFile(hookformFile('dist/resolvers.js')) // the package's own
+
+  const module = state.modules.get('node_modules/@hookform/resolvers')
+  t.assert.equal(module.name, '@hookform/resolvers')
+  t.assert.equal(module.version, '5.9.1')
+  t.assert.ok(module.files['zod/dist/zod.js'])
+  t.assert.ok(!state.modules.has('node_modules/@hookform/resolvers/zod'), 'never a bucket of its own')
+  // Only what was reached: arktype is never listed.
+  t.assert.deepStrictEqual({ ...module.subpackages }, {
+    zod: { name: '@hookform/resolvers/zod', version: '1.0.0' },
+    ajv: { name: '@hookform/resolvers/ajv' },
+    yup: { name: '@hookform/resolvers/yup', version: '1.0.0' },
+  })
+  t.assert.equal(state.formats.get('node_modules/@hookform/resolvers/yup/dist/esm/yup.js'), 'module', 'the marker still decides the format')
+  t.assert.equal(module.vendored, undefined, 'its own code, no copy of another package')
+})
+
+test('a package.json below a subpackage\'s, not its own, is still held to the package\'s version', (t) => {
+  // yup/dist/cjs/package.json gives a version and no name: no subpackage's, whatever is above it.
+  const state = new State(root)
+  t.assert.throws(() => state.addFile(hookformFile('yup/dist/cjs/yup.js')),
+    /Inconsistent data between node_modules\/@hookform\/resolvers\/yup\/dist\/cjs\/package\.json and node_modules\/@hookform\/resolvers\/package\.json/)
+})
+
+test('a package.json named in the package\'s namespace for another directory is still held to its version', (t) => {
+  const state = new State(root)
+  t.assert.throws(() => state.addFile(hookformFile('misplaced/index.js')),
+    /Inconsistent data between node_modules\/@hookform\/resolvers\/misplaced\/package\.json and node_modules\/@hookform\/resolvers\/package\.json/)
+})
+
+test('a bundle lists the subpackages it carries a file of; a lockfile none', (t) => {
+  const state = new State(root, { lock: 'add', bundle: 'add' })
+  state.addFile(hookformFile('zod/dist/zod.js'))
+  const record = (artifact) => JSON.parse(artifact.serialize()).modules['node_modules/@hookform/resolvers']
+  t.assert.deepStrictEqual(record(state.sourceBundle).subpackages, { zod: { name: '@hookform/resolvers/zod', version: '1.0.0' } })
+  t.assert.equal(record(state.lockfile).subpackages, undefined, 'metadata, which a lockfile never records')
+  t.assert.deepStrictEqual({ ...Bundle.parse(state.sourceBundle.serialize()).modules.get('node_modules/@hookform/resolvers').subpackages.zod },
+    { name: '@hookform/resolvers/zod', version: '1.0.0' })
+})
+
+test('a bundle refuses a subpackage named other than its package\'s name for its directory', (t) => {
+  const bundle = (subpackages) => JSON.stringify({
+    version: 1, config: { scope: 'node_modules' }, formats: {}, imports: {},
+    modules: { 'node_modules/@hookform/resolvers': { name: '@hookform/resolvers', version: '5.9.1', ecosystem: 'npm', subpackages, files: { 'zod/dist/zod.js': '' } } },
+  })
+  t.assert.doesNotThrow(() => Bundle.parse(bundle({ zod: { name: '@hookform/resolvers/zod', version: '1.0.0' } })))
+  t.assert.throws(() => Bundle.parse(bundle({ zod: { name: '@hookform/resolvers/yup', version: '1.0.0' } })),
+    /subpackages 'zod' is named '@hookform\/resolvers\/yup', not '@hookform\/resolvers\/zod'/)
+  t.assert.throws(() => Bundle.parse(bundle({ zod: { name: 'zod' } })), /is named 'zod'/)
+  t.assert.throws(() => Bundle.parse(bundle({ yup: { name: '@hookform/resolvers/yup' } })), /subpackages 'yup' holds none of its files/)
 })
 
 test('addFile walks past a workspace type-only marker to find the project package.json', (t) => {

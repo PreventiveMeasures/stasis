@@ -17,6 +17,7 @@ import {
   normalizeBlock,
   normalizeModule,
   normalizeRepo,
+  PACKAGE_BLOCK,
   parseEntries,
   parseExecutable,
   parseFormats,
@@ -91,9 +92,6 @@ const parsedRepo = (repo) => {
   return rest
 }
 
-// A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not space or `"#$%&,:;<=>?[\]^`{|}`.
-const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
-const PACKAGE_BLOCK = { name: isPackageString, version: isPackageString }
 // One block per ecosystem, named as a module's `ecosystem` is.
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
