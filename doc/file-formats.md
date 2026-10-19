@@ -1392,7 +1392,8 @@ is:
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (Clang's `-iwithsysroot`),
   Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
-  directories, a C++ unit's only: by cl's `/Tp` or `/Tc` naming it, else the
+  directories, a C++ or Objective-C++ unit's only, `-stdlib++-isystem` but under
+  `-nostdinc++`: by cl's `/Tp` or `/Tc` naming it, else the
   `-x` before its own argument (but `-x none`) or cl's last `/TP` or `/TC`, else a C++ driver (`--driver-mode=g++` too) or its extension), Clang's
   `-c-isystem` (a C unit's only, in `-cxx-isystem`'s place), `-internal-isystem`
   and `-internal-externc-isystem` (through `-Wp,` or `-Xpreprocessor`, ahead of
@@ -1422,7 +1423,9 @@ is:
   compiler in `dir`, nested ones in turn; the include path variables they set,
   `env -u` and `-i` aside, searched as GCC and Clang search them: `CPATH`'s
   directories after the `-I` ones, `C_INCLUDE_PATH`'s or `CPLUS_INCLUDE_PATH`'s
-  after the `-c-isystem` or `-cxx-isystem` ones, and cl's `INCLUDE` and
+  after the `-c-isystem` or `-cxx-isystem` ones, then `OBJC_INCLUDE_PATH`'s or
+  `OBJCPLUS_INCLUDE_PATH`'s (Clang reads `CPLUS_INCLUDE_PATH` too for
+  Objective-C++, GCC that alone), and cl's `INCLUDE` and
   `EXTERNAL_INCLUDE` after the `/imsvc` ones, but under `/X`), and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
   and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,

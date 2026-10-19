@@ -513,9 +513,11 @@ const OTHER_TOOL = /^-X(?:linker|assembler|analyzer|cuda-ptxas|cuda-fatbinary|of
 
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
 // cl's too where `cl` says the driver is one), each dir resolved against `commandDirectory` (or its
-// -working-directory); `cxx` says the command compiles C++, where -cxx-isystem and -stdlib++-isystem
-// count; `vars` the environment variables the command sets the compiler (CPATH and the like).
-function includeFlags(argv, commandDirectory, toDir, cl, cxx = false, vars = new Map()) {
+// -working-directory); `language` is what it compiles the unit as (languageOf), the C++ ones where
+// -cxx-isystem and -stdlib++-isystem count; `vars` the environment variables the command sets the
+// compiler (CPATH and the like).
+function includeFlags(argv, commandDirectory, toDir, cl, language = 'c', vars = new Map()) {
+  const cxx = language === 'c++' || language === 'objective-c++'
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
@@ -653,9 +655,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false, vars = new
       else if ((v = take('-cxx-isystem')) !== undefined) {
         if (cxx) dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
       } else if ((v = take('-c-isystem')) !== undefined) {
-        if (!cxx) dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
+        if (language === 'c') dir(v, k < compilerFrom ? languageSystem : compilerLanguage)
       } else if ((v = take('-stdlib++-isystem')) !== undefined) {
-        if (cxx) dir(v, standardLibrary)
+        if (cxx && !args.includes('-nostdinc++')) dir(v, standardLibrary)
       }
       // Clang's -internal-isystem and -internal-externc-isystem, which only -Xclang, -Wp, and
       // -Xpreprocessor pass (the driver rejects them), searched where the compiler gets them: the
@@ -690,21 +692,31 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false, vars = new
   }
   // The include path variables the command sets, as gcc 13 and clang 18 -v list them: CPATH's
   // directories after every -I one (to Clang, every one but -Xclang's), C_INCLUDE_PATH's (a C
-  // unit's) or CPLUS_INCLUDE_PATH's (a C++ one's) after the -c-isystem or -cxx-isystem ones (but
-  // -Xclang's), and under cl and clang-cl, INCLUDE's and EXTERNAL_INCLUDE's (`;`-separated, as cl
-  // splits them) after /imsvc's, unless /X; an empty element is the working directory.
+  // unit's) or CPLUS_INCLUDE_PATH's (a C++ one's, and to Clang an Objective-C++ one's) after the
+  // -c-isystem or -cxx-isystem ones (but -Xclang's), OBJC_INCLUDE_PATH's or OBJCPLUS_INCLUDE_PATH's
+  // (an Objective-C or Objective-C++ unit's, which GCC reads alone) after those, and under cl and
+  // clang-cl, INCLUDE's and EXTERNAL_INCLUDE's (`;`-separated, as cl splits them) after /imsvc's,
+  // unless /X; an empty element is the working directory.
   const envDirs = (name, separator = delimiter) => (vars.get(name) ? vars.get(name).split(separator).map((d) => (d === '' ? '.' : d)) : [])
   const cpath = []
   for (const d of envDirs('CPATH')) dir(d, cpath)
   flags.I.splice(gcc ? flags.I.length : ownI, 0, ...cpath)
-  for (const d of envDirs(cxx ? 'CPLUS_INCLUDE_PATH' : 'C_INCLUDE_PATH')) dir(d, languageSystem)
+  const [languageVar, objcVar] = {
+    c: ['C_INCLUDE_PATH'],
+    'c++': ['CPLUS_INCLUDE_PATH'],
+    'objective-c': [undefined, 'OBJC_INCLUDE_PATH'],
+    'objective-c++': [gcc ? undefined : 'CPLUS_INCLUDE_PATH', 'OBJCPLUS_INCLUDE_PATH'],
+  }[language]
+  for (const d of envDirs(languageVar)) dir(d, languageSystem)
+  const objcSystem = []
+  for (const d of envDirs(objcVar)) dir(d, objcSystem)
   if (cl && !args.some((a) => /^[/-]X$/u.test(a))) for (const d of [...envDirs('INCLUDE', ';'), ...envDirs('EXTERNAL_INCLUDE', ';')]) dir(d, flags.after)
   // Clang's -resource-dir: its `include`, which -nostdinc and -nobuiltininc leave out.
   const resource = []
   if (resourceDir !== undefined && resourceDir !== '' && !args.includes('-nostdinc') && !args.includes('-nobuiltininc')) dir(`${resourceDir}/include`, resource)
   flags.quote.unshift(...preBarrier)
   flags.system.unshift(...prefixSystem)
-  flags.system.push(...systemFrameworks, ...languageSystem, ...compilerLanguage, ...passedSystem, ...standardLibrary, ...resource, ...compilerSystem, ...internalFrameworks)
+  flags.system.push(...systemFrameworks, ...languageSystem, ...compilerLanguage, ...objcSystem, ...passedSystem, ...standardLibrary, ...resource, ...compilerSystem, ...internalFrameworks)
   if (cl) flags.msvc = true
   return flags
 }
@@ -858,11 +870,12 @@ function compilerAt(args) {
 // `<target>-clang-cl`).
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
-// Whether a command (run in `directory`) compiles its unit `file` as C++: by cl's `/Tp` or `/Tc` naming
-// it, else by the `-x` before the unit's own argument (the last one where it is none of them; cl's
-// last `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by a C++ driver (`clang++`, `g++`,
+// What a command (run in `directory`) compiles its unit `file` as: 'c', 'c++', 'objective-c' or
+// 'objective-c++' (an `-x` naming another language counts as C), by cl's `/Tp` or `/Tc` naming it,
+// else by the `-x` before the unit's own argument (the last one where it is none of them; cl's last
+// `/TP` or `/TC`, wherever it is, as clang-cl takes it), else by a C++ driver (`clang++`, `g++`,
 // `--driver-mode=g++`), else by the unit's extension.
-function isCxx(args, file, cl, directory) {
+function languageOf(args, file, cl, directory) {
   let language
   let global
   let own
@@ -880,9 +893,13 @@ function isCxx(args, file, cl, directory) {
   }
   language = own ?? global ?? (input === undefined ? language : input[0])
   // `-x none` gives the extension back the say.
-  if (language !== undefined && language !== 'none') return language.startsWith('c++')
+  if (language !== undefined && language !== 'none') {
+    const objc = /^(?:objective-c|objc)/u.test(language)
+    const plus = /^(?:objective-c|objc|c)\+\+/u.test(language)
+    return `${objc ? 'objective-' : ''}c${plus ? '++' : ''}`
+  }
   const mode = driverMode(args)
-  return (mode === undefined ? programName(args[0]).includes('++') : mode === 'g++') || CPP_FORMATS.has(cFormatOf(file))
+  return (mode === undefined ? programName(args[0]).includes('++') : mode === 'g++') || CPP_FORMATS.has(cFormatOf(file)) ? 'c++' : 'c'
 }
 
 // A clang command's `--driver-mode=` (the last), which overrides what its program's name says.
@@ -976,7 +993,7 @@ export function loadCompileCommands(baseDir, file) {
     const runs = resolve(directory, ...chdir)
     const command = expandResponseFiles(args.slice(at), runs, isClCommand(args))
     const cl = isClCommand(command)
-    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, isCxx(command, resolve(directory, entry.file), cl, runs), vars))
+    commands.set(unit.rel, includeFlags(command, runs, toDir, cl, languageOf(command, resolve(directory, entry.file), cl, runs), vars))
   }
   return commands
 }

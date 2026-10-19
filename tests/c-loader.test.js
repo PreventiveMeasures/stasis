@@ -804,6 +804,26 @@ test('loadCompileCommands applies the include path variables a command sets, as 
   t.assert.deepStrictEqual(commands.get('f.c').I, [{ rel: 'cp1' }])
 }))
 
+test('loadCompileCommands takes Objective-C++ for C++, Objective-C for neither, and -nostdinc++ out of -stdlib++-isystem', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'd.cpp': '' })
+  const vars = 'CPLUS_INCLUDE_PATH=cxi C_INCLUDE_PATH=ci OBJCPLUS_INCLUDE_PATH=op OBJC_INCLUDE_PATH=oc'
+  const flags = '-cxx-isystem cx -stdlib++-isystem stdl -Xclang -c-isystem -Xclang csys'
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', command: `${vars} clang -x objective-c++ ${flags} -c a.c` },
+    { directory: tmp, file: 'b.c', command: `${vars} clang -x objective-c ${flags} -c b.c` },
+    { directory: tmp, file: 'c.c', command: `${vars} gcc -x objective-c++ -c c.c` },
+    { directory: tmp, file: 'd.cpp', arguments: ['clang++', '-stdlib++-isystem', 'stdl', '-cxx-isystem', 'cx', '-nostdinc++', '-c', 'd.cpp'] },
+  ]))
+  // clang 18 -v lists cx, cxi, op, stdl for Objective-C++ (no csys, no ci), oc alone for Objective-C,
+  // and cx without stdl under -nostdinc++. GCC reads one variable per language (its incpath.c),
+  // OBJCPLUS_INCLUDE_PATH for Objective-C++.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'cx' }, { rel: 'cxi' }, { rel: 'op' }, { rel: 'stdl' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'oc' }])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'op' }])
+  t.assert.deepStrictEqual(commands.get('d.cpp').system, [{ rel: 'cx' }])
+}))
+
 test('loadCompileCommands searches a Clang -resource-dir\'s include, after the -stdlib++-isystem directories', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '', 'b.cpp': '', 'c.c': '', 'd.c': '', 'e.c': '' })
   const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
