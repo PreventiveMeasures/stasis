@@ -783,21 +783,26 @@ test('loadCompileCommands reads what clang-cl\'s /clang: passes the clang driver
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
 }))
 
-test('loadCompileCommands reads -stdlib++-isystem for a C++ unit, after the other system directories', withTmp((t, tmp) => {
-  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '' })
+test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ unit, after the other system directories', withTmp((t, tmp) => {
+  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '', 'e.c': '', 'f.c': '' })
   const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
-    unit('a.cpp', ['clang', '-stdlib++-isystem', 'lib', '-isystem', 's', '-iframework', 'f', '-Iy']),
-    unit('b.c', ['clang', '-stdlib++-isystem', 'lib']),
+    unit('a.cpp', ['clang', '-stdlib++-isystem', 'lib', '-cxx-isystem', 'a', '-isystem', 's', '-iframework', 'f', '-Iy']),
+    unit('b.c', ['clang', '-stdlib++-isystem', 'lib', '-cxx-isystem', 'a']),
     unit('c.c', ['clang++', '-stdlib++-isystemlib']),
     unit('d.cpp', ['clang', '-x', 'c', '-stdlib++-isystem', 'lib']),
+    unit('e.c', ['clang-cl', '/TP', '/clang:-stdlib++-isystem', '/clang:lib']),
+    unit('f.c', ['clang-cl', '/TP', '/TC', '/clang:-stdlib++-isystem', '/clang:lib']),
   ]))
-  // clang 18's -v for a.cpp lists y, then s, f (a framework directory), lib; for C, no lib.
+  // clang 18's -v for a.cpp lists y, then s, f (a framework directory), a, lib; for C, neither a nor
+  // lib. clang-cl's /TP makes e.c C++, /TC after it f.c C again.
   const commands = loadCompileCommands(tmp, 'compile_commands.json')
-  t.assert.deepStrictEqual(commands.get('a.cpp').system, [{ rel: 's' }, { rel: 'f', framework: true }, { rel: 'lib' }])
+  t.assert.deepStrictEqual(commands.get('a.cpp').system, [{ rel: 's' }, { rel: 'f', framework: true }, { rel: 'a' }, { rel: 'lib' }])
   t.assert.deepStrictEqual(commands.get('b.c').system, [])
   t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'lib' }])
   t.assert.deepStrictEqual(commands.get('d.cpp').system, [])
+  t.assert.deepStrictEqual(commands.get('e.c').system, [{ rel: 'lib' }])
+  t.assert.deepStrictEqual(commands.get('f.c').system, [])
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

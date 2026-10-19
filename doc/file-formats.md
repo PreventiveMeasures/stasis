@@ -1387,9 +1387,10 @@ is:
   (`compile_commands.json`, or the directory holding it; CMake writes one with
   `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
   unit it lists -- an entry, or an implementation file -- is resolved with its
-  first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`, Clang's
-  `-iwithsysroot`), Clang's `-stdlib++-isystem` (after the other system
-  directories, a C++ unit's only), `-idirafter`,
+  first command's `-I`, `-iquote`, `-isystem` (Clang's `-iwithsysroot`),
+  Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
+  directories, a C++ unit's only: by its `-x`, cl's `/TP`, a C++ driver or its
+  extension), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,

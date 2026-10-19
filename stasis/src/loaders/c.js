@@ -470,7 +470,7 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
 // cl's too where `cl` says the driver is one), each dir resolved against `directory`; `cxx` says the
-// command compiles C++, where -stdlib++-isystem counts.
+// command compiles C++, where -cxx-isystem and -stdlib++-isystem count.
 function includeFlags(argv, directory, toDir, cl, cxx = false) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
@@ -492,6 +492,7 @@ function includeFlags(argv, directory, toDir, cl, cxx = false) {
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
+  const cxxSystem = [] // -cxx-isystem's, after those, a C++ unit's only
   const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
@@ -569,11 +570,13 @@ function includeFlags(argv, directory, toDir, cl, cxx = false) {
       if (pass === '-I' || a.startsWith('-include-pch')) continue
       if ((v = long('--include-directory-after')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
       else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
-      else if ((v = take('-cxx-isystem')) !== undefined || (v = take('-isystem')) !== undefined) dir(v, flags.system)
+      else if ((v = take('-isystem')) !== undefined) dir(v, flags.system)
       else if ((v = take('-iwithsysroot')) !== undefined) dir(withSysroot(v), flags.system)
       else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
       else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
-      else if ((v = take('-stdlib++-isystem')) !== undefined) {
+      else if ((v = take('-cxx-isystem')) !== undefined) {
+        if (cxx) dir(v, cxxSystem)
+      } else if ((v = take('-stdlib++-isystem')) !== undefined) {
         if (cxx) dir(v, standardLibrary)
       }
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
@@ -593,7 +596,7 @@ function includeFlags(argv, directory, toDir, cl, cxx = false) {
     }
   }
   flags.quote.unshift(...preBarrier)
-  flags.system.push(...systemFrameworks, ...standardLibrary)
+  flags.system.push(...systemFrameworks, ...cxxSystem, ...standardLibrary)
   if (cl) flags.msvc = true
   return flags
 }
@@ -670,13 +673,15 @@ function compilerAt(args) {
 // `<target>-clang-cl`).
 const isCl = (arg) => /^(?:(?:.*-)?clang-cl(?:-[\d.]+)?|cl)(?:\.exe)?$/iu.test(programName(arg))
 
-// Whether a command compiles its unit as C++: by its last `-x`, else by a C++ driver's name (`clang++`,
-// `g++`), else by the unit's extension.
-function isCxx(args, file) {
+// Whether a command compiles its unit as C++: by its last `-x` (cl's `/TP`, `/Tp<file>`, `/TC`, `/Tc`),
+// else by a C++ driver's name (`clang++`, `g++`), else by the unit's extension.
+function isCxx(args, file, cl) {
   let language
   for (let k = 1; k < args.length; k++) {
     if (args[k] === '-x') language = args[++k]
     else if (args[k].startsWith('-x') && args[k].length > 2) language = args[k].slice(2)
+    else if (cl && /^[/-]T[Pp]/u.test(args[k])) language = 'c++'
+    else if (cl && /^[/-]T(?:C$|c.)/u.test(args[k])) language = 'c'
   }
   if (language !== undefined) return language.startsWith('c++')
   return programName(args[0]).includes('++') || CPP_FORMATS.has(cFormatOf(file))
@@ -756,7 +761,7 @@ export function loadCompileCommands(baseDir, file) {
     const first = compilerAt(args)
     const cl = isCl(args[first])
     const command = expandResponseFiles(args.slice(first), directory, cl)
-    commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file)))
+    commands.set(unit.rel, includeFlags(command, directory, toDir, cl, isCxx(command, entry.file, cl)))
   }
   return commands
 }
