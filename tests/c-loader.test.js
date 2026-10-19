@@ -750,6 +750,21 @@ test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }, { rel: 't' }])
 }))
 
+test('loadCompileCommands leaves out what -Xlinker, -Xassembler and the like hand other tools', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '#include <stdio.h>\n', 'vendor/stdio.h': '', 'sr/inc/.keep': '' })
+  const other = ['-Xlinker', '-Ivendor', '-Xassembler', '-Iv2', '-Xanalyzer', '-Iv3', '-Xopenmp-target=x86_64-pc-linux-gnu', '-Iv4', '-Xoffload-linker-x86_64', '-Iv5', '-Xlinker', '--sysroot=sr']
+  const args = ['clang', ...other, '-Xarch_host', '-Ih', '-I=/inc', '-c', 'a.c']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
+  // clang 18 (and gcc 13, for -Xlinker and -Xassembler) adds none of them, nor the linker's
+  // --sysroot, so =/inc is no directory; -Xarch_host hands -Ih to the host compile. <stdio.h> is the
+  // system's, not vendor's.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'h' }])
+  const { sources, resolutions } = collectCBundle(tmp, ['a.c'], { commands })
+  t.assert.notEqual(resolutions.get('a.c')?.get('include <stdio.h>'), 'vendor/stdio.h')
+  t.assert.ok(!sources.has('vendor/stdio.h'))
+}))
+
 test('loadCompileCommands splits a cl or clang-cl command string by Windows rules, others as a shell does', withTmp((t, tmp) => {
   tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '' })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([

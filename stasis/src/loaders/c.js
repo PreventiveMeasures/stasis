@@ -478,6 +478,11 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
   return ctx
 }
 
+// Options handing the argument after them to a tool other than the compiler (gcc's and clang's
+// linker and assembler, clang's analyzer, CUDA and offloading tools), which clang 18 and gcc 13 leave
+// out of the compile. (clang's -Xarch_host hands its argument to the host compile.)
+const OTHER_TOOL = /^-X(?:linker|assembler|analyzer|cuda-ptxas|cuda-fatbinary|offload-linker(?:-.+)?|openmp-target(?:=.+)?)$/su
+
 // `argv` (a compile command's) read for its include search flags, GCC's and Clang's (clang-cl's and
 // cl's too where `cl` says the driver is one), each dir resolved against `commandDirectory` (or its
 // -working-directory); `cxx` says the command compiles C++, where -cxx-isystem and -stdlib++-isystem
@@ -486,7 +491,8 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
-  // clang-cl's /clang:arg hands `arg` to the clang driver, after its own arguments.
+  // clang-cl's /clang:arg hands `arg` to the clang driver, after its own arguments. What -Xlinker,
+  // -Xassembler and the like hand another tool is no compile's option.
   const forwarded = /^[/-]clang:/u
   const native = cl ? argv.filter((a) => !forwarded.test(a)) : argv
   const driver = cl ? [...native, ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
@@ -499,6 +505,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
     else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
     else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
     else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
+    else if (OTHER_TOOL.test(driver[k]) && k + 1 < driver.length) k++
     else {
       own.push(driver[k])
       if (cl && k < native.length) clOwn++

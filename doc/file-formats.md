@@ -1416,7 +1416,8 @@ is:
   compiler in `dir`, nested ones in turn), and what clang-cl's `/clang:`
   passes the driver read after clang-cl's own options, what `-Xpreprocessor`
   and `-Wp,` pass on after the driver's, then what `-Xclang` (`-Xclang=`) does,
-  as the compiler gets them. A `-include` is the unit's first include, looked up in the
+  as the compiler gets them (what `-Xlinker`, `-Xassembler` and the like hand
+  other tools is none of them). A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
   after the working directory, as clang-cl looks it up. GCC's `-I-` (to cl and clang-cl, `/I -`) makes the `-I` directories
