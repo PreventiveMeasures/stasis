@@ -615,6 +615,11 @@ test('scanIncludes evaluates a condition\'s literals and operators, a macro unkn
   ])
 })
 
+test('scanIncludes splices a line at a backslash spaces apart from its end, as GCC and Clang do', (t) => {
+  // GCC 13 opens required.h, warning, and the comment takes in the #include after it.
+  t.assert.deepStrictEqual(specs('#include "requi\\   \nred.h"\n// comment\\ \t\n#include "next.h"\n'), ['include "required.h" live'])
+})
+
 test('scanIncludes reads a first-line directive after a byte order mark, as GCC does', (t) => {
   t.assert.deepStrictEqual(specs('﻿#include "a.h"\n'), ['include "a.h" live'])
   t.assert.deepStrictEqual(specs('﻿#ifndef A_H\n#define A_H\n#include "b.h"\n#endif\n'), ['include "b.h" live'])
@@ -764,6 +769,15 @@ test('collectCBundle reads a unit\'s forced includes though an #include reached 
   const { sources, resolutions } = collectCBundle(tmp, ['src/main.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
   t.assert.equal(resolutions.get('lib/util.c')?.get('/FI pch.h'), 'lib/pch.h')
   t.assert.ok(sources.has('lib/pch.h'))
+}))
+
+test('loadCompileCommands reads what clang-cl\'s /clang: passes the clang driver, after its own options', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: ['clang-cl', '/clang:-Ix', '/Iy', '/clang:-I', '/clang:z', '-clang:-isystem', '-clang:s', '/Iw', '/c', 'a.c'] }]))
+  // clang-cl 18 -v lists y, w, then x, z; s.
+  const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
+  t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }])
+  t.assert.deepStrictEqual(flags.system, [{ rel: 's' }])
 }))
 
 test('loadCompileCommands reads the compiler behind a launcher, clang-cl\'s options too', withTmp((t, tmp) => {

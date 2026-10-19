@@ -226,8 +226,8 @@ const TRIGRAPHS = { '=': '#', '/': '\\', "'": '^', '(': '[', ')': ']', '!': '|',
 // One reading of `source` (scanIncludes).
 function scanText(source) {
   // A byte order mark opens no line; lines end at CR LF, LF or a lone CR, as GCC reads them; a
-  // backslash before one splices it.
-  const s = source.replace(/^\uFEFF/u, '').replaceAll(/\r\n?/gu, '\n').replaceAll(/\\\n/gu, '')
+  // backslash before one splices it, though spaces come between (as GCC and Clang splice, warning).
+  const s = source.replace(/^\uFEFF/u, '').replaceAll(/\r\n?/gu, '\n').replaceAll(/\\[ \t\f\v]*\n/gu, '')
   const n = s.length
   const out = []
   const stack = []
@@ -473,16 +473,19 @@ function includeFlags(argv, directory, toDir, cl) {
   // -Xpreprocessor hands the argument after it to the preprocessor, -Wp,a,b its comma-separated ones,
   // and Clang's -Xclang the one after it to the compiler proper: after the driver's own options, the
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
+  // clang-cl's /clang:arg hands `arg` to the clang driver, after its own arguments.
+  const forwarded = /^[/-]clang:/u
+  const driver = cl ? [...argv.filter((a) => !forwarded.test(a)), ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
   const own = []
   const preprocessor = []
   const compiler = []
-  for (let k = 1; k < argv.length; k++) {
-    if (argv[k] === '-Xpreprocessor' && k + 1 < argv.length) preprocessor.push(argv[++k])
-    else if (argv[k].startsWith('-Wp,')) preprocessor.push(...argv[k].slice(4).split(','))
-    else if (argv[k] === '-Xclang' && k + 1 < argv.length) compiler.push(argv[++k])
-    else own.push(argv[k])
+  for (let k = 1; k < driver.length; k++) {
+    if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
+    else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
+    else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
+    else own.push(driver[k])
   }
-  const args = [argv[0], ...own, ...preprocessor, ...compiler]
+  const args = [driver[0], ...own, ...preprocessor, ...compiler]
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them

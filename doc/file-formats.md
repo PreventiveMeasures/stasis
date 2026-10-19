@@ -1320,7 +1320,8 @@ graph, as the preprocessor would follow it, plus each header's implementation.
 
 **Directives.** `#include`, `#import`, `#include_next` and `#embed` are found as
 translation phases 1 to 4 find them: a leading byte order mark skipped, a line
-ending at CR LF, LF or a lone CR, lines spliced by a backslash joined, comments
+ending at CR LF, LF or a lone CR, lines spliced by a backslash joined (spaces
+between it and the line's end too, as GCC and Clang splice them), comments
 and string and character literals skipped (C++ raw strings and digit separators
 included), a directive being `#` (or `%:`) first on its line. A file holding a
 trigraph -- with trigraphs on, `??=` a `#`, `??/` a backslash (which can splice
@@ -1403,9 +1404,10 @@ is:
   command, as clang's tooling splits one), a response file (`@file`, from the command's `directory`,
   nested ones too) read in where it is named, split as GCC splits one (as cl
   does, under cl and clang-cl), a compiler launcher in front of the compiler (`ccache`,
-  `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what `-Xpreprocessor` and
-  `-Wp,` pass on read after the driver's own options, then what `-Xclang` does,
-  as the compiler gets them. A `-include` is the unit's first include, looked up in the
+  `sccache`, `distcc`, `icecc`, `buildcache`) skipped, and what clang-cl's `/clang:`
+  passes the driver read after clang-cl's own options, what `-Xpreprocessor`
+  and `-Wp,` pass on after the driver's, then what `-Xclang` does, as the
+  compiler gets them. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
   after the working directory, as clang-cl looks it up. GCC's `-I-` (to cl and clang-cl, `/I -`) makes the `-I` directories
