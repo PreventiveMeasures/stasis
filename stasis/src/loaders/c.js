@@ -272,10 +272,11 @@ function makeDir(baseDir, realBase, abs) {
 
 // A translation unit's search context: `quote` the -iquote dirs, `angle` the -I, -isystem and
 // -idirafter ones in that order (what both forms search after the quote ones), `embed` the
-// --embed-dir ones, `forced` the -include/-imacros files, as `{ flag, path, dir }`. `id` tells
+// --embed-dir ones, `forced` the -include/-imacros files, as `{ flag, path, dir }`, `split` set by
+// GCC's `-I-`, after which a quoted include isn't looked up beside its includer. `id` tells
 // contexts apart: a header is walked once per context it is reached in.
-function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [] } = {}, includeDirs = []) {
-  const ctx = { quote, angle: [...I, ...includeDirs, ...system, ...after], embed, forced }
+function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false } = {}, includeDirs = []) {
+  const ctx = { quote, angle: [...I, ...includeDirs, ...system, ...after], embed, forced, split }
   ctx.id = JSON.stringify(ctx)
   return ctx
 }
@@ -297,6 +298,14 @@ function includeFlags(args, directory, toDir, cl) {
     const a = args[k]
     if (SEPARATE.has(a)) {
       k++
+      continue
+    }
+    // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes only,
+    // and none is looked up beside its includer.
+    if (a === '-I-') {
+      flags.quote.push(...flags.I)
+      flags.I = []
+      flags.split = true
       continue
     }
     // Longest flag first: `-isystem-after` before `-isystem`, `-include-pch` before `-include`.
@@ -770,7 +779,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       }
       return null
     }
-    if (inc.form === 'quote') {
+    if (inc.form === 'quote' && !ctx.split) {
       const hit = probe({ rel: dirOf(file) }, inc.path)
       if (hit !== null) return { ...hit, at: -1 }
     }

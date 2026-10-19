@@ -470,3 +470,19 @@ test('collectCBundle: an #embed found nowhere is missing, where every configurat
   t.assert.deepStrictEqual(missing, [{ spec: 'embed "gone.bin"', from: 'main.c' }])
   t.assert.deepStrictEqual(unfound, [])
 }))
+
+test('loadCompileCommands and collectCBundle honor GCC\'s -I-: quote-only directories before it, no lookup beside the includer', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/a.c': '#include "x.h"\n#include "q.h"\n#include <q.h>\n',
+    'src/x.h': '',
+    'quote/q.h': '',
+    'post/x.h': '',
+  })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/a.c', arguments: ['gcc', '-Iquote', '-I-', '-Ipost', '-c', 'src/a.c'] }]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('src/a.c').quote, [{ rel: 'quote' }])
+  t.assert.deepStrictEqual(commands.get('src/a.c').I, [{ rel: 'post' }])
+  const { resolutions } = collectCBundle(tmp, ['src/a.c'], { commands })
+  // Not src/x.h beside the unit, and <q.h> isn't searched for in the quote-only directory.
+  t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('src/a.c')), { 'include "x.h"': 'post/x.h', 'include "q.h"': 'quote/q.h' })
+}))
