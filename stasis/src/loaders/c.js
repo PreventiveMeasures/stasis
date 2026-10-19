@@ -60,11 +60,12 @@ function nextTaken(taken, cond) {
   return taken
 }
 
-// An `#if`/`#elif` condition's value where it is an integer literal (`#if 0`, `#if 1`), else
-// undefined: macros aren't evaluated, so whatever names one could go either way.
+// An `#if`/`#elif` condition's value where it is an integer literal in any base, digit separators
+// and suffixes included (`#if 0`, `#if 1`, `#if 0x0`, `#if 0b1`, `#if 1'000L`), else undefined:
+// macros aren't evaluated, so whatever names one could go either way.
 function evalCondition(expr) {
-  const m = /^\(*\s*(\d+)[uUlL]*\s*\)*$/u.exec(expr.trim())
-  return m ? Number(m[1]) !== 0 : undefined
+  const m = /^\(*\s*(?:0[xX]([\da-fA-F']+)|0[bB]([01']+)|(\d[\d']*))(?:[uUlLzZ]|wb|WB)*\s*\)*$/u.exec(expr.trim())
+  return m ? /[^0']/u.test(m[1] ?? m[2] ?? m[3]) : undefined
 }
 
 // `#ifndef X` / `#if !defined(X)`: the macro name, the candidate include guard.
@@ -598,9 +599,9 @@ export const KNOWN_IMPLEMENTATIONS = [
 //   missing      [{ spec, from, reason? }] -- what makes the bundle incomplete, where every
 //                configuration compiles it (in a file every configuration reaches, not through a
 //                conditional include or an implementation file's guess): an include of a file the
-//                bundle refuses (a symlink out of the root, a `.env`), or a quoted (or forced) one
-//                found nowhere that a directory above its includer's holds -- the search path lacks
-//                the -I the file is built with (`hints`)
+//                bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere,
+//                or a quoted (or forced) one found nowhere that a directory above its includer's
+//                holds -- the search path lacks the -I the file is built with (`hints`)
 //   unfound      [{ spec, from }] -- such a quoted include found nowhere else: a system header
 //                written in quotes (`"math.h"`), or one the build generates. `<x>` found nowhere is
 //                a system header, never reported.
@@ -829,12 +830,17 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     if (!scans.has(file)) scans.set(file, scanIncludes(sources.get(file)))
     const format = formats.get(file)
 
-    // A unit's -include/-imacros files, read as if included first, from the command's directory.
+    // A unit's -include/-imacros files, read as if included first: looked up in the command's
+    // directory instead of the unit's own, then along the rest of the quote chain, as GCC does.
     if (node.primary) {
       for (const { flag, path, dir } of ctx.forced) {
         const spec = `${flag} ${path}`
         let result = isAbsolute(path) ? probe(makeDir(baseDir, realBase, path), '.') : probe(dir, path)
-        if (result === null && !isAbsolute(path)) result = resolveInclude(node, { directive: 'include', form: 'quote', path })
+        const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
+        for (let k = 0; result === null && k < chain.length; k++) {
+          const hit = probe(chain[k], path)
+          if (hit !== null) result = { ...hit, at: k }
+        }
         const edge = { spec, live: true, forced: true, result, target: undefined }
         if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format) })
         addEdge(node, edge)
@@ -896,6 +902,10 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       if (!edge.live || seen.has(id)) continue
       if (edge.result?.refused !== undefined) {
         missing.push({ spec: edge.spec, from: node.file, reason: edge.result.refused })
+        seen.add(id)
+      } else if (edge.result === null && edge.inc?.directive === 'embed') {
+        // An #embed has no system file to fall back on: found nowhere, the build fails.
+        missing.push({ spec: edge.spec, from: node.file })
         seen.add(id)
       } else if (edge.result === null && (edge.forced || (edge.inc.form === 'quote' && edge.inc.directive !== 'include_next'))) {
         seen.add(id)

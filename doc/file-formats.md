@@ -992,7 +992,7 @@ What counts as a fatal unresolved reference differs by language:
 | Bash | every in-root `.sh`/`.bash` reference | PATH commands, `$VAR`/absolute/system paths, `../`-escaping sources (external); dynamic `source "${VAR}/x.sh"` followed via `# shellcheck source=` when present |
 | Rust | every `mod foo;` not gated on an undecidable cfg (see the cfg rules below), incl. one whose `#[path]` names no file, or escapes the bundle root | a `mod` gated on a cfg the loader can't decide (`unix`, a feature of a package outside the resolved build, …); a `mod` inside a macro invocation body (`cfg_if! { … }` emits real ones, other macros may not — followed when the file exists); every path edge (`crate::`/`self::`/`super::`/relative `use`s, recorded best-effort and never widening the walk); crates not in-tree (see above); an `include!`/`include_str!`/`include_bytes!` whose literal path names no file, or whose argument is no literal the loader can read (a `concat!` of anything but `env!("CARGO_MANIFEST_DIR")` and literals, a macro variable) -- both warned; a vendored crate's include, `#[path]` or build script that reaches outside its own package (refused and warned; a `mod` so refused is missing) |
 
-| C/C++ | an include every configuration compiles, from a file every configuration reaches, of a file the bundle refuses (a symlink out of the root, a `.env`), or quoted (or `-include`d) and found nowhere while the tree holds it below a directory above its includer's (the search path lacks a `-I`: the error names it) | a quoted include found nowhere else (a system header in quotes, a generated header: reported); `<x>` found nowhere (a system header); whatever is under a conditional the scan can't decide (`#ifdef`), or reached only through one or through an implementation file; `#include MACRO` (reported, not followed) |
+| C/C++ | an include every configuration compiles, from a file every configuration reaches, of a file the bundle refuses (a symlink out of the root, a `.env`), an `#embed` found nowhere (it has no system fallback), or quoted (or `-include`d) and found nowhere while the tree holds it below a directory above its includer's (the search path lacks a `-I`: the error names it) | a quoted include found nowhere else (a system header in quotes, a generated header: reported); `<x>` found nowhere (a system header); whatever is under a conditional the scan can't decide (`#ifdef`), or reached only through one or through an implementation file; `#include MACRO` (reported, not followed) |
 
 A missing entry is always fatal.
 
@@ -1318,10 +1318,10 @@ translation phases 1 to 4 find them: lines spliced by a backslash joined, commen
 and string and character literals skipped (C++ raw strings and digit separators
 included), a directive being `#` (or `%:`) first on its line. Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and conditionals
-aren't evaluated, past an integer literal: `#if 0` code (and the `#else` of an
-`#if 1`) is never followed, and an include under any other condition (`#ifdef
-_WIN32`, `#if defined(X)`) is followed when found, every configuration's alike,
-but not required. A file's include guard (`#ifndef X` then `#define X` as its
+aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
+code (and the `#else` of an `#if 1`) is never followed, and an include under any
+other condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found,
+every configuration's alike, but not required. A file's include guard (`#ifndef X` then `#define X` as its
 first directives, `#pragma once` aside) isn't a condition.
 
 **Search.** As GCC and Clang search: `"x"` in the includer's directory, then the
@@ -1363,7 +1363,8 @@ directory for `"x"`, then the `--embed-dir` directories. The search path is:
   `/external:I` and `/FI` too), each relative to the command's `directory`; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it. A `-include` is the unit's first include, looked up in the
-  command's directory first. It takes the place of a known project's search
+  command's directory instead of the unit's own, then along the rest of the
+  quote chain, as GCC looks it up. It takes the place of a known project's search
   path for the units it lists; an entry it doesn't list is resolved with its
   known project's and `--include-dirs`, said so. The database is read wherever
   it is, never bundled.

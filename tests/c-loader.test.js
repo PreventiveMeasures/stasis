@@ -443,3 +443,30 @@ test('collectCBundle refuses a source that isn\'t UTF-8', withTmp((t, tmp) => {
   tree(tmp, { 'main.c': '#include "latin1.h"\n', 'latin1.h': Buffer.from('/* caf\xe9 */\n', 'latin1') })
   t.assert.throws(() => collectCBundle(tmp, ['main.c']), { message: 'C/C++ source is not valid UTF-8: latin1.h' })
 }))
+
+test('scanIncludes decides an #if on an integer literal in any base', (t) => {
+  const src = [
+    '#if 0x0', '#include "hex-zero.h"', '#endif',
+    '#if 0b1', '#include "bin-one.h"', '#endif',
+    "#if 0X1'0uL", '#include "hex-separated.h"', '#endif',
+    '#if 00', '#include "octal-zero.h"', '#else', '#include "octal-else.h"', '#endif',
+    '#if 0x', '#include "not-a-number.h"', '#endif',
+  ].join('\n')
+  t.assert.deepStrictEqual(specs(src), ['include "bin-one.h" live', 'include "hex-separated.h" live', 'include "octal-else.h" live', 'include "not-a-number.h" maybe'])
+})
+
+test('collectCBundle looks a -include up in the command\'s directory instead of the unit\'s, then along the quote chain', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '', 'src/config.h': '', 'include/config.h': '', 'build/README': '' })
+  const commands = new Map([['src/a.c', { I: [{ rel: 'include' }], forced: [{ flag: '-include', path: 'config.h', dir: { rel: 'build' } }] }]])
+  // Not beside the unit: GCC searches the working directory in its place.
+  t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('-include config.h'), 'include/config.h')
+  writeFileSync(join(tmp, 'build/config.h'), '')
+  t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('-include config.h'), 'build/config.h')
+}))
+
+test('collectCBundle: an #embed found nowhere is missing, where every configuration compiles it', withTmp((t, tmp) => {
+  tree(tmp, { 'main.c': 'const char a[] = {\n#embed "gone.bin"\n};\n#if __has_embed(<maybe.bin>)\n#embed <maybe.bin>\n#endif\n' })
+  const { missing, unfound } = collectCBundle(tmp, ['main.c'])
+  t.assert.deepStrictEqual(missing, [{ spec: 'embed "gone.bin"', from: 'main.c' }])
+  t.assert.deepStrictEqual(unfound, [])
+}))
