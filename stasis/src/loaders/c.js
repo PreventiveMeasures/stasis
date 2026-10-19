@@ -488,18 +488,24 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   // -Xclang ones last (as clang -v and gcc -v list the directories they add), each in order.
   // clang-cl's /clang:arg hands `arg` to the clang driver, after its own arguments.
   const forwarded = /^[/-]clang:/u
-  const driver = cl ? [...argv.filter((a) => !forwarded.test(a)), ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
+  const native = cl ? argv.filter((a) => !forwarded.test(a)) : argv
+  const driver = cl ? [...native, ...argv.filter((a) => forwarded.test(a)).map((a) => a.slice(7))] : argv
   const own = []
   const preprocessor = []
   const compiler = []
+  let clOwn = 0 // how many of `own` are cl's, ahead of what /clang: passes the clang driver
   for (let k = 1; k < driver.length; k++) {
     if (driver[k] === '-Xpreprocessor' && k + 1 < driver.length) preprocessor.push(driver[++k])
     else if (driver[k].startsWith('-Wp,')) preprocessor.push(...driver[k].slice(4).split(','))
     else if (driver[k] === '-Xclang' && k + 1 < driver.length) compiler.push(driver[++k])
     else if (driver[k].startsWith('-Xclang=')) compiler.push(driver[k].slice('-Xclang='.length))
-    else own.push(driver[k])
+    else {
+      own.push(driver[k])
+      if (cl && k < native.length) clOwn++
+    }
   }
   const args = [driver[0], ...own, ...preprocessor, ...compiler]
+  const clangFrom = 1 + clOwn // where clang's own options begin, under cl and clang-cl
   const compilerFrom = 1 + own.length + preprocessor.length // where the -Xclang ones begin
   // Clang's -working-directory (the last): what relative paths are taken from, itself taken from the
   // command's directory.
@@ -511,10 +517,11 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
   const systemFrameworks = [] // -iframework's, after every -isystem one, as Clang searches them
-  const cxxSystem = [] // -cxx-isystem's, after those, a C++ unit's only
+  const languageSystem = [] // -cxx-isystem's (a C++ unit's) or Clang's -c-isystem's (a C one's), after those
   const standardLibrary = [] // -stdlib++-isystem's, after those, a C++ unit's only
   const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
   const compilerSystem = [] // and -Xclang's, after all the driver's own
+  const internalFrameworks = [] // -internal-iframework's, after every -internal-isystem one
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -583,8 +590,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
         if (pass === '-I') dir(v, flags.I)
         continue
       }
-      // Clang's -F framework directories go with the -I ones, in order (cl's -F options are others).
-      if (!cl && (v = take('-F')) !== undefined) {
+      // Clang's -F framework directories go with the -I ones, in order (cl's own -F options are
+      // others; what /clang: passes the clang driver is Clang's).
+      if ((!cl || k >= clangFrom) && (v = take('-F')) !== undefined) {
         if (pass === '-I') dir(v, flags.I, true)
         continue
       }
@@ -596,7 +604,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       else if ((v = take('-iframeworkwithsysroot')) !== undefined) dir(withSysroot(v), systemFrameworks, true)
       else if ((v = take('-iframework')) !== undefined) dir(v, systemFrameworks, true)
       else if ((v = take('-cxx-isystem')) !== undefined) {
-        if (cxx) dir(v, cxxSystem)
+        if (cxx) dir(v, languageSystem)
+      } else if ((v = take('-c-isystem')) !== undefined) {
+        if (!cxx) dir(v, languageSystem)
       } else if ((v = take('-stdlib++-isystem')) !== undefined) {
         if (cxx) dir(v, standardLibrary)
       }
@@ -605,6 +615,8 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       // preprocessor's with the driver's options, ahead of the -internal-isystem a -stdlib++-isystem
       // becomes, and -Xclang's after every one the driver adds (as clang -v lists them).
       else if ((v = take('-internal-isystem')) !== undefined || (v = take('-internal-externc-isystem')) !== undefined) dir(v, k < compilerFrom ? passedSystem : compilerSystem)
+      // -internal-iframework (newer Clang's), which the compiler adds after all those.
+      else if ((v = take('-internal-iframework')) !== undefined) dir(v, internalFrameworks, true)
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).
       else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
@@ -622,7 +634,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
     }
   }
   flags.quote.unshift(...preBarrier)
-  flags.system.push(...systemFrameworks, ...cxxSystem, ...passedSystem, ...standardLibrary, ...compilerSystem)
+  flags.system.push(...systemFrameworks, ...languageSystem, ...passedSystem, ...standardLibrary, ...compilerSystem, ...internalFrameworks)
   if (cl) flags.msvc = true
   return flags
 }

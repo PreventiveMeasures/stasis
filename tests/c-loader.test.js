@@ -838,11 +838,13 @@ test('loadCompileCommands reads -cxx-isystem and -stdlib++-isystem for a C++ uni
 }))
 
 test('loadCompileCommands reads the -internal-isystem directories -Wp, and -Xclang pass, where clang searches them', withTmp((t, tmp) => {
-  tree(tmp, { 'a.cpp': '', 'b.c': '' })
+  tree(tmp, { 'a.cpp': '', 'b.c': '', 'c.c': '', 'd.cpp': '' })
   const unit = (file, args) => ({ directory: tmp, file, arguments: [...args, '-c', file] })
   writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
     unit('a.cpp', ['clang++', '-Xclang', '-internal-externc-isystem', '-Xclang', 'ext', '-Wp,-internal-isystem,inc', '-isystem', 'sys', '-idirafter', 'after', '-cxx-isystem', 'cxxs', '-stdlib++-isystem', 'stdl']),
     unit('b.c', ['clang', '-Xclang', '-internal-isystem', '-Xclang', 'x', '-Xpreprocessor', '-internal-isystem', '-Xpreprocessor', 'p', '-iframework', 'fw', '-isystem', 'sys']),
+    unit('c.c', ['clang', '-Xclang', '-internal-iframework', '-Xclang', 'ifw', '-Xclang', '-internal-isystem', '-Xclang', 'x', '-Wp,-c-isystem,cs', '-Xclang', '-c-isystem', '-Xclang', 'cs2', '-isystem', 'sys', '-iframework', 'fw']),
+    unit('d.cpp', ['clang++', '-Xclang', '-c-isystem', '-Xclang', 'cs', '-cxx-isystem', 'cx']),
   ]))
   // clang 18's -v for a.cpp lists sys, cxxs, inc, stdl, its own system directories, ext; after. For
   // b.c, sys, fw, p, its own, x.
@@ -850,6 +852,27 @@ test('loadCompileCommands reads the -internal-isystem directories -Wp, and -Xcla
   t.assert.deepStrictEqual(commands.get('a.cpp').system, [{ rel: 'sys' }, { rel: 'cxxs' }, { rel: 'inc' }, { rel: 'stdl' }, { rel: 'ext' }])
   t.assert.deepStrictEqual(commands.get('a.cpp').after, [{ rel: 'after' }])
   t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'sys' }, { rel: 'fw', framework: true }, { rel: 'p' }, { rel: 'x' }])
+  // -c-isystem is a C unit's, with -cxx-isystem's place (clang 18 lists sys, fw, cs, cs2, its own, x
+  // for c.c, and no cs for d.cpp); -internal-iframework comes after every -internal-isystem, as
+  // Clang's CompilerInvocation adds them.
+  t.assert.deepStrictEqual(commands.get('c.c').system, [{ rel: 'sys' }, { rel: 'fw', framework: true }, { rel: 'cs' }, { rel: 'cs2' }, { rel: 'x' }, { rel: 'ifw', framework: true }])
+  t.assert.deepStrictEqual(commands.get('d.cpp').system, [{ rel: 'cx' }])
+}))
+
+test('collectCBundle searches the framework directories clang-cl\'s /clang: passes, not cl\'s own -F', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '#include <Foo/X.h>\n', 'b.c': '#include <Foo/X.h>\n', 'fw/Foo.framework/Headers/X.h': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['clang-cl', '/clang:-Ffw', '/c', 'a.c'] },
+    { directory: tmp, file: 'b.c', arguments: ['clang-cl', '-Ffw', '/c', 'b.c'] },
+  ]))
+  // clang-cl 18 finds fw/Foo.framework/Headers/X.h for a.c; b.c's -Ffw is cl's (unused), not a framework
+  // directory.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'fw', framework: true }])
+  t.assert.deepStrictEqual(commands.get('b.c').I, [])
+  const { resolutions } = collectCBundle(tmp, ['a.c', 'b.c'], { commands })
+  t.assert.equal(resolutions.get('a.c').get('include <Foo/X.h>'), 'fw/Foo.framework/Headers/X.h')
+  t.assert.notEqual(resolutions.get('b.c')?.get('include <Foo/X.h>'), 'fw/Foo.framework/Headers/X.h')
 }))
 
 test('collectCBundle takes a Clang command\'s relative paths from its -working-directory', withTmp((t, tmp) => {

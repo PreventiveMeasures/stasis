@@ -1391,14 +1391,15 @@ is:
   Clang's `-cxx-isystem` and `-stdlib++-isystem` (after the other system
   directories, a C++ unit's only: by cl's `/Tp` or `/Tc` naming it, else the
   `-x` before its own argument (but `-x none`) or cl's last `/TP` or `/TC`, else a C++ driver (`--driver-mode=g++` too) or its extension), Clang's
-  `-internal-isystem` and `-internal-externc-isystem` (through `-Wp,` or
-  `-Xpreprocessor`, ahead of the `-stdlib++-isystem` ones; through `-Xclang`,
-  after them), `-idirafter`,
+  `-c-isystem` (a C unit's only, in `-cxx-isystem`'s place), `-internal-isystem`
+  and `-internal-externc-isystem` (through `-Wp,` or `-Xpreprocessor`, ahead of
+  the `-stdlib++-isystem` ones; through `-Xclang`, after them) and
+  `-internal-iframework` (after all those), `-idirafter`,
   `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
   `--include-barrier`, ...), Clang's framework directories -- `-F` (with the
-  `-I` ones, in order) and `-iframework` (after the `-isystem` ones), where
+  `-I` ones, in order; clang-cl's through `/clang:`) and `-iframework` (after the `-isystem` ones), where
   `<Foo/Bar.h>` is `Foo.framework/Headers/Bar.h`, else
   `Foo.framework/PrivateHeaders/Bar.h` -- and clang-cl's (`clang-cl-20`,
   `<target>-clang-cl` and `--driver-mode=cl` too) and cl's `/I`, `/external:I`,
