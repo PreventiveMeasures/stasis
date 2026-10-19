@@ -67,41 +67,64 @@ const CONDITION_NAME = /[A-Za-z_]\w*/uy
 const CONDITION_OPERATOR = /\|\||&&|==|!=|<=|>=|<<|>>|[-+*/%<>&|^!~?:()]/uy
 const CONDITION_LEVELS = [['||'], ['&&'], ['|'], ['^'], ['&'], ['==', '!='], ['<', '>', '<=', '>='], ['<<', '>>'], ['+', '-'], ['*', '/', '%']]
 
+// A preprocessor value: `{ v, u }`, `v` a BigInt in its type's range, `u` whether that type is
+// unsigned (undefined where it hangs on an unknown operand's, as in `1 ? -1 : X`); undefined itself
+// where the value hangs on a macro.
+const ONE = { v: 1n, u: false }
+const ZERO = { v: 0n, u: false }
+// `v` as a value of the type `u` says: an unsigned one wraps, as C's do; a signed one past its range
+// is unknown, C leaving it undefined.
+const typed = (v, u) => (u ? { v: BigInt.asUintN(64, v), u } : v >= -(1n << 63n) && v < 1n << 63n ? { v, u } : undefined)
+// `f` over `values`, where one's signedness is unknown: what it gives either way, where they agree.
+function either(f, ...values) {
+  const at = values.findIndex((x) => x !== undefined && x.u === undefined)
+  if (at === -1) return f(...values)
+  const [s, u] = [false, true].map((sign) => either(f, ...values.map((x, i) => (i === at ? typed(x.v, sign) : x))))
+  if (s === undefined || u === undefined || s.v !== u.v) return undefined
+  return { v: s.v, u: s.u === u.u ? s.u : undefined }
+}
+
 // The value of `a op b`, either undefined where it hangs on a macro: unknown, but where the known
-// side decides (`1 || X`, `0 && X`).
+// side decides (`1 || X`, `0 && X`). Both sides take the usual arithmetic conversions, unsigned
+// where either is (`-1 < 0u` is false), but a shift's type is its left side's; a comparison or a
+// logical operator gives a signed 0 or 1.
 function conditionOperator(op, a, b) {
-  if (op === '||') return a === undefined ? (b !== undefined && b !== 0n ? 1n : undefined) : a !== 0n ? 1n : b === undefined ? undefined : BigInt(b !== 0n)
-  if (op === '&&') return a === 0n || b === 0n ? 0n : a === undefined || b === undefined ? undefined : 1n
+  const truth = (x) => (x === undefined ? undefined : x.v !== 0n)
+  if (op === '||') return truth(a) === true || truth(b) === true ? ONE : truth(a) === false && truth(b) === false ? ZERO : undefined
+  if (op === '&&') return truth(a) === false || truth(b) === false ? ZERO : truth(a) && truth(b) ? ONE : undefined
   if (a === undefined || b === undefined) return undefined
-  switch (op) {
-    case '|': return a | b
-    case '^': return a ^ b
-    case '&': return a & b
-    case '==': return BigInt(a === b)
-    case '!=': return BigInt(a !== b)
-    case '<': return BigInt(a < b)
-    case '>': return BigInt(a > b)
-    case '<=': return BigInt(a <= b)
-    case '>=': return BigInt(a >= b)
+  return either((l, r) => {
     // Past the width, a shift is undefined in C.
-    case '<<': return b < 0n || b >= 64n ? undefined : a << b
-    case '>>': return b < 0n || b >= 64n ? undefined : a >> b
-    case '+': return a + b
-    case '-': return a - b
-    case '*': return a * b
-    default: return b === 0n ? undefined : op === '/' ? a / b : a % b
-  }
+    if (op === '<<' || op === '>>') return r.v < 0n || r.v >= 64n ? undefined : typed(op === '<<' ? l.v << r.v : l.v >> r.v, l.u)
+    const u = l.u || r.u
+    const [x, y] = [typed(l.v, u).v, typed(r.v, u).v]
+    switch (op) {
+      case '|': return typed(x | y, u)
+      case '^': return typed(x ^ y, u)
+      case '&': return typed(x & y, u)
+      case '==': return x === y ? ONE : ZERO
+      case '!=': return x !== y ? ONE : ZERO
+      case '<': return x < y ? ONE : ZERO
+      case '>': return x > y ? ONE : ZERO
+      case '<=': return x <= y ? ONE : ZERO
+      case '>=': return x >= y ? ONE : ZERO
+      case '+': return typed(x + y, u)
+      case '-': return typed(x - y, u)
+      case '*': return typed(x * y, u)
+      default: return y === 0n ? undefined : typed(op === '/' ? x / y : x % y, u)
+    }
+  }, a, b)
 }
 
 // An `#if`/`#elif` condition's value: true, false, or undefined where it hangs on a macro. Integer
 // literals and the operators over them are evaluated (`#if 0`, `#if 0x1`, `#if 1 + 0`, `#if !0`);
 // a name, `defined X` and a macro call (`__has_include(<x.h>)`) are unknown, as is what they take
 // part in, but where the rest decides (`#if 1 || X`, `#if 0 && defined(X)`). Macros aren't expanded.
-// Values are the preprocessor's 64-bit integers: one past their range (a negative one, where an
-// unsigned literal like `1u` takes part) is unknown, as C's would wrap.
+// Values are the preprocessor's 64-bit integers, each signed or unsigned as C types it (a literal
+// with a `u` suffix, or too large for a signed one, is unsigned): an unsigned one wraps, and a
+// signed one past its range is unknown, as C leaves it undefined.
 function evalCondition(expr) {
   const tokens = []
-  let unsigned = false
   for (let i = 0; i < expr.length;) {
     if (/\s/u.test(expr[i])) {
       i++
@@ -110,12 +133,10 @@ function evalCondition(expr) {
     let m
     if (((CONDITION_NUMBER.lastIndex = i), (m = CONDITION_NUMBER.exec(expr))) !== null) {
       const [, hex, binary, octal, decimal, suffix] = m
-      if (/u/iu.test(suffix)) unsigned = true
       const digits = (hex ?? binary ?? octal ?? decimal).replaceAll("'", '')
       const value = BigInt(hex ? `0x${digits}` : binary ? `0b${digits}` : octal ? `0o${digits}` : digits)
-      // Too large for a signed one, a literal is unsigned (GCC says so).
-      if (value >= 1n << 63n) unsigned = true
-      tokens.push({ value })
+      // Too large for a signed one, a literal is unsigned (GCC says so); past 64 bits, none.
+      tokens.push({ value: value >= 1n << 64n ? undefined : { v: value, u: /u/iu.test(suffix) || value >= 1n << 63n } })
       i = CONDITION_NUMBER.lastIndex
     } else if (((CONDITION_NAME.lastIndex = i), (m = CONDITION_NAME.exec(expr))) !== null) {
       i = CONDITION_NAME.lastIndex
@@ -141,11 +162,10 @@ function evalCondition(expr) {
   }
   let k = 0
   const malformed = new SyntaxError('malformed condition')
-  const checked = (value) => (value === undefined || (unsigned ? value < 0n || value >= 1n << 64n : value < -(1n << 63n) || value >= 1n << 63n) ? undefined : value)
   const unary = () => {
     const token = tokens[k++]
     if (token === undefined) throw malformed
-    if ('value' in token) return checked(token.value)
+    if ('value' in token) return token.value
     if (token.op === '(') {
       const value = ternary()
       if (tokens[k++]?.op !== ')') throw malformed
@@ -154,16 +174,23 @@ function evalCondition(expr) {
     if (!['!', '~', '-', '+'].includes(token.op)) throw malformed
     const value = unary()
     if (value === undefined) return undefined
-    return checked(token.op === '!' ? BigInt(value === 0n) : token.op === '~' ? ~value : token.op === '-' ? -value : value)
+    return either((x) => (token.op === '!' ? (x.v === 0n ? ONE : ZERO) : token.op === '~' ? typed(~x.v, x.u) : token.op === '-' ? typed(-x.v, x.u) : x), value)
   }
   const binary = (level) => {
     if (level === CONDITION_LEVELS.length) return unary()
     let value = binary(level + 1)
     while (CONDITION_LEVELS[level].includes(tokens[k]?.op)) {
       const { op } = tokens[k++]
-      value = checked(conditionOperator(op, value, binary(level + 1)))
+      value = conditionOperator(op, value, binary(level + 1))
     }
     return value
+  }
+  // `c ? a : b` is typed by both branches, whichever is taken (`1 ? -1 : 0u` is unsigned): where the
+  // other is unknown, so is its signedness, unless the taken one is unsigned already.
+  const branch = (taken, other) => {
+    if (taken === undefined) return undefined
+    if (other === undefined) return taken.u === true ? taken : { v: taken.v, u: undefined }
+    return either((x, y) => typed(x.v, x.u || y.u), taken, other)
   }
   const ternary = () => {
     const cond = binary(0)
@@ -172,12 +199,13 @@ function evalCondition(expr) {
     const a = ternary()
     if (tokens[k++]?.op !== ':') throw malformed
     const b = ternary()
-    if (cond !== undefined) return cond === 0n ? b : a
-    return a === b ? a : undefined
+    if (cond !== undefined) return cond.v !== 0n ? branch(a, b) : branch(b, a)
+    const [x, y] = [branch(a, b), branch(b, a)]
+    return x !== undefined && y !== undefined && x.v === y.v && x.u === y.u ? x : undefined
   }
   try {
     const value = ternary()
-    return k === tokens.length && value !== undefined ? value !== 0n : undefined
+    return k === tokens.length && value !== undefined ? value.v !== 0n : undefined
   } catch (error) {
     if (error === malformed) return undefined
     throw error
@@ -529,6 +557,9 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
   const passedSystem = [] // -internal-isystem's -Wp, or -Xpreprocessor passes, before -stdlib++-isystem's
   const compilerSystem = [] // and -Xclang's, after all the driver's own
   const internalFrameworks = [] // -internal-iframework's, after every -internal-isystem one
+  // GCC's -B prefixes' `include` directories, ahead of every other system one (Clang adds none).
+  const gcc = !cl && driverMode(argv) === undefined && !/clang/iu.test(programName(argv[0]))
+  const prefixSystem = []
   // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
   // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
   // for `=dir` itself, which isn't there).
@@ -624,6 +655,13 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
       else if ((v = take('-internal-isystem')) !== undefined || (v = take('-internal-externc-isystem')) !== undefined) dir(v, k < compilerFrom ? passedSystem : compilerSystem)
       // -internal-iframework (newer Clang's), which the compiler adds after all those.
       else if ((v = take('-internal-iframework')) !== undefined) dir(v, internalFrameworks, true)
+      // GCC's -B (--prefix): `<prefix>include`, a directory's slash added, as gcc 13 -v lists it.
+      else if ((v = long('--prefix')) !== undefined || (v = take('-B')) !== undefined) {
+        if (gcc && v !== undefined && v !== '') {
+          const path = resolve(directory, v)
+          prefixSystem.push(toDir(/[/\\]$/u.test(v) || isDir(path) ? join(path, 'include') : `${path}include`))
+        }
+      }
       // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
       // GCC 13 places it, not after -idirafter as its manual says).
       else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
@@ -641,6 +679,7 @@ function includeFlags(argv, commandDirectory, toDir, cl, cxx = false) {
     }
   }
   flags.quote.unshift(...preBarrier)
+  flags.system.unshift(...prefixSystem)
   flags.system.push(...systemFrameworks, ...languageSystem, ...passedSystem, ...standardLibrary, ...compilerSystem, ...internalFrameworks)
   if (cl) flags.msvc = true
   return flags

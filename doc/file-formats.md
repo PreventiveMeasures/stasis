@@ -1331,8 +1331,11 @@ only one reading finds, or finds unconditional, taken as one some builds read.
 Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and a condition
 is evaluated as far as its integer literals (in any base) and the operators
-over them go, a macro unknown but where the rest decides, and so is a value past
-the preprocessor's 64 bits, which would wrap (or a shift past them): `#if 0` code (and the
+over them go, a macro unknown but where the rest decides, each value signed or
+unsigned as C types it (`1u`, or a literal too large for a signed one, is
+unsigned, and so is what it takes part in, an unsigned one wrapping at 64 bits:
+`-1 < 0u` is false, `-1 < 0 && 1u` true), and a signed one past the
+preprocessor's 64 bits (or a shift past them) unknown: `#if 0` code (and the
 `#else` of an `#if 1`; `#if 1 + 0`, `#if !0`, `#if 1 || X` and
 `#if 0 && defined(X)` alike) is never followed, and an include under any other
 condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found, every
@@ -1395,7 +1398,8 @@ is:
   and `-internal-externc-isystem` (through `-Wp,` or `-Xpreprocessor`, ahead of
   the `-stdlib++-isystem` ones; through `-Xclang`, after them) and
   `-internal-iframework` (after all those), `-idirafter`,
-  `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
+  `--embed-dir`, `-include`, `-imacros`, `-I-`, GCC's `-B` (`--prefix`, whose
+  `include` is a system directory ahead of the others; Clang adds none), and `-iprefix` with the
   `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
   directories after it, GCC's long spellings of them (`--include-directory`,
   `--include-barrier`, ...), Clang's framework directories -- `-F` (with the

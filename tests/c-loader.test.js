@@ -620,13 +620,18 @@ test('scanIncludes evaluates a condition\'s literals and operators, a macro unkn
     ['1 || FEATURE', 'a'], ['0 && defined(X)', 'b'], ['1 + 0', 'c'], ['!0', 'd'], ['X ? 1 : 1', 'e'],
     ['__has_include(<x.h>) || 2 > 1', 'f'], ['(0x10 >> 4) == 1 && -1 < 0', 'h'], ['defined X', 'i'], ['-1U < 0', 'j'], ['08', 'k'],
     ['0xffffffffffffffffULL + 1 == 0', 'l'], ['1 << 63', 'm'], ['-9223372036854775807 - 1 < 0', 'n'], ['1 << 4000000000', 'o'],
+    ['-1 < 0 && 1u', 'p'], ['-1 < 0u', 'q'], ['(1 ? -1 : 0u) > 0', 'r'], ['(1 ? -1 : X) > 0', 's'], ['(1u << 63) > 0', 't'],
+    ['18446744073709551615 == -1', 'u'], ['(1u ? 2 : 3) - 3 > 0', 'v'],
   ].map(([cond, name]) => `#if ${cond}\n#include "${name}.h"\n#endif\n`).join('')
-  // GCC 13 opens a, c, d, e, f, h and n, never b; i hangs on X; j, l and m wrap at 64 bits (GCC's
-  // -1U < 0 is false, its l and m true), 08 is no literal, and o shifts past the width.
+  // GCC 13 and clang 18 open a, c, d, e, f, h, l, n, p, r, t and u, never b, j, q or v; i and s hang
+  // on X; each operator takes its operands' usual arithmetic conversions, so an unsigned one makes
+  // only what it takes part in unsigned (p's -1 < 0 is signed; q's -1 and r's are 2^64 - 1, j's -1U
+  // too), and unsigned values wrap at 64 bits (l); m overflows a signed one (undefined in C), 08 is
+  // no literal, and o shifts past the width.
   t.assert.deepStrictEqual(specs(src), [
     'include "a.h" live', 'include "c.h" live', 'include "d.h" live', 'include "e.h" live', 'include "f.h" live', 'include "h.h" live',
-    'include "i.h" maybe', 'include "j.h" maybe', 'include "k.h" maybe', 'include "l.h" maybe', 'include "m.h" maybe', 'include "n.h" live',
-    'include "o.h" maybe',
+    'include "i.h" maybe', 'include "k.h" maybe', 'include "l.h" live', 'include "m.h" maybe', 'include "n.h" live',
+    'include "o.h" maybe', 'include "p.h" live', 'include "r.h" live', 'include "s.h" maybe', 'include "t.h" live', 'include "u.h" live',
   ])
 })
 
@@ -748,6 +753,22 @@ test('loadCompileCommands reads the options -Xclang, -Xpreprocessor and -Wp pass
   const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
   t.assert.deepStrictEqual(flags.I, [{ rel: 'y' }, { rel: 'w' }, { rel: 'x' }, { rel: 'z' }, { rel: 'v' }])
   t.assert.deepStrictEqual(flags.system, [{ rel: 's' }, { rel: 't' }])
+}))
+
+test('loadCompileCommands searches GCC\'s -B prefixes\' include directories first among the system ones, not clang\'s', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '', 'b.c': '', 'c.c': '', 'tc/include/.keep': '', 'b1/include/.keep': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'a.c', arguments: ['gcc', '-iprefix', 'pfx/', '-iwithprefix', 'wp', '-isystem', 'sys', '-B', 'tc', '-I', 'i', '-c', 'a.c'] },
+    { directory: tmp, file: 'b.c', arguments: ['x86_64-linux-gnu-gcc-13', '-Btc/x-', '--prefix=b1', '-Btc/', '-c', 'b.c'] },
+    { directory: tmp, file: 'c.c', arguments: ['clang', '-B', 'tc', '-c', 'c.c'] },
+  ]))
+  // gcc 13 -v lists i, then tc/include, pfx/wp, sys for a.c (a -B directory taking its slash); for
+  // b.c, tc/x-include (a prefix, not a directory), b1/include, tc/include. clang 18 adds none.
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('a.c').I, [{ rel: 'i' }])
+  t.assert.deepStrictEqual(commands.get('a.c').system, [{ rel: 'tc/include' }, { rel: 'pfx/wp' }, { rel: 'sys' }])
+  t.assert.deepStrictEqual(commands.get('b.c').system, [{ rel: 'tc/x-include' }, { rel: 'b1/include' }, { rel: 'tc/include' }])
+  t.assert.deepStrictEqual(commands.get('c.c').system, [])
 }))
 
 test('loadCompileCommands leaves out what -Xlinker, -Xassembler and the like hand other tools', withTmp((t, tmp) => {
