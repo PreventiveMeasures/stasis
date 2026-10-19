@@ -1,5 +1,5 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, moduleFileKey, sameGithub } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, packageRecords, sameGithub } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -35,7 +35,8 @@ const keyOf = (ecosystem, name, version) => `${ecosystem === 'npm' ? '' : `${eco
 const isComposerDev = (version) => /^dev-|-dev$/iu.test(version.replace(/#.*$/su, ''))
 
 // Why `pkg` cannot be audited, or undefined where it can.
-function unaudited({ ecosystem, version }) {
+function unaudited({ ecosystem, version, vendoredIn }) {
+  if (version === undefined) return `a copy vendored in ${vendoredIn.join(', ')} whose package.json gives no version, so no advisory can be matched to it`
   if (Object.hasOwn(UNREGISTERED_CRATES, ecosystem)) return UNREGISTERED_CRATES[ecosystem]
   if (!Object.hasOwn(SOURCES, ecosystem)) return `no advisories are looked up for ${ecosystem}`
   if (ecosystem === 'composer' && isComposerDev(version)) return 'a Composer dev version, which no advisory database lists'
@@ -61,15 +62,25 @@ function unaudited({ ecosystem, version }) {
 // one does; else, for an npm package a bundle carries the package.json of (one built before builds
 // recorded `repo`), the one that names, read by the rule builds record it by. A GitHub repo is its
 // own, and has none.
+//
+// A copy of a package a dependency ships (its record's `vendored`, as packageRecords splits it out) is
+// audited too, as the package it is, by the same evidence rule over the files it holds, with
+// `vendoredIn` its host's `name@version`; its host, all of whose files the copy's are, as before. A copy
+// whose package.json gives no version is listed with none, as not audited.
 export function collectPackagesFromFile(file) {
   const out = []
   const { kind, artifact } = parseFileWithKind(file)
-  for (const [dir, { name, version, ecosystem: tagged, repo, files }] of artifact.modules) {
+  for (const [dir, { name, version, ecosystem: tagged, repo, files, vendoredIn }] of packageRecords(artifact.modules)) {
     const ecosystem = dependencyEcosystem(dir, tagged)
     // First-party code is never sent to a public registry (leaks names, adds noise).
     if (ecosystem === undefined) continue
-    if (!name || !version) continue
-    if (!Object.keys(files).some((rel) => isEvidenceFile(name, version, rel, ecosystem))) continue
+    if (!name || (!version && vendoredIn === undefined)) continue
+    if (!Object.keys(files).some((rel) => isEvidenceFile(name, version ?? null, rel, ecosystem))) continue
+    if (vendoredIn !== undefined) {
+      const host = artifact.modules.get(vendoredIn)
+      out.push({ ecosystem, name, version: version === undefined ? undefined : versionOf(ecosystem, version), vendoredIn: `${host.name}@${host.version}` })
+      continue
+    }
     let github = ecosystem === 'github' ? undefined : repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
     out.push({ ecosystem, name, version: versionOf(ecosystem, version), ...(github === undefined ? {} : { github }) })
@@ -96,14 +107,20 @@ const byVersion = (a, b) => (valid(a) && valid(b) ? compareVersions(a, b) : byNu
 // Each package once, with the GitHub repository its artifacts record for its name, which
 // advisories() asks instead of looking one up. It takes one repository a name, so a name recorded
 // with two, by two of its versions (a package that moved) or by two artifacts, has none, and is
-// looked up as before.
+// looked up as before. One some dependency ships a copy of carries `vendoredIn`, the hosts' sorted
+// `name@version`s, and `vendoredOnly`, whether that copy is all there is of it; a copy without a version
+// is one package per host.
 export function collectPackages(files) {
   const byKey = new Map()
+  const vendored = new Map() // key -> { hosts, only }
   const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
   for (const file of files) {
-    for (const { github, ...pkg } of collectPackagesFromFile(file)) {
-      const key = keyOf(pkg.ecosystem, pkg.name, pkg.version)
+    for (const { github, vendoredIn, ...pkg } of collectPackagesFromFile(file)) {
+      const key = pkg.version === undefined ? `${pkg.ecosystem}:${pkg.name} in ${vendoredIn}` : keyOf(pkg.ecosystem, pkg.name, pkg.version)
       if (!byKey.has(key)) byKey.set(key, pkg)
+      if (!vendored.has(key)) vendored.set(key, { hosts: new Set(), only: true })
+      if (vendoredIn === undefined) vendored.get(key).only = false
+      else vendored.get(key).hosts.add(vendoredIn)
       if (github === undefined) continue
       const name = `${pkg.ecosystem}:${pkg.name}`
       const known = repos.get(name)
@@ -112,10 +129,11 @@ export function collectPackages(files) {
       else if (known !== null && !sameGithub(known, github)) repos.set(name, null)
     }
   }
-  return [...byKey.values()]
-    .map((pkg) => {
+  return [...byKey]
+    .map(([key, pkg]) => {
       const github = repos.get(`${pkg.ecosystem}:${pkg.name}`)
-      return github ? { ...pkg, github } : pkg
+      const { hosts, only } = vendored.get(key)
+      return { ...pkg, ...(github ? { github } : {}), ...(hosts.size === 0 ? {} : { vendoredIn: [...hosts].toSorted(), vendoredOnly: only }) }
     })
     .toSorted((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || byVersion(a.version, b.version))
 }
@@ -126,27 +144,30 @@ export function collectPackages(files) {
 // (see audit-corrections.js): a consumer that recorded nothing of a package but a corrected file or
 // its manifest carries none of its real code and is NOT a reason -- e.g. webpack shipping only ws's
 // noop browser.js stub, while `run` bundles the real ws.
+// A file of a copy a dependency ships (packageRecords) attributes to both: the copy and its host.
 export function collectReasons(files) {
   const byPkg = new Map()
   for (const file of files) {
     const artifact = parseFile(file)
     const fileReasons = invertReason(artifact.reason)
     if (!fileReasons) continue
-    const fileToPkg = new Map()
-    for (const [dir, { name, version, ecosystem: tagged, files: modFiles }] of artifact.modules) {
+    const fileToPkgs = new Map()
+    for (const [dir, { name, version, ecosystem: tagged, files: modFiles }] of packageRecords(artifact.modules)) {
       const ecosystem = dependencyEcosystem(dir, tagged)
       if (ecosystem === undefined || !name || !version) continue
       for (const rel of Object.keys(modFiles)) {
         if (!isEvidenceFile(name, version, rel, ecosystem)) continue
-        fileToPkg.set(moduleFileKey(dir, rel), keyOf(ecosystem, name, versionOf(ecosystem, version)))
+        const f = moduleFileKey(dir, rel)
+        if (!fileToPkgs.has(f)) fileToPkgs.set(f, [])
+        fileToPkgs.get(f).push(keyOf(ecosystem, name, versionOf(ecosystem, version)))
       }
     }
     for (const [f, consumers] of fileReasons) {
-      const key = fileToPkg.get(f)
-      if (key === undefined) continue
-      let set = byPkg.get(key)
-      if (set === undefined) byPkg.set(key, (set = new Set()))
-      for (const consumer of consumers) set.add(consumer)
+      for (const key of fileToPkgs.get(f) ?? []) {
+        let set = byPkg.get(key)
+        if (set === undefined) byPkg.set(key, (set = new Set()))
+        for (const consumer of consumers) set.add(consumer)
+      }
     }
   }
   return byPkg
@@ -190,10 +211,18 @@ function reasonCell({ ecosystem, name, versions: affected }, reasonsByPkg, whyBy
   return consumers.toSorted(byConsumerOrder).join(', ')
 }
 
+// An installed version as the table shows it: with the dependencies that ship a copy of it, where one does
+// (`vendoredByKey`, collectPackages' packages by keyOf).
+function installedCell({ ecosystem, name }, version, vendoredByKey) {
+  const pkg = vendoredByKey.get(keyOf(ecosystem, name, version))
+  if (pkg?.vendoredIn === undefined) return version
+  return `${version} (${pkg.vendoredOnly ? '' : 'also '}vendored in ${pkg.vendoredIn.join(', ')})`
+}
+
 // `found` is what @preventive/upstream's advisories() answers: one row per advisory range, whose
 // `versions` are the audited versions it covers (never empty -- a range covering none is dropped
 // there, so the table and exit code reflect only real hits).
-export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = null, reasonFilter = null) {
+export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = null, reasonFilter = null, vendoredByKey = new Map()) {
   const rows = []
   for (const adv of found) {
     const reason = reasonCell(adv, reasonsByPkg, whyByPkg, reasonFilter)
@@ -203,7 +232,7 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
     rows.push({
       ecosystem: adv.ecosystem,
       package: adv.name,
-      installed: adv.versions.join(', '),
+      installed: adv.versions.map((v) => installedCell(adv, v, vendoredByKey)).join(', '),
       vulnerable: adv.range ?? '',
       severity: adv.severity ?? '',
       title: adv.title ?? '',
@@ -281,7 +310,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(asked.map(({ version, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
@@ -296,14 +325,15 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   // `reason` (--reason) narrows both the paths (in collectWhy) and the consumer
   // list (in flattenAdvisories) to a single consumer, dropping advisories
   // unrelated to it.
+  const vendoredByKey = new Map(asked.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
   let rows
   if (why) {
     const npm = result.filter((adv) => adv.ecosystem === 'npm')
     const targetKeys = new Set(npm.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
     const reasons = npm.length < result.length ? collectReasons(files) : undefined
-    rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason)
+    rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason, vendoredByKey)
   } else {
-    rows = flattenAdvisories(result, collectReasons(files), null, reason)
+    rows = flattenAdvisories(result, collectReasons(files), null, reason, vendoredByKey)
   }
   return { packages, skipped, advisories: result, rows, why, whyDeep, whyFull, reason }
 }
@@ -322,7 +352,7 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     return
   }
   err.write(`${scanned}: ${alertStats(rows)}\n`)
-  for (const pkg of skipped) err.write(`Not audited: ${pkg.ecosystem} ${pkg.name}@${pkg.version}, ${pkg.because}\n`)
+  for (const pkg of skipped) err.write(`Not audited: ${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}, ${pkg.because}\n`)
   if (rows.length === 0) return
   // The ecosystem column only where one is not npm's, which the others were all once.
   const columns = ['severity', ...(rows.some((r) => r.ecosystem !== 'npm') ? ['ecosystem'] : []), 'package', 'installed', 'vulnerable', 'title', 'id']

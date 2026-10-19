@@ -135,10 +135,13 @@ attested.
   import out of `node_modules` is `npm`. Workspace/top-level buckets (`sources`)
   are first-party and omit `ecosystem`. Artifacts predating this field lack it and
   still load.
-- A record carries no `repo`, `vendored` or `subpackages`: a dependency's
-  repository, the packages copied into it and its subpath entry points are
-  metadata, which a bundle carries (see `modules` under `stasis.code.br`) and a
-  lockfile neither writes nor reads.
+- A record carries no `repo` or `subpackages`: a dependency's repository and
+  its subpath entry points are metadata, which a bundle carries (see `modules`
+  under `stasis.code.br`) and a lockfile neither writes nor reads. A dependency
+  record may carry `vendored`, the packages copied into it, after `ecosystem`,
+  as a bundle's record does (see there), so that `stasis audit` and `stasis
+  sbom` see them from a lockfile alone; it is metadata here too, never
+  attested.
 - A file under a dependency is that dependency's, at the directory its
   `package.json` is in, and a `package.json` nested inside it, one nothing
   expects, must not name another package or version: where it came from is the
@@ -339,11 +342,13 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   key, and one on first-party code. The directory names what the host calls the
   copy, its `package.json` what the copy calls itself (Next.js's `loader-utils2`
   is `loader-utils`, its React `react-builtin`), and neither is checked against
-  a registry. Like `repo`, it is metadata: never written to the lockfile, never
-  attested, and held to nothing; a run fills in a directory a record lists none
-  for, and a merge takes the union, the existing side's where both list one.
-  `stasis sbom` lists each copy as a package contained in its host (see
-  `doc/sbom.md`).
+  a registry. Like `repo`, it is metadata: never attested, and held to
+  nothing; a run fills in a directory a record lists none for, and a merge
+  takes the union, the existing side's where both list one. Unlike `repo`, a
+  lockfile records it too, by the same rules, so a lockfile alone tells what
+  copies a dependency ships. `stasis audit` audits each copy that records a
+  version as the package it is (see `doc/audit.md`), and `stasis sbom` lists
+  each copy as a package contained in its host (see `doc/sbom.md`).
 - A dependency record may carry `subpackages`, after `vendored`: its subpath
   entry points with a `package.json` of their own whose files the bundle
   carries, by directory, each with that `package.json`'s `name`, which must be

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { State } from '@exodus/stasis-core/state'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'state-nested-pkg')
@@ -91,7 +92,7 @@ test('a nested package.json outside the vendor dir is still held to its host\'s 
     /Inconsistent data between node_modules\/next\/dist\/server\/package\.json and node_modules\/next\/package\.json/)
 })
 
-test('a bundle lists the vendored packages it carries a file of; a lockfile none', (t) => {
+test('a bundle lists the vendored packages it carries a file of, and so does a lockfile, for audit', (t) => {
   const state = new State(root, { lock: 'add', bundle: 'add' })
   state.addFile(nextFile('dist/compiled/ua-parser-js/ua-parser.js'))
   state.addFile(nextFile('dist/compiled/react-is/LICENSE'), { resource: true })
@@ -106,7 +107,12 @@ test('a bundle lists the vendored packages it carries a file of; a lockfile none
   t.assert.deepStrictEqual(record(state.resourcesBundle).vendored, {
     'dist/compiled/react-is': { name: 'react-is', version: '19.3.0-canary-278794d7-20261002' },
   })
-  t.assert.equal(record(state.lockfile).vendored, undefined, 'metadata, which a lockfile never records')
+  // A lockfile carries it too (unattested), so the copies can be audited from a lockfile alone.
+  const lockfile = record(state.lockfile)
+  t.assert.deepStrictEqual(lockfile.vendored, record(state.sourceBundle).vendored)
+  t.assert.deepStrictEqual(Object.keys(lockfile), ['name', 'version', 'ecosystem', 'vendored', 'files'], 'no repo or subpackages')
+  t.assert.deepStrictEqual({ ...Lockfile.parse(state.lockfile.serialize()).modules.get('node_modules/next').vendored['dist/compiled/react-is'] },
+    { name: 'react-is', version: '19.3.0-canary-278794d7-20261002' })
 
   const parsed = Bundle.parse(state.sourceBundle.serialize())
   t.assert.deepStrictEqual(Object.keys(parsed.modules.get('node_modules/next').vendored), ['dist/compiled/react-is', 'dist/compiled/ua-parser-js'])
