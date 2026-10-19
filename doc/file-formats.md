@@ -1314,9 +1314,10 @@ library's). Nothing is compiled or preprocessed: the graph is the include
 graph, as the preprocessor would follow it, plus each header's implementation.
 
 **Directives.** `#include`, `#import`, `#include_next` and `#embed` are found as
-translation phases 1 to 4 find them: lines spliced by a backslash joined, comments
-and string and character literals skipped (C++ raw strings and digit separators
-included), a directive being `#` (or `%:`) first on its line. Macros aren't
+translation phases 1 to 4 find them: a line ending at CR LF, LF or a lone CR,
+lines spliced by a backslash joined, comments and string and character literals
+skipped (C++ raw strings and digit separators included), a directive being `#`
+(or `%:`) first on its line. Macros aren't
 expanded, so `#include MACRO` is reported and not followed, and conditionals
 aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
 code (and the `#else` of an `#if 1`) is never followed, and an include under any
@@ -1364,8 +1365,12 @@ is:
   `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Bear and Meson too). Each translation
   unit it lists -- an entry, or an implementation file -- is resolved with its
   first command's `-I`, `-iquote`, `-isystem` (`-cxx-isystem`), `-idirafter`,
-  `--embed-dir`, `-include`, `-imacros` and `-I-` (clang-cl's and cl's `/I`,
-  `/external:I` and `/FI` too), each relative to the command's `directory`; an
+  `--embed-dir`, `-include`, `-imacros`, `-I-`, and `-iprefix` with the
+  `-iwithprefixbefore` (placed as `-I`) and `-iwithprefix` (as `-isystem`)
+  directories after it, GCC's long spellings of them (`--include-directory`,
+  `--include-barrier`, ...) and clang-cl's and cl's `/I`, `/external:I` and
+  `/FI` too, each relative to the command's `directory`, the `-I` ones read
+  first as GCC's driver hands them over; an
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the

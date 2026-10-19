@@ -535,3 +535,22 @@ test('loadCompileCommands puts =dir and $SYSROOT/dir in the sysroot, -isysroot\'
   t.assert.deepStrictEqual(commands.get('src/c.c').I, [])
   t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('include <x.h>'), 'sr/usr/include/x.h')
 }))
+
+test('loadCompileCommands reads GCC\'s long spellings and prefix options, the -I ones first, as its driver orders them', withTmp((t, tmp) => {
+  tree(tmp, { 'a.c': '' })
+  const args = ['gcc', '-iprefix', 'p/', '-iwithprefixbefore', 'wb', '-I', 'j', '--include-directory', 'i', '--include-barrier', '--include-directory=k', '--include-directory-after', 'af', '--include-with-prefix', 'w', '--include-prefix', 'q/', '--include-with-prefix-before=v', '--include', 'f.h', '-c', 'a.c']
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'a.c', arguments: args }]))
+  const flags = loadCompileCommands(tmp, 'compile_commands.json').get('a.c')
+  // GCC 13's `gcc -v -E` for these: quote j, i; then k, p/wb, q/v; system p/w; after af.
+  const rels = (dirs) => dirs.map((d) => d.rel)
+  t.assert.deepStrictEqual(rels(flags.quote), ['j', 'i'])
+  t.assert.deepStrictEqual(rels(flags.I), ['k', 'p/wb', 'q/v'])
+  t.assert.deepStrictEqual(rels(flags.system), ['p/w'])
+  t.assert.deepStrictEqual(rels(flags.after), ['af'])
+  t.assert.deepStrictEqual(flags.forced.map((f) => f.path), ['f.h'])
+  t.assert.equal(flags.split, true)
+}))
+
+test('scanIncludes ends a line at a lone carriage return, as GCC does', (t) => {
+  t.assert.deepStrictEqual(specs('#include "a.h"\r#include "b.h"\r#inc\\\rlude "c.h"\r'), ['include "a.h" live', 'include "b.h" live', 'include "c.h" live'])
+})

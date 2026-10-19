@@ -84,7 +84,8 @@ function guardName(name, expr) {
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
 // backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
 export function scanIncludes(source) {
-  const s = source.replaceAll(/\\\r?\n/gu, '')
+  // Lines end at CR LF, LF or a lone CR, as GCC reads them; a backslash before one splices it.
+  const s = source.replaceAll(/\r\n?/gu, '\n').replaceAll(/\\\n/gu, '')
   const n = s.length
   const out = []
   const stack = []
@@ -321,40 +322,62 @@ function includeFlags(args, directory, toDir, cl) {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
   }
   // Options whose value is the next argument, which is never a flag of its own.
-  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-Xclang', '-Xpreprocessor', '-include-pch', '-iprefix', '-iwithprefix', '-iwithprefixbefore', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib'])
-  for (let k = 1; k < args.length; k++) {
-    const a = args[k]
-    if (SEPARATE.has(a)) {
-      k++
-      continue
+  const SEPARATE = new Set(['-o', '-x', '-MF', '-MT', '-MQ', '-Xclang', '-Xpreprocessor', '-include-pch', '-isysroot', '--sysroot', '-target', '-arch', '-D', '-U', '-imultilib'])
+  let prefix // -iprefix's, for the -iwithprefix ones after it; with none, they name no directory
+  // GCC's driver hands its compiler the -I options (and -I-) ahead of the others, so they are read
+  // first, in order (`-iwithprefixbefore wb -I a` searches a, then wb), then the rest, in order.
+  for (const pass of ['-I', 'rest']) {
+    for (let k = 1; k < args.length; k++) {
+      const a = args[k]
+      if (SEPARATE.has(a)) {
+        k++
+        continue
+      }
+      // A short option's value follows it, joined or as the next argument; a long option's is
+      // the next argument or follows its `=`, and the option is only ever itself
+      // (`--include-directory-after` is no `--include-directory`). Longest flag first:
+      // `-isystem-after` before `-isystem`, `-iwithprefixbefore` before `-iwithprefix`.
+      const take = (flag) => {
+        if (a === flag) return args[++k]
+        return a.startsWith(flag) ? a.slice(flag.length) : undefined
+      }
+      const long = (flag) => {
+        if (a === flag) return args[++k]
+        return a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : undefined
+      }
+      let v
+      // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes
+      // only, ahead of every -iquote one whatever the order given (as `gcc -v` lists them), and
+      // none is looked up beside its includer.
+      if (a === '-I-' || a === '--include-barrier') {
+        if (pass === '-I') {
+          preBarrier.push(...flags.I)
+          flags.I = []
+          flags.split = true
+        }
+        continue
+      }
+      if ((v = long('--include-directory')) !== undefined || (v = take('-I')) !== undefined || (cl && (v = take('/I')) !== undefined)) {
+        if (pass === '-I') dir(v, flags.I)
+        continue
+      }
+      if (pass === '-I' || a.startsWith('-include-pch')) continue
+      if ((v = long('--include-directory-after')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
+      else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
+      else if ((v = take('-cxx-isystem')) !== undefined || (v = take('-isystem')) !== undefined) dir(v, flags.system)
+      // -iwithprefixbefore goes where -I goes, after them all; -iwithprefix with -isystem (as
+      // GCC 13 places it, not after -idirafter as its manual says).
+      else if ((v = long('--include-prefix')) !== undefined || (v = take('-iprefix')) !== undefined) prefix = v
+      else if ((v = long('--include-with-prefix-before')) !== undefined || (v = take('-iwithprefixbefore')) !== undefined) {
+        if (prefix !== undefined && v !== undefined) dir(prefix + v, flags.I)
+      } else if ((v = long('--include-with-prefix-after')) !== undefined || (v = long('--include-with-prefix')) !== undefined || (v = take('-iwithprefix')) !== undefined) {
+        if (prefix !== undefined && v !== undefined) dir(prefix + v, flags.system)
+      } else if ((v = long('--embed-dir')) !== undefined) dir(v, flags.embed)
+      else if ((v = take('-imacros')) !== undefined) file('-imacros', v)
+      else if ((v = long('--include')) !== undefined || (v = take('-include')) !== undefined) file('-include', v)
+      else if (cl && ((v = take('/external:I')) !== undefined || (v = take('-external:I')) !== undefined)) dir(v, flags.system)
+      else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v)
     }
-    // GCC's deprecated `-I-`: the -I directories before it are searched for quoted includes only,
-    // ahead of every -iquote one whatever the order given (as `gcc -v` lists them), and none is
-    // looked up beside its includer.
-    if (a === '-I-') {
-      preBarrier.push(...flags.I)
-      flags.I = []
-      flags.split = true
-      continue
-    }
-    // Longest flag first: `-isystem-after` before `-isystem`, `-include-pch` before `-include`.
-    const take = (flag) => {
-      if (a === flag) return args[++k]
-      return a.startsWith(flag) ? a.slice(flag.length) : undefined
-    }
-    let v
-    if (a.startsWith('-include-pch')) continue
-    if ((v = take('--include-directory-after=')) !== undefined || (v = take('-idirafter')) !== undefined || (v = take('-isystem-after')) !== undefined) dir(v, flags.after)
-    else if ((v = take('--include-directory=')) !== undefined || (v = take('--include-directory')) !== undefined) dir(v, flags.I)
-    else if ((v = take('-iquote')) !== undefined) dir(v, flags.quote)
-    else if ((v = take('-cxx-isystem')) !== undefined || (v = take('-isystem')) !== undefined) dir(v, flags.system)
-    else if ((v = take('--embed-dir=')) !== undefined || (v = take('--embed-dir')) !== undefined) dir(v, flags.embed)
-    else if ((v = take('-imacros')) !== undefined) file('-imacros', v)
-    else if ((v = take('--include=')) !== undefined || (v = take('--include')) !== undefined || (v = take('-include')) !== undefined) file('-include', v)
-    else if ((v = take('-I')) !== undefined) dir(v, flags.I)
-    else if (cl && ((v = take('/external:I')) !== undefined || (v = take('-external:I')) !== undefined)) dir(v, flags.system)
-    else if (cl && (v = take('/I')) !== undefined) dir(v, flags.I)
-    else if (cl && ((v = take('/FI')) !== undefined || (v = take('-FI')) !== undefined)) file('/FI', v)
   }
   flags.quote.unshift(...preBarrier)
   return flags
