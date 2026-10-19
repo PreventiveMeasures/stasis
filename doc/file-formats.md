@@ -1330,7 +1330,8 @@ first directives, `#pragma once` aside) isn't a condition.
 includer was found in (from the start of its form's list where it wasn't found
 through one), never landing on the includer. `#embed` searches the includer's
 directory for `"x"`, then the `--embed-dir` directories. A directory given twice
-is searched once, where GCC keeps it: a system one (`-isystem`, then
+(spelled either way: its real path tells, as GCC tells it by inode) is searched
+once, where GCC keeps it: a system one (`-isystem`, then
 `-idirafter`) at its first place, an `-I` or `-iquote` one that is also a system
 one only there, other `-I` and `-iquote` ones at their first. The search path
 is:
@@ -1370,7 +1371,10 @@ is:
   command's directory instead of the unit's own, then along the rest of the
   quote chain, as GCC looks it up. GCC's `-I-` makes the `-I` directories
   before it quote-only, searched ahead of every `-iquote` one, and no quoted
-  include is then looked up beside its includer. The database takes the place of a known project's search path for
+  include is then looked up beside its includer. An include directory spelled
+  `=dir` or `$SYSROOT/dir` lies in the command's `-isysroot`, else its
+  `--sysroot` (relative to its `directory`); with neither, it is no directory,
+  as to GCC. The database takes the place of a known project's search path for
   the units it lists; an entry it doesn't list is resolved with its known
   project's and `--include-dirs`, said so. The database is read wherever it
   is, never bundled.

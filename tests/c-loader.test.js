@@ -512,3 +512,26 @@ test('collectCBundle: an #embed found outside the bundle root is missing', withT
   const { missing } = collectCBundle(join(tmp, 'root'), ['main.c'])
   t.assert.deepStrictEqual(missing, [{ spec: 'embed "../outside/logo.bin"', from: 'main.c', reason: 'outside the bundle root' }])
 }))
+
+test('collectCBundle tells one directory spelled two ways by its real path', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '#include <x.h>\n', 'real/x.h': '', 'b/x.h': '' })
+  symlinkSync('real', join(tmp, 'alias'))
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: 'src/a.c', arguments: ['gcc', '-Ialias', '-isystem', 'real', '-Ib', '-c', 'src/a.c'] }]))
+  // GCC 13 searches b, then real: the -I alias is the -isystem directory, searched only there.
+  const { resolutions } = collectCBundle(tmp, ['src/a.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  t.assert.equal(resolutions.get('src/a.c').get('include <x.h>'), 'b/x.h')
+}))
+
+test('loadCompileCommands puts =dir and $SYSROOT/dir in the sysroot, -isysroot\'s over --sysroot\'s', withTmp((t, tmp) => {
+  tree(tmp, { 'src/a.c': '#include <x.h>\n', 'sr/usr/include/x.h': '', 'hsr/inc/y.h': '' })
+  writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([
+    { directory: tmp, file: 'src/a.c', arguments: ['gcc', '-I=/usr/include', '--sysroot', 'sr', '-c', 'src/a.c'] },
+    { directory: tmp, file: 'src/b.c', arguments: ['gcc', '--sysroot=sr', '-isysroot', 'hsr', '-isystem', '$SYSROOT/inc', '-c', 'src/b.c'] },
+    { directory: tmp, file: 'src/c.c', arguments: ['gcc', '-I=/usr/include', '-c', 'src/c.c'] },
+  ]))
+  const commands = loadCompileCommands(tmp, 'compile_commands.json')
+  t.assert.deepStrictEqual(commands.get('src/a.c').I, [{ rel: 'sr/usr/include' }])
+  t.assert.deepStrictEqual(commands.get('src/b.c').system, [{ rel: 'hsr/inc' }])
+  t.assert.deepStrictEqual(commands.get('src/c.c').I, [])
+  t.assert.equal(collectCBundle(tmp, ['src/a.c'], { commands }).resolutions.get('src/a.c').get('include <x.h>'), 'sr/usr/include/x.h')
+}))

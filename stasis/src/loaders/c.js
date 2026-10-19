@@ -277,10 +277,11 @@ function makeDir(baseDir, realBase, abs) {
 // twice is searched once, as GCC merges its chains: the system ones (-isystem, then -idirafter)
 // keep their first place, and an -I or -iquote one that is also a system one is searched only
 // there; the -I ones keep their first, as do the -iquote ones, the last of which goes where it is
-// the first one after them. `id` tells contexts apart: a header is walked once per context it is
-// reached in.
-function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false } = {}, includeDirs = []) {
-  const key = (dir) => JSON.stringify(dir)
+// the first one after them. Which directories are one is `identity`'s to tell (the real path, as
+// GCC tells them by inode); each is searched as first spelled. `id` tells contexts apart: a header
+// is walked once per context it is reached in.
+function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false } = {}, includeDirs = [], identity = (dir) => JSON.stringify(dir)) {
+  const key = identity
   const unique = (dirs, taken = new Set()) => dirs.filter((dir) => !taken.has(key(dir)) && taken.add(key(dir)))
   const systemDirs = unique([...system, ...after])
   const systemKeys = new Set(systemDirs.map(key))
@@ -297,9 +298,24 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
 function includeFlags(args, directory, toDir, cl) {
   const flags = { quote: [], I: [], system: [], after: [], embed: [], forced: [] }
   const preBarrier = [] // the -I directories before a `-I-`
+  // The sysroot a directory spelled `=dir` or `$SYSROOT/dir` lies in, wherever it is given: -isysroot,
+  // which is the headers', else --sysroot. With neither, such a directory is no directory (GCC looks
+  // for `=dir` itself, which isn't there).
+  let sysroot
+  let isysroot
+  for (let k = 1; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--sysroot') sysroot = args[++k]
+    else if (a === '-isysroot') isysroot = args[++k]
+    else if (a.startsWith('--sysroot=')) sysroot = a.slice('--sysroot='.length)
+    else if (a.startsWith('-isysroot')) isysroot = a.slice('-isysroot'.length)
+  }
+  const headerSysroot = isysroot ?? sysroot
   const dir = (value, list) => {
-    // `-I=dir` is relative to the sysroot: a system directory.
-    if (value !== undefined && value !== '' && value !== '-' && !value.startsWith('=')) list.push(toDir(resolve(directory, value)))
+    if (value === undefined || value === '' || value === '-') return
+    const inSysroot = /^(?:=|\$SYSROOT)(.*)$/su.exec(value)
+    if (inSysroot === null) list.push(toDir(resolve(directory, value)))
+    else if (headerSysroot !== undefined) list.push(toDir(resolve(directory, headerSysroot + inSysroot[1])))
   }
   const file = (flag, value) => {
     if (value !== undefined && value !== '') flags.forced.push({ flag, path: value, dir: toDir(directory) })
@@ -646,14 +662,29 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
     if (!contexts.has(ctx.id)) contexts.set(ctx.id, ctx)
     return contexts.get(ctx.id)
   }
-  const defaultCtx = intern(makeContext({}, extraDirs))
+  // A search directory's identity, for telling two spellings of one apart: its real path.
+  const identities = new Map()
+  const identity = (dir) => {
+    const spelled = JSON.stringify(dir)
+    if (!identities.has(spelled)) {
+      let real = spelled
+      try {
+        real = realpathSync(dir.abs ?? join(baseDir, dir.rel || '.'))
+      } catch {
+        // Nothing there: only its spelling tells it apart.
+      }
+      identities.set(spelled, real)
+    }
+    return identities.get(spelled)
+  }
+  const defaultCtx = intern(makeContext({}, extraDirs, identity))
   // A unit's search path: its compile command's, else its known project's (after --include-dirs),
   // else `fallback`'s.
   const projects = detectProjects(baseDir, knownProjects)
   const contextOf = (file, fallback) => {
-    if (commands?.has(file)) return intern(makeContext(commands.get(file), extraDirs))
+    if (commands?.has(file)) return intern(makeContext(commands.get(file), extraDirs, identity))
     const project = projects.of(file)
-    return project === null ? fallback : intern(makeContext({ I: [...extraDirs, ...project.searchPath] }))
+    return project === null ? fallback : intern(makeContext({ I: [...extraDirs, ...project.searchPath] }, [], identity))
   }
 
   const sources = new Map()
