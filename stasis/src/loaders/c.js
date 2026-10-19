@@ -80,7 +80,8 @@ function guardName(name, expr) {
 // 'macro' (a computed include, `path` the macro's name), `state` 'live' where every configuration
 // compiles it, 'maybe' inside a conditional the scan can't decide (`#ifdef _WIN32`). Ones in code
 // no configuration compiles (`#if 0`, its `#else` of an `#if 1`) are left out. A file's include
-// guard (`#ifndef X` then `#define X` as its first directives) isn't a condition. Comments, string
+// guard (`#ifndef X` then `#define X` as its first directives, before any code, closed by an
+// `#endif` with nothing after it and no `#else` or `#elif` between) isn't a condition. Comments, string
 // and character literals (C++ raw strings, digit separators) are skipped, lines spliced with a
 // backslash joined, and a directive is `#` (or `%:`) first on its line, as in translation phase 4.
 export function scanIncludes(source) {
@@ -93,6 +94,13 @@ export function scanIncludes(source) {
   let state = 'live'
   let directives = 0
   let guard = null // { frame, name } of the first directive, an #ifndef, until the next one
+  let code = false // whether a token has been seen outside a directive
+  let closedGuard = null // { from, to }: the includes of a guard just closed, nothing after it yet
+  // The includes out[from, to) under what was taken for an include guard and isn't one: under a
+  // condition, like any other.
+  const unguard = (from, to) => {
+    for (let k = from; k < to; k++) if (out[k].state === 'live') out[k].state = 'maybe'
+  }
 
   const skipBlockComment = (i) => {
     const end = s.indexOf('*/', i + 2)
@@ -149,6 +157,11 @@ export function scanIncludes(source) {
     const name = IDENTIFIER.exec(s)?.[0]
     if (name === undefined) return lineEnd(i) // a null directive, or `# 12 "file"` line markers
     i += name.length
+    // Anything after a guard's #endif: it encloses less than the file.
+    if (closedGuard !== null) {
+      unguard(closedGuard.from, closedGuard.to)
+      closedGuard = null
+    }
     // `#pragma once` before a guard leaves it the file's first directive.
     if (name !== 'pragma') directives++
     const guarding = guard
@@ -179,7 +192,7 @@ export function scanIncludes(source) {
         const frame = { parent: state, taken: nextTaken('no', cond) }
         stack.push(frame)
         state = branchState(frame.parent, 'no', cond)
-        const macro = directives === 1 ? guardName(name, text) : undefined
+        const macro = directives === 1 && !code ? guardName(name, text) : undefined
         if (macro !== undefined) guard = { frame, name: macro }
         break
       }
@@ -189,18 +202,29 @@ export function scanIncludes(source) {
       case 'else': {
         const frame = stack.at(-1)
         if (frame === undefined) break
+        // An #else or #elif of an include guard: it was a condition, its first branch undecided.
+        if (frame.guard !== undefined) {
+          unguard(frame.guard, out.length)
+          frame.taken = nextTaken('no', undefined)
+          delete frame.guard
+        }
         const cond = name === 'else' ? true : name === 'elif' ? evalCondition(text) : undefined
         state = branchState(frame.parent, frame.taken, cond)
         frame.taken = nextTaken(frame.taken, cond)
         break
       }
-      case 'endif':
-        if (stack.length > 0) state = stack.pop().parent
+      case 'endif': {
+        const frame = stack.pop()
+        if (frame === undefined) break
+        state = frame.parent
+        if (frame.guard !== undefined) closedGuard = { from: frame.guard, to: out.length }
         break
+      }
       case 'define':
         // `#define X` right after a first `#ifndef X`: the include guard, whose body is the file.
         if (guarding !== null && stack.at(-1) === guarding.frame && /^\s*(\w+)/u.exec(text)?.[1] === guarding.name) {
           guarding.frame.taken = 'yes'
+          guarding.frame.guard = out.length
           state = guarding.frame.parent
         }
         break
@@ -226,6 +250,11 @@ export function scanIncludes(source) {
       i = directive(i + (c === '#' ? 1 : 2))
     } else {
       atLineStart = false
+      code = true
+      if (closedGuard !== null) {
+        unguard(closedGuard.from, closedGuard.to)
+        closedGuard = null
+      }
       if (c === '"' || c === "'") {
         i = skipQuoted(i)
         continue
@@ -1051,8 +1080,9 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
         const result = resolveInclude(node, inc)
         const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
         if (result?.target !== undefined) {
-          const embed = inc.directive === 'embed'
-          edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node), embed })
+          // An #embed's file is bytes, and so is a cl #import's: a type library (.tlb, .dll).
+          const bytes = inc.directive === 'embed' || (ctx.msvc && inc.directive === 'import')
+          edge.target = visit(result.target, ctx, { at: result.at, format: bytes ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node), embed: bytes })
         }
         addEdge(node, edge)
       }

@@ -130,6 +130,14 @@ test('scanIncludes takes a file\'s include guard for no condition', (t) => {
   // Not the first directive, or no matching #define: a condition like any other.
   t.assert.deepStrictEqual(specs('#include "y.h"\n#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\n'), ['include "y.h" live', 'include "x.h" maybe'])
   t.assert.deepStrictEqual(specs('#ifndef A_H\n#define B_H\n#include "x.h"\n#endif\n'), ['include "x.h" maybe'])
+  // With an #else or #elif, or not enclosing the file, it is a condition: its branches undecided.
+  t.assert.deepStrictEqual(specs('#ifndef MODE\n#define MODE\n#include "a.h"\n#else\n#include "b.h"\n#endif\n'), ['include "a.h" maybe', 'include "b.h" maybe'])
+  t.assert.deepStrictEqual(specs('#if !defined(A_H)\n#define A_H\n#include "a.h"\n#elif 1\n#include "b.h"\n#endif\n'), ['include "a.h" maybe', 'include "b.h" maybe'])
+  t.assert.deepStrictEqual(specs('#ifndef USE_X\n#define USE_X\n#include "x.h"\n#endif\n#include "y.h"\n'), ['include "x.h" maybe', 'include "y.h" live'])
+  t.assert.deepStrictEqual(specs('#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\nint after;\n'), ['include "x.h" maybe'])
+  t.assert.deepStrictEqual(specs('int before;\n#ifndef A_H\n#define A_H\n#include "x.h"\n#endif\n'), ['include "x.h" maybe'])
+  // Comments after the #endif leave it the file's guard.
+  t.assert.deepStrictEqual(specs('#ifndef A_H\n#define A_H\n#ifdef W\n#include "w.h"\n#endif\n#include "x.h"\n#endif /* A_H */\n// end\n'), ['include "w.h" maybe', 'include "x.h" live'])
 })
 
 test('isCEntry and cFormatOf', (t) => {
@@ -581,6 +589,21 @@ test('loadCompileCommands reads clang-cl\'s include options, /imsvc after the ot
   t.assert.deepStrictEqual(rels(flags.system), ['ext'])
   t.assert.deepStrictEqual(rels(flags.after), ['sys', 'sys2'])
   t.assert.deepStrictEqual(flags.forced.map((f) => f.path), ['pch.h'])
+}))
+
+test('collectCBundle carries a cl #import\'s type library as bytes, where GCC\'s #import is an #include', withTmp((t, tmp) => {
+  const tlb = Buffer.from([0x4d, 0x53, 0x46, 0x54, 0xff, 0x00])
+  tree(tmp, { 'a.cpp': '#import "lib/types.tlb"\n', 'b.c': '#import "lib/h.h"\n', 'lib/types.tlb': tlb, 'lib/h.h': '#include "dep.h"\n', 'lib/dep.h': '' })
+  const bundle = (unit, argv) => {
+    writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: tmp, file: unit, arguments: [...argv, unit] }]))
+    return collectCBundle(tmp, [unit], { commands: loadCompileCommands(tmp, 'compile_commands.json') })
+  }
+  const cl = bundle('a.cpp', ['cl', '/c'])
+  t.assert.equal(cl.formats.get('lib/types.tlb'), 'resource:base64')
+  t.assert.equal(cl.sources.get('lib/types.tlb'), tlb.toString('base64'))
+  const gcc = bundle('b.c', ['gcc', '-c'])
+  t.assert.equal(gcc.formats.get('lib/h.h'), 'c-header')
+  t.assert.ok(gcc.sources.has('lib/dep.h'))
 }))
 
 test('collectCBundle searches Clang\'s framework directories, -F with the -I ones, -iframework after the -isystem ones', withTmp((t, tmp) => {

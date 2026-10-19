@@ -1328,7 +1328,10 @@ aren't evaluated, past an integer literal (in any base, `#if 0x0` too): `#if 0`
 code (and the `#else` of an `#if 1`) is never followed, and an include under any
 other condition (`#ifdef _WIN32`, `#if defined(X)`) is followed when found,
 every configuration's alike, but not required. A file's include guard (`#ifndef X` then `#define X` as its
-first directives, `#pragma once` aside) isn't a condition.
+first directives, `#pragma once` aside, before any code, closed by an `#endif`
+with nothing after it and no `#else` or `#elif` in it) isn't a condition. Under
+a cl or clang-cl command, an `#import` names a type library (`.tlb`, `.dll`),
+carried as a resource as an `#embed`'s file is.
 
 **Search.** As GCC and Clang search: `"x"` in the includer's directory, then the
 `-iquote` directories, then those `<x>` searches -- `-I`, `-isystem`, then
