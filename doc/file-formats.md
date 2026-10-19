@@ -1334,7 +1334,11 @@ first directives, `#pragma once` aside) isn't a condition.
 `-iquote` directories, then those `<x>` searches -- `-I`, `-isystem`, then
 `-idirafter`, in order. `#include_next` carries on from after the directory its
 includer was found in (from the start of its form's list where it wasn't found
-through one), never landing on the includer. `#embed` searches the includer's
+through one), never landing on the includer. Under a cl or clang-cl command, a
+quoted include not beside its includer is then looked up beside each file
+including that one, nearest first, before the `/I` directories (MSVC's rule,
+which clang-cl follows): along the first path the walk reaches the includer by,
+where another path could find another file. `#embed` searches the includer's
 directory for `"x"`, then the `--embed-dir` directories. A directory given twice
 (spelled either way: its real path tells, as GCC tells it by inode) is searched
 once, where GCC keeps it: a system one (`-isystem`, then
@@ -1379,7 +1383,8 @@ is:
   `arguments` array is taken as it is, a `command` string split as a POSIX
   shell splits it. A `-include` is the unit's first include, looked up in the
   command's directory instead of the unit's own, then along the rest of the
-  quote chain, as GCC looks it up. GCC's `-I-` makes the `-I` directories
+  quote chain, as GCC looks it up; a cl `/FI` one is looked up beside the unit
+  after the working directory, as clang-cl looks it up. GCC's `-I-` makes the `-I` directories
   before it quote-only, searched ahead of every `-iquote` one, and no quoted
   include is then looked up beside its includer. An include directory spelled
   `=dir` or `$SYSROOT/dir` lies in the command's `-isysroot`, else its
@@ -1444,9 +1449,8 @@ edge. **Formats** are `c`, `cpp`, `c-header` and `cpp-header` by extension; any
 other included file (`.inl`, `.inc`, Eigen's extensionless `Core`) is a header
 of its includer's language.
 
-Not supported: Objective-C (`.m`, `.mm`) entries, C++20 modules' `import`,
-`-D`/`-U` (no macro is evaluated), and cl's search of every includer's directory
-for a quoted include.
+Not supported: Objective-C (`.m`, `.mm`) entries, C++20 modules' `import`, and
+`-D`/`-U` (no macro is evaluated).
 
 ## Resources in the bundle
 

@@ -275,14 +275,16 @@ function makeDir(baseDir, realBase, abs) {
 // A translation unit's search context: `quote` the -iquote dirs, `angle` the -I, -isystem and
 // -idirafter ones in that order (what both forms search after the quote ones), `embed` the
 // --embed-dir ones, `forced` the -include/-imacros files, as `{ flag, path, dir }`, `split` set by
-// GCC's `-I-`, after which a quoted include isn't looked up beside its includer. A directory given
+// GCC's `-I-`, after which a quoted include isn't looked up beside its includer, `msvc` set by a cl or
+// clang-cl command, whose quoted includes are also looked up beside the files including the
+// includer, and whose /FI files beside the unit too. A directory given
 // twice is searched once, as GCC merges its chains: the system ones (-isystem, then -idirafter)
 // keep their first place, and an -I or -iquote one that is also a system one is searched only
 // there; the -I ones keep their first, as do the -iquote ones, the last of which goes where it is
 // the first one after them. Which directories are one is `identity`'s to tell (the real path, as
 // GCC tells them by inode); each is searched as first spelled. `id` tells contexts apart: a header
 // is walked once per context it is reached in.
-function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false } = {}, includeDirs = [], identity = (dir) => JSON.stringify(dir)) {
+function makeContext({ quote = [], I = [], system = [], after = [], embed = [], forced = [], split = false, msvc = false } = {}, includeDirs = [], identity = (dir) => JSON.stringify(dir)) {
   const key = identity
   const unique = (dirs, taken = new Set()) => dirs.filter((dir) => !taken.has(key(dir)) && taken.add(key(dir)))
   const systemDirs = unique([...system, ...after])
@@ -290,7 +292,7 @@ function makeContext({ quote = [], I = [], system = [], after = [], embed = [], 
   const angle = [...unique([...I, ...includeDirs], new Set(systemKeys)), ...systemDirs]
   const quoteDirs = unique(quote, new Set(systemKeys))
   if (quoteDirs.length > 0 && angle.length > 0 && key(quoteDirs.at(-1)) === key(angle[0])) quoteDirs.pop()
-  const ctx = { quote: quoteDirs, angle, embed, forced, split }
+  const ctx = { quote: quoteDirs, angle, embed, forced, split, msvc }
   ctx.id = JSON.stringify(ctx)
   return ctx
 }
@@ -383,6 +385,7 @@ function includeFlags(args, directory, toDir, cl) {
     }
   }
   flags.quote.unshift(...preBarrier)
+  if (cl) flags.msvc = true
   return flags
 }
 
@@ -726,15 +729,21 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
   // `at` is where in the context's [...quote, ...angle] list the file was found, -1 where it wasn't
   // found through the search path (an entry, a quoted include beside its includer): where an
   // `#include_next` in it carries on from. `primary` marks a unit its own compile command names.
-  const visit = (file, ctx, { at = -1, primary = false, format }) => {
+  // `stack` is the directories of the files including it, nearest first, along the first path that
+  // reaches it: where MSVC looks a quoted include up after the includer's own directory.
+  const visit = (file, ctx, { at = -1, primary = false, format, stack = [] }) => {
     const key = keyOf(file, ctx)
     if (!nodes.has(key)) {
-      nodes.set(key, { file, ctx, at, primary, edges: [] })
+      nodes.set(key, { file, ctx, at, primary, edges: [], stack })
       queue.push(key)
     }
     if (!formats.has(file)) formats.set(file, format)
     return key
   }
+
+  // The `stack` of what `node` includes: its own directory, then its stack, each directory once.
+  // Only MSVC looks there, so only its contexts keep one.
+  const stackBelow = (node) => (node.ctx.msvc ? [...new Set([dirOf(node.file), ...node.stack])] : [])
 
   const exists = (rel) => isFile(join(baseDir, rel))
 
@@ -852,8 +861,11 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       return null
     }
     if (inc.form === 'quote' && !ctx.split) {
-      const hit = probe({ rel: dirOf(file) }, inc.path)
-      if (hit !== null) return { ...hit, at: -1 }
+      // MSVC's: beside the includer, then beside each file including it, nearest first.
+      for (const dir of ctx.msvc ? [dirOf(file), ...node.stack] : [dirOf(file)]) {
+        const hit = probe({ rel: dir }, inc.path)
+        if (hit !== null) return { ...hit, at: -1 }
+      }
     }
     for (let k = first; k < chain.length; k++) {
       const hit = probe(chain[k], inc.path)
@@ -917,13 +929,15 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       for (const { flag, path, dir } of ctx.forced) {
         const spec = `${flag} ${path}`
         let result = isAbsolute(path) ? probe(makeDir(baseDir, realBase, path), '.') : probe(dir, path)
+        // cl's /FI is a quoted #include of the unit's: beside it next, as clang-cl looks it up.
+        if (result === null && flag === '/FI' && !isAbsolute(path)) result = probe({ rel: dirOf(file) }, path)
         const chain = isAbsolute(path) ? [] : [...ctx.quote, ...ctx.angle]
         for (let k = 0; result === null && k < chain.length; k++) {
           const hit = probe(chain[k], path)
           if (hit !== null) result = { ...hit, at: k }
         }
         const edge = { spec, live: true, forced: true, result, target: undefined }
-        if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format) })
+        if (result?.target !== undefined) edge.target = visit(result.target, ctx, { at: result.at ?? -1, format: cFormatOf(result.target, format), stack: stackBelow(node) })
         addEdge(node, edge)
       }
     }
@@ -938,7 +952,7 @@ export function collectCBundle(baseDir, entries, { includeDirs = [], commands = 
       const edge = { spec, inc, live: inc.state === 'live', result, target: undefined }
       if (result?.target !== undefined) {
         const embed = inc.directive === 'embed'
-        edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format) })
+        edge.target = visit(result.target, ctx, { at: result.at, format: embed ? 'resource' : cFormatOf(result.target, format), stack: stackBelow(node) })
       }
       addEdge(node, edge)
     }

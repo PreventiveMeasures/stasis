@@ -572,3 +572,28 @@ test('loadCompileCommands reads clang-cl\'s include options, /imsvc after the ot
   t.assert.deepStrictEqual(rels(flags.after), ['sys', 'sys2'])
   t.assert.deepStrictEqual(flags.forced.map((f) => f.path), ['pch.h'])
 }))
+
+test('collectCBundle looks an MSVC quoted include up beside each file including its includer, and /FI beside the unit', withTmp((t, tmp) => {
+  tree(tmp, {
+    'src/deep/m.c': '#include "../../inc/b.h"\n',
+    'inc/b.h': '#include "../other/c.h"\n',
+    'other/c.h': '#include "config.h"\n',
+    'src/deep/config.h': '',
+    'sys/config.h': '',
+    'src/deep/pch.h': '',
+    'build/README': '',
+  })
+  const resolve = (argv) => {
+    writeFileSync(join(tmp, 'compile_commands.json'), JSON.stringify([{ directory: join(tmp, 'build'), file: '../src/deep/m.c', arguments: [...argv, '../src/deep/m.c'] }]))
+    return collectCBundle(tmp, ['src/deep/m.c'], { commands: loadCompileCommands(tmp, 'compile_commands.json') }).resolutions
+  }
+  // clang-cl resolves "config.h" from other/c.h beside m.c, three includers up (-Wmicrosoft-include),
+  // ahead of /I; and /FIpch.h, not in the working directory, beside the unit.
+  const cl = resolve(['clang-cl', '/I../sys', '/FIpch.h', '/c'])
+  t.assert.equal(cl.get('other/c.h').get('include "config.h"'), 'src/deep/config.h')
+  t.assert.equal(cl.get('src/deep/m.c').get('/FI pch.h'), 'src/deep/pch.h')
+  // GCC looks beside the includer alone, and -include in the working directory, not beside the unit.
+  const gcc = resolve(['gcc', '-I../sys', '-include', 'pch.h', '-c'])
+  t.assert.equal(gcc.get('other/c.h').get('include "config.h"'), 'sys/config.h')
+  t.assert.equal(gcc.get('src/deep/m.c').get('-include pch.h'), undefined)
+}))
