@@ -555,7 +555,7 @@ export class State {
 
   // Verify one resolution edge against an attestation map: exact conditions key first, else accept
   // only if every condition set agrees on one target. Unknown edges fatal unless tolerateUnknown.
-  #assertAttestedResolution(attestation, conditions, parent, specifier, file, { what, source = 'lockfile', tolerateUnknown = false }) {
+  #assertAttestedResolution(attestation, conditions, parent, specifier, file, { what, source = 'lockfile', tolerateUnknown = false, targetPlatform }) {
     const edge = `'${specifier}' from ${parent} (${conditions})`
     let attested = attestation.get(conditions)?.get(parent)?.get(specifier)
     if (attested === undefined) {
@@ -568,6 +568,11 @@ export class State {
       assert.ok(targets.size > 0, `${what} resolution ${edge} is not attested by the ${source}`)
       assert.ok(targets.size === 1, `${what} resolution ${edge} is attested inconsistently across condition sets in the ${source}`)
       ;[attested] = targets
+    }
+    // A resolution made for one platform checks that platform's target of a per-platform edge.
+    if (targetPlatform !== undefined && attested instanceof Map && !(file instanceof Map)) {
+      attested = attested.get(targetPlatform)
+      assert.ok(attested !== undefined, `${what} resolution ${edge} is not attested for platform '${targetPlatform}' by the ${source}`)
     }
     // A per-platform edge is a Map<platform, target>: compare structurally (assert.equal is
     // reference equality).
@@ -1291,6 +1296,22 @@ export class State {
     noupsert(nestedMap(nestedMap(this.imports, key), parent), specifier, file)
     // upsertFormat, not noupsert: a real format must replace a weak 'stat:*' record from an --fs stat.
     if (format) upsertFormat(this.formats, file, format)
+  }
+
+  // Under bundle=load, verify a resolution a bundler made on its own (Metro resolves the app's
+  // imports itself, where the loader and the esbuild/webpack plugins take them from the bundle): it
+  // must be the edge the bundle attests, for `platform` where the edge is per-platform. Unknown
+  // edges are tolerated only where addImport tolerates them, for workspace parents in nm scope.
+  assertImport(parentURL, specifier, url, { conditions = '*', importAttributes, platform: targetPlatform } = {}) {
+    assert.ok(this.config.loadBundle, 'assertImport checks a resolution against a loaded bundle (bundle=load)')
+    if (conditions !== '*') assert.ok(Array.isArray(conditions))
+    assert.ok(parentURL, 'assertImport requires a parent')
+    const parent = this.#canonicalFile(parentURL)
+    const file = this.#canonicalFile(url)
+    specifier = this.#canonicalSpecifier(parentURL, specifier)
+    const key = this.#conditionsKey(conditions, importAttributes)
+    const tolerateUnknown = !this.config.full && !hasNodeModulesSegment(parent)
+    this.#assertAttestedResolution(this.imports, key, parent, specifier, file, { what: 'observed', source: 'bundle', tolerateUnknown, targetPlatform })
   }
 
   getImport(parentURL, specifier, { conditions = '*', importAttributes } = {}) {

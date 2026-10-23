@@ -216,7 +216,10 @@ files it adds.
   checked: a divergence from the recorded target is fatal (catching a specifier
   redirected to a *different* attested file, which byte hashes can't); an
   unrecorded edge is fatal in `scope = full` but tolerated for workspace parents
-  in `scope = node_modules`.
+  in `scope = node_modules`. Under `bundle = load` the edges are used: the
+  loader and the esbuild and webpack plugins resolve through them. Metro
+  resolves on its own, so its plugin checks every edge Metro resolved against
+  the bundle's, the same way, before any output.
 - Per-platform edges (`stasis bundle --metro --platforms=…`): a resolution target
   is normally a project-relative file string. When `--metro` resolves one
   `(parent, specifier)` edge to **different** files across platforms (e.g.

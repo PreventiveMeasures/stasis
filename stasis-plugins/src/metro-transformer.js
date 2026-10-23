@@ -12,7 +12,7 @@ import { transformContext } from './metro-babel-transformer.js'
 //  - keeps each import as written for the serializer, through the Babel transformer it swaps in
 //    (./metro-babel-transformer.js): a dependency Babel rewrote (e.g. through
 //    babel-plugin-module-resolver) carries the specifiers written in the source as `stasisAsWritten`;
-//  - is the LOAD half of stasis for Metro (under load the serializer is a pass-through). Load only
+//  - is the LOAD half of stasis for Metro (under load the serializer only asserts edges). Load only
 //    READS an immutable bundle and every worker reads the same bytes (no IPC), so a per-worker
 //    transformer is the natural seam: it replaces Metro's on-disk `data` with the bundle's
 //    hash-verified bytes (fail-closed; out-of-scope files pass their disk bytes through).
@@ -46,14 +46,15 @@ function baseConfig({ stasisBaseTransformerPath: _, ...config } = {}) {
 
 // Per-worker load State, built once from the usual env + stasis.config.json. Non-load mode -> null
 // -> transparent pass-through, so wiring it permanently is safe. A construction failure is cached
-// and rethrown on every call -- never throw-once-then-silently-pass-through.
+// and rethrown on every call -- never throw-once-then-silently-pass-through. It never writes, so it
+// claims no write path: a capturing worker's own preload State already holds them.
 let stateInited = false
 let loadState = null
 let stateError = null
 function getLoadState() {
   if (!stateInited) {
     try {
-      const state = new State(process.cwd())
+      const state = new State(process.cwd(), { claim: false })
       loadState = state.config.loadBundle ? state : null
     } catch (err) {
       stateError = err

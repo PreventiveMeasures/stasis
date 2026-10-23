@@ -13,6 +13,8 @@
 //       -> prints the transformer's getCacheKey({})
 // STASIS_TEST_DISK_BYTES -- the "on-disk" bytes handed to transform() (default: the file's own).
 // STASIS_TEST_TRANSFORMER_CONFIG (JSON) -- Metro's transformer config handed to transform() (default {}).
+// STASIS_TEST_PRELOAD=1 -- first construct the preload State a Metro worker has under
+//   `stasis run --child-process`, from the same env.
 
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
@@ -22,6 +24,9 @@ if (args.length === 0) {
   console.error('usage: metro-transformer-run.helper.js <file> [...] | --cache-key')
   process.exit(2)
 }
+
+const { State } = await import('@exodus/stasis-core/state')
+const _preload = process.env.STASIS_TEST_PRELOAD === '1' ? new State(process.cwd(), { preload: true }) : undefined
 
 const t = await import('../stasis/src/metro-transformer.js')
 

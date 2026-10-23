@@ -16,6 +16,13 @@ const require = createRequire(import.meta.url)
 // The companion worker transformer withStasis() wires as Metro's `transformerPath`.
 const TRANSFORMER = fileURLToPath(new URL('./metro-transformer.js', import.meta.url))
 
+// A graph module's absolute path (graph modules and preModules both carry it), or undefined for a
+// synthetic/virtual one (require.context's ?ctx=, __prelude__), with no on-disk bytes to hash.
+function diskPath(module) {
+  const modPath = module?.path
+  return typeof modPath === 'string' && isAbsolute(modPath) && existsSync(modPath) ? modPath : undefined
+}
+
 // Metro's `graph.entryPoints` is a Set now, an Array before ~0.71; normalize to a Set.
 function entrySet(graph) {
   const ep = graph?.entryPoints
@@ -116,7 +123,8 @@ function metroDefaultSerializer() {
 // the MAIN process with the full module graph -- a per-worker transformer's process-local State
 // could never be merged. This is the CAPTURE half; the companion ./metro-transformer.js runs in
 // the workers, recording each import as written and serving the LOAD half, and withStasis wires
-// both. Under bundle=load this serializer is a transparent pass-through.
+// both. Under bundle=load this serializer records nothing: Metro resolved every import itself,
+// so it asserts each edge against the bundle (see #assertEdges).
 // Capture is one-shot (dev-server rebuilds refused, see #run) and REQUIRES --child-process so the
 // worker-side toolchain (babel, RN preset) is attested (enforced in the constructor). withStasis
 // wires the stable customSerializer -- the only surface that receives preModules; serializerHook
@@ -201,9 +209,12 @@ export class StasisMetro {
 
   #run(graph, preModules) {
     if (!this.#state) return
-    // bundle=load: pass through (load is served by the worker transformer). Checked BEFORE the
-    // one-shot guard -- load captures nothing and legitimately re-serializes under a dev server.
-    if (this.#state.config.loadBundle) return
+    // bundle=load: assert, don't record (the worker transformer serves the bundle's bytes). Checked
+    // BEFORE the one-shot guard -- load captures nothing and legitimately re-serializes under a dev server.
+    if (this.#state.config.loadBundle) {
+      this.#assertEdges(graph, preModules)
+      return
+    }
     // Watch/dev-server capture is unsupported: dedupe is keyed by PATH not content, so a rebuild
     // with changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Refuse
     // the second serialization loudly (the first rebuild is the earliest refusal point Metro allows).
@@ -400,12 +411,42 @@ export class StasisMetro {
     }
   }
 
+  // bundle=load: Metro resolved every import itself (the loader and the esbuild/webpack plugins
+  // take theirs from the bundle), so before any output each edge must be the one the bundle attests
+  // -- the edges a capture records, from the same modules.
+  // A per-platform edge (a `stasis bundle --metro --platforms=...` bundle added to) is checked for the
+  // platform Metro builds.
+  #assertEdges(graph, preModules) {
+    const platform = graph.transformOptions?.platform ?? undefined
+    for (const module of [...(preModules ?? []), ...graph.dependencies.values()]) {
+      const modPath = diskPath(module)
+      if (modPath === undefined) continue
+      const url = pathToFileURL(modPath).toString()
+      for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
+    }
+  }
+
+  // A module's outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
+  // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis transformer
+  // (./metro-transformer.js) carries the ones written in the source. Code and resource targets alike,
+  // as `stasis bundle --metro` and the esbuild plugin record them: an asset is resolved as code is.
+  #edges(module) {
+    const edges = []
+    for (const dep of module.dependencies?.values?.() ?? []) {
+      const target = dep?.absolutePath
+      if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
+      if (classifyExtension(target, this.#resources) === 'unknown') continue
+      for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
+        if (typeof specifier === 'string') edges.push([specifier, pathToFileURL(target).toString()])
+      }
+    }
+    return edges
+  }
+
   #captureModules(modules, entries) {
     for (const module of modules) {
-      // module.path is the absolute path (both graph modules and preModules carry it).
-      const modPath = module?.path
-      // Skip synthetic/virtual modules (require.context's ?ctx=, __prelude__): no on-disk bytes to hash.
-      if (typeof modPath !== 'string' || !isAbsolute(modPath) || !existsSync(modPath)) continue
+      const modPath = diskPath(module)
+      if (modPath === undefined) continue
 
       const kind = classifyExtension(modPath, this.#resources)
       if (kind === 'unknown') {
@@ -415,20 +456,7 @@ export class StasisMetro {
         )
       }
       const url = pathToFileURL(modPath).toString()
-
-      // Outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
-      // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis
-      // transformer (./metro-transformer.js) carries the ones written in the source.
-      // Only code targets get an edge (resource imports are captured as files, no edge).
-      for (const dep of module.dependencies?.values?.() ?? []) {
-        const target = dep?.absolutePath
-        if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
-        if (classifyExtension(target, this.#resources) !== 'code') continue
-        for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
-          if (typeof specifier !== 'string') continue
-          this.#state.addImport(url, specifier, pathToFileURL(target).toString())
-        }
-      }
+      for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
 
       if (this.#seen.has(modPath)) continue
       this.#seen.add(modPath)
