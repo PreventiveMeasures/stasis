@@ -9,7 +9,7 @@ to be captured (a React Native app, a library's entry points).
 ```sh
 stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--babel] [--metro-resolver] [--cargo] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
+stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -100,9 +100,10 @@ With it:
   each of them would.
 - An entry it names is built with its options there, and no flag but those four
   and the consent below may be given with it: it is set there instead.
-- `babel`, `metro-resolver` and `cargo` run the project's code (its Babel
-  config, its `metro-resolver`, `cargo` and what its `.cargo/config.toml`
-  names), so set there they take effect only with their flag given too, as
+- `babel`, `metro-resolver`, `flow` and `cargo` run the project's code (its
+  Babel config, its `metro-resolver`, the `flow-remove-types` it installs,
+  `cargo` and what its `.cargo/config.toml` names), so set there they take
+  effect only with their flag given too, as
   consent: the config can't make a bare `stasis bundle` run anything. An entry
   setting one fails without its flag, and its flag fails where no entry given
   sets it; given, it applies to the entries setting it alone.
@@ -118,8 +119,8 @@ With it:
 A string `bundle` is `stasis run`'s bundle mode, which takes nothing from it.
 
 ```sh
-stasis bundle --metro-resolver        # bundles index.js with --metro and bin.js without
-stasis bundle --metro-resolver --output=app.br index.js
+stasis bundle --metro-resolver --flow   # bundles index.js with --metro and bin.js without
+stasis bundle --metro-resolver --flow --output=app.br index.js
 ```
 
 ## Resolution

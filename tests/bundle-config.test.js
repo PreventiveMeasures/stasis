@@ -154,6 +154,11 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
   // Given, and set for some: it applies to those alone.
   const plan = bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: { 'metro-resolver': true }, config })
   t.assert.deepStrictEqual(plan.builds.map((b) => [b.entries, b.metroResolver]), [[['index.js'], true], [['cli.js'], false]])
+  // flow loads the flow-remove-types the project installs (stasis's peer), so it needs consent too.
+  writeTree(tmp, { 'stasis.config.json': { bundle: { 'index.js': { flow: true } } } })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readBundleConfig(tmp) }),
+    { message: 'stasis.config.json: bundle "index.js" sets flow, which runs the project\'s code: pass --flow to allow it' })
+  t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: { flow: true }, config: readBundleConfig(tmp) }).builds[0].flow, true)
 }))
 
 test('bundleCommand builds each of builds and writes their union: bundle:metro beside bundle', withTmp(async (t, tmp) => {

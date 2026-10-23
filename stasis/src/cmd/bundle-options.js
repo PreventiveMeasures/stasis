@@ -43,10 +43,11 @@ export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfi
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
-// The entry flags that run the project's code (its Babel config, its metro-resolver, cargo, which runs
-// what its .cargo/config.toml names). Set in stasis.config.json, they take effect only with the flag
-// given too, as consent: the config can't make a bare `stasis bundle` run anything.
-const CONSENT_FLAGS = new Set(['babel', 'metro-resolver', 'cargo'])
+// The entry flags that run the project's code (its Babel config, its metro-resolver, the
+// flow-remove-types it installs as stasis's peer, cargo, which runs what its .cargo/config.toml
+// names). Set in stasis.config.json, they take effect only with the flag given too, as consent: the
+// config can't make a bare `stasis bundle` run anything.
+const CONSENT_FLAGS = new Set(['babel', 'metro-resolver', 'flow', 'cargo'])
 
 // `entry` as a path relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
