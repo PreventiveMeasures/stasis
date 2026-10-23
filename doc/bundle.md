@@ -228,7 +228,8 @@ from Node's and esbuild's:
   subpath falls through to a matching pattern, and a target names its file
   exactly, with no extension or `index` probing. Where a map serves nothing,
   resolution falls back to the files: for a `#` specifier, the importer's
-  `browser`/`react-native` map, then `node_modules`.
+  `browser`/`react-native` map, then `node_modules`. A `#` specifier from a
+  package with no `imports` resolves nowhere.
 - A directory in `node_modules` that resolves to nothing gives way to the next
   `node_modules` up, but a package whose `main` resolves to nothing fails, as
   in Metro, without falling back to its root `index`.

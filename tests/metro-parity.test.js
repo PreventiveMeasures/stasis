@@ -76,6 +76,8 @@ const PROJECT = {
   ...nm('keyimp', { 'package.json': { name: 'keyimp', main: 'index.js', imports: { '#a': './a.js', b: './b.js' } }, 'index.js': '', 'a.js': '', 'b.js': '' }),
   ...nm('primimp', { 'package.json': { name: 'primimp', main: 'index.js', imports: { '#a': true, '#b': './b.js' } }, 'index.js': '', 'b.js': '' }),
   ...nm('brimp', { 'package.json': { name: 'brimp', main: 'index.js', imports: { '#x': './x.js' }, browser: { '#y': './y.js', '#gone': false } }, 'index.js': '', 'x.js': '', 'y.js': '' }),
+  ...nm('noimp', { 'package.json': { name: 'noimp', main: 'index.js', browser: { '#dep': './shim.js' } }, 'index.js': '', 'shim.js': '' }),
+  ...nm('#z', { 'package.json': { name: '#z', main: 'index.js' }, 'index.js': '' }),
   ...nm('scopeimp', { 'package.json': { name: 'scopeimp', main: 'index.js', imports: { '#s': './s.js' } }, 'index.js': '', 's.js': '', 'sub/package.json': {}, 'sub/index.js': '' }),
 }
 
@@ -104,7 +106,8 @@ const CASES = [
   ['node_modules/emptyimp/index.js', ['#x']],
   ['node_modules/keyimp/index.js', ['#a']],
   ['node_modules/primimp/index.js', ['#a', '#b', '#c']],
-  ['node_modules/brimp/index.js', ['#x', '#y', '#gone']],
+  ['node_modules/brimp/index.js', ['#x', '#y', '#gone', '#z']],
+  ['node_modules/noimp/index.js', ['#dep', '#z']],
   ['node_modules/scopeimp/sub/index.js', ['#s']],
 ]
 
@@ -199,6 +202,9 @@ const MAP_CASES = [
   ['a boolean in imports fails a specifier it serves outright', 'node_modules/primimp/index.js', '#b', 'require', null],
   ['an imports miss falls back to the browser map', 'node_modules/brimp/index.js', '#y', 'require', 'node_modules/brimp/y.js'],
   ['an imports miss mapped false is an empty module', 'node_modules/brimp/index.js', '#gone', 'require', '<empty>'],
+  ['an imports miss falls back to node_modules', 'node_modules/brimp/index.js', '#z', 'require', 'node_modules/#z/index.js'],
+  ['a package with no imports fails a # specifier, browser map aside', 'node_modules/noimp/index.js', '#dep', 'require', null],
+  ['a package with no imports fails a # specifier, node_modules aside', 'node_modules/noimp/index.js', '#z', 'require', null],
   ['imports come from the package closest to the importer', 'node_modules/scopeimp/sub/index.js', '#s', 'require', null],
 ]
 

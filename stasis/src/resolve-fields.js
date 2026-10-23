@@ -227,15 +227,16 @@ function metroAsset(path, host) {
 // refused, the specifier unmatched, its target null or naming no file -- is Metro's cue to fall
 // back to file-based resolution, which the callers take.
 
-// A map value Metro can't reduce (a number or boolean, where its reduceConditionalExport throws),
-// failing the resolution outright where a miss falls back.
-class MetroMapError extends Error {}
+// Metro failing a resolution outright, where a miss falls back: on a map value it can't reduce (a
+// number or boolean, where its reduceConditionalExport throws), or a `#` specifier from a package
+// with no `imports` (resolve.js throws before its fallback).
+class MetroFailure extends Error {}
 
 // reduceConditionalExport: the string or null `value` reduces to under `conds`, or 'no-match'.
 function metroReduceConditional(value, conds) {
   let reduced = value
   while (reduced != null && typeof reduced !== 'string') {
-    if (typeof reduced !== 'object') throw new MetroMapError(`Can't reduce ${JSON.stringify(reduced)} by conditions`)
+    if (typeof reduced !== 'object') throw new MetroFailure(`Can't reduce ${JSON.stringify(reduced)} by conditions`)
     let match = 'default' in reduced ? 'no-match' : null
     for (const name in reduced) {
       if (conds.has(name)) {
@@ -456,11 +457,12 @@ export function createFieldResolver({
   }
   // --metro: the file a `#` specifier names through the `imports` of the package closest to the
   // importer, as Metro maps it (resolvePackageTargetFromImports), which refuses a map with no keys
-  // or with one not starting `#`; null where it names none.
+  // or with one not starting `#`; null where it names none. With no such package or no `imports`
+  // in it, Metro fails the specifier, with no file-based fallback.
   const viaMetroImports = (parentFile, specifier, conds) => {
     const scope = metroPackageScope(parentFile, host)
     const imports = scope?.pkg.imports
-    if (imports == null) return null
+    if (imports == null) throw new MetroFailure(`No "imports" for ${specifier} from ${parentFile}`)
     const keys = Object.keys(imports)
     if (keys.length === 0 || !keys.every((key) => key.startsWith('#'))) return null
     const target = metroMapTarget(new Map(Object.entries(imports)), specifier, conds)
@@ -558,7 +560,7 @@ export function createFieldResolver({
       try {
         return (specifier.startsWith('#') && viaMetroImports(parentFile, specifier, conds)) || viaMetro(parentFile, specifier, conds, fileOpts)
       } catch (error) {
-        if (error instanceof MetroMapError) return null
+        if (error instanceof MetroFailure) return null
         throw error
       }
     }
