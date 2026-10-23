@@ -3292,15 +3292,34 @@ cliTest('CLI: bundle --mainFields rejects a non-JS bundle and an empty value', a
   t.assert.match(empty.stderr, /--mainFields must list at least one field/)
 })
 
-cliTest('--mainFields rejects --scope (the field resolver always builds a full-scope bundle)', async (t) => {
-  const r = await runCli(['bundle', '--scope=node_modules', '--mainFields=browser', 'src/entry.js'], { cwd: fieldsFixture })
+cliTest('--mainFields/--metro take --scope, else the cwd\'s stasis.config.json scope, and refuse all but full (the field resolver builds no other)', withTmp(async (t, tmp) => {
+  cpSync(fieldsFixture, tmp, { recursive: true })
+  const outPath = join(tmp, 'out.br')
+  const r = await runCli(['bundle', '--scope=node_modules', '--mainFields=browser', `--output=${outPath}`, 'src/entry.js'], { cwd: tmp })
   t.assert.notEqual(r.status, 0)
-  t.assert.match(r.stderr, /--scope is not supported with --mainFields/)
+  t.assert.match(r.stderr, /--scope=node_modules is not supported with --mainFields or --metro/)
   await t.assert.rejects(
-    () => buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], mainFields: ['browser'], scope: 'node_modules' }),
-    /--scope is not supported with --mainFields/,
+    () => buildBundle({ cwd: tmp, entries: ['src/entry.js'], mainFields: ['browser'], scope: 'node_modules' }),
+    /^Error: buildBundle: --scope=node_modules is not supported with --mainFields or --metro/,
   )
-})
+
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'node_modules' }))
+  const fromConfig = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'src/entry.js'], { cwd: tmp })
+  t.assert.notEqual(fromConfig.status, 0)
+  t.assert.match(fromConfig.stderr, /stasis\.config\.json sets scope "node_modules", which --mainFields and --metro don't support .*; pass --scope=full to override it/)
+  t.assert.ok(!existsSync(outPath))
+  await t.assert.rejects(
+    () => buildBundle({ cwd: tmp, entries: ['src/entry.js'], mainFields: ['react-native', 'browser', 'main'] }),
+    /^Error: buildBundle: stasis\.config\.json sets scope "node_modules"/,
+  )
+
+  // --scope=full overrides the config's.
+  const overridden = await runCli(['bundle', '--scope=full', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'src/entry.js'], { cwd: tmp })
+  t.assert.equal(overridden.status, 0, `stderr: ${overridden.stderr}`)
+  t.assert.deepStrictEqual(Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8')).config, { scope: 'full' })
+  const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], mainFields: ['react-native', 'browser', 'main'], scope: 'full' })
+  t.assert.deepStrictEqual(bundle.config, { scope: 'full' })
+}))
 
 cliTest('CLI: bundle --mainFields --lockfile attests the resolved (incl. empty-stub) edges', withTmp(async (t, tmp) => {
   const bundlePath = join(tmp, 'snap.br')
@@ -4067,6 +4086,34 @@ const writeAssets = (tmp) => {
   writeFileSync(join(tmp, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   writeFileSync(join(tmp, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>\n')
 }
+
+test('buildBundle --mainFields/--metro take --resources, else the cwd\'s stasis.config.json resources', withTmp(async (t, tmp) => {
+  jsProject(tmp, { 'index.js': "import logo from './logo.png'\nimport icon from './icon.svg'\nexport const assets = [logo, icon]\n" })
+  writeAssets(tmp)
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ resources: ['png', 'svg'] }))
+  await Promise.all([{ mainFields: ['main'] }, { metro: true, platforms: ['ios', 'android'] }].map(async (options) => {
+    const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })
+    t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js', 'logo.png'])
+    t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
+    // --resources overrides the config's allowlist rather than adding to it, an empty one too.
+    await t.assert.rejects(
+      () => buildBundle({ cwd: tmp, entries: ['index.js'], resources: ['svg'], ...options }),
+      /\.\/logo\.png from index\.js resolves to logo\.png, which a source bundle can't carry/,
+    )
+    await t.assert.rejects(
+      () => buildBundle({ cwd: tmp, entries: ['index.js'], resources: [], ...options }),
+      /\.\/icon\.svg from index\.js resolves to icon\.svg, which a source bundle can't carry/,
+    )
+  }))
+  // The config's allowlist is checked as --resources is.
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ resources: ['js'] }))
+  await t.assert.rejects(
+    () => buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'] }),
+    /^Error: stasis\.config\.json: resources entry 'js' is a code extension/,
+  )
+  writeFileSync(join(tmp, 'stasis.config.json'), '{"resources":')
+  await t.assert.rejects(() => buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'] }), /^Error: buildBundle: stasis\.config\.json is not valid JSON$/)
+}))
 
 cliTest('CLI: bundle --metro carries reached assets only with --resources (binary -> base64, text -> resource)', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nimport icon from './icon.svg'\nexport const assets = [logo, icon]\n" })

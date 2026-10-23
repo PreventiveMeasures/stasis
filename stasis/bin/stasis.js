@@ -268,9 +268,9 @@ if (command === '-v' || command === '--version') {
     fail('Error: --scope must be node_modules or full')
   }
   if (values.lockfile && !allJs) fail('Error: --lockfile is only valid for JS bundles')
-  // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore --scope.
-  if (values.scope !== undefined && (values.mainFields !== undefined || values.metro)) {
-    fail('Error: --scope is not supported with --mainFields or --metro')
+  // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore a narrower --scope.
+  if (values.scope !== undefined && values.scope !== 'full' && (values.mainFields !== undefined || values.metro)) {
+    fail(`Error: --scope=${values.scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
   }
   // --conditions: extra exports/imports resolution conditions merged onto Node's defaults;
   // they don't honour legacy `mainFields` or platform suffixes (see --mainFields).
@@ -325,7 +325,7 @@ if (command === '-v' || command === '--version') {
   // for graphs that aren't fully loadable in JS (Metro consumes such assets). JS-only.
   if (values.resources !== undefined && !allJs) fail('Error: --resources is only valid for JS bundles')
   const resources = values.resources === undefined
-    ? []
+    ? undefined
     : values.resources.split(',').map((s) => s.trim()).filter(Boolean)
   if (values.resources !== undefined && resources.length === 0) {
     fail('Error: --resources must list at least one extension or filename (e.g. --resources=png,svg)')
@@ -452,7 +452,7 @@ if (command === '-v' || command === '--version') {
     flow: Boolean(values.flow),
     typescript: Boolean(values.typescript),
     tsconfig: values.tsconfig,
-    resources: list(values.resources),
+    resources: values.resources === undefined ? undefined : list(values.resources),
     packageJSON: Boolean(values['package-json']),
     generate: list(values.generate),
     brotliQuality,

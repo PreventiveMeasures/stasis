@@ -436,6 +436,8 @@ test('buildVfsBundle refuses layouts and options it cannot reproduce', async (t)
   await t.assert.rejects(build({ vfs: projectVfs('pnpm'), packageManager: 'yarn1' }), /no yarn\.lock found/u)
   await t.assert.rejects(build({ vfs: new Vfs(), entries: ['a.sol'] }), /^Error: buildVfsBundle: only JS bundles are built with pnpm$/u)
   await t.assert.rejects(build({ vfs: new Vfs(), entries: ['a.js'], metro: true, metroResolver: true, platforms: ['ios'] }), /^Error: buildVfsBundle: metroResolver is not supported/u)
+  // The project's own stasis.config.json, read from the Vfs before anything is fetched.
+  await t.assert.rejects(build({ vfs: projectVfs('pnpm', { 'stasis.config.json': '{"scope":"node_modules"}' }), mainFields: ['main'] }), /^Error: buildVfsBundle: stasis\.config\.json sets scope "node_modules", which --mainFields and --metro don't support/u)
   await t.assert.rejects(build({ entries: ['a.js'] }), /^TypeError: buildVfsBundle: vfs must be a @preventive\/vfs Vfs holding the project/u)
 })
 
