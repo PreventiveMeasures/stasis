@@ -195,6 +195,22 @@ test('transformer is a transparent pass-through when not in load mode', withTmp(
   t.assert.equal(out.received, 'PLAIN DISK BYTES', 'non-load mode passes disk bytes through unchanged')
 }))
 
+test('in a capturing worker, the transformer claims none of the paths the worker\'s preload State writes', withTmp((t, tmp) => {
+  // A bundle-only capture (lock=none): the worker's preload State claims the bundle file, and the
+  // transformer's own State, built only to tell load mode, must not claim it again.
+  cpSync(fullFixture, tmp, { recursive: true })
+  rmSync(join(tmp, 'stasis.lock.json'))
+  const r = transform(['src/hello.js'], {
+    cwd: tmp,
+    env: {
+      EXODUS_STASIS_LOCK: 'none', EXODUS_STASIS_SCOPE: 'full',
+      EXODUS_STASIS_BUNDLE: 'add', EXODUS_STASIS_BUNDLE_FILE: join(tmp, 'snapshot.br'),
+      STASIS_TEST_PRELOAD: '1',
+    },
+  })
+  t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+}))
+
 test('getCacheKey folds in the base transformer key and a load-mode discriminator', withTmp((t, tmp) => {
   cpSync(fullFixture, tmp, { recursive: true })
   const bundle = join(tmp, 'snapshot.br')

@@ -46,14 +46,15 @@ function baseConfig({ stasisBaseTransformerPath: _, ...config } = {}) {
 
 // Per-worker load State, built once from the usual env + stasis.config.json. Non-load mode -> null
 // -> transparent pass-through, so wiring it permanently is safe. A construction failure is cached
-// and rethrown on every call -- never throw-once-then-silently-pass-through.
+// and rethrown on every call -- never throw-once-then-silently-pass-through. It never writes, so it
+// claims no write path: a capturing worker's own preload State already holds them.
 let stateInited = false
 let loadState = null
 let stateError = null
 function getLoadState() {
   if (!stateInited) {
     try {
-      const state = new State(process.cwd())
+      const state = new State(process.cwd(), { claim: false })
       loadState = state.config.loadBundle ? state : null
     } catch (err) {
       stateError = err
