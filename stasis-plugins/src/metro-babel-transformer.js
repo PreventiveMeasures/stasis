@@ -8,8 +8,8 @@ import { createRequire } from 'node:module'
 // babel-plugin-module-resolver mapping `#local/abc` to `./src/abc`) leaves the serializer only the
 // rewrite. This adds one plugin that records every specifier in its `pre` -- Babel runs every
 // plugin's `pre` before any plugin's visitor, so nothing has rewritten one yet -- and reads each
-// again once Babel is done, before Metro's own passes replace them in the AST. The real transformer
-// runs as it would; its output is untouched.
+// again once Babel is done, before Metro's own passes replace them in the AST, unless Babel erased
+// it. The real transformer runs as it would; its output is untouched.
 
 const require = createRequire(import.meta.url)
 
@@ -21,11 +21,6 @@ export const transformContext = new AsyncLocalStorage()
 // below (`import()`, `require()`, `__prefetchImport()`, `require.<member>()`).
 const DECLARATIONS = new Set(['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'])
 const REQUIRE_MEMBERS = new Set(['context', 'resolveWeak', 'unstable_importMaybeSync'])
-
-// A declaration only of types (TS/Flow `import type`, Flow `import typeof`) Babel erases before
-// Metro sees it.
-const isDependencyDeclaration = (node) =>
-  DECLARATIONS.has(node.type) && (node.importKind ?? node.exportKind ?? 'value') === 'value'
 
 function isDependencyCall(callee) {
   if (callee.type === 'Import') return true
@@ -48,10 +43,26 @@ function asWrittenPlugin({ types: t }) {
     pre(file) {
       const { slots } = transformContext.getStore()
       t.traverseFast(file.ast, (node) => {
-        if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !isDependencyDeclaration(node)) return
+        if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
         const written = specifierOf(node)
         if (written !== undefined) slots.push({ node, written })
       })
+    },
+    visitor: {
+      Program: {
+        // A declaration gone from the program by now was erased for importing types alone (`import
+        // type`, `import { type A }`, a TS import used only as a type): the plugins stripping types
+        // have run, in the traversal or as it entered, while the one turning the rest into requires
+        // (@babel/plugin-transform-modules-commonjs, in the RN preset) does so as it exits, after
+        // this one -- a preset's plugins come after those Metro passes. (Listed among the config's
+        // own plugins, it takes them all first, leaving each to Metro's name.)
+        exit(path) {
+          const statements = new Set(path.node.body)
+          for (const slot of transformContext.getStore().slots) {
+            if (DECLARATIONS.has(slot.node.type) && !statements.has(slot.node)) slot.erased = true
+          }
+        },
+      },
     },
   }
 }
@@ -63,7 +74,8 @@ export function transform(args) {
   context.slots = slots
   // Once Babel is done: each specifier as it left it, from the node that held it as written.
   const collect = (result) => {
-    for (const { node, written } of slots) {
+    for (const { node, written, erased } of slots) {
+      if (erased) continue
       const left = specifierOf(node)
       if (left === undefined) continue
       if (!context.asWritten.has(left)) context.asWritten.set(left, new Set())

@@ -249,33 +249,47 @@ test('getCacheKey marks load when activated via stasis.config.json, not just env
 
 const mockWorker = join(here, 'metro-mock-worker.cjs')
 
-// A project aliasing `#local` to ./src through module-resolver, its babel.config.js also lowering
-// each import to a require once every plugin has visited it (Program exit), as
-// @babel/plugin-transform-modules-commonjs does, so the import declarations are gone by then, and
-// dropping a Flow type import there, as flow-strip-types does. That one is aliased to the file
-// index.js requires by path, which it must not count as written through the alias.
+// A project aliasing `#local` to ./src through module-resolver, its babel.config.js laid out as a
+// React Native one is: a plugin erasing each Flow import of types alone during the traversal, as
+// flow-strip-types does, and a preset lowering every other import to a require once the traversal
+// is done (Program exit), as @babel/plugin-transform-modules-commonjs does in the RN preset -- so
+// the import declarations are gone by the time Babel returns. The type imports are aliased to the
+// file index.js requires by path, which they must not count as written through the alias.
 const babelAliasProject = (tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'babel-alias', version: '0.0.0' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
-  writeFileSync(join(tmp, 'babel.config.js'), `const lower = ({ types: t }) => ({
+  writeFileSync(join(tmp, 'babel.config.js'), `const typesOnly = (node) =>
+  node.importKind === 'type' || (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.importKind === 'type'))
+const stripTypes = () => ({
+  visitor: {
+    ImportDeclaration(path) {
+      if (typesOnly(path.node)) path.remove()
+    },
+  },
+})
+const lower = ({ types: t }) => ({
   visitor: {
     Program: {
       exit(path) {
         for (const statement of path.get('body')) {
           if (!statement.isImportDeclaration()) continue
-          if (statement.node.importKind === 'type') statement.remove()
-          else statement.replaceWith(t.expressionStatement(t.callExpression(t.identifier('require'), [t.cloneNode(statement.node.source)])))
+          statement.replaceWith(t.expressionStatement(t.callExpression(t.identifier('require'), [t.cloneNode(statement.node.source)])))
         }
       },
     },
   },
 })
-module.exports = { parserOpts: { plugins: ['flow'] }, plugins: [['module-resolver', { alias: { '#local': './src' } }], lower] }
+module.exports = {
+  parserOpts: { plugins: ['flow'] },
+  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+  presets: [() => ({ plugins: [lower] })],
+}
 `)
   writeFileSync(join(tmp, 'index.js'), [
     "import abc from '#local/abc'",
     "import same from './src/abc'",
     "import type { Def } from '#local/def'",
+    "import { type Def2 } from '#local/def'",
     "const def = require('./src/def')",
     "const ghi = require('#local/ghi')",
     'export default [abc, same, def, ghi]',
@@ -305,7 +319,7 @@ for (const babelAsync of [false, true]) {
     // The project's transformer runs on its own config, the stasis Babel transformer standing in.
     t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
     // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
-    // './src/def' only for the path (the type import is erased).
+    // './src/def' only for the path (the type imports are erased).
     t.assert.deepStrictEqual(out.dependencies, [
       { name: './src/abc', data: { key: './src/abc' }, stasisAsWritten: ['#local/abc', './src/abc'] },
       { name: './src/def', data: { key: './src/def' } },
