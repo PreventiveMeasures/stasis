@@ -171,12 +171,10 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     // config.json read path for resourcesBundleFile end-to-end through a load round-trip.
     const codePath = join(tmp, 'code.br')
     const resPath = join(tmp, 'resources.br')
-    const configPath = join(tmp, 'stasis.config.json')
-    const writeConfig = (lock, bundle) =>
-      writeFileSync(configPath, JSON.stringify(
-        { scope: 'full', resources: ['bin', 'txt'], lock, bundle, bundleFile: 'code.br', resourcesBundleFile: 'resources.br' }))
+    // The modes are the flags' (a config sets neither).
+    writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify(
+      { scope: 'full', resources: ['bin', 'txt'], bundleFile: 'code.br', resourcesBundleFile: 'resources.br' }))
 
-    writeConfig('add', 'add')
     const save = await run(['run', '--lock=add', '--bundle=add', '--fs=sync', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(save.status, 0, `save stderr: ${save.stderr}`)
     t.assert.equal(save.stdout, EXPECTED_STDOUT)
@@ -188,7 +186,6 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     t.assert.deepStrictEqual(Object.keys(res.sources['.'].files).toSorted(), ['src/assets', 'src/assets/blob.bin', 'src/assets/message.txt'])
     t.assert.equal(res.formats['src/assets'], 'directory')
 
-    writeConfig('frozen', 'load')
     rmSync(join(tmp, 'src'), { recursive: true })
     const load = await run(['run', '--lock=frozen', '--bundle=load', '--fs=sync', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)

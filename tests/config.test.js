@@ -55,7 +55,7 @@ test('Config json output has trailing newline and stable shape', (t) => {
   const c = new Config()
   const out = c.json
   t.assert.equal(out.at(-1), '\n')
-  t.assert.deepStrictEqual(JSON.parse(out), { scope: 'full', lock: 'add', bundle: 'none' })
+  t.assert.deepStrictEqual(JSON.parse(out), { scope: 'full' })
 })
 
 test('loadConfig accepts empty object and keeps defaults', (t) => {
@@ -139,14 +139,30 @@ test('loadConfig with lock=frozen', (t) => {
   t.assert.equal(c.writeLockfile, false)
 })
 
-test('loadConfig with lock=none requires bundle non-none', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ lock: 'none' })), RangeError)
+// A stasis.config.json can pin a run's lockfile frozen, and set no other mode: a run that writes,
+// loads or ignores is given its modes explicitly (flags, env, options).
+test('loadConfig refuses any lock but frozen, and any bundle', (t) => {
+  for (const lock of ['none', 'ignore', 'add', 'replace', 'thawed', '']) {
+    t.assert.throws(() => new Config().loadConfig(json({ lock })), /^Error: stasis\.config\.json: lock can only be 'frozen'/, JSON.stringify(lock))
+  }
+  for (const bundle of ['none', 'ignore', 'add', 'replace', 'load', 'frozen', 'maybe']) {
+    t.assert.throws(() => new Config({ bundle: 'add' }).loadConfig(json({ bundle })), /^Error: stasis\.config\.json: bundle can not be set here/, bundle)
+  }
 })
 
-test('loadConfig with lock=none and bundle=add', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'none', bundle: 'add' }))
+test('loadConfig lock=frozen composes with an explicit bundle mode, and refuses an explicit other lock', (t) => {
+  const c = new Config({ bundle: 'add' })
+  c.loadConfig(json({ lock: 'frozen' }))
+  t.assert.equal(c.frozen, true)
+  t.assert.equal(c.writeBundle, true)
+  const load = new Config({ lock: 'frozen', bundle: 'load' })
+  load.loadConfig(json({ lock: 'frozen' }))
+  t.assert.equal(load.loadBundle, true)
+  t.assert.throws(() => new Config({ lock: 'add' }).loadConfig(json({ lock: 'frozen' })), /Flags\/env can not override stasis\.config\.json/)
+})
+
+test('Config lock=none and bundle=add', (t) => {
+  const c = new Config({ lock: 'none', bundle: 'add' })
   t.assert.equal(c.lock, 'none')
   t.assert.equal(c.frozen, false)
   t.assert.equal(c.useLockfile, false)
@@ -154,18 +170,16 @@ test('loadConfig with lock=none and bundle=add', (t) => {
   t.assert.equal(c.writeBundle, true)
 })
 
-test('loadConfig with lock=none and bundle=load', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'none', bundle: 'load' }))
+test('Config lock=none and bundle=load', (t) => {
+  const c = new Config({ lock: 'none', bundle: 'load' })
   t.assert.equal(c.lock, 'none')
   t.assert.equal(c.frozen, false)
   t.assert.equal(c.useLockfile, false)
   t.assert.equal(c.loadBundle, true)
 })
 
-test('loadConfig bundle=add -> writeBundle, bundle truthy, not replace', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'add' }))
+test('Config bundle=add -> writeBundle, bundle truthy, not replace', (t) => {
+  const c = new Config({ bundle: 'add' })
   t.assert.equal(c.bundle, true)
   t.assert.equal(c.writeBundle, true)
   t.assert.equal(c.replaceBundle, false)
@@ -174,14 +188,14 @@ test('loadConfig bundle=add -> writeBundle, bundle truthy, not replace', (t) => 
 })
 
 test('loadConfig with resourcesBundleFile (split-resources layout)', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'add', resourcesBundleFile: 'resources.br' }))
+  const c = new Config({ bundle: 'add' })
+  c.loadConfig(json({ resourcesBundleFile: 'resources.br' }))
   t.assert.equal(c.resourcesBundleFile, 'resources.br')
 })
 
 test('loadConfig resourcesBundleFile without a bundle mode is rejected', (t) => {
   const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ lock: 'add', resourcesBundleFile: 'resources.br' })),
+  t.assert.throws(() => c.loadConfig(json({ resourcesBundleFile: 'resources.br' })),
     /requires an active bundle mode/)
 })
 
@@ -190,22 +204,22 @@ test('loadConfig resourcesBundleFile conflicting with EXODUS_STASIS_RESOURCES_BU
   (t) => {
     const c = new Config()
     t.assert.equal(c.resourcesBundleFile, '/abs/res.br') // env is picked up at construction
-    t.assert.throws(() => c.loadConfig(json({ bundle: 'add', resourcesBundleFile: '/abs/other.br' })),
+    t.assert.throws(() => c.loadConfig(json({ resourcesBundleFile: '/abs/other.br' })),
       /can not override stasis\.config\.json/)
   }
 ))
 
 test('loadConfig with bundleFile (set via stasis.config.json)', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'add', bundleFile: 'bundle.br' }))
+  const c = new Config({ bundle: 'add' })
+  c.loadConfig(json({ bundleFile: 'bundle.br' }))
   t.assert.equal(c.bundleFile, 'bundle.br')
 })
 
 // Unlike resourcesBundleFile, bundleFile carries no "requires an active bundle mode"
-// constraint -- a lock-only config may still name a bundleFile.
+// constraint -- a lock-only run may still name a bundleFile.
 test('loadConfig accepts bundleFile without a bundle mode', (t) => {
   const c = new Config()
-  c.loadConfig(json({ lock: 'add', bundleFile: 'bundle.br' }))
+  c.loadConfig(json({ bundleFile: 'bundle.br' }))
   t.assert.equal(c.bundleFile, 'bundle.br')
 })
 
@@ -214,23 +228,21 @@ test('loadConfig bundleFile conflicting with EXODUS_STASIS_BUNDLE_FILE is reject
   (t) => {
     const c = new Config()
     t.assert.equal(c.bundleFile, '/abs/bundle.br') // env is picked up at construction
-    t.assert.throws(() => c.loadConfig(json({ bundle: 'add', bundleFile: '/abs/other.br' })),
+    t.assert.throws(() => c.loadConfig(json({ bundleFile: '/abs/other.br' })),
       /can not override stasis\.config\.json/)
   }
 ))
 
-test('loadConfig bundle=replace -> writeBundle and replaceBundle', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'replace' }))
+test('Config bundle=replace -> writeBundle and replaceBundle', (t) => {
+  const c = new Config({ bundle: 'replace' })
   t.assert.equal(c.bundle, true)
   t.assert.equal(c.writeBundle, true)
   t.assert.equal(c.replaceBundle, true)
   t.assert.equal(c.loadBundle, false)
 })
 
-test('loadConfig lock=replace -> writeLockfile and replaceLockfile', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'replace' }))
+test('Config lock=replace -> writeLockfile and replaceLockfile', (t) => {
+  const c = new Config({ lock: 'replace' })
   t.assert.equal(c.lock, 'replace')
   t.assert.equal(c.useLockfile, true)
   t.assert.equal(c.writeLockfile, true)
@@ -238,37 +250,29 @@ test('loadConfig lock=replace -> writeLockfile and replaceLockfile', (t) => {
   t.assert.equal(c.frozen, false)
 })
 
-test('loadConfig bundle=load rejects lock=add', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ bundle: 'load' })), RangeError)
+test('Config bundle=load rejects lock=add and lock=replace', (t) => {
+  t.assert.throws(() => new Config({ bundle: 'load' }), RangeError)
+  t.assert.throws(() => new Config({ bundle: 'load', lock: 'replace' }), RangeError)
 })
 
-test('loadConfig bundle=load rejects lock=replace', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ bundle: 'load', lock: 'replace' })), RangeError)
-})
-
-test('loadConfig bundle=load works with lock=frozen', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'load', lock: 'frozen' }))
+test('Config bundle=load works with lock=frozen', (t) => {
+  const c = new Config({ bundle: 'load', lock: 'frozen' })
   t.assert.equal(c.bundle, true)
   t.assert.equal(c.loadBundle, true)
   t.assert.equal(c.writeBundle, false)
   t.assert.equal(c.frozen, true)
 })
 
-test('loadConfig bundle=ignore', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'ignore' }))
+test('Config bundle=ignore', (t) => {
+  const c = new Config({ bundle: 'ignore' })
   t.assert.equal(c.bundle, false)
   t.assert.equal(c.ignoreBundle, true)
   t.assert.equal(c.writeBundle, false)
   t.assert.equal(c.loadBundle, false)
 })
 
-test('loadConfig lock=ignore', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'ignore' }))
+test('Config lock=ignore', (t) => {
+  const c = new Config({ lock: 'ignore' })
   t.assert.equal(c.lock, 'ignore')
   t.assert.equal(c.useLockfile, false)
   t.assert.equal(c.ignoreLockfile, true)
@@ -277,23 +281,20 @@ test('loadConfig lock=ignore', (t) => {
   t.assert.equal(c.frozen, false)
 })
 
-test('loadConfig bundle=load works with lock=ignore', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'load', lock: 'ignore' }))
+test('Config bundle=load works with lock=ignore', (t) => {
+  const c = new Config({ bundle: 'load', lock: 'ignore' })
   t.assert.equal(c.loadBundle, true)
   t.assert.equal(c.ignoreLockfile, true)
 })
 
-test('loadConfig bundle=none', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'none' }))
+test('Config bundle=none', (t) => {
+  const c = new Config({ bundle: 'none' })
   t.assert.equal(c.bundle, false)
   t.assert.equal(c.ignoreBundle, false)
 })
 
-test('loadConfig bundle=frozen -> frozenBundle, bundle truthy, never writes/loads/replaces', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'none', bundle: 'frozen' }))
+test('Config bundle=frozen -> frozenBundle, bundle truthy, never writes/loads/replaces', (t) => {
+  const c = new Config({ lock: 'none', bundle: 'frozen' })
   t.assert.equal(c.bundleMode, 'frozen')
   t.assert.equal(c.frozenBundle, true)
   t.assert.equal(c.bundle, true) // content is in play (addFile records + verifies)
@@ -303,27 +304,25 @@ test('loadConfig bundle=frozen -> frozenBundle, bundle truthy, never writes/load
   t.assert.equal(c.ignoreBundle, false)
 })
 
-test('loadConfig bundle=frozen needs no lockfile: composes with lock=none', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'none', bundle: 'frozen' }))
+test('Config bundle=frozen needs no lockfile: composes with lock=none', (t) => {
+  const c = new Config({ lock: 'none', bundle: 'frozen' })
   t.assert.equal(c.lock, 'none')
   t.assert.equal(c.useLockfile, false)
   t.assert.equal(c.frozenBundle, true)
 })
 
-test('loadConfig bundle=frozen composes with every lock mode (unlike load)', (t) => {
+test('Config bundle=frozen composes with every lock mode (unlike load)', (t) => {
   for (const lock of ['none', 'ignore', 'add', 'replace', 'frozen']) {
-    const c = new Config()
-    c.loadConfig(json({ lock, bundle: 'frozen' }))
+    const c = new Config({ lock, bundle: 'frozen' })
     t.assert.equal(c.frozenBundle, true)
     t.assert.equal(c.lock, lock)
   }
 })
 
-test('json reflects bundle=frozen', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'none', bundle: 'frozen' }))
-  t.assert.deepStrictEqual(JSON.parse(c.json), { scope: 'full', lock: 'none', bundle: 'frozen' })
+test('json holds what a stasis.config.json can: never bundle, and lock only when frozen', (t) => {
+  t.assert.deepStrictEqual(JSON.parse(new Config({ lock: 'none', bundle: 'frozen' }).json), { scope: 'full' })
+  t.assert.deepStrictEqual(JSON.parse(new Config({ lock: 'replace', bundle: 'replace' }).json), { scope: 'full' })
+  t.assert.deepStrictEqual(JSON.parse(new Config({ lock: 'frozen', bundle: 'load' }).json), { scope: 'full', lock: 'frozen' })
 })
 
 test('loadConfig debug=true', (t) => {
@@ -335,16 +334,6 @@ test('loadConfig debug=true', (t) => {
 test('loadConfig rejects invalid scope', (t) => {
   const c = new Config()
   t.assert.throws(() => c.loadConfig(json({ scope: 'whatever' })))
-})
-
-test('loadConfig rejects invalid lock', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ lock: 'thawed' })))
-})
-
-test('loadConfig rejects invalid bundle', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ bundle: 'maybe' })))
 })
 
 // --- resourcesBundleFile (split-bundle layout) ----------------------------------
@@ -490,24 +479,14 @@ test('loadConfig rejects malformed JSON', (t) => {
   t.assert.throws(() => c.loadConfig('not json'))
 })
 
-test('json reflects loaded values', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ scope: 'node_modules', lock: 'frozen', bundle: 'load' }))
-  t.assert.deepStrictEqual(JSON.parse(c.json), {
-    scope: 'node_modules',
-    lock: 'frozen',
-    bundle: 'load',
-  })
-})
-
-test('json reflects replace modes', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'replace', bundle: 'replace' }))
-  t.assert.deepStrictEqual(JSON.parse(c.json), {
-    scope: 'full',
-    lock: 'replace',
-    bundle: 'replace',
-  })
+test('json reflects loaded values, and loads back', (t) => {
+  const c = new Config({ bundle: 'load', lock: 'frozen' })
+  c.loadConfig(json({ scope: 'node_modules', lock: 'frozen' }))
+  t.assert.deepStrictEqual(JSON.parse(c.json), { scope: 'node_modules', lock: 'frozen' })
+  const c2 = new Config()
+  c2.loadConfig(c.json)
+  t.assert.equal(c2.scope, 'node_modules')
+  t.assert.equal(c2.frozen, true)
 })
 
 test('loadConfig can be called twice and applies the latest values', (t) => {
@@ -892,26 +871,25 @@ test('Config(options) fs requires bundle=(add|replace|load)', (t) => {
 })
 
 test('loadConfig fs=sync', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ bundle: 'add', fs: 'sync' }))
+  const c = new Config({ bundle: 'add' })
+  c.loadConfig(json({ fs: 'sync' }))
   t.assert.equal(c.fs, 'sync')
 })
 
 test('loadConfig fs=async', (t) => {
-  const c = new Config()
-  c.loadConfig(json({ lock: 'frozen', bundle: 'load', fs: 'async' }))
+  const c = new Config({ lock: 'frozen', bundle: 'load' })
+  c.loadConfig(json({ lock: 'frozen', fs: 'async' }))
   t.assert.equal(c.fs, 'async')
 })
 
 test('loadConfig rejects invalid fs', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ bundle: 'add', fs: 'maybe' })), /Invalid fs: maybe/)
+  const c = new Config({ bundle: 'add' })
+  t.assert.throws(() => c.loadConfig(json({ fs: 'maybe' })), /Invalid fs: maybe/)
 })
 
 test('loadConfig fs requires an active read/write bundle mode', (t) => {
-  const c = new Config()
-  t.assert.throws(() => c.loadConfig(json({ fs: 'sync' })), /fs requires bundle=\(add\|replace\|load\)/)
-  t.assert.throws(() => c.loadConfig(json({ lock: 'none', bundle: 'frozen', fs: 'sync' })),
+  t.assert.throws(() => new Config().loadConfig(json({ fs: 'sync' })), /fs requires bundle=\(add\|replace\|load\)/)
+  t.assert.throws(() => new Config({ lock: 'none', bundle: 'frozen' }).loadConfig(json({ fs: 'sync' })),
     /fs requires bundle=\(add\|replace\|load\)/)
 })
 

@@ -14,7 +14,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'state')
 const fileAbs = join(root, 'src', 'foo.js')
 const fileAbs2 = join(root, 'src', 'bar.js')
 
-const state = new State(root)
+const state = new State(root, { bundle: 'add' })
 
 test('root resolved to provided directory', (t) => {
   t.assert.equal(state.root, root)
@@ -121,7 +121,7 @@ test('getImport throws for unknown specifier', (t) => {
 // 'module' vs 'stat:file'. Fresh State instances so the shared `state` above stays clean.
 
 test('addFsStat yields to a real format addImport recorded for a byte-less target', (t) => {
-  const s = new State(root)
+  const s = new State(root, { bundle: 'add' })
   const parentURL = pathToFileURL(fileAbs2).toString()
   const childURL = pathToFileURL(fileAbs).toString()
   s.addImport(parentURL, './foo.js', childURL, { format: 'module' }) // resolve-time format, no addFile
@@ -131,7 +131,7 @@ test('addFsStat yields to a real format addImport recorded for a byte-less targe
 })
 
 test('addImport upgrades a stat record recorded before the target was ever resolved', (t) => {
-  const s = new State(root)
+  const s = new State(root, { bundle: 'add' })
   const parentURL = pathToFileURL(fileAbs2).toString()
   const childURL = pathToFileURL(fileAbs).toString()
   s.addFsStat(childURL, 'file') // stat first (check-before-import)
@@ -146,7 +146,7 @@ test('getImport/getFormat mask a stat record out of the loader-format channel', 
   // LOADER format -- the resolve hook returns getImport's format to Node and gates it
   // against the executable allowlist, so leaking 'stat:file' there refused a valid
   // resolution. The stat/probe channel (getFsStat) still sees the record.
-  const s = new State(root)
+  const s = new State(root, { bundle: 'add' })
   const parentURL = pathToFileURL(fileAbs2).toString()
   const childURL = pathToFileURL(fileAbs).toString()
   s.addFsStat(childURL, 'file')
@@ -158,7 +158,7 @@ test('getImport/getFormat mask a stat record out of the loader-format channel', 
 })
 
 test('divergent stat kinds and divergent real formats still conflict', (t) => {
-  const s = new State(root)
+  const s = new State(root, { bundle: 'add' })
   const parentURL = pathToFileURL(fileAbs2).toString()
   const childURL = pathToFileURL(fileAbs).toString()
   s.addFsStat(childURL, 'file')
@@ -459,8 +459,8 @@ test('a node_modules symlink to a workspace source is classified as a source, no
 })
 
 test('node_modules-scope bundle excludes a workspace source symlinked into node_modules', (t) => {
-  const tmp = workspaceLinkTree(t, { scope: 'node_modules', bundle: 'add' })
-  const st = new State(tmp)
+  const tmp = workspaceLinkTree(t, { scope: 'node_modules' })
+  const st = new State(tmp, { bundle: 'add' })
   st.addFile(pathToFileURL(join(tmp, 'node_modules', 'dep', 'index.js')).toString(), { format: 'module' })
   st.addFile(pathToFileURL(join(tmp, 'node_modules', 'lib', 'index.js')).toString(), { format: 'module' })
 
@@ -472,8 +472,8 @@ test('node_modules-scope bundle excludes a workspace source symlinked into node_
 })
 
 test('inNodeModules classifies a real dependency in, a symlinked workspace source out', (t) => {
-  const tmp = workspaceLinkTree(t, { scope: 'node_modules', bundle: 'add' })
-  const st = new State(tmp)
+  const tmp = workspaceLinkTree(t, { scope: 'node_modules' })
+  const st = new State(tmp, { bundle: 'add' })
   const dep = pathToFileURL(join(tmp, 'node_modules', 'dep', 'index.js')).toString()
   const wsp = pathToFileURL(join(tmp, 'node_modules', 'lib', 'index.js')).toString()
   // the loader hooks gate on this: a real dep is served from the bundle, while a
@@ -483,9 +483,9 @@ test('inNodeModules classifies a real dependency in, a symlinked workspace sourc
 })
 
 test('getImport reads an edge recorded under a symlinked workspace parent (canonical round-trip)', (t) => {
-  const tmp = workspaceLinkTree(t, { scope: 'full', bundle: 'add' })
+  const tmp = workspaceLinkTree(t, { scope: 'full' })
   writeFileSync(join(tmp, 'packages', 'lib', 'util.js'), 'export const u = 1\n')
-  const st = new State(tmp)
+  const st = new State(tmp, { bundle: 'add' })
   const parentSym = pathToFileURL(join(tmp, 'node_modules', 'lib', 'index.js')).toString()
   const childSym = pathToFileURL(join(tmp, 'node_modules', 'lib', 'util.js')).toString()
   st.addFile(parentSym, { format: 'module' })

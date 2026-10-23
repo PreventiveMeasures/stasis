@@ -221,24 +221,26 @@ test('getCacheKey folds in the base transformer key and a load-mode discriminato
   t.assert.match(on.stdout, /load:/, 'load-mode marker present so disk-built results are not reused')
 }))
 
-test('getCacheKey marks load when activated via stasis.config.json, not just env', withTmp((t, tmp) => {
-  // Regression guard for the env/config split: the marker must track the same source of
-  // truth as transform() (config.loadBundle), not just EXODUS_STASIS_BUNDLE. Before the fix
-  // this keyed as 'off' for a config-file-activated load, colliding with a plain build.
+test('getCacheKey: a stasis.config.json can not activate load, only pin the lockfile frozen beside it', withTmp((t, tmp) => {
   cpSync(fullFixture, tmp, { recursive: true })
-  // Capture to the DEFAULT bundle path so config-file load discovers it with no env.
+  // Capture to the DEFAULT bundle path, which a load State discovers with no bundleFile set.
   const cap = capture('src/entry.js', {
     cwd: tmp,
     graph: FULL_GRAPH,
     env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_BUNDLE: 'add', EXODUS_STASIS_BUNDLE_FILE: join(tmp, 'stasis.code.br') },
   })
   t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
-  // Activate load purely through the config file (no EXODUS_STASIS_* load env).
+  // The bundle mode is explicit: a config that sets one is refused, never taken for load mode.
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full', lock: 'frozen', bundle: 'load' }))
+  const refused = transform(['--cache-key'], { cwd: tmp, env: {} })
+  t.assert.notEqual(refused.status, 0)
+  t.assert.match(refused.stderr, /stasis\.config\.json: bundle can not be set here/)
 
-  const r = transform(['--cache-key'], { cwd: tmp, env: {} })
+  // Load given explicitly, beside the config's frozen pin.
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full', lock: 'frozen' }))
+  const r = transform(['--cache-key'], { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'frozen', EXODUS_STASIS_BUNDLE: 'load' } })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  t.assert.match(r.stdout, /load:/, 'config-file-activated load is keyed as load mode, not "off"')
+  t.assert.match(r.stdout, /load:default/, 'load is keyed as load mode')
 }))
 
 // --- As written: the specifiers a Babel plugin rewrote, kept for the serializer -------------
