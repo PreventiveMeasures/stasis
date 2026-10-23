@@ -305,11 +305,15 @@ function assembleCodeBundle({
 }
 
 // A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
-// (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`.
-// Every file is attributed to `consumer` in the `reason` map: `bundle`, or `bundle:metro` for --metro.
+// (Map<path,format>) overrides it per file (a file neither tags has none), and the `resolutions` edges
+// are keyed under `conditionKey`. Every file is attributed to `consumer` in the `reason` map: `bundle`,
+// or `bundle:metro` for --metro.
 function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer = 'bundle' }) {
   const formatsMap = new Map()
-  for (const path of sources.keys()) formatsMap.set(path, formats?.get(path) ?? format)
+  for (const path of sources.keys()) {
+    const fileFormat = formats?.get(path) ?? format
+    if (fileFormat !== undefined) formatsMap.set(path, fileFormat)
+  }
 
   const importsForKey = new Map()
   for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
@@ -1192,7 +1196,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const rel = toRel(abs)
       reached.add(abs)
       if (info.resource) resourceRels.add(rel)
-      formatsByRel.set(rel, info.format)
+      // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
+      // it from source, and Node's module/commonjs isn't what it runs.
+      formatsByRel.set(rel, metro && !info.resource ? undefined : info.format)
       for (const e of info.edges) {
         if (e.builtin || e.dynamic) continue
         let target
@@ -1225,11 +1231,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // byte-derived format (here and in the --metro native capture below).
   const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
   const realBase = host.realpath(baseDir)
-  // Metro's empty module is carried as the file it is, the scan's format where the scan reached it.
-  if (usesEmpty && metroEmpty !== null && !reached.has(metroEmpty)) {
-    reached.add(metroEmpty)
-    formatsByRel.set(emptyTarget, packageType(metroEmpty, host) === 'module' ? 'module' : 'commonjs')
-  }
+  // Metro's empty module is carried as the file it is, a code file of Metro's (no format).
+  if (usesEmpty && metroEmpty !== null) reached.add(metroEmpty)
   for (const abs of reached) {
     const rel = toRel(abs)
     // Security: a resolved file arrives by its real path, which toRel already holds to the root,
@@ -1251,7 +1254,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
-    put(EMPTY_MODULE_PATH, '', 'commonjs', Buffer.alloc(0))
+    put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs', Buffer.alloc(0))
   }
 
   // The package a bundled file is in (findPackageMetadata: its pkgDir and identity, null where no

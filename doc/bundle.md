@@ -217,6 +217,12 @@ Its files are attributed to the `bundle:metro` consumer in the bundle's
 `reason` map, where every other `stasis bundle` build names `bundle`, so
 `stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
 
+The code it carries has no format, as the Metro plugin records it: Metro
+transforms each file from source, so how Node would load it (`module`,
+`commonjs`, `json`) doesn't apply. Assets keep their `resource` formats and
+native build inputs theirs. Such a bundle is for Metro: `stasis run
+--bundle=load` refuses to run its code under Node.
+
 It takes Metro's own steps, as `metro-resolver` takes them, where they differ
 from Node's and esbuild's:
 

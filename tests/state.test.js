@@ -272,6 +272,15 @@ test('getImport wildcard fallback resolves an absolute specifier recorded under 
   t.assert.equal(got.url, childURL)
 })
 
+test('getImport fails closed on a --metro per-platform edge, with no platform to pick one by', (t) => {
+  const parentURL = pathToFileURL(fileAbs2).toString() // src/bar.js
+  if (!state.imports.has('*')) state.imports.set('*', new Map())
+  const byParent = state.imports.get('*')
+  if (!byParent.has('src/bar.js')) byParent.set('src/bar.js', new Map())
+  byParent.get('src/bar.js').set('./platformed', new Map([['android', 'src/foo.js'], ['ios', 'src/foo.js']]))
+  t.assert.throws(() => state.getImport(parentURL, './platformed'), { code: 'ERR_STASIS_PLATFORM_SPECIFIC', message: /'\.\/platformed' from .* is platform-specific/ })
+})
+
 // End-to-end through the security-critical path: an absolute-specifier edge
 // captured into a bundle must, on a frozen reload, attest on a re-presented match
 // and fail closed on a redirect -- the resolution check (#assertAttestedResolution)
