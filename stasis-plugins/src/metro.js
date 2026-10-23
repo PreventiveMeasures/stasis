@@ -256,10 +256,11 @@ export class StasisMetro {
   }
 
   // Shared epilogue for the classify-driven capture paths: record under the given format/resource.
-  // `format` null/undefined lets addFile pick (loader format for JS, byte-derived for a resource);
-  // addFile already asserts UTF-8 for a non-resource (code) source, so no guard is needed here.
-  #recordCapture(full, source, { format, resource }) {
-    this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, reason: 'metro' })
+  // `format` null/undefined lets addFile pick (loader format for JS unless `inferFormat` is false,
+  // byte-derived for a resource); addFile already asserts UTF-8 for a non-resource (code) source, so
+  // no guard is needed here.
+  #recordCapture(full, source, { format, resource, inferFormat = true }) {
+    this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason: 'metro' })
   }
 
   // Attest the AUTO_INCLUDES list. Per entry, skip: unresolvable, already-seen, or resolving
@@ -284,8 +285,9 @@ export class StasisMetro {
       // Tag from the ONE shared classifier so an auto-include agrees with any other path meeting
       // the same file (native walk, --fs): setup_env.sh -> 'shell', not a forced 'resource' that
       // would collide at the format noupsert. Unrecognized -> resource (vetted list, so no allowlist).
+      // JS (asyncRequire.js) is code Metro builds, so it takes no format, as the graph's doesn't.
       const format = classifyFormat(modPath, { content: source })
-      this.#recordCapture(modPath, source, { format, resource: format === undefined })
+      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false })
     }
   }
 
@@ -468,7 +470,9 @@ export class StasisMetro {
       if (kind === 'code') {
         assert.ok(isUtf8(source), `StasisMetro: code-classified file has non-UTF-8 bytes: ${modPath}`)
       }
-      this.#state.addFile(url, { source, isEntry: entries.has(modPath), resource: kind === 'resource', reason: 'metro' })
+      // No format for a code file: Metro transforms it from source, so Node's module/commonjs isn't
+      // what runs (a resource still takes its byte-derived one).
+      this.#state.addFile(url, { source, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
     }
   }
 }

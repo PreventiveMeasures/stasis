@@ -1338,7 +1338,7 @@ export class State {
     // context to pick one, so fail closed rather than feed a Map where a path is expected.
     if (typeof file !== 'string') {
       throw Object.assign(
-        new Error(`Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle); it can't be loaded by plain node, build a single-platform bundle to load`),
+        new Error(`Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`),
         { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
     }
     return { url: pathToFileURL(resolve(this.root, file)).toString(), format: this.#loaderFormat(file) }

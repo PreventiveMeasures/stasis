@@ -242,8 +242,8 @@ files it adds.
   platforms (no `"*"`). Edges every platform agrees on stay a flat string, and a
   single requested platform never produces a map. The file set is the union across
   platforms. Bundle and companion lockfile share this shape. Such artifacts are for
-  analysis/attestation: plain `stasis run --bundle=load` has no platform context
-  and fails closed on a per-platform edge (`ERR_STASIS_PLATFORM_SPECIFIC`).
+  Metro: plain `stasis run --bundle=load` has no platform context and fails closed
+  on a per-platform edge (`ERR_STASIS_PLATFORM_SPECIFIC`).
 - `formats` records each file's format. Values:
   Node loader (`module`, `commonjs`, `json`, `module-typescript`,
   `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`);
@@ -255,7 +255,9 @@ files it adds.
   (raw UTF-8) / `resource:base64` (binary); and the filesystem-capture tags
   `directory`, `stat:file`, `stat:directory` (see "Filesystem captures"). Native
   tags come from the Metro native capture and aren't runnable by Node; `pbxproj`
-  is an Xcode project file added via `stasis add`. The loader picks
+  is an Xcode project file added via `stasis add`. The code Metro builds has no
+  format, from the Metro plugin or `stasis bundle --metro`: Metro transforms it
+  from source, and `stasis run --bundle=load` refuses to run it. The loader picks
   module-vs-commonjs and (for `*-typescript`) type-stripping purely from this
   value. Checked like `imports`: a mismatch is fatal, and on disk only the attested
   zone is enforced (`node_modules` files in `node_modules` scope, everything in

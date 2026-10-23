@@ -240,7 +240,8 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.deepStrictEqual(decoded.entries, ['src/entry.js'])
     t.assert.equal(decoded.sources['.'].files['src/entry.js'], readFileSync(join(tmp, 'src/entry.js'), 'utf-8'))
     t.assert.equal(decoded.sources['.'].files['src/hello.js'], readFileSync(join(tmp, 'src/hello.js'), 'utf-8'))
-    t.assert.equal(decoded.formats['src/entry.js'], 'module')
+    // Metro builds it from source: no format, though its package is `type: module`.
+    t.assert.equal(decoded.formats['src/entry.js'], undefined)
   }))
 
   test('bundle=load: the serializer records nothing, and the edges it asserts hold (load lives in the worker transformer)', withTmp(async (t, tmp) => {
@@ -956,9 +957,9 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.ok(lock.modules['node_modules/metro-runtime'].files['src/modules/asyncRequire.js'].startsWith('sha512-'))
     t.assert.ok(lock.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'].startsWith('sha512-'))
-    // asyncRequire is code (commonjs -- metro-runtime declares no `type`); setup_env.sh is a `.sh`
-    // script tagged 'shell' by the shared classifier (no 'sh' in the resources allowlist needed).
-    t.assert.equal(lock.formats[ASYNC_REQUIRE], 'commonjs')
+    // asyncRequire is code Metro builds (no format, as the graph's); setup_env.sh is a `.sh` script
+    // tagged 'shell' by the shared classifier (no 'sh' in the resources allowlist needed).
+    t.assert.equal(lock.formats[ASYNC_REQUIRE], undefined)
     t.assert.equal(lock.formats[SETUP_ENV], 'shell')
     // The app graph is still captured alongside.
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
@@ -969,7 +970,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       readFileSync(join(tmp, ASYNC_REQUIRE), 'utf-8'))
     t.assert.equal(decoded.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'],
       readFileSync(join(tmp, SETUP_ENV), 'utf-8'))
-    t.assert.equal(decoded.formats[ASYNC_REQUIRE], 'commonjs')
+    t.assert.equal(decoded.formats[ASYNC_REQUIRE], undefined)
     t.assert.equal(decoded.formats[SETUP_ENV], 'shell')
   }))
 
@@ -1484,7 +1485,7 @@ process.exit(1)
     const files = lock.modules['node_modules/react-native-native-lib'].files
     // The imported JS is attested via the graph as CODE (not skipped, not double-recorded).
     t.assert.ok(files['src/index.js']?.startsWith('sha512-'), 'imported dep JS attested via the graph')
-    t.assert.equal(lock.formats['node_modules/react-native-native-lib/src/index.js'], 'commonjs')
+    t.assert.equal(lock.formats['node_modules/react-native-native-lib/src/index.js'], undefined)
     // The native pass still adds the native build-input surface alongside it.
     t.assert.ok(files['react-native-native-lib.podspec']?.startsWith('sha512-'), 'podspec attested by the native pass')
     t.assert.ok(files['ios/RNThing.m']?.startsWith('sha512-'), 'native source attested by the native pass')

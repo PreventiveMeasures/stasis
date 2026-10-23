@@ -205,6 +205,12 @@ Its files are attributed to the `bundle:metro` consumer in the bundle's
 `reason` map, where every other `stasis bundle` build names `bundle`, so
 `stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
 
+The code it carries has no format, as the Metro plugin records it: Metro
+transforms each file from source, so how Node would load it (`module`,
+`commonjs`, `json`) doesn't apply. Assets keep their `resource` formats and
+native build inputs theirs. Such a bundle is for Metro: `stasis run
+--bundle=load` refuses to run its code under Node.
+
 It takes Metro's own steps, as `metro-resolver` takes them, where they differ
 from Node's and esbuild's:
 
@@ -300,12 +306,6 @@ with `./` or `../` is a path from the cwd, as the plugin's is from Metro's
 project root; any other is the specifier it maps to, a package's name. The
 file must lie in the project, and is not carried. The same for every
 `--platforms` target; not with `--babel`.
-
-Under either, each file is recorded in the format the Metro plugin's capture
-records it in, Metro's Babel transformer compiling every file to CommonJS: a
-`.js` or `.ts` in its package's `type`, else as `commonjs` or
-`commonjs-typescript` whatever its syntax (not the `module` Node would detect
-from it), and a `.jsx` or `.tsx` in none, as Node has no format for one.
 
 A `package.json` `imports` specifier (`#local/abc`) keeps Metro's exact rule
 under either, as `babel-plugin-module-resolver` leaves it: its target must name

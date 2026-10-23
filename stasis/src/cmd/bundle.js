@@ -17,7 +17,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyFormat, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPlainObject, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPlainObject, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -1033,17 +1033,6 @@ function metroEmptyModule(baseDir, host) {
   return isUtf8(buf) && EMPTY_MODULE_SOURCE.test(buf.toString('utf8').trim()) ? real : null
 }
 
-// The format of `file`, scanned as `scanned`, as the Metro plugin's capture records it (State infers
-// it), where Babel compiles every file to CommonJS: a .js/.ts takes its package's `type`, else commonjs
-// (-typescript), never the module Node would detect from its syntax; a .jsx/.tsx none, as Node has no
-// format for it; any other the one its name gives, as scanned. -> a format, or undefined for none
-function babelFormat(file, scanned, host) {
-  if (classifyFormat(file) !== null) return scanned
-  const ext = extname(file)
-  if (ext !== '.js' && ext !== '.ts') return undefined
-  return `${packageType(file, host) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
-}
-
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
@@ -1095,8 +1084,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
-  // --babel or --babel-aliases: files Metro builds through Babel, recorded in the formats it gives them.
-  const babelled = babel || fileAliases !== null
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1123,7 +1110,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const rel = toRel(abs)
       reached.add(abs)
       if (info.resource) resourceRels.add(rel)
-      formatsByRel.set(rel, babelled && !info.resource ? babelFormat(abs, info.format, host) : info.format)
+      // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
+      // it from source, and Node's module/commonjs isn't what it runs.
+      formatsByRel.set(rel, metro && !info.resource ? undefined : info.format)
       for (const e of info.edges) {
         if (e.builtin || e.dynamic) continue
         let target
@@ -1152,11 +1141,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // byte-derived format (here and in the --metro native capture below).
   const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
   const realBase = host.realpath(baseDir)
-  // Metro's empty module is carried as the file it is, the scan's format where the scan reached it.
-  if (usesEmpty && metroEmpty !== null && !reached.has(metroEmpty)) {
-    reached.add(metroEmpty)
-    formatsByRel.set(emptyTarget, packageType(metroEmpty, host) === 'module' ? 'module' : 'commonjs')
-  }
+  // Metro's empty module is carried as the file it is, a code file of Metro's (no format).
+  if (usesEmpty && metroEmpty !== null) reached.add(metroEmpty)
   for (const abs of reached) {
     const rel = toRel(abs)
     // Security: a resolved file arrives by its real path, which toRel already holds to the root,
@@ -1178,7 +1164,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
-    put(EMPTY_MODULE_PATH, '', 'commonjs', Buffer.alloc(0))
+    put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs', Buffer.alloc(0))
   }
 
   // The package a bundled file is in (findPackageMetadata: its pkgDir and identity, null where no

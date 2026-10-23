@@ -32,6 +32,9 @@ function refuseNonNodeFormat(format, url) {
   if (format === 'directory') {
     throw new Error(`[stasis] cannot import a directory listing ('directory'): a captured fs.readdirSync result is not executable JavaScript. Read it with fs.readdirSync instead (${url})`)
   }
+  if (format === undefined) {
+    throw new Error(`[stasis] cannot execute '${url}': the bundle carries it with no format, as it carries the code Metro builds from source, which is for Metro, not Node`)
+  }
   if (STAT_FORMATS.has(format)) {
     throw new Error(`[stasis] cannot import '${url}': the bundle carries only a payload-free stat record ('${format}', an fs.lstatSync/statSync capture attesting existence and kind) -- not the file's content. Capture a run that reads or imports it to bundle its bytes.`)
   }
