@@ -934,9 +934,10 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   }
   // Its own targets are none of the State's: it writes nothing.
   if (extra) state.includeExtra({ outputs: outputsAt(state.root), resources: resources === undefined ? undefined : resourceSet })
-  // --package-json: fold each bundled module's package.json into the State's buckets (idempotent --
-  // no-ops any manifest the scan already reached). State's bundle=replace makes writeBundle true, so addFile accepts them.
-  if (packageJSON) state.includePackageJson()
+  // --package-json, or the `packageJSON` of the stasis.config.json the State took, as `stasis run` takes
+  // it: fold each bundled module's package.json into the State's buckets (idempotent -- no-ops any
+  // manifest the scan already reached). State's bundle=replace makes writeBundle true, so addFile accepts them.
+  if (packageJSON || state.config.packageJSON) state.includePackageJson()
   return state
 }
 
@@ -1076,21 +1077,28 @@ function readAliasesFile(baseDir, file, host = diskHost) {
   return alias
 }
 
-// The `scope` and `resources` of a --mainFields/--metro build: as given (an empty `resources` too,
-// for no allowlist), else as the stasis.config.json in `cwd` sets them (the directory these bundles' paths are relative to, and
-// where one is written by default). The field resolver builds a full-scope bundle alone, so a
-// narrower scope, from either, is refused rather than silently ignored.
-// -> { resources: Set<string> } (parseResourcesOption's)
-function fieldBuildOptions(name, { cwd = process.cwd(), scope, resources, host = diskHost }) {
+// The `scope`, `resources` and `packageJSON` of a --mainFields/--metro build: as given (an empty
+// `resources` too, for no allowlist; `packageJSON` true), else as the stasis.config.json in `cwd`
+// sets them (the directory these bundles' paths are relative to, and where one is written by
+// default). The field resolver builds a full-scope bundle alone, so a narrower scope, from either,
+// is refused rather than silently ignored.
+// -> { resources: Set<string> (parseResourcesOption's), packageJSON: boolean }
+function fieldBuildOptions(name, { cwd = process.cwd(), scope, resources, packageJSON = false, host = diskHost }) {
   const resourcesGiven = resources !== undefined
-  const config = scope === undefined || !resourcesGiven ? readConfigFile(name, cwd, host) : null
+  const config = scope === undefined || !resourcesGiven || !packageJSON ? readConfigFile(name, cwd, host) : null
   if (scope !== undefined && scope !== 'full') {
     throw new Error(`${name}: --scope=${scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
   }
   if (scope === undefined && config?.scope !== undefined && config.scope !== 'full') {
     throw new Error(`${name}: ${CONFIG_FILE} sets scope ${JSON.stringify(config.scope)}, which --mainFields and --metro don't support (they always build a full-scope bundle); pass --scope=full to override it`)
   }
-  return { resources: resourcesGiven ? parseResourcesOption(name, resources) : parseResourcesOption(CONFIG_FILE, config?.resources) }
+  if (config?.packageJSON !== undefined && typeof config.packageJSON !== 'boolean') {
+    throw new Error(`${name}: ${CONFIG_FILE} sets packageJSON ${JSON.stringify(config.packageJSON)}, which must be true or false`)
+  }
+  return {
+    resources: resourcesGiven ? parseResourcesOption(name, resources) : parseResourcesOption(CONFIG_FILE, config?.resources),
+    packageJSON: packageJSON || config?.packageJSON === true,
+  }
 }
 
 // Metro's own empty module, which it resolves a disabled import to (its default
@@ -1146,8 +1154,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // --typescript's tsconfig `paths` matcher, shared by every per-platform resolver below.
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
   // --resources (else the config's): extensions/filenames carried as opaque assets instead of
-  // failing "can't carry".
-  const { resources: resourceSet } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, host })
+  // failing "can't carry". --package-json, else the config's `packageJSON`: see withManifests below.
+  const { resources: resourceSet, packageJSON: withManifests } = fieldBuildOptions('buildResolvedJsBundle', { cwd, scope, resources, packageJSON, host })
 
   const formatsByRel = new Map()
   // Reached files the scanner tagged as resources (rel keys); read as bytes below, not UTF-8 source.
@@ -1377,12 +1385,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
   }
 
-  // --package-json: fold each bundled module's package.json into `sources` (and its integrity into
-  // the companion lockfile) even when the scan never reached it. Buckets are the ones
-  // assembleCodeBundle derives, from the same `packageOf` (its pkgDir, else the '.' workspace
-  // bucket). readModuleManifest applies the read/validate rules shared with the State path
-  // (containment, UTF-8-aborts); no identity check here -- these buckets are all fresh from disk.
-  if (packageJSON) {
+  // --package-json (or the config's packageJSON): fold each bundled module's package.json into
+  // `sources` (and its integrity into the companion lockfile) even when the scan never reached it.
+  // Buckets are the ones assembleCodeBundle derives, from the same `packageOf` (its pkgDir, else the
+  // '.' workspace bucket). readModuleManifest applies the read/validate rules shared with the State
+  // path (containment, UTF-8-aborts); no identity check here -- these buckets are all fresh from disk.
+  if (withManifests) {
     const pkgDirs = new Set()
     for (const abs of reached) {
       const rel = toRel(abs)

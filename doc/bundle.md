@@ -449,7 +449,8 @@ to it.
 `--package-json` bundles each bundled module's `package.json`, even one the
 scan never reached, so `stasis run --bundle=load` and `stasis prune` can read
 every dependency's manifest. It is the `packageJSON` key of
-[`stasis.config.json`](file-formats.md#stasisconfigjson).
+[`stasis.config.json`](file-formats.md#stasisconfigjson): `"packageJSON": true`
+there does the same without the flag, for every JS build.
 
 ## Other languages
 
