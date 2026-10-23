@@ -14,6 +14,10 @@ conflict. The zero-dependency core CLI runs the same loader as
 stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
 ```
 
+Files the run never loads, but which are to be attested anyway, are named in
+`stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson): a run that
+writes a lockfile or bundle (`add` or `replace`) adds them.
+
 Everything after the options goes to node as is: the entry and its arguments.
 The exit code is the entry's, or 128 plus the signal's number where a signal
 killed it. The effective configuration is printed to stderr first.

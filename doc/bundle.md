@@ -14,6 +14,10 @@ stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--pl
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
 and Rust bundles, see [Other languages](#other-languages).
 
+Files the graph never reaches, but which are to be bundled anyway, are named in
+`stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson), for every
+language: the bundle (and its `--lockfile`) carries them too.
+
 | Flag | Meaning |
 | - | - |
 | `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
@@ -325,3 +329,7 @@ stasis add a.js icon.svg     # these two files
 stasis add src assets        # every file under them, minus the set above
 stasis add src src/README.md # the README too, named
 ```
+
+To have `stasis run` and `stasis bundle` add the same files each time, name them
+in `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson), globs
+included (`"extra": ["a.js", "b/", "c/*.png"]`).

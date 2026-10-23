@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS } from './artifact-util.js'
@@ -66,6 +66,24 @@ export function parseResourcesOption(label, resources) {
     out.add(clean)
   }
   return out
+}
+
+// stasis.config.json's `extra`: paths, directories and glob patterns relative to the project root,
+// taken as `stasis add` takes its arguments (expandExtra). Each must stay within the root.
+export function parseExtraOption(label, extra) {
+  if (extra === undefined) return []
+  if (!Array.isArray(extra)) {
+    throw new TypeError(`${label}: extra must be an array of paths or glob patterns`)
+  }
+  for (const entry of extra) {
+    if (typeof entry !== 'string' || entry === '') {
+      throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
+    }
+    if (relativeEscapes(normalize(entry))) {
+      throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
+    }
+  }
+  return [...extra]
 }
 
 export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11

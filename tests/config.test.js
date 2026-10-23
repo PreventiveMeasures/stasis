@@ -112,6 +112,25 @@ test('Config resources: rejects a code extension', (t) => {
   t.assert.throws(() => new Config({ resources: ['js'] }), /is a code extension/)
 })
 
+test('Config extra: empty by default, set by stasis.config.json alone, and never serialized', (t) => {
+  const c = new Config()
+  t.assert.deepStrictEqual(c.extra, [])
+  c.loadConfig(json({ extra: ['a.js', 'b/', 'c/*.png'] }))
+  t.assert.deepStrictEqual(c.extra, ['a.js', 'b/', 'c/*.png'])
+  t.assert.equal(JSON.parse(c.json).extra, undefined)
+  // Config-file only: no option (or env var) sets it.
+  t.assert.throws(() => new Config({ extra: ['a.js'] }), /Unknown Config options: extra/)
+})
+
+test('Config extra: rejects a non-array, a non-string or empty entry, and a path out of the root', (t) => {
+  for (const extra of ['a.js', [1], [''], ['../x'], ['a/../../x'], ['/abs/x']]) {
+    t.assert.throws(() => new Config().loadConfig(json({ extra })), /extra/, JSON.stringify(extra))
+  }
+  const c = new Config()
+  c.loadConfig(json({ extra: ['./a.js', 'b/../c/*.png'] }))
+  t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png'])
+})
+
 test('loadConfig with lock=frozen', (t) => {
   const c = new Config()
   c.loadConfig(json({ lock: 'frozen' }))
