@@ -2315,6 +2315,48 @@ cliTest('CLI: bundle --conditions --lockfile attests the conditions-selected res
   t.assert.equal(lock.imports['*']['src/entry.js'].rnpkg, 'node_modules/rnpkg/rn.js')
 }))
 
+cliTest('CLI: bundle refuses a specifier one context resolves and the other fails', withTmp(async (t, tmp) => {
+  // An `exports` map with a `require` branch alone (or an `import` branch alone): Node serves the
+  // one context and fails the other. A bundle can't record that miss -- under --bundle=load,
+  // getImport's fallback would serve the failing context the other's file -- so the build refuses.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }))
+  mkdirSync(join(tmp, 'node_modules', 'reqonly'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'reqonly', 'package.json'), JSON.stringify({ name: 'reqonly', version: '1.0.0', exports: { require: './cjs.js' } }))
+  writeFileSync(join(tmp, 'node_modules', 'reqonly', 'cjs.js'), 'module.exports = "cjs"\n')
+  mkdirSync(join(tmp, 'node_modules', 'imponly'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'imponly', 'package.json'), JSON.stringify({ name: 'imponly', version: '1.0.0', exports: { import: './esm.mjs' } }))
+  writeFileSync(join(tmp, 'node_modules', 'imponly', 'esm.mjs'), 'export default "esm"\n')
+  writeFileSync(join(tmp, 'reqonly.js'), [
+    "console.log(require('reqonly'))",
+    "import('reqonly').then((m) => console.log('import ok', m.default), (e) => console.log('import failed', e.code))",
+  ].join('\n'))
+  writeFileSync(join(tmp, 'imponly.js'), [
+    "try { console.log(require('imponly')) } catch (e) { console.log('require failed', e.code) }",
+    "import('imponly').then((m) => console.log('import ok', m.default), (e) => console.log('import failed', e.code))",
+  ].join('\n'))
+
+  const node = async (entry) => spawnAsync(process.execPath, [entry], { cwd: tmp, encoding: 'utf-8', env: cleanEnv })
+  t.assert.equal((await node('reqonly.js')).stdout, 'cjs\nimport failed ERR_PACKAGE_PATH_NOT_EXPORTED\n')
+  t.assert.equal((await node('imponly.js')).stdout, 'require failed ERR_PACKAGE_PATH_NOT_EXPORTED\nimport ok esm\n')
+
+  const req = await runCli(['bundle', 'reqonly.js'], { cwd: tmp })
+  t.assert.notEqual(req.status, 0)
+  t.assert.match(req.stderr, /reqonly from reqonly\.js resolves to node_modules\/reqonly\/cjs\.js for its require\(\) but fails for its import\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
+  const imp = await runCli(['bundle', 'imponly.js'], { cwd: tmp })
+  t.assert.notEqual(imp.status, 0)
+  t.assert.match(imp.stderr, /imponly from imponly\.js resolves to node_modules\/imponly\/esm\.mjs for its import\(\) but fails for its require\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
+
+  // One context alone is no split: the require() bundles, and loads from the bundle's own bytes.
+  writeFileSync(join(tmp, 'require.js'), "console.log(require('reqonly'))\n")
+  const build = await runCli(['bundle', 'require.js'], { cwd: tmp })
+  t.assert.equal(build.status, 0, build.stderr)
+  rmSync(join(tmp, 'node_modules'), { recursive: true })
+  const load = await runCli(['run', '--lock=none', '--bundle=load', 'require.js'], { cwd: tmp })
+  t.assert.equal(load.status, 0, load.stderr)
+  t.assert.equal(load.stdout, 'cjs\n')
+}))
+
 // --- Flow-stripping JS bundling (`--flow`) ---
 //
 // oxc parses JS/TS but not Flow, so a Flow-annotated source fails to parse and its import edges

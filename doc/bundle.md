@@ -171,7 +171,11 @@ Resolving as Node, `import` or `require` follows the edge (an `import`,
 `export ... from` or `import()` asserts `import`, a `require()` `require`),
 and the set is the one Node itself asserts, so `stasis run --bundle=load`
 lands on the file Node would. An `exports` map listing `node` first therefore
-takes that branch whatever `--conditions` adds.
+takes that branch whatever `--conditions` adds. A specifier that a file
+resolves one way and fails the other (an `exports` map with a `require`
+branch alone, say, for a file that both `require()`s and `import()`s it) is
+refused: a bundle can't record a miss in one context alone, and
+`--bundle=load` would serve that context the other's file.
 
 `--mainFields` and `--metro` resolve as a bundler does: `import` or `require`
 follows the importing file's format, and `node`, `node-addons` and

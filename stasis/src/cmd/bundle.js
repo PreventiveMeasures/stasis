@@ -759,6 +759,27 @@ function refuseSplit(split, baseDir) {
   }
 }
 
+// Refuse a specifier a file resolves in one context (require() or import) and fails in the other,
+// as Node's resolver does where an `exports` map has a `require` branch alone, say. The bundle has
+// no way to record the miss: its edge would be served to both, getImport's fallback ('*', then any
+// condition set) answering the failing context with the resolving one's file. That fallback can't
+// skip the other context's condition sets instead: replaying a `stasis run` capture can look an
+// edge up under the other context's than it was recorded under (tsx's CJS lane does).
+function refuseContextMiss(scanner, baseDir) {
+  const show = (url) => displayPath(url, baseDir)
+  const edgeKind = { require: 'require()', 'dynamic-import': 'import()', import: 'import', 'export-from': 'export ... from' }
+  for (const u of scanner.unresolved) {
+    // One context's resolution is the same for every edge, so a resolved edge is the other context's.
+    const edge = u.spec === undefined ? undefined : scanner.files.get(u.parentURL)?.edges.find((e) => e.spec === u.spec && e.child)
+    if (edge === undefined) continue
+    throw new Error(
+      `${u.spec} from ${show(u.parentURL)} resolves to ${show(edge.child)} for its ${edgeKind[edge.kind]} but fails for its ` +
+      `${edgeKind[u.kind]} (${u.reason}): a bundle can't record a miss in one context alone, and --bundle=load would serve the ` +
+      `${edgeKind[u.kind]} that file in its place`
+    )
+  }
+}
+
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
 // vs tolerated (a catchable runtime miss). Shared so the plain and --mainFields JS paths
 // gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
@@ -893,6 +914,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
     throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
   }
   refuseSplit(split, baseDir)
+  refuseContextMiss(scanner, baseDir)
   // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
   reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, root })
   for (const [url, info] of scanner.files) {
