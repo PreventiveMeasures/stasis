@@ -86,7 +86,7 @@ reported as a missing file. Each resulting path is then taken as `stasis add`
 takes an argument (see [`stasis add`](bundle.md#stasis-add)): a file is kept, and
 a directory expands to the files under it, minus the set a sweep leaves out. A
 file the command itself writes (its lockfile or bundle) is never taken, named,
-matched or swept, nor through a symlink to it. Every file must be a recognized source file or have its
+matched or swept, nor through a symlink or hard link to it. Every file must be a recognized source file or have its
 extension (or extensionless filename) in `resources`. Every offender is named in
 one error before anything is written.
 

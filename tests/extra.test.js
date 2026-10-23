@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -165,7 +165,7 @@ test('run takes a stasis artifact it does not write when extra names it', withTm
   t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.lock.json'])
 }))
 
-test('extra never takes a file it writes under another name, a symlink to it', withTmp(async (t, tmp) => {
+test('extra never takes a file it writes under another name, a symlink or hard link to it', withTmp(async (t, tmp) => {
   const runs = {
     run: { config: { bundleFile: 'dist/code.br' }, args: ['run', '--bundle=add', 'src/entry.js'], out: 'dist/code.br' },
     bundle: { config: {}, args: ['bundle', '--output=dist/code.br', 'src/entry.js'], out: 'dist/code.br' },
@@ -174,14 +174,16 @@ test('extra never takes a file it writes under another name, a symlink to it', w
   for (const [name, { config, args, out }] of Object.entries(runs)) {
     rmSync(join(tmp, 'dist'), { recursive: true, force: true })
     rmSync(join(tmp, 'alias.br'), { force: true })
+    rmSync(join(tmp, 'hard.br'), { force: true })
     // The output is there from an earlier build, and named in `extra` through a link (and swept through one).
     seed(tmp, { ...config, resources: ['br'] })
     t.assert.equal(runCli(stasisCli, args, tmp).status, 0, name)
     symlinkSync(out, join(tmp, 'alias.br'))
+    linkSync(join(tmp, out), join(tmp, 'hard.br'))
     mkdirSync(join(tmp, 'links'))
     symlinkSync(join('..', out), join(tmp, 'links', 'alias.br'))
     writeFileSync(join(tmp, 'links', 'helper.js'), 'export const h = 1\n')
-    seed(tmp, { ...config, resources: ['br'], extra: ['alias.br', 'links/'] })
+    seed(tmp, { ...config, resources: ['br'], extra: ['alias.br', 'hard.br', 'links/'] })
     const r = runCli(stasisCli, args, tmp)
     t.assert.equal(r.status, 0, `${name}: ${r.stderr}`)
     t.assert.deepStrictEqual(filesOf(decode(join(tmp, out))), ['links/helper.js', 'src/entry.js', 'src/util.js'], name)

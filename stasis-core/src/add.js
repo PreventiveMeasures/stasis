@@ -156,20 +156,23 @@ function prepareLockfile(lockPath, lockAdd) {
 }
 
 // Whether a project-relative path, with its stats (undefined when missing), is one of `outputs`
-// (project-relative): by name, or as the same file under another, compared as canonicalizePath
-// compares write targets (a symlink to one is it). Only a path on an output's device and inode is
-// canonicalized, so a sweep pays no realpath per file.
+// (project-relative): by name, or as the same file under another, a symlink or hard link to it -- its
+// device and inode, which a write rewrites in place. Stats as numbers can round a large inode
+// (Windows file ids), so a match on those is settled exactly (bigint), never taken on its own.
 function outputMatcher(baseDir, outputs) {
-  const canonicalById = new Map()
+  const exact = new Set()
+  const rounded = new Set()
   for (const rel of outputs) {
-    const abs = join(baseDir, rel)
-    const stats = statSync(abs, { throwIfNoEntry: false })
-    if (stats !== undefined) canonicalById.set(`${stats.dev}:${stats.ino}`, canonicalizePath(abs))
+    const stats = statSync(join(baseDir, rel), { throwIfNoEntry: false, bigint: true })
+    if (stats === undefined) continue
+    exact.add(`${stats.dev}:${stats.ino}`)
+    rounded.add(`${Number(stats.dev)}:${Number(stats.ino)}`)
   }
   return (rel, stats) => {
     if (outputs.has(rel)) return true
-    const canonical = stats === undefined ? undefined : canonicalById.get(`${stats.dev}:${stats.ino}`)
-    return canonical !== undefined && canonicalizePath(join(baseDir, rel)) === canonical
+    if (stats === undefined || !rounded.has(`${stats.dev}:${stats.ino}`)) return false
+    const precise = statSync(join(baseDir, rel), { throwIfNoEntry: false, bigint: true })
+    return precise !== undefined && exact.has(`${precise.dev}:${precise.ino}`)
   }
 }
 
