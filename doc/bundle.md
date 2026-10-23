@@ -516,4 +516,5 @@ stasis add src src/README.md # the README too, named
 
 To have `stasis run` and `stasis bundle` add the same files each time, name them
 in `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson), globs
-included (`"extra": ["a.js", "b/", "c/*.png"]`).
+included, and `!` entries leaving some out:
+`"extra": ["a.js", "b/", "c/*.png", "!b/tmp"]`.

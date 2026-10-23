@@ -69,7 +69,8 @@ export function parseResourcesOption(label, resources) {
 }
 
 // stasis.config.json's `extra`: paths, directories and glob patterns relative to the project root,
-// taken as `stasis add` takes its arguments (expandExtra). Each must stay within the root.
+// taken as `stasis add` takes its arguments, and `!`-prefixed ones excluding what they match
+// (expandExtra). Each must stay within the root.
 export function parseExtraOption(label, extra) {
   if (extra === undefined) return []
   if (!Array.isArray(extra)) {
@@ -79,7 +80,8 @@ export function parseExtraOption(label, extra) {
     if (typeof entry !== 'string' || entry === '') {
       throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
     }
-    if (relativeEscapes(normalize(entry))) {
+    if (entry === '!') throw new Error(`${label}: extra entry '!' needs a pattern to exclude (e.g. '!ios/Pods')`)
+    if (relativeEscapes(normalize(entry.startsWith('!') ? entry.slice(1) : entry))) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }

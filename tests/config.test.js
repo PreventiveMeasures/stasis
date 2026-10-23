@@ -123,12 +123,12 @@ test('Config extra: empty by default, set by stasis.config.json alone, and never
 })
 
 test('Config extra: rejects a non-array, a non-string or empty entry, and a path out of the root', (t) => {
-  for (const extra of ['a.js', [1], [''], ['../x'], ['a/../../x'], ['/abs/x']]) {
+  for (const extra of ['a.js', [1], [''], ['../x'], ['a/../../x'], ['/abs/x'], ['!'], ['!../x'], ['!/abs/x']]) {
     t.assert.throws(() => new Config().loadConfig(json({ extra })), /extra/, JSON.stringify(extra))
   }
   const c = new Config()
-  c.loadConfig(json({ extra: ['./a.js', 'b/../c/*.png'] }))
-  t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png'])
+  c.loadConfig(json({ extra: ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata'] }))
+  t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata'])
 })
 
 test('loadConfig with lock=frozen', (t) => {
