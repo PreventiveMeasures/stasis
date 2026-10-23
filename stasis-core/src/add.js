@@ -155,23 +155,43 @@ function prepareLockfile(lockPath, lockAdd) {
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }
 
+// Whether a project-relative path, with its stats (undefined when missing), is one of `outputs`
+// (project-relative): by name, or as the same file under another, compared as canonicalizePath
+// compares write targets (a symlink to one is it). Only a path on an output's device and inode is
+// canonicalized, so a sweep pays no realpath per file.
+function outputMatcher(baseDir, outputs) {
+  const canonicalById = new Map()
+  for (const rel of outputs) {
+    const abs = join(baseDir, rel)
+    const stats = statSync(abs, { throwIfNoEntry: false })
+    if (stats !== undefined) canonicalById.set(`${stats.dev}:${stats.ino}`, canonicalizePath(abs))
+  }
+  return (rel, stats) => {
+    if (outputs.has(rel)) return true
+    const canonical = stats === undefined ? undefined : canonicalById.get(`${stats.dev}:${stats.ino}`)
+    return canonical !== undefined && canonicalizePath(join(baseDir, rel)) === canonical
+  }
+}
+
 // GLOB + FILTER: expand each directory entry into the files under it (recursive glob), dropping the
 // auto-excluded set from what a sweep FINDS -- dir rules on the segments BELOW the named root (`add
 // src/examples` sweeps the dir it was pointed at, `add src` skips one it merely found), file rules
-// by name plus the caller's `outputs` (this run's own write targets). A path the caller NAMED is
-// always kept (naming is the override; a missing one keeps stats undefined so validation reports
-// it), and inclusion is monotone: a nearer root's sweep can only ever see FEWER excluded segments,
+// by name plus the caller's `outputs` (this run's own write targets, by name or alias: outputMatcher).
+// A path the caller NAMED is always kept (naming is the override; a missing one keeps stats undefined
+// so validation reports it) -- unless `keepNamedOutputs` is false, then one of `outputs` never is --
+// and inclusion is monotone: a nearer root's sweep can only ever see FEWER excluded segments,
 // so a path any entry keeps stays kept -- `add src src/examples` includes the subtree it names in
 // either order. `stats` is the walk's own stat, reused by validation. Gotcha: `**/*` skips dotfiles
 // (.env, .git/...) -- name them explicitly.
-function expandDirectories(baseDir, rels, outputs) {
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true } = {}) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
+  const isOutput = outputMatcher(baseDir, outputs)
   for (const rel of rels) {
     const dirAbs = join(baseDir, rel)
     const stats = statSync(dirAbs, { throwIfNoEntry: false })
     if (stats === undefined || !stats.isDirectory()) {
-      files.set(rel, stats)
+      if (keepNamedOutputs || !isOutput(rel, stats)) files.set(rel, stats)
       continue
     }
     const found = []
@@ -185,7 +205,7 @@ function expandDirectories(baseDir, rels, outputs) {
     // canonicalized by serialize() either way, but multi-file diagnostics keep a stable order.
     for (const [file, match, fileStats] of found.toSorted(([a], [b]) => sortPaths(a, b))) {
       if (toPosix(match).split('/').slice(0, -1).some(isAutoExcludedDir)
-        || outputs.has(file) || isAutoExcludedFile(file)) excluded.add(file)
+        || isOutput(file, fileStats) || isAutoExcludedFile(file)) excluded.add(file)
       else files.set(file, fileStats)
     }
   }
@@ -220,13 +240,14 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // by Node's glob (whose `*` skips dotfiles, as the shell's does), a pattern matching nothing standing
 // for itself as it does without bash's nullglob (so a missing path is reported missing), then each
 // path as `add` takes it (expandDirectories): a file named or matched is kept, a directory swept.
-// One of `outputs`, the files this very run writes, is never kept, named or matched (`dist/*`).
+// One of `outputs`, the files this very run writes, is never kept, named, matched (`dist/*`) or
+// under another name (outputMatcher).
 export function expandExtra(baseDir, patterns, outputs) {
   const entries = patterns.flatMap((pattern) => {
     const matches = globSync(pattern, { cwd: baseDir })
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir).filter((rel) => !outputs.has(rel)), outputs)
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false })
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --
