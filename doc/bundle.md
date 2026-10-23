@@ -74,14 +74,14 @@ bundle's files (write `--lockfile` from the first build, or drop it).
 
 ## Entry options (`stasis.config.json`)
 
-The `bundle` of the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson),
-where it is an object, gives entries their options: each key is an entry, a
-path relative to that directory, and its value the flags building it, named as
-they are without the `--`.
+The `entries` of the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson)
+give entries their options: each key is an entry, a path relative to that
+directory, and its value the flags building it, named as they are without the
+`--`.
 
 ```json
 {
-  "bundle": {
+  "entries": {
     "index.js": { "metro": true, "metro-resolver": true, "platforms": ["ios", "android"], "flow": true, "jsx": true },
     "node_modules/@react-native-community/cli/build/bin.js": { "metro": false }
   }
@@ -117,7 +117,7 @@ With it:
   one's, attributed to `bundle`. The config's `extra` is the bundle's, not an
   entry's: added once, to that union, by the config's own `resources`.
 
-A string `bundle` is `stasis run`'s bundle mode, which takes nothing from it.
+`stasis run` takes nothing from it.
 
 ```sh
 stasis bundle --metro-resolver --flow   # bundles index.js with --metro and bin.js without

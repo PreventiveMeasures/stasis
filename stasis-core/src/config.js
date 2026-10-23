@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { diskHost } from './host.js'
 import { canonicalizePath } from './state-util.js'
-import { extSetsEqual, isBrotliQuality, isPlainObject, parseBrotliQuality, parseExtraOption, parseResourcesOption } from './util.js'
+import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseResourcesOption } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 export const DEFAULT_BUNDLE = 'none'
@@ -21,7 +21,8 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // Every option: its env var, how the env string parses (strings pass through) and, for a non-string
 // option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only (never from
 // stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
-// stasis.config.json only (no env var or option).
+// stasis.config.json only (no env var or option), and `entries` is `stasis bundle`'s, which a run
+// takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -38,7 +39,7 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'bundle']
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries']
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
 // explicitly (flags, env, options), never by a file.
 const CONFIG_FILE_LOCK = 'frozen'
@@ -203,8 +204,7 @@ export class Config {
   loadConfig(json) {
     const config = JSON.parse(json)
     const keys = Object.keys(config)
-    // An object `bundle` is `stasis bundle`'s per-entry options, not a bundle mode.
-    if (keys.includes('bundle') && !isPlainObject(config.bundle)) {
+    if (keys.includes('bundle')) {
       throw new Error('stasis.config.json: bundle can not be set here; give the bundle mode explicitly (--bundle, EXODUS_STASIS_BUNDLE)')
     }
     if (keys.includes('lock') && config.lock !== CONFIG_FILE_LOCK) {
@@ -212,8 +212,8 @@ export class Config {
     }
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
-      // An object `bundle` is `stasis bundle`'s per-entry options, not a bundle mode: it sets none.
-      if (key === 'bundle' && isPlainObject(config.bundle)) continue
+      // `stasis bundle`'s, validated there.
+      if (key === 'entries') continue
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
       else if (key === 'extra') this.#opts.extra = parseExtraOption('stasis.config.json', config.extra)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.

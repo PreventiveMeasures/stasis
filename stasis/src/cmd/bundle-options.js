@@ -39,7 +39,7 @@ export const BUNDLE_FLAGS = {
 export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
 
 // The flags saying where and how the bundle is written. Every other one says how its entries are
-// built, which stasis.config.json's `bundle` sets per entry instead.
+// built, which stasis.config.json's `entries` sets per entry instead.
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
@@ -199,7 +199,7 @@ function outputOptions(values, { allJs }) {
   return { output: values.output, lockfile: values.lockfile, brotliQuality, add }
 }
 
-// An entry's options in stasis.config.json's `bundle` (`what` names it) as the flags they alias, in
+// An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in
 // parseArgs' shape: `true` for a boolean flag set (`false`, its default, is no flag), a string for one
 // taking a value, which a list flag takes as an array too, and an array of it for a repeatable one.
 function entryFlags(what, options) {
@@ -222,10 +222,10 @@ function entryFlags(what, options) {
   return values
 }
 
-// The `bundle` of the stasis.config.json in `cwd` where it is an object: each entry it names, as a
-// path relative to cwd -> { entry: the name as written, values: its options as flags (entryFlags') }.
-// null where there is none, or `bundle` is a bundle mode (`stasis run`'s, a string).
-export function readBundleConfig(cwd = process.cwd(), host = diskHost) {
+// The `entries` of the stasis.config.json in `cwd`: each entry it names, as a path relative to cwd
+// -> { entry: the name as written, values: its options as flags (entryFlags') }. null where there is
+// none.
+export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
   if (text === null) return null
   let config
@@ -234,12 +234,12 @@ export function readBundleConfig(cwd = process.cwd(), host = diskHost) {
   } catch (cause) {
     throw new Error(`${CONFIG_FILE} is not valid JSON`, { cause })
   }
-  const bundle = config?.bundle
-  if (bundle === undefined || typeof bundle === 'string') return null
-  if (!isPlainObject(bundle)) throw new Error(`${CONFIG_FILE}: bundle must be a bundle mode or an object of each entry's stasis bundle options`)
+  const entries = config?.entries
+  if (entries === undefined) return null
+  if (!isPlainObject(entries)) throw new Error(`${CONFIG_FILE}: entries must be an object of each entry's stasis bundle options`)
   const named = new Map()
-  for (const [entry, options] of Object.entries(bundle)) {
-    const what = `${CONFIG_FILE}: bundle ${JSON.stringify(entry)}`
+  for (const [entry, options] of Object.entries(entries)) {
+    const what = `${CONFIG_FILE}: entries ${JSON.stringify(entry)}`
     const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
     if (key === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     if (named.has(key)) throw new Error(`${what} names the same entry as ${JSON.stringify(named.get(key).entry)}`)
@@ -249,7 +249,7 @@ export function readBundleConfig(cwd = process.cwd(), host = diskHost) {
 }
 
 // bundleCommand's options for bundling `entries` with the parsed flags `values` in `cwd`, whose
-// stasis.config.json's `bundle` is `config` (readBundleConfig's). Where it names every entry, each is
+// stasis.config.json's `entries` is `config` (readConfigEntries'). Where it names every entry, each is
 // built with its options there, the ones with the same options together (a build each), and none
 // may be given as a flag but the bundle's own (OUTPUT_FLAGS) and the consent to a CONSENT_FLAGS
 // option, which an entry setting it needs and some entry must set. Where it names none, they are all
@@ -262,14 +262,14 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   if (configured.length === 0) return { ...output, entries, ...buildOptions(values, lang) }
   const unnamed = entries.find((_, i) => !config.has(keys[i]))
   if (unnamed !== undefined) {
-    throw new Error(`${CONFIG_FILE}'s bundle names ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
+    throw new Error(`${CONFIG_FILE}'s entries name ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
   }
   const flag = Object.keys(values).find((name) => !OUTPUT_FLAGS.has(name) && !CONSENT_FLAGS.has(name))
-  if (flag !== undefined) throw new Error(`--${flag} can't be given for ${configured[0]}, whose options ${CONFIG_FILE}'s bundle sets: set it there`)
+  if (flag !== undefined) throw new Error(`--${flag} can't be given for ${configured[0]}, whose options ${CONFIG_FILE}'s entries set: set it there`)
   const named = keys.map((key) => config.get(key))
   for (const consent of CONSENT_FLAGS) {
     if (values[consent] && !named.some(({ values: flags }) => flags[consent])) {
-      throw new Error(`--${consent} is given, but ${CONFIG_FILE}'s bundle sets ${consent} for none of ${entries.join(', ')}`)
+      throw new Error(`--${consent} is given, but ${CONFIG_FILE}'s entries set ${consent} for none of ${entries.join(', ')}`)
     }
   }
   const builds = new Map()
@@ -277,13 +277,13 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
     const { entry: name, values: flags } = named[i]
     const unconsented = [...CONSENT_FLAGS].find((consent) => flags[consent] && !values[consent])
     if (unconsented !== undefined) {
-      throw new Error(`${CONFIG_FILE}: bundle ${JSON.stringify(name)} sets ${unconsented}, which runs the project's code: pass --${unconsented} to allow it`)
+      throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)} sets ${unconsented}, which runs the project's code: pass --${unconsented} to allow it`)
     }
     let options
     try {
       options = buildOptions(flags, entriesLanguage([entry], cwd))
     } catch (cause) {
-      throw new Error(`${CONFIG_FILE}: bundle ${JSON.stringify(name)}: ${cause.message}`, { cause })
+      throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)}: ${cause.message}`, { cause })
     }
     const id = JSON.stringify(options)
     if (builds.has(id)) builds.get(id).entries.push(entry)

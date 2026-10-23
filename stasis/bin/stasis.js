@@ -24,7 +24,7 @@ const HELP = `Usage:
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
- stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's bundle)
+ stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
@@ -190,14 +190,14 @@ if (command === '-v' || command === '--version') {
   // code is null when the child died from a signal; report 128+signo (shell convention) instead of the implicit 0
   process.exitCode = code ?? 128 + (osConstants.signals[signal] ?? 0)
 } else if (command === 'bundle') {
-  const { BUNDLE_FLAGS, BUNDLE_VALUE_FLAGS, bundlePlan, readBundleConfig } = await import('../src/cmd/bundle-options.js')
+  const { BUNDLE_FLAGS, BUNDLE_VALUE_FLAGS, bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
   const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: BUNDLE_VALUE_FLAGS, onError: fail })
   const cwd = process.cwd()
   let plan
   try {
     // stasis.config.json's `bundle`, where it is an object: its entries' options, and with no entry
     // given, the entries.
-    const config = readBundleConfig(cwd)
+    const config = readConfigEntries(cwd)
     const entries = argv.length > 0 ? argv : [...(config?.values() ?? [])].map(({ entry }) => entry)
     if (entries.length === 0) fail('Nothing to bundle: no entry file given')
     plan = bundlePlan({ cwd, entries, values, config })
