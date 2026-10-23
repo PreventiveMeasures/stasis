@@ -931,6 +931,31 @@ test('bundle `reason`: run does not claim a file it only fs-reads AFTER a plugin
   }
 })
 
+test('bundle `reason`: `extra` naming a file run fs-read after a plugin attached is no plugin claim', (t) => {
+  // `extra` adds its consumer to a file the run captured itself, but bundles nothing: run's claim on
+  // a post-plugin fs read stands unless a plugin bundles the file.
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-reason-extra-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ extra: ['app.js'] }))
+    for (const f of ['entry.js', 'app.js']) writeFileSync(join(dir, f), `export const x = '${f}'\n`)
+    const url = (f) => pathToFileURL(join(dir, f)).toString()
+    const src = (f) => Buffer.from(`export const x = '${f}'\n`)
+
+    const s = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
+    s.addFile(url('entry.js'), { source: src('entry.js'), format: 'module', isEntry: true })
+    s.markPluginAttached()
+    s.addFsFile(url('app.js'), src('app.js'))
+    s.includeExtra()
+
+    const reason = JSON.parse(s.sourceData).reason
+    t.assert.deepStrictEqual(reason.run, ['app.js', 'entry.js'])
+    t.assert.deepStrictEqual(reason.extra, ['app.js'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('bundle=add carries a loaded multi-consumer `reason` forward instead of dropping it', (t) => {
   // Regression: `stasis-core run --bundle=add` absorbs the on-disk bundle, then re-emits it.
   // The absorb path copies sources/formats/imports but used to ignore the loaded `reason`, so

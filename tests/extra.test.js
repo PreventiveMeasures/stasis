@@ -78,9 +78,9 @@ test('run --lock=add --bundle=add attests the extra files beside what the run re
   t.assert.equal(bundle.formats.get('assets/logo.png'), 'resource:base64')
   t.assert.equal(bundle.formats.get('assets/icon.svg'), 'resource')
   t.assert.equal(bundle.formats.has('scripts/tool.js'), false)
-  // A file the run loaded itself (src/*.js) keeps the run's own record.
+  // A file the run loaded itself (src/*.js) keeps the run's own record, and is `extra`'s too.
   t.assert.equal(bundle.formats.get('src/util.js'), 'module')
-  t.assert.deepStrictEqual(bundle.reason, { extra: EXTRA_FILES, run: ['src/entry.js', 'src/util.js'] })
+  t.assert.deepStrictEqual(bundle.reason, { extra: all, run: ['src/entry.js', 'src/util.js'] })
   t.assert.deepStrictEqual([...bundle.entries], ['src/entry.js'], 'extra files are no entries')
 
   // The bundle runs on its own, and a frozen replay of both passes.
@@ -215,10 +215,23 @@ test('bundle adds the extra files beside what the scan reached, into its lockfil
   // As `stasis run` records them.
   t.assert.equal(bundle.formats.get('assets/logo.png'), 'resource:base64')
   t.assert.equal(bundle.formats.has('scripts/tool.js'), false)
-  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: EXTRA_FILES })
+  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all })
 
   const load = runCli(stasisCli, ['run', '--lock=frozen', '--bundle=load', 'src/entry.js'], tmp)
   t.assert.equal(load.status, 0, load.stderr)
+}))
+
+test('a file extra names that the build reached itself is the `extra` consumer\'s too', withTmp(async (t, tmp) => {
+  // Nothing but already-reached files named: no file is added, every one is attributed to both.
+  for (const [args, own] of [[['run', '--bundle=add'], 'run'], [['bundle'], 'bundle'], [['bundle', '--mainFields=main'], 'bundle']]) {
+    seed(tmp, { extra: ['src/*.js'] })
+    const r = runCli(stasisCli, [...args, 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${args}: ${r.stderr}`)
+    const bundle = decode(join(tmp, 'stasis.code.br'))
+    t.assert.deepStrictEqual(filesOf(bundle), ['src/entry.js', 'src/util.js'], `${args}`)
+    t.assert.deepStrictEqual(bundle.reason, { [own]: ['src/entry.js', 'src/util.js'], extra: ['src/entry.js', 'src/util.js'] }, `${args}`)
+    rmSync(join(tmp, 'stasis.code.br'))
+  }
 }))
 
 test('bundle without extra keeps a single `bundle` consumer', withTmp(async (t, tmp) => {
@@ -292,7 +305,7 @@ test('bundle --mainFields adds extra as `stasis add` adds files, into its lockfi
   t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), all)
   // `add`'s format: the package's `type`.
   t.assert.equal(bundle.formats.get('scripts/tool.js'), 'module')
-  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: EXTRA_FILES })
+  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all })
 
   const load = runCli(stasisCli, ['run', '--lock=frozen', '--bundle=load', 'src/entry.js'], tmp)
   t.assert.equal(load.status, 0, load.stderr)

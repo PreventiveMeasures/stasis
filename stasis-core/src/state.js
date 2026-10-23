@@ -1042,6 +1042,7 @@ export class State {
     const undeclared = []
     const nonUtf8 = []
     const toAdd = []
+    const captured = []
     for (const [rel, stats] of files) {
       if (stats === undefined) {
         missing.push(rel)
@@ -1051,7 +1052,13 @@ export class State {
       const absolute = resolve(this.root, rel)
       const url = pathToFileURL(absolute).toString()
       // A node_modules scope leaves the project's own files out, as it does the run's.
-      if (this.#filesCapturedThisRun.has(this.#canonicalFile(url)) || (!this.config.full && !this.inNodeModules(url))) continue
+      if (!this.config.full && !this.inNodeModules(url)) continue
+      // The run's record of a file it captured stands, and `extra` is one more consumer of it.
+      const file = this.#canonicalFile(url)
+      if (this.#filesCapturedThisRun.has(file)) {
+        captured.push(file)
+        continue
+      }
       const source = this.#host.readFile(absolute)
       const options = this.#readFileOptions(absolute, source, resources)
       if (options === null) undeclared.push(rel)
@@ -1060,6 +1067,7 @@ export class State {
     }
     if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, 'extra')
     for (const { url, source, options } of toAdd) this.addFile(url, { source, ...options, reason: 'extra' })
+    if (this.config.bundle) for (const file of captured) this.#recordReason('extra', file)
   }
 
   // The artifacts write() writes: the lockfile (never a sidecar's) and the bundle(s), as configured.
@@ -1468,10 +1476,11 @@ export class State {
   // contributed. Never attested.
   #bundleReason(bundledFiles) {
     const inBundle = bundledFiles instanceof Set ? bundledFiles : new Set(bundledFiles)
-    // A file run merely fs-READ post-plugin that a plugin also bundles is the plugin's, not run's.
+    // A file run merely fs-READ post-plugin that a plugin also bundles is the plugin's, not run's
+    // (`extra` names files, it bundles none).
     const pluginFiles = new Set()
     for (const [who, recorded] of this.#reasonFiles) {
-      if (who !== 'run') for (const file of recorded) pluginFiles.add(file)
+      if (who !== 'run' && who !== 'extra') for (const file of recorded) pluginFiles.add(file)
     }
     const runOverclaims = (file) =>
       this.#fsReadPostPlugin.has(file) && !this.#runImported.has(file) && pluginFiles.has(file)

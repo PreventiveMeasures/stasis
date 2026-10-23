@@ -128,8 +128,9 @@ taken as always):
   does, by `resources` (an entry's own is its graph's alone). `stasis
   github-bundle` doesn't take `extra`.
 
-In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), they
-are the `extra` consumer's. They are never entries.
+In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), every
+file `extra` names is the `extra` consumer's, a file the run or build reached
+itself as well as its own consumer's (`run`, `bundle`). They are never entries.
 
 `entries` names `stasis bundle`'s entries, each with the flags it is built with,
 as [Entry options](bundle.md#entry-options-stasisconfigjson) describes.

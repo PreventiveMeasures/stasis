@@ -1609,12 +1609,13 @@ function withExtra(built, cwd, outputs, resources) {
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
   const added = extraArtifacts({ baseDir, patterns, resources: allowlist, bundle: built.bundle, outputs: written })
-  if (added === null) return built
+  if (added.bundle === null && added.carried.length === 0) return built
   // Each file attributed: to the build's own consumer (`bundle`, or `bundle:metro`, as codeBundle
-  // stamps it), or `extra`.
-  const bundle = built.bundle.merge(added.bundle)
+  // stamps it), `extra`, or both, for one `extra` names that the build carries itself.
+  const merged = added.bundle === null ? built.bundle : built.bundle.merge(added.bundle)
+  const bundle = added.carried.length === 0 ? merged : merged.withReason('extra', added.carried)
   const { lockfile } = built
-  return { ...built, bundle, ...(lockfile && { lockfile: () => lockfile().merge(added.lockfile) }) }
+  return { ...built, bundle, ...(lockfile && added.lockfile && { lockfile: () => lockfile().merge(added.lockfile) }) }
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
