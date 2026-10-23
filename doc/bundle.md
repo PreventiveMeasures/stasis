@@ -291,18 +291,10 @@ project root; any other is the specifier it maps to, a package's name. The
 file must lie in the project, and is not carried. The same for every
 `--platforms` target; not with `--babel`.
 
-Under `--babel` and `--babel-aliases`, the `imports` of the cwd's
-`package.json` alias too, after the aliases they set, as a Babel config
-spreading them into its aliases would have them: `"#local/*": "./src/*"` maps
-`#local/abc` to `./src/abc`, resolved as any relative path is, so an
-extensionless import reaches `src/abc.js` where Node's exact target finds no
-file. A key is selected as Node selects it (one equal to the specifier, else
-the pattern with the longest prefix before its `*`), and every `*` of its
-target takes what the key's matched. A target that isn't a string (conditions,
-a fallback array, `null`) is left to Node's resolution, as without either. They
-apply to the project's own files alone, those whose nearest `package.json` is
-the cwd's, as Node scopes `imports`: a dependency's own `#` imports resolve
-through its own `package.json`.
+A `package.json` `imports` specifier (`#local/abc`) keeps Metro's exact rule
+under either, as `babel-plugin-module-resolver` leaves it: its target must name
+the file itself. An alias of the same name, in the aliases file or the Babel
+config, rewrites it first, as it would under Metro.
 
 What only a dev build imports (`if (__DEV__) require(...)`) is bundled too,
 unless `--define` gives the values a release build inlines: see

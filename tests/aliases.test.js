@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { createAliases, createImportsAliases } from '../stasis/src/babel.js'
+import { createAliases } from '../stasis/src/babel.js'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -133,57 +133,16 @@ test('CLI: bundle --metro --babel-aliases, and an entry\'s babel-aliases with no
   t.assert.equal(read('config.br').serialize(), read('flag.br').serialize())
 }))
 
-test('createImportsAliases selects a package.json imports key as Node does, mapping a string target as an alias', (t) => {
-  const aliases = createImportsAliases({
-    '#exact': './src/exact.js',
-    '#local/*': './src/*',
-    '#local/deep/*': './deep/*/index',
-    '#both/*': './a/*/b/*',
-    '#ext/*.js': './ext/*.js',
-    '#dep': 'lodash-es',
-    '#cond': { 'react-native': './rn.js', 'default': './web.js' },
-    '#none/*': null,
-    'local': './nope',
-  }, '/p')
-  const file = '/p/src/x/f.js'
-  t.assert.equal(aliases(file, '#exact'), '../exact.js')
-  t.assert.equal(aliases(file, '#exact/more'), null, 'a key without * matches only itself')
-  t.assert.equal(aliases(file, '#local/abc'), '../abc')
-  t.assert.equal(aliases(file, '#local/deep/x'), '../../deep/x', 'the longest prefix wins, and /index drops as the plugin drops it')
-  t.assert.equal(aliases(file, '#both/m'), '../../a/m/b/m', 'every * in the target takes the match')
-  t.assert.equal(aliases(file, '#ext/y.js'), '../../ext/y.js')
-  t.assert.equal(aliases(file, '#dep'), 'lodash-es')
-  t.assert.equal(aliases(file, '#cond'), null, 'conditions are left to Node')
-  t.assert.equal(aliases(file, '#none/z'), null)
-  t.assert.equal(aliases(file, 'local'), null, 'only # specifiers')
-})
-
-test('buildBundle --babel-aliases and --babel take the project\'s package.json imports as aliases, for its own files', withTmp(async (t, tmp) => {
+test('buildBundle --babel-aliases leaves package.json imports to Metro\'s exact rule, unless an alias names them', withTmp(async (t, tmp) => {
   writeTree(tmp, {
-    'package.json': { name: 'imp', version: '1.0.0', imports: { '#local/*': './src/*', '#cond': { 'react-native': './src/rn.js', 'default': './src/abc.js' } } },
-    'index.js': "import a from '#local/abc'\nimport c from '#cond'\nimport d from 'dep'\nexport default [a, c, d]\n",
+    'package.json': { name: 'imp', version: '1.0.0', imports: { '#local/*': './src/*' } },
+    'index.js': "import a from '#local/abc'\nexport default a\n",
     'src/abc.js': 'export default 1\n',
-    'src/rn.js': 'export default 2\n',
-    'other/abc.js': 'export default 3\n',
     'aliases.json': {},
-    'babel.config.js': 'module.exports = {}\n',
-    // A dependency's own `#local/*` stays its own.
-    'node_modules/dep/package.json': { name: 'dep', version: '1.0.0', main: 'index.js', imports: { '#local/*': './lib/*.js' } },
-    'node_modules/dep/index.js': "module.exports = require('#local/x')\n",
-    'node_modules/dep/lib/x.js': "module.exports = 'x'\n",
   })
-  symlinkSync(join(here, '..', 'node_modules', '@babel'), join(tmp, 'node_modules', '@babel'), 'dir')
-  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
-  // Without either, Node's exact target finds no extensionless file.
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' }
+  // As module-resolver leaves them: the target must name the file itself.
   await t.assert.rejects(() => buildBundle(options), /unresolved import #local\/abc from index\.js/u)
-  const edgesBy = (bundle) => Object.fromEntries([...bundle.imports.values()].flatMap((m) => [...m]).map(([parent, specs]) => [parent, Object.fromEntries(specs)]))
-  const expected = {
-    'index.js': { '#local/abc': 'src/abc.js', '#cond': 'src/rn.js', 'dep': 'node_modules/dep/index.js' },
-    'node_modules/dep/index.js': { '#local/x': 'node_modules/dep/lib/x.js' },
-  }
-  t.assert.deepStrictEqual(edgesBy(await buildBundle({ ...options, babelAliases: 'aliases.json' })), expected)
-  t.assert.deepStrictEqual(edgesBy(await buildBundle({ ...options, babel: true })), expected)
-  // The aliases --babel-aliases sets come first.
-  writeTree(tmp, { 'aliases.json': { '#local': './other' } })
-  t.assert.equal(edgesBy(await buildBundle({ ...options, babelAliases: 'aliases.json' }))['index.js']['#local/abc'], 'other/abc.js')
+  writeTree(tmp, { 'aliases.json': { '#local': './src' } })
+  t.assert.deepStrictEqual(edgesOf(await buildBundle(options)), { '#local/abc': 'src/abc.js' })
 }))

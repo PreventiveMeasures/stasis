@@ -12,7 +12,7 @@ import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
-import { createAliases, createBabelAliases, createImportsAliases } from '../babel.js'
+import { createAliases, createBabelAliases } from '../babel.js'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
@@ -995,27 +995,6 @@ function readAliasesFile(baseDir, file, host = diskHost) {
   return alias
 }
 
-// Under --babel and --babel-aliases: the `imports` of the package.json in `baseDir` as aliases
-// (createImportsAliases), for the project's own files alone, whose nearest package.json it is, as
-// Node scopes them; null where it has none.
-function projectImportsAliases(baseDir, host = diskHost) {
-  const imports = readJson(join(baseDir, 'package.json'), host)?.imports
-  if (!isPlainObject(imports)) return null
-  const aliases = createImportsAliases(imports, baseDir)
-  // A file is reached by its real path, which lies below the root's real path.
-  const roots = new Set([baseDir, host.realpath(baseDir)])
-  const own = new Map() // directory -> whether its nearest package.json is the project's
-  const ownDir = (dir) => {
-    if (roots.has(dir)) return true
-    if (own.has(dir)) return own.get(dir)
-    const inside = [...roots].some((root) => !relativeEscapes(relative(root, dir)))
-    const result = inside && host.stat(join(dir, 'package.json')) === null && ownDir(dirname(dir))
-    own.set(dir, result)
-    return result
-  }
-  return (file, specifier) => (ownDir(dirname(file)) ? aliases(file, specifier) : null)
-}
-
 // The `scope` and `resources` of a --mainFields/--metro build: as given (an empty `resources` too,
 // for no allowlist), else as the stasis.config.json in `cwd` sets them (the directory these bundles' paths are relative to, and
 // where one is written by default). The field resolver builds a full-scope bundle alone, so a
@@ -1101,8 +1080,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
-  // Under either, the project's package.json `imports` alias too, after the aliases they set.
-  const importsAliases = babel || aliasesFile !== undefined ? projectImportsAliases(baseDir, host) : null
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1118,8 +1095,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript: true, typescriptPaths, host }).resolver
     // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
-    const configured = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
-    const aliases = importsAliases === null ? configured : (file, spec) => configured?.(file, spec) ?? importsAliases(file, spec)
+    const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
     const scanner = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
     reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
