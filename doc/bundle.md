@@ -159,9 +159,10 @@ transformer loads it, with Metro's `caller` and each `--platforms` target, so a
 config that aliases per platform resolves per platform. That runs the config,
 which is why it is opt-in; it needs `@babel/core` installed in the project. Only
 the aliases apply: each file's own source is what is scanned and carried, and
-an edge stays keyed by the specifier written there (`#local/abc`). The plugin
-must be listed in the config itself, not brought in by a preset. Not with
-`github-bundle`.
+an edge stays keyed by the specifier written there (`#local/abc`). Every
+instance of the plugin the config lists counts, by name or as a `require`d or
+imported value, the first to map a path winning as in Babel; one a preset brings
+in does not. Not with `github-bundle`.
 
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js

@@ -4121,17 +4121,18 @@ test('buildBundle --mainFields/--metro take --resources, else the cwd\'s stasis.
 // Metro runs before it resolves: `#local/abc` reaches src/abc.js only through that rewrite.
 
 // The project, with the workspace's @babel/core and babel-plugin-module-resolver (v3) installed
-// where --babel resolves them from, and a babel.config.js aliasing `#local` to ./src/ios on iOS
-// and ./src elsewhere (by Metro's caller).
-const babelAliasProject = (tmp) => {
-  jsProject(tmp, {
-    'index.js': "import x from '#local/abc'\nexport default x\n",
-    'babel.config.js': `module.exports = (api) => {
+// where --babel resolves them from, src/abc.js and src/ios/abc.js, and `config` as its
+// babel.config.js: by default, aliasing `#local` to ./src/ios on iOS and ./src elsewhere (by
+// Metro's caller).
+const babelAliasProject = (tmp, {
+  config = `module.exports = (api) => {
   const platform = api.caller((caller) => caller && caller.platform)
   return { plugins: [['module-resolver', { alias: { '#local': platform === 'ios' ? './src/ios' : './src' } }]] }
 }
 `,
-  }, { name: 'babel-alias', version: '0.0.0' })
+  index = "import x from '#local/abc'\nexport default x\n",
+} = {}) => {
+  jsProject(tmp, { 'index.js': index, 'babel.config.js': config }, { name: 'babel-alias', version: '0.0.0' })
   mkdirSync(join(tmp, 'src', 'ios'), { recursive: true })
   writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
   writeFileSync(join(tmp, 'src', 'ios', 'abc.js'), 'export default 2\n')
@@ -4146,6 +4147,24 @@ test('buildBundle --metro --babel resolves the Babel config\'s module-resolver a
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'src/abc.js', 'src/ios/abc.js'])
   const edges = [...bundle.imports.values()].map((m) => m.get('index.js')).find(Boolean)
   t.assert.deepStrictEqual(Object.fromEntries(edges.get('#local/abc')), { android: 'src/abc.js', ios: 'src/ios/abc.js' })
+}))
+
+test('buildBundle --metro --babel takes every module-resolver instance, in order, one passed as a value too', withTmp(async (t, tmp) => {
+  // Both alias `#local`: the first that maps a path wins, as the plugin leaves a path it wrote alone.
+  babelAliasProject(tmp, {
+    config: `module.exports = {
+  plugins: [
+    [require('babel-plugin-module-resolver'), { alias: { '#local': './src' } }],
+    ['module-resolver', { alias: { '#local': './src/ios', '#other': './src/ios' } }, 'second'],
+  ],
+}
+`,
+    index: "import a from '#local/abc'\nimport b from '#other/abc'\nexport default [a, b]\n",
+  })
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babel: true })
+  const edges = [...bundle.imports.values()].map((m) => m.get('index.js')).find(Boolean)
+  t.assert.equal(edges.get('#local/abc'), 'src/abc.js')
+  t.assert.equal(edges.get('#other/abc'), 'src/ios/abc.js')
 }))
 
 test('buildBundle --babel is only valid with --metro, and needs a babel.config.*', withTmp(async (t, tmp) => {

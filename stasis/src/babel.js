@@ -139,21 +139,36 @@ function findBabelConfig(projectDir, command) {
   return configFile
 }
 
-// A plugin item of babel-plugin-module-resolver, however the config names it (by its resolved file).
+// The file a plugin item names babel-plugin-module-resolver by resolves into this.
 const MODULE_RESOLVER = /[\\/]node_modules[\\/]babel-plugin-module-resolver[\\/]/u
 
 // --babel for `stasis bundle --metro`: the import aliases babel-plugin-module-resolver applies to
 // each file under the project's babel.config.*, loaded as Metro's transformer loads it (its `metro`
 // caller, for `platform`) -- the config is project code, run here. The plugin's own resolvePath (or
 // the config's custom one) maps each specifier, its `cwd` the project's where the config sets none,
-// as Metro started there has it. Only a plugin the config lists itself counts, not one a preset adds.
+// as Metro started there has it. Every instance the config lists, by name or as a value (`require`d
+// or imported), counts, in order; one a preset adds doesn't.
 // -> (file, specifier) => the specifier the plugin rewrites it to, else null
 export function createBabelAliases({ projectDir, platform }) {
   const configFile = findBabelConfig(projectDir, 'stasis bundle')
   const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
   const babel = require(babelPath)
   const caller = { name: 'metro', bundler: 'metro', platform }
-  // file -> { resolvePath, options } of the module-resolver its config applies, else null.
+  // The project's own copy, which a config passing the plugin as a value passes; none where the
+  // project installs none.
+  let projectPlugin
+  try {
+    projectPlugin = require(createRequire(join(projectDir, 'noop.js')).resolve('babel-plugin-module-resolver'))
+  } catch {
+    projectPlugin = null
+  }
+  // The module of a module-resolver plugin item, else null.
+  const moduleOf = (plugin) => {
+    const resolved = plugin.file?.resolved
+    if (resolved !== undefined) return MODULE_RESOLVER.test(resolved) ? require(resolved) : null
+    return plugin.value === projectPlugin?.default ? projectPlugin : null
+  }
+  // file -> [{ resolvePath, options }] of the module-resolver instances its config applies.
   const byFile = new Map()
   const aliasingOf = (file) => {
     if (byFile.has(file)) return byFile.get(file)
@@ -163,19 +178,24 @@ export function createBabelAliases({ projectDir, platform }) {
     } catch (cause) {
       throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
     }
-    // null: the config ignores the file.
-    const item = partial?.options.plugins?.find((plugin) => MODULE_RESOLVER.test(plugin.file?.resolved ?? ''))
-    let aliasing = null
-    if (item) {
-      const options = { cwd: projectDir, ...item.options }
-      aliasing = { resolvePath: typeof options.resolvePath === 'function' ? options.resolvePath : require(item.file.resolved).resolvePath, options }
+    const instances = []
+    // No partial config: the config ignores the file.
+    for (const plugin of partial?.options.plugins ?? []) {
+      const module = moduleOf(plugin)
+      if (module === null) continue
+      const options = { cwd: projectDir, ...plugin.options }
+      instances.push({ resolvePath: typeof options.resolvePath === 'function' ? options.resolvePath : module.resolvePath, options })
     }
-    byFile.set(file, aliasing)
-    return aliasing
+    byFile.set(file, instances)
+    return instances
   }
   return (file, specifier) => {
-    const aliasing = aliasingOf(file)
-    const mapped = aliasing?.resolvePath(specifier, file, aliasing.options)
-    return typeof mapped === 'string' && mapped !== specifier ? mapped : null
+    for (const { resolvePath, options } of aliasingOf(file)) {
+      const mapped = resolvePath(specifier, file, options)
+      // The first instance mapping it wins: the plugin marks the path it writes resolved, which
+      // later instances leave as it is.
+      if (mapped) return typeof mapped === 'string' && mapped !== specifier ? mapped : null
+    }
+    return null
   }
 }
