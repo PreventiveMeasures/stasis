@@ -25,10 +25,8 @@ if (args.length === 0) {
   process.exit(2)
 }
 
-if (process.env.STASIS_TEST_PRELOAD === '1') {
-  const { State } = await import('@exodus/stasis-core/state')
-  new State(process.cwd(), { preload: true })
-}
+const { State } = await import('@exodus/stasis-core/state')
+const _preload = process.env.STASIS_TEST_PRELOAD === '1' ? new State(process.cwd(), { preload: true }) : undefined
 
 const t = await import('../stasis/src/metro-transformer.js')
 
