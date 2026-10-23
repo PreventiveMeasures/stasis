@@ -34,6 +34,7 @@ it, or take it for another path.
 | `packageJSON` | boolean | `false` | `EXODUS_STASIS_PACKAGE_JSON` |
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
 | `brotliQuality` | integer `0`–`11` | `9` | `EXODUS_STASIS_BROTLI_QUALITY` |
+| `extra` | array of paths and glob patterns | unset | none |
 
 `lock`/`bundle` modes:
 
@@ -70,10 +71,48 @@ files (attested like any other), so the flag itself is not serialized. JS bundle
 only on the `stasis bundle` side (`.sol`/`.php`/`.sh`/`.rs` bundles have no npm
 `package.json`; Rust bundles have `--cargo-manifests`, see below).
 
-Unknown keys are rejected. A key set by both file and env var must match. Only
-`scope` is persisted into the lockfile/bundle `config` block; `debug`,
-`childProcess`, `packageJSON`, `fs`, and `brotliQuality` are run-time flags, not
-attested.
+`extra` names files to attest beside what a run or bundle reaches, the files the
+import graph never does (assets, scripts, data), as `stasis add` takes them:
+
+```json
+{ "lock": "add", "bundle": "add", "resources": ["png"], "extra": ["a.js", "b/", "c/*.png"] }
+```
+
+Each entry is a path or a glob pattern relative to the directory holding
+`stasis.config.json`, and may not climb out of it. Node's built-in glob
+(`fs.globSync`) expands a pattern as a shell expands `stasis add a b/ c/*.png`:
+`*` skips dotfiles, and a pattern matching nothing stands for itself, so it is
+reported as a missing file. Each resulting path is then taken as `stasis add`
+takes an argument (see [`stasis add`](bundle.md#stasis-add)): a file is kept, and
+a directory expands to the files under it, minus the set a sweep leaves out. A
+file the command itself writes (its lockfile or bundle) is never taken, named,
+matched or swept, nor through a symlink or hard link to it. Every file must be a
+recognized source file or have its extension (or extensionless filename) in
+`resources`. Every offender is named in one error before anything is written.
+
+- `stasis run` adds them only when it writes: with `lock` or `bundle` set to
+  `add` or `replace`. A `frozen`, `load` or `ignore` run never reads `extra`. A
+  file the run loaded itself keeps the run's record; any other is recorded as a
+  `--fs` capture records a read: a resource by its bytes, a JS-family file with
+  no loader format. Under `lock = add`/`bundle = add`, an extra file whose bytes
+  changed since it was recorded is refused, as any recorded file is. Under
+  `scope = node_modules`, the project's own files are left out, as the run's are.
+- `stasis bundle` adds them to the bundle it builds, and to its `--lockfile`.
+  Its `--resources`, where given, is the allowlist they are checked against
+  instead of `resources`. A JS bundle scanned through a State reads
+  the `stasis.config.json` at its root and records them as `stasis run` does. A
+  `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
+  the cwd, and packs them as `stasis add` does. `stasis github-bundle` doesn't
+  take `extra`.
+
+In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), they
+are the `extra` consumer's. They are never entries.
+
+Unknown keys are rejected. A key set by both file and env var must match. `extra`
+is set in the file alone. Only `scope` is persisted into the lockfile/bundle
+`config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
+`brotliQuality` are run-time flags, not attested, and `extra`'s effect is the
+files it adds.
 
 ## `stasis.lock.json`
 

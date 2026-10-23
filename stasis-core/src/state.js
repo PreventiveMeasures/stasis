@@ -11,8 +11,9 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, withMetadataOf } from './util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { expandExtra, validationError } from './add.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -999,21 +1000,68 @@ export class State {
     return this.#sidecars
   }
 
-  // Record an `fs.readFileSync` capture (--fs). classifyFormat routes the bytes: a concrete format
-  // is code, null defers to the loader, and undefined (or a binary plist, whose bytes can't be the
-  // UTF-8 code its format implies) is a resource IFF allowlisted, else THROW -- an undeclared file
-  // would widen the attested set.
+  // Record an `fs.readFileSync` capture (--fs), carried as #readFileOptions says, else THROW -- an
+  // undeclared file would widen the attested set.
   addFsFile(url, source) {
     assert.ok(Buffer.isBuffer(source), 'addFsFile requires a Buffer source')
     const path = fileURLToPath(url)
-    const format = classifyFormat(path, { content: source })
-    if (format !== undefined && !isBinaryPlist(path, source)) {
-      this.addFile(url, { source, format: format ?? undefined, inferFormat: false, fsRead: true })
-    } else if (this.config.resources.has(pathExt(path) || basename(path).toLowerCase())) {
-      this.addFile(url, { source, resource: true, fsRead: true })
-    } else {
+    const options = this.#readFileOptions(path, source)
+    if (options === null) {
       throw new Error(`addFsFile: ${path} is neither code nor a declared resource; add its extension or filename to the resources allowlist or stop reading it`)
     }
+    this.addFile(url, { source, ...options, fsRead: true })
+  }
+
+  // The addFile options for a file read rather than loaded: classifyFormat routes the bytes -- a
+  // concrete format is code, null defers to the loader, and undefined (or a binary plist, whose bytes
+  // can't be the UTF-8 code its format implies) is a resource IFF in `resources`, else null.
+  #readFileOptions(path, source, resources = this.config.resources) {
+    const format = classifyFormat(path, { content: source })
+    if (format !== undefined && !isBinaryPlist(path, source)) return { format: format ?? undefined, inferFormat: false }
+    if (resources.has(pathExt(path) || basename(path).toLowerCase())) return { resource: true }
+    return null
+  }
+
+  // Attest the files stasis.config.json's `extra` names (expandExtra: paths, directories and globs,
+  // as `stasis add` takes them) beside what the run reached, each carried as an fs read is
+  // (#readFileOptions) unless the run captured it itself, whose record stands. The whole set is
+  // validated before a file is added, every offender named at once. `outputs` are the paths written,
+  // never taken in: by default the ones write() writes. `resources` is the allowlist, the config's by default.
+  includeExtra({ outputs = this.#writeTargets(), resources = this.config.resources } = {}) {
+    if (this.config.extra.length === 0) return
+    // Resolved as write() writes them: a relative one from the cwd.
+    const written = new Set(outputs.map((file) => toPosix(relative(this.root, resolve(file)))))
+    const { files } = expandExtra(this.root, this.config.extra, written)
+    const realRoot = this.#host.realpath(this.root)
+    const missing = []
+    const undeclared = []
+    const nonUtf8 = []
+    const toAdd = []
+    for (const [rel, stats] of files) {
+      if (stats === undefined) {
+        missing.push(rel)
+        continue
+      }
+      assertRealPathWithinBase(realRoot, this.root, rel, this.#host)
+      const absolute = resolve(this.root, rel)
+      const url = pathToFileURL(absolute).toString()
+      // A node_modules scope leaves the project's own files out, as it does the run's.
+      if (this.#filesCapturedThisRun.has(this.#canonicalFile(url)) || (!this.config.full && !this.inNodeModules(url))) continue
+      const source = this.#host.readFile(absolute)
+      const options = this.#readFileOptions(absolute, source, resources)
+      if (options === null) undeclared.push(rel)
+      else if (!options.resource && !isUtf8(source)) nonUtf8.push({ rel, format: options.format })
+      else toAdd.push({ url, source, options })
+    }
+    if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, 'extra')
+    for (const { url, source, options } of toAdd) this.addFile(url, { source, ...options, reason: 'extra' })
+  }
+
+  // The artifacts write() writes: the lockfile (never a sidecar's) and the bundle(s), as configured.
+  #writeTargets() {
+    const lock = this.config.writeLockfile && !this.#parent ? [this.config.lockFile || join(this.root, FILE_LOCK)] : []
+    const bundles = this.config.writeBundle ? [this.config.bundleFile || join(this.root, FILE_CODE), this.config.resourcesBundleFile] : []
+    return [...lock, ...bundles].filter((file) => file !== undefined)
   }
 
   // Record an `fs.readdirSync` capture: the listing is SORTED for reproducibility and stored as a
@@ -1592,7 +1640,9 @@ export class State {
     this.#backfillObservedResolutions()
     this.#backfillExecutedFiles()
     this.#backfillBeforeWrite()
-    // AFTER the backfills, so buckets they create are covered too.
+    // Only when writing (a frozen run verifies what it reached, not `extra`); a sidecar loads no config.
+    if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
+    // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
 
     // Sidecars never write the lockfile (parent owns it); they only emit their bundle.

@@ -135,6 +135,10 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
   if (installed) return
   installed = true
 
+  // Node's glob takes fs's readers when it first loads: load it now, on the real ones, so the sweep
+  // of stasis.config.json's `extra` at write (expandExtra) is never captured as the program's reads.
+  fs.globSync([])
+
   // Classify a path for every hook: null passes through to the real fs; else { mode, abs, url, state }
   // with mode 'absent' (a skipped path: ENOENT), 'serve' (bundle=load; an uncaptured path still falls
   // through to disk) or 'capture' (bundle=add|replace, outside a loader read).

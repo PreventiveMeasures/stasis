@@ -6,6 +6,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { extraArtifacts } from '@exodus/stasis-core/add'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -15,7 +16,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -760,8 +761,12 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
 // above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
-// root above it, where that holds no stasis file of its own.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost, innermostRoot = false } = {}) {
+// root above it, where that holds no stasis file of its own. With `extra`, the files its
+// stasis.config.json's `extra` names are added as `stasis run` adds them (State#includeExtra), never
+// one of `outputsAt(root)` (the absolute paths the build writes, given the root its paths are
+// relative to), resources by `resources` where given, else by the config's; from disk alone, as
+// Node's glob reads it.
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [] } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
   }
@@ -809,12 +814,13 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   for (const [url, info] of scanner.files) {
     // A resource carries bytes only: addFile derives resource vs resource:base64 from the content
     // and stores it under `resources` (a resource can't be an entry, so no isEntry).
+    // Recorded as the `bundle` consumer's, which `extra` files are not.
     if (info.resource) {
-      state.addFile(url, { resource: true })
+      state.addFile(url, { resource: true, reason: 'bundle' })
       continue
     }
     const isEntry = scanner.entries.has(url)
-    state.addFile(url, { format: info.format, isEntry })
+    state.addFile(url, { format: info.format, isEntry, reason: 'bundle' })
   }
   // Edges where every context agrees keep the wildcard '*' key (getImport's fallback when a
   // condition lookup misses). Where the require()- and import()-context resolutions of one
@@ -843,6 +849,8 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
       }
     }
   }
+  // Its own targets are none of the State's: it writes nothing.
+  if (extra) state.includeExtra({ outputs: outputsAt(state.root), resources: resources === undefined ? undefined : resourceSet })
   // --package-json: fold each bundled module's package.json into the State's buckets (idempotent --
   // no-ops any manifest the scan already reached). State's bundle=replace makes writeBundle true, so addFile accepts them.
   if (packageJSON) state.includePackageJson()
@@ -946,6 +954,16 @@ export function fieldResolverFor(platform, { mainFields, metro = false, conditio
 
 const CONFIG_FILE = 'stasis.config.json'
 
+// The stasis.config.json in `cwd`, parsed; null where there is none.
+function readConfigFile(name, cwd, host = diskHost) {
+  const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
+  try {
+    return text === null ? null : JSON.parse(text)
+  } catch (cause) {
+    throw new Error(`${name}: ${CONFIG_FILE} is not valid JSON`, { cause })
+  }
+}
+
 // The `scope` and `resources` of a --mainFields/--metro build: as given (an empty `resources` too,
 // for no allowlist), else as the stasis.config.json in `cwd` sets them (the directory these bundles' paths are relative to, and
 // where one is written by default). The field resolver builds a full-scope bundle alone, so a
@@ -953,15 +971,7 @@ const CONFIG_FILE = 'stasis.config.json'
 // -> { resources: Set<string> } (parseResourcesOption's)
 function fieldBuildOptions(name, { cwd = process.cwd(), scope, resources, host = diskHost }) {
   const resourcesGiven = resources !== undefined
-  let config = null
-  if (scope === undefined || !resourcesGiven) {
-    const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
-    try {
-      config = text === null ? null : JSON.parse(text)
-    } catch (cause) {
-      throw new Error(`${name}: ${CONFIG_FILE} is not valid JSON`, { cause })
-    }
-  }
+  const config = scope === undefined || !resourcesGiven ? readConfigFile(name, cwd, host) : null
   if (scope !== undefined && scope !== 'full') {
     throw new Error(`${name}: --scope=${scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
   }
@@ -1432,27 +1442,54 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
 // A JS bundle as `stasis bundle` builds it: by the legacy-field resolver with `mainFields` or
 // `metro`, whose per-platform edges and synthetic empty module a State can't hold, else through a
 // State, which detects the bundle's repo itself. `root` is the directory the bundle's paths are
-// relative to: cwd for the resolver's, the State's root for the State's.
+// relative to: cwd for the resolver's, the State's root for the State's. `extra` and `outputsAt` are
+// buildJsBundle's, for the State's alone (see withExtra).
 // -> { bundle, lockfile: () => Lockfile, stateBuilt, root }
-async function buildJs({ mainFields, platforms, metro, metroResolver, babel, innermostRoot, ...options }) {
+async function buildJs({ mainFields, platforms, metro, metroResolver, babel, innermostRoot, extra, outputsAt, ...options }) {
   if (metro || mainFields !== undefined) {
     const built = await buildResolvedJsBundle({ ...options, mainFields: metro ? METRO_MAIN_FIELDS : mainFields, platforms: metro ? platforms : [null], metro: Boolean(metro), metroResolver: Boolean(metroResolver), babel: Boolean(babel) })
     return { bundle: built.bundle, lockfile: () => built.lockfile, stateBuilt: false, root: resolve(options.cwd) }
   }
-  const state = await buildJsBundle({ ...options, innermostRoot })
-  // Stamp the `bundle` consumer (the static build carries none).
-  return { bundle: state.sourceBundle.withReason('bundle'), lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
+  const state = await buildJsBundle({ ...options, innermostRoot, extra, outputsAt })
+  const bundle = state.sourceBundle
+  // Stamp the `bundle` consumer (the static build carries none), unless `extra` added files: then
+  // the State attributes each file, to `bundle` or `extra`.
+  return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
-// The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk: a JS bundle's
-// git dependencies at the commits their package managers' records name (pinInstalledCommits).
+// `built` (buildOfKind's, built in `cwd` without a State) with the files the stasis.config.json
+// there names in `extra`, as `stasis add` adds them (extraArtifacts), into its bundle and its
+// lockfile; never one of `outputs` (the absolute paths the build writes), and resources by the
+// build's `resources` where given, else by the config's. A State-built bundle takes them in its
+// State instead, as `stasis run` does (State#includeExtra).
+function withExtra(built, cwd, outputs, resources) {
+  const config = readConfigFile('bundle', cwd)
+  const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
+  if (patterns.length === 0) return built
+  const baseDir = resolve(cwd)
+  const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
+  const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
+  const added = extraArtifacts({ baseDir, patterns, resources: allowlist, bundle: built.bundle, outputs: written })
+  if (added === null) return built
+  // Each file attributed: to `bundle`, or `extra`.
+  const bundle = built.bundle.withReason('bundle').merge(added.bundle)
+  const { lockfile } = built
+  return { ...built, bundle, ...(lockfile && { lockfile: () => lockfile().merge(added.lockfile) }) }
+}
+
+// The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
+// stasis.config.json's `extra` names: a JS bundle's git dependencies at the commits their package
+// managers' records name (pinInstalledCommits). `outputsAt(root)` are the absolute paths the build
+// writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) {
-  if (kind === 'sol') return { bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }
-  if (kind === 'php') return { bundle: await buildPhpBundle({ cwd, entries }) }
-  if (kind === 'bash') return { bundle: await buildBashBundle({ cwd, entries }) }
-  if (kind === 'rust') return { bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }
-  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON })
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [] }) {
+  const outputs = outputsAt(resolve(cwd))
+  if (kind === 'sol') return withExtra({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }, cwd, outputs)
+  if (kind === 'php') return withExtra({ bundle: await buildPhpBundle({ cwd, entries }) }, cwd, outputs)
+  if (kind === 'bash') return withExtra({ bundle: await buildBashBundle({ cwd, entries }) }, cwd, outputs)
+  if (kind === 'rust') return withExtra({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }, cwd, outputs)
+  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, extra: true, outputsAt })
+  if (!built.stateBuilt) built = withExtra(built, cwd, outputs, resources)
   pinInstalledCommits(built.bundle, built.root)
   return built
 }
@@ -1551,7 +1588,10 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
 
-  const built = await buildOfKind(kind, options)
+  // The files this build writes, never taken into `extra`, given the root its paths are relative to:
+  // the bundle (by default at that root, see `target` below) and the lockfile.
+  const outputsAt = (root) => [output ?? join(root, DEFAULT_BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
+  const built = await buildOfKind(kind, { ...options, outputsAt })
   let { bundle } = built
   // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
   // project's at or above cwd (a workspace package's is the workspace root's), else cwd.

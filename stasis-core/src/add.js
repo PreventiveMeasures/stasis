@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { existsSync, globSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import * as fs from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -9,6 +9,10 @@ import { brotliOptions } from './brotli.js'
 import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson } from './bundle-util.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+
+// Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra sweeps `extra` with these
+// at write, which must read the real disk, not be captured as the program's reads.
+const { existsSync, globSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
 
 const CONFIG_FILE = 'stasis.config.json'
 const LOCK_FILE = 'stasis.lock.json'
@@ -57,7 +61,9 @@ function readAddConfig(baseDir) {
 }
 
 // Assemble a Bundle bucketed per package.json. `add` records NO entries -- its files are attested, not entry points -- so nothing in an add bundle is runnable via `--bundle=load`.
-function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
+// `buckets` (dir -> module) are identities to take for a dir over the one found there: those of the
+// bundle the files will merge into, which may name its buckets otherwise (`solidity-bundle`, say).
+function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map() } = {}) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
@@ -65,6 +71,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
   // file's adds the vendored package it is in.
   const bucketFiles = (dir, identity) => {
     const bucket = modules.get(dir)
+    identity = buckets.get(dir) ?? identity
     modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
     return modules.get(dir).files
   }
@@ -92,7 +99,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo) {
     if (isExec) executable.add(rel)
   }
 
-  return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason('add')
+  return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason(reason)
 }
 
 // Merge add-if-missing into any existing bundle (divergent bytes for an attested path throw -- see
@@ -148,23 +155,46 @@ function prepareLockfile(lockPath, lockAdd) {
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }
 
+// Whether a project-relative path, with its stats (undefined when missing), is one of `outputs`
+// (project-relative): by name, or as the same file under another, a symlink or hard link to it -- its
+// device and inode, which a write rewrites in place. Stats as numbers can round a large inode
+// (Windows file ids), so a match on those is settled exactly (bigint), never taken on its own.
+function outputMatcher(baseDir, outputs) {
+  const exact = new Set()
+  const rounded = new Set()
+  for (const rel of outputs) {
+    const stats = statSync(join(baseDir, rel), { throwIfNoEntry: false, bigint: true })
+    if (stats === undefined) continue
+    exact.add(`${stats.dev}:${stats.ino}`)
+    rounded.add(`${Number(stats.dev)}:${Number(stats.ino)}`)
+  }
+  return (rel, stats) => {
+    if (outputs.has(rel)) return true
+    if (stats === undefined || !rounded.has(`${stats.dev}:${stats.ino}`)) return false
+    const precise = statSync(join(baseDir, rel), { throwIfNoEntry: false, bigint: true })
+    return precise !== undefined && exact.has(`${precise.dev}:${precise.ino}`)
+  }
+}
+
 // GLOB + FILTER: expand each directory entry into the files under it (recursive glob), dropping the
 // auto-excluded set from what a sweep FINDS -- dir rules on the segments BELOW the named root (`add
 // src/examples` sweeps the dir it was pointed at, `add src` skips one it merely found), file rules
-// by name plus the caller's `outputs` (this run's own write targets). A path the caller NAMED is
-// always kept (naming is the override; a missing one keeps stats undefined so validation reports
-// it), and inclusion is monotone: a nearer root's sweep can only ever see FEWER excluded segments,
+// by name plus the caller's `outputs` (this run's own write targets, by name or alias: outputMatcher).
+// A path the caller NAMED is always kept (naming is the override; a missing one keeps stats undefined
+// so validation reports it) -- unless `keepNamedOutputs` is false, then one of `outputs` never is --
+// and inclusion is monotone: a nearer root's sweep can only ever see FEWER excluded segments,
 // so a path any entry keeps stays kept -- `add src src/examples` includes the subtree it names in
 // either order. `stats` is the walk's own stat, reused by validation. Gotcha: `**/*` skips dotfiles
 // (.env, .git/...) -- name them explicitly.
-function expandDirectories(baseDir, rels, outputs) {
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true } = {}) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
+  const isOutput = outputMatcher(baseDir, outputs)
   for (const rel of rels) {
     const dirAbs = join(baseDir, rel)
     const stats = statSync(dirAbs, { throwIfNoEntry: false })
     if (stats === undefined || !stats.isDirectory()) {
-      files.set(rel, stats)
+      if (keepNamedOutputs || !isOutput(rel, stats)) files.set(rel, stats)
       continue
     }
     const found = []
@@ -178,7 +208,7 @@ function expandDirectories(baseDir, rels, outputs) {
     // canonicalized by serialize() either way, but multi-file diagnostics keep a stable order.
     for (const [file, match, fileStats] of found.toSorted(([a], [b]) => sortPaths(a, b))) {
       if (toPosix(match).split('/').slice(0, -1).some(isAutoExcludedDir)
-        || outputs.has(file) || isAutoExcludedFile(file)) excluded.add(file)
+        || isOutput(file, fileStats) || isAutoExcludedFile(file)) excluded.add(file)
       else files.set(file, fileStats)
     }
   }
@@ -190,8 +220,8 @@ function expandDirectories(baseDir, rels, outputs) {
 const listPaths = (rels) => [...rels].toSorted(sortPaths).join(', ')
 
 // One error for every file validation rejected, so a directory sweep names all of them at once
-// instead of one per re-run. A lone offender keeps its exact standalone message.
-function validationError({ missing, undeclared, nonUtf8 }) {
+// instead of one per re-run. A lone offender keeps its exact standalone message. `label` prefixes it.
+export function validationError({ missing, undeclared, nonUtf8 }, label) {
   const phrase = (items, one, many) => (items.length === 1 ? [one(items[0])] : items.length > 1 ? [many(items)] : [])
   const withFormat = (format) => (format == null ? '' : ` (format '${format}')`)
   const named = ({ rel, format }) => `${rel}${withFormat(format)}`
@@ -206,15 +236,29 @@ function validationError({ missing, undeclared, nonUtf8 }) {
       ({ rel, format }) => `${rel} is not valid UTF-8${withFormat(format)}`,
       (bad) => `${bad.length} files are not valid UTF-8: ${bad.map(named).join(', ')}`),
   ]
-  return new Error(`add: ${parts.join('; ')}`)
+  return new Error(`${label}: ${parts.join('; ')}`)
+}
+
+// stasis.config.json's `extra` patterns, expanded as a shell expands `stasis add`'s arguments: each
+// by Node's glob (whose `*` skips dotfiles, as the shell's does), a pattern matching nothing standing
+// for itself as it does without bash's nullglob (so a missing path is reported missing), then each
+// path as `add` takes it (expandDirectories): a file named or matched is kept, a directory swept.
+// One of `outputs`, the files this very run writes, is never kept, named, matched (`dist/*`) or
+// under another name (outputMatcher).
+export function expandExtra(baseDir, patterns, outputs) {
+  const entries = patterns.flatMap((pattern) => {
+    const matches = globSync(pattern, { cwd: baseDir })
+    return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
+  })
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false })
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --
 // before a single target is touched, collecting every offender into one error. `files` is the glob
 // step's rel -> stats map (stats undefined = not on disk). Containment is the one rule NOT collected:
 // a symlink escaping the root is a security invariant, so it fails closed on the spot. Bytes are
-// hashed only when there's a lockfile to receive the integrities (`withIntegrity`).
-function validateFiles({ baseDir, realBase, files, resources, withIntegrity }) {
+// hashed only when there's a lockfile to receive the integrities (`withIntegrity`). `label` prefixes the error.
+function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add' }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()
   const integrities = new Map()
@@ -244,8 +288,22 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity }) {
       undeclared.push(rel)
     }
   }
-  if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 })
+  if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, label)
   return { codeFiles, resourceFiles, integrities }
+}
+
+// The files stasis.config.json's `extra` names under `baseDir` (expandExtra), packed as `add` packs
+// them, for `stasis bundle` to merge into `bundle`, one built there without a State (always full
+// scope): those it doesn't carry already (its own record of a file stands), in its buckets where it
+// has them. `outputs` are the project-relative paths the build writes, never swept in.
+// -> { bundle, lockfile } of the `extra` consumer, or null when there is nothing to add
+export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set() }) {
+  const files = new Map([...expandExtra(baseDir, patterns, outputs).files].filter(([rel]) => !bundle.sources.has(rel)))
+  if (files.size === 0) return null
+  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: realpathSync(baseDir), files, resources, withIntegrity: true, label: 'extra' })
+  const rootPkg = readJson(join(baseDir, 'package.json')) ?? {}
+  const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules })
+  return { bundle: extra, lockfile: bundleToLockfile(extra, integrities) }
 }
 
 // GLOB the listed paths, FILTERING the auto-excluded set out of what a sweep finds (see

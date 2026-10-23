@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { diskHost } from './host.js'
 import { canonicalizePath } from './state-util.js'
-import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseResourcesOption } from './util.js'
+import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseResourcesOption } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 export const DEFAULT_BUNDLE = 'none'
@@ -19,7 +19,8 @@ const envBool = (name, value) => {
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
 // Every option: its env var, how the env string parses (strings pass through) and, for a non-string
-// option, how a `new Config()` option does. `lockFile` is flag/env-only (never from stasis.config.json).
+// option, how a `new Config()` option does. `lockFile` is flag/env-only (never from stasis.config.json);
+// `extra` is the reverse, stasis.config.json only (no env var or option).
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -36,7 +37,7 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-const CONFIG_FILE_KEYS = OPTION_KEYS.filter((key) => key !== 'lockFile')
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile'), 'extra']
 const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
 
 const assertKnownKeys = (keys, known, what) => {
@@ -125,6 +126,7 @@ export class Config {
       fs: str('fs', undefined),
       brotliQuality: this.#envValue('brotliQuality') ?? explicit.brotliQuality,
       resources: parseResourcesOption('resources', this.#env.resources !== undefined ? envList(this.#env.resources) : explicit.resources),
+      extra: [],
     }
     const flush = env.EXODUS_STASIS_SHARD_SIGNAL_FLUSH
     this.#shardSignalFlush = Boolean(flush) && envBool('EXODUS_STASIS_SHARD_SIGNAL_FLUSH', flush)
@@ -200,6 +202,7 @@ export class Config {
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
+      else if (key === 'extra') this.#opts.extra = parseExtraOption('stasis.config.json', config.extra)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
       else this.#opts[key] = config[key]
@@ -240,6 +243,11 @@ export class Config {
   // Set of lowercase extensions/filenames treated as asset payloads.
   get resources() {
     return this.#opts.resources
+  }
+
+  // stasis.config.json's `extra` patterns, attested beside what a writing run reaches (State#includeExtra). Not serialized.
+  get extra() {
+    return this.#opts.extra
   }
 
   get debug() {

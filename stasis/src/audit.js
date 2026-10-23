@@ -176,15 +176,15 @@ export function collectReasons(files) {
 const SEVERITY_ORDER = { critical: 0, high: 1, moderate: 2, low: 3, info: 4, none: 5 }
 
 // Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
-// then `run`, then `add`. Ties broken alphabetically.
-const CONSUMER_RANK = { run: 1, add: 2 }
+// then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
+const CONSUMER_RANK = { run: 1, add: 2, extra: 3 }
 const consumerRank = (c) => CONSUMER_RANK[c] ?? 0
 const byConsumerOrder = (a, b) => consumerRank(a) - consumerRank(b) || a.localeCompare(b)
 
 // Build a row's `reason` cell by unioning over exactly the affected versions it
 // covers. Without `--why` that's the `, `-joined set of bundle consumers; with
 // `--why` it's the newline-joined `consumer: a -> b -> c` import-path lines
-// (which REPLACE the consumer list). Consumers are ordered plugins -> run -> add.
+// (which REPLACE the consumer list). Consumers are ordered plugins -> run -> add -> extra.
 // `reasonFilter`, when set, narrows the cell to a single consumer: the `--why`
 // chains are already filtered upstream (see collectWhy), so only the consumer
 // list needs pruning here. collectWhy follows npm's import graph alone, so an
@@ -197,7 +197,7 @@ function reasonCell({ ecosystem, name, versions: affected }, reasonsByPkg, whyBy
     for (const p of source.get(keyOf(ecosystem, name, v)) ?? []) parts.add(p)
   }
   // --why: group `consumer: path` lines by consumer and order the groups
-  // plugins -> run -> add (this also re-unites a consumer's lines when they were
+  // plugins -> run -> add -> extra (this also re-unites a consumer's lines when they were
   // split across affected versions); within a group collectWhy's compressed order
   // is preserved. Otherwise: the `, `-joined consumer set in the same order.
   if (chains) {
