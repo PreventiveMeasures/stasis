@@ -34,6 +34,7 @@ it, or take it for another path.
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
 | `brotliQuality` | integer `0`–`11` | `9` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
+| `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -108,14 +109,20 @@ recognized source file or have its extension (or extensionless filename) in
   instead of `resources`. A JS bundle scanned through a State reads
   the `stasis.config.json` at its root and records them as `stasis run` does. A
   `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
-  the cwd, and packs them as `stasis add` does. `stasis github-bundle` doesn't
-  take `extra`.
+  the cwd, and packs them as `stasis add` does. Where `entries` builds the
+  bundle, they are added once, to its builds' union, packed as `stasis add`
+  does, by `resources` (an entry's own is its graph's alone). `stasis
+  github-bundle` doesn't take `extra`.
 
 In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), they
 are the `extra` consumer's. They are never entries.
 
+`entries` names `stasis bundle`'s entries, each with the flags it is built with,
+as [Entry options](bundle.md#entry-options-stasisconfigjson) describes.
+`stasis run` takes nothing from it.
+
 Unknown keys are rejected. A key set by both file and env var must match. `extra`
-is set in the file alone. Only `scope` is persisted into the lockfile/bundle
+and `entries` are set in the file alone. Only `scope` is persisted into the lockfile/bundle
 `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, and `extra`'s effect is the
 files it adds.

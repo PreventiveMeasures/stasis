@@ -1457,7 +1457,7 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, inn
   return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
-// `built` (buildOfKind's, built in `cwd` without a State) with the files the stasis.config.json
+// `built` (buildOfKind's, built in `cwd` without a State, or the union of bundleCommand's `builds` rooted there) with the files the stasis.config.json
 // there names in `extra`, as `stasis add` adds them (extraArtifacts), into its bundle and its
 // lockfile; never one of `outputs` (the absolute paths the build writes), and resources by the
 // build's `resources` where given, else by the config's. A State-built bundle takes them in its
@@ -1466,13 +1466,17 @@ function withExtra(built, cwd, outputs, resources) {
   const config = readConfigFile('bundle', cwd)
   const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
   if (patterns.length === 0) return built
+  // The union of `builds` (see bundleCommand) may be State-built in node_modules scope, which the
+  // full-scope files `extra` adds can't join.
+  if (built.bundle.config.scope !== 'full') throw new Error(`bundle: ${CONFIG_FILE}'s extra can't be added to a ${built.bundle.config.scope}-scope bundle of its entries`)
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
   const added = extraArtifacts({ baseDir, patterns, resources: allowlist, bundle: built.bundle, outputs: written })
   if (added === null) return built
-  // Each file attributed: to `bundle`, or `extra`.
-  const bundle = built.bundle.withReason('bundle').merge(added.bundle)
+  // Each file attributed: to the build's own consumer (`bundle`, or `bundle:metro`, as codeBundle
+  // stamps it), or `extra`.
+  const bundle = built.bundle.merge(added.bundle)
   const { lockfile } = built
   return { ...built, bundle, ...(lockfile && { lockfile: () => lockfile().merge(added.lockfile) }) }
 }
@@ -1482,14 +1486,16 @@ function withExtra(built, cwd, outputs, resources) {
 // managers' records name (pinInstalledCommits). `outputsAt(root)` are the absolute paths the build
 // writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [] }) {
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
-  if (kind === 'sol') return withExtra({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }, cwd, outputs)
-  if (kind === 'php') return withExtra({ bundle: await buildPhpBundle({ cwd, entries }) }, cwd, outputs)
-  if (kind === 'bash') return withExtra({ bundle: await buildBashBundle({ cwd, entries }) }, cwd, outputs)
-  if (kind === 'rust') return withExtra({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }, cwd, outputs)
-  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, extra: true, outputsAt })
-  if (!built.stateBuilt) built = withExtra(built, cwd, outputs, resources)
+  // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
+  const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, outputs, buildResources) : built)
+  if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
+  if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
+  if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
+  if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
+  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, extra, outputsAt })
+  if (!built.stateBuilt) built = withExtraOf(built, resources)
   pinInstalledCommits(built.bundle, built.root)
   return built
 }
@@ -1578,10 +1584,21 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // with `--conditions` it attests the conditions-selected graph, so a plain
 // `stasis run --lock=frozen` (which doesn't replay them) fails closed -- pair it with
 // `--bundle=load` or replay the conditions. `add` unions the fresh build into the bundle
-// already on disk (strict; a conflicting file throws) and can't target stdout.
-export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false } = {}) {
+// already on disk (strict; a conflicting file throws) and can't target stdout. `builds`, in place
+// of `entries` and the options building them, is several builds' (each `{ entries, ...options }`,
+// as stasis.config.json's `bundle` gives an entry its own, see bundle-options.js), whose bundles
+// (and lockfiles) are one's: their strict union, rooted where every one of them is.
+export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
-  const kind = classifyEntries('bundleCommand', { ...options, lockfile })
+  if (builds !== undefined) {
+    if (!Array.isArray(builds) || builds.length === 0) throw new TypeError('bundleCommand: builds must be a non-empty array')
+    const given = Object.entries(options).find(([key, value]) => !['cwd', 'env'].includes(key) && value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))
+    if (given) throw new TypeError(`bundleCommand: ${given[0]} can't be combined with builds (each build sets its own)`)
+  }
+  // Each build's options, the defaults above where it leaves one out.
+  const defaults = { manifests, babel, jsx, flow, typescript, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...defaults, ...build, cwd, env }))
+  const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
 
   // --add has nothing to merge into on stdout (write-only).
   if (add && output === '-') {
@@ -1591,20 +1608,40 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   // The files this build writes, never taken into `extra`, given the root its paths are relative to:
   // the bundle (by default at that root, see `target` below) and the lockfile.
   const outputsAt = (root) => [output ?? join(root, DEFAULT_BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
-  const built = await buildOfKind(kind, { ...options, outputsAt })
-  let { bundle } = built
+  // With `builds` (stasis.config.json's entries, however many builds they make), `extra` is the
+  // bundle's, not any build's: added to their union below.
+  const bundleExtra = builds !== undefined
+  const builts = []
+  for (const [i, plan] of plans.entries()) {
+    // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+    builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: !bundleExtra }))
+  }
   // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
   // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
-  const root = built.root ?? resolve(cwd)
+  const roots = builts.map((built) => built.root ?? resolve(cwd))
+  const root = roots[0]
+  const other = roots.findIndex((r) => r !== root)
+  if (other !== -1) {
+    throw new Error(`bundleCommand: ${plans[0].entries[0]} and ${plans[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${roots[other]})`)
+  }
   // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
   // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
   // files above it.
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
-  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
-  let lockData = lockfile ? built.lockfile().serialize() : undefined
 
   // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
-  if (!built.stateBuilt) bundle.repo ??= detectRepo(cwd)
+  for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
+  let union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+  if (bundleExtra) {
+    // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
+    // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
+    const withExtras = withExtra(union, root, outputsAt(root))
+    if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
+    union = withExtras
+  }
+  let { bundle } = union
+  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
+  let lockData = lockfile ? union.lockfile().serialize() : undefined
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)

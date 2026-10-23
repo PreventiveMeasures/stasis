@@ -9,6 +9,7 @@ to be captured (a React Native app, a library's entry points).
 ```sh
 stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -70,6 +71,62 @@ with `--bundle=load`, or replay the conditions. Under `--add`, an existing
 lockfile at that path is merged the same way as the bundle; with none there it
 refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
+
+## Entry options (`stasis.config.json`)
+
+The `entries` of the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson)
+give entries their options: each key is an entry, a path relative to that
+directory, and its value the flags building it, named as they are without the
+`--`.
+
+```json
+{
+  "entries": {
+    "index.js": { "metro": true, "metro-resolver": true, "platforms": ["ios", "android"], "flow": true, "jsx": true },
+    "node_modules/@react-native-community/cli/build/bin.js": { "metro": false }
+  }
+}
+```
+
+A boolean flag takes `true` or `false` (its default, as leaving it out is); one
+taking a value, a string as on the command line, and one taking a list
+(`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an
+array of strings too. `output`, `lockfile`, `brotli-quality` and `add` say how
+the bundle is written, not how an entry is built, so they stay flags.
+
+With it:
+
+- `stasis bundle` alone bundles every entry it names, as `stasis bundle` with
+  each of them would.
+- An entry it names is built with its options there, and no flag but those four
+  and the consent below may be given with it: it is set there instead.
+- `babel`, `metro-resolver`, `flow`, `cargo` and `cargo-target` run a program
+  (the project's Babel config, its `metro-resolver`, the `flow-remove-types` it
+  installs, `cargo` and what its `.cargo/config.toml` names, `rustc`), so set
+  there they take effect only with their flag given too, `cargo-target` with
+  the same value (`--cargo-target=host`), as consent: the config can't make a
+  bare `stasis bundle` run anything. An entry setting one fails without its
+  flag, and its flag fails where no entry given sets it; given, it applies to
+  the entries setting it alone. So entries setting different `cargo-target`s
+  are bundled apart.
+- The entries given are all named there, or none is, the two never mixed. Where
+  none is, whatever else it names, they are built with the flags exactly as
+  without it.
+- Entries with different options are built apart, and their bundles merged as
+  `--add` merges (a file both carry with different content fails) into one,
+  whose paths must be relative to the same root. So one bundle may hold a
+  Metro build's files, attributed to the `bundle:metro` consumer, and a Node
+  one's, attributed to `bundle`.
+- The config's `extra` is the bundle's, not an entry's: added once, to the
+  builds' union however many there are, by the config's own `resources` (an
+  entry's `resources` is its graph's alone).
+
+`stasis run` takes nothing from it.
+
+```sh
+stasis bundle --metro-resolver --flow   # bundles index.js with --metro and bin.js without
+stasis bundle --metro-resolver --flow --output=app.br index.js
+```
 
 ## Resolution
 
