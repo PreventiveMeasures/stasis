@@ -4115,6 +4115,79 @@ test('buildBundle --mainFields/--metro take --resources, else the cwd\'s stasis.
   await t.assert.rejects(() => buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'] }), /^Error: buildBundle: stasis\.config\.json is not valid JSON$/)
 }))
 
+// --- --babel: the aliases of the project's babel-plugin-module-resolver ---------------------
+//
+// A React Native project often aliases imports in its babel.config.js (module-resolver), which
+// Metro runs before it resolves: `#local/abc` reaches src/abc.js only through that rewrite.
+
+// The project, with the workspace's @babel/core and babel-plugin-module-resolver (v3) installed
+// where --babel resolves them from, src/abc.js and src/ios/abc.js, and `config` as its
+// babel.config.js: by default, aliasing `#local` to ./src/ios on iOS and ./src elsewhere (by
+// Metro's caller).
+const babelAliasProject = (tmp, {
+  config = `module.exports = (api) => {
+  const platform = api.caller((caller) => caller && caller.platform)
+  return { plugins: [['module-resolver', { alias: { '#local': platform === 'ios' ? './src/ios' : './src' } }]] }
+}
+`,
+  index = "import x from '#local/abc'\nexport default x\n",
+} = {}) => {
+  jsProject(tmp, { 'index.js': index, 'babel.config.js': config }, { name: 'babel-alias', version: '0.0.0' })
+  mkdirSync(join(tmp, 'src', 'ios'), { recursive: true })
+  writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
+  writeFileSync(join(tmp, 'src', 'ios', 'abc.js'), 'export default 2\n')
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+}
+
+test('buildBundle --metro --babel resolves the Babel config\'s module-resolver aliases per platform, keyed as written', withTmp(async (t, tmp) => {
+  babelAliasProject(tmp)
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
+  await t.assert.rejects(() => buildBundle(options), /unresolved import #local\/abc from index\.js/)
+  const bundle = await buildBundle({ ...options, babel: true })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'src/abc.js', 'src/ios/abc.js'])
+  const edges = [...bundle.imports.values()].map((m) => m.get('index.js')).find(Boolean)
+  t.assert.deepStrictEqual(Object.fromEntries(edges.get('#local/abc')), { android: 'src/abc.js', ios: 'src/ios/abc.js' })
+}))
+
+test('buildBundle --metro --babel takes every module-resolver instance, in order, one passed as a value too', withTmp(async (t, tmp) => {
+  // Both alias `#local`: the first that maps a path wins, as the plugin leaves a path it wrote alone.
+  babelAliasProject(tmp, {
+    config: `module.exports = {
+  plugins: [
+    [require('babel-plugin-module-resolver'), { alias: { '#local': './src' } }],
+    ['module-resolver', { alias: { '#local': './src/ios', '#other': './src/ios' } }, 'second'],
+  ],
+}
+`,
+    index: "import a from '#local/abc'\nimport b from '#other/abc'\nexport default [a, b]\n",
+  })
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babel: true })
+  const edges = [...bundle.imports.values()].map((m) => m.get('index.js')).find(Boolean)
+  t.assert.equal(edges.get('#local/abc'), 'src/abc.js')
+  t.assert.equal(edges.get('#other/abc'), 'src/ios/abc.js')
+}))
+
+test('buildBundle --babel is only valid with --metro, and needs a babel.config.*', withTmp(async (t, tmp) => {
+  jsProject(tmp, { 'index.js': 'export default 1\n' })
+  await t.assert.rejects(() => buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'], babel: true }), /^Error: buildBundle: --babel is only valid with --metro$/)
+  await t.assert.rejects(
+    () => buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babel: true }),
+    /^Error: stasis bundle: --babel found no babel\.config\.\(js\|cjs\|mjs\|json\) in /,
+  )
+}))
+
+cliTest('CLI: bundle --metro --babel resolves through the Babel config\'s aliases; --babel needs --metro', withTmp(async (t, tmp) => {
+  babelAliasProject(tmp)
+  const outPath = join(tmp, 'out.br')
+  const r = await runCli(['bundle', '--metro', '--babel', '--platforms=ios', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'src/ios/abc.js'])
+  const refused = await runCli(['bundle', '--babel', '--mainFields=main', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.notEqual(refused.status, 0)
+  t.assert.match(refused.stderr, /--babel is only valid with --metro/)
+}))
+
 cliTest('CLI: bundle --metro carries reached assets only with --resources (binary -> base64, text -> resource)', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nimport icon from './icon.svg'\nexport const assets = [logo, icon]\n" })
   writeAssets(tmp)
