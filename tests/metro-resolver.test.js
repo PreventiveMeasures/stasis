@@ -114,6 +114,8 @@ const METRO_ORDER_CASES = [
   ['the package\'s browser map redirects a subpath before its exports', nm('exportsbrowser', 'esm/utils.js'), 'exportsbrowser/crypto', true, 'node_modules/exportsbrowser/crypto.js'],
   // rpc-websockets: exports serve only browser/node, so main through the browser map.
   ['an exports miss falls back to main and the browser map', entry, 'exportsfallback', false, 'node_modules/exportsfallback/dist/index.browser.cjs'],
+  // `./*` maps `./dir/subdir` to the directory, no file: Metro falls back to it, and its index.
+  ['an exports miss on a directory subpath falls back to its index', entry, '@org/exportsdir/dir/subdir', false, 'node_modules/@org/exportsdir/dir/subdir/index.js'],
   // ox: sub/package.json, not the root exports, decides `nestedsub/sub`.
   ['a subpath directory\'s own package.json hides the root exports', join(fx, 'src', 'metro-order.mjs'), 'nestedsub/sub', true, 'node_modules/nestedsub/_cjs/sub.js'],
   ['the root still resolves through exports', join(fx, 'src', 'metro-order.mjs'), 'nestedsub', true, 'node_modules/nestedsub/_esm/index.js'],
