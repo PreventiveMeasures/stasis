@@ -145,7 +145,7 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
   const config = readConfigEntries(tmp)
   // Set for an entry, but not given.
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: {}, config }),
-    { message: 'stasis.config.json: entries "index.js" sets metro-resolver, which runs the project\'s code: pass --metro-resolver to allow it' })
+    { message: 'stasis.config.json: entries "index.js" sets metro-resolver, which runs the project\'s metro-resolver: pass --metro-resolver to allow it' })
   // Given, but set for none of the entries.
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['cli.js', 'b.js'], values: { 'metro-resolver': true }, config }),
     { message: "--metro-resolver is given, but stasis.config.json's entries set metro-resolver for none of cli.js, b.js" })
@@ -157,8 +157,17 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
   // flow loads the flow-remove-types the project installs (stasis's peer), so it needs consent too.
   writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { flow: true } } } })
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
-    { message: 'stasis.config.json: entries "index.js" sets flow, which runs the project\'s code: pass --flow to allow it' })
+    { message: 'stasis.config.json: entries "index.js" sets flow, which runs the flow-remove-types the project installs (stasis\'s peer): pass --flow to allow it' })
   t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: { flow: true }, config: readConfigEntries(tmp) }).builds[0].flow, true)
+  // cargo-target runs rustc: its consent is the flag with the same value.
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'a.rs': { 'cargo-target': 'host' }, 'b.rs': {} } } })
+  const rust = readConfigEntries(tmp)
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['a.rs'], values: {}, config: rust }),
+    { message: 'stasis.config.json: entries "a.rs" sets cargo-target=host, which runs rustc: pass --cargo-target=host to allow it' })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['a.rs', 'b.rs'], values: { 'cargo-target': 'aarch64-apple-darwin' }, config: rust }),
+    { message: "--cargo-target=aarch64-apple-darwin is given, but stasis.config.json's entries set cargo-target=aarch64-apple-darwin for none of a.rs, b.rs" })
+  const targeted = bundlePlan({ cwd: tmp, entries: ['a.rs', 'b.rs'], values: { 'cargo-target': 'host' }, config: rust })
+  t.assert.deepStrictEqual(targeted.builds.map((b) => [b.entries, b.cargoTarget]), [[['a.rs'], 'host'], [['b.rs'], null]])
 }))
 
 test('bundleCommand builds each of builds and writes their union: bundle:metro beside bundle', withTmp(async (t, tmp) => {
@@ -246,7 +255,7 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
   writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { metro: true, platforms: 'ios', babel: true } } } })
   const unconsented = await runCli(['bundle'], tmp)
   t.assert.equal(unconsented.status, 1)
-  t.assert.match(unconsented.stderr, /Error: stasis\.config\.json: entries "index\.js" sets babel, which runs the project's code: pass --babel to allow it/u)
+  t.assert.match(unconsented.stderr, /Error: stasis\.config\.json: entries "index\.js" sets babel, which runs the project's Babel config: pass --babel to allow it/u)
   // An entry it doesn't name takes flags, as without it.
   const plain = await runCli(['bundle', '--mainFields=main', '--output=plain.br', 'cli.js'], tmp)
   t.assert.equal(plain.status, 0, plain.stderr)

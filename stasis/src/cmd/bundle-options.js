@@ -43,11 +43,18 @@ export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfi
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
-// The entry flags that run the project's code (its Babel config, its metro-resolver, the
-// flow-remove-types it installs as stasis's peer, cargo, which runs what its .cargo/config.toml
-// names). Set in stasis.config.json, they take effect only with the flag given too, as consent: the
-// config can't make a bare `stasis bundle` run anything.
-const CONSENT_FLAGS = new Set(['babel', 'metro-resolver', 'flow', 'cargo'])
+// The entry flags that run a program -> what they run. Set in stasis.config.json, they take effect
+// only with the same flag given too (a value one, with the same value), as consent: the config can't
+// make a bare `stasis bundle` run anything.
+const CONSENT_FLAGS = new Map([
+  ['babel', "the project's Babel config"],
+  ['metro-resolver', "the project's metro-resolver"],
+  ['flow', "the flow-remove-types the project installs (stasis's peer)"],
+  ['cargo', "cargo, and what the project's .cargo/config.toml names"],
+  ['cargo-target', 'rustc'],
+])
+// A flag as given: `--name`, or `--name=value` for one taking a value.
+const flagText = (name, value) => (value === true ? `--${name}` : `--${name}=${value}`)
 
 // `entry` as a path relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
@@ -267,17 +274,19 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   const flag = Object.keys(values).find((name) => !OUTPUT_FLAGS.has(name) && !CONSENT_FLAGS.has(name))
   if (flag !== undefined) throw new Error(`--${flag} can't be given for ${configured[0]}, whose options ${CONFIG_FILE}'s entries set: set it there`)
   const named = keys.map((key) => config.get(key))
-  for (const consent of CONSENT_FLAGS) {
-    if (values[consent] && !named.some(({ values: flags }) => flags[consent])) {
-      throw new Error(`--${consent} is given, but ${CONFIG_FILE}'s entries set ${consent} for none of ${entries.join(', ')}`)
+  for (const consent of CONSENT_FLAGS.keys()) {
+    const given = values[consent]
+    if (given !== undefined && !named.some(({ values: flags }) => flags[consent] === given)) {
+      throw new Error(`${flagText(consent, given)} is given, but ${CONFIG_FILE}'s entries set ${flagText(consent, given).slice(2)} for none of ${entries.join(', ')}`)
     }
   }
   const builds = new Map()
   for (const [i, entry] of entries.entries()) {
     const { entry: name, values: flags } = named[i]
-    const unconsented = [...CONSENT_FLAGS].find((consent) => flags[consent] && !values[consent])
+    const unconsented = [...CONSENT_FLAGS.keys()].find((consent) => flags[consent] !== undefined && values[consent] !== flags[consent])
     if (unconsented !== undefined) {
-      throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)} sets ${unconsented}, which runs the project's code: pass --${unconsented} to allow it`)
+      const consent = flagText(unconsented, flags[unconsented])
+      throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)} sets ${consent.slice(2)}, which runs ${CONSENT_FLAGS.get(unconsented)}: pass ${consent} to allow it`)
     }
     let options
     try {
