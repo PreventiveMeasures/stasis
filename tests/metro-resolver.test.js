@@ -61,13 +61,15 @@ const rel = (r) => {
   return relative(fx, fileURLToPath(r.url)).split(/[\\/]/u).join('/')
 }
 
-// Built-in (hand-rolled) resolver, configured the way --metro drives it.
-const mkField = ({ platform = 'ios', mainFields = ['react-native', 'browser', 'main'], extras = ['react-native'] } = {}) =>
+// Built-in (hand-rolled) resolver, configured the way --metro drives it (`metro: false`: as
+// --mainFields does, esbuild's way).
+const mkField = ({ platform = 'ios', mainFields = ['react-native', 'browser', 'main'], extras = ['react-native'], metro = true } = {}) =>
   createFieldResolver({
     conditions: resolveConditions('commonjs', extras),
     mainFields,
     platform,
     preferNative: platform !== 'web',
+    metro,
   })
 
 // The project's real metro-resolver, via the adapter under test.
@@ -97,6 +99,40 @@ test('adapter matches the built-in resolver on the shared Metro cases', ifMetro,
   const metro = mkMetro()
   for (const [label, from, spec] of PARITY_CASES) {
     t.assert.equal(rel(metro(from, spec)), rel(field(from, spec)), label)
+  }
+})
+
+// Where the two used to part, each a real package's shape: Metro's own order for a bare specifier
+// (the redirect of the package closest to the candidate path, before that package's `exports`; a
+// nested package.json counting as that package; the file fallback from an `exports` miss; the
+// importer's own `exports` for its own name; the next node_modules up from a copy that resolves to
+// nothing) and for a path (the redirect of the package closest to the target, not the importer's).
+// (label, from, spec, from an ESM import, expected)
+const nm = (pkg, file) => join(fx, 'node_modules', pkg, file)
+const METRO_ORDER_CASES = [
+  // @noble/hashes 1.x: browser { "./crypto": "./crypto.js" } wins over exports' `import` branch.
+  ['the package\'s browser map redirects a subpath before its exports', nm('exportsbrowser', 'esm/utils.js'), 'exportsbrowser/crypto', true, 'node_modules/exportsbrowser/crypto.js'],
+  // rpc-websockets: exports serve only browser/node, so main through the browser map.
+  ['an exports miss falls back to main and the browser map', entry, 'exportsfallback', false, 'node_modules/exportsfallback/dist/index.browser.cjs'],
+  // ox: sub/package.json, not the root exports, decides `nestedsub/sub`.
+  ['a subpath directory\'s own package.json hides the root exports', join(fx, 'src', 'metro-order.mjs'), 'nestedsub/sub', true, 'node_modules/nestedsub/_cjs/sub.js'],
+  ['the root still resolves through exports', join(fx, 'src', 'metro-order.mjs'), 'nestedsub', true, 'node_modules/nestedsub/_esm/index.js'],
+  ['a relative import takes the map of the package closest to its target', nm('nestedmap', 'index.js'), './lib/a', false, 'node_modules/nestedmap/lib/b.js'],
+  // outer/node_modules/dup holds no package.json and no index; outer/node_modules/broken's main is missing.
+  ['a directory that resolves to nothing gives way to the next node_modules up', nm('outer', 'index.js'), 'dup', false, 'node_modules/dup/index.js'],
+  ['a package whose main is missing ends the lookup, its root index aside', nm('outer', 'index.js'), 'broken', false, null],
+  ['a package imports its own name through its own exports', join(fx, 'packages', 'selfpkg', 'index.js'), 'selfpkg/feature', false, 'packages/selfpkg/feature.js'],
+  // Metro takes a relative key's bare target as a path in the package (redirectModulePath), so misses.
+  ['a relative key mapped to a bare name resolves nowhere', nm('relbare', 'index.js'), './impl', false, null],
+]
+
+test('adapter and built-in resolver follow Metro\'s order around exports, nested package.json files and fallbacks', ifMetro, (t) => {
+  const field = mkField()
+  const metro = mkMetro()
+  for (const [label, from, spec, esm, expected] of METRO_ORDER_CASES) {
+    const conditions = new Set(resolveConditions(esm ? 'module' : 'commonjs', ['react-native']))
+    t.assert.equal(rel(metro(from, spec, conditions)), expected, `metro-resolver: ${label}`)
+    t.assert.equal(rel(field(from, spec, conditions)), expected, `built-in: ${label}`)
   }
 })
 
@@ -140,16 +176,19 @@ test('unresolvable specifiers return null', ifMetro, (t) => {
 // These are the cases where real Metro diverges from the built-in approximation. Asserting BOTH
 // sides pins the divergence: if a metro-resolver upgrade changes it, this test flags it.
 test('DIVERGENCE: a bare browser-map key redirects the resolved package entry (unlike the built-in)', ifMetro, (t) => {
-  // streampkg: main "./stream.js", browser { "stream": "./vendor/sb.js" }. The built-in keeps
-  // stream.js (matching esbuild); real Metro applies the bare "stream" redirect to the entry.
-  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'] })(entry, 'streampkg')), 'node_modules/streampkg/stream.js')
+  // streampkg: main "./stream.js", browser { "stream": "./vendor/sb.js" }. The --mainFields resolver
+  // keeps stream.js (matching esbuild); real Metro, and --metro, apply the bare "stream" redirect to the entry.
+  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'], metro: false })(entry, 'streampkg')), 'node_modules/streampkg/stream.js')
+  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'] })(entry, 'streampkg')), 'node_modules/streampkg/vendor/sb.js')
   t.assert.equal(rel(mkMetro({ mainFields: ['browser', 'main'] })(entry, 'streampkg')), 'node_modules/streampkg/vendor/sb.js')
 })
 
 test('DIVERGENCE: a browser-map false on the package entry does NOT empty it in real Metro', ifMetro, (t) => {
-  // entryfalse: main "./fe.js", browser { "./fe.js": false }. The built-in empties the entry;
-  // Metro's getPackageEntryPoint ignores a non-string (false) replacement and keeps the main.
-  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'] })(entry, 'entryfalse')), '<empty>')
+  // entryfalse: main "./fe.js", browser { "./fe.js": false }. The --mainFields resolver empties the
+  // entry (as esbuild does); Metro's getPackageEntryPoint ignores a non-string (false) replacement
+  // and keeps the main, as --metro does.
+  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'], metro: false })(entry, 'entryfalse')), '<empty>')
+  t.assert.equal(rel(mkField({ mainFields: ['browser', 'main'] })(entry, 'entryfalse')), 'node_modules/entryfalse/fe.js')
   t.assert.equal(rel(mkMetro({ mainFields: ['browser', 'main'] })(entry, 'entryfalse')), 'node_modules/entryfalse/fe.js')
 })
 
