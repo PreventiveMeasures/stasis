@@ -20,7 +20,8 @@ import { createNodeResolver } from './resolve-node.js'
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), reproducing Metro/React-Native
 // resolution that Node's own resolver (used by scan.js) can't. `exports`-bearing packages are
 // delegated to Node's algorithm, under a bundler's conditions rather than Node's (see
-// resolveConditions); under `metro`, through metro-resolver's own steps around them (viaMetro).
+// resolveConditions); under `metro`, metro-resolver's own steps around them (viaMetro) and its own
+// reading of `exports` and `imports` maps (metroMapTarget).
 // No user code is executed (only package.json is stat/read).
 //
 // Returns, for each specifier:
@@ -215,6 +216,95 @@ function metroAsset(path, host) {
   return files === null ? null : lowestPath(files)
 }
 
+// --metro: metro-resolver's own reading of an `exports` or `imports` map (PackageExportsResolve,
+// PackageImportsResolve and their utils), which Node's differs from. Each entry reduces by the
+// conditions (reduceConditionalExport): an object to the first of its keys `conds` holds, again
+// until a string or null, so a fallback array, whose indices no condition names, to null. The whole
+// map is refused where an entry reduces to a value not starting `./` (reduceExportsLikeMap), as
+// Metro refuses it: a bare or `../` target anywhere fails every specifier the map serves. A
+// specifier takes its own entry, else (where that reduces to null as well) the pattern whose base
+// before its `*` is longest, then the longest (matchSubpathFromExportsLike). Each miss -- the map
+// refused, the specifier unmatched, its target null or naming no file -- is Metro's cue to fall
+// back to file-based resolution, which the callers take.
+
+// A map value Metro can't reduce (a number or boolean, where its reduceConditionalExport throws),
+// failing the resolution outright where a miss falls back.
+class MetroMapError extends Error {}
+
+// reduceConditionalExport: the string or null `value` reduces to under `conds`, or 'no-match'.
+function metroReduceConditional(value, conds) {
+  let reduced = value
+  while (reduced != null && typeof reduced !== 'string') {
+    if (typeof reduced !== 'object') throw new MetroMapError(`Can't reduce ${JSON.stringify(reduced)} by conditions`)
+    let match = 'default' in reduced ? 'no-match' : null
+    for (const name in reduced) {
+      if (conds.has(name)) {
+        match = reduced[name]
+        break
+      }
+    }
+    reduced = match
+  }
+  return reduced
+}
+
+// matchSubpathPattern: what `pattern`'s `*` stands for in `subpath`, else null.
+function metroPatternMatch(pattern, subpath) {
+  const [base, trailer] = pattern.split('*')
+  if (subpath.startsWith(base) && (trailer.length === 0 || (subpath.endsWith(trailer) && subpath.length >= pattern.length))) {
+    return subpath.slice(base.length, subpath.length - trailer.length)
+  }
+  return null
+}
+
+// The target `subpath` takes in `map` (a Map of a package map's entries) under `conds`, each `*` its
+// match, as Metro maps it; null where it takes none. An `exports` target holding an empty, `.`,
+// `..` or `node_modules` segment is refused besides (findInvalidPathSegment).
+function metroMapTarget(map, subpath, conds, { exports = false } = {}) {
+  // isSubpathDefinedInExportsLike: listed, as itself or by a one-`*` pattern, before conditions apply.
+  if (!map.has(subpath) && ![...map.keys()].some((key) => key.split('*').length === 2 && metroPatternMatch(key, subpath) !== null)) return null
+  const reduced = new Map()
+  for (const [key, value] of map) {
+    const target = metroReduceConditional(value, conds)
+    if (target !== 'no-match') reduced.set(key, target)
+  }
+  if ([...reduced.values()].some((target) => target != null && !target.startsWith('./'))) return null
+  let target = reduced.get(subpath)
+  let match = null
+  if (target == null) {
+    const patterns = [...reduced.keys()].filter((key) => key.includes('*')).toSorted((a, b) => b.indexOf('*') - a.indexOf('*') || b.length - a.length)
+    for (const key of patterns) {
+      match = metroPatternMatch(key, subpath)
+      if (match !== null) {
+        target = reduced.get(key)
+        break
+      }
+    }
+  }
+  if (target == null) return null
+  if (exports && target.slice(2).split(/[\\/]/u).some((segment) => ['', '.', '..', 'node_modules'].includes(segment))) return null
+  // The match as a replacement pattern, as Metro's replaceAll takes it: a `$&` in it is the `*`.
+  return match === null ? target : target.replaceAll('*', match)
+}
+
+// normalizeExportsField: an `exports` field as Metro's Map of subpaths, null where it refuses it --
+// an array to its first `./` string (or first value), each subpath's legacy array to its first item.
+function metroExportsMap(exportsField) {
+  if (typeof exportsField === 'string') return new Map([['.', exportsField]])
+  let root = exportsField
+  if (Array.isArray(exportsField)) root = exportsField.every((value) => typeof value === 'string') ? exportsField.find((value) => value.startsWith('./')) : exportsField[0]
+  if (root == null || Array.isArray(root)) return null
+  if (typeof root === 'string') return new Map([['.', root]])
+  const flat = {}
+  for (const [key, value] of Object.entries(root)) {
+    if (Array.isArray(value) && (value.length === 0 || Array.isArray(value[0]))) return null
+    flat[key] = Array.isArray(value) ? value[0] : value
+  }
+  const keys = Object.keys(root)
+  if (keys.every((key) => key.startsWith('.') || key.startsWith('#'))) return new Map(Object.entries(flat))
+  return keys.some((key) => key.startsWith('.')) ? null : new Map([['.', flat]])
+}
+
 // Metro's relative specifier (isRelativeImport): `.`, `..`, or one starting `./` or `../`.
 const METRO_RELATIVE = /^\.\.?(?:\/|$)/u
 
@@ -351,17 +441,30 @@ export function createFieldResolver({
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
-  // one (see the header) resolves through this instead, with builtins off -- as does a package's
-  // `exports` under --metro (viaMetro); built on first use.
+  // one (see the header) resolves through this instead, with builtins off; built on first use.
   let packageResolver
   const nodeResolver = () => (packageResolver ??= createNodeResolver(host))
-  // --metro: a package-map target (`exports`, `imports`) naming an asset resolves as an asset, its
-  // scale variants included (PackageExportsResolve, PackageImportsResolve), where Node wants the
-  // file itself: `"./logo": "./logo.png"` reaches `logo@3x.png` where only that exists.
-  const viaMetroAsset = (target) => {
-    if (target == null || !isMetroAssetFile(target)) return null
-    const hit = metroAsset(target, host)
-    return hit === null ? null : fileResolution(hit, host)
+  // --metro: the file a package-map target (`exports`, `imports`; a path from `pkgDir`) names, as
+  // Metro takes it (PackageExportsResolve, PackageImportsResolve): an asset as an asset, its scale
+  // variants included, so `"./logo": "./logo.png"` reaches `logo@3x.png` where only that exists,
+  // else that file itself, no probing; null where it names none.
+  const metroTargetFile = (pkgDir, target) => {
+    const path = join(pkgDir, target)
+    const asset = isMetroAssetFile(path) ? metroAsset(path, host) : null
+    if (asset !== null) return fileResolution(asset, host)
+    return isFile(path, host) && !isTypeDeclaration(path) ? fileResolution(path, host) : null
+  }
+  // --metro: the file a `#` specifier names through the `imports` of the package closest to the
+  // importer, as Metro maps it (resolvePackageTargetFromImports), which refuses a map with no keys
+  // or with one not starting `#`; null where it names none.
+  const viaMetroImports = (parentFile, specifier, conds) => {
+    const scope = metroPackageScope(parentFile, host)
+    const imports = scope?.pkg.imports
+    if (imports == null) return null
+    const keys = Object.keys(imports)
+    if (keys.length === 0 || !keys.every((key) => key.startsWith('#'))) return null
+    const target = metroMapTarget(new Map(Object.entries(imports)), specifier, conds)
+    return target === null ? null : metroTargetFile(scope.pkgDir, target)
   }
 
   // --metro: metro-resolver's own steps (its resolve.js), so the two resolve alike where they can.
@@ -377,20 +480,17 @@ export function createFieldResolver({
       const target = metroRedirect(abs, opts)
       return target === false ? { empty: true } : resolveFileOrDir(target, fileOpts)
     }
-    const viaExports = (pkgDir, subpath) => {
-      let file
-      try {
-        file = nodeResolver().resolveExports(pkgDir, subpath, conds)
-      } catch {
-        return viaMetroAsset(nodeResolver().exportsTarget(pkgDir, subpath, conds))
-      }
-      return file === null ? null : fileResolution(file, host)
+    // The file `subpath` names through the package at `pkgDir`'s `exports` field, as Metro maps it.
+    const viaExports = (pkgDir, exportsField, subpath) => {
+      const map = metroExportsMap(exportsField)
+      const target = map === null ? null : metroMapTarget(map, subpath, conds, { exports: true })
+      return target === null ? null : metroTargetFile(pkgDir, target)
     }
     const viaPackage = (spec) => {
       const { name, firstPart, subpath } = parseBare(spec)
       const own = nearestPackage(parentFile, host)
       if (own?.pkg.exports != null && own.pkg.name === name) {
-        const hit = viaExports(own.pkgDir, subpath)
+        const hit = viaExports(own.pkgDir, own.pkg.exports, subpath)
         if (hit) return hit
       }
       for (let dir = dirname(parentFile); ; dir = dirname(dir)) {
@@ -400,7 +500,7 @@ export function createFieldResolver({
           const target = metroRedirect(join(nm, spec), opts)
           if (target === false) return { empty: true }
           const scope = metroPackageScope(target, host)
-          const hit = (scope?.pkg.exports != null && viaExports(scope.pkgDir, target === scope.pkgDir ? '.' : `./${toPosix(relative(scope.pkgDir, target))}`)) || viaPath(target)
+          const hit = (scope?.pkg.exports != null && viaExports(scope.pkgDir, scope.pkg.exports, target === scope.pkgDir ? '.' : `./${toPosix(relative(scope.pkgDir, target))}`)) || viaPath(target)
           if (hit) return hit
           // A package there whose entry resolves to nothing ends the lookup: Metro throws on it
           // (InvalidPackageError). Anything else that misses gives way to the next node_modules up.
@@ -452,9 +552,17 @@ export function createFieldResolver({
       const target = typeof r === 'string' ? r : sub
       return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
     }
-    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
-    if (specifier.startsWith('#')) return viaNode(specifier) ?? (metro ? viaMetroAsset(nodeResolver().importsTarget(parentFile, specifier, conds)) : null)
-    if (metro) return viaMetro(parentFile, specifier, conds, fileOpts)
+    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them,
+    // Metro's own under --metro, which falls back to file-based resolution where `imports` misses.
+    if (metro) {
+      try {
+        return (specifier.startsWith('#') && viaMetroImports(parentFile, specifier, conds)) || viaMetro(parentFile, specifier, conds, fileOpts)
+      } catch (error) {
+        if (error instanceof MetroMapError) return null
+        throw error
+      }
+    }
+    if (specifier.startsWith('#')) return viaNode(specifier)
 
     let spec = specifier
     // Redirect via the IMPORTER's browser/react-native map, BEFORE the builtin check on purpose:

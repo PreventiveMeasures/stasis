@@ -415,34 +415,5 @@ export function createNodeResolver(host) {
       if (hit === undefined) memo.set(key, hit = resolveFilename(parentFile, request, conditions, builtins))
       return hit
     },
-    // The file `subpath` ('.' or './x') of the package at `pkgDir` names through that package.json's
-    // own `exports` under `conditions`, by its real path; null where it declares none. Throws as Node
-    // does where `exports` maps the subpath nowhere, or to no file.
-    resolveExports(pkgDir, subpath, conditions) {
-      const pkg = readPackage(join(pkgDir, 'package.json'))
-      if (!pkg.exists || pkg.exports == null) return null
-      return viaEsm(() => packageExportsResolve(pathToFileURL(pkg.path), subpath, pkg, new Set(conditions)), subpath, pkg.path, null, pkgDir)
-    },
-    // The path the package at `pkgDir`'s `exports`, or the `imports` of `parentFile`'s package for a
-    // `#` specifier, maps a request to under `conditions`, whether a file is there or not; null where
-    // it maps it nowhere (or to no file: URL).
-    exportsTarget(pkgDir, subpath, conditions) {
-      try {
-        const pkg = readPackage(join(pkgDir, 'package.json'))
-        if (!pkg.exists || pkg.exports == null) return null
-        return fileURLToPath(packageExportsResolve(pathToFileURL(pkg.path), subpath, pkg, new Set(conditions)))
-      } catch {
-        return null
-      }
-    },
-    importsTarget(parentFile, specifier, conditions) {
-      let url
-      try {
-        url = packageImportsResolve(specifier, pathToFileURL(resolve(parentFile)), new Set(conditions))
-      } catch {
-        return null
-      }
-      return url.protocol === 'file:' ? fileURLToPath(url) : null
-    },
   }
 }
