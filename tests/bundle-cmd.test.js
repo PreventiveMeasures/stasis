@@ -4095,10 +4095,14 @@ test('buildBundle --mainFields/--metro take --resources, else the cwd\'s stasis.
     const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })
     t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['icon.svg', 'index.js', 'logo.png'])
     t.assert.equal(bundle.formats.get('logo.png'), 'resource:base64')
-    // --resources overrides the config's allowlist rather than adding to it.
+    // --resources overrides the config's allowlist rather than adding to it, an empty one too.
     await t.assert.rejects(
       () => buildBundle({ cwd: tmp, entries: ['index.js'], resources: ['svg'], ...options }),
       /\.\/logo\.png from index\.js resolves to logo\.png, which a source bundle can't carry/,
+    )
+    await t.assert.rejects(
+      () => buildBundle({ cwd: tmp, entries: ['index.js'], resources: [], ...options }),
+      /\.\/icon\.svg from index\.js resolves to icon\.svg, which a source bundle can't carry/,
     )
   }))
   // The config's allowlist is checked as --resources is.
