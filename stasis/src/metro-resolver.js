@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { diskHost } from '@exodus/stasis-core/host'
 import { isTypeDeclaration } from '@exodus/stasis-core/util'
 import { readJson } from './resolve-typescript.js'
+import { METRO_ASSET_EXTS, lowestPath, metroAssetCandidates } from './resolve-fields.js'
 
 // Adapter that drives the PROJECT's own `metro-resolver` from stasis's static scanner, so
 // `stasis bundle --metro --metro-resolver` resolves modules EXACTLY the way that project's
@@ -89,7 +90,8 @@ export function createMetroResolver({
   // A React Native app has no Node builtins by default; Metro only prefers native suffixes off web.
   const base = {
     allowHaste: false,
-    assetExts: new Set(),
+    // Metro's default asset extensions, resolved as Metro's DependencyGraph resolves them.
+    assetExts: METRO_ASSET_EXTS,
     customResolverOptions: {},
     disableHierarchicalLookup: false,
     doesFileExist: (p) => resolvableType(p) === 'f',
@@ -110,10 +112,7 @@ export function createMetroResolver({
     mainFields,
     nodeModulesPaths: [],
     preferNativePlatform: platform !== 'web',
-    resolveAsset: (dirPath, assetName, ext) => {
-      const f = join(dirPath, `${assetName}${ext}`)
-      return pathType(f) === 'f' ? [f] : null
-    },
+    resolveAsset: (dirPath, assetName, ext) => metroAssetCandidates(dirPath, assetName, ext),
     resolveHasteModule: () => null,
     resolveHastePackage: () => null,
     // Inert placeholder: `resolve` redirects via its own bundled helper, never this (see header).
@@ -143,8 +142,8 @@ export function createMetroResolver({
     if (!res) return null
     if (res.type === 'empty') return { empty: true }
     if (res.type === 'sourceFile') return { url: pathToFileURL(res.filePath).toString() }
-    // Assets are off (assetExts empty) for a code bundle, but map defensively to the first variant.
-    if (res.type === 'assetFiles' && res.filePaths?.length) return { url: pathToFileURL(res.filePaths[0]).toString() }
+    // An asset's files are it and its scale variants: Metro's graph takes the lowest path for the module.
+    if (res.type === 'assetFiles' && res.filePaths?.length) return { url: pathToFileURL(lowestPath(res.filePaths)).toString() }
     return null
   }
 }

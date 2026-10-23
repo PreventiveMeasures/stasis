@@ -1,5 +1,5 @@
 import { isBuiltin } from 'node:module'
-import { basename, dirname, isAbsolute, join, normalize, relative, resolve as resolvePath } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
@@ -178,6 +178,43 @@ function parseBare(spec) {
   return { name: parts.slice(0, n).join('/'), firstPart: parts[0], subpath: parts.length > n ? `./${parts.slice(n).join('/')}` : '.' }
 }
 
+// Metro's default assetExts and assetResolutions (metro-config's defaults).
+export const METRO_ASSET_EXTS = new Set(['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', 'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip'])
+const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4']
+
+// Metro's isAssetFile: any of the file name's dot-suffixes (`png`, or `tar.gz` and `gz`) an asset extension.
+function isMetroAssetFile(path) {
+  const name = basename(path)
+  for (let i = name.length - 1; i >= 0; i--) {
+    if (name[i] === '.' && METRO_ASSET_EXTS.has(name.slice(i + 1))) return true
+  }
+  return false
+}
+
+// Metro's own resolveAsset (metro's DependencyGraph): `assetName` with `ext` in `dirPath`, and its
+// scale variants (`a@1x.png` ... `a@4x.png`), those that exist, by real path. -> the paths, or null
+export function metroAssetCandidates(dirPath, assetName, ext, host = diskHost) {
+  const base = join(dirPath, assetName)
+  const files = [`${base}${ext}`, ...METRO_ASSET_RESOLUTIONS.map((r) => `${base}@${r}x${ext}`)]
+    .filter((p) => isFile(p, host))
+    .map((p) => host.realpath(p))
+  return files.length > 0 ? files : null
+}
+
+// The file Metro takes for an asset of several (getArrayLowestItem): the lowest path.
+export const lowestPath = (paths) => paths.reduce((lowest, p) => (p < lowest ? p : lowest))
+
+// Metro's asset resolution of `path` (resolveFile's, through metro-resolver's resolveAsset): the
+// lowest of it and its scale variants, so `./a.png` lands on `a@3x.png` where only that exists;
+// nothing for a path naming a scale variant itself (`./a@2x.png`), which Metro refuses.
+function metroAsset(path, host) {
+  const ext = extname(path)
+  const name = basename(path, ext)
+  if (/@\d+(?:\.\d+)?x$/u.test(name)) return null
+  const files = metroAssetCandidates(dirname(path), name, ext, host)
+  return files === null ? null : lowestPath(files)
+}
+
 // Metro's relative specifier (isRelativeImport): `.`, `..`, or one starting `./` or `../`.
 const METRO_RELATIVE = /^\.\.?(?:\/|$)/u
 
@@ -194,6 +231,8 @@ function resolveSourceFile(base, opts) {
   // `dist/index.js` beside it rather than bundling the declaration -- or failing the package
   // outright by falling back to a different index. The probe below still refuses a literal hit.
   base = stripTypeDeclaration(base)
+  // Metro resolves an asset by its own rule, scale variants and all, not as a source file.
+  if (opts.metro && isMetroAssetFile(base)) return metroAsset(base, opts.host)
   // Candidates share base's directory, hence its package scope; resolve it lazily, once.
   let scope
   const redirectCandidate = (p) => {
@@ -453,6 +492,8 @@ export function createFieldResolver({
   return function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
     const resolved = resolve(parentFile, specifier, callConditions)
     if (resolved) return resolved
+    // Under --metro an asset is Metro's asset rule's to resolve (resolveSourceFile), as tsc never does.
+    if (metro && isMetroAssetFile(specifier)) return null
     const hit = resolveTypescriptFallback(parentFile, specifier, {
       conditions: new Set(callConditions ?? conditions),
       paths: typescriptPaths,

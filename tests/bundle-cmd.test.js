@@ -4242,6 +4242,19 @@ test('buildBundle --metro resolves a disabled import to metro-runtime\'s empty m
   t.assert.deepStrictEqual(disabledTargets(await buildBundle(metroOptions(linked))), [real, real])
 }))
 
+test('buildBundle --metro resolves an asset to its scale variant where only that exists, as Metro does', withTmp(async (t, tmp) => {
+  jsProject(tmp, { 'index.js': "require('./img/logo.png')\n" }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, 'img'))
+  writeFileSync(join(tmp, 'img', 'logo@3x.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'], resources: ['png'] })
+  t.assert.equal(importTarget(bundle, 'index.js', './img/logo.png'), 'img/logo@3x.png')
+  t.assert.equal(bundle.formats.get('img/logo@3x.png'), 'resource:base64')
+  // --mainFields resolves as esbuild does: no file of that name, so no edge.
+  const fields = await buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'], resources: ['png'] })
+  t.assert.equal(fields.imports.get('*')?.get('index.js')?.get('./img/logo.png'), undefined)
+  t.assert.ok(!fields.sources.has('img/logo@3x.png'))
+}))
+
 test('buildBundle --metro keeps .stasis/empty-module.js where metro-runtime\'s is missing or not empty, as --mainFields does', withTmp(async (t, tmp) => {
   const synthetic = ['.stasis/empty-module.js', '.stasis/empty-module.js']
   await Promise.all([undefined, "module.exports = 'not empty'\n", '"use strict";\nexports.x = 1\n'].map(async (source, i) => {

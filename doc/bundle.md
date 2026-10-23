@@ -163,6 +163,12 @@ from Node's and esbuild's:
   in Metro, without falling back to its root `index`.
 - A map entry sending a relative path to a package name is taken as a path in
   the package, as Metro takes it, and so resolves nowhere.
+- An asset (an extension in Metro's default `assetExts`: `png`, `jpg`, `svg`,
+  `ttf`, ...) resolves to itself or one of its scale variants (`@1x` to `@4x`),
+  the lowest path among those that exist, so `./logo.png` reaches
+  `logo@3x.png` where only that exists. A path naming a scale variant itself
+  (`./logo@2x.png`) resolves nowhere, as in Metro. `--metro-resolver` resolves
+  assets the same way. Carrying one needs `--resources` (e.g. `--resources=png`).
 
 It also carries each bundled dependency's native build inputs: for every
 `node_modules` package the code graph reaches, its `ios/` and `android/`

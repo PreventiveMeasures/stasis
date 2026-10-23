@@ -126,6 +126,12 @@ const METRO_ORDER_CASES = [
   ['a package imports its own name through its own exports', join(fx, 'packages', 'selfpkg', 'index.js'), 'selfpkg/feature', false, 'packages/selfpkg/feature.js'],
   // Metro takes a relative key's bare target as a path in the package (redirectModulePath), so misses.
   ['a relative key mapped to a bare name resolves nowhere', nm('relbare', 'index.js'), './impl', false, null],
+  // An asset (Metro's assetExts) is it or its scale variants, the lowest path taken; one named by
+  // its scale (`@2x`) Metro refuses.
+  ['an asset with only a scale variant resolves to it', entry, './img/scaleonly.png', false, 'src/img/scaleonly@3x.png'],
+  ['an asset beside its scale variants resolves to itself', entry, './img/withbase.png', false, 'src/img/withbase.png'],
+  ['an asset of several scale variants resolves to the lowest path', entry, './img/multi.png', false, 'src/img/multi@1.5x.png'],
+  ['an asset named by its scale resolves nowhere', entry, './img/direct@2x.png', false, null],
 ]
 
 test('adapter and built-in resolver follow Metro\'s order around exports, nested package.json files and fallbacks', ifMetro, (t) => {
