@@ -268,9 +268,9 @@ if (command === '-v' || command === '--version') {
     fail('Error: --scope must be node_modules or full')
   }
   if (values.lockfile && !allJs) fail('Error: --lockfile is only valid for JS bundles')
-  // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore --scope.
-  if (values.scope !== undefined && (values.mainFields !== undefined || values.metro)) {
-    fail('Error: --scope is not supported with --mainFields or --metro')
+  // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore a narrower --scope.
+  if (values.scope !== undefined && values.scope !== 'full' && (values.mainFields !== undefined || values.metro)) {
+    fail(`Error: --scope=${values.scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
   }
   // --conditions: extra exports/imports resolution conditions merged onto Node's defaults;
   // they don't honour legacy `mainFields` or platform suffixes (see --mainFields).

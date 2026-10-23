@@ -19,7 +19,7 @@ and Rust bundles, see [Other languages](#other-languages).
 | `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
-| `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. Not with `--mainFields`/`--metro`, which always emit full scope. |
+| `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
 | `--metro --platforms=ios,android` | Resolve the way Metro does. See [Metro](#metro---metro). |
@@ -28,7 +28,7 @@ and Rust bundles, see [Other languages](#other-languages).
 | `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. Needs the optional `flow-remove-types` dependency. |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
-| `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. See [Resources and manifests](#resources-and-manifests). |
+| `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
 | `--package-json` | Also bundle each bundled module's `package.json`, even ones the scan never reached. |
 | `--brotli-quality=0..11` | Compression level, default `9`. |
 
@@ -213,7 +213,11 @@ A reached file that is not code (an imported `.png`, `.svg` or font) fails the
 build by default. `--resources=png,svg,ttf` carries the allowlisted ones (by
 bare extension, or extensionless filename such as `LICENSE`) as resources, with
 their import edges recorded: see [build](build.md#non-code-assets---resources)
-and [file formats](file-formats.md#resources-in-the-bundle).
+and [file formats](file-formats.md#resources-in-the-bundle). With `--mainFields`
+or `--metro`, the allowlist is the `resources` of the `stasis.config.json` in
+the cwd, the directory these bundles' paths are relative to, where
+`--resources` isn't given; given, it replaces the config's rather than adding
+to it.
 
 `--package-json` bundles each bundled module's `package.json`, even one the
 scan never reached, so `stasis run --bundle=load` and `stasis prune` can read
