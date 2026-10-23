@@ -965,7 +965,8 @@ test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches 
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
     writeFileSync(join(dir, 'entry.js'), 'export const e = 1\n')
     writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ extra: ['node_modules/tool/index.js'] }))
-    for (const name of ['mdep', 'shared', 'early', 'tool']) {
+    writeFileSync(join(dir, 'again.js'), 'export const a = 1\n')
+    for (const name of ['mdep', 'shared', 'early', 'again', 'tool']) {
       mkdirSync(join(dir, 'node_modules', name), { recursive: true })
       writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
       writeFileSync(join(dir, 'node_modules', name, 'index.js'), `export const x = '${name}'\n`)
@@ -977,17 +978,25 @@ test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches 
     s.addFile(url('entry.js'), { format: 'module', isEntry: true })
     s.addFile(url('node_modules/shared/index.js'), { format: 'module' }) // run IMPORTS shared
     s.addFsFile(url('node_modules/early/package.json'), disk('node_modules/early/package.json')) // read BEFORE any plugin
+    s.addFsFile(url('node_modules/again/package.json'), disk('node_modules/again/package.json')) // read BEFORE any plugin...
+    s.addFsFile(url('again.js'), disk('again.js'))
     s.markPluginAttached()
-    for (const name of ['mdep', 'shared', 'tool']) s.addFsFile(url(`node_modules/${name}/package.json`), disk(`node_modules/${name}/package.json`))
+    for (const name of ['mdep', 'shared', 'again', 'tool']) s.addFsFile(url(`node_modules/${name}/package.json`), disk(`node_modules/${name}/package.json`)) // ...and again AFTER
+    s.addFsFile(url('again.js'), disk('again.js'))
     s.addFsFile(url('node_modules/tool/index.js'), disk('node_modules/tool/index.js')) // fs-read, but no plugin bundles tool
-    for (const name of ['mdep', 'shared', 'early']) s.addFile(url(`node_modules/${name}/index.js`), { format: 'module', reason: 'metro' })
+    for (const name of ['mdep', 'shared', 'early', 'again']) s.addFile(url(`node_modules/${name}/index.js`), { format: 'module', reason: 'metro' })
+    s.addFile(url('again.js'), { format: 'module', reason: 'metro' })
     s.includeExtra() // `extra` names tool's code: no plugin, so it neither takes nor moves tool's manifest
 
     const reason = JSON.parse(s.sourceData).reason
     // mdep's manifest is metro's alone (run claims no other file of mdep); shared's is both
-    // consumers' (run imports shared too); early's stays run's (read before the plugin); tool's
-    // stays run's (no plugin bundles tool, and `extra` is none).
+    // consumers' (run imports shared too); early's stays run's (read before the plugin); again's
+    // is both (run read it before the plugin too, as it did again.js, which so stays run's as well);
+    // tool's stays run's (no plugin bundles tool, and `extra` is none).
     t.assert.deepStrictEqual(reason.metro, [
+      'again.js',
+      'node_modules/again/index.js',
+      'node_modules/again/package.json',
       'node_modules/early/index.js',
       'node_modules/mdep/index.js',
       'node_modules/mdep/package.json',
@@ -995,7 +1004,9 @@ test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches 
       'node_modules/shared/package.json',
     ])
     t.assert.deepStrictEqual(reason.run, [
+      'again.js',
       'entry.js',
+      'node_modules/again/package.json',
       'node_modules/early/package.json',
       'node_modules/shared/index.js',
       'node_modules/shared/package.json',
