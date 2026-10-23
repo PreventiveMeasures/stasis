@@ -95,6 +95,38 @@ test('buildBundle --metro --babel-aliases resolves a JSON file\'s aliases as --b
   t.assert.equal(aliased.serialize(), (await buildBundle({ ...options, babel: true })).serialize())
 }))
 
+test('buildBundle --metro --babel(-aliases) records each file in the format Metro\'s capture does, Babel compiling it to CommonJS', withTmp(async (t, tmp) => {
+  aliasProject(tmp)
+  writeTree(tmp, {
+    'index.js': "import x from '#local/abc'\nimport y from '@lib/util'\nimport './comp.jsx'\nimport './mod.ts'\nimport './util.mjs'\nimport './data.json'\nimport 'typed'\nexport default [x, y]\n",
+    'comp.jsx': 'export default () => <div />\n',
+    'mod.ts': 'export const n: number = 1\n',
+    'util.mjs': 'export default 3\n',
+    'data.json': '{}',
+    'typed/package.json': { name: 'typed', version: '1.0.0', type: 'module', main: 'index.js' },
+    'typed/index.js': "import './view.jsx'\nexport default 4\n",
+    'typed/view.jsx': 'export default () => <span />\n',
+  })
+  writeFileSync(join(tmp, 'aliases.json'), JSON.stringify({ ...ALIAS, typed: './typed' }))
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
+  const aliased = await buildBundle({ ...options, babelAliases: 'aliases.json' })
+  // A typeless .js/.ts is commonjs(-typescript) whatever its syntax, a typed one its package's `type`,
+  // and a .jsx none, typed or not.
+  t.assert.deepStrictEqual(Object.fromEntries(aliased.formats), {
+    'data.json': 'json',
+    'index.js': 'commonjs',
+    'lib/util.js': 'commonjs',
+    'mod.ts': 'commonjs-typescript',
+    'src/abc.js': 'commonjs',
+    'typed/index.js': 'module',
+    'util.mjs': 'module',
+  })
+  t.assert.ok(aliased.sources.has('comp.jsx') && aliased.sources.has('typed/view.jsx'))
+  t.assert.equal(aliased.serialize(), (await buildBundle({ ...options, babel: true })).serialize())
+  // Without either, a file keeps the format Node detects from its syntax.
+  t.assert.equal((await buildBundle({ ...options, entries: ['comp.jsx'] })).formats.get('comp.jsx'), 'module')
+}))
+
 test('buildBundle --babel-aliases is only valid with --metro, not with --babel, and reads a JSON object in the project', withTmp(async (t, tmp) => {
   aliasProject(tmp)
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }

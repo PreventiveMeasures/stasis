@@ -17,7 +17,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPlainObject, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyFormat, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPlainObject, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -305,11 +305,15 @@ function assembleCodeBundle({
 }
 
 // A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
-// (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`.
-// Every file is attributed to `consumer` in the `reason` map: `bundle`, or `bundle:metro` for --metro.
+// (Map<path,format>) overrides it per file (a file neither tags has none), and the `resolutions` edges
+// are keyed under `conditionKey`. Every file is attributed to `consumer` in the `reason` map: `bundle`,
+// or `bundle:metro` for --metro.
 function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer = 'bundle' }) {
   const formatsMap = new Map()
-  for (const path of sources.keys()) formatsMap.set(path, formats?.get(path) ?? format)
+  for (const path of sources.keys()) {
+    const fileFormat = formats?.get(path) ?? format
+    if (fileFormat !== undefined) formatsMap.set(path, fileFormat)
+  }
 
   const importsForKey = new Map()
   for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
@@ -1029,6 +1033,17 @@ function metroEmptyModule(baseDir, host) {
   return isUtf8(buf) && EMPTY_MODULE_SOURCE.test(buf.toString('utf8').trim()) ? real : null
 }
 
+// The format of `file`, scanned as `scanned`, as the Metro plugin's capture records it (State infers
+// it), where Babel compiles every file to CommonJS: a .js/.ts takes its package's `type`, else commonjs
+// (-typescript), never the module Node would detect from its syntax; a .jsx/.tsx none, as Node has no
+// format for it; any other the one its name gives, as scanned. -> a format, or undefined for none
+function babelFormat(file, scanned, host) {
+  if (classifyFormat(file) !== null) return scanned
+  const ext = extname(file)
+  if (ext !== '.js' && ext !== '.ts') return undefined
+  return `${packageType(file, host) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
+}
+
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
@@ -1080,6 +1095,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
+  // --babel or --babel-aliases: files Metro builds through Babel, recorded in the formats it gives them.
+  const babelled = babel || fileAliases !== null
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1106,7 +1123,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const rel = toRel(abs)
       reached.add(abs)
       if (info.resource) resourceRels.add(rel)
-      formatsByRel.set(rel, info.format)
+      formatsByRel.set(rel, babelled && !info.resource ? babelFormat(abs, info.format, host) : info.format)
       for (const e of info.edges) {
         if (e.builtin || e.dynamic) continue
         let target

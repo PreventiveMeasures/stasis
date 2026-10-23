@@ -301,6 +301,12 @@ project root; any other is the specifier it maps to, a package's name. The
 file must lie in the project, and is not carried. The same for every
 `--platforms` target; not with `--babel`.
 
+Under either, each file is recorded in the format the Metro plugin's capture
+records it in, Metro's Babel transformer compiling every file to CommonJS: a
+`.js` or `.ts` in its package's `type`, else as `commonjs` or
+`commonjs-typescript` whatever its syntax (not the `module` Node would detect
+from it), and a `.jsx` or `.tsx` in none, as Node has no format for one.
+
 A `package.json` `imports` specifier (`#local/abc`) keeps Metro's exact rule
 under either, as `babel-plugin-module-resolver` leaves it: its target must name
 the file itself. An alias of the same name, in the aliases file or the Babel
