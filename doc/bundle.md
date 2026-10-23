@@ -143,6 +143,27 @@ Its files are attributed to the `bundle:metro` consumer in the bundle's
 `reason` map, where every other `stasis bundle` build names `bundle`, so
 `stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
 
+It takes Metro's own steps, as `metro-resolver` takes them, where they differ
+from Node's and esbuild's:
+
+- A package's `browser`/`react-native` map applies before its `exports`, so
+  `@noble/hashes` 1.x's `{ "./crypto": "./crypto.js" }` wins over the
+  `exports` `import` branch.
+- Where `exports` serves nothing (no condition Metro asserts matches, as with
+  `exports` offering only `browser` and `node` on iOS), resolution falls back
+  to the package's files: `main` through the map, so `rpc-websockets` resolves
+  to its `index.browser.cjs`.
+- The `package.json` closest to the path counts, a nested one included: a
+  subpath directory with a `package.json` of its own (`ox/erc8010`) resolves
+  through its own `main`, not the root `exports`.
+- A relative import takes the map of the package closest to its target.
+- A package can import its own name through its own `exports`.
+- A directory in `node_modules` that resolves to nothing gives way to the next
+  `node_modules` up, but a package whose `main` resolves to nothing fails, as
+  in Metro, without falling back to its root `index`.
+- A map entry sending a relative path to a package name is taken as a path in
+  the package, as Metro takes it, and so resolves nowhere.
+
 It also carries each bundled dependency's native build inputs: for every
 `node_modules` package the code graph reaches, its `ios/` and `android/`
 sources and its podspecs (for `react-native` itself, its whole native tree).

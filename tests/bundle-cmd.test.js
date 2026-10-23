@@ -3483,12 +3483,13 @@ test('--mainFields and --metro build from a cwd named through a link', withTmp(a
 test('--metro carries the native surface of a workspace package linked into node_modules, by its real path', withTmp(async (t, tmp) => {
   // A workspace package linked into node_modules is reached by its real path, out of node_modules,
   // but is a dependency like any installed one, however the import reaches it: rn-lib by its own
-  // name, rn-mapped through the app's react-native map, rn-aliased by the name it's installed under,
+  // name, rn-mapped as the name the app's react-native map sends `rn-impl` to (a bare key, which
+  // Metro redirects; it takes a relative key's bare target as a path), rn-aliased by the name it's installed under,
   // linked-rel by a relative path, native by a relative path though it's installed under an alias.
   // other is linked nowhere, and the app's own native project is no dependency's.
   const files = {
-    'package.json': { name: 'app', version: '1.0.0', 'react-native': { './src/impl.js': 'rn-mapped' } },
-    'src/index.js': "require('rn-lib')\nrequire('./impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/native')\nrequire('../packages/other')\n",
+    'package.json': { name: 'app', version: '1.0.0', 'react-native': { 'rn-impl': 'rn-mapped' } },
+    'src/index.js': "require('rn-lib')\nrequire('rn-impl')\nrequire('rn-alias')\nrequire('../packages/linked-rel')\nrequire('../packages/native')\nrequire('../packages/other')\n",
     'ios/App.mm': '@implementation App @end\n',
     'packages/rn-lib/package.json': { name: 'rn-lib', version: '1.0.0', main: './index.js' },
     'packages/rn-lib/index.js': 'module.exports = 1\n',
@@ -3513,7 +3514,7 @@ test('--metro carries the native surface of a workspace package linked into node
   }
   const bundle = await buildBundle({ cwd: tmp, entries: ['src/index.js'], metro: true, platforms: ['ios', 'android'] })
   t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-lib'), 'packages/rn-lib/index.js')
-  t.assert.equal(importTarget(bundle, 'src/index.js', './impl'), 'packages/rn-mapped/index.js')
+  t.assert.equal(importTarget(bundle, 'src/index.js', 'rn-impl'), 'packages/rn-mapped/index.js')
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [
     'packages/linked-rel/android/build.gradle',
     'packages/linked-rel/index.js',
