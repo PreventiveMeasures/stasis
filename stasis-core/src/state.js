@@ -1025,13 +1025,12 @@ export class State {
   // Attest the files stasis.config.json's `extra` names (expandExtra: paths, directories and globs,
   // as `stasis add` takes them) beside what the run reached, each carried as an fs read is
   // (#readFileOptions) unless the run captured it itself, whose record stands. The whole set is
-  // validated before a file is added, every offender named at once. `outputs` are paths written
-  // besides this State's own targets, never swept in; `resources` the allowlist, the config's by default.
-  includeExtra({ outputs = [], resources = this.config.resources } = {}) {
+  // validated before a file is added, every offender named at once. `outputs` are the paths written,
+  // never taken in: by default the ones write() writes. `resources` is the allowlist, the config's by default.
+  includeExtra({ outputs = this.#writeTargets(), resources = this.config.resources } = {}) {
     if (this.config.extra.length === 0) return
-    const targets = [this.config.lockFile || join(this.root, FILE_LOCK), this.config.bundleFile || join(this.root, FILE_CODE), this.config.resourcesBundleFile, ...outputs]
     // Resolved as write() writes them: a relative one from the cwd.
-    const written = new Set(targets.filter((file) => file !== undefined).map((file) => toPosix(relative(this.root, resolve(file)))))
+    const written = new Set(outputs.map((file) => toPosix(relative(this.root, resolve(file)))))
     const { files } = expandExtra(this.root, this.config.extra, written)
     const realRoot = this.#host.realpath(this.root)
     const missing = []
@@ -1056,6 +1055,13 @@ export class State {
     }
     if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, 'extra')
     for (const { url, source, options } of toAdd) this.addFile(url, { source, ...options, reason: 'extra' })
+  }
+
+  // The artifacts write() writes: the lockfile (never a sidecar's) and the bundle(s), as configured.
+  #writeTargets() {
+    const lock = this.config.writeLockfile && !this.#parent ? [this.config.lockFile || join(this.root, FILE_LOCK)] : []
+    const bundles = this.config.writeBundle ? [this.config.bundleFile || join(this.root, FILE_CODE), this.config.resourcesBundleFile] : []
+    return [...lock, ...bundles].filter((file) => file !== undefined)
   }
 
   // Record an `fs.readdirSync` capture: the listing is SORTED for reproducibility and stored as a

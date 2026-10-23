@@ -155,6 +155,16 @@ test('run never takes the artifacts it writes into extra, even matched by a glob
   t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files)
 }))
 
+test('run takes a stasis artifact it does not write when extra names it', withTmp(async (t, tmp) => {
+  seed(tmp, { extra: ['stasis.lock.json'] })
+  // Written by this run: never taken.
+  t.assert.equal(runCli(stasisCli, ['run', '--lock=add', 'src/entry.js'], tmp).status, 0)
+  // Only tolerated by this one: taken as named.
+  const r = runCli(stasisCli, ['run', '--lock=ignore', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.lock.json'])
+}))
+
 test('run --fs never captures the extra sweep itself as the program\'s reads', withTmp(async (t, tmp) => {
   seed(tmp)
   const r = runCli(stasisCli, ['run', '--bundle=add', '--fs=sync', 'src/entry.js'], tmp)
@@ -217,6 +227,16 @@ test('bundle never takes its default output into extra, matched by a glob', with
     }
     t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'top.br'], `${mainFields}`)
     rmSync(join(tmp, 'stasis.code.br'))
+  }
+}))
+
+test('bundle takes a default-named bundle it does not write when extra names it', withTmp(async (t, tmp) => {
+  for (const mainFields of [[], ['--mainFields=main']]) {
+    seed(tmp, { resources: ['br'], extra: ['stasis.code.br'] })
+    writeFileSync(join(tmp, 'stasis.code.br'), PNG)
+    const r = runCli(stasisCli, ['bundle', ...mainFields, '--output=other.br', 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'other.br'))), ['src/entry.js', 'src/util.js', 'stasis.code.br'], `${mainFields}`)
   }
 }))
 
