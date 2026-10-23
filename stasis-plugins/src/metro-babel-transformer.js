@@ -49,18 +49,14 @@ function asWrittenPlugin({ types: t }) {
       })
     },
     visitor: {
-      Program: {
-        // A declaration gone from the program by now was erased for importing types alone (`import
-        // type`, `import { type A }`, a TS import used only as a type): the plugins stripping types
-        // have run, in the traversal or as it entered, while the one turning the rest into requires
-        // (@babel/plugin-transform-modules-commonjs, in the RN preset) does so as it exits, after
-        // this one -- a preset's plugins come after those Metro passes. (Listed among the config's
-        // own plugins, it takes them all first, leaving each to Metro's name.)
+      // Babel exits a node only if no plugin removed it on the way in, so a declaration erased for
+      // importing types alone (`import type`, `import { type A }`, a TS import used only as a type)
+      // never exits: flow-strip-types removes it as it enters it, the TS plugin before the
+      // traversal gets there. One lowered to a require exits first: wherever it is listed,
+      // @babel/plugin-transform-modules-commonjs takes the declarations away as the program exits.
+      'ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration': {
         exit(path) {
-          const statements = new Set(path.node.body)
-          for (const slot of transformContext.getStore().slots) {
-            if (DECLARATIONS.has(slot.node.type) && !statements.has(slot.node)) slot.erased = true
-          }
+          transformContext.getStore().kept.add(path.node)
         },
       },
     },
@@ -71,11 +67,12 @@ export function transform(args) {
   const context = transformContext.getStore()
   assert.ok(context, 'StasisMetro: the stasis Babel transformer runs only under the stasis metro-transformer')
   const slots = []
-  context.slots = slots
+  const kept = new Set()
+  Object.assign(context, { slots, kept })
   // Once Babel is done: each specifier as it left it, from the node that held it as written.
   const collect = (result) => {
-    for (const { node, written, erased } of slots) {
-      if (erased) continue
+    for (const { node, written } of slots) {
+      if (DECLARATIONS.has(node.type) && !kept.has(node)) continue
       const left = specifierOf(node)
       if (left === undefined) continue
       if (!context.asWritten.has(left)) context.asWritten.set(left, new Set())

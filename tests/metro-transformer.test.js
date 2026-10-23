@@ -255,7 +255,9 @@ const mockWorker = join(here, 'metro-mock-worker.cjs')
 // is done (Program exit), as @babel/plugin-transform-modules-commonjs does in the RN preset -- so
 // the import declarations are gone by the time Babel returns. The type imports are aliased to the
 // file index.js requires by path, which they must not count as written through the alias.
-const babelAliasProject = (tmp) => {
+// `lowerAmongPlugins` lists the lowering first among the config's own plugins instead, so that it
+// runs before the stasis plugin Metro passes.
+const babelAliasProject = (tmp, { lowerAmongPlugins = false } = {}) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'babel-alias', version: '0.0.0' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
   writeFileSync(join(tmp, 'babel.config.js'), `const typesOnly = (node) =>
@@ -279,11 +281,14 @@ const lower = ({ types: t }) => ({
     },
   },
 })
-module.exports = {
+module.exports = ${lowerAmongPlugins ? `{
+  parserOpts: { plugins: ['flow'] },
+  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+}` : `{
   parserOpts: { plugins: ['flow'] },
   plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes],
   presets: [() => ({ plugins: [lower] })],
-}
+}`}
 `)
   writeFileSync(join(tmp, 'index.js'), [
     "import abc from '#local/abc'",
@@ -307,9 +312,13 @@ module.exports = {
 const handedOver = { stasisBaseTransformerPath: mockWorker, babelTransformerPath: './metro-mock-babel-transformer.cjs' }
 const stasisBabelTransformer = join(here, '..', 'stasis-plugins', 'src', 'metro-babel-transformer.js')
 
-for (const babelAsync of [false, true]) {
-  test(`a dependency Babel rewrote carries the specifiers written in the source (${babelAsync ? 'async' : 'sync'} Babel transformer)`, withTmp((t, tmp) => {
-    babelAliasProject(tmp)
+for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
+  ['sync Babel transformer', {}],
+  ['async Babel transformer', { babelAsync: true }],
+  ['imports lowered by a plugin listed before it', { lowerAmongPlugins: true }],
+]) {
+  test(`a dependency Babel rewrote carries the specifiers written in the source (${variant})`, withTmp((t, tmp) => {
+    babelAliasProject(tmp, { lowerAmongPlugins })
     const r = transform(['index.js'], {
       cwd: tmp,
       env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver), ...(babelAsync && { STASIS_TEST_BABEL_ASYNC: '1' }) },
