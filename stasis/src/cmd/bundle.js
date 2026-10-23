@@ -969,6 +969,23 @@ function fieldBuildOptions(name, { cwd = process.cwd(), scope, resources, host =
   return { resources: resourcesGiven ? parseResourcesOption(name, resources) : parseResourcesOption(CONFIG_FILE, config?.resources) }
 }
 
+// Metro's own empty module, which it resolves a disabled import to (its default
+// resolver.emptyModulePath), where the project installs metro-runtime at its root.
+const METRO_EMPTY_MODULE = 'node_modules/metro-runtime/src/modules/empty-module.js'
+// An empty module's source, trimmed: nothing, or a lone "use strict" directive.
+const EMPTY_MODULE_SOURCE = /^(?:(["'])use strict\1;?)?$/u
+
+// The real path of METRO_EMPTY_MODULE under `baseDir`, where it is a file in the project that is in
+// fact empty (EMPTY_MODULE_SOURCE), else null.
+function metroEmptyModule(baseDir, host) {
+  const abs = join(baseDir, METRO_EMPTY_MODULE)
+  if (!host.stat(abs)?.isFile()) return null
+  const real = host.realpath(abs)
+  if (!isPathWithin(host.realpath(baseDir), real)) return null
+  const buf = host.readFile(real)
+  return isUtf8(buf) && EMPTY_MODULE_SOURCE.test(buf.toString('utf8').trim()) ? real : null
+}
+
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
@@ -1013,6 +1030,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const edges = new Map()
   const reached = new Set() // absolute paths reached on any platform
   let usesEmpty = false
+  // What a disabled import resolves to: under --metro Metro's own empty module where the project
+  // has it (metroEmptyModule), as Metro resolves it; else the reserved synthetic one.
+  const metroEmpty = metro ? metroEmptyModule(baseDir, host) : null
+  const emptyTarget = metroEmpty === null ? EMPTY_MODULE_PATH : toRel(metroEmpty)
 
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
@@ -1044,7 +1065,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       for (const e of info.edges) {
         if (e.builtin || e.dynamic) continue
         let target
-        if (e.empty) { usesEmpty = true; target = EMPTY_MODULE_PATH }
+        if (e.empty) { usesEmpty = true; target = emptyTarget }
         else if (e.child) target = toRel(fileURLToPath(e.child))
         else continue // unresolved (already warned/thrown by reportScanIssues)
         if (!edges.has(rel)) edges.set(rel, new Map())
@@ -1069,6 +1090,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // byte-derived format (here and in the --metro native capture below).
   const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
   const realBase = host.realpath(baseDir)
+  // Metro's empty module is carried as the file it is, the scan's format where the scan reached it.
+  if (usesEmpty && metroEmpty !== null && !reached.has(metroEmpty)) {
+    reached.add(metroEmpty)
+    formatsByRel.set(emptyTarget, packageType(metroEmpty, host) === 'module' ? 'module' : 'commonjs')
+  }
   for (const abs of reached) {
     const rel = toRel(abs)
     // Security: a resolved file arrives by its real path, which toRel already holds to the root,
@@ -1085,7 +1111,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       put(rel, buf.toString('utf8'), formatsByRel.get(rel), buf)
     }
   }
-  if (usesEmpty) {
+  if (usesEmpty && metroEmpty === null) {
     // Refuse to shadow a real reached file sitting at the reserved empty-module path.
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)

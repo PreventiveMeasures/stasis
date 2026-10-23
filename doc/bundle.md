@@ -146,6 +146,13 @@ A package reached only for an asset through `--resources` is not a linked
 native dependency and contributes none. Build output (`build`, `.gradle`,
 `.cxx`, `Pods`, `DerivedData`, nested `node_modules`) is skipped.
 
+A disabled import (a `browser`/`react-native` map entry set to `false`)
+resolves, as Metro resolves it, to Metro's own empty module: the project's
+`node_modules/metro-runtime/src/modules/empty-module.js`, carried in
+`metro-runtime`'s package, where that file is in fact empty (nothing but a
+`"use strict"` directive). Otherwise it resolves, as with `--mainFields`, to a
+synthetic empty `.stasis/empty-module.js`.
+
 `--metro-resolver` resolves through the project's own installed
 `metro-resolver` (it ships with `react-native`/`metro`) for byte-for-byte
 Metro fidelity, instead of the built-in approximation. It can't substitute

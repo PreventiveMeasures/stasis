@@ -4188,6 +4188,75 @@ cliTest('CLI: bundle --metro --babel resolves through the Babel config\'s aliase
   t.assert.match(refused.stderr, /--babel is only valid with --metro/)
 }))
 
+// --- the empty module under --metro --------------------------------------------------------
+//
+// A disabled import (a `browser`/`react-native` map entry set to `false`) resolves, under --metro, to
+// Metro's own empty module where the project installs metro-runtime and that file is in fact empty,
+// as Metro (and so the Metro plugin) resolves it; else to the synthetic .stasis/empty-module.js.
+
+const METRO_EMPTY = 'node_modules/metro-runtime/src/modules/empty-module.js'
+
+// An app requiring `dis`, whose browser map disables ./gone.js and leftpad, with metro-runtime's
+// empty-module.js holding `emptySource` (none where undefined); under .pnpm, linked into
+// node_modules, with `pnpm`.
+const metroEmptyProject = (dir, emptySource, { pnpm = false } = {}) => {
+  mkdirSync(join(dir, 'node_modules', 'dis'), { recursive: true })
+  jsProject(dir, { 'index.js': "require('dis')\n" }, { name: 'app', version: '0.0.0' })
+  writeFileSync(join(dir, 'node_modules', 'dis', 'package.json'), JSON.stringify({ name: 'dis', version: '1.0.0', main: 'index.js', browser: { './gone.js': false, leftpad: false } }))
+  writeFileSync(join(dir, 'node_modules', 'dis', 'index.js'), "require('./gone.js')\nrequire('leftpad')\n")
+  if (emptySource === undefined) return
+  const runtime = join(dir, 'node_modules', ...(pnpm ? ['.pnpm', 'metro-runtime@0.87.0', 'node_modules'] : []), 'metro-runtime')
+  mkdirSync(join(runtime, 'src', 'modules'), { recursive: true })
+  writeFileSync(join(runtime, 'package.json'), JSON.stringify({ name: 'metro-runtime', version: '0.87.0' }))
+  writeFileSync(join(runtime, 'src', 'modules', 'empty-module.js'), emptySource)
+  if (pnpm) symlinkSync(join('.pnpm', 'metro-runtime@0.87.0', 'node_modules', 'metro-runtime'), join(dir, 'node_modules', 'metro-runtime'), 'dir')
+}
+
+// What `dis`'s two disabled imports resolve to.
+const disabledTargets = (bundle) => {
+  const edges = [...bundle.imports.values()].map((m) => m.get('node_modules/dis/index.js')).find(Boolean)
+  return [edges.get('./gone.js'), edges.get('leftpad')]
+}
+
+const metroOptions = (cwd) => ({ cwd, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] })
+
+test('buildBundle --metro resolves a disabled import to metro-runtime\'s empty module where it is empty', withTmp(async (t, tmp) => {
+  // Empty after trimming: nothing, or a lone "use strict" directive (metro-runtime ships `"use strict";`).
+  await Promise.all(['"use strict";\n', "  'use strict'  \n\n", ''].map(async (source, i) => {
+    const dir = join(tmp, `case${i}`)
+    metroEmptyProject(dir, source)
+    const bundle = await buildBundle(metroOptions(dir))
+    t.assert.deepStrictEqual(disabledTargets(bundle), [METRO_EMPTY, METRO_EMPTY], JSON.stringify(source))
+    // Carried as the file it is, in metro-runtime's own package, and the synthetic one not at all.
+    t.assert.equal(bundle.sources.get(METRO_EMPTY), source)
+    t.assert.equal(bundle.formats.get(METRO_EMPTY), 'commonjs')
+    t.assert.equal(bundle.modules.get('node_modules/metro-runtime').name, 'metro-runtime')
+    t.assert.ok(!bundle.sources.has('.stasis/empty-module.js'))
+  }))
+  // pnpm links metro-runtime into node_modules: the file is carried by its real path, as the scan
+  // carries every file it reaches.
+  const linked = join(tmp, 'pnpm')
+  metroEmptyProject(linked, '"use strict";\n', { pnpm: true })
+  const real = 'node_modules/.pnpm/metro-runtime@0.87.0/node_modules/metro-runtime/src/modules/empty-module.js'
+  t.assert.deepStrictEqual(disabledTargets(await buildBundle(metroOptions(linked))), [real, real])
+}))
+
+test('buildBundle --metro keeps .stasis/empty-module.js where metro-runtime\'s is missing or not empty, as --mainFields does', withTmp(async (t, tmp) => {
+  const synthetic = ['.stasis/empty-module.js', '.stasis/empty-module.js']
+  await Promise.all([undefined, "module.exports = 'not empty'\n", '"use strict";\nexports.x = 1\n'].map(async (source, i) => {
+    const dir = join(tmp, `case${i}`)
+    metroEmptyProject(dir, source)
+    const bundle = await buildBundle(metroOptions(dir))
+    t.assert.deepStrictEqual(disabledTargets(bundle), synthetic, JSON.stringify(source))
+    t.assert.equal(bundle.sources.get('.stasis/empty-module.js'), '')
+    t.assert.ok(!bundle.sources.has(METRO_EMPTY))
+  }))
+  // Only Metro resolves to its own: --mainFields keeps the synthetic one beside an empty metro-runtime file.
+  const fields = join(tmp, 'fields')
+  metroEmptyProject(fields, '"use strict";\n')
+  t.assert.deepStrictEqual(disabledTargets(await buildBundle({ cwd: fields, entries: ['index.js'], mainFields: ['browser', 'main'] })), synthetic)
+}))
+
 cliTest('CLI: bundle --metro carries reached assets only with --resources (binary -> base64, text -> resource)', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': "import logo from './logo.png'\nimport icon from './icon.svg'\nexport const assets = [logo, icon]\n" })
   writeAssets(tmp)
