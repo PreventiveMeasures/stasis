@@ -786,8 +786,9 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // addImport replays the edge map; serialize emits the runtime loader's v1 layout.
   // bundle:'replace' skips reading any on-disk stasis.code.br (bundle:'add' would leak stale
   // entries); lock:'ignore' tolerates a pre-existing lockfile without consuming it; and it is never
-  // written, so it claims no write target.
-  const stateOptions = { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, claim: false }
+  // written, so it claims no write target. Both modes are the build's own (staticBuild): the lock
+  // and bundle a stasis.config.json sets are `stasis run`'s, while a `scope` given must match its.
+  const stateOptions = { bundle: 'replace', lock: 'ignore', staticBuild: true, ...(scope ? { scope } : {}), host, claim: false }
   let state = new State(baseDir, { ...stateOptions, env })
   // A root holding a stasis file is the project's own choice, whose config the build takes.
   if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {

@@ -1158,3 +1158,20 @@ test('Config treats an empty-string path/mode option as unset, so loadConfig see
   // A real option still is an override.
   t.assert.throws(() => new Config({ scope: 'full' }).loadConfig(json({ scope: 'node_modules' })), /can not override stasis\.config\.json/)
 }))
+
+test('Config staticBuild keeps its own lock/bundle modes over stasis.config.json\'s, which are checked but not taken', withEnv({}, (t) => {
+  const c = new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true })
+  c.loadConfig(json({ scope: 'node_modules', lock: 'frozen', bundle: 'load' }))
+  t.assert.equal(c.lock, 'ignore')
+  t.assert.equal(c.bundleMode, 'replace')
+  // The rest of the file is taken as ever.
+  t.assert.equal(c.scope, 'node_modules')
+  t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true }).loadConfig(json({ lock: 'bogus' })), /Invalid lock: bogus/)
+  t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true }).loadConfig(json({ bundle: 'bogus' })), /Invalid bundle: bogus/)
+  // An explicit scope is still authoritative.
+  t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', scope: 'full', staticBuild: true }).loadConfig(json({ scope: 'node_modules', lock: 'add', bundle: 'add' })),
+    /can not override stasis\.config\.json/)
+  // Without staticBuild the file's modes are overrides, refused.
+  t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace' }).loadConfig(json({ lock: 'add' })), /can not override stasis\.config\.json/)
+  t.assert.throws(() => new Config({ lock: 'ignore', staticBuild: true }), /A static build sets its own lock and bundle modes/)
+}))

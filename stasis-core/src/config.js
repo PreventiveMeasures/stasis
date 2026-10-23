@@ -85,17 +85,22 @@ export class Config {
   #explicit
   #opts
   #shardSignalFlush
+  #staticBuild
 
   // Env and options must agree when both are set; #explicit is kept so a later loadConfig can't override them.
+  // `staticBuild`: a static build (`stasis bundle`'s) gives its own lock and bundle modes, and
+  // loadConfig checks a stasis.config.json's, `stasis run`'s, without taking them.
   constructor(options = {}) {
-    const { env = process.env, host = diskHost, ...rest } = options
+    const { env = process.env, host = diskHost, staticBuild = false, ...rest } = options
     assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')
     // An empty-string path/mode option is unset, as its resolution below treats it; #explicit must
     // agree, or loadConfig would refuse a stasis.config.json for not matching a phantom override.
     const explicit = Object.fromEntries(Object.entries(rest).map(([key, value]) =>
       [key, value === '' && (OPTIONS[key].valid || OPTIONS[key].type === 'string') ? undefined : value]))
+    assert.ok(!staticBuild || (explicit.lock !== undefined && explicit.bundle !== undefined), 'A static build sets its own lock and bundle modes')
     this.#host = host
     this.#explicit = explicit
+    this.#staticBuild = staticBuild
     // An env var set to '' counts as unset.
     this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, env[OPTIONS[key].env] || undefined]))
 
@@ -199,6 +204,11 @@ export class Config {
     const keys = Object.keys(config)
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
+      // A static build's modes are its own: the file's are `stasis run`'s, checked but not taken.
+      if (this.#staticBuild && (key === 'lock' || key === 'bundle')) {
+        assertOption(key, config[key])
+        continue
+      }
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined

@@ -75,6 +75,11 @@ Unknown keys are rejected. A key set by both file and env var must match. Only
 `childProcess`, `packageJSON`, `fs`, and `brotliQuality` are run-time flags, not
 attested.
 
+`lock` and `bundle` are `stasis run`'s modes. `stasis bundle`, a static build with
+modes of its own, checks that the file's are valid but doesn't use them, so one
+`stasis.config.json` serves both commands; its `scope` it takes, or refuses a
+`--scope` that conflicts with it.
+
 ## `stasis.lock.json`
 
 ```json

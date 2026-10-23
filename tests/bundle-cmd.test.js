@@ -2165,6 +2165,60 @@ cliTest('CLI: bundle --scope conflicting with stasis.config.json errors instead 
     `expected conflict error in stderr, got: ${r.stderr}`)
 }))
 
+// A project's stasis.config.json usually drives `stasis run` too, so it sets lock/bundle modes. Those
+// are run-time settings a static build has its own of, so they no longer fail it as overrides.
+const runModesProject = (tmp, config) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'run-modes', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify(config))
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'entry.js'), "import { dep } from 'dep'\nconsole.log(dep)\n")
+  mkdirSync(join(tmp, 'node_modules', 'dep'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep', version: '1.0.0', type: 'module', exports: './index.js' }))
+  writeFileSync(join(tmp, 'node_modules', 'dep', 'index.js'), 'export const dep = 1\n')
+}
+
+cliTest('CLI: bundle (JS) builds with a stasis.config.json that sets lock and bundle modes', withTmp(async (t, tmp) => {
+  runModesProject(tmp, { lock: 'add', bundle: 'add' })
+  const r = await runCli(['bundle', '--lockfile=stasis.lock.json', 'src/entry.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.entries], ['src/entry.js'])
+  t.assert.deepStrictEqual([...bundle.formats.keys()].toSorted(), ['node_modules/dep/index.js', 'src/entry.js'])
+  const lockfile = Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))
+  t.assert.deepStrictEqual([...lockfile.entries], ['src/entry.js'])
+
+  // Rebuilt with the bundle and lockfile now on disk: the config's lock=add/bundle=add are `stasis
+  // run`'s, so the build neither absorbs nor checks them, and stays its own.
+  writeFileSync(join(tmp, 'src', 'entry.js'), 'console.log(2)\n')
+  const again = await runCli(['bundle', '--lockfile=stasis.lock.json', 'src/entry.js'], { cwd: tmp })
+  t.assert.equal(again.status, 0, `stderr: ${again.stderr}`)
+  const rebuilt = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'stasis.code.br'))).toString('utf8'))
+  t.assert.deepStrictEqual([...rebuilt.formats.keys()], ['src/entry.js'])
+}))
+
+test('buildBundle (JS) takes stasis.config.json\'s scope beside its lock and bundle modes, and refuses a conflicting one as before', withTmp(async (t, tmp) => {
+  runModesProject(tmp, { scope: 'node_modules', lock: 'frozen', bundle: 'load' })
+  const bundle = await buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'] })
+  t.assert.deepStrictEqual(bundle.config, { scope: 'node_modules' })
+  await t.assert.rejects(
+    () => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'], scope: 'full' }),
+    (err) => /Flags\/env can not override stasis\.config\.json/.test(err.message) && err.cause.actual === 'node_modules' && err.cause.expected === 'full',
+  )
+  // An invalid mode is refused still, if not used.
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'frozne' }))
+  await t.assert.rejects(() => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'] }), /Invalid lock: frozne/)
+}))
+
+cliTest('CLI: bundle --scope conflicting with stasis.config.json errors beside its lock and bundle modes too', withTmp(async (t, tmp) => {
+  runModesProject(tmp, { scope: 'node_modules', lock: 'add', bundle: 'add' })
+  const r = await runCli(['bundle', '--scope=full', '--output=snap.br', 'src/entry.js'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0, 'should error on --scope vs config disagreement')
+  t.assert.match(r.stderr, /Flags\/env can not override stasis\.config\.json/)
+  t.assert.match(r.stderr, /actual: 'node_modules',\s+expected: 'full'/)
+  t.assert.ok(!existsSync(join(tmp, 'snap.br')))
+}))
+
 // --- Conditions-aware JS bundling (`--conditions`) ---
 //
 // `--conditions` adds resolution conditions on top of the base set Node always
