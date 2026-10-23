@@ -616,7 +616,7 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, entries: ['a.sol'] }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm/u)
   await t.assert.rejects(build({ client, entries: ['a.js'], metro: true, metroResolver: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: metroResolver is not supported/u)
   await t.assert.rejects(build({ client, entries: [] }), /^Error: buildGitHubBundle: at least one entry file is required/u)
-  await t.assert.rejects(build({ client, entries: ['a.js'], scope: 'node_modules', metro: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: --scope is not supported with --mainFields or --metro/u)
+  await t.assert.rejects(build({ client, entries: ['a.js'], scope: 'node_modules', metro: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: --scope=node_modules is not supported with --mainFields or --metro/u)
   // With neither entries nor a package manager, what no kind takes; a version is of one given.
   await t.assert.rejects(build({ client, packageManager: undefined, tsconfig: 'x.json' }), /^Error: buildGitHubBundle: --tsconfig is only valid with --typescript$/u)
   await t.assert.rejects(build({ client, packageManager: undefined, packageManagerVersion: '10.33.4' }), /^TypeError: buildGitHubBundle: packageManagerVersion is only valid with packageManager$/u)
