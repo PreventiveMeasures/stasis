@@ -8,7 +8,7 @@ to be captured (a React Native app, a library's entry points).
 
 ```sh
 stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
@@ -30,6 +30,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--metro --platforms=ios,android` | Resolve the way Metro does. See [Metro](#metro---metro). |
 | `--metro-resolver` | With `--metro`: resolve through the project's own `metro-resolver` instead of the built-in approximation. |
 | `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
+| `--babel-aliases=path.json` | With `--metro`: resolve through the import aliases a JSON file of the project lists, as `--babel` would, without running anything. See [Metro](#metro---metro). |
 | `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. See [JSX and Flow](#jsx-and-flow). |
 | `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. Needs the optional `flow-remove-types` dependency. |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
@@ -111,7 +112,8 @@ With it:
   bare `stasis bundle` run anything. An entry setting one fails without its
   flag, and its flag fails where no entry given sets it; given, it applies to
   the entries setting it alone. So entries setting different `cargo-target`s
-  are bundled apart.
+  are bundled apart. `babel-aliases` reads a JSON file and runs nothing, so it
+  needs no consent.
 - The entries given are all named there, or none is, the two never mixed. Where
   none is, whatever else it names, they are built with the flags exactly as
   without it.
@@ -270,6 +272,37 @@ in does not. Not with `github-bundle`.
 The Metro plugin keys its edges the same way: `withStasis()` runs Metro's
 transformer through stasis's, which records each import as written, before any
 Babel plugin rewrites it.
+
+`--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the
+project instead, running nothing: the object a `babel-plugin-module-resolver`
+takes as its `alias` option, each alias to the string it maps to, the shape a
+`babel.config.js` can `require` (`alias: require('./aliases.json')`).
+
+```json
+{ "#local": "./src", "^@lib/(.+)": "./lib/\\1", "lodash": "lodash-es" }
+```
+
+They map as the plugin maps them: a key starting with `^` or ending with `$` is
+a regular expression whose groups `\1`, `\2`... in its value take, any other
+matches the specifier it is or one it starts with and `/`, keeping the rest
+(`#local/abc` to `./src/abc`); the first key to match wins. A value starting
+with `./` or `../` is a path from the cwd, as the plugin's is from Metro's
+project root; any other is the specifier it maps to, a package's name. The
+file must lie in the project, and is not carried. The same for every
+`--platforms` target; not with `--babel`.
+
+Under `--babel` and `--babel-aliases`, the `imports` of the cwd's
+`package.json` alias too, after the aliases they set, as a Babel config
+spreading them into its aliases would have them: `"#local/*": "./src/*"` maps
+`#local/abc` to `./src/abc`, resolved as any relative path is, so an
+extensionless import reaches `src/abc.js` where Node's exact target finds no
+file. A key is selected as Node selects it (one equal to the specifier, else
+the pattern with the longest prefix before its `*`), and every `*` of its
+target takes what the key's matched. A target that isn't a string (conditions,
+a fallback array, `null`) is left to Node's resolution, as without either. They
+apply to the project's own files alone, those whose nearest `package.json` is
+the cwd's, as Node scopes `imports`: a dependency's own `#` imports resolve
+through its own `package.json`.
 
 What only a dev build imports (`if (__DEV__) require(...)`) is bundled too,
 unless `--define` gives the values a release build inlines: see
