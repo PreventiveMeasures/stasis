@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 // In-process import for the withStasis transparency unit test below. Safe here: constructing an
 // inert plugin (no options, no loader, no preload) mints no State, so it can't disturb the
@@ -322,6 +322,53 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const rewritten = await captureThenLoad(tmp, { captureGraph, loadGraph: graph([['./hello.js', 'src/hello.js']]) })
     t.assert.notEqual(rewritten.status, 0)
     t.assert.match(rewritten.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) is not attested by the bundle/)
+  }))
+
+  test('bundle=load fails when Metro resolves an asset import to another attested asset', withTmp(async (t, tmp) => {
+    const assets = (logoTarget) => ({
+      modules: [
+        { path: 'src/entry.js', deps: [['./logo.png', logoTarget], ['./icon.svg', 'src/icon.svg']] },
+        { path: 'src/logo.png', deps: [] },
+        { path: 'src/icon.svg', deps: [] },
+      ],
+    })
+    cpSync(assetsFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    const bundlePath = join(tmp, 'snapshot.br')
+    const opts = (lock, bundle) => withOpts({ lock, bundle, bundleFile: bundlePath, resources: ['png', 'svg'] })
+    const cap = await run('src/entry.js', { cwd: tmp, graph: assets('src/logo.png'), env: opts('add', 'add') })
+    t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    const same = await run('src/entry.js', { cwd: tmp, graph: assets('src/logo.png'), env: opts('frozen', 'load') })
+    t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
+    const redirected = await run('src/entry.js', { cwd: tmp, graph: assets('src/icon.svg'), env: opts('frozen', 'load') })
+    t.assert.notEqual(redirected.status, 0)
+    t.assert.match(redirected.stderr, /observed resolution '\.\/logo\.png' from src\/entry\.js \(\*\) mismatches the bundle/)
+  }))
+
+  test('bundle=load checks a per-platform edge for the platform Metro builds', withTmp(async (t, tmp) => {
+    // A bundle `stasis bundle --metro --platforms=...` added to carries { platform: file } edges;
+    // the mock graph builds for ios.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    const bundlePath = join(tmp, 'snapshot.br')
+    const env = { EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_BUNDLE_FILE: bundlePath }
+    const cap = await run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_BUNDLE: 'add' } })
+    t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    rmSync(join(tmp, 'stasis.lock.json')) // the bundle alone is the trust root for the edited edge
+    const captured = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    const loadWith = (target) => {
+      captured.imports['*']['src/entry.js']['./hello.js'] = target
+      writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(captured)))
+      return run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'none', EXODUS_STASIS_BUNDLE: 'load' } })
+    }
+    const ios = await loadWith({ android: 'src/entry.js', ios: 'src/hello.js' })
+    t.assert.equal(ios.status, 0, `stderr: ${ios.stderr}`)
+    const android = await loadWith({ android: 'src/hello.js', ios: 'src/entry.js' })
+    t.assert.notEqual(android.status, 0)
+    t.assert.match(android.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) mismatches the bundle/)
+    const web = await loadWith({ web: 'src/hello.js' })
+    t.assert.notEqual(web.status, 0)
+    t.assert.match(web.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) is not attested for platform 'ios' by the bundle/)
   }))
 
   test('bundle=load in node_modules scope tolerates an unknown edge from a workspace file, not from a package', withTmp(async (t, tmp) => {
@@ -826,8 +873,9 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.ok(lock.sources['.'].files['src/icon.svg'].startsWith('sha512-'), 'svg hash-attested')
     t.assert.equal(lock.formats['src/icon.svg'], 'resource', 'UTF-8 asset tagged "resource"')
     t.assert.equal(lock.formats['src/logo.png'], 'resource:base64', 'binary asset tagged "resource:base64"')
-    // Resource imports carry no resolution edge (matches webpack/esbuild).
-    t.assert.deepStrictEqual(lock.imports, {})
+    // Resource imports are resolved like code ones and carry an edge, as `stasis bundle --metro` and
+    // the esbuild plugin record them.
+    t.assert.deepStrictEqual(lock.imports, { '*': { 'src/entry.js': { './icon.svg': 'src/icon.svg', './logo.png': 'src/logo.png' } } })
 
     // Bundle: all three files live together; resources are tagged in formats.
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))

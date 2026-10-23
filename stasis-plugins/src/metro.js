@@ -414,25 +414,28 @@ export class StasisMetro {
   // bundle=load: Metro resolved every import itself (the loader and the esbuild/webpack plugins
   // take theirs from the bundle), so before any output each edge must be the one the bundle attests
   // -- the edges a capture records, from the same modules.
+  // A per-platform edge (a `stasis bundle --metro --platforms=...` bundle added to) is checked for the
+  // platform Metro builds.
   #assertEdges(graph, preModules) {
+    const platform = graph.transformOptions?.platform ?? undefined
     for (const module of [...(preModules ?? []), ...graph.dependencies.values()]) {
       const modPath = diskPath(module)
       if (modPath === undefined) continue
       const url = pathToFileURL(modPath).toString()
-      for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target)
+      for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
     }
   }
 
   // A module's outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
   // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis transformer
-  // (./metro-transformer.js) carries the ones written in the source.
-  // Only code targets get an edge (resource imports are captured as files, no edge).
+  // (./metro-transformer.js) carries the ones written in the source. Code and resource targets alike,
+  // as `stasis bundle --metro` and the esbuild plugin record them: an asset is resolved as code is.
   #edges(module) {
     const edges = []
     for (const dep of module.dependencies?.values?.() ?? []) {
       const target = dep?.absolutePath
       if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
-      if (classifyExtension(target, this.#resources) !== 'code') continue
+      if (classifyExtension(target, this.#resources) === 'unknown') continue
       for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
         if (typeof specifier === 'string') edges.push([specifier, pathToFileURL(target).toString()])
       }
