@@ -43,6 +43,10 @@ export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfi
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
+// The entry flags that run the project's code (its Babel config, its metro-resolver, cargo, which runs
+// what its .cargo/config.toml names). Set in stasis.config.json, they take effect only with the flag
+// given too, as consent: the config can't make a bare `stasis bundle` run anything.
+const CONSENT_FLAGS = new Set(['babel', 'metro-resolver', 'cargo'])
 
 // `entry` as a path relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
@@ -246,7 +250,8 @@ export function readBundleConfig(cwd = process.cwd(), host = diskHost) {
 // bundleCommand's options for bundling `entries` with the parsed flags `values` in `cwd`, whose
 // stasis.config.json's `bundle` is `config` (readBundleConfig's). Where it names every entry, each is
 // built with its options there, the ones with the same options together (a build each), and none
-// may be given as a flag but the bundle's own (OUTPUT_FLAGS). Where it names none, they are all
+// may be given as a flag but the bundle's own (OUTPUT_FLAGS) and the consent to a CONSENT_FLAGS
+// option, which an entry setting it needs and some entry must set. Where it names none, they are all
 // built with the flags; it may not name only some. A usage error throws.
 export function bundlePlan({ cwd = process.cwd(), entries, values, config = null }) {
   const lang = entriesLanguage(entries, cwd)
@@ -258,11 +263,21 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   if (unnamed !== undefined) {
     throw new Error(`${CONFIG_FILE}'s bundle names ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
   }
-  const flag = Object.keys(values).find((name) => !OUTPUT_FLAGS.has(name))
+  const flag = Object.keys(values).find((name) => !OUTPUT_FLAGS.has(name) && !CONSENT_FLAGS.has(name))
   if (flag !== undefined) throw new Error(`--${flag} can't be given for ${configured[0]}, whose options ${CONFIG_FILE}'s bundle sets: set it there`)
+  const named = keys.map((key) => config.get(key))
+  for (const consent of CONSENT_FLAGS) {
+    if (values[consent] && !named.some(({ values: flags }) => flags[consent])) {
+      throw new Error(`--${consent} is given, but ${CONFIG_FILE}'s bundle sets ${consent} for none of ${entries.join(', ')}`)
+    }
+  }
   const builds = new Map()
   for (const [i, entry] of entries.entries()) {
-    const { entry: name, values: flags } = config.get(keys[i])
+    const { entry: name, values: flags } = named[i]
+    const unconsented = [...CONSENT_FLAGS].find((consent) => flags[consent] && !values[consent])
+    if (unconsented !== undefined) {
+      throw new Error(`${CONFIG_FILE}: bundle ${JSON.stringify(name)} sets ${unconsented}, which runs the project's code: pass --${unconsented} to allow it`)
+    }
     let options
     try {
       options = buildOptions(flags, entriesLanguage([entry], cwd))

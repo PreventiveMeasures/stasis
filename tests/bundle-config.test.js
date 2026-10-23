@@ -104,6 +104,9 @@ test('bundlePlan builds unnamed entries with the flags, as without the config', 
   t.assert.equal(plan.metro, false)
   t.assert.equal(plan.output, 'x.br')
   t.assert.equal(plan.builds, undefined)
+  // Its consent rules don't apply either: a flag that runs the project's code is just the flag.
+  const consented = bundlePlan({ cwd: tmp, entries: ['cli.js', 'b.js'], values: { metro: true, platforms: ['ios'], 'metro-resolver': true, babel: true }, config: readBundleConfig(tmp) })
+  t.assert.deepStrictEqual([consented.entries, consented.metroResolver, consented.babel], [['cli.js', 'b.js'], true, true])
 }))
 
 test('bundlePlan builds named entries with their own options, the same ones together', withTmp((t, tmp) => {
@@ -131,6 +134,26 @@ test('bundlePlan refuses flags for named entries, and naming only some', withTmp
   writeTree(tmp, { 'stasis.config.json': { bundle: { 'index.js': { metro: true } } } })
   t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readBundleConfig(tmp) }),
     { message: 'stasis.config.json: bundle "index.js": --metro requires --platforms (e.g. --platforms=ios,android)' })
+}))
+
+test('bundlePlan takes an option that runs the project\'s code from the config only with its flag as consent', withTmp((t, tmp) => {
+  project(tmp, {
+    'index.js': { metro: true, platforms: 'ios', 'metro-resolver': true },
+    'cli.js': { metro: true, platforms: 'ios' },
+    'b.js': {},
+  })
+  const config = readBundleConfig(tmp)
+  // Set for an entry, but not given.
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: {}, config }),
+    { message: 'stasis.config.json: bundle "index.js" sets metro-resolver, which runs the project\'s code: pass --metro-resolver to allow it' })
+  // Given, but set for none of the entries.
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['cli.js', 'b.js'], values: { 'metro-resolver': true }, config }),
+    { message: "--metro-resolver is given, but stasis.config.json's bundle sets metro-resolver for none of cli.js, b.js" })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: { 'metro-resolver': true, babel: true }, config }),
+    { message: "--babel is given, but stasis.config.json's bundle sets babel for none of index.js" })
+  // Given, and set for some: it applies to those alone.
+  const plan = bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: { 'metro-resolver': true }, config })
+  t.assert.deepStrictEqual(plan.builds.map((b) => [b.entries, b.metroResolver]), [[['index.js'], true], [['cli.js'], false]])
 }))
 
 test('bundleCommand builds each of builds and writes their union: bundle:metro beside bundle', withTmp(async (t, tmp) => {
@@ -200,6 +223,11 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
   const r = await runCli(['bundle', '--jsx', 'index.js'], tmp)
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Error: --jsx can't be given for index\.js, whose options stasis\.config\.json's bundle sets/u)
+  // An option that runs the project's code needs its flag as consent.
+  writeTree(tmp, { 'stasis.config.json': { bundle: { 'index.js': { metro: true, platforms: 'ios', babel: true } } } })
+  const unconsented = await runCli(['bundle'], tmp)
+  t.assert.equal(unconsented.status, 1)
+  t.assert.match(unconsented.stderr, /Error: stasis\.config\.json: bundle "index\.js" sets babel, which runs the project's code: pass --babel to allow it/u)
   // An entry it doesn't name takes flags, as without it.
   const plain = await runCli(['bundle', '--mainFields=main', '--output=plain.br', 'cli.js'], tmp)
   t.assert.equal(plain.status, 0, plain.stderr)
