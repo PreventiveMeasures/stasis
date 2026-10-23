@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
@@ -12,6 +12,9 @@ import { realReadFileSync, realReaddirSync } from '@exodus/stasis-core/state-uti
 import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
+
+// The companion worker transformer withStasis() wires as Metro's `transformerPath`.
+const TRANSFORMER = fileURLToPath(new URL('./metro-transformer.js', import.meta.url))
 
 // Metro's `graph.entryPoints` is a Set now, an Array before ~0.71; normalize to a Set.
 function entrySet(graph) {
@@ -111,15 +114,15 @@ function metroDefaultSerializer() {
 
 // Stasis capture plugin for Metro (React Native). Hooks Metro's serializer, which runs ONCE in
 // the MAIN process with the full module graph -- a per-worker transformer's process-local State
-// could never be merged. This is the CAPTURE half; the LOAD half is the companion
-// ./metro-transformer.js. Wire both permanently (withStasis + transformerPath); the mode picks
-// the active one, and under bundle=load this serializer is a transparent pass-through.
+// could never be merged. This is the CAPTURE half; the companion ./metro-transformer.js runs in
+// the workers, recording each import as written and serving the LOAD half, and withStasis wires
+// both. Under bundle=load this serializer is a transparent pass-through.
 // Capture is one-shot (dev-server rebuilds refused, see #run) and REQUIRES --child-process so the
 // worker-side toolchain (babel, RN preset) is attested (enforced in the constructor). withStasis
 // wires the stable customSerializer -- the only surface that receives preModules; serializerHook
 // is a lower-coverage fallback that never sees them. Prefer withStasis for a second reason too: a
-// hand-wired serializer leaves the Metro config -- and therefore its transform cache -- out of
-// stasis's hands (see withStasis).
+// hand-wired serializer leaves the Metro config -- and therefore its transform cache and
+// transformerPath -- out of stasis's hands (see withStasis).
 export class StasisMetro {
   #seen = new Set()
   #state
@@ -413,15 +416,18 @@ export class StasisMetro {
       }
       const url = pathToFileURL(modPath).toString()
 
-      // Outgoing edges: as-written specifier is `dep.data.name`, target `dep.absolutePath`.
+      // Outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
+      // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis
+      // transformer (./metro-transformer.js) carries the ones written in the source.
       // Only code targets get an edge (resource imports are captured as files, no edge).
       for (const dep of module.dependencies?.values?.() ?? []) {
         const target = dep?.absolutePath
-        const specifier = dep?.data?.name
         if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
-        if (typeof specifier !== 'string') continue
         if (classifyExtension(target, this.#resources) !== 'code') continue
-        this.#state.addImport(url, specifier, pathToFileURL(target).toString())
+        for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
+          if (typeof specifier !== 'string') continue
+          this.#state.addImport(url, specifier, pathToFileURL(target).toString())
+        }
       }
 
       if (this.#seen.has(modPath)) continue
@@ -441,7 +447,8 @@ export class StasisMetro {
 
 // Idiomatic Metro-config wrapper: returns a new config with `serializer.customSerializer` wired
 // so stasis captures the graph + preModules while your existing serializer (or Metro's default)
-// still produces the bundle, and with Metro's transform cache dropped so the workers really run.
+// still produces the bundle, with Metro's transform cache dropped so the workers really run, and
+// with Metro's transformer run through stasis's (./metro-transformer.js).
 // Pure -- returns a new object, doesn't mutate `config`.
 export function withStasis(config = {}, options = {}) {
   const stasis = new StasisMetro(options, { ownsConfig: true })
@@ -474,9 +481,18 @@ export function withStasis(config = {}, options = {}) {
       'transform skips the worker, leaving the toolchain it loads unattested'
     )
   }
+  // The workers run the project's transformer through stasis's, which records each import as
+  // written, before Babel rewrites it, and serves bundle=load: handed over in `transformer`, which
+  // Metro passes to each worker's transformer as is. In every active mode, load included, so the
+  // modules a worker loads are the same when recorded and when replayed.
+  const transformer = stasis.needsTransforms && {
+    transformerPath: TRANSFORMER,
+    transformer: { ...config.transformer, stasisBaseTransformerPath: config.transformerPath },
+  }
   return {
     ...config,
     ...(dropCache && { cacheStores: [] }),
+    ...transformer,
     serializer: {
       ...config.serializer,
       customSerializer: stasis.customSerializer(existing),

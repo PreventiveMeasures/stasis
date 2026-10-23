@@ -10,7 +10,7 @@
 
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -239,4 +239,122 @@ test('getCacheKey marks load when activated via stasis.config.json, not just env
   const r = transform(['--cache-key'], { cwd: tmp, env: {} })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.match(r.stdout, /load:/, 'config-file-activated load is keyed as load mode, not "off"')
+}))
+
+// --- As written: the specifiers a Babel plugin rewrote, kept for the serializer -------------
+//
+// Driven through a stand-in for metro-transform-worker (metro-mock-worker.cjs), which hands the
+// source to `babelTransformerPath` and collects dependencies from the AST it gets back, over the
+// workspace's real @babel/core + babel-plugin-module-resolver (v3).
+
+const mockWorker = join(here, 'metro-mock-worker.cjs')
+
+// A project aliasing `#local` to ./src through module-resolver, its babel.config.js laid out as a
+// React Native one is: a plugin erasing each Flow import of types alone during the traversal, as
+// flow-strip-types does, and a preset lowering every other import to a require once the traversal
+// is done (Program exit), as @babel/plugin-transform-modules-commonjs does in the RN preset -- so
+// the import declarations are gone by the time Babel returns. The type imports are aliased to the
+// file index.js requires by path, which they must not count as written through the alias.
+// `lowerAmongPlugins` lists the lowering first among the config's own plugins instead, so that it
+// runs before the stasis plugin Metro passes.
+const babelAliasProject = (tmp, { lowerAmongPlugins = false } = {}) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'babel-alias', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), `const typesOnly = (node) =>
+  node.importKind === 'type' || (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.importKind === 'type'))
+const stripTypes = () => ({
+  visitor: {
+    ImportDeclaration(path) {
+      if (typesOnly(path.node)) path.remove()
+    },
+  },
+})
+const lower = ({ types: t }) => ({
+  visitor: {
+    Program: {
+      exit(path) {
+        for (const statement of path.get('body')) {
+          if (!statement.isImportDeclaration()) continue
+          statement.replaceWith(t.expressionStatement(t.callExpression(t.identifier('require'), [t.cloneNode(statement.node.source)])))
+        }
+      },
+    },
+  },
+})
+module.exports = ${lowerAmongPlugins ? `{
+  parserOpts: { plugins: ['flow'] },
+  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+}` : `{
+  parserOpts: { plugins: ['flow'] },
+  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+  presets: [() => ({ plugins: [lower] })],
+}`}
+`)
+  writeFileSync(join(tmp, 'index.js'), [
+    "import abc from '#local/abc'",
+    "import same from './src/abc'",
+    "import type { Def } from '#local/def'",
+    "import { type Def2 } from '#local/def'",
+    "const def = require('./src/def')",
+    "const ghi = require('#local/ghi')",
+    'export default [abc, same, def, ghi]',
+    '',
+  ].join('\n'))
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
+  writeFileSync(join(tmp, 'src', 'def.js'), 'module.exports = 2\n')
+  writeFileSync(join(tmp, 'src', 'ghi.js'), 'module.exports = 3\n')
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+}
+
+// Metro's transformer config as withStasis() hands it over: the project's transformer, and its
+// Babel transformer, named relative to that (metro-transform-worker requires a name from its own dir).
+const handedOver = { stasisBaseTransformerPath: mockWorker, babelTransformerPath: './metro-mock-babel-transformer.cjs' }
+const stasisBabelTransformer = join(here, '..', 'stasis-plugins', 'src', 'metro-babel-transformer.js')
+
+for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
+  ['sync Babel transformer', {}],
+  ['async Babel transformer', { babelAsync: true }],
+  ['imports lowered by a plugin listed before it', { lowerAmongPlugins: true }],
+]) {
+  test(`a dependency Babel rewrote carries the specifiers written in the source (${variant})`, withTmp((t, tmp) => {
+    babelAliasProject(tmp, { lowerAmongPlugins })
+    const r = transform(['index.js'], {
+      cwd: tmp,
+      env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver), ...(babelAsync && { STASIS_TEST_BABEL_ASYNC: '1' }) },
+    })
+    t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+    const [out] = JSON.parse(r.stdout)
+    // The project's transformer runs on its own config, the stasis Babel transformer standing in.
+    t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
+    // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
+    // './src/def' only for the path (the type imports are erased).
+    t.assert.deepStrictEqual(out.dependencies, [
+      { name: './src/abc', data: { key: './src/abc' }, stasisAsWritten: ['#local/abc', './src/abc'] },
+      { name: './src/def', data: { key: './src/def' } },
+      { name: './src/ghi', data: { key: './src/ghi' }, stasisAsWritten: ['#local/ghi'] },
+    ])
+  }))
+}
+
+test('a project transformer that is this one itself, wired by hand as well, gives way to Metro\'s default', withTmp((t, tmp) => {
+  // withStasis() hands over the project's transformerPath, which a project that wired
+  // @exodus/stasis/metro-transformer by hand points at this transformer: running it as its own
+  // base would wrap the Babel transformer in itself, endlessly.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'self-base', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), 'module.exports = {}\n')
+  writeFileSync(join(tmp, 'index.js'), "require('./a')\n")
+  // Metro's default, as the project's own node_modules has it.
+  mkdirSync(join(tmp, 'node_modules', 'metro-transform-worker'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'metro-transform-worker', 'index.js'), `module.exports = require(${JSON.stringify(mockWorker)})\n`)
+  const config = {
+    stasisBaseTransformerPath: join(here, '..', 'stasis', 'src', 'metro-transformer.js'),
+    babelTransformerPath: join(here, 'metro-mock-babel-transformer.cjs'),
+  }
+  const r = transform(['index.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(config) } })
+  t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+  const [out] = JSON.parse(r.stdout)
+  t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
+  t.assert.deepStrictEqual(out.dependencies, [{ name: './a', data: { key: './a' } }])
 }))

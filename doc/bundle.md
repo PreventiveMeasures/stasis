@@ -200,6 +200,10 @@ instance of the plugin the config lists counts, by name or as a `require`d or
 imported value, the first to map a path winning as in Babel; one a preset brings
 in does not. Not with `github-bundle`.
 
+The Metro plugin keys its edges the same way: `withStasis()` runs Metro's
+transformer through stasis's, which records each import as written, before any
+Babel plugin rewrites it.
+
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js
 ```

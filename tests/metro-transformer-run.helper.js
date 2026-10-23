@@ -8,12 +8,14 @@
 //
 // Usage:
 //   node tests/metro-transformer-run.helper.js <project-relative-file> [...]
-//       -> prints JSON [{ file, received, filename }, ...]
+//       -> prints JSON [{ file, ...what the base transformer returned }, ...]
 //   node tests/metro-transformer-run.helper.js --cache-key
 //       -> prints the transformer's getCacheKey({})
-// STASIS_TEST_DISK_BYTES -- the "on-disk" bytes handed to transform() (default sentinel).
+// STASIS_TEST_DISK_BYTES -- the "on-disk" bytes handed to transform() (default: the file's own).
+// STASIS_TEST_TRANSFORMER_CONFIG (JSON) -- Metro's transformer config handed to transform() (default {}).
 
 import { Buffer } from 'node:buffer'
+import { readFileSync } from 'node:fs'
 
 const args = process.argv.slice(2)
 if (args.length === 0) {
@@ -26,13 +28,15 @@ const t = await import('../stasis/src/metro-transformer.js')
 if (args[0] === '--cache-key') {
   process.stdout.write(t.getCacheKey({}))
 } else {
-  const diskBytes = process.env.STASIS_TEST_DISK_BYTES ?? '<<<DISK-PLACEHOLDER>>>'
+  const diskBytes = process.env.STASIS_TEST_DISK_BYTES
+  const config = JSON.parse(process.env.STASIS_TEST_TRANSFORMER_CONFIG ?? '{}')
   // Mirror Metro's worker call: (config, projectRoot, filename, data, options),
   // filename project-relative, data = the bytes Metro read from disk. Promise.all
   // preserves argv order in the output.
   const out = await Promise.all(args.map(async (file) => {
-    const result = await t.transform({}, process.cwd(), file, Buffer.from(diskBytes), { dev: false, platform: 'ios' })
-    return { file, received: result.received, filename: result.filename }
+    const data = diskBytes === undefined ? readFileSync(file) : Buffer.from(diskBytes)
+    const result = await t.transform(config, process.cwd(), file, data, { dev: false, platform: 'ios' })
+    return { file, ...result }
   }))
   process.stdout.write(JSON.stringify(out))
 }

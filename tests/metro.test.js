@@ -126,6 +126,28 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
 
+  test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    // Metro names it by the rewrite ('./hello.js'), written in the source both through an alias and
+    // as that path; the stasis worker transformer carries both.
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js', ['#local/hello', './hello.js']]] },
+        { path: 'src/hello.js', deps: [] },
+      ],
+    }
+    const env = { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' }
+    const r = await run('src/entry.js', { cwd: tmp, env, graph })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['src/entry.js'], { '#local/hello': 'src/hello.js', './hello.js': 'src/hello.js' })
+
+    // And a frozen run over the same graph verifies against them.
+    const frozen = await run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'frozen' }, graph })
+    t.assert.equal(frozen.status, 0, `stderr: ${frozen.stderr}`)
+  }))
+
   test('lock=add is idempotent against the committed lockfile', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     const before = readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8')
@@ -472,6 +494,23 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(r.stdout, /^CACHE_STORES_INPUT=\["user-store"\]$/m, 'withStasis must not mutate the input config')
   }))
 
+  test('withStasis runs the project\'s transformer through stasis\'s, handing it over in the transformer config', withTmp(async (t, tmp) => {
+    // stasis's transformer records each import as written in the workers (and serves bundle=load).
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    const env = { ...withOpts({ lock: 'add' }), STASIS_TEST_METRO_MODE: 'withStasis', STASIS_TEST_REPORT_TRANSFORMER: '1' }
+    const custom = await run('src/entry.js', { cwd: tmp, env: { ...env, STASIS_TEST_METRO_TRANSFORMER_PATH: '/project/transform-worker.js' } })
+    t.assert.equal(custom.status, 0, `stderr: ${custom.stderr}`)
+    const wired = join(here, '..', 'stasis-plugins', 'src', 'metro-transformer.js')
+    t.assert.ok(custom.stdout.includes(`TRANSFORMER_PATH=${wired}\n`), custom.stdout)
+    t.assert.match(custom.stdout, /^TRANSFORMER=\{"stasisBaseTransformerPath":"\/project\/transform-worker\.js"\}$/m)
+    // A config naming none leaves Metro's default to the stasis transformer.
+    const plain = await run('src/entry.js', { cwd: tmp, env })
+    t.assert.equal(plain.status, 0, `stderr: ${plain.stderr}`)
+    t.assert.ok(plain.stdout.includes(`TRANSFORMER_PATH=${wired}\n`), plain.stdout)
+    t.assert.match(plain.stdout, /^TRANSFORMER=\{\}$/m)
+  }))
+
   test('withStasis drops the Metro transform cache under bundle=load too', withTmp(async (t, tmp) => {
     // Load mode used to keep the cache, on the theory that a hit costs no attestation because the
     // transform derives from the bundle's bytes. It costs something else: the cache decides which
@@ -498,12 +537,14 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       env: {
         EXODUS_STASIS_LOCK: 'frozen', EXODUS_STASIS_SCOPE: 'full',
         EXODUS_STASIS_BUNDLE: 'load', EXODUS_STASIS_BUNDLE_FILE: bundlePath,
-        STASIS_TEST_METRO_MODE: 'withStasis', STASIS_TEST_REPORT_CACHE_STORES: '1',
+        STASIS_TEST_METRO_MODE: 'withStasis', STASIS_TEST_REPORT_CACHE_STORES: '1', STASIS_TEST_REPORT_TRANSFORMER: '1',
         STASIS_TEST_METRO_CACHE_STORES: JSON.stringify(['user-store']),
       },
     })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     t.assert.match(r.stdout, /^CACHE_STORES=\[\]$/m, 'a replay must load the same modules a capture did')
+    // Likewise the transformer, which a replay needs anyway: it serves the bundle's bytes.
+    t.assert.match(r.stdout, /^TRANSFORMER_PATH=.*[\\/]stasis-plugins[\\/]src[\\/]metro-transformer\.js$/m)
     t.assert.match(r.stderr, /ignoring the `cacheStores` in your Metro config/, 'the override must be announced')
   }))
 
@@ -600,6 +641,9 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       // Nor may it invent a cacheStores field: an inert plugin dropping the transform cache would
       // silently slow down (and change the cache semantics of) a build stasis isn't even capturing.
       t.assert.equal('cacheStores' in bare, false, 'an inert plugin must not touch cacheStores')
+      // Nor its transformer: a plain build runs Metro's own, never stasis's.
+      t.assert.equal('transformerPath' in bare, false, 'an inert plugin must not touch transformerPath')
+      t.assert.equal('transformer' in bare, false, 'an inert plugin must not touch the transformer config')
     } finally {
       if (saved === undefined) delete process.env.EXODUS_STASIS_LOCK
       else process.env.EXODUS_STASIS_LOCK = saved
@@ -1452,7 +1496,7 @@ process.exit(1)
     //
     // To pin the contract against reality (fast-follow): add `metro` as a devDependency and,
     // gated on it resolving, run a real `metro build` over a fixture with BOTH halves wired
-    // permanently (`withStasis(config)` + top-level `transformerPath`) -- once to capture, then
+    // (`withStasis(config)` wires the transformer too) -- once to capture, then
     // again with EXODUS_STASIS_BUNDLE=load on the same config -- asserting the lockfile/bundle
     // round-trips. The mock is the verified surface today.
   })
