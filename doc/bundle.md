@@ -144,6 +144,15 @@ Node's conditions, `main`, extension and index probing.
   in that order, including the `browser` field's object form (file redirection
   and `false` stubs). Always a full-scope bundle.
 
+An import that doesn't resolve fails the build if the entries load it eagerly,
+through static `import` and `export … from` chains. Behind a `require()` or
+`import()`, where load can catch the failure, it is only a warning, and it
+falls through at load. An import that resolves to a file outside the project
+root is treated the same way, and that file is never carried. A typical case is
+a lazy `require('typescript')` for an optional peer dependency hoisted above a
+package whose stasis files root the bundle there: it is left out, with a
+warning that names it.
+
 ### Conditions
 
 The conditions each mode asserts for `exports` and `imports` maps (`default`

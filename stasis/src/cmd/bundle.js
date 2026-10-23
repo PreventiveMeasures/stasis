@@ -671,25 +671,78 @@ function describeUnresolved(u, show) {
   return `${u.kind} ${u.spec ?? '<dynamic>'} from ${show(u.parentURL)} (${u.reason}${typescript})`
 }
 
+// Static ESM import/export-from edges load eagerly before user code, so a failure there is
+// uncatchable; one below a require()/dynamic-import() boundary is catchable.
+const STATIC_KINDS = new Set(['import', 'export-from'])
+
+// The files the entries link eagerly, through static edges alone.
+function eagerlyLinked(scanner) {
+  const linked = new Set(scanner.entries)
+  const walk = [...scanner.entries]
+  while (walk.length > 0) {
+    for (const e of scanner.files.get(walk.shift())?.edges ?? []) {
+      if (STATIC_KINDS.has(e.kind) && e.child && !linked.has(e.child)) {
+        linked.add(e.child)
+        walk.push(e.child)
+      }
+    }
+  }
+  return linked
+}
+
+// The scan within the project root (`within(url)`), since a bundle can't carry a file outside it.
+// One the entries link eagerly is returned in `outside`, for the caller to refuse. One reached
+// only past a require()/import() boundary is left out, with whatever only it reaches, and its edges
+// are returned in `leftOut`, misses that load can catch as it does an unresolved one: an optional
+// peer dependency's lazy require() reaching a copy hoisted above a root that a stasis file pins, say.
+function withinRoot(scanner, within) {
+  const outside = [...eagerlyLinked(scanner)].filter((url) => scanner.files.has(url) && !within(url))
+  if (outside.length > 0) return { scanner, outside, leftOut: [] }
+  const kept = new Set([...scanner.entries].filter((url) => scanner.files.has(url)))
+  const walk = [...kept]
+  while (walk.length > 0) {
+    for (const e of scanner.files.get(walk.shift())?.edges ?? []) {
+      if (e.child && scanner.files.has(e.child) && !kept.has(e.child) && within(e.child)) {
+        kept.add(e.child)
+        walk.push(e.child)
+      }
+    }
+  }
+  if (kept.size === scanner.files.size) return { scanner, outside, leftOut: [] }
+  const leftOut = []
+  const files = new Map()
+  for (const url of kept) {
+    const info = scanner.files.get(url)
+    const edges = info.edges.map((e) => {
+      if (!e.child || within(e.child)) return e
+      const { child, ...rest } = e
+      leftOut.push({ parentURL: url, kind: e.kind, spec: e.spec, outsideURL: child })
+      return { ...rest, error: 'outside the project root' }
+    })
+    files.set(url, { ...info, edges })
+  }
+  const imports = new Map()
+  for (const [key, byParent] of scanner.imports) {
+    const parents = new Map()
+    for (const [parentURL, specMap] of byParent) {
+      if (!files.has(parentURL)) continue
+      const specs = new Map([...specMap].filter(([, childURL]) => within(childURL)))
+      if (specs.size > 0) parents.set(parentURL, specs)
+    }
+    if (parents.size > 0) imports.set(key, parents)
+  }
+  const unresolved = scanner.unresolved.filter((u) => files.has(u.parentURL))
+  const parseErrors = scanner.parseErrors.filter((p) => files.has(p.url))
+  return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, outside, leftOut }
+}
+
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
 // vs tolerated (a catchable runtime miss). Shared so the plain and --mainFields JS paths
 // gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
 function analyzeScanner(scanner, { baseDir }) {
   const show = (url) => displayPath(url, baseDir)
-  // Static ESM import/export-from edges load eagerly before user code, so a failure there is
-  // uncatchable (fatal); misses below a require()/dynamic-import() boundary are catchable (warn).
-  const staticKinds = new Set(['import', 'export-from'])
-  const staticReachable = new Set(scanner.entries)
-  const walk = [...scanner.entries]
-  while (walk.length > 0) {
-    for (const e of scanner.files.get(walk.shift())?.edges ?? []) {
-      if (staticKinds.has(e.kind) && e.child && !staticReachable.has(e.child)) {
-        staticReachable.add(e.child)
-        walk.push(e.child)
-      }
-    }
-  }
-  const fatalUnresolved = (u) => staticKinds.has(u.kind) && staticReachable.has(u.parentURL)
+  const staticReachable = eagerlyLinked(scanner)
+  const fatalUnresolved = (u) => STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL)
   const fatal = scanner.unresolved
     .filter((u) => fatalUnresolved(u))
     .map((u) => `unresolved ${describeUnresolved(u, show)}`)
@@ -716,7 +769,7 @@ function analyzeScanner(scanner, { baseDir }) {
 
 // Throw on fatal scan issues; warn on tolerated ones. `label` tags the scan pass; `baseDir`
 // relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages.
-function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', baseDir }) {
+function reportScanIssues({ fatal, tolerated, toleratedParse, leftOut = [] }, { label = '', baseDir, root = '' }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
   // The first 10 of `items` as indented lines (`line` renders one), then how many more there are.
@@ -734,6 +787,11 @@ function reportScanIssues({ fatal, tolerated, toleratedParse }, { label = '', ba
   if (toleratedParse.length > 0) {
     const summary = listed(toleratedParse, (p) => `${show(p.url)}: ${p.message}`)
     console.warn(`[stasis] Bundle has ${toleratedParse.length} file(s) with parse errors${where}; their recorded imports may be incomplete:\n${summary}`)
+  }
+  if (leftOut.length > 0) {
+    // The file outside the root by its path from the cwd, as the refusal of one linked eagerly names it.
+    const summary = listed(leftOut, (u) => `${u.kind} ${u.spec} from ${show(u.parentURL)} (at ${relative(baseDir, fileURLToPath(u.outsideURL))})`)
+    console.warn(`[stasis] Bundle leaves out ${leftOut.length} import(s) of files outside the project root${root}${where}; they will fall through at load time:\n${summary}`)
   }
 }
 
@@ -786,10 +844,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
 
-  const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host })
-
-  // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
-  reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir })
+  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host })
 
   // Materialise via a non-preload State: addFile bucketizes + records sources/formats,
   // addImport replays the edge map; serialize emits the runtime loader's v1 layout.
@@ -800,19 +855,22 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   let state = new State(baseDir, { ...stateOptions, env })
   // A root holding a stasis file is the project's own choice, whose config the build takes.
   if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {
-    const root = innermostRootOf(baseDir, [...scanner.files.keys()].map((url) => host.realpath(fileURLToPath(url))), state.root, host)
+    const root = innermostRootOf(baseDir, [...scanned.files.keys()].map((url) => host.realpath(fileURLToPath(url))), state.root, host)
     // The State's walk up from cwd stops at PROJECT_CWD, as it does where yarn sets it.
     if (root !== state.root) state = new State(baseDir, { ...stateOptions, env: { ...env, PROJECT_CWD: root } })
   }
-  // Named here rather than as the State's bare assertion: a stasis file in a directory below the
-  // project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
-  for (const url of scanner.files.keys()) {
-    const file = fileURLToPath(url)
-    if (!relativeEscapes(relative(state.root, file))) continue
-    const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
-    const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
-    throw new Error(`buildJsBundle: ${relative(baseDir, file)} is outside the project root at ${relative(baseDir, state.root) || '.'}${rootedBy}`)
+  // Only what lies within the root is carried (see withinRoot). One the entries link eagerly is
+  // refused, named here rather than as the State's bare assertion: a stasis file in a directory below
+  // the project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
+  const { scanner, outside, leftOut } = withinRoot(scanned, (url) => !relativeEscapes(relative(state.root, fileURLToPath(url))))
+  const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
+  const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
+  const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy}`
+  for (const url of outside) {
+    throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
   }
+  // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
+  reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, root })
   for (const [url, info] of scanner.files) {
     // A resource carries bytes only: addFile derives resource vs resource:base64 from the content
     // and stores it under `resources` (a resource can't be an entry, so no isEntry).
@@ -1043,15 +1101,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // is the root; a file below neither is outside it. (Realpathed only when needed, so a missing cwd
   // is still the scan's missing entry.)
   let realRoot
-  const toRel = (abs) => {
+  const relWithin = (abs) => {
     let rel = toPosix(relative(baseDir, abs))
     if (relativeEscapes(rel)) {
       realRoot ??= host.realpath(baseDir)
       rel = toPosix(relative(realRoot, abs))
     }
-    if (relativeEscapes(rel)) {
-      throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
-    }
+    return relativeEscapes(rel) ? null : rel
+  }
+  const toRel = (abs) => {
+    const rel = relWithin(abs)
+    if (rel === null) throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
     return rel
   }
 
@@ -1097,8 +1157,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
-    const scanner = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
-    reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
+    const scanned = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
+    // Only what lies within the root is carried; one the entries link eagerly is refused (see withinRoot).
+    const { scanner, outside, leftOut } = withinRoot(scanned, (url) => relWithin(fileURLToPath(url)) !== null)
+    for (const url of outside) toRel(fileURLToPath(url))
+    reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     for (const [url, info] of scanner.files) {
