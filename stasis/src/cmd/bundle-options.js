@@ -4,6 +4,7 @@ import { diskHost } from '@exodus/stasis-core/host'
 import { readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
+import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry } from './bundle.js'
 
 const CONFIG_FILE = 'stasis.config.json'
@@ -27,6 +28,7 @@ export const BUNDLE_FLAGS = {
   tsconfig: { type: 'string' },
   resources: { type: 'string' },
   'package-json': { type: 'boolean' },
+  define: { type: 'string', multiple: true },
   cargo: { type: 'boolean' },
   'cargo-features': { type: 'string', multiple: true },
   'cargo-no-default-features': { type: 'boolean' },
@@ -36,13 +38,16 @@ export const BUNDLE_FLAGS = {
   'brotli-quality': { type: 'string' },
   add: { type: 'boolean' },
 }
-export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
+export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--define', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
 
 // The flags saying where and how the bundle is written. Every other one says how its entries are
 // built, which stasis.config.json's `entries` sets per entry instead.
 const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
+// The entry flags given once per value, which a comma doesn't separate (a define's JSON value may
+// hold one): an entry's options give them as an array, or one as a string.
+const REPEATED_FLAGS = new Set(['define'])
 // The entry flags that run a program -> what they run. Set in stasis.config.json, they take effect
 // only with the same flag given too (a value one, with the same value), as consent: the config can't
 // make a bare `stasis bundle` run anything.
@@ -192,7 +197,11 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (babel && !metro) throw new Error('--babel is only valid with --metro')
   // metro-resolver can't substitute .js -> .ts, so --typescript would silently not apply -- reject it.
   if (typescript && metroResolver) throw new Error("--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
-  return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  // --define=KEY=VALUE: a global's value (JSON), repeatable; the scan leaves out the imports of the
+  // branches the values keep from running (`if (__DEV__)` under __DEV__=false). JS-only.
+  if (values.define !== undefined && !allJs) throw new Error('--define is only valid for JS bundles')
+  const define = values.define === undefined ? undefined : parseDefineFlags(null, values.define)
+  return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
 }
 
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
@@ -208,7 +217,8 @@ function outputOptions(values, { allJs }) {
 
 // An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in
 // parseArgs' shape: `true` for a boolean flag set (`false`, its default, is no flag), a string for one
-// taking a value, which a list flag takes as an array too, and an array of it for a repeatable one.
+// taking a value, which a list flag takes as an array too, and an array of it for a repeatable one
+// (each of a REPEATED_FLAGS one's values, as given).
 function entryFlags(what, options) {
   if (!isPlainObject(options)) throw new Error(`${what} must be an object of stasis bundle options`)
   const values = {}
@@ -221,8 +231,13 @@ function entryFlags(what, options) {
       if (value) values[flag] = true
       continue
     }
-    const list = LIST_FLAGS.has(flag) && Array.isArray(value) && value.every((v) => typeof v === 'string')
-    if (typeof value !== 'string' && !list) throw new Error(`${what}: ${flag} must be a string${LIST_FLAGS.has(flag) ? ' or an array of strings' : ''}`)
+    const takesArray = LIST_FLAGS.has(flag) || REPEATED_FLAGS.has(flag)
+    const list = takesArray && Array.isArray(value) && value.every((v) => typeof v === 'string')
+    if (typeof value !== 'string' && !list) throw new Error(`${what}: ${flag} must be a string${takesArray ? ' or an array of strings' : ''}`)
+    if (REPEATED_FLAGS.has(flag)) {
+      values[flag] = [value].flat()
+      continue
+    }
     const text = list ? value.join(',') : value
     values[flag] = multiple ? [text] : text
   }

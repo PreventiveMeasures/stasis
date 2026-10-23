@@ -293,6 +293,113 @@ test('scan reports dynamic require() as unresolved', withTmp((t, tmp) => {
   t.assert.ok(result.unresolved[0].parentURL.endsWith('/dyn.cjs'))
 }))
 
+// The files a scan of `entry` under `define` reaches, by name.
+const reached = (entry, define) => [...scan([entry], { define }).files.keys()].map((url) => basename(url)).toSorted()
+
+// One file per branch: `x.js` is reached exactly where the branch that requires it can run.
+const writeBranches = (dir, entry, source, names) => {
+  writeFileSync(join(dir, entry), source)
+  for (const name of names) writeFileSync(join(dir, `${name}.js`), `module.exports = '${name}'\n`)
+}
+
+test('scan define leaves out the imports of the branches the defined values keep from running', withTmp((t, tmp) => {
+  const names = ['dev', 'prod', 'ternaryDev', 'ternaryProd', 'and', 'or', 'typeofDev', 'neDev', 'looseEq', 'dynamicImport', 'nested', 'elseIf']
+  writeBranches(tmp, 'entry.cts', [
+    "if (__DEV__) { require('./dev.js') } else { require('./prod.js') }",
+    "module.exports = __DEV__ ? require('./ternaryDev.js') : require('./ternaryProd.js')",
+    "__DEV__ && require('./and.js')",
+    "!__DEV__ || require('./or.js')",
+    "if (typeof __DEV__ !== 'undefined' && (__DEV__ as boolean)) require('./typeofDev.js')",
+    "if ('production' !== process.env.NODE_ENV) require('./neDev.js')",
+    "if ((process.env).NODE_ENV == `development`) require('./looseEq.js')",
+    "if (__DEV__) import('./dynamicImport.js')",
+    "if (__DEV__) { if (process.env.NODE_ENV === 'production') require('./nested.js') }",
+    "if (process.env.NODE_ENV === 'test') {} else if (!__DEV__) require('./elseIf.js')",
+    // A dynamic require the define keeps from running is no unresolved edge either.
+    'if (__DEV__) require(process.env.TOOL)',
+  ].join('\n'), names)
+  const entry = join(tmp, 'entry.cts')
+  t.assert.deepStrictEqual(reached(entry), ['entry.cts', ...names.map((n) => `${n}.js`)].toSorted(), 'every branch is walked without a define')
+  t.assert.deepStrictEqual(reached(entry, { __DEV__: false, 'process.env.NODE_ENV': 'production' }),
+    ['entry.cts', 'prod.js', 'ternaryProd.js', 'elseIf.js'].toSorted())
+  t.assert.deepStrictEqual(reached(entry, { __DEV__: true, 'process.env.NODE_ENV': 'development' }),
+    ['entry.cts', 'dev.js', 'ternaryDev.js', 'and.js', 'or.js', 'typeofDev.js', 'neDev.js', 'looseEq.js', 'dynamicImport.js'].toSorted())
+  t.assert.equal(scan([entry], { define: { __DEV__: false } }).unresolved.length, 0)
+  t.assert.equal(scan([entry], { define: { __DEV__: true } }).unresolved.length, 1)
+}))
+
+// What it can't fold, nor be sure Metro's constant folding would, after inlining the same values.
+test('scan define walks both sides of a test it can\'t fold', withTmp((t, tmp) => {
+  writeBranches(tmp, 'entry.cjs', [
+    "if (debug && __DEV__) require('./a.js')", // `debug` is no define
+    "if (__DEV__ === debug) require('./b.js')",
+    "if (process.env.DEBUG) require('./c.js')", // a path the define doesn't give
+    "if (process.env.NODE_ENV.length) require('./d.js')", // a property of the value
+    "if (__DEV__ > 0) require('./e.js')", // an operator it doesn't fold
+    "if (process.env['NODE_ENV'] !== 'production') require('./g.js')", // not the path as written
+    "if (process.env?.NODE_ENV !== 'production') require('./h.js')",
+    "if (void require('./i.js')) require('./j.js')", // a void of no literal
+    "if (__DEV__ || isDebug()) require('./k.js')", // a call: Metro never folds one
+    // What React Native's Babel transforms make Metro unable to fold: `??` an assignment, and a
+    // `typeof` compared with no string, or with 'object' or 'symbol', a call.
+    "process.env.NODE_ENV ?? require('./l.js')",
+    "if (typeof __DEV__) require('./m.js')",
+    "if (typeof __DEV__ === 'object') require('./n.js')",
+    "if (typeof __DEV__ === `boolean`) require('./o.js')",
+    "if (__DEV__) require('./f.js')",
+  ].join('\n'), ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o'])
+  t.assert.deepStrictEqual(reached(join(tmp, 'entry.cjs'), { __DEV__: false, 'process.env.NODE_ENV': 'production' }),
+    ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'entry.cjs', 'g.js', 'h.js', 'i.js', 'j.js', 'k.js', 'l.js', 'm.js', 'n.js', 'o.js'])
+}))
+
+test('scan define leaves a name the file binds or writes itself to the file', withTmp((t, tmp) => {
+  const own = {
+    'const.cjs': 'const __DEV__ = true',
+    'param.cjs': 'function f(__DEV__) {}',
+    'pattern.cjs': 'const { a: [__DEV__] } = {}',
+    'assign.cjs': '__DEV__ = true',
+    'import.mjs': "import { env as __DEV__ } from 'node:process'",
+    'process.cjs': 'const process = globalThis.process',
+    'env.cjs': 'process.env = {}',
+    'nodeEnv.cjs': "process.env.NODE_ENV = 'development'",
+    'computedEnv.cjs': "process.env[name] = 'development'",
+  }
+  for (const [file, binding] of Object.entries(own)) {
+    writeBranches(tmp, file, `${binding}\nif (__DEV__ || process.env.NODE_ENV !== 'production') require('./dev.js')\n`, ['dev'])
+    t.assert.ok(reached(join(tmp, file), { __DEV__: false, 'process.env.NODE_ENV': 'production' }).includes('dev.js'), `${file}: ${binding}`)
+  }
+  // A name the file binds keeps only that define from applying; one it merely declares for the
+  // type checker, or a path beside the define's that it writes, keeps none.
+  const other = {
+    'declare.ts': 'declare const __DEV__: boolean\ndeclare global { var __DEV__: boolean }',
+    'otherEnv.cjs': "process.env.DEBUG = '1'",
+  }
+  for (const [file, binding] of Object.entries(other)) {
+    writeBranches(tmp, file, `${binding}\nif (__DEV__ || process.env.NODE_ENV !== 'production') require('./dev.js')\n`, ['dev'])
+    t.assert.ok(!reached(join(tmp, file), { __DEV__: false, 'process.env.NODE_ENV': 'production' }).includes('dev.js'), `${file}: ${binding}`)
+  }
+  writeBranches(tmp, 'shadowedDev.cjs', "const __DEV__ = true\nif (__DEV__) require('./dev.js')\nif (process.env.NODE_ENV !== 'production') require('./prod.js')\n", ['dev', 'prod'])
+  t.assert.deepStrictEqual(reached(join(tmp, 'shadowedDev.cjs'), { __DEV__: false, 'process.env.NODE_ENV': 'production' }), ['dev.js', 'shadowedDev.cjs'])
+}))
+
+test('scan define keeps static imports, and leaves out the right of a test it folds that never runs', withTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'x', version: '0.0.0', type: 'module' }))
+  writeBranches(tmp, 'entry.js', [
+    "import './a.js'",
+    "if (__DEV__) await import('./b.js')",
+    "if (__DEV__ && import('./c.js')) import('./d.js')",
+    "if (void 0) import('./e.js')",
+  ].join('\n'), ['a', 'b', 'c', 'd', 'e'])
+  t.assert.deepStrictEqual(reached(join(tmp, 'entry.js'), { __DEV__: false }), ['a.js', 'entry.js'])
+}))
+
+test('scan define refuses a name or value it can\'t fold', (t) => {
+  t.assert.throws(() => new Scan({ define: { 'process.env[0]': 'x' } }), /--define names an identifier or a dotted path of them/u)
+  t.assert.throws(() => new Scan({ define: { __DEV__: {} } }), /--define's value for __DEV__ must be a string, number, boolean or null, not \{\}/u)
+  t.assert.throws(() => new Scan({ define: { __DEV__: undefined } }), /not undefined/u)
+  t.assert.throws(() => new Scan({ define: ['__DEV__=false'] }), /define must be an object of each name's value/u)
+})
+
 // Set of `parent -> child` file edges. We compare on edges rather than full triples
 // because Node's CJS->ESM bridge rewrites a `require('./hello.cjs')` specifier into a
 // `file:` URL before our resolve hook sees it, while the static scan keeps the source

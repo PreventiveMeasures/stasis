@@ -5,10 +5,12 @@ import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
 import { classifyExtension, classifyFormat, isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
 import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
-// Dynamic specifiers (`require(name)`, `import('./'+x)`) are recorded as unresolved.
+// Dynamic specifiers (`require(name)`, `import('./'+x)`) are recorded as unresolved. With
+// `define`, a branch the defined values keep from running is not walked (see define.js).
 
 // .jsx/.tsx need no flag: oxc parses them as JSX/TSX purely from the filename, so a reached one
 // -- e.g. a package whose React Native entry is src/index.tsx -- is parsed and carried like any .ts.
@@ -74,7 +76,9 @@ export function literalSpec(node) {
 }
 
 // Walks require()/import() calls only; ESM static imports/re-exports come from oxc module records.
-function findCallSpecifiers(ast, push) {
+// `fold` (define.js's branchFolder, or null) names the children of a branch whose test folds: the
+// side that can't run is never walked.
+function findCallSpecifiers(ast, push, fold = null) {
   const visit = (node) => {
     if (!node || typeof node !== 'object') return
     if (Array.isArray(node)) {
@@ -82,6 +86,11 @@ function findCallSpecifiers(ast, push) {
       return
     }
     if (typeof node.type !== 'string') return
+    const live = fold?.(node)
+    if (live !== undefined) {
+      for (const c of live) visit(c)
+      return
+    }
 
     if (node.type === 'CallExpression') {
       const { callee, arguments: args } = node
@@ -120,8 +129,9 @@ function findCallSpecifiers(ast, push) {
 // -- still loads its module, so its edge is real. oxc's module records can't draw that line
 // (`import type { A }` and `import { type A }` yield identical all-isType entries, and
 // `export {} from` yields no entry at all), so the statements are read off the AST, where
-// importKind/exportKind carry it.
-function collectSpecifiers(program) {
+// importKind/exportKind carry it. `defines` (parseDefine's) leave out the calls in branches they
+// keep from running; static import statements are never in one.
+function collectSpecifiers(program, defines = new Map()) {
   const specs = []
   for (const node of program.body) {
     if (node.type === 'ImportDeclaration') {
@@ -132,7 +142,7 @@ function collectSpecifiers(program) {
       if (node.exportKind !== 'type') specs.push({ kind: 'export-from', spec: node.source.value })
     }
   }
-  findCallSpecifiers(program, (s) => specs.push(s))
+  findCallSpecifiers(program, (s) => specs.push(s), branchFolder(defines, program))
   return specs
 }
 
@@ -200,7 +210,9 @@ export class Scan {
   // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
   // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
   // `host`: the filesystem the walk reads and resolves through (@exodus/stasis-core/host).
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), host = diskHost } = {}) {
+  // `define` (each global name -> its value, see define.js): a require()/import() in a branch they
+  // keep from running (`if (__DEV__)` under `{ __DEV__: false }`) is no edge.
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, host = diskHost } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.typescriptResolve = typescriptResolve
@@ -209,6 +221,7 @@ export class Scan {
     this.typescript = typescript
     this.typescriptPaths = typescriptPaths
     this.resources = resources
+    this.defines = parseDefine('scan', define)
     this.host = host
   }
 
@@ -434,7 +447,7 @@ export class Scan {
       this.parseErrors.push({ url, format, message: parseError, recovered: true })
     }
 
-    const specs = collectSpecifiers(parsed.program)
+    const specs = collectSpecifiers(parsed.program, this.defines)
 
     // The edge KIND picks the resolution context, not the parent's format: createRequire()d
     // require() inside ESM resolves under REQUIRE conditions, literal import() inside CJS under

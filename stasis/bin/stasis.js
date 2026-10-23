@@ -20,7 +20,7 @@ assert(basename(jsname) === 'stasis' || pathsEqual(jsname, fileURLToPath(import.
 
 const HELP = `Usage:
  stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
- stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+ stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
@@ -228,11 +228,12 @@ if (command === '-v' || command === '--version') {
     typescript: { type: 'boolean' },
     tsconfig: { type: 'string' },
     resources: { type: 'string' },
+    define: { type: 'string', multiple: true },
     'package-json': { type: 'boolean' },
     'brotli-quality': { type: 'string' },
     generate: { type: 'string', multiple: true },
   }, {
-    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--brotli-quality', '--generate', '-o'],
+    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--define', '--brotli-quality', '--generate', '-o'],
     onError: fail,
   })
   if (values.github === undefined) fail('Error: github-bundle requires --github=owner/name, the repo to bundle')
@@ -243,6 +244,15 @@ if (command === '-v' || command === '--version') {
   if (values['brotli-quality'] !== undefined) {
     try {
       brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
+    } catch (cause) {
+      fail(`Error: ${cause.message}`)
+    }
+  }
+  let define
+  if (values.define !== undefined) {
+    const { parseDefineFlags } = await import('../src/define.js')
+    try {
+      define = parseDefineFlags(null, values.define)
     } catch (cause) {
       fail(`Error: ${cause.message}`)
     }
@@ -273,6 +283,7 @@ if (command === '-v' || command === '--version') {
     typescript: Boolean(values.typescript),
     tsconfig: values.tsconfig,
     resources: values.resources === undefined ? undefined : list(values.resources),
+    define,
     packageJSON: Boolean(values['package-json']),
     generate: list(values.generate),
     brotliQuality,

@@ -7,8 +7,8 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
@@ -35,6 +35,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
+| `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. See [Defines](#defines---define). |
 | `--package-json` | Also bundle each bundled module's `package.json`, even ones the scan never reached. |
 | `--brotli-quality=0..11` | Compression level, default `9`. |
 
@@ -91,7 +92,9 @@ directory, and its value the flags building it, named as they are without the
 A boolean flag takes `true` or `false` (its default, as leaving it out is); one
 taking a value, a string as on the command line, and one taking a list
 (`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an
-array of strings too. `output`, `lockfile`, `brotli-quality` and `add` say how
+array of strings too. `define`, repeated rather than comma-separated, takes an
+array of its `K=V` strings (`["__DEV__=false", "process.env.NODE_ENV=\"production\""]`),
+or one. `output`, `lockfile`, `brotli-quality` and `add` say how
 the bundle is written, not how an entry is built, so they stay flags.
 
 With it:
@@ -268,6 +271,10 @@ The Metro plugin keys its edges the same way: `withStasis()` runs Metro's
 transformer through stasis's, which records each import as written, before any
 Babel plugin rewrites it.
 
+What only a dev build imports (`if (__DEV__) require(...)`) is bundled too,
+unless `--define` gives the values a release build inlines: see
+[Defines](#defines---define).
+
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js
 ```
@@ -324,6 +331,55 @@ is stored verbatim, for `stasis build --loader=.js:jsx` to transform later: see
 parse and retries, so the import graph resolves; the stored source stays the
 original bytes. It needs the optional `flow-remove-types` dependency, and
 combines with `--jsx`, `--conditions`, `--mainFields` and `--metro`.
+
+## Defines (`--define`)
+
+`--define=KEY=VALUE` gives a global the value the build gives it, and the scan
+leaves out what only the code that value keeps from running imports:
+
+```sh
+stasis bundle --metro --platforms=ios,android --define=__DEV__=false --define=process.env.NODE_ENV='"production"' index.js
+```
+
+With those, `if (__DEV__) require('./devtools')` reaches nothing, and a package
+picking its build by `process.env.NODE_ENV === 'production'`, as React does,
+reaches only its production build.
+
+- KEY is an identifier or a dotted path of them, matched as written:
+  `process.env.NODE_ENV`, not `process.env['NODE_ENV']` or
+  `process.env?.NODE_ENV`. VALUE is JSON, as esbuild's `--define` takes it: a
+  string, quoted (`'"production"'` in a shell), a number, `true`, `false` or
+  `null`. Repeat the flag for each.
+- What is left out is the side of an `if`/`else` or `?:`, or the right of `&&`
+  or `||`, that a test it folds to a constant keeps from running. A test folds
+  where it is built of the defined names, literals, `!`, `void 0`, `===`, `!==`,
+  `==` and `!=`, and `typeof` compared with a string (other than `'object'` or
+  `'symbol'`). A test it can't fold (`debug && __DEV__`, one making a call, or
+  `??`) keeps both sides, as without `--define`. A static `import` is never in
+  a branch, and is always followed.
+- A file that binds a defined name itself (`const __DEV__ = ...`, a parameter,
+  an import, `const process = ...`) or writes to it (`process.env.NODE_ENV =
+  ...`, `process.env = {}`) keeps its own: there the define doesn't apply. A
+  TypeScript `declare const __DEV__: boolean` binds nothing.
+
+Metro's release build (`dev: false`) inlines `__DEV__` as `false` and
+`process.env.NODE_ENV` as `"production"`, folds away the branches they decide,
+and only then collects a file's dependencies. Its dev build inlines neither.
+So under `--metro`, those two defines bundle what a release build reaches, and
+no define what a dev build reaches. The scan folds only tests Metro's constant
+folding folds too, and leaves alone those React Native's Babel transforms keep
+it from folding: `??`, which becomes an assignment, and a `typeof` compared
+with anything but a string, which becomes a call. So the bundle carries every
+file Metro's graph holds. Metro may fold tests the scan doesn't; what those
+import is carried anyway. A name a Babel plugin of the project inlines
+(`babel-plugin-transform-define`, Expo's `process.env.EXPO_OS`) can be defined
+the same way. One the build doesn't inline leaves out files Metro still
+bundles.
+
+A bundle built with defines holds what those values run, and no more. Where
+they don't hold (a dev build against a bundle built for release, or
+`stasis run --bundle=load` under another `NODE_ENV`), an import of a file it
+left out fails, as an import of any file the bundle doesn't carry does.
 
 ## Resources and manifests
 

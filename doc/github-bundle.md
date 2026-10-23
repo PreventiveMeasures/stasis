@@ -20,7 +20,7 @@ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=
 | `--generate=prisma` | Generate each project's Prisma Client first. See [Prisma](#prisma---generateprisma). |
 | `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
-| [`stasis bundle`'s options](bundle.md) | For the entries: `--conditions`, `--mainFields`, `--metro --platforms`, `--jsx`, `--flow`, `--typescript`, `--tsconfig`, `--resources`, `--package-json`, `--scope`, `--brotli-quality`, and `--mapping`/`--manifests` for Solidity. Not `--metro-resolver`, `--cargo*` or `--add`. |
+| [`stasis bundle`'s options](bundle.md) | For the entries: `--conditions`, `--mainFields`, `--metro --platforms`, `--jsx`, `--flow`, `--typescript`, `--tsconfig`, `--resources`, `--define`, `--package-json`, `--scope`, `--brotli-quality`, and `--mapping`/`--manifests` for Solidity. Not `--metro-resolver`, `--cargo*` or `--add`. |
 
 ```sh
 stasis github-bundle --github=owner/name --sha=0123abc src/index.js
