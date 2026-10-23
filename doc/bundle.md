@@ -220,6 +220,16 @@ from Node's and esbuild's:
   through its own `main`, not the root `exports`.
 - A relative import takes the map of the package closest to its target.
 - A package can import its own name through its own `exports`.
+- `exports` and `imports` maps read as Metro reads them. A map with any target
+  not starting `./` (a package name, a `../` path) is refused whole, as is an
+  `imports` map with a key not starting `#`; an `exports` target with an empty,
+  `.`, `..` or `node_modules` segment is refused on its own. A fallback array
+  takes its first entry in `exports` and serves nothing in `imports`, a `null`
+  subpath falls through to a matching pattern, and a target names its file
+  exactly, with no extension or `index` probing. Where a map serves nothing,
+  resolution falls back to the files: for a `#` specifier, the importer's
+  `browser`/`react-native` map, then `node_modules`. A `#` specifier from a
+  package with no `imports` resolves nowhere.
 - A directory in `node_modules` that resolves to nothing gives way to the next
   `node_modules` up, but a package whose `main` resolves to nothing fails, as
   in Metro, without falling back to its root `index`.
