@@ -8,6 +8,7 @@ import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { importsTypescriptByOutputName, scan } from '../scan.js'
+import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
@@ -758,6 +759,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // resolution to its on-disk TS source (tsc's rules; see resolve-typescript.js), honouring the
 // `paths` aliases of `tsconfig` (an explicit config path, default each package's tsconfig.json); it
 // is taken as given where the entries import TS sources by output name (importsTypescriptByOutputName).
+// `define` gives globals their values, a branch they keep from running reaching nothing (define.js).
 // Files are read through `host` (@exodus/stasis-core/host), the disk by default; EXODUS_STASIS_*
 // settings from `env`. With `innermostRoot`, the State is rooted at the innermost package at or
 // above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
@@ -766,7 +768,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // one of `outputsAt(root)` (the absolute paths the build writes, given the root its paths are
 // relative to), resources by `resources` where given, else by the config's; from disk alone, as
 // Node's glob reads it.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [] } = {}) {
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [] } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
   }
@@ -784,7 +786,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
 
-  const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, host })
+  const scanner = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host })
 
   // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
   reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir })
@@ -1002,7 +1004,7 @@ function metroEmptyModule(baseDir, host) {
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
 // are fieldBuildOptions'. Returns { bundle, lockfile }.
-async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro = false, metroResolver = false, babel = false, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, packageJSON = false, host = diskHost }) {
+async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro = false, metroResolver = false, babel = false, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
@@ -1064,7 +1066,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : null
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
-    const scanner = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, host })
+    const scanner = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
     reportScanIssues(analyzeScanner(scanner, { baseDir }), { baseDir, label: platform ?? 'mainFields' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
@@ -1325,7 +1327,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
 // errors. A directory entry (resolved against `cwd`, on `host`) stands for the .sol files under it: Solidity only.
-function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched }) {
+function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error(`${name}: at least one entry file is required`)
   }
@@ -1390,6 +1392,10 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   // entries are scanned.
   if (jsx && kind !== 'js') {
     throw new Error(`${name}: --jsx is only valid for JS bundles`)
+  }
+  // --define folds the globals it gives in the JS scan's branch tests; no other language is scanned for them.
+  if (parseDefine(name, define).size > 0 && kind !== 'js') {
+    throw new Error(`${name}: --define is only valid for JS bundles`)
   }
   // --package-json folds each bundled module's npm package.json in; JS-only (the sol/php/bash/rust
   // bucketizers group by their own ecosystems' manifests, not an npm package.json).
@@ -1486,7 +1492,7 @@ function withExtra(built, cwd, outputs, resources) {
 // managers' records name (pinInstalledCommits). `outputsAt(root)` are the absolute paths the build
 // writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
-async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
+async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, outputs, buildResources) : built)
@@ -1494,7 +1500,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
   if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
   if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, extra, outputsAt })
+  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
   if (!built.stateBuilt) built = withExtraOf(built, resources)
   pinInstalledCommits(built.bundle, built.root)
   return built
@@ -1572,9 +1578,11 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
 // writing to disk. Files are attributed to the `bundle` consumer (`bundle:metro` with `metro`).
 // Option applicability (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|
-// --flow|--typescript/JS) is enforced by classifyEntries.
-export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+// --flow|--typescript|--define/JS) is enforced by classifyEntries. `define` gives globals their
+// values (`{ __DEV__: false, 'process.env.NODE_ENV': 'production' }`), whose dead branches' imports
+// are left out (see define.js).
+export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   return (await buildOfKind(classifyEntries('buildBundle', options), options)).bundle
 }
 
@@ -1588,8 +1596,8 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // of `entries` and the options building them, is several builds' (each `{ entries, ...options }`,
 // as stasis.config.json's `bundle` gives an entry its own, see bundle-options.js), whose bundles
 // (and lockfiles) are one's: their strict union, rooted where every one of them is.
-export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds } = {}) {
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   if (builds !== undefined) {
     if (!Array.isArray(builds) || builds.length === 0) throw new TypeError('bundleCommand: builds must be a non-empty array')
     const given = Object.entries(options).find(([key, value]) => !['cwd', 'env'].includes(key) && value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))

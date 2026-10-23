@@ -2214,6 +2214,50 @@ test('buildBundle rejects conditions for non-JS entries', async (t) => {
   )
 })
 
+// An app requiring a dev tool behind __DEV__, and a package picking its build by NODE_ENV, as React's does.
+const writeDefineProject = (dir) => {
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'index.js': "if (__DEV__) require('devtool')\nmodule.exports = require('lib')\n",
+    'node_modules/devtool/package.json': { name: 'devtool', version: '1.0.0' },
+    'node_modules/devtool/index.js': "module.exports = require('./inspector.js')\n",
+    'node_modules/devtool/inspector.js': 'module.exports = 1\n',
+    'node_modules/lib/package.json': { name: 'lib', version: '2.0.0' },
+    'node_modules/lib/index.js': "if (process.env.NODE_ENV === 'production') module.exports = require('./lib.production.js')\nelse module.exports = require('./lib.development.js')\n",
+    'node_modules/lib/lib.production.js': 'module.exports = 1\n',
+    'node_modules/lib/lib.development.js': 'module.exports = 2\n',
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true })
+    writeFileSync(join(dir, rel), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+}
+
+test('buildBundle (JS) define leaves out what only the branches it keeps from running import, under Node and --metro', withTmp(async (t, tmp) => {
+  writeDefineProject(tmp)
+  const files = async (options) => [...(await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })).sources.keys()].toSorted()
+  const release = { __DEV__: false, 'process.env.NODE_ENV': 'production' }
+  const releaseFiles = ['index.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.production.js']
+  t.assert.deepStrictEqual(await files({ define: release }), releaseFiles)
+  t.assert.deepStrictEqual(await files({ define: release, metro: true, platforms: ['ios', 'android'] }), releaseFiles)
+  t.assert.deepStrictEqual(await files({ define: release, mainFields: ['browser', 'main'] }), releaseFiles)
+  t.assert.deepStrictEqual(await files({ define: { __DEV__: true, 'process.env.NODE_ENV': 'development' } }),
+    ['index.js', 'node_modules/devtool/index.js', 'node_modules/devtool/inspector.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.development.js'])
+  // Without a define, every branch's imports are bundled.
+  t.assert.equal((await files({})).length, 6)
+}))
+
+test('buildBundle rejects define for non-JS entries, and a define it can\'t fold', async (t) => {
+  await t.assert.rejects(
+    () => buildBundle({ cwd: join(fixtures, 'basic'), entries: ['src/A.sol'], define: { __DEV__: false } }),
+    /^Error: buildBundle: --define is only valid for JS bundles$/,
+  )
+  await t.assert.rejects(
+    () => buildBundle({ cwd: conditionsFixture, entries: ['src/entry.js'], define: { __DEV__: [false] } }),
+    /^Error: buildBundle: --define's value for __DEV__ must be a string, number, boolean or null, not \[false\]$/,
+  )
+})
+
 cliTest('CLI: bundle --conditions selects the matching exports branch', withTmp(async (t, tmp) => {
   const out = join(tmp, 'snap.br')
   const r = await runCli(['bundle', '--conditions=react-native,browser', `--output=${out}`, 'src/entry.js'], { cwd: conditionsFixture })

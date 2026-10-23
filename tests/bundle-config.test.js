@@ -261,3 +261,69 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
   t.assert.equal(plain.status, 0, plain.stderr)
   t.assert.deepStrictEqual(Object.keys(readBundle(join(tmp, 'plain.br')).reason), ['bundle'])
 }))
+
+test('readConfigEntries reads an entry\'s define as the --define flags it gives, each one whole', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'stasis.config.json': {
+      entries: {
+        'index.js': { define: ['__DEV__=false', 'process.env.NODE_ENV="production,min"'] },
+        'cli.js': { define: '__DEV__=true' },
+      },
+    },
+  })
+  t.assert.deepStrictEqual([...readConfigEntries(tmp)].map(([key, { values }]) => [key, values]), [
+    ['index.js', { define: ['__DEV__=false', 'process.env.NODE_ENV="production,min"'] }],
+    ['cli.js', { define: ['__DEV__=true'] }],
+  ])
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { define: { __DEV__: false } } } } })
+  t.assert.throws(() => readConfigEntries(tmp), /entries "index\.js": define must be a string or an array of strings/u)
+}))
+
+test('bundlePlan parses --define, and builds entries whose defines differ apart', withTmp((t, tmp) => {
+  const plan = bundlePlan({ cwd: tmp, entries: ['index.js'], values: { define: ['__DEV__=false', 'process.env.NODE_ENV="production"', 'LEVEL=2', 'TAG=null'] } })
+  t.assert.deepStrictEqual(plan.define, { __DEV__: false, 'process.env.NODE_ENV': 'production', LEVEL: 2, TAG: null })
+  t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: {} }).define, undefined)
+  const refused = (values, entries, message) => t.assert.throws(() => bundlePlan({ cwd: tmp, entries, values }), { message })
+  refused({ define: ['__DEV__'] }, ['index.js'], '--define must be KEY=VALUE (e.g. --define=__DEV__=false), not "__DEV__"')
+  refused({ define: ['=false'] }, ['index.js'], '--define must be KEY=VALUE (e.g. --define=__DEV__=false), not "=false"')
+  refused({ define: ['process.env.NODE_ENV=production'] }, ['index.js'],
+    '--define\'s value for process.env.NODE_ENV must be JSON: a string, quoted (--define=process.env.NODE_ENV=\'"production"\'), a number, true, false or null, not "production"')
+  refused({ define: ['__DEV__=[]'] }, ['index.js'], '--define\'s value for __DEV__ must be a string, number, boolean or null, not []')
+  refused({ define: ['process.env["X"]=1'] }, ['index.js'], '--define names an identifier or a dotted path of them (e.g. __DEV__, process.env.NODE_ENV), not "process.env[\\"X\\"]"')
+  refused({ define: ['A=1', 'A=2'] }, ['index.js'], '--define gives A a value twice')
+  refused({ define: ['A=1'] }, ['src/A.sol'], '--define is only valid for JS bundles')
+
+  project(tmp, {
+    'index.js': { define: ['__DEV__=false'] },
+    'cli.js': { define: '__DEV__=true' },
+    'b.js': { define: ['__DEV__=false'] },
+  })
+  const builds = bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js', 'b.js'], values: {}, config: readConfigEntries(tmp) }).builds
+  t.assert.deepStrictEqual(builds.map((b) => [b.entries, b.define]), [[['index.js', 'b.js'], { __DEV__: false }], [['cli.js'], { __DEV__: true }]])
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: { define: ['__DEV__=true'] }, config: readConfigEntries(tmp) }),
+    { message: "--define can't be given for index.js, whose options stasis.config.json's entries set: set it there" })
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { define: [] } } } })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
+    { message: 'stasis.config.json: entries "index.js": --define must give at least one KEY=VALUE (e.g. --define=__DEV__=false)' })
+}))
+
+test('CLI: stasis bundle --define leaves out the imports of the branches it keeps from running', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'index.js': "if (__DEV__) require('./dev.js')\nif (process.env.NODE_ENV !== 'production') require('./notProd.js')\nrequire('./b.js')\n",
+    'dev.js': 'module.exports = 1\n',
+    'notProd.js': 'module.exports = 1\n',
+    'b.js': 'module.exports = 1\n',
+  })
+  const r = await runCli(['bundle', '--define=__DEV__=false', '--define', 'process.env.NODE_ENV="production"', '--output=release.br', 'index.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'release.br')).sources.keys()].toSorted(), ['b.js', 'index.js'])
+  // stasis.config.json's entries give it too.
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { define: ['__DEV__=true'] } } } })
+  const configured = await runCli(['bundle', '--output=dev.br'], tmp)
+  t.assert.equal(configured.status, 0, configured.stderr)
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'dev.br')).sources.keys()].toSorted(), ['b.js', 'dev.js', 'index.js', 'notProd.js'])
+  const bad = await runCli(['bundle', '--define=process.env.NODE_ENV=production', 'b.js'], tmp)
+  t.assert.equal(bad.status, 1)
+  t.assert.match(bad.stderr, /Error: --define's value for process\.env\.NODE_ENV must be JSON/u)
+}))
