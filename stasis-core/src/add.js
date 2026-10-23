@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, matchesGlob, posix, relative, resolve } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from './bundle.js'
@@ -185,12 +185,15 @@ function outputMatcher(baseDir, outputs) {
 // and inclusion is monotone: a nearer root's sweep can only ever see FEWER excluded segments,
 // so a path any entry keeps stays kept -- `add src src/examples` includes the subtree it names in
 // either order. `stats` is the walk's own stat, reused by validation. Gotcha: `**/*` skips dotfiles
-// (.env, .git/...) -- name them explicitly.
-function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true } = {}) {
+// (.env, .git/...) -- name them explicitly. A project-relative path `exclude` takes is dropped, named
+// or swept, with everything under it: a named path below one too, and a directory it takes is never walked.
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude = () => false } = {}) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
   const isOutput = outputMatcher(baseDir, outputs)
   for (const rel of rels) {
+    // A walk meets a directory before what's under it, so it checks each path alone; a named one, its directories too.
+    if (rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
     const dirAbs = join(baseDir, rel)
     const stats = statSync(dirAbs, { throwIfNoEntry: false })
     if (stats === undefined || !stats.isDirectory()) {
@@ -198,8 +201,11 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true } =
       continue
     }
     const found = []
-    for (const match of globSync('**/*', { cwd: dirAbs })) {
-      const fileAbs = join(dirAbs, match)
+    // Dirents, for `exclude`: its callback is handed a bare name for a file, but a Dirent knows its parent.
+    const projectPath = (dirent) => toPosix(relative(baseDir, join(dirent.parentPath, dirent.name)))
+    for (const dirent of globSync('**/*', { cwd: dirAbs, withFileTypes: true, exclude: (dirent) => exclude(projectPath(dirent)) })) {
+      const fileAbs = join(dirent.parentPath, dirent.name)
+      const match = relative(dirAbs, fileAbs)
       // A dangling symlink stats as undefined -- skipped, not a hard ENOENT out of the walk.
       const fileStats = statSync(fileAbs, { throwIfNoEntry: false })
       if (fileStats?.isFile()) found.push([toPosix(relative(baseDir, fileAbs)), match, fileStats])
@@ -244,13 +250,18 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // for itself as it does without bash's nullglob (so a missing path is reported missing), then each
 // path as `add` takes it (expandDirectories): a file named or matched is kept, a directory swept.
 // One of `outputs`, the files this very run writes, is never kept, named, matched (`dist/*`) or
-// under another name (outputMatcher).
+// under another name (outputMatcher). A `!` entry (`!ios/Pods`, `!**/xcuserdata`) is no path: it
+// takes out every path its pattern matches, in any order of the entries, along with everything under
+// one that is a directory, which is then never walked. One matching nothing is no error.
 export function expandExtra(baseDir, patterns, outputs) {
-  const entries = patterns.flatMap((pattern) => {
+  // Normalized as the paths they're matched against are: no `./`, no trailing `/`.
+  const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => posix.normalize(pattern.slice(1)).replace(/\/+$/u, ''))
+  const exclude = (rel) => exclusions.some((pattern) => matchesGlob(rel, pattern))
+  const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
     const matches = globSync(pattern, { cwd: baseDir })
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false })
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, ...(exclusions.length > 0 && { exclude }) })
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --

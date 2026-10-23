@@ -311,6 +311,74 @@ test('bundle of a Bash entry takes extra into its own workspace bucket', withTmp
   t.assert.equal(bundle.modules.get('.').name, 'bash-bundle')
 }))
 
+// --- exclusions -------------------------------------------------------------
+
+// An ios/ tree as a build leaves it: the sources beside CocoaPods' and Xcode's output and per-user
+// state, none of which a sweep of `ios` should take (and none of which validates).
+const seedIos = (tmp, extra) => {
+  seed(tmp, { resources: ['png'], extra })
+  const write = (rel, content) => {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  write('ios/Podfile', "platform :ios, '15.0'\n")
+  write('ios/.xcode.env', 'export NODE_BINARY=$(command -v node)\n')
+  write('ios/App/AppDelegate.swift', 'import UIKit\n')
+  write('ios/App/Images.xcassets/icon.png', PNG)
+  write('ios/App.xcodeproj/project.pbxproj', '// !$*UTF8*$!\n{ archiveVersion = 1; }\n')
+  write('ios/App.xcodeproj/xcuserdata/me.xcuserdatad/UserInterfaceState.xcuserstate', 'bplist00')
+  write('ios/Pods/Manifest.lock', 'PODS:\n')
+  write('ios/Pods/Target Support Files/Pods-App/Pods-App.debug.xcconfig', 'FOO = 1\n')
+  write('ios/build/Build/Products/App.app/App', Buffer.from([0xff, 0xfe, 0x00]))
+}
+const IOS_FILES = ['ios/.xcode.env', 'ios/App.xcodeproj/project.pbxproj', 'ios/App/AppDelegate.swift', 'ios/App/Images.xcassets/icon.png', 'ios/Podfile']
+// A file named under an excluded directory is out too (ios/Pods/Manifest.lock).
+const IOS_EXTRA = ['ios', 'ios/.xcode.env', 'ios/Pods/Manifest.lock', '!ios/Pods', '!ios/build/', '!**/xcuserdata', '!ios/DerivedData']
+
+test('extra `!` entries take out what they match, a directory with everything under it', withTmp(async (t, tmp) => {
+  // Without them, the sweep takes in what the build left, which doesn't validate.
+  seedIos(tmp, ['ios', 'ios/.xcode.env'])
+  const unexcluded = runCli(stasisCli, ['run', '--lock=add', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.notEqual(unexcluded.status, 0)
+  t.assert.match(unexcluded.stderr, /extra: 4 files are neither recognized source files nor declared resources/)
+
+  // `!ios/DerivedData` matches nothing, which is no error.
+  seedIos(tmp, IOS_EXTRA)
+  const r = runCli(stasisCli, ['run', '--lock=add', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  const files = [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted()
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files)
+  t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files)
+}))
+
+test('extra `!` entries take out named and matched paths too, in any order', withTmp(async (t, tmp) => {
+  // `assets/*` names assets/examples, swept as a named root (as `stasis add assets/*` would), unless taken out.
+  seed(tmp, { resources: ['png', 'svg'], extra: ['!assets/logo.png', 'assets/*', 'scripts/tool.js', '!./scripts/tool.js', '!assets/README.md', '!assets/examples/'] })
+  const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'src/entry.js', 'src/util.js'])
+}))
+
+test('a directory extra excludes is never walked', withTmp(async (t, tmp) => {
+  // A name holding `\` is refused wherever a walk meets it: the run passes only if ios/Pods is skipped whole.
+  seedIos(tmp, IOS_EXTRA)
+  writeFileSync(join(tmp, 'ios/Pods/odd\\name.m'), '')
+  const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted())
+}))
+
+test('bundle takes extra `!` entries as run does', withTmp(async (t, tmp) => {
+  for (const mainFields of [[], ['--mainFields=main']]) {
+    seedIos(tmp, IOS_EXTRA)
+    const r = runCli(stasisCli, ['bundle', ...mainFields, '--lockfile=stasis.lock.json', 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
+    const files = [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted()
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files, `${mainFields}`)
+    t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files, `${mainFields}`)
+  }
+}))
+
 test('bundle refuses an invalid extra', withTmp(async (t, tmp) => {
   seed(tmp, { extra: ['../outside.js'] })
   const r = runCli(stasisCli, ['bundle', 'src/entry.js'], tmp)
