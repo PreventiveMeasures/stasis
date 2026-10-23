@@ -7,9 +7,11 @@ import { isAbsolute, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
+import { looksNative, nativeInputs } from './metro-native.js'
+import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
-import { realReadFileSync, realReaddirSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { realReadFileSync } from '@exodus/stasis-core/state-util'
+import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -316,7 +318,7 @@ export class StasisMetro {
       } catch {
         continue
       }
-      this.#captureNativeTree(root, true)
+      this.#captureNativeTree(root)
     }
     // RN core's `.js` build scripts the walk skips (Metro-owned by extension, but never in the graph).
     if (typeof rnPath === 'string' && isAbsolute(rnPath)) {
@@ -352,64 +354,16 @@ export class StasisMetro {
       if (!nm || nm.name === 'react-native') continue
       pkgRoots.add(nm.dir)
     }
-    return [...pkgRoots].filter((root) => this.#looksNative(root))
+    return [...pkgRoots].filter((root) => looksNative(root, diskHost))
   }
 
-  #looksNative(root) {
-    if (existsSync(join(root, 'ios')) || existsSync(join(root, 'android'))) return true
-    return this.#hasPodspec(root)
-  }
-
-  // True if any *.podspec exists under `dir`, pruning the same subtrees the capture walk skips.
-  #hasPodspec(dir) {
-    let entries
-    try {
-      entries = realReaddirSync(dir, { withFileTypes: true })
-    } catch {
-      return false
-    }
-    for (const ent of entries) {
-      if (ent.isSymbolicLink()) continue
-      if (ent.isFile()) {
-        if (isPodspec(ent.name)) return true
-      } else if (ent.isDirectory() && !isSkippedNativeWalkDir(ent.name)) {
-        if (this.#hasPodspec(join(dir, ent.name))) return true
-      }
-    }
-    return false
-  }
-
-  // Recursively attest native build-input files under `dir`. Genuine readers (plugin bookkeeping,
-  // not re-recorded by --fs); symlinks not followed (cycle/escape hazard).
-  #captureNativeTree(dir, atRoot = false) {
-    let entries
-    try {
-      entries = realReaddirSync(dir, { withFileTypes: true })
-    } catch {
-      return // dir missing / not a directory -- nothing to walk
-    }
-    for (const ent of entries) {
-      if (ent.isSymbolicLink()) continue
-      const full = join(dir, ent.name)
-      if (ent.isDirectory()) {
-        // Skip build-output subtrees, Apple binary bundles + their loose per-arch slice dirs, and an
-        // off-platform toplevel dir.
-        if (!isSkippedNativeWalkDir(ent.name) && !(atRoot && isExcludedNativeDir(ent.name))) this.#captureNativeTree(full)
-        continue
-      }
-      if (!ent.isFile()) continue // sockets/FIFOs/etc. -- no attestable bytes
-      // Prebuilt binary artifacts are build output, non-deterministic -- never captured.
-      if (isNativeArtifact(ent.name)) continue
-      if (this.#seen.has(full)) continue // already captured as a graph module or auto-include
-      const byName = classifyNativeCapture(ent.name)
-      // Node-runnable JS/TS is captured via Metro's graph, not here (action==='skip').
-      if (byName.action === 'skip') continue
-      const source = realReadFileSync(full)
-      // Byte-level rules (prebuilt binaries, binary plists) -- see refineNativeCapture.
-      const { action, format } = refineNativeCapture(byName, ent.name, source, this.#resources)
-      if (action === 'skip') continue
-      this.#seen.add(full)
-      this.#recordCapture(full, source, { format, resource: action === 'resource' })
+  // Attest the native build inputs of the package at `root` (nativeInputs, shared with `stasis bundle
+  // --metro`), but what is already captured as a graph module or auto-include. Real readers: plugin
+  // bookkeeping, not re-recorded by --fs.
+  #captureNativeTree(root) {
+    for (const { file, source, action, format } of nativeInputs(root, diskHost, { resources: this.#resources, skip: (f) => this.#seen.has(f) })) {
+      this.#seen.add(file)
+      this.#recordCapture(file, source, { format, resource: action === 'resource' })
     }
   }
 

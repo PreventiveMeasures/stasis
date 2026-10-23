@@ -13,11 +13,12 @@ import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases } from '../babel.js'
+import { linkedNativePackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyNativeCapture, hasNodeModulesSegment, isDotEnvFile, isExcludedNativeDir, isExecutableFile, isNativeArtifact, isNativeManifest, isPathWithin, isPlainObject, isPodspec, isSkippedNativeWalkDir, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, refineNativeCapture, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -968,47 +969,6 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 // own; webpack keeps it, as `--conditions` adds to it here.) Node and Metro never assert it.
 const BUNDLER_CONDITIONS = ['module']
 
-// Recursively collect the files under `dirAbs` whose name `keep` takes, skipping build output,
-// symlinks (cycle/escape hazard) and, directly in `dirAbs`, the dirs `skipAtRoot` names. Absolute
-// paths into `out`.
-function walkNative(dirAbs, out, host, keep, skipAtRoot) {
-  let entries
-  try {
-    entries = host.readdir(dirAbs)
-  } catch {
-    return // absent -- nothing for this platform
-  }
-  for (const ent of entries) {
-    if (ent.isSymbolicLink()) continue
-    const full = join(dirAbs, ent.name)
-    if (ent.isDirectory()) {
-      if (!isSkippedNativeWalkDir(ent.name) && !skipAtRoot?.(ent.name)) walkNative(full, out, host, keep)
-    } else if (ent.isFile() && keep(ent.name)) {
-      out.push(full)
-    }
-  }
-}
-
-// The files of a native ios/android dir: all but build artifacts.
-const isNativeSource = (name) => !isNativeArtifact(name)
-
-// Native source files a bundled RN dep contributes to the app's native build (podspecs +
-// ios/android sources). Manifests are kept only when the package is actually native (podspec
-// or ios/android dir), else a JS-only dep's package.json would be pulled in. Deduped absolute paths.
-function nativeModuleFiles(pkgAbs, host) {
-  // Podspec-load manifests: RN's own podspecs live in scattered subdirs a root-only scan would miss,
-  // so recurse fully.
-  const manifests = []
-  walkNative(pkgAbs, manifests, host, isNativeManifest, isExcludedNativeDir)
-  const hasIos = host.stat(join(pkgAbs, 'ios')) !== null
-  const hasAndroid = host.stat(join(pkgAbs, 'android')) !== null
-  if (!hasIos && !hasAndroid && !manifests.some((f) => isPodspec(f))) return []
-  const out = [...manifests]
-  if (hasIos) walkNative(join(pkgAbs, 'ios'), out, host, isNativeSource)
-  if (hasAndroid) walkNative(join(pkgAbs, 'android'), out, host, isNativeSource)
-  return [...new Set(out)]
-}
-
 // The built-in field/suffix resolver (resolve-fields.js) the legacy-field build resolves with on
 // `platform` (null for --mainFields), its `mainFields` (Metro's under --metro), and the conditions
 // it adds to the bundler base (`import`/`require` + `default`, never Node's `node`; see
@@ -1261,9 +1221,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // manifest names one), memoized per directory so a package's many files don't each re-walk to it.
   const packageOf = packageLookup(baseDir, { host })
 
-  // --metro also carries each bundled dependency's native build-input surface (ios/android
-  // sources + podspecs), scoped to the packages in the bundle installed or linked into
-  // node_modules. Native source is stored as code under a language tag; other assets as
+  // --metro also carries the native build inputs of each native package the app links, as the Metro
+  // plugin does: the bundled packages installed or linked into node_modules, and those React Native
+  // links unimported. Native source is stored as code under a language tag; other assets as
   // 'resource'/'resource:base64'.
   if (metro) {
     const pkgDirs = new Map() // package dir -> its package's name
@@ -1334,30 +1294,40 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         }
       }
     }
+    // And the app's packages React Native links whether JS imports them or not (`react-native config`'s
+    // list, read as data), by their real path, but one above the root, which the plugin passes over too.
+    for (const dir of linkedNativePackages(baseDir, host)) {
+      let rel
+      try {
+        rel = toRel(host.realpath(dir))
+      } catch {
+        continue
+      }
+      if (!pkgDirs.has(rel)) pkgDirs.set(rel, readPackageJson(baseDir, `${rel}/package.json`, { host })?.name)
+    }
+    // Each one's native build inputs, walked whole (nativeInputs, shared with the plugin), read only
+    // once its real path is held to the root.
+    const nativeFs = {
+      readdir: (abs) => host.readdir(abs),
+      stat: (abs) => host.stat(abs),
+      readFile(abs) {
+        assertRealPathWithinBase(realBase, baseDir, toRel(abs), host)
+        return host.readFile(abs)
+      },
+    }
     for (const [pkgDir, name] of [...pkgDirs].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       const pkgAbs = join(baseDir, pkgDir)
       // react-native core isn't a Pod (config reports it via reactNativePath, not `dependencies`),
-      // so walk its whole tree for native source (React/, ReactCommon/, ReactAndroid/, ...) the same
-      // way a native dep's ios/android surface is walked; every other dep gets its ios/android + podspecs.
+      // but its native source (React/, ReactCommon/, ReactAndroid/, ...) is walked all the same.
       const isRnCore = name === 'react-native'
-      const files = isRnCore ? [] : nativeModuleFiles(pkgAbs, host)
-      if (isRnCore) walkNative(pkgAbs, files, host, isNativeSource)
-      for (const abs of files) {
-        const rel = toRel(abs)
-        if (sources.has(rel)) continue
-        assertRealPathWithinBase(realBase, baseDir, rel, host)
-        // classifyNativeCapture (shared with the StasisMetro plugin) returns action skip/code/resource with a format tag.
-        const byName = classifyNativeCapture(rel)
-        if (byName.action === 'skip') continue
-        const buf = host.readFile(abs)
-        // Byte-level rules (prebuilt binaries, binary plists) -- see refineNativeCapture.
-        const { action, format } = refineNativeCapture(byName, rel, buf, resourceSet)
-        if (action === 'skip') continue
+      if (!isRnCore && !looksNative(pkgAbs, nativeFs)) continue
+      for (const { file, source, action, format } of nativeInputs(pkgAbs, nativeFs, { resources: resourceSet, skip: (abs) => sources.has(toRel(abs)) })) {
+        const rel = toRel(file)
         if (action === 'code') {
-          if (!isUtf8(buf)) throw new Error(`native source is not valid UTF-8: ${rel}`)
-          put(rel, buf.toString('utf8'), format, buf)
+          if (!isUtf8(source)) throw new Error(`native source is not valid UTF-8: ${rel}`)
+          put(rel, source.toString('utf8'), format, source)
         } else {
-          putResource(rel, buf)
+          putResource(rel, source)
         }
       }
       // RN core's `.js` build scripts the classify loop skips (Metro-owned by extension, but never in

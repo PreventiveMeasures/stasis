@@ -27,6 +27,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 // inert plugin (no options, no loader, no preload) mints no State, so it can't disturb the
 // preload-singleton invariant the spawned tests rely on.
 import { withStasis } from '../stasis-plugins/src/metro.js'
+import { buildBundle } from '../stasis/src/cmd/bundle.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const helper = join(here, 'metro-run.helper.js')
@@ -1460,6 +1461,32 @@ process.exit(1)
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.deepStrictEqual(lock.modules, {}, 'no native modules attested when the RN CLI is absent')
+  }))
+
+  test('native modules: `stasis bundle --metro` carries the same native inputs the capture attests', withTmp(async (t, tmp) => {
+    // The two share the walk (metro-native.js): an autolinked dep nothing imports, found by the
+    // capture through `react-native config` and by the static build through the app's package.json,
+    // and react-native core, carry the same files in the same formats, outside ios/ and android/ too.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    writeReactNativeCli(tmp)
+    writeNativeDep(tmp, 'react-native-native-lib')
+    const pkg = JSON.parse(readFileSync(join(tmp, 'package.json'), 'utf8'))
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ ...pkg, dependencies: { 'react-native': '*', 'react-native-native-lib': '*' } }))
+    const r = await run('src/entry.js', {
+      cwd: tmp,
+      env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full', __FAKE_NATIVE_DEPS: JSON.stringify(['react-native-native-lib']) },
+    })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
+    for (const dir of ['node_modules/react-native-native-lib', 'node_modules/react-native']) {
+      const captured = Object.keys(lock.modules[dir].files).toSorted()
+      t.assert.deepStrictEqual(Object.keys(bundle.modules.get(dir).files).toSorted(), captured, dir)
+      for (const f of captured) t.assert.equal(bundle.formats.get(`${dir}/${f}`), lock.formats[`${dir}/${f}`], `${dir}/${f}`)
+    }
+    // Among them, the dep's files outside ios/ and android/.
+    t.assert.equal(bundle.formats.get('node_modules/react-native-native-lib/fastlane/Fastfile'), 'fastlane')
   }))
 
   test('native modules: a native dep whose JS is imported is captured once; its native surface is still added', withTmp(async (t, tmp) => {

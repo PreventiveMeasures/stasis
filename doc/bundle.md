@@ -261,16 +261,32 @@ from Node's and esbuild's:
   (`./logo@2x.png`) resolves nowhere, as in Metro. `--metro-resolver` resolves
   assets the same way. Carrying one needs `--resources` (e.g. `--resources=png`).
 
-It also carries each bundled dependency's native build inputs: for every
-`node_modules` package the code graph reaches, its `ios/` and `android/`
-sources and its podspecs (for `react-native` itself, its whole native tree).
+It also carries the native build inputs of the packages the app links, as the
+Metro plugin does:
+
+- every `node_modules` package the code graph reaches that ships native code
+  (an `ios/` or `android/` directory, or a podspec);
+- every package the app's `package.json` lists under `dependencies`,
+  `peerDependencies` or `devDependencies` that ships native code, whether or
+  not anything imports it. These are the packages `react-native config` links,
+  found as it finds them, in the nearest `node_modules` holding them. A
+  `react-native.config.js` is code, so it isn't read: a package it disables is
+  carried all the same, and one it adds from elsewhere isn't. A package found
+  above the project root is passed over;
+- `react-native` itself.
+
+Each one's whole tree is walked, as a native build may read sources from
+anywhere in it (a podspec compiling a `cpp/` beside `ios/`). The walk carries
+every file but the JS and TypeScript Metro's graph owns, docs, secrets and
+build output (`build`, `.gradle`, `.cxx`, `Pods`, `DerivedData`, nested
+`node_modules`), and it skips prebuilt binaries.
+
 That includes a workspace package linked, under any name, into a
 `node_modules` its importer resolves packages from, carried where it lies
 (`packages/<name>/...`) however the import reaches it; one linked nowhere
 there is the project's own source.
-A package reached only for an asset through `--resources` is not a linked
-native dependency and contributes none. Build output (`build`, `.gradle`,
-`.cxx`, `Pods`, `DerivedData`, nested `node_modules`) is skipped.
+Reaching a package only for an asset (through `--resources`) doesn't count: it
+contributes nothing unless the app's `package.json` lists it.
 
 A disabled import (a `browser`/`react-native` map entry set to `false`)
 resolves, as Metro resolves it, to Metro's own empty module: the project's

@@ -3344,6 +3344,53 @@ test('buildBundle --mainFields (no --metro) does NOT pull native ios/android sou
   t.assert.ok(!files.has('RNThing.podspec') && !files.has('ios/RNThing.mm'), 'native capture is --metro-only')
 }))
 
+// A package at `dir` shipping native code: a podspec and an ios/ source, plus whatever `files` add.
+const writeNativePackage = (dir, files = {}) => {
+  mkdirSync(join(dir, 'ios'), { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: basename(dir), version: '1.0.0', main: 'index.js' }))
+  writeFileSync(join(dir, 'index.js'), 'module.exports = 1\n')
+  writeFileSync(join(dir, `${basename(dir)}.podspec`), 'Pod::Spec.new {}\n')
+  writeFileSync(join(dir, 'ios', 'Thing.m'), '// objc\n')
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true })
+    writeFileSync(join(dir, rel), content)
+  }
+}
+
+test('buildBundle --metro carries a native package\'s inputs outside ios/ and android/, as the Metro plugin does', withTmp(async (t, tmp) => {
+  // A podspec compiling shared C++ from cpp/ (a JSI module's layout) needs it in the bundle.
+  jsProject(tmp, { 'index.js': "require('rn-jsi')\n" }, { name: 'app', version: '0.0.0' })
+  writeNativePackage(join(tmp, 'node_modules', 'rn-jsi'), { 'cpp/Jsi.cpp': '// shared\n', 'cpp/CMakeLists.txt': 'add_library(jsi)\n', 'src/index.ts': 'export {}\n' })
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('node_modules/rn-jsi').files).toSorted(),
+    ['cpp/CMakeLists.txt', 'cpp/Jsi.cpp', 'index.js', 'ios/Thing.m', 'package.json', 'rn-jsi.podspec'])
+  t.assert.equal(bundle.formats.get('node_modules/rn-jsi/cpp/Jsi.cpp'), 'cpp')
+}))
+
+test('buildBundle --metro carries the native packages the app\'s package.json lists, imported or not, as React Native links them', withTmp(async (t, tmp) => {
+  // `react-native config` links each dependency, peerDependency and devDependency that ships native
+  // code, whether JS imports it or not; the static build reads the same list, running nothing.
+  const app = join(tmp, 'app')
+  mkdirSync(app)
+  jsProject(app, { 'index.js': 'module.exports = 0\n' }, {
+    name: 'app', version: '0.0.0',
+    dependencies: { 'native-dep': '1.0.0', '@scope/native-scoped': '1.0.0', 'js-only': '1.0.0', 'native-hoisted': '1.0.0', '../escape': '1.0.0' },
+    peerDependencies: { 'native-peer': '1.0.0' },
+    devDependencies: { 'native-dev': '1.0.0' },
+  })
+  for (const name of ['native-dep', '@scope/native-scoped', 'native-peer', 'native-dev', 'native-unlisted']) writeNativePackage(join(app, 'node_modules', name))
+  mkdirSync(join(app, 'node_modules', 'js-only'), { recursive: true })
+  writeFileSync(join(app, 'node_modules', 'js-only', 'package.json'), JSON.stringify({ name: 'js-only', version: '1.0.0' }))
+  // Hoisted above the root: passed over, as the Metro plugin passes over a dep outside it.
+  writeNativePackage(join(tmp, 'node_modules', 'native-hoisted'))
+  writeNativePackage(join(tmp, 'escape'))
+  const bundle = await buildBundle({ cwd: app, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.deepStrictEqual([...bundle.modules.keys()].toSorted(),
+    ['.', 'node_modules/@scope/native-scoped', 'node_modules/native-dep', 'node_modules/native-dev', 'node_modules/native-peer'])
+  // Only its native inputs: no JS imports it.
+  t.assert.deepStrictEqual(Object.keys(bundle.modules.get('node_modules/native-dep').files).toSorted(), ['ios/Thing.m', 'native-dep.podspec', 'package.json'])
+}))
+
 cliTest('CLI: a --metro bundle + companion lockfile attest the native surface (by integrity), round-tripping', withTmp(async (t, tmp) => {
   writeRnFixture(tmp)
   const bundlePath = join(tmp, 'stasis.code.br')
@@ -4556,7 +4603,8 @@ cliTest('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing
   // exited 0 with no warning at all. The setup error must propagate with its
   // install hint instead. Exercised against a copy of stasis whose node_modules
   // carries only the zero-dep @exodus/stasis-core (so the moved-module shims
-  // resolve), @preventive/lockfile (whose TOML, .gitmodules and Cargo readers the
+  // resolve), @exodus/stasis-plugins (whose native walk `--metro` imports, on the
+  // core alone), @preventive/lockfile (whose TOML, .gitmodules and Cargo readers the
   // loaders import) and @exodus/bytes (its dependency, and the loaders' UTF-8 decoder), so
   // the bundle command loads, but no oxc-parser, so the lazy lookup (createRequire
   // from src/scan.js) genuinely misses.
@@ -4570,6 +4618,10 @@ cliTest('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing
   mkdirSync(coreDest, { recursive: true })
   for (const entry of ['bin', 'src']) cpSync(join(here, '..', 'stasis-core', entry), join(coreDest, entry), { recursive: true })
   cpSync(join(here, '..', 'stasis-core', 'package.json'), join(coreDest, 'package.json'))
+  const pluginsDest = join(stasisCopy, 'node_modules', '@exodus', 'stasis-plugins')
+  mkdirSync(pluginsDest, { recursive: true })
+  cpSync(join(here, '..', 'stasis-plugins', 'src'), join(pluginsDest, 'src'), { recursive: true })
+  cpSync(join(here, '..', 'stasis-plugins', 'package.json'), join(pluginsDest, 'package.json'))
   // pnpm links them from its store: the real directories are what get copied.
   const lockfile = realpathSync(join(here, '..', 'stasis', 'node_modules', '@preventive', 'lockfile'))
   cpSync(lockfile, join(stasisCopy, 'node_modules', '@preventive', 'lockfile'), { recursive: true })
