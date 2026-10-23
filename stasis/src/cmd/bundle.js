@@ -1457,7 +1457,7 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, inn
   return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
 }
 
-// `built` (buildOfKind's, built in `cwd` without a State) with the files the stasis.config.json
+// `built` (buildOfKind's, built in `cwd` without a State, or several builds' union rooted there) with the files the stasis.config.json
 // there names in `extra`, as `stasis add` adds them (extraArtifacts), into its bundle and its
 // lockfile; never one of `outputs` (the absolute paths the build writes), and resources by the
 // build's `resources` where given, else by the config's. A State-built bundle takes them in its
@@ -1466,6 +1466,9 @@ function withExtra(built, cwd, outputs, resources) {
   const config = readConfigFile('bundle', cwd)
   const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
   if (patterns.length === 0) return built
+  // Several builds' union (see bundleCommand) may be State-built in node_modules scope, which the
+  // full-scope files `extra` adds can't join.
+  if (built.bundle.config.scope !== 'full') throw new Error(`bundle: ${CONFIG_FILE}'s extra can't be added to a ${built.bundle.config.scope}-scope bundle of several builds`)
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
@@ -1605,11 +1608,12 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   // The files this build writes, never taken into `extra`, given the root its paths are relative to:
   // the bundle (by default at that root, see `target` below) and the lockfile.
   const outputsAt = (root) => [output ?? join(root, DEFAULT_BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
+  // With several builds, `extra` is the bundle's, not any one's: added to their union below.
+  const several = plans.length > 1
   const builts = []
   for (const [i, plan] of plans.entries()) {
-    // `extra` is the bundle's, not a build's: added once, by the first.
     // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-    builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: i === 0 }))
+    builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: !several }))
   }
   // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
   // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
@@ -1623,12 +1627,20 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
   // files above it.
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
-  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
-  let lockData = lockfile ? builts.map((built) => built.lockfile()).reduce((a, b) => a.merge(b)).serialize() : undefined
 
   // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
   for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
-  let bundle = builts.map((built) => built.bundle).reduce((a, b) => a.merge(b))
+  let union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+  if (several) {
+    // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
+    // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
+    const withExtras = withExtra(union, root, outputsAt(root))
+    if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
+    union = withExtras
+  }
+  let { bundle } = union
+  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
+  let lockData = lockfile ? union.lockfile().serialize() : undefined
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)

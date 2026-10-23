@@ -114,7 +114,8 @@ With it:
   `--add` merges (a file both carry with different content fails) into one,
   whose paths must be relative to the same root. So one bundle may hold a
   Metro build's files, attributed to the `bundle:metro` consumer, and a Node
-  one's, attributed to `bundle`.
+  one's, attributed to `bundle`. The config's `extra` is the bundle's, not an
+  entry's: added once, to that union, by the config's own `resources`.
 
 A string `bundle` is `stasis run`'s bundle mode, which takes nothing from it.
 
