@@ -22,21 +22,27 @@ it, or take it for another path.
 ## `stasis.config.json`
 
 ```json
-{ "scope": "node_modules", "lock": "frozen", "bundle": "load", "debug": false }
+{ "scope": "node_modules", "lock": "frozen", "debug": false }
 ```
 
 | Key | Values | Default | Env var |
 | --- | --- | --- | --- |
 | `scope` | `"node_modules"`, `"full"` | `"full"` | `EXODUS_STASIS_SCOPE` |
-| `lock` | `"ignore"`, `"add"`, `"replace"`, `"frozen"` | `"add"` | `EXODUS_STASIS_LOCK` |
-| `bundle` | `"ignore"`, `"add"`, `"replace"`, `"load"`, `"frozen"` | unset | `EXODUS_STASIS_BUNDLE` |
+| `lock` | `"frozen"` | the flag's or env var's, else `"add"` | `EXODUS_STASIS_LOCK` |
 | `debug` | boolean | `false` | `EXODUS_STASIS_DEBUG` |
 | `packageJSON` | boolean | `false` | `EXODUS_STASIS_PACKAGE_JSON` |
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
 | `brotliQuality` | integer `0`–`11` | `9` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
 
-`lock`/`bundle` modes:
+A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
+mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
+`EXODUS_STASIS_LOCK`/`EXODUS_STASIS_BUNDLE`), and a file that sets one is
+refused. A run must then be given `--lock=frozen` (any other lock mode is
+refused), and a JS `stasis bundle` built through a State (without
+`--mainFields`/`--metro`), which ignores the lockfile, is refused too.
+
+`lock`/`bundle` modes, as the flags and env vars give them:
 
 | Mode | Behavior |
 | --- | --- |
@@ -75,7 +81,7 @@ only on the `stasis bundle` side (`.sol`/`.php`/`.sh`/`.rs` bundles have no npm
 import graph never does (assets, scripts, data), as `stasis add` takes them:
 
 ```json
-{ "lock": "add", "bundle": "add", "resources": ["png"], "extra": ["a.js", "b/", "c/*.png"] }
+{ "resources": ["png"], "extra": ["a.js", "b/", "c/*.png"] }
 ```
 
 Each entry is a path or a glob pattern relative to the directory holding

@@ -19,8 +19,9 @@ const envBool = (name, value) => {
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
 // Every option: its env var, how the env string parses (strings pass through) and, for a non-string
-// option, how a `new Config()` option does. `lockFile` is flag/env-only (never from stasis.config.json);
-// `extra` is the reverse, stasis.config.json only (no env var or option).
+// option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only (never from
+// stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
+// stasis.config.json only (no env var or option).
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -37,7 +38,10 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile'), 'extra']
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra']
+// The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
+// explicitly (flags, env, options), never by a file.
+const CONFIG_FILE_LOCK = 'frozen'
 const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
 
 const assertKnownKeys = (keys, known, what) => {
@@ -199,6 +203,12 @@ export class Config {
   loadConfig(json) {
     const config = JSON.parse(json)
     const keys = Object.keys(config)
+    if (keys.includes('bundle')) {
+      throw new Error('stasis.config.json: bundle can not be set here; give the bundle mode explicitly (--bundle, EXODUS_STASIS_BUNDLE)')
+    }
+    if (keys.includes('lock') && config.lock !== CONFIG_FILE_LOCK) {
+      throw new Error(`stasis.config.json: lock can only be '${CONFIG_FILE_LOCK}' (got ${JSON.stringify(config.lock)}); give any other lock mode explicitly (--lock, EXODUS_STASIS_LOCK)`)
+    }
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
@@ -345,9 +355,11 @@ export class Config {
     return this.#opts.lock
   }
 
+  // As a stasis.config.json holds it: `lock` only where it is the one a file can pin, `bundle` never.
   get json() {
-    const { scope, lock, bundle, resources } = this.#opts
-    const data = { scope, lock, bundle }
+    const { scope, lock, resources } = this.#opts
+    const data = { scope }
+    if (lock === CONFIG_FILE_LOCK) data.lock = lock
     // Only serialize `resources` when non-empty, so configs without an allowlist stay byte-identical.
     if (resources.size > 0) data.resources = [...resources].toSorted()
     return JSON.stringify(data, undefined, 2) + '\n'

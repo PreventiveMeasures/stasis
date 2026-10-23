@@ -2165,6 +2165,21 @@ cliTest('CLI: bundle --scope conflicting with stasis.config.json errors instead 
     `expected conflict error in stderr, got: ${r.stderr}`)
 }))
 
+// stasis.config.json can pin the lockfile frozen, which a JS bundle's State -- that ignores the
+// lockfile -- can't override, so the build refuses it; a bundle mode is no config key at all.
+test('buildBundle (JS) refuses a stasis.config.json that sets lock, and one that sets bundle', withTmp(async (t, tmp) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'pinned', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'entry.js'), 'console.log(1)\n')
+  const build = () => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['entry.js'] })
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'frozen' }))
+  await t.assert.rejects(build, (err) => /Flags\/env can not override stasis\.config\.json/.test(err.message) && err.cause.actual === 'frozen' && err.cause.expected === 'ignore')
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'add' }))
+  await t.assert.rejects(build, /stasis\.config\.json: lock can only be 'frozen'/)
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ bundle: 'add' }))
+  await t.assert.rejects(build, /stasis\.config\.json: bundle can not be set here/)
+}))
+
 // --- Conditions-aware JS bundling (`--conditions`) ---
 //
 // `--conditions` adds resolution conditions on top of the base set Node always

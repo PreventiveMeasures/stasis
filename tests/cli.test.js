@@ -369,19 +369,16 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     // stasis.code.br present, loaded the wrong file). The write side already ran post-loadConfig.
     cpSync(runFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json')) // lock=none must not meet an existing lockfile
-    const configPath = join(tmp, 'stasis.config.json')
-    const writeConfig = (bundle) =>
-      writeFileSync(configPath, JSON.stringify({ scope: 'full', lock: 'none', bundle, bundleFile: 'custom.code.br' }))
+    // The modes are the flags' (a config sets neither): bundleFile comes ONLY from stasis.config.json.
+    writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ scope: 'full', bundleFile: 'custom.code.br' }))
 
-    // capture: bundleFile comes ONLY from stasis.config.json
-    writeConfig('add')
+    // capture
     const save = await run(['run', '--lock=none', '--bundle=add', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(save.status, 0, `save stderr: ${save.stderr}`)
     t.assert.ok(existsSync(join(tmp, 'custom.code.br')), 'bundle written to the config-specified path')
     t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), 'nothing written to the default path')
 
     // load: remove on-disk sources so the bundle is the ONLY source of code
-    writeConfig('load')
     rmSync(join(tmp, 'src'), { recursive: true })
     const r = await run(['run', '--lock=none', '--bundle=load', 'src/entry.js'], { cwd: tmp })
     t.assert.equal(r.status, 0, `load stderr: ${r.stderr}`)
@@ -400,16 +397,12 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     writeFileSync(join(foo, 'package.json'), JSON.stringify({ name: 'foo', version: '1.0.0', type: 'module' }))
     writeFileSync(join(foo, 'src', 'entry.js'), "import { hello } from './hello.js'\nconsole.log(hello)\n")
     writeFileSync(join(foo, 'src', 'hello.js'), "export const hello = 'HELLO-MONO'\n")
-    const configPath = join(foo, 'stasis.config.json')
-    const writeConfig = (bundle) =>
-      writeFileSync(configPath, JSON.stringify({ scope: 'full', lock: 'none', bundle, bundleFile: 'custom.code.br' }))
+    writeFileSync(join(foo, 'stasis.config.json'), JSON.stringify({ scope: 'full', bundleFile: 'custom.code.br' }))
 
-    writeConfig('add')
     const save = await run(['run', '--lock=none', '--bundle=add', 'src/entry.js'], { cwd: foo })
     t.assert.equal(save.status, 0, `save stderr: ${save.stderr}`)
     t.assert.ok(existsSync(join(foo, 'custom.code.br')), 'bundle written under the leaf package')
 
-    writeConfig('load')
     rmSync(join(foo, 'src'), { recursive: true })
     const r = await run(['run', '--lock=none', '--bundle=load', 'src/entry.js'], { cwd: foo })
     t.assert.equal(r.status, 0, `load stderr: ${r.stderr}`)
@@ -732,6 +725,27 @@ describe('stasis run CLI (spawned, concurrent)', { concurrency: CONCURRENCY }, (
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const after = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
     t.assert.equal(after.sources['.'].files['src/orphan.js'], undefined, 'orphan source must be dropped')
+  }))
+
+  test('run takes a stasis.config.json lock of frozen alone, which a flag can not override, and no bundle', withTmp(async (t, tmp) => {
+    cpSync(runFixture, tmp, { recursive: true })
+    const configPath = join(tmp, 'stasis.config.json')
+    writeFileSync(configPath, JSON.stringify({ scope: 'full', lock: 'frozen' }))
+    const frozen = await run(['run', '--lock=frozen', 'src/entry.js'], { cwd: tmp })
+    t.assert.equal(frozen.status, 0, `stderr: ${frozen.stderr}`)
+    const add = await run(['run', '--lock=add', 'src/entry.js'], { cwd: tmp })
+    t.assert.notEqual(add.status, 0)
+    t.assert.match(add.stderr, /Flags\/env can not override stasis\.config\.json/)
+
+    // Every other lock mode, and any bundle mode, is the flags' alone.
+    writeFileSync(configPath, JSON.stringify({ scope: 'full', lock: 'add' }))
+    const lockAdd = await run(['run', '--lock=add', 'src/entry.js'], { cwd: tmp })
+    t.assert.notEqual(lockAdd.status, 0)
+    t.assert.match(lockAdd.stderr, /stasis\.config\.json: lock can only be 'frozen' \(got "add"\)/)
+    writeFileSync(configPath, JSON.stringify({ scope: 'full', bundle: 'add' }))
+    const bundleAdd = await run(['run', '--lock=add', '--bundle=add', 'src/entry.js'], { cwd: tmp })
+    t.assert.notEqual(bundleAdd.status, 0)
+    t.assert.match(bundleAdd.stderr, /stasis\.config\.json: bundle can not be set here/)
   }))
 
   test('run --lock=frozen fails when scope conflicts with the committed lockfile', async (t) => {

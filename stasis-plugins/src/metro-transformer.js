@@ -124,7 +124,7 @@ export async function transform(config, projectRoot, filename, data, options) {
 export function getCacheKey(config, opts) {
   // Fold in the base transformer's cache key, then add a stasis-load discriminator so load results
   // (which can differ from a disk build even when disk == bundle) don't cross-pollinate the cache.
-  // Derive the marker from the resolved load State (not the env) so config.json activation keys too.
+  // Derive the marker from the resolved load State, which transform() goes by.
   const { transformer } = baseOf(config, opts?.projectRoot)
   const baseKey = typeof transformer.getCacheKey === 'function' ? transformer.getCacheKey(baseConfig(config), opts) : ''
   const state = getLoadState()

@@ -7,8 +7,9 @@ or serves the run from a bundle alone, with nothing read from disk. The flags
 are the keys of [`stasis.config.json`](file-formats.md#stasisconfigjson) and
 their `EXODUS_STASIS_*` environment variables: each sets its variable for the
 node process it spawns, and a variable already set to another value is a
-conflict. The zero-dependency core CLI runs the same loader as
-`stasis-core run`, without `--mock` and `--package-json`.
+conflict. The modes are the flags' alone, save that a config file can pin
+`lock` to `frozen`, which a run must then be given. The zero-dependency core CLI
+runs the same loader as `stasis-core run`, without `--mock` and `--package-json`.
 
 ```sh
 stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
