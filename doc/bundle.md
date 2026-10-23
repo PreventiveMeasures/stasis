@@ -151,7 +151,10 @@ falls through at load. An import that resolves to a file outside the project
 root is treated the same way, and that file is never carried. A typical case is
 a lazy `require('typescript')` for an optional peer dependency hoisted above a
 package whose stasis files root the bundle there: it is left out, with a
-warning that names it.
+warning that names it. An import that resolves within the root for one
+`require()`/`import()` or `--platforms` target and outside it for another
+fails the build, because leaving out the outside file would have load serve
+the inside one in its place.
 
 ### Conditions
 

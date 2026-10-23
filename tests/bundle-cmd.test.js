@@ -2653,6 +2653,29 @@ cliTest('CLI: bundle refuses a specifier that resolves within the root in one co
   }
 }))
 
+test('buildBundle --metro refuses a specifier one platform resolves within the root and another outside it', withTmp(async (t, tmp) => {
+  // ./dep is dep.ios.js on iOS, and on Android dep.android.js, linked out of the root: leaving that
+  // out alone would have the edge collapse to dep.ios.js, served to Android too.
+  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
+  try {
+    writeFileSync(join(outside, 'dep.js'), 'module.exports = "outside"\n')
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
+    writeFileSync(join(tmp, 'index.js'), "require('./dep')\n")
+    writeFileSync(join(tmp, 'dep.ios.js'), 'module.exports = "inside"\n')
+    symlinkSync(join(outside, 'dep.js'), join(tmp, 'dep.android.js'))
+    const options = { cwd: tmp, entries: ['index.js'], metro: true }
+    await t.assert.rejects(
+      () => buildBundle({ ...options, platforms: ['ios', 'android'] }),
+      /\.\/dep from index\.js resolves within the project root in one context and outside it, at .*dep\.js, in another: a bundle can't leave out the one without serving the other in its place/,
+    )
+    // Each alone has nothing to split.
+    t.assert.equal(importTarget(await buildBundle({ ...options, platforms: ['ios'] }), 'index.js', './dep'), 'dep.ios.js')
+    t.assert.equal((await buildBundle({ ...options, platforms: ['android'] })).imports.get('*')?.get('index.js'), undefined)
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+}))
+
 // --typescript is taken as given only where every entry is TypeScript, the entries import at least
 // one relative JS output (./dep.js), and every one of those is off disk with its TS source on it.
 // Anything less leaves it off -- a project of Node-compatible .ts files importing ./dep.ts must

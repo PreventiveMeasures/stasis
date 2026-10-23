@@ -1159,6 +1159,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
+  // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
+  const leftOutEdges = []
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1182,6 +1184,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     for (const url of outside) toRel(fileURLToPath(url))
     refuseSplit(split, baseDir)
     reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
+    leftOutEdges.push(...leftOut)
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     for (const [url, info] of scanner.files) {
@@ -1203,6 +1206,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
     }
   }
+
+  // One platform leaving out an edge another resolves within the root is a split too: collapsed
+  // below, the edge would serve that platform the other's file in its place.
+  refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(fileURLToPath(e.parentURL)))?.has(e.spec)), baseDir)
 
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is
   // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.
