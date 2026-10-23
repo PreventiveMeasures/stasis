@@ -2632,6 +2632,27 @@ cliTest('CLI: bundle leaves out, and names, a file a lazy require() reaches abov
   t.assert.equal(load.stdout, 'lib function\n')
 }))
 
+cliTest('CLI: bundle refuses a specifier that resolves within the root in one context and outside it in another', withTmp(async (t, tmp) => {
+  // require() and import() take different `exports` branches, the import one linked out of the root:
+  // leaving it out alone would have load serve import('dual') the require() branch's file instead.
+  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
+  try {
+    writeFileSync(join(outside, 'esm.mjs'), 'export default "outside"\n')
+    mkdirSync(join(tmp, 'node_modules', 'dual'), { recursive: true })
+    writeFileSync(join(tmp, 'node_modules', 'dual', 'package.json'), JSON.stringify({ name: 'dual', version: '1.0.0', exports: { import: './esm.mjs', require: './cjs.js' } }))
+    writeFileSync(join(tmp, 'node_modules', 'dual', 'cjs.js'), 'module.exports = "inside"\n')
+    symlinkSync(join(outside, 'esm.mjs'), join(tmp, 'node_modules', 'dual', 'esm.mjs'))
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
+    writeFileSync(join(tmp, 'index.js'), "require('dual')\nimport('dual')\n")
+    const r = await runCli(['bundle', '--output=out.br', 'index.js'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /dual from index\.js resolves within the project root in one context and outside it, at .*esm\.mjs, in another: a bundle can't leave out the one without serving the other in its place/)
+    t.assert.ok(!existsSync(join(tmp, 'out.br')))
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+}))
+
 // --typescript is taken as given only where every entry is TypeScript, the entries import at least
 // one relative JS output (./dep.js), and every one of those is off disk with its TS source on it.
 // Anything less leaves it off -- a project of Node-compatible .ts files importing ./dep.ts must

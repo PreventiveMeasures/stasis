@@ -695,9 +695,12 @@ function eagerlyLinked(scanner) {
 // only past a require()/import() boundary is left out, with whatever only it reaches, and its edges
 // are returned in `leftOut`, misses that load can catch as it does an unresolved one: an optional
 // peer dependency's lazy require() reaching a copy hoisted above a root that a stasis file pins, say.
+// A specifier a file resolves within the root in one context and outside it in another (require()
+// and import() taking different `exports` branches) is returned in `split`, for the caller to
+// refuse: with one context left out, load would serve the other's file in its place.
 function withinRoot(scanner, within) {
   const outside = [...eagerlyLinked(scanner)].filter((url) => scanner.files.has(url) && !within(url))
-  if (outside.length > 0) return { scanner, outside, leftOut: [] }
+  if (outside.length > 0) return { scanner, outside, leftOut: [], split: [] }
   const kept = new Set([...scanner.entries].filter((url) => scanner.files.has(url)))
   const walk = [...kept]
   while (walk.length > 0) {
@@ -708,11 +711,16 @@ function withinRoot(scanner, within) {
       }
     }
   }
-  if (kept.size === scanner.files.size) return { scanner, outside, leftOut: [] }
+  if (kept.size === scanner.files.size) return { scanner, outside, leftOut: [], split: [] }
   const leftOut = []
+  const split = []
   const files = new Map()
   for (const url of kept) {
     const info = scanner.files.get(url)
+    const withinSpecs = new Set(info.edges.filter((e) => e.child && within(e.child)).map((e) => e.spec))
+    for (const e of info.edges) {
+      if (e.child && !within(e.child) && withinSpecs.has(e.spec)) split.push({ parentURL: url, spec: e.spec, outsideURL: e.child })
+    }
     const edges = info.edges.map((e) => {
       if (!e.child || within(e.child)) return e
       const { child, ...rest } = e
@@ -733,7 +741,17 @@ function withinRoot(scanner, within) {
   }
   const unresolved = scanner.unresolved.filter((u) => files.has(u.parentURL))
   const parseErrors = scanner.parseErrors.filter((p) => files.has(p.url))
-  return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, outside, leftOut }
+  return { scanner: { entries: scanner.entries, files, imports, unresolved, parseErrors }, outside, leftOut, split }
+}
+
+// Refuse a specifier withinRoot found resolving within the root in one context, outside it in another.
+function refuseSplit(split, baseDir) {
+  for (const { parentURL, spec, outsideURL } of split) {
+    throw new Error(
+      `${spec} from ${displayPath(parentURL, baseDir)} resolves within the project root in one context and outside it, ` +
+      `at ${relative(baseDir, fileURLToPath(outsideURL))}, in another: a bundle can't leave out the one without serving the other in its place`
+    )
+  }
 }
 
 // Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
@@ -862,13 +880,14 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // Only what lies within the root is carried (see withinRoot). One the entries link eagerly is
   // refused, named here rather than as the State's bare assertion: a stasis file in a directory below
   // the project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
-  const { scanner, outside, leftOut } = withinRoot(scanned, (url) => !relativeEscapes(relative(state.root, fileURLToPath(url))))
+  const { scanner, outside, leftOut, split } = withinRoot(scanned, (url) => !relativeEscapes(relative(state.root, fileURLToPath(url))))
   const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
   const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
   const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy}`
   for (const url of outside) {
     throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
   }
+  refuseSplit(split, baseDir)
   // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
   reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, root })
   for (const [url, info] of scanner.files) {
@@ -1159,8 +1178,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
     const scanned = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
     // Only what lies within the root is carried; one the entries link eagerly is refused (see withinRoot).
-    const { scanner, outside, leftOut } = withinRoot(scanned, (url) => relWithin(fileURLToPath(url)) !== null)
+    const { scanner, outside, leftOut, split } = withinRoot(scanned, (url) => relWithin(fileURLToPath(url)) !== null)
     for (const url of outside) toRel(fileURLToPath(url))
+    refuseSplit(split, baseDir)
     reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
 
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
