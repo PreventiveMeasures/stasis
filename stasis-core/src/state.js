@@ -1014,11 +1014,11 @@ export class State {
 
   // The addFile options for a file read rather than loaded: classifyFormat routes the bytes -- a
   // concrete format is code, null defers to the loader, and undefined (or a binary plist, whose bytes
-  // can't be the UTF-8 code its format implies) is a resource IFF allowlisted, else null.
-  #readFileOptions(path, source) {
+  // can't be the UTF-8 code its format implies) is a resource IFF in `resources`, else null.
+  #readFileOptions(path, source, resources = this.config.resources) {
     const format = classifyFormat(path, { content: source })
     if (format !== undefined && !isBinaryPlist(path, source)) return { format: format ?? undefined, inferFormat: false }
-    if (this.config.resources.has(pathExt(path) || basename(path).toLowerCase())) return { resource: true }
+    if (resources.has(pathExt(path) || basename(path).toLowerCase())) return { resource: true }
     return null
   }
 
@@ -1026,8 +1026,8 @@ export class State {
   // as `stasis add` takes them) beside what the run reached, each carried as an fs read is
   // (#readFileOptions) unless the run captured it itself, whose record stands. The whole set is
   // validated before a file is added, every offender named at once. `outputs` are paths written
-  // besides this State's own targets, never swept in.
-  includeExtra({ outputs = [] } = {}) {
+  // besides this State's own targets, never swept in; `resources` the allowlist, the config's by default.
+  includeExtra({ outputs = [], resources = this.config.resources } = {}) {
     if (this.config.extra.length === 0) return
     const targets = [this.config.lockFile || join(this.root, FILE_LOCK), this.config.bundleFile || join(this.root, FILE_CODE), this.config.resourcesBundleFile, ...outputs]
     // Resolved as write() writes them: a relative one from the cwd.
@@ -1049,7 +1049,7 @@ export class State {
       // A node_modules scope leaves the project's own files out, as it does the run's.
       if (this.#filesCapturedThisRun.has(this.#canonicalFile(url)) || (!this.config.full && !this.inNodeModules(url))) continue
       const source = this.#host.readFile(absolute)
-      const options = this.#readFileOptions(absolute, source)
+      const options = this.#readFileOptions(absolute, source, resources)
       if (options === null) undeclared.push(rel)
       else if (!options.resource && !isUtf8(source)) nonUtf8.push({ rel, format: options.format })
       else toAdd.push({ url, source, options })

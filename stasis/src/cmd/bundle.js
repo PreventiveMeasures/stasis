@@ -761,8 +761,9 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // above cwd that holds every file the scan reaches (innermostRootOf), rather than at the project's
 // root above it, where that holds no stasis file of its own. With `extra`, the files its
 // stasis.config.json's `extra` names are added as `stasis run` adds them (State#includeExtra), never
-// one of `outputs` (the absolute paths the build writes); from disk alone, as Node's glob reads it.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources = [], packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputs = [] } = {}) {
+// one of `outputs` (the absolute paths the build writes), resources by `resources` where given, else
+// by the config's; from disk alone, as Node's glob reads it.
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputs = [] } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
   }
@@ -845,7 +846,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
       }
     }
   }
-  if (extra) state.includeExtra({ outputs })
+  if (extra) state.includeExtra({ outputs, resources: resources === undefined ? undefined : resourceSet })
   // --package-json: fold each bundled module's package.json into the State's buckets (idempotent --
   // no-ops any manifest the scan already reached). State's bundle=replace makes writeBundle true, so addFile accepts them.
   if (packageJSON) state.includePackageJson()
@@ -1453,15 +1454,17 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, inn
 
 // `built` (buildOfKind's, built in `cwd` without a State) with the files the stasis.config.json
 // there names in `extra`, as `stasis add` adds them (extraArtifacts), into its bundle and its
-// lockfile; never one of `outputs` (the absolute paths the build writes). A State-built bundle takes
-// them in its State instead, as `stasis run` does (State#includeExtra).
-function withExtra(built, cwd, outputs) {
+// lockfile; never one of `outputs` (the absolute paths the build writes), and resources by the
+// build's `resources` where given, else by the config's. A State-built bundle takes them in its
+// State instead, as `stasis run` does (State#includeExtra).
+function withExtra(built, cwd, outputs, resources) {
   const config = readConfigFile('bundle', cwd)
   const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
   if (patterns.length === 0) return built
   const baseDir = resolve(cwd)
   const written = new Set(outputs.map((file) => toPosix(relative(baseDir, file))))
-  const added = extraArtifacts({ baseDir, patterns, resources: parseResourcesOption(CONFIG_FILE, config.resources), bundle: built.bundle, outputs: written })
+  const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
+  const added = extraArtifacts({ baseDir, patterns, resources: allowlist, bundle: built.bundle, outputs: written })
   if (added === null) return built
   // Each file attributed: to `bundle`, or `extra`.
   const bundle = built.bundle.withReason('bundle').merge(added.bundle)
@@ -1479,7 +1482,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'bash') return withExtra({ bundle: await buildBashBundle({ cwd, entries }) }, cwd, outputs)
   if (kind === 'rust') return withExtra({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }, cwd, outputs)
   let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, extra: true, outputs })
-  if (!built.stateBuilt) built = withExtra(built, cwd, outputs)
+  if (!built.stateBuilt) built = withExtra(built, cwd, outputs, resources)
   pinInstalledCommits(built.bundle, built.root)
   return built
 }
@@ -1577,8 +1580,9 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
 
-  // The files this build writes, never swept in by `extra`.
-  const outputs = [output === '-' ? undefined : output, lockfile].filter((file) => file !== undefined).map((file) => resolve(cwd, file))
+  // The files this build writes, never taken into `extra` (a State-built bundle's default target, at
+  // its root, the State's own).
+  const outputs = [output ?? DEFAULT_BUNDLE_FILE, lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
   const built = await buildOfKind(kind, { ...options, outputs })
   let { bundle } = built
   // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the

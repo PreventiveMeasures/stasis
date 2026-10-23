@@ -220,12 +220,13 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // by Node's glob (whose `*` skips dotfiles, as the shell's does), a pattern matching nothing standing
 // for itself as it does without bash's nullglob (so a missing path is reported missing), then each
 // path as `add` takes it (expandDirectories): a file named or matched is kept, a directory swept.
+// One of `outputs`, the files this very run writes, is never kept, named or matched (`dist/*`).
 export function expandExtra(baseDir, patterns, outputs) {
   const entries = patterns.flatMap((pattern) => {
     const matches = globSync(pattern, { cwd: baseDir })
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs)
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir).filter((rel) => !outputs.has(rel)), outputs)
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --

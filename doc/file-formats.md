@@ -84,10 +84,11 @@ Each entry is a path or a glob pattern relative to the directory holding
 `*` skips dotfiles, and a pattern matching nothing stands for itself, so it is
 reported as a missing file. Each resulting path is then taken as `stasis add`
 takes an argument (see [`stasis add`](bundle.md#stasis-add)): a file is kept, and
-a directory expands to the files under it, minus the set a sweep leaves out. Every
-file must be a recognized source file or have its extension (or extensionless
-filename) in `resources`. Every offender is named in one error before anything is
-written.
+a directory expands to the files under it, minus the set a sweep leaves out. A
+file the command itself writes (its lockfile or bundle) is never taken, named,
+matched or swept. Every file must be a recognized source file or have its
+extension (or extensionless filename) in `resources`. Every offender is named in
+one error before anything is written.
 
 - `stasis run` adds them only when it writes: with `lock` or `bundle` set to
   `add` or `replace`. A `frozen`, `load` or `ignore` run never reads `extra`. A
@@ -96,8 +97,9 @@ written.
   no loader format. Under `lock = add`/`bundle = add`, an extra file whose bytes
   changed since it was recorded is refused, as any recorded file is. Under
   `scope = node_modules`, the project's own files are left out, as the run's are.
-- `stasis bundle` adds them to the bundle it builds, and to its `--lockfile`,
-  never sweeping in the files it writes. A JS bundle scanned through a State reads
+- `stasis bundle` adds them to the bundle it builds, and to its `--lockfile`.
+  Its `--resources`, where given, is the allowlist they are checked against
+  instead of `resources`. A JS bundle scanned through a State reads
   the `stasis.config.json` at its root and records them as `stasis run` does. A
   `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
   the cwd, and packs them as `stasis add` does. `stasis github-bundle` doesn't

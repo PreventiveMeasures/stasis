@@ -143,6 +143,18 @@ test('run never sweeps the bundle it writes into extra, so it is repeatable', wi
   t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'code.br'))), ['dist/helper.js', 'src/entry.js', 'src/util.js'])
 }))
 
+test('run never takes the artifacts it writes into extra, even matched by a glob', withTmp(async (t, tmp) => {
+  seed(tmp, { resources: ['br'], extra: ['*.json', '*.br'] })
+  writeFileSync(join(tmp, 'top.br'), PNG)
+  for (let i = 0; i < 2; i++) {
+    const r = runCli(stasisCli, ['run', '--lock=add', '--bundle=add', 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, r.stderr)
+  }
+  const files = ['package.json', 'src/entry.js', 'src/util.js', 'stasis.config.json', 'top.br']
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files)
+  t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files)
+}))
+
 test('run --fs never captures the extra sweep itself as the program\'s reads', withTmp(async (t, tmp) => {
   seed(tmp)
   const r = runCli(stasisCli, ['run', '--bundle=add', '--fs=sync', 'src/entry.js'], tmp)
@@ -179,15 +191,49 @@ test('bundle without extra keeps a single `bundle` consumer', withTmp(async (t, 
   t.assert.deepStrictEqual(decode(join(tmp, 'stasis.code.br')).reason, { bundle: ['src/entry.js', 'src/util.js'] })
 }))
 
-test('bundle never sweeps its own --output into extra', withTmp(async (t, tmp) => {
-  seed(tmp, { resources: ['png', 'svg', 'br'], extra: ['dist/'] })
-  mkdirSync(join(tmp, 'dist'))
-  writeFileSync(join(tmp, 'dist', 'helper.js'), 'export const h = 1\n')
-  for (let i = 0; i < 2; i++) {
-    const r = runCli(stasisCli, ['bundle', '--output=dist/app.br', 'src/entry.js'], tmp)
-    t.assert.equal(r.status, 0, r.stderr)
+test('bundle never takes its own --output or --lockfile into extra, swept or matched', withTmp(async (t, tmp) => {
+  for (const [extra, mainFields] of [[['dist/'], []], [['dist/*'], []], [['dist/*'], ['--mainFields=main']]]) {
+    rmSync(join(tmp, 'dist'), { recursive: true, force: true })
+    seed(tmp, { resources: ['br'], extra })
+    mkdirSync(join(tmp, 'dist'))
+    writeFileSync(join(tmp, 'dist', 'helper.js'), 'export const h = 1\n')
+    for (let i = 0; i < 2; i++) {
+      const r = runCli(stasisCli, ['bundle', ...mainFields, '--output=dist/app.br', '--lockfile=dist/lock.json', 'src/entry.js'], tmp)
+      t.assert.equal(r.status, 0, `${extra} ${mainFields}: ${r.stderr}`)
+    }
+    const files = ['dist/helper.js', 'src/entry.js', 'src/util.js']
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'app.br'))), files, `${extra} ${mainFields}`)
+    t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'dist', 'lock.json'), 'utf8'))), files, `${extra} ${mainFields}`)
   }
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'app.br'))), ['dist/helper.js', 'src/entry.js', 'src/util.js'])
+}))
+
+test('bundle never takes its default output into extra, matched by a glob', withTmp(async (t, tmp) => {
+  for (const mainFields of [[], ['--mainFields=main']]) {
+    seed(tmp, { resources: ['br'], extra: ['*.br'] })
+    writeFileSync(join(tmp, 'top.br'), PNG)
+    for (let i = 0; i < 2; i++) {
+      const r = runCli(stasisCli, ['bundle', ...mainFields, 'src/entry.js'], tmp)
+      t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
+    }
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'top.br'], `${mainFields}`)
+    rmSync(join(tmp, 'stasis.code.br'))
+  }
+}))
+
+test('bundle validates extra against --resources where given, else the config\'s resources', withTmp(async (t, tmp) => {
+  for (const mainFields of [[], ['--mainFields=main']]) {
+    seed(tmp, { extra: ['assets/'] })
+    const r = runCli(stasisCli, ['bundle', ...mainFields, '--resources=png,svg', 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'assets/logo.png', 'src/entry.js', 'src/util.js'], `${mainFields}`)
+
+    // A flag narrower than the config's list is the one that holds.
+    seed(tmp, { resources: ['png', 'svg'], extra: ['assets/'] })
+    const narrow = runCli(stasisCli, ['bundle', ...mainFields, '--resources=png', 'src/entry.js'], tmp)
+    t.assert.notEqual(narrow.status, 0, `${mainFields}`)
+    t.assert.match(narrow.stderr, /extra: assets\/icon\.svg is neither a recognized source file nor a declared resource/, `${mainFields}`)
+    rmSync(join(tmp, 'stasis.code.br'), { force: true })
+  }
 }))
 
 test('bundle --mainFields adds extra as `stasis add` adds files, into its lockfile too', withTmp(async (t, tmp) => {
