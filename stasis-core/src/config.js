@@ -203,18 +203,20 @@ export class Config {
     const config = JSON.parse(json)
     const keys = Object.keys(config)
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
+    // A static build's modes are its own: the file's are `stasis run`'s, checked as it checks them
+    // (one the file leaves unset as the build's, which no key the file sets conflicts with), not taken.
+    const ownModes = this.#staticBuild ? { lock: this.#opts.lock, bundle: this.#opts.bundle } : null
     for (const key of keys) {
-      // A static build's modes are its own: the file's are `stasis run`'s, checked but not taken.
-      if (this.#staticBuild && (key === 'lock' || key === 'bundle')) {
-        assertOption(key, config[key])
-        continue
-      }
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
       else this.#opts[key] = config[key]
     }
     this.#checkInvariants()
+    if (ownModes) {
+      Object.assign(this.#opts, ownModes)
+      this.#checkInvariants()
+    }
 
     try {
       for (const key of CONFIG_FILE_KEYS) {

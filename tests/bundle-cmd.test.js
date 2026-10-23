@@ -2205,9 +2205,12 @@ test('buildBundle (JS) takes stasis.config.json\'s scope beside its lock and bun
     () => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'], scope: 'full' }),
     (err) => /Flags\/env can not override stasis\.config\.json/.test(err.message) && err.cause.actual === 'node_modules' && err.cause.expected === 'full',
   )
-  // An invalid mode is refused still, if not used.
+  // An invalid mode is refused still, if not used,
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'frozne' }))
   await t.assert.rejects(() => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'] }), /Invalid lock: frozne/)
+  // As is a combination `stasis run` refuses.
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'add', bundle: 'load' }))
+  await t.assert.rejects(() => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['src/entry.js'] }), /bundle=load is incompatible with lock=\(add\|replace\)/)
 }))
 
 cliTest('CLI: bundle --scope conflicting with stasis.config.json errors beside its lock and bundle modes too', withTmp(async (t, tmp) => {

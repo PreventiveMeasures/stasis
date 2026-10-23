@@ -1168,6 +1168,21 @@ test('Config staticBuild keeps its own lock/bundle modes over stasis.config.json
   t.assert.equal(c.scope, 'node_modules')
   t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true }).loadConfig(json({ lock: 'bogus' })), /Invalid lock: bogus/)
   t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true }).loadConfig(json({ bundle: 'bogus' })), /Invalid bundle: bogus/)
+  // So is a combination `stasis run` refuses; a mode the file leaves unset is the build's own.
+  for (const [file, error] of [
+    [{ lock: 'add', bundle: 'load' }, /bundle=load is incompatible with lock=\(add\|replace\)/],
+    [{ lock: 'none', bundle: 'none' }, /stasis needs a lockfile or a bundle/],
+    [{ bundle: 'none', fs: 'sync' }, /fs requires bundle=\(add\|replace\|load\)/],
+    [{ bundle: 'ignore', resourcesBundleFile: 'res.br' }, /resourcesBundleFile requires an active bundle mode/],
+  ]) {
+    t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true }).loadConfig(json(file)), error)
+  }
+  for (const file of [{ bundle: 'load' }, { lock: 'none' }, { lock: 'frozen', bundle: 'load', fs: 'sync' }]) {
+    const own = new Config({ lock: 'ignore', bundle: 'replace', staticBuild: true })
+    own.loadConfig(json(file))
+    t.assert.equal(own.lock, 'ignore')
+    t.assert.equal(own.bundleMode, 'replace')
+  }
   // An explicit scope is still authoritative.
   t.assert.throws(() => new Config({ lock: 'ignore', bundle: 'replace', scope: 'full', staticBuild: true }).loadConfig(json({ scope: 'node_modules', lock: 'add', bundle: 'add' })),
     /can not override stasis\.config\.json/)
