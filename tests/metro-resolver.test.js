@@ -132,6 +132,9 @@ const METRO_ORDER_CASES = [
   ['an asset beside its scale variants resolves to itself', entry, './img/withbase.png', false, 'src/img/withbase.png'],
   ['an asset of several scale variants resolves to the lowest path', entry, './img/multi.png', false, 'src/img/multi@1.5x.png'],
   ['an asset named by its scale resolves nowhere', entry, './img/direct@2x.png', false, null],
+  // Package maps too: an `exports` or `imports` target naming an asset is resolved as one.
+  ['an exports target naming an asset resolves to its scale variant', entry, 'exportsasset/logo', false, 'node_modules/exportsasset/logo@3x.png'],
+  ['an imports target naming an asset resolves to its scale variant', nm('exportsasset', 'index.js'), '#icon', false, 'node_modules/exportsasset/icon@2x.png'],
 ]
 
 test('adapter and built-in resolver follow Metro\'s order around exports, nested package.json files and fallbacks', ifMetro, (t) => {

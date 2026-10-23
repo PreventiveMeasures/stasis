@@ -166,7 +166,8 @@ from Node's and esbuild's:
 - An asset (an extension in Metro's default `assetExts`: `png`, `jpg`, `svg`,
   `ttf`, ...) resolves to itself or one of its scale variants (`@1x` to `@4x`),
   the lowest path among those that exist, so `./logo.png` reaches
-  `logo@3x.png` where only that exists. A path naming a scale variant itself
+  `logo@3x.png` where only that exists, as does an `exports` or `imports`
+  target naming one (`"./logo": "./logo.png"`). A path naming a scale variant itself
   (`./logo@2x.png`) resolves nowhere, as in Metro. `--metro-resolver` resolves
   assets the same way. Carrying one needs `--resources` (e.g. `--resources=png`).
 

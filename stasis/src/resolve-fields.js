@@ -355,6 +355,14 @@ export function createFieldResolver({
   // `exports` under --metro (viaMetro); built on first use.
   let packageResolver
   const nodeResolver = () => (packageResolver ??= createNodeResolver(host))
+  // --metro: a package-map target (`exports`, `imports`) naming an asset resolves as an asset, its
+  // scale variants included (PackageExportsResolve, PackageImportsResolve), where Node wants the
+  // file itself: `"./logo": "./logo.png"` reaches `logo@3x.png` where only that exists.
+  const viaMetroAsset = (target) => {
+    if (target == null || !isMetroAssetFile(target)) return null
+    const hit = metroAsset(target, host)
+    return hit === null ? null : fileResolution(hit, host)
+  }
 
   // --metro: metro-resolver's own steps (its resolve.js), so the two resolve alike where they can.
   // A path takes the redirect of the package closest to it, then resolves as a file or directory
@@ -374,7 +382,7 @@ export function createFieldResolver({
       try {
         file = nodeResolver().resolveExports(pkgDir, subpath, conds)
       } catch {
-        return null
+        return viaMetroAsset(nodeResolver().exportsTarget(pkgDir, subpath, conds))
       }
       return file === null ? null : fileResolution(file, host)
     }
@@ -445,7 +453,7 @@ export function createFieldResolver({
       return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
     }
     // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
-    if (specifier.startsWith('#')) return viaNode(specifier)
+    if (specifier.startsWith('#')) return viaNode(specifier) ?? (metro ? viaMetroAsset(nodeResolver().importsTarget(parentFile, specifier, conds)) : null)
     if (metro) return viaMetro(parentFile, specifier, conds, fileOpts)
 
     let spec = specifier
