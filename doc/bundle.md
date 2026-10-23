@@ -9,6 +9,7 @@ to be captured (a React Native app, a library's entry points).
 ```sh
 stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -70,6 +71,49 @@ with `--bundle=load`, or replay the conditions. Under `--add`, an existing
 lockfile at that path is merged the same way as the bundle; with none there it
 refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
+
+## Entry options (`stasis.config.json`)
+
+The `bundle` of the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson),
+where it is an object, gives entries their options: each key is an entry, a
+path relative to that directory, and its value the flags building it, named as
+they are without the `--`.
+
+```json
+{
+  "bundle": {
+    "index.js": { "metro": true, "metro-resolver": true, "platforms": ["ios", "android"], "flow": true, "jsx": true },
+    "node_modules/@react-native-community/cli/build/bin.js": { "metro": false }
+  }
+}
+```
+
+A boolean flag takes `true` or `false` (its default, as leaving it out is); one
+taking a value, a string as on the command line, and one taking a list
+(`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an
+array of strings too. `output`, `lockfile`, `brotli-quality` and `add` say how
+the bundle is written, not how an entry is built, so they stay flags.
+
+With it:
+
+- `stasis bundle` alone bundles every entry it names, as `stasis bundle` with
+  each of them would.
+- An entry it names is built with its options there, and no flag but those four
+  may be given with it: it is set there instead.
+- The entries given are all named there, or none is: those it doesn't name are
+  built with the flags, as without it.
+- Entries with different options are built apart, and their bundles merged as
+  `--add` merges (a file both carry with different content fails) into one,
+  whose paths must be relative to the same root. So one bundle may hold a
+  Metro build's files, attributed to the `bundle:metro` consumer, and a Node
+  one's, attributed to `bundle`.
+
+A string `bundle` is `stasis run`'s bundle mode, which takes nothing from it.
+
+```sh
+stasis bundle                         # bundles index.js with --metro and bin.js without
+stasis bundle --output=app.br index.js
+```
 
 ## Resolution
 

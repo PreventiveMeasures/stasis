@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir, constants as osConstants } from 'node:os'
 import assert from 'node:assert/strict'
-import { parseBrotliQuality, parseLeadingOptions, parseResourcesOption } from '@exodus/stasis-core/util'
+import { parseBrotliQuality, parseLeadingOptions } from '@exodus/stasis-core/util'
 import pkg from '../package.json' with { type: 'json' }
 
 const argv = [...process.argv]
@@ -24,6 +24,7 @@ const HELP = `Usage:
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
+ stasis bundle [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's bundle)
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
@@ -189,209 +190,22 @@ if (command === '-v' || command === '--version') {
   // code is null when the child died from a signal; report 128+signo (shell convention) instead of the implicit 0
   process.exitCode = code ?? 128 + (osConstants.signals[signal] ?? 0)
 } else if (command === 'bundle') {
-  const options = {
-    mapping: { type: 'string' },
-    manifests: { type: 'boolean' },
-    output: { type: 'string', short: 'o' },
-    scope: { type: 'string' },
-    lockfile: { type: 'string' },
-    conditions: { type: 'string' },
-    mainFields: { type: 'string' },
-    metro: { type: 'boolean' },
-    'metro-resolver': { type: 'boolean' },
-    babel: { type: 'boolean' },
-    platforms: { type: 'string', multiple: true },
-    jsx: { type: 'boolean' },
-    flow: { type: 'boolean' },
-    typescript: { type: 'boolean' },
-    tsconfig: { type: 'string' },
-    resources: { type: 'string' },
-    'package-json': { type: 'boolean' },
-    cargo: { type: 'boolean' },
-    'cargo-features': { type: 'string', multiple: true },
-    'cargo-no-default-features': { type: 'boolean' },
-    'cargo-all-features': { type: 'boolean' },
-    'cargo-target': { type: 'string' },
-    'cargo-manifests': { type: 'boolean' },
-    'brotli-quality': { type: 'string' },
-    add: { type: 'boolean' },
-  }
-  const values = parseLeadingOptions(argv, options, {
-    valueFlags: ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--cargo-features', '--cargo-target', '--brotli-quality', '-o'],
-    onError: fail,
-  })
-  if (argv.length === 0) fail('Nothing to bundle: no entry file given')
-  // A directory entry stands for the .sol files under it (Solidity only); an extensionless path
-  // that doesn't exist is a missing one (skipped with a warning).
-  const { directoryEntryError, isSolidityEntry } = await import('../src/cmd/bundle.js')
-  const dirError = directoryEntryError(argv)
-  if (dirError !== null) fail(`Error: ${dirError}`)
-  const allSol = argv.every((f) => isSolidityEntry(f))
-  const allPhp = argv.every((f) => f.endsWith('.php'))
-  const allJs = argv.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f))
-  const allBash = argv.every((f) => /\.(?:sh|bash)$/u.test(f))
-  const allRust = argv.every((f) => f.endsWith('.rs'))
-  if (!allSol && !allPhp && !allJs && !allBash && !allRust) {
-    fail('Error: bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
-  }
-  if (values.mapping && !allSol) fail('Error: --mapping is only valid for .sol bundles')
-  // --manifests: carry the Solidity build's description files (foundry.toml, remappings.txt, ...).
-  const manifests = Boolean(values.manifests)
-  if (manifests && !allSol) fail('Error: --manifests is only valid for .sol bundles')
-  // --cargo: take the Rust feature/dependency resolution from `cargo metadata` (runs cargo; opt-in).
-  const cargo = Boolean(values.cargo)
-  if (cargo && !allRust) fail('Error: --cargo is only valid for Rust bundles')
-  // --cargo-features / --cargo-no-default-features / --cargo-all-features: cargo's own feature flags
-  // for the entries' packages (`pkg/feat` targets one, or a dependency). --cargo-features is
-  // repeatable and/or comma-separated; parseFeatureList is the one splitter (the resolver reuses it).
-  const { parseFeatureList } = await import('../src/loaders/cargo.js')
-  const cargoFeatures = parseFeatureList(values['cargo-features'] ?? [])
-  if (values['cargo-features'] !== undefined && cargoFeatures.length === 0) {
-    fail('Error: --cargo-features must list at least one feature (e.g. --cargo-features=serde,app/tls)')
-  }
-  const cargoNoDefaultFeatures = Boolean(values['cargo-no-default-features'])
-  const cargoAllFeatures = Boolean(values['cargo-all-features'])
-  // --cargo-target=<triple|host>: the build's target, whose cfgs (from `rustc --print cfg`) decide
-  // `#[cfg(unix)]`-style code. A triple is letters, digits, `-`, `_` and `.` (`x86_64-unknown-linux-gnu`).
-  const cargoTarget = values['cargo-target'] ?? null
-  if (cargoTarget !== null && !/^[\w.-]+$/u.test(cargoTarget)) {
-    fail('Error: --cargo-target must be a target triple or "host" (e.g. --cargo-target=aarch64-apple-darwin)')
-  }
-  // --cargo-manifests: carry each bundled package's Cargo.toml and build script, the workspace
-  // Cargo.toml, Cargo.lock and .cargo/config.toml too (the Rust counterpart of --package-json).
-  const cargoManifests = Boolean(values['cargo-manifests'])
-  if (!allRust) {
-    const given = { 'cargo-features': cargoFeatures.length > 0, 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget !== null, 'cargo-manifests': cargoManifests }
-    for (const [flag, on] of Object.entries(given)) if (on) fail(`Error: --${flag} is only valid for Rust bundles`)
-  }
-  if (values.scope && !allJs) fail('Error: --scope is only valid for JS bundles')
-  if (values.scope && !['node_modules', 'full'].includes(values.scope)) {
-    fail('Error: --scope must be node_modules or full')
-  }
-  if (values.lockfile && !allJs) fail('Error: --lockfile is only valid for JS bundles')
-  // --mainFields/--metro always emit a full-scope bundle, so they'd silently ignore a narrower --scope.
-  if (values.scope !== undefined && values.scope !== 'full' && (values.mainFields !== undefined || values.metro)) {
-    fail(`Error: --scope=${values.scope} is not supported with --mainFields or --metro (they always build a full-scope bundle)`)
-  }
-  // --conditions: extra exports/imports resolution conditions merged onto Node's defaults;
-  // they don't honour legacy `mainFields` or platform suffixes (see --mainFields).
-  if (values.conditions !== undefined && !allJs) fail('Error: --conditions is only valid for JS bundles')
-  const conditions = values.conditions === undefined
-    ? []
-    : values.conditions.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.conditions !== undefined && conditions.length === 0) {
-    fail('Error: --conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
-  }
-  // --flow: strip Flow type syntax (via the optional flow-remove-types dep) before parsing; JS-only.
-  if (values.flow && !allJs) fail('Error: --flow is only valid for JS bundles')
-  const flow = Boolean(values.flow)
-  // --typescript: resolve like tsc -- a specifier naming a missing JS output (./x.js, .mjs, .cjs,
-  // extensionless) lands on its on-disk TS source (./x.ts, .mts, .cts); an existing .js always wins.
-  if (values.typescript && !allJs) fail('Error: --typescript is only valid for JS bundles')
-  const typescript = Boolean(values.typescript)
-  // --tsconfig: the config whose compilerOptions.paths aliases --typescript honours (default: the
-  // tsconfig.json beside each importing file's package.json). Meaningless without --typescript.
-  if (values.tsconfig !== undefined && !typescript) fail('Error: --tsconfig is only valid with --typescript')
-  // --mainFields: legacy package entry fields (e.g. react-native,browser,main) for the non-exports resolver.
-  if (values.mainFields !== undefined && !allJs) fail('Error: --mainFields is only valid for JS bundles')
-  const mainFields = values.mainFields === undefined
-    ? undefined
-    : values.mainFields.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.mainFields !== undefined && mainFields.length === 0) {
-    fail('Error: --mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
-  }
-  // --metro: resolve like Metro/RN (its own conditions + mainFields, platform suffixes per
-  // --platforms target). --platforms is repeatable and/or comma-separated; the values union.
-  const metro = Boolean(values.metro)
-  // --metro-resolver: resolve through the project's own metro-resolver instead of the built-in
-  // approximation. Only meaningful alongside --metro (enforced below and in classifyEntries).
-  const metroResolver = Boolean(values['metro-resolver'])
-  const platforms = [...new Set((values.platforms ?? []).flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean))]
-  // A platform name becomes an edge key: reject '/' (parsers reject it) and '*' (reserved placeholder).
-  for (const p of platforms) {
-    if (p === '*' || p.includes('/')) fail(`Error: invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)
-  }
-  if ((metro || platforms.length > 0) && !allJs) fail('Error: --metro is only valid for JS bundles')
-  // --jsx: parse React Native's JSX-in-.js source in the static scanner (off by default; oxc,
-  // like tsc, auto-enables JSX for .jsx/.tsx only). Orthogonal to the resolver, so it pairs with
-  // plain/--mainFields/--metro alike -- JS-only, since no other entry language is scanned.
-  const jsx = Boolean(values.jsx)
-  if (jsx && !allJs) fail('Error: --jsx is only valid for JS bundles')
-  // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
-  // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).
-  const packageJSON = Boolean(values['package-json'])
-  if (packageJSON && !allJs) fail('Error: --package-json is only valid for JS bundles')
-  // --resources: comma-separated extension/filename allowlist for assets reached through the graph
-  // (e.g. --resources=png,svg). They're carried as resources instead of failing "can't carry" --
-  // for graphs that aren't fully loadable in JS (Metro consumes such assets). JS-only.
-  if (values.resources !== undefined && !allJs) fail('Error: --resources is only valid for JS bundles')
-  const resources = values.resources === undefined
-    ? undefined
-    : values.resources.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.resources !== undefined && resources.length === 0) {
-    fail('Error: --resources must list at least one extension or filename (e.g. --resources=png,svg)')
-  }
+  const { BUNDLE_FLAGS, BUNDLE_VALUE_FLAGS, bundlePlan, readBundleConfig } = await import('../src/cmd/bundle-options.js')
+  const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: BUNDLE_VALUE_FLAGS, onError: fail })
+  const cwd = process.cwd()
+  let plan
   try {
-    parseResourcesOption('--resources', resources) // validate early for a clean usage error (code exts / bad chars rejected)
+    // stasis.config.json's `bundle`, where it is an object: its entries' options, and with no entry
+    // given, the entries.
+    const config = readBundleConfig(cwd)
+    const entries = argv.length > 0 ? argv : [...(config?.values() ?? [])].map(({ entry }) => entry)
+    if (entries.length === 0) fail('Nothing to bundle: no entry file given')
+    plan = bundlePlan({ cwd, entries, values, config })
   } catch (cause) {
     fail(`Error: ${cause.message}`)
   }
-  if (metro) {
-    if (conditions.length > 0) fail("Error: --conditions can't be combined with --metro (it sets its own conditions)")
-    if (mainFields !== undefined) fail("Error: --mainFields can't be combined with --metro (it sets its own mainFields)")
-    if (platforms.length === 0) fail('Error: --metro requires --platforms (e.g. --platforms=ios,android)')
-  } else if (platforms.length > 0) {
-    fail('Error: --platforms is only valid with --metro')
-  }
-  if (metroResolver && !metro) fail('Error: --metro-resolver is only valid with --metro')
-  // --babel: resolve through the import aliases (babel-plugin-module-resolver) of the project's
-  // babel.config.*, which Metro runs before it resolves. Runs that config, so opt-in; --metro only.
-  const babel = Boolean(values.babel)
-  if (babel && !metro) fail('Error: --babel is only valid with --metro')
-  // metro-resolver can't substitute .js -> .ts, so --typescript would silently not apply -- reject it.
-  if (typescript && metroResolver) fail("Error: --typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
-  // --brotli-quality: valid for every entry language (no allJs gate).
-  let brotliQuality
-  if (values['brotli-quality'] !== undefined) {
-    try {
-      brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-    } catch (cause) {
-      fail(`Error: ${cause.message}`)
-    }
-  }
-  // --add merges into the existing bundle at --output, so it can't target write-only stdout.
-  const add = Boolean(values.add)
-  if (add && values.output === '-') fail('Error: --add cannot be combined with --output=-')
   const { bundleCommand } = await import('../src/cmd/bundle.js')
-  await bundleCommand({
-    cwd: process.cwd(),
-    entries: argv,
-    mappingFile: values.mapping,
-    manifests,
-    output: values.output,
-    scope: values.scope,
-    lockfile: values.lockfile,
-    conditions,
-    mainFields,
-    metro,
-    metroResolver,
-    babel,
-    platforms,
-    jsx,
-    flow,
-    typescript,
-    tsconfig: values.tsconfig,
-    resources,
-    packageJSON,
-    cargo,
-    cargoFeatures,
-    cargoNoDefaultFeatures,
-    cargoAllFeatures,
-    cargoTarget,
-    cargoManifests,
-    brotliQuality,
-    add,
-  })
+  await bundleCommand({ cwd, ...plan })
 } else if (command === 'github-bundle') {
   const values = parseLeadingOptions(argv, {
     github: { type: 'string' },

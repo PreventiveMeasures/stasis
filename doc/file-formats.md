@@ -29,6 +29,7 @@ it, or take it for another path.
 | --- | --- | --- | --- |
 | `scope` | `"node_modules"`, `"full"` | `"full"` | `EXODUS_STASIS_SCOPE` |
 | `lock` | `"frozen"` | the flag's or env var's, else `"add"` | `EXODUS_STASIS_LOCK` |
+| `bundle` | object of entries' `stasis bundle` options, which sets no mode (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `debug` | boolean | `false` | `EXODUS_STASIS_DEBUG` |
 | `packageJSON` | boolean | `false` | `EXODUS_STASIS_PACKAGE_JSON` |
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
