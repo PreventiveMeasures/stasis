@@ -321,14 +321,17 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
 // them, for `stasis bundle` to merge into `bundle`, one built there without a State (always full
 // scope): those it doesn't carry already (its own record of a file stands), in its buckets where it
 // has them. `outputs` are the project-relative paths the build writes, never swept in.
-// -> { bundle, lockfile } of the `extra` consumer, or null when there is nothing to add
+// -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), and
+// `carried`: the files named that `bundle` carries already, the `extra` consumer's too
 export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set() }) {
-  const files = new Map([...expandExtra(baseDir, patterns, outputs).files].filter(([rel]) => !bundle.sources.has(rel)))
-  if (files.size === 0) return null
+  const named = expandExtra(baseDir, patterns, outputs).files
+  const carried = [...named.keys()].filter((rel) => bundle.sources.has(rel))
+  const files = new Map([...named].filter(([rel]) => !bundle.sources.has(rel)))
+  if (files.size === 0) return { bundle: null, lockfile: null, carried }
   const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: realpathSync(baseDir), files, resources, withIntegrity: true, label: 'extra' })
   const rootPkg = readJson(join(baseDir, 'package.json')) ?? {}
   const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules })
-  return { bundle: extra, lockfile: bundleToLockfile(extra, integrities) }
+  return { bundle: extra, lockfile: bundleToLockfile(extra, integrities), carried }
 }
 
 // GLOB the listed paths, FILTERING the auto-excluded set out of what a sweep finds (see

@@ -285,10 +285,10 @@ export class Bundle {
     return JSON.stringify(data, undefined, 2)
   }
 
-  // Stamp `consumer` onto every carried file in the informational `reason` map.
-  withReason(consumer) {
+  // Stamp `consumer` onto `files` in the informational `reason` map: by default every carried file.
+  withReason(consumer, files = [...this.sources.keys()]) {
     const { version, config, entries, modules, formats, imports, executable, repo, package: pkg } = this
-    const reason = mergeReason(this.reason, { [consumer]: [...this.sources.keys()] })
+    const reason = mergeReason(this.reason, { [consumer]: files })
     return new Bundle({ version, config, entries, modules, formats, imports, executable, reason, repo, package: pkg })
   }
 
