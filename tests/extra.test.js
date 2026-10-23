@@ -359,13 +359,29 @@ test('extra `!` entries take out named and matched paths too, in any order', wit
   t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'src/entry.js', 'src/util.js'])
 }))
 
-test('a directory extra excludes is never walked', withTmp(async (t, tmp) => {
-  // A name holding `\` is refused wherever a walk meets it: the run passes only if ios/Pods is skipped whole.
-  seedIos(tmp, IOS_EXTRA)
-  writeFileSync(join(tmp, 'ios/Pods/odd\\name.m'), '')
+test('a directory extra excludes is never walked, by a sweep or a pattern\'s expansion', withTmp(async (t, tmp) => {
+  // A name holding `\` is refused wherever a walk keeps it: the run passes only if ios/Pods is skipped whole.
+  for (const ios of ['ios', 'ios/**/*']) {
+    seedIos(tmp, [ios, ...IOS_EXTRA.slice(1)])
+    writeFileSync(join(tmp, 'ios/Pods/odd\\name.m'), '')
+    const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${ios}: ${r.stderr}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted(), ios)
+    rmSync(join(tmp, 'stasis.code.br'))
+  }
+}))
+
+test('a walk never refuses a name it passes by, only one it keeps', withTmp(async (t, tmp) => {
+  // static/odd\name.txt neither matches `static/*.wav` nor is excluded: matching against the
+  // exclusions must not trip on it.
+  seed(tmp, { resources: ['wav'], extra: ['static/*.wav', '!static/skip.wav'] })
+  mkdirSync(join(tmp, 'static'))
+  writeFileSync(join(tmp, 'static', 'a.wav'), PNG)
+  writeFileSync(join(tmp, 'static', 'skip.wav'), PNG)
+  writeFileSync(join(tmp, 'static', 'odd\\name.txt'), '')
   const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted())
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'static/a.wav'])
 }))
 
 test('bundle takes extra `!` entries as run does', withTmp(async (t, tmp) => {

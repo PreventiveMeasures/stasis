@@ -99,8 +99,9 @@ recognized source file or have its extension (or extensionless filename) in
 
 An entry starting with `!` excludes instead: whatever its pattern matches is
 left out, named, matched or swept, and a directory it matches is left out with
-everything under it, never walked. Exclusions apply whatever their position in
-the list, and one matching nothing is no error. They match with Node's
+everything under it, never walked, by a sweep or another entry's pattern (so a
+pattern whose every match is excluded matches nothing). Exclusions apply
+whatever their position in the list, and one matching nothing is no error. They match with Node's
 `path.matchesGlob`, as `fs.globSync` would, against the path relative to the
 config's directory (`./` and a trailing `/` are ignored). This sweeps an `ios`
 directory without what a build or the IDE leaves there (named dotfiles are

@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { basename, dirname, extname, join, matchesGlob, posix, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, matchesGlob, posix, relative, resolve, sep } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from './bundle.js'
@@ -176,6 +176,21 @@ function outputMatcher(baseDir, outputs) {
   }
 }
 
+// fs.globSync's matches of `pattern` under `cwd`, as paths relative to it, taking none `exclude` takes
+// (given the path relative to `baseDir`, '/'-joined) and walking into none it takes. fs.globSync hands
+// its callback a bare name for a file, so the walk is over Dirents, which know their parent. A visited
+// name is checked as spelled: one holding `\` is for the caller to refuse where it is kept, not here.
+function globPaths(pattern, cwd, baseDir, exclude) {
+  if (exclude === undefined) return globSync(pattern, { cwd })
+  const pathOf = (dirent) => join(dirent.parentPath, dirent.name)
+  const projectPath = (dirent) => {
+    const rel = relative(baseDir, pathOf(dirent))
+    return sep === '\\' ? rel.replaceAll('\\', '/') : rel
+  }
+  return globSync(pattern, { cwd, withFileTypes: true, exclude: (entry) => exclude(projectPath(entry)) })
+    .map((dirent) => relative(cwd, pathOf(dirent)))
+}
+
 // GLOB + FILTER: expand each directory entry into the files under it (recursive glob), dropping the
 // auto-excluded set from what a sweep FINDS -- dir rules on the segments BELOW the named root (`add
 // src/examples` sweeps the dir it was pointed at, `add src` skips one it merely found), file rules
@@ -186,14 +201,15 @@ function outputMatcher(baseDir, outputs) {
 // so a path any entry keeps stays kept -- `add src src/examples` includes the subtree it names in
 // either order. `stats` is the walk's own stat, reused by validation. Gotcha: `**/*` skips dotfiles
 // (.env, .git/...) -- name them explicitly. A project-relative path `exclude` takes is dropped, named
-// or swept, with everything under it: a named path below one too, and a directory it takes is never walked.
-function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude = () => false } = {}) {
+// or swept, with everything under it: a named path below one too, and a directory it takes is never
+// walked (globPaths).
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude } = {}) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
   const isOutput = outputMatcher(baseDir, outputs)
   for (const rel of rels) {
     // A walk meets a directory before what's under it, so it checks each path alone; a named one, its directories too.
-    if (rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
+    if (exclude !== undefined && rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
     const dirAbs = join(baseDir, rel)
     const stats = statSync(dirAbs, { throwIfNoEntry: false })
     if (stats === undefined || !stats.isDirectory()) {
@@ -201,11 +217,8 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
       continue
     }
     const found = []
-    // Dirents, for `exclude`: its callback is handed a bare name for a file, but a Dirent knows its parent.
-    const projectPath = (dirent) => toPosix(relative(baseDir, join(dirent.parentPath, dirent.name)))
-    for (const dirent of globSync('**/*', { cwd: dirAbs, withFileTypes: true, exclude: (dirent) => exclude(projectPath(dirent)) })) {
-      const fileAbs = join(dirent.parentPath, dirent.name)
-      const match = relative(dirAbs, fileAbs)
+    for (const match of globPaths('**/*', dirAbs, baseDir, exclude)) {
+      const fileAbs = join(dirAbs, match)
       // A dangling symlink stats as undefined -- skipped, not a hard ENOENT out of the walk.
       const fileStats = statSync(fileAbs, { throwIfNoEntry: false })
       if (fileStats?.isFile()) found.push([toPosix(relative(baseDir, fileAbs)), match, fileStats])
@@ -252,16 +265,17 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // One of `outputs`, the files this very run writes, is never kept, named, matched (`dist/*`) or
 // under another name (outputMatcher). A `!` entry (`!ios/Pods`, `!**/xcuserdata`) is no path: it
 // takes out every path its pattern matches, in any order of the entries, along with everything under
-// one that is a directory, which is then never walked. One matching nothing is no error.
+// one that is a directory, which is then never walked, whether by a pattern's expansion or a sweep:
+// a pattern whose every match is excluded matches nothing. One matching nothing is no error.
 export function expandExtra(baseDir, patterns, outputs) {
   // Normalized as the paths they're matched against are: no `./`, no trailing `/`.
   const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => posix.normalize(pattern.slice(1)).replace(/\/+$/u, ''))
-  const exclude = (rel) => exclusions.some((pattern) => matchesGlob(rel, pattern))
+  const exclude = exclusions.length === 0 ? undefined : (rel) => exclusions.some((pattern) => matchesGlob(rel, pattern))
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
-    const matches = globSync(pattern, { cwd: baseDir })
+    const matches = globPaths(pattern, baseDir, baseDir, exclude)
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, ...(exclusions.length > 0 && { exclude }) })
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude })
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --
