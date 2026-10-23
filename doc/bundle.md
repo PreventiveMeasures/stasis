@@ -135,6 +135,10 @@ one bundle. `--platforms` is repeatable and/or comma-separated
 (`--platforms=web` too). It sets its own conditions and `mainFields`, so it
 doesn't combine with `--conditions` or `--mainFields`.
 
+Its files are attributed to the `bundle:metro` consumer in the bundle's
+`reason` map, where every other `stasis bundle` build names `bundle`, so
+`stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
+
 It also carries each bundled dependency's native build inputs: for every
 `node_modules` package the code graph reaches, its `ios/` and `android/`
 sources and its podspecs (for `react-native` itself, its whole native tree).

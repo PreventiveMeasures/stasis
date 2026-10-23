@@ -102,6 +102,19 @@ test('collectWhy with a reason filter keeps only that consumer\'s chains', withT
   t.assert.deepStrictEqual(linesFor(why, 'c@1.0.0'), ['a -> b -> c', 'b -> c'])
 }))
 
+test('collectWhy keeps a namespaced consumer (`bundle:metro`) apart from `bundle`', withTmp((t, tmp) => {
+  const file = writeGraphBundle(tmp, {
+    deps: ['a', 'b', 'c'],
+    edges: [['entry', 'a'], ['entry', 'b'], ['a', 'c'], ['b', 'c']],
+    reason: {
+      'bundle': ['entry', 'a', 'c'],
+      'bundle:metro': ['entry', 'b', 'c'],
+    },
+  })
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['c@1.0.0'])), 'c@1.0.0'), ['bundle: a -> c', 'bundle:metro: b -> c'])
+  t.assert.deepStrictEqual(linesFor(collectWhy([file], new Set(['c@1.0.0']), 'bundle:metro'), 'c@1.0.0'), ['b -> c'])
+}))
+
 test('collectWhy with a reason filter drops bare (unattributed) chains', withTmp((t, tmp) => {
   // No reason map -> chains are unattributed and can't match a named reason.
   const file = writeGraphBundle(tmp, {

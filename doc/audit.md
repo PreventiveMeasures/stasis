@@ -14,7 +14,7 @@ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisor
 | `--why` | Per advisory, the cross-module import chains that pull the package in. See [Import chains](#import-chains---why). |
 | `--why-deep` | Like `--why`, also keeping a chain a shorter listed chain is the tail of. |
 | `--why-full` | Spell every chain out, with no `...` collapse. With `--why-deep`, the complete raw listing. |
-| `--reason=consumer` | Only advisories tied to that consumer (`run`, `metro`, ...); with `--why`, only its chains. |
+| `--reason=consumer` | Only advisories tied to that consumer (`run`, `metro`, `bundle:metro`, ...); with `--why`, only its chains. |
 | `--repo-advisories` | Also ask each package's GitHub repository for its advisories. Needs `GITHUB_TOKEN`. See [Repository advisories](#repository-advisories---repo-advisories). |
 
 Exits 0 when nothing is flagged and 1 otherwise, so it composes in CI. The
@@ -58,7 +58,8 @@ can't be matched to an advisory: it is listed as not audited, naming its host.
 GitHub is asked with `GITHUB_TOKEN` where it is set. Each flagged advisory is
 one row: severity, ecosystem (when not all npm), package, installed and
 vulnerable versions, title and id, plus a `reason` column where the artifacts
-record provenance: which bundle consumers (`run`, `metro`, `esbuild`, ...)
+record provenance: which bundle consumers (`run`, `metro`, `esbuild`, ...,
+`bundle` for `stasis bundle`, `bundle:metro` for `stasis bundle --metro`)
 recorded the package, and with `--why`, how.
 
 ## Import chains (`--why`)

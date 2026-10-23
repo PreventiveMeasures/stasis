@@ -265,10 +265,11 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
 // (packageLookup by default, which walks past a malformed one). `classifyDep(path)` optionally
 // places a file directly (non-node_modules ecosystems like Soldeer/github); null defers. `format` tags
 // every file; `formats` (Map<path,format>) overrides it per file. `resolutions` values are
-// a flat target string or a Map<platform,target>; both round-trip untouched.
+// a flat target string or a Map<platform,target>; both round-trip untouched. `consumer` is
+// codeBundle's.
 function assembleCodeBundle({
   baseDir, entries, sources, resolutions, workspaceName, workspaceVersion, format, formats, conditionKey, classifyDep, host,
-  packageOf = packageLookup(baseDir, { host }),
+  packageOf = packageLookup(baseDir, { host }), consumer,
 }) {
   const modules = new Map()
   // `identity`'s name, version, ecosystem, repo and vendored (moduleInfo takes those alone); a later
@@ -298,12 +299,13 @@ function assembleCodeBundle({
     }
   }
 
-  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host })
+  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer })
 }
 
 // A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
 // (Map<path,format>) overrides it per file, and the `resolutions` edges are keyed under `conditionKey`.
-function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host }) {
+// Every file is attributed to `consumer` in the `reason` map: `bundle`, or `bundle:metro` for --metro.
+function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer = 'bundle' }) {
   const formatsMap = new Map()
   for (const path of sources.keys()) formatsMap.set(path, formats?.get(path) ?? format)
 
@@ -315,7 +317,7 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, format, f
   // executable). Shell bundles lean on this most: `stasis extract` puts the +x back on the scripts.
   const executable = executableSources(baseDir, sources, host)
 
-  // Attribute files to the `bundle` consumer (static builders skip State's per-file tagging).
+  // Attribute files to the static build's consumer (static builders skip State's per-file tagging).
   return new Bundle({
     config: { scope: 'full' },
     entries: new Set(entries),
@@ -323,7 +325,7 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, format, f
     formats: formatsMap,
     imports,
     executable,
-  }).withReason('bundle')
+  }).withReason(consumer)
 }
 
 // Files never carried, whatever reads them: `.env` files, and Hardhat's config, which is code
@@ -1288,6 +1290,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     conditionKey: '*',
     host,
     packageOf,
+    consumer: metro ? 'bundle:metro' : 'bundle',
   })
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
@@ -1524,8 +1527,9 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
 }
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
-// writing to disk. Files are attributed to the `bundle` consumer. Option applicability
-// (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|--flow|--typescript/JS) is enforced by classifyEntries.
+// writing to disk. Files are attributed to the `bundle` consumer (`bundle:metro` with `metro`).
+// Option applicability (--mapping|--manifests/.sol, --scope|--conditions|--mainFields|--metro|--jsx|
+// --flow|--typescript/JS) is enforced by classifyEntries.
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, jsx = false, flow = false, typescript = false, tsconfig, resources, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, jsx, flow, typescript, tsconfig, resources, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   return (await buildOfKind(classifyEntries('buildBundle', options), options)).bundle

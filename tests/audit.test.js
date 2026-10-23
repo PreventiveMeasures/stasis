@@ -496,6 +496,22 @@ test('flattenAdvisories --reason narrows the consumer list and drops unrelated r
   t.assert.deepStrictEqual(rows.map((r) => [r.package, r.reason]), [['foo', 'run']])
 })
 
+test('flattenAdvisories takes a namespaced consumer (`bundle:metro`) whole', (t) => {
+  const result = [
+    found('bar', ['1.0.0'], { severity: 'low', title: 'y' }),
+    found('foo', ['1.0.0'], { severity: 'high', title: 'x' }),
+  ]
+  // --why: a line splits at its first `: `, so `bundle:metro` groups apart from `bundle`.
+  const why = new Map([['foo@1.0.0', new Set(['bundle:metro: a -> foo', 'run: foo', 'bundle: b -> foo', 'bundle:metro: c -> foo'])]])
+  t.assert.equal(flattenAdvisories([result[1]], undefined, why)[0].reason, 'bundle: b -> foo\nbundle:metro: a -> foo\nbundle:metro: c -> foo\nrun: foo')
+  // --reason=bundle:metro matches that key alone, not `bundle`.
+  const reasons = new Map([
+    ['foo@1.0.0', new Set(['bundle:metro', 'run'])],
+    ['bar@1.0.0', new Set(['bundle'])],
+  ])
+  t.assert.deepStrictEqual(flattenAdvisories(result, reasons, null, 'bundle:metro').map((r) => [r.package, r.reason]), [['foo', 'bundle:metro']])
+})
+
 test('formatTable renders a multiline cell across physical rows', (t) => {
   const out = formatTable([{ a: 'x', b: 'l1\nl2' }], ['a', 'b'], { multiline: ['b'] })
   const lines = out.split('\n')

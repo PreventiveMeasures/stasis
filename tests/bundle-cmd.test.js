@@ -5389,6 +5389,17 @@ test('buildBundle attributes files to `bundle`, matching what bundleCommand writ
   t.assert.deepStrictEqual({ ...bundle.reason }, { bundle: ['src/A.sol', 'src/B.sol'] })
 })
 
+test('buildBundle --metro attributes every file to `bundle:metro`, --mainFields to `bundle`', async (t) => {
+  // --metro is told apart from the other static builds: its files are what Metro would ship.
+  const metro = await buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.deepStrictEqual(Object.keys(metro.reason), ['bundle:metro'])
+  t.assert.deepStrictEqual(new Set(metro.reason['bundle:metro']), new Set(metro.sources.keys()))
+  t.assert.ok(metro.reason['bundle:metro'].includes('src/Button.android.js'))
+  const fields = await buildBundle({ cwd: fieldsFixture, entries: ['src/entry.js'], mainFields: ['react-native', 'browser', 'main'] })
+  t.assert.deepStrictEqual(Object.keys(fields.reason), ['bundle'])
+  t.assert.deepStrictEqual(new Set(fields.reason.bundle), new Set(fields.sources.keys()))
+})
+
 test('bundleCommand --add unions the `bundle` attribution across builds', withTmp(async (t, tmp) => {
   const outPath = join(tmp, 'out.stasis.code.br')
   const cwd = join(fixtures, 'shared')
