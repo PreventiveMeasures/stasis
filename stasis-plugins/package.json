@@ -13,6 +13,7 @@
   "files": [
     "src/esbuild.js",
     "src/metro.js",
+    "src/metro-babel-transformer.js",
     "src/metro-transformer.js",
     "src/plugins.js",
     "src/rollup.js",

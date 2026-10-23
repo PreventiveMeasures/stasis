@@ -413,15 +413,18 @@ export class StasisMetro {
       }
       const url = pathToFileURL(modPath).toString()
 
-      // Outgoing edges: as-written specifier is `dep.data.name`, target `dep.absolutePath`.
+      // Outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
+      // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis
+      // transformer (./metro-transformer.js) carries the ones written in the source.
       // Only code targets get an edge (resource imports are captured as files, no edge).
       for (const dep of module.dependencies?.values?.() ?? []) {
         const target = dep?.absolutePath
-        const specifier = dep?.data?.name
         if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
-        if (typeof specifier !== 'string') continue
         if (classifyExtension(target, this.#resources) !== 'code') continue
-        this.#state.addImport(url, specifier, pathToFileURL(target).toString())
+        for (const specifier of dep.data?.stasisAsWritten ?? [dep.data?.name]) {
+          if (typeof specifier !== 'string') continue
+          this.#state.addImport(url, specifier, pathToFileURL(target).toString())
+        }
       }
 
       if (this.#seen.has(modPath)) continue

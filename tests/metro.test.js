@@ -126,6 +126,28 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
 
+  test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    // Metro names it by the rewrite ('./hello.js'), written in the source both through an alias and
+    // as that path; the stasis worker transformer carries both.
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js', ['#local/hello', './hello.js']]] },
+        { path: 'src/hello.js', deps: [] },
+      ],
+    }
+    const env = { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' }
+    const r = await run('src/entry.js', { cwd: tmp, env, graph })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['src/entry.js'], { '#local/hello': 'src/hello.js', './hello.js': 'src/hello.js' })
+
+    // And a frozen run over the same graph verifies against them.
+    const frozen = await run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'frozen' }, graph })
+    t.assert.equal(frozen.status, 0, `stderr: ${frozen.stderr}`)
+  }))
+
   test('lock=add is idempotent against the committed lockfile', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     const before = readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8')

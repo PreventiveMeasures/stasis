@@ -171,6 +171,12 @@ instance of the plugin the config lists counts, by name or as a `require`d or
 imported value, the first to map a path winning as in Babel; one a preset brings
 in does not. Not with `github-bundle`.
 
+The Metro plugin keys its edges the same way under `stasis run`, with
+`@exodus/stasis/metro-transformer` wired as Metro's `transformerPath`: that
+transformer records each import as written, before any Babel plugin rewrites
+it. Without it, the plugin sees only Metro's dependency names, which are the
+rewritten specifiers (`./src/abc`).
+
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js
 ```
