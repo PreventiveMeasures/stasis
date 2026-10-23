@@ -1293,6 +1293,22 @@ export class State {
     if (format) upsertFormat(this.formats, file, format)
   }
 
+  // Under bundle=load, verify a resolution a bundler made on its own (Metro resolves the app's
+  // imports itself, where the loader and the esbuild/webpack plugins take them from the bundle): it
+  // must be the edge the bundle attests. Unknown edges are tolerated only where addImport tolerates
+  // them, for workspace parents in nm scope.
+  assertImport(parentURL, specifier, url, { conditions = '*', importAttributes } = {}) {
+    assert.ok(this.config.loadBundle, 'assertImport checks a resolution against a loaded bundle (bundle=load)')
+    if (conditions !== '*') assert.ok(Array.isArray(conditions))
+    assert.ok(parentURL, 'assertImport requires a parent')
+    const parent = this.#canonicalFile(parentURL)
+    const file = this.#canonicalFile(url)
+    specifier = this.#canonicalSpecifier(parentURL, specifier)
+    const key = this.#conditionsKey(conditions, importAttributes)
+    const tolerateUnknown = !this.config.full && !hasNodeModulesSegment(parent)
+    this.#assertAttestedResolution(this.imports, key, parent, specifier, file, { what: 'observed', source: 'bundle', tolerateUnknown })
+  }
+
   getImport(parentURL, specifier, { conditions = '*', importAttributes } = {}) {
     if (conditions !== '*') assert.ok(Array.isArray(conditions))
     assert.ok(parentURL, 'getImport requires a parent') // matches addImport; #canonicalSpecifier needs it

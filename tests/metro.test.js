@@ -12,6 +12,7 @@
 // loader. Tests at the bottom pass STASIS_TEST_PRELOAD=0 to exercise the standalone
 // / noop / hard-throw paths instead.
 
+import assert from 'node:assert/strict'
 import { test, describe } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -242,10 +243,10 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(decoded.formats['src/entry.js'], 'module')
   }))
 
-  test('bundle=load: the serializer is a transparent pass-through (load lives in the worker transformer)', withTmp(async (t, tmp) => {
-    // Load is served by the companion worker transformer, so the serializer must pass
-    // through, not throw -- metro.config.js is itself attested at capture, so a load run
-    // executes the same config, plugin included.
+  test('bundle=load: the serializer records nothing, and the edges it asserts hold (load lives in the worker transformer)', withTmp(async (t, tmp) => {
+    // Load is served by the companion worker transformer, so the serializer must not capture or
+    // throw -- metro.config.js is itself attested at capture, so a load run executes the same
+    // config, plugin included -- only assert each edge Metro resolved, which here are the same.
     cpSync(fullFixture, tmp, { recursive: true })
     const bundlePath = join(tmp, 'snapshot.br')
 
@@ -272,12 +273,75 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
         STASIS_TEST_METRO_MODE: 'customSerializer', STASIS_TEST_METRO_SERIALIZE_TWICE: '1',
       },
     })
-    t.assert.equal(r.status, 0, `load-mode serialization must pass through; stderr: ${r.stderr}`)
+    t.assert.equal(r.status, 0, `load-mode serialization must not capture; stderr: ${r.stderr}`)
     // Both invocations delegated to the base serializer (dev-server rebuild shape).
     t.assert.equal(r.stdout.match(/stasis base: 2 modules/gu)?.length, 2, `stdout: ${r.stdout}`)
     // Nothing captured, nothing written.
     t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'), lockBefore, 'load must not touch the lockfile')
     t.assert.deepStrictEqual(readFileSync(bundlePath), bundleBefore, 'load must not touch the bundle')
+  }))
+
+  // bundle=load asserts every edge Metro resolved against the bundle's: captures `captureGraph`,
+  // then serializes `loadGraph` under load.
+  const captureThenLoad = async (tmp, { fixture = fullFixture, scope = 'full', entry = 'src/entry.js', captureGraph, loadGraph }) => {
+    cpSync(fixture, tmp, { recursive: true })
+    const bundlePath = join(tmp, 'snapshot.br')
+    const env = { EXODUS_STASIS_SCOPE: scope, EXODUS_STASIS_BUNDLE_FILE: bundlePath }
+    const cap = await run(entry, { cwd: tmp, graph: captureGraph, env: { ...env, EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_BUNDLE: 'add' } })
+    assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    return run(entry, { cwd: tmp, graph: loadGraph, env: { ...env, EXODUS_STASIS_LOCK: 'frozen', EXODUS_STASIS_BUNDLE: 'load' } })
+  }
+
+  test('bundle=load fails when Metro resolves an import to another attested file than the bundle\'s', withTmp(async (t, tmp) => {
+    // Both files are in the bundle, so serving bytes alone can't tell: only the edge can.
+    const r = await captureThenLoad(tmp, {
+      captureGraph: FULL_GRAPH,
+      loadGraph: { modules: [{ path: 'src/entry.js', deps: [['./hello.js', 'src/entry.js']] }, { path: 'src/hello.js', deps: [] }] },
+    })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) mismatches the bundle/)
+  }))
+
+  test('bundle=load fails on an edge the bundle doesn\'t carry', withTmp(async (t, tmp) => {
+    const r = await captureThenLoad(tmp, {
+      captureGraph: FULL_GRAPH,
+      loadGraph: { modules: [{ path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./greet', 'src/hello.js']] }, { path: 'src/hello.js', deps: [] }] },
+    })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /observed resolution '\.\/greet' from src\/entry\.js \(\*\) is not attested by the bundle/)
+  }))
+
+  test('bundle=load asserts an edge Babel rewrote under the specifier written in the source', withTmp(async (t, tmp) => {
+    // The stasis worker transformer carries it at load as at capture; Metro's name alone misses.
+    const graph = (deps) => ({ modules: [{ path: 'src/entry.js', deps }, { path: 'src/hello.js', deps: [] }] })
+    const captureGraph = graph([['./hello.js', 'src/hello.js', ['#local/hello']]])
+    const same = await captureThenLoad(tmp, { captureGraph, loadGraph: captureGraph })
+    t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp)
+    const rewritten = await captureThenLoad(tmp, { captureGraph, loadGraph: graph([['./hello.js', 'src/hello.js']]) })
+    t.assert.notEqual(rewritten.status, 0)
+    t.assert.match(rewritten.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) is not attested by the bundle/)
+  }))
+
+  test('bundle=load in node_modules scope tolerates an unknown edge from a workspace file, not from a package', withTmp(async (t, tmp) => {
+    // As frozen does: workspace parents are outside what an nm-scope capture attests.
+    const loadGraph = (extra) => ({
+      modules: NM_GRAPH.modules.map((mod) => (mod.path === extra.from ? { ...mod, deps: [...mod.deps, extra.dep] } : mod)),
+    })
+    const fromWorkspace = await captureThenLoad(tmp, {
+      fixture: nmFixture, scope: 'node_modules', captureGraph: NM_GRAPH,
+      loadGraph: loadGraph({ from: 'src/entry.js', dep: ['./helper', 'src/helper.js'] }),
+    })
+    t.assert.equal(fromWorkspace.status, 0, `stderr: ${fromWorkspace.stderr}`)
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp)
+    const fromPackage = await captureThenLoad(tmp, {
+      fixture: nmFixture, scope: 'node_modules', captureGraph: NM_GRAPH,
+      loadGraph: loadGraph({ from: 'node_modules/fake-esm-pkg/index.js', dep: ['./index', 'node_modules/fake-esm-pkg/index.js'] }),
+    })
+    t.assert.notEqual(fromPackage.status, 0)
+    t.assert.match(fromPackage.stderr, /observed resolution '\.\/index' from node_modules\/fake-esm-pkg\/index\.js \(\*\) is not attested by the bundle/)
   }))
 
   test('capture refuses a second serialization (watch/dev-server rebuild)', withTmp(async (t, tmp) => {
