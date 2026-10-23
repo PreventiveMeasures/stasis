@@ -956,6 +956,85 @@ test('bundle `reason`: `extra` naming a file run fs-read after a plugin attached
   }
 })
 
+test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches follows its package', (t) => {
+  // metro under `stasis run --fs`: Metro's resolver reads each dependency's package.json through fs,
+  // so the --fs hook records it as 'run', but Metro bundles only the package's code, never the
+  // manifest. Such a manifest goes to whoever claims the package's other files -- not to run alone.
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-reason-manifest-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    writeFileSync(join(dir, 'entry.js'), 'export const e = 1\n')
+    writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ extra: ['node_modules/tool/index.js'] }))
+    for (const name of ['mdep', 'shared', 'early', 'tool']) {
+      mkdirSync(join(dir, 'node_modules', name), { recursive: true })
+      writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
+      writeFileSync(join(dir, 'node_modules', name, 'index.js'), `export const x = '${name}'\n`)
+    }
+    const url = (rel) => pathToFileURL(join(dir, rel)).toString()
+    const disk = (rel) => readFileSync(join(dir, rel))
+
+    const s = new State(dir, { scope: 'full', lock: 'none', bundle: 'add' })
+    s.addFile(url('entry.js'), { format: 'module', isEntry: true })
+    s.addFile(url('node_modules/shared/index.js'), { format: 'module' }) // run IMPORTS shared
+    s.addFsFile(url('node_modules/early/package.json'), disk('node_modules/early/package.json')) // read BEFORE any plugin
+    s.markPluginAttached()
+    for (const name of ['mdep', 'shared', 'tool']) s.addFsFile(url(`node_modules/${name}/package.json`), disk(`node_modules/${name}/package.json`))
+    s.addFsFile(url('node_modules/tool/index.js'), disk('node_modules/tool/index.js')) // fs-read, but no plugin bundles tool
+    for (const name of ['mdep', 'shared', 'early']) s.addFile(url(`node_modules/${name}/index.js`), { format: 'module', reason: 'metro' })
+    s.includeExtra() // `extra` names tool's code: no plugin, so it neither takes nor moves tool's manifest
+
+    const reason = JSON.parse(s.sourceData).reason
+    // mdep's manifest is metro's alone (run claims no other file of mdep); shared's is both
+    // consumers' (run imports shared too); early's stays run's (read before the plugin); tool's
+    // stays run's (no plugin bundles tool, and `extra` is none).
+    t.assert.deepStrictEqual(reason.metro, [
+      'node_modules/early/index.js',
+      'node_modules/mdep/index.js',
+      'node_modules/mdep/package.json',
+      'node_modules/shared/index.js',
+      'node_modules/shared/package.json',
+    ])
+    t.assert.deepStrictEqual(reason.run, [
+      'entry.js',
+      'node_modules/early/package.json',
+      'node_modules/shared/index.js',
+      'node_modules/shared/package.json',
+      'node_modules/tool/index.js',
+      'node_modules/tool/package.json',
+    ])
+    t.assert.deepStrictEqual(reason.extra, ['node_modules/tool/index.js'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--package-json manifests do not inherit run from files it only fs-read for a plugin', (t) => {
+  // A bucket whose code run only fs-read AFTER a plugin attached, for the plugin that bundles it, is
+  // not run's (see above), so the manifest the fold adds for it is the plugin's alone.
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-pkg-reason-fs-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    writeFileSync(join(dir, 'entry.js'), 'export const e = 1\n')
+    mkdirSync(join(dir, 'node_modules', 'mdep'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', 'mdep', 'package.json'), JSON.stringify({ name: 'mdep', version: '1.0.0' }))
+    writeFileSync(join(dir, 'node_modules', 'mdep', 'index.js'), "export const x = 'mdep'\n")
+    const bundleFile = join(dir, 'snapshot.br')
+    const s = new State(dir, { scope: 'full', lock: 'none', bundle: 'add', bundleFile, packageJSON: true })
+    const url = (rel) => pathToFileURL(join(dir, rel)).toString()
+    s.addFile(url('entry.js'), { format: 'module', isEntry: true })
+    s.markPluginAttached()
+    s.addFsFile(url('node_modules/mdep/index.js'), readFileSync(join(dir, 'node_modules/mdep/index.js')))
+    s.addFile(url('node_modules/mdep/index.js'), { format: 'module', reason: 'metro' })
+    s.write()
+
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundleFile)).toString())
+    t.assert.deepStrictEqual(bundle.reason.metro, ['node_modules/mdep/index.js', 'node_modules/mdep/package.json'])
+    t.assert.deepStrictEqual(bundle.reason.run, ['entry.js', 'package.json'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('bundle=add carries a loaded multi-consumer `reason` forward instead of dropping it', (t) => {
   // Regression: `stasis-core run --bundle=add` absorbs the on-disk bundle, then re-emits it.
   // The absorb path copies sources/formats/imports but used to ignore the loaded `reason`, so

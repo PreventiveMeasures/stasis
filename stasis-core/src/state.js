@@ -1451,8 +1451,8 @@ export class State {
     return modules
   }
 
-  // Files fs-READ after this point that a plugin also bundles are the plugin's, not run's (see
-  // #bundleReason). Public, cross-copy.
+  // Files fs-READ after this point for a plugin (one it bundles, or a manifest of a package it
+  // bundles) are the plugin's, not run's (see #reasonClaims). Public, cross-copy.
   markPluginAttached() {
     this.#pluginAttached = true
   }
@@ -1472,25 +1472,51 @@ export class State {
     }
   }
 
-  // The bundle's informational `reason` map, restricted to `bundledFiles`; only when >1 consumer
-  // contributed. Never attested.
-  #bundleReason(bundledFiles) {
-    const inBundle = bundledFiles instanceof Set ? bundledFiles : new Set(bundledFiles)
-    // A file run merely fs-READ post-plugin that a plugin also bundles is the plugin's, not run's
-    // (`extra` names files, it bundles none).
+  // Consumer -> the files it claims: #reasonFiles, less what run merely fs-READ (never imported)
+  // after a plugin attached on a plugin's behalf. That is a file a plugin also bundles, which is
+  // the plugin's; and a package.json of a package a plugin bundles, which a bundler reads to
+  // resolve (Metro's resolver does) but never bundles itself, so it follows the package's other
+  // files to whoever claims them -- run too, when run claims one. `extra` names files and bundles
+  // none, so it is no plugin here.
+  #reasonClaims() {
     const pluginFiles = new Set()
     for (const [who, recorded] of this.#reasonFiles) {
       if (who !== 'run' && who !== 'extra') for (const file of recorded) pluginFiles.add(file)
     }
-    const runOverclaims = (file) =>
-      this.#fsReadPostPlugin.has(file) && !this.#runImported.has(file) && pluginFiles.has(file)
+    const fsReadOnly = (file) => this.#fsReadPostPlugin.has(file) && !this.#runImported.has(file)
+    const claims = new Map()
+    for (const [who, recorded] of this.#reasonFiles) {
+      claims.set(who, new Set(who === 'run' ? [...recorded].filter((file) => !(fsReadOnly(file) && pluginFiles.has(file))) : recorded))
+    }
+    const run = claims.get('run')
+    if (run === undefined || pluginFiles.size === 0 || this.#fsReadPostPlugin.size === 0) return claims
+    for (const [dir, module] of this.modules) {
+      const rels = Object.keys(module.files)
+      const read = new Set(rels.filter((rel) => basename(rel) === 'package.json').map((rel) => moduleFileKey(dir, rel)).filter((file) => run.has(file) && fsReadOnly(file)))
+      if (read.size === 0) continue
+      const files = rels.map((rel) => moduleFileKey(dir, rel)).filter((file) => !read.has(file))
+      const owners = [...claims].filter(([who, claimed]) => who !== 'extra' && files.some((file) => claimed.has(file))).map(([, claimed]) => claimed)
+      if (!owners.some((claimed) => claimed !== run)) continue // no plugin bundles the package: run's own read
+      for (const file of read) {
+        run.delete(file)
+        for (const claimed of owners) claimed.add(file)
+      }
+    }
+    return claims
+  }
+
+  // The bundle's informational `reason` map, restricted to `bundledFiles`; only when >1 consumer
+  // contributed. Never attested.
+  #bundleReason(bundledFiles) {
+    const inBundle = bundledFiles instanceof Set ? bundledFiles : new Set(bundledFiles)
+    const claims = this.#reasonClaims()
 
     const reason = {}
     let consumers = 0
     // Sort keys and file lists: the JSON must be byte-reproducible regardless of record order, else
     // #emitBundle's compare-and-skip sees spurious diffs.
-    for (const who of [...this.#reasonFiles.keys()].toSorted()) {
-      const files = [...this.#reasonFiles.get(who)].filter((file) => inBundle.has(file) && !(who === 'run' && runOverclaims(file)))
+    for (const who of [...claims.keys()].toSorted()) {
+      const files = [...claims.get(who)].filter((file) => inBundle.has(file))
       if (files.length > 0) {
         reason[who] = files.toSorted(sortPaths)
         consumers += 1
@@ -1639,6 +1665,7 @@ export class State {
   includePackageJson() {
     // Gather first: addFile mutates this.modules, so don't addFile while iterating it.
     const realRoot = this.#host.realpath(this.root)
+    const claims = this.#reasonClaims()
     const toAdd = []
     for (const [dir, module] of this.modules) {
       const rel = moduleFileKey(dir, 'package.json')
@@ -1651,11 +1678,12 @@ export class State {
       try { pkg = JSON.parse(buf.toString()) } catch { continue } // malformed manifest for an untouched bucket: skip
       if (pkg?.name !== module.name || pkg?.version !== module.version) continue
       // The manifest rides along BECAUSE some consumer bundled the bucket, so it inherits every
-      // consumer that recorded a file of the bucket -- nothing observed the manifest itself, but an
-      // unattributed file can't be sorted by provenance downstream. Derived BEFORE the adds below,
-      // so one fold's manifest can't count as another bucket's consumer evidence.
+      // consumer that claims a file of the bucket (#reasonClaims: not run for a file it merely
+      // fs-read for a plugin) -- nothing observed the manifest itself, but an unattributed file
+      // can't be sorted by provenance downstream. Derived BEFORE the adds below, so one fold's
+      // manifest can't count as another bucket's consumer evidence.
       const files = Object.keys(module.files)
-      const consumers = [...this.#reasonFiles].filter(([, recorded]) => files.some((f) => recorded.has(moduleFileKey(dir, f)))).map(([who]) => who)
+      const consumers = [...claims].filter(([, claimed]) => files.some((f) => claimed.has(moduleFileKey(dir, f)))).map(([who]) => who)
       toAdd.push({ rel, buf, consumers })
     }
     for (const { rel, buf, consumers } of toAdd) {
