@@ -21,6 +21,7 @@ export const BUNDLE_FLAGS = {
   metro: { type: 'boolean' },
   'metro-resolver': { type: 'boolean' },
   babel: { type: 'boolean' },
+  'babel-aliases': { type: 'string' },
   platforms: { type: 'string', multiple: true },
   jsx: { type: 'boolean' },
   flow: { type: 'boolean' },
@@ -38,7 +39,7 @@ export const BUNDLE_FLAGS = {
   'brotli-quality': { type: 'string' },
   add: { type: 'boolean' },
 }
-export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--resources', '--tsconfig', '--define', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
+export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--babel-aliases', '--platforms', '--resources', '--tsconfig', '--define', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
 
 // The flags saying where and how the bundle is written. Every other one says how its entries are
 // built, which stasis.config.json's `entries` sets per entry instead.
@@ -195,13 +196,17 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   // babel.config.*, which Metro runs before it resolves. Runs that config, so opt-in; --metro only.
   const babel = Boolean(values.babel)
   if (babel && !metro) throw new Error('--babel is only valid with --metro')
+  // --babel-aliases: the same aliases from a JSON file of the project (module-resolver's `alias` option as
+  // data), which runs nothing, so stasis.config.json's entries may set it alone. --metro only.
+  if (values['babel-aliases'] !== undefined && !metro) throw new Error('--babel-aliases is only valid with --metro')
+  if (values['babel-aliases'] !== undefined && babel) throw new Error("--babel-aliases can't be combined with --babel (both set the import aliases)")
   // metro-resolver can't substitute .js -> .ts, so --typescript would silently not apply -- reject it.
   if (typescript && metroResolver) throw new Error("--typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
   // --define=KEY=VALUE: a global's value (JSON), repeatable; the scan leaves out the imports of the
   // branches the values keep from running (`if (__DEV__)` under __DEV__=false). JS-only.
   if (values.define !== undefined && !allJs) throw new Error('--define is only valid for JS bundles')
   const define = values.define === undefined ? undefined : parseDefineFlags(null, values.define)
-  return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, babelAliases: values['babel-aliases'], platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
 }
 
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.

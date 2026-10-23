@@ -18,14 +18,16 @@
 // toolchain (e.g. Metro) would hand it over.
 //
 // `stasis bundle --metro --babel` takes only the import aliases from that config (see
-// createBabelAliases): the scan still reads each file's own source.
+// createBabelAliases): the scan still reads each file's own source. `--babel-aliases` takes the same
+// aliases from a JSON file instead, mapped here as the plugin maps them (createAliases), so nothing
+// of the project's runs.
 //
 // Babel is the PROJECT's dev dependency, not stasis's: @babel/core (and, for hermes, the
 // two transform plugins) resolve from the project directory, so the project pins its own
 // Babel toolchain and config semantics.
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 
 const require = createRequire(import.meta.url)
 
@@ -198,4 +200,45 @@ export function createBabelAliases({ projectDir, platform }) {
     }
     return null
   }
+}
+
+// babel-plugin-module-resolver's path tests, as it writes them.
+const isRelativePath = (path) => /^\.?\.\//u.test(path)
+const toLocalPath = (path) => {
+  const local = path.replace(/\/index$/u, '')
+  return isRelativePath(local) ? local : `./${local}`
+}
+const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+
+// --babel-aliases for `stasis bundle --metro`: the import aliases of `alias`, babel-plugin-module-resolver's
+// `alias` option as data (a JSON file's), mapped as the plugin maps them with `cwd` its own, as
+// createBabelAliases has it: a key starting with `^` or ending with `$` is a regular expression whose
+// groups the value's `\N` take, any other matches the specifier it is or one it starts with and `/`,
+// whose rest the value keeps; the first key matching wins. A value starting with `./` or `../` is a
+// path from `cwd`, written relative to the importing file; any other is the specifier as it is.
+// -> (file, specifier) => the specifier it rewrites it to, else null
+export function createAliases(alias, cwd) {
+  const matchers = Object.entries(alias).map(([key, value]) => {
+    // As the plugin builds them: a key's own pattern, unflagged (`u` would refuse some it takes).
+    if (!key.startsWith('^') && !key.endsWith('$')) return [new RegExp(`^${escapeRegExp(key)}(/.*|)$`), ([, rest]) => `${value}${rest}`]
+    const parts = value.split('\\\\')
+    return [new RegExp(key), (groups) => parts.map((part) => part.replace(/\\\d+/gu, (n) => groups[n.slice(1)] || '')).join('\\')]
+  })
+  return (file, specifier) => {
+    if (isRelativePath(specifier)) return null
+    for (const [regExp, substitute] of matchers) {
+      const groups = regExp.exec(specifier)
+      if (groups === null) continue
+      return rewrite(file, specifier, substitute(groups), cwd)
+    }
+    return null
+  }
+}
+
+// `mapped`, the alias `specifier` from `file` maps to, as the plugin writes it: none where empty, a
+// relative one (`./`, `../`) a path from `cwd` written relative to `file`, any other as it is.
+function rewrite(file, specifier, mapped, cwd) {
+  if (!mapped) return null
+  const rewritten = isRelativePath(mapped) ? toLocalPath(relative(dirname(file), resolve(cwd, mapped)).replace(/\\/gu, '/')) : mapped
+  return rewritten === specifier ? null : rewritten
 }

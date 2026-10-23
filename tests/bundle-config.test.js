@@ -170,6 +170,18 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
   t.assert.deepStrictEqual(targeted.builds.map((b) => [b.entries, b.cargoTarget]), [[['a.rs'], 'host'], [['b.rs'], null]])
 }))
 
+test('bundlePlan takes an entry\'s babel-aliases from the config alone, as reading a JSON file runs nothing', withTmp((t, tmp) => {
+  project(tmp, { 'index.js': { metro: true, platforms: 'ios', 'babel-aliases': 'aliases.json' } })
+  const config = readConfigEntries(tmp)
+  t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config }).builds[0].babelAliases, 'aliases.json')
+  // It is an entry's option like any other: set there, not as a flag.
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: { 'babel-aliases': 'aliases.json' }, config }),
+    { message: "--babel-aliases can't be given for index.js, whose options stasis.config.json's entries set: set it there" })
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { 'babel-aliases': 'aliases.json' } } } })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
+    { message: 'stasis.config.json: entries "index.js": --babel-aliases is only valid with --metro' })
+}))
+
 test('bundleCommand builds each of builds and writes their union: bundle:metro beside bundle', withTmp(async (t, tmp) => {
   project(tmp)
   await bundleCommand({
