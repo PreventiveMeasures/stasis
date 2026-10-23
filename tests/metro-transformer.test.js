@@ -210,12 +210,6 @@ test('getCacheKey folds in the base transformer key and a load-mode discriminato
   const off = transform(['--cache-key'], { cwd: tmp, env: {} })
   t.assert.equal(off.status, 0, `stderr: ${off.stderr}`)
   t.assert.match(off.stdout, /mock-base-cache-key/, 'wraps the base transformer cache key')
-  t.assert.match(off.stdout, /:off$/)
-
-  // Under stasis run, results carry `stasisAsWritten`, so they key apart from a plain build's.
-  const asWritten = transform(['--cache-key'], { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'frozen' } })
-  t.assert.equal(asWritten.status, 0, `stderr: ${asWritten.stderr}`)
-  t.assert.match(asWritten.stdout, /mock-base-cache-key.*:as-written$/)
 
   // on: a VALID load config (frozen uses the committed lockfile; load reads the bundle).
   const on = transform(['--cache-key'], {
@@ -294,20 +288,22 @@ module.exports = { parserOpts: { plugins: ['flow'] }, plugins: [['module-resolve
   symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
 }
 
-// The project's Babel transformer, named relative to the base transformer (metro-transform-worker
-// requires a name from its own dir).
-const babelTransformerEnv = { EXODUS_STASIS_METRO_BASE_TRANSFORMER: mockWorker, STASIS_TEST_BABEL_TRANSFORMER: './metro-mock-babel-transformer.cjs' }
+// Metro's transformer config as withStasis() hands it over: the project's transformer, and its
+// Babel transformer, named relative to that (metro-transform-worker requires a name from its own dir).
+const handedOver = { stasisBaseTransformerPath: mockWorker, babelTransformerPath: './metro-mock-babel-transformer.cjs' }
+const stasisBabelTransformer = join(here, '..', 'stasis-plugins', 'src', 'metro-babel-transformer.js')
 
 for (const babelAsync of [false, true]) {
-  test(`under stasis run, a dependency Babel rewrote carries the specifiers written in the source (${babelAsync ? 'async' : 'sync'} Babel transformer)`, withTmp((t, tmp) => {
+  test(`a dependency Babel rewrote carries the specifiers written in the source (${babelAsync ? 'async' : 'sync'} Babel transformer)`, withTmp((t, tmp) => {
     babelAliasProject(tmp)
     const r = transform(['index.js'], {
       cwd: tmp,
-      env: { ...babelTransformerEnv, EXODUS_STASIS_LOCK: 'add', ...(babelAsync && { STASIS_TEST_BABEL_ASYNC: '1' }) },
+      env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver), ...(babelAsync && { STASIS_TEST_BABEL_ASYNC: '1' }) },
     })
     t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
     const [out] = JSON.parse(r.stdout)
-    t.assert.match(out.babelTransformerPath, /[\\/]stasis-plugins[\\/]src[\\/]metro-babel-transformer\.js$/, 'the stasis Babel transformer stands in')
+    // The project's transformer runs on its own config, the stasis Babel transformer standing in.
+    t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
     // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
     // './src/def' only for the path (the type import is erased).
     t.assert.deepStrictEqual(out.dependencies, [
@@ -318,15 +314,24 @@ for (const babelAsync of [false, true]) {
   }))
 }
 
-test('outside stasis run, the transformer leaves the Babel transformer and the dependencies as Metro has them', withTmp((t, tmp) => {
-  babelAliasProject(tmp)
-  const r = transform(['index.js'], { cwd: tmp, env: babelTransformerEnv })
+test('a project transformer that is this one itself, wired by hand as well, gives way to Metro\'s default', withTmp((t, tmp) => {
+  // withStasis() hands over the project's transformerPath, which a project that wired
+  // @exodus/stasis/metro-transformer by hand points at this transformer: running it as its own
+  // base would wrap the Babel transformer in itself, endlessly.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'self-base', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), 'module.exports = {}\n')
+  writeFileSync(join(tmp, 'index.js'), "require('./a')\n")
+  // Metro's default, as the project's own node_modules has it.
+  mkdirSync(join(tmp, 'node_modules', 'metro-transform-worker'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'metro-transform-worker', 'index.js'), `module.exports = require(${JSON.stringify(mockWorker)})\n`)
+  const config = {
+    stasisBaseTransformerPath: join(here, '..', 'stasis', 'src', 'metro-transformer.js'),
+    babelTransformerPath: join(here, 'metro-mock-babel-transformer.cjs'),
+  }
+  const r = transform(['index.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(config) } })
   t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
   const [out] = JSON.parse(r.stdout)
-  t.assert.equal(out.babelTransformerPath, './metro-mock-babel-transformer.cjs')
-  t.assert.deepStrictEqual(out.dependencies, [
-    { name: './src/abc', data: { key: './src/abc' } },
-    { name: './src/def', data: { key: './src/def' } },
-    { name: './src/ghi', data: { key: './src/ghi' } },
-  ])
+  t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
+  t.assert.deepStrictEqual(out.dependencies, [{ name: './a', data: { key: './a' } }])
 }))

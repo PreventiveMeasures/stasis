@@ -4,8 +4,8 @@
 // isn't a dependency): it requires `config.babelTransformerPath` from its own dir, as the worker
 // does, hands it the source with Metro's caller-side args, then collects dependencies from the AST
 // it returns -- replacing each `require`'s specifier with a dependency-map lookup, as Metro's
-// collectDependencies does. Returns `{ babelTransformerPath, dependencies, output }`, so a test can
-// see which Babel transformer ran and how each dependency came out.
+// collectDependencies does. Returns `{ config, dependencies, output }`, so a test can see the config
+// it was handed (and so which Babel transformer ran) and how each dependency came out.
 const { types: t } = require('@babel/core')
 
 exports.transform = async (config, projectRoot, filename, data, options) => {
@@ -26,7 +26,7 @@ exports.transform = async (config, projectRoot, filename, data, options) => {
       node.arguments[0] = register(node.arguments[0])
     }
   })
-  return { babelTransformerPath: config.babelTransformerPath, dependencies, output: [] }
+  return { config, dependencies, output: [] }
 }
 
 exports.getCacheKey = () => 'mock-worker-cache-key'

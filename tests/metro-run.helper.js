@@ -35,6 +35,9 @@
 //   transform cache on the input config.
 // STASIS_TEST_REPORT_CACHE_STORES=1 -- 'withStasis' mode only: print the returned + input
 //   cacheStores, so tests can pin that a capture/verify drops them and a load/inert run doesn't.
+// STASIS_TEST_METRO_TRANSFORMER_PATH -- 'withStasis' mode only: the input config's transformerPath.
+// STASIS_TEST_REPORT_TRANSFORMER=1 -- 'withStasis' mode only: print the returned transformerPath
+//   and transformer config.
 
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -138,12 +141,17 @@ if (mode === 'customSerializer') {
   const storesRaw = process.env.STASIS_TEST_METRO_CACHE_STORES
   const input = { serializer: { customSerializer: baseSerializer } }
   if (storesRaw) input.cacheStores = JSON.parse(storesRaw)
+  if (process.env.STASIS_TEST_METRO_TRANSFORMER_PATH) input.transformerPath = process.env.STASIS_TEST_METRO_TRANSFORMER_PATH
   const config = withStasis(input, pluginOptions ?? {})
   // Second line is the purity check: the input object we passed must come back unchanged.
   if (process.env.STASIS_TEST_REPORT_CACHE_STORES) {
     const show = (c) => ('cacheStores' in c ? JSON.stringify(c.cacheStores) : 'absent')
     console.log(`CACHE_STORES=${show(config)}`)
     console.log(`CACHE_STORES_INPUT=${show(input)}`)
+  }
+  if (process.env.STASIS_TEST_REPORT_TRANSFORMER) {
+    console.log(`TRANSFORMER_PATH=${config.transformerPath}`)
+    console.log(`TRANSFORMER=${JSON.stringify(config.transformer)}`)
   }
   serializeAndPrint(config.serializer.customSerializer)
 } else {
