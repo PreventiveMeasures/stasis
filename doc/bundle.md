@@ -8,7 +8,7 @@ to be captured (a React Native app, a library's entry points).
 
 ```sh
 stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle --metro [--metro-resolver] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle --metro [--metro-resolver] [--babel] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -24,6 +24,7 @@ and Rust bundles, see [Other languages](#other-languages).
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
 | `--metro --platforms=ios,android` | Resolve the way Metro does. See [Metro](#metro---metro). |
 | `--metro-resolver` | With `--metro`: resolve through the project's own `metro-resolver` instead of the built-in approximation. |
+| `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
 | `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. See [JSX and Flow](#jsx-and-flow). |
 | `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. Needs the optional `flow-remove-types` dependency. |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
@@ -149,6 +150,18 @@ native dependency and contributes none. Build output (`build`, `.gradle`,
 `metro-resolver` (it ships with `react-native`/`metro`) for byte-for-byte
 Metro fidelity, instead of the built-in approximation. It can't substitute
 `.js` for `.ts`, so it doesn't combine with `--typescript`.
+
+`--babel` resolves the import aliases the project's Babel config sets, which
+Metro applies before it resolves: a `babel-plugin-module-resolver` that maps
+`#local` to `./src` makes `import '#local/abc'` reach `src/abc.js`. The
+project's `babel.config.(js|cjs|mjs|json)` is loaded for each file as Metro's
+transformer loads it, with Metro's `caller` and each `--platforms` target, so a
+config that aliases per platform resolves per platform. That runs the config,
+which is why it is opt-in; it needs `@babel/core` installed in the project. Only
+the aliases apply: each file's own source is what is scanned and carried, and
+an edge stays keyed by the specifier written there (`#local/abc`). The plugin
+must be listed in the config itself, not brought in by a preset. Not with
+`github-bundle`.
 
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js

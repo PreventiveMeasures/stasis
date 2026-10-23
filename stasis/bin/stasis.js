@@ -20,7 +20,7 @@ assert(basename(jsname) === 'stasis' || pathsEqual(jsname, fileURLToPath(import.
 
 const HELP = `Usage:
  stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
- stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+ stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--metro [--metro-resolver] [--babel] --platforms=ios,android] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--package-json] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
  stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
@@ -199,6 +199,7 @@ if (command === '-v' || command === '--version') {
     mainFields: { type: 'string' },
     metro: { type: 'boolean' },
     'metro-resolver': { type: 'boolean' },
+    babel: { type: 'boolean' },
     platforms: { type: 'string', multiple: true },
     jsx: { type: 'boolean' },
     flow: { type: 'boolean' },
@@ -343,6 +344,10 @@ if (command === '-v' || command === '--version') {
     fail('Error: --platforms is only valid with --metro')
   }
   if (metroResolver && !metro) fail('Error: --metro-resolver is only valid with --metro')
+  // --babel: resolve through the import aliases (babel-plugin-module-resolver) of the project's
+  // babel.config.*, which Metro runs before it resolves. Runs that config, so opt-in; --metro only.
+  const babel = Boolean(values.babel)
+  if (babel && !metro) fail('Error: --babel is only valid with --metro')
   // metro-resolver can't substitute .js -> .ts, so --typescript would silently not apply -- reject it.
   if (typescript && metroResolver) fail("Error: --typescript is not supported with --metro-resolver (the project's metro-resolver doesn't substitute .js -> .ts)")
   // --brotli-quality: valid for every entry language (no allJs gate).
@@ -370,6 +375,7 @@ if (command === '-v' || command === '--version') {
     mainFields,
     metro,
     metroResolver,
+    babel,
     platforms,
     jsx,
     flow,
