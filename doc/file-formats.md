@@ -110,8 +110,9 @@ recognized source file or have its extension (or extensionless filename) in
   the `stasis.config.json` at its root and records them as `stasis run` does. A
   `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
   the cwd, and packs them as `stasis add` does. Where `entries` builds the
-  bundle in several builds, they are added once, to their union, packed as
-  `stasis add` does, by `resources`. `stasis github-bundle` doesn't take `extra`.
+  bundle, they are added once, to its builds' union, packed as `stasis add`
+  does, by `resources` (an entry's own is its graph's alone). `stasis
+  github-bundle` doesn't take `extra`.
 
 In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), they
 are the `extra` consumer's. They are never entries.

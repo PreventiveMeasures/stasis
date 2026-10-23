@@ -189,13 +189,15 @@ test('bundleCommand adds the config\'s extra once, beside each build\'s own cons
   t.assert.deepStrictEqual(readBundle(join(tmp, 'both.br')).reason, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['tool.js'] })
 }))
 
-test('bundleCommand adds several builds\' extra by the config\'s resources, whatever their order', withTmp(async (t, tmp) => {
+test('bundleCommand adds builds\' extra by the config\'s resources, whatever their number and order', withTmp(async (t, tmp) => {
   project(tmp)
   writeTree(tmp, { 'logo.png': 'png\n', 'stasis.config.json': { extra: ['logo.png'] } })
   const builds = [{ entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['png'] }, { entries: ['cli.js'] }]
-  // An entry's `resources` is its graph's, not the bundle's: neither order takes logo.png by it.
+  // An entry's `resources` is its graph's, not the bundle's: neither order takes logo.png by it,
+  // nor that entry built alone.
   await t.assert.rejects(bundleCommand({ cwd: tmp, output: 'x.br', builds }), /logo\.png/u)
   await t.assert.rejects(bundleCommand({ cwd: tmp, output: 'x.br', builds: builds.toReversed() }), /logo\.png/u)
+  await t.assert.rejects(bundleCommand({ cwd: tmp, output: 'x.br', builds: builds.slice(0, 1) }), /logo\.png/u)
   writeTree(tmp, { 'stasis.config.json': { extra: ['logo.png'], resources: ['png'] } })
   await bundleCommand({ cwd: tmp, output: 'a.br', builds })
   await bundleCommand({ cwd: tmp, output: 'b.br', builds: builds.toReversed() })
