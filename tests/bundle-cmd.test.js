@@ -2605,6 +2605,77 @@ cliTest('CLI: bundle names a stasis file below the root that roots the build out
   t.assert.match(r.stderr, /\.\.\/\.\.\/shared\/index\.js is outside the project root at \. \(rooted there by its stasis\.code\.br, which can be removed if stale\)/)
 }))
 
+cliTest('CLI: bundle leaves out, and names, a file a lazy require() reaches above a root a stasis file pins', withTmp(async (t, tmp) => {
+  // A package a/b with a stasis file of its own, its dependency lazily requiring an optional peer
+  // the package manager hoisted to the workspace root above: as cosmiconfig requires typescript for
+  // a .ts config, under @react-native-community/cli.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'ws-root', private: true }))
+  mkdirSync(join(tmp, 'node_modules', 'peer'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'peer', 'package.json'), JSON.stringify({ name: 'peer', version: '1.0.0' }))
+  writeFileSync(join(tmp, 'node_modules', 'peer', 'index.js'), 'module.exports = "peer"\n')
+  const cwd = join(tmp, 'a', 'b')
+  mkdirSync(join(cwd, 'node_modules', 'lib'), { recursive: true })
+  writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'b', version: '1.0.0' }))
+  writeFileSync(join(cwd, 'stasis.config.json'), JSON.stringify({ scope: 'full' }))
+  writeFileSync(join(cwd, 'node_modules', 'lib', 'package.json'), JSON.stringify({ name: 'lib', version: '1.0.0' }))
+  writeFileSync(join(cwd, 'node_modules', 'lib', 'index.js'), "exports.load = () => require('peer')\n")
+  writeFileSync(join(cwd, 'index.js'), "console.log('lib', typeof require('lib').load)\n")
+  const r = await runCli(['bundle', 'index.js'], { cwd })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.match(r.stderr, /Bundle leaves out 1 import\(s\) of files outside the project root at \. \(rooted there by its stasis\.config\.json, which can be removed if stale\); they will fall through at load time:\n {2}require peer from node_modules\/lib\/index\.js \(at \.\.\/\.\.\/node_modules\/peer\/index\.js\)/)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(cwd, 'stasis.code.br'))).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'node_modules/lib/index.js'])
+  t.assert.equal(bundle.imports.get('*').get('node_modules/lib/index.js'), undefined, 'no edge to the file left out')
+  // It loads: nothing calls load(), so the require it would miss never runs.
+  const load = await runCli(['run', '--lock=none', '--bundle=load', 'index.js'], { cwd })
+  t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
+  t.assert.equal(load.stdout, 'lib function\n')
+}))
+
+cliTest('CLI: bundle refuses a specifier that resolves within the root in one context and outside it in another', withTmp(async (t, tmp) => {
+  // require() and import() take different `exports` branches, the import one linked out of the root:
+  // leaving it out alone would have load serve import('dual') the require() branch's file instead.
+  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
+  try {
+    writeFileSync(join(outside, 'esm.mjs'), 'export default "outside"\n')
+    mkdirSync(join(tmp, 'node_modules', 'dual'), { recursive: true })
+    writeFileSync(join(tmp, 'node_modules', 'dual', 'package.json'), JSON.stringify({ name: 'dual', version: '1.0.0', exports: { import: './esm.mjs', require: './cjs.js' } }))
+    writeFileSync(join(tmp, 'node_modules', 'dual', 'cjs.js'), 'module.exports = "inside"\n')
+    symlinkSync(join(outside, 'esm.mjs'), join(tmp, 'node_modules', 'dual', 'esm.mjs'))
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
+    writeFileSync(join(tmp, 'index.js'), "require('dual')\nimport('dual')\n")
+    const r = await runCli(['bundle', '--output=out.br', 'index.js'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /dual from index\.js resolves within the project root in one context and outside it, at .*esm\.mjs, in another: a bundle can't leave out the one without serving the other in its place/)
+    t.assert.ok(!existsSync(join(tmp, 'out.br')))
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+}))
+
+test('buildBundle --metro refuses a specifier one platform resolves within the root and another outside it', withTmp(async (t, tmp) => {
+  // ./dep is dep.ios.js on iOS, and on Android dep.android.js, linked out of the root: leaving that
+  // out alone would have the edge collapse to dep.ios.js, served to Android too.
+  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
+  try {
+    writeFileSync(join(outside, 'dep.js'), 'module.exports = "outside"\n')
+    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
+    writeFileSync(join(tmp, 'index.js'), "require('./dep')\n")
+    writeFileSync(join(tmp, 'dep.ios.js'), 'module.exports = "inside"\n')
+    symlinkSync(join(outside, 'dep.js'), join(tmp, 'dep.android.js'))
+    const options = { cwd: tmp, entries: ['index.js'], metro: true }
+    await t.assert.rejects(
+      () => buildBundle({ ...options, platforms: ['ios', 'android'] }),
+      /\.\/dep from index\.js resolves within the project root in one context and outside it, at .*dep\.js, in another: a bundle can't leave out the one without serving the other in its place/,
+    )
+    // Each alone has nothing to split.
+    t.assert.equal(importTarget(await buildBundle({ ...options, platforms: ['ios'] }), 'index.js', './dep'), 'dep.ios.js')
+    t.assert.equal((await buildBundle({ ...options, platforms: ['android'] })).imports.get('*')?.get('index.js'), undefined)
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+}))
+
 // --typescript is taken as given only where every entry is TypeScript, the entries import at least
 // one relative JS output (./dep.js), and every one of those is off disk with its TS source on it.
 // Anything less leaves it off -- a project of Node-compatible .ts files importing ./dep.ts must
@@ -3409,10 +3480,10 @@ cliTest('CLI: a --mainFields bundle round-trips through --bundle=load (empty mod
   t.assert.equal(load.stdout, 'ok\n')
 }))
 
-cliTest('--mainFields fails closed on a node_modules symlink whose target escapes the project root', withTmp(async (t, tmp) => {
+cliTest('--mainFields never carries a node_modules symlink whose target escapes the project root', withTmp(async (t, tmp) => {
   // A dependency symlinked to a real file OUTSIDE the project root must not pull
   // out-of-tree bytes into the bundle: the resolver records its real path, which the build
-  // refuses, the same way the State-based JS path and the non-JS loaders do.
+  // leaves out, as the State-based JS path does, or refuses where the entries link it eagerly.
   const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
   try {
     writeFileSync(join(outside, 'evil.js'), 'module.exports = "external"\n')
@@ -3420,11 +3491,21 @@ cliTest('--mainFields fails closed on a node_modules symlink whose target escape
     writeFileSync(join(tmp, 'node_modules', 'extdep', 'package.json'), JSON.stringify({ name: 'extdep', version: '1.0.0', main: './index.js' }))
     symlinkSync(join(outside, 'evil.js'), join(tmp, 'node_modules', 'extdep', 'index.js'))
     writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
+    // Past a require(), it is a miss load can catch, as an unresolved one is: left out, and named.
     writeFileSync(join(tmp, 'app.js'), "require('extdep')\n")
     const r = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.js'], { cwd: tmp })
-    t.assert.notEqual(r.status, 0)
-    t.assert.match(r.stderr, /Bundle would reach a file outside the project root: .*evil\.js/)
-    t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle is written when a source escapes the root')
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    t.assert.match(r.stderr, /Bundle leaves out 1 import\(s\) of files outside the project root at \. \(mainFields\); they will fall through at load time:\n {2}require extdep from app\.js \(at .*evil\.js\)/)
+    const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'out.br'))).toString('utf8'))
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['app.js'])
+    t.assert.equal(bundle.imports.get('*')?.get('app.js'), undefined, 'no edge to the file left out')
+    rmSync(join(tmp, 'out.br'))
+    // Linked eagerly, it is refused.
+    writeFileSync(join(tmp, 'app.mjs'), "import 'extdep'\n")
+    const eager = await runCli(['bundle', '--mainFields=browser,main', '--output=out.br', 'app.mjs'], { cwd: tmp })
+    t.assert.notEqual(eager.status, 0)
+    t.assert.match(eager.stderr, /Bundle would reach a file outside the project root: .*evil\.js/)
+    t.assert.ok(!existsSync(join(tmp, 'out.br')), 'no bundle is written when a source linked eagerly escapes the root')
     // An entry is taken as spelled, so one linked out of the root passes the textual check and is
     // refused by its real path.
     symlinkSync(join(outside, 'evil.js'), join(tmp, 'linked.js'))
