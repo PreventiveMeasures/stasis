@@ -79,6 +79,15 @@ function resolutionContext(conditions) {
   return asImport ? 'import' : 'require'
 }
 
+// Whether resolving `specifier` reads conditions: a bare one does (a package's `exports`, its own
+// name's included), as does a `#` one (its `imports`); a relative, absolute or URL one never does.
+function readsConditions(specifier) {
+  if (typeof specifier !== 'string') return false
+  if (specifier.startsWith('#')) return true
+  return !(specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../') ||
+    specifier.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(specifier))
+}
+
 // On globalThis via `Symbol.for` so the registry is shared across duplicate stasis-core copies.
 const STATES_KEY = Symbol.for('@exodus/stasis-core/states')
 const liveStates = () => (globalThis[STATES_KEY] ??= new Set())
@@ -1345,7 +1354,8 @@ export class State {
     let file = this.imports.get(key)?.get(parent)?.get(specifier)
     if (file === undefined && key !== '*') file = this.imports.get('*')?.get(parent)?.get(specifier)
     if (file === undefined) {
-      // The edge may be recorded under a DIFFERENT conditions bucket -- resolveBundled scans every bucket.
+      // The edge may be recorded under a DIFFERENT conditions bucket -- resolveBundled scans every
+      // bucket related to these conditions.
       if (this.config.loadBundle) {
         const abs = this.resolveBundled(parentURL, specifier, { conditions })
         if (abs !== undefined) return { url: pathToFileURL(abs).toString(), format: this.#loaderFormat(relative(this.root, abs)) }
@@ -1366,23 +1376,29 @@ export class State {
 
   // Resolve a CJS require() target to a bundled absolute path, or undefined to defer to Node (the
   // hooks.js CJS shim needs this: registerHooks can't intercept Module._resolveFilename). Matches
-  // under ANY conditions bucket, since native require gives none: a capture's replay can look an edge
-  // up under the other context's conditions than it was recorded under (tsx's CJS lane does).
-  // Divergent buckets are settled by those of the context `conditions` asserts (see
-  // resolutionContext) where they agree -- a --conditions build's require() and import() targets,
-  // each under a key plain node never asks -- else defer.
+  // under the buckets related to `conditions`: every one, except that where conditions decide the
+  // resolution (readsConditions), a key of the other context (see resolutionContext) is another
+  // resolution, never served. Node asks an edge under its own context's set on every version and
+  // code path, the rest varying by flag alone (--conditions, --no-addons, require(esm) off); a
+  // relative edge resolves alike under either, as a capture's replay can ask it (tsx's CJS lane does).
+  // Divergent buckets are settled by those of the lookup's context where they agree -- a
+  // --conditions build's require() and import() targets, each under a key plain node never asks --
+  // else defer.
   resolveBundled(parentURL, specifier, { conditions = '*' } = {}) {
     const parent = this.#canonicalFileMaybe(parentURL)
     if (parent === undefined) return undefined
     const spec = this.#canonicalSpecifier(parentURL, specifier)
     const context = resolutionContext(conditions)
+    const contextual = context !== null && readsConditions(spec)
     const matches = new Set()
     const ownContext = new Set()
     for (const [key, byParent] of this.imports) {
       const file = byParent.get(parent)?.get(spec)
       if (file === undefined) continue
+      const keyContext = resolutionContext(key)
+      if (contextual && keyContext !== null && keyContext !== context) continue
       matches.add(file)
-      if (context !== null && resolutionContext(key) === context) ownContext.add(file)
+      if (context !== null && keyContext === context) ownContext.add(file)
     }
     const candidates = matches.size === 1 ? matches : ownContext
     if (candidates.size !== 1) return undefined
