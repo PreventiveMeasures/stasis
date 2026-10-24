@@ -88,6 +88,8 @@ test('buildVfsBundle records a commit only in the GitHub repository the package.
     [{ repository: { url: 'git+https://github.com/o/mono.git', directory: 'packages/pinned' } }, { gitHead: COMMIT }, { github: 'o/mono', directory: 'packages/pinned', commit: COMMIT }, 'at its directory'],
     [{ repository: 'github:o/pinned' }, { gitHead: 'c'.repeat(7) }, { github: 'o/pinned' }, 'an abbreviated gitHead: none'],
     [{ repository: 'github:o/pinned' }, {}, { github: 'o/pinned' }, 'no gitHead'],
+    [{ repository: 'github:o/pinned', gitHead: 'd'.repeat(40) }, {}, { github: 'o/pinned', commit: 'd'.repeat(40) }, "none in the document: the package.json's"],
+    [{ repository: 'github:o/pinned', gitHead: 'd'.repeat(40) }, { gitHead: COMMIT }, { github: 'o/pinned', commit: COMMIT }, "the document's over the package.json's"],
   ]
   const recorded = await Promise.all(cases.map(async ([manifest, about]) => {
     const pkg = await published(manifest, about)

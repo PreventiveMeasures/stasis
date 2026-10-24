@@ -354,7 +354,7 @@ function repositoryUrl(json) {
 // The `repo` a parsed package.json's `repository` names for `rel`, a directory below it ('' for its
 // own): `github` from its GitHub URL or shorthand, and `directory` from `repository.directory` joined
 // with `rel` (declaredLocation); undefined where it names no GitHub repository.
-export function packageRepo(json, rel = '') {
+function declaredRepo(json, rel) {
   const github = parseGithubRepository(repositoryUrl(json))
   if (!github) return undefined
   let base = json.repository.directory
@@ -367,8 +367,18 @@ export function packageRepo(json, rel = '') {
   return { github, ...declaredLocation(base, rel) }
 }
 
+// A dependency's `repo`, from its parsed package.json: the repository it names (declaredRepo), at the
+// commit its `gitHead` names where that is a full one. npm publish writes `gitHead` into the
+// registry's version document alone, but lerna writes it into the published package.json too, and
+// npm keeps one a package.json has, so the two agree. Undefined where it names no GitHub repository.
+export function packageRepo(json) {
+  const repo = declaredRepo(json, '')
+  return repo !== undefined && isValidRepoField('commit', json.gitHead) ? { ...repo, commit: json.gitHead } : repo
+}
+
 // Bundle `repo` for `dir`: git origin/HEAD at the work tree root, with `dir`'s place in it (`''` at
-// the root), else nearest package.json `repository` (packageRepo).
+// the root), else nearest package.json `repository` (declaredRepo). Its commit is git's HEAD alone,
+// never a package.json's `gitHead`: a project's own files are likely changed since the one it names.
 export function detectRepo(dir, host = diskHost) {
   const start = resolve(dir)
   let pkg = null // null: no package.json `repository` seen yet; undefined: one seen, not GitHub
@@ -376,7 +386,7 @@ export function detectRepo(dir, host = diskHost) {
     const rel = toPosix(relative(cursor, start))
     if (pkg === null) {
       const json = readJson(join(cursor, 'package.json'), host)
-      if (repositoryUrl(json) !== undefined) pkg = packageRepo(json, rel)
+      if (repositoryUrl(json) !== undefined) pkg = declaredRepo(json, rel)
     }
     const dotGit = join(cursor, '.git')
     if (host.stat(dotGit) !== null) {
