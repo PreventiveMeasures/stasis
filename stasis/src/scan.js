@@ -35,20 +35,12 @@ export function getParser() {
   return _parser
 }
 
-// flow-remove-types is an optional dependency, loaded lazily and only under --flow: it strips
-// Flow type syntax down to plain JS before oxc (which parses JS/TS, not Flow) sees it. A missing
-// dep is an env error, so surface it with an actionable install hint rather than a bare resolve throw.
+// flow-remove-types is stasis's own dependency, resolved from stasis itself (never from the project
+// being bundled) and loaded lazily, only under --flow: it strips Flow type syntax down to plain JS
+// before oxc (which parses JS/TS, not Flow) sees it.
 let _flowRemoveTypes
 function getFlowRemoveTypes() {
-  if (_flowRemoveTypes) return _flowRemoveTypes
-  try {
-    _flowRemoveTypes = createRequire(import.meta.url)('flow-remove-types')
-  } catch (cause) {
-    throw new Error(
-      "--flow needs the optional 'flow-remove-types' dependency; install it (e.g. `npm i flow-remove-types`)",
-      { cause }
-    )
-  }
+  _flowRemoveTypes ??= createRequire(import.meta.url)('flow-remove-types')
   return _flowRemoveTypes
 }
 
@@ -302,10 +294,10 @@ export class Scan {
     return hit == null ? null : pathToFileURL(hit).toString()
   }
 
-  // Strip Flow type syntax to plain JS via the optional flow-remove-types dep (resolved lazily; a
-  // missing dep is an env error and propagates). Only invoked as a parse fallback (see #scanFile),
-  // so plain-JS files never reach it. Returns the rewritten source, or null when the transform
-  // itself fails on this file -- the caller then keeps oxc's original parse error.
+  // Strip Flow type syntax to plain JS via stasis's flow-remove-types (loaded lazily). Only invoked
+  // as a parse fallback (see #scanFile), so plain-JS files never reach it. Returns the rewritten
+  // source, or null when the transform itself fails on this file -- the caller then keeps oxc's
+  // original parse error.
   #stripFlow(src, file) {
     const flowRemoveTypes = getFlowRemoveTypes()
     try {

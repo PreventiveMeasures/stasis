@@ -55,7 +55,6 @@ const REPEATED_FLAGS = new Set(['define'])
 const CONSENT_FLAGS = new Map([
   ['babel', "the project's Babel config"],
   ['metro-resolver', "the project's metro-resolver"],
-  ['flow', "the flow-remove-types the project installs (stasis's peer)"],
   ['cargo', "cargo, and what the project's .cargo/config.toml names"],
   ['cargo-target', 'rustc'],
 ])
@@ -134,7 +133,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.conditions !== undefined && conditions.length === 0) {
     throw new Error('--conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
   }
-  // --flow: strip Flow type syntax (via the optional flow-remove-types dep) before parsing; JS-only.
+  // --flow: strip Flow type syntax (via stasis's own flow-remove-types) before parsing; JS-only.
   if (values.flow && !allJs) throw new Error('--flow is only valid for JS bundles')
   const flow = Boolean(values.flow)
   // --typescript: resolve like tsc -- a specifier naming a missing JS output (./x.js, .mjs, .cjs,

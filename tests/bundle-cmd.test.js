@@ -2385,7 +2385,7 @@ cliTest('CLI: --bundle=load serves each context its own target of a divergent ed
 // --- Flow-stripping JS bundling (`--flow`) ---
 //
 // oxc parses JS/TS but not Flow, so a Flow-annotated source fails to parse and its import edges
-// vanish from the graph. `--flow` runs the optional flow-remove-types dep over each JS-family
+// vanish from the graph. `--flow` runs stasis's own flow-remove-types over each JS-family
 // source *before* oxc, blanking Flow syntax to whitespace so the real graph resolves. Only the
 // parse input is rewritten -- the bundle stores the pristine on-disk source.
 const writeFlowProject = (dir) => {
