@@ -31,7 +31,7 @@ killed it. The effective configuration is printed to stderr first.
 | `--resources-bundle-file=path` | A split layout: the run's non-code files are read from and written to this sidecar bundle, the code bundle holding code alone. Needs `--bundle=add\|replace\|load\|frozen`. |
 | `--dependencies` | `node_modules` scope: attest the dependencies only, not the project's own files (the `scope` key). |
 | `--child-process` | Also attest the modules forked child processes load, see [Child processes](#child-processes---child-process). |
-| `--package-json` | Also bundle each module's `package.json`, even one the run never reached. Needs `--bundle=add\|replace`. |
+| `--package-json` | Also bundle each module's `package.json`, and the nearest one above each bundled file (an `esm/package.json`), even one the run never reached. Needs `--bundle=add\|replace`. |
 | `--mock` | Run with the app's side effects denied, see [Mock](#mock---mock). Not with `--bundle=load`. |
 | `--import=module` | A preload module for the node process, after stasis's own loader; repeatable. See [Preloads](#preloads---import). |
 | `--fs=(sync\|async)` | Also capture the files the run reads through `fs` into the bundle: `sync` the sync readers, `async` their callback and `fs.promises` forms too. Needs `--bundle=add\|replace\|load`. See [filesystem captures](file-formats.md#filesystem-captures-stasis-run---fssync----fsasync). |

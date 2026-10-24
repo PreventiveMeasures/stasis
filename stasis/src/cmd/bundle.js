@@ -17,7 +17,7 @@ import { linkedNativePackages, looksNative, nativeInputs } from '@exodus/stasis-
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
-import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
+import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1351,20 +1351,25 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   }
 
   // --package-json (or the config's packageJSON): fold each bundled module's package.json into
-  // `sources` (and its integrity into the companion lockfile) even when the scan never reached it.
+  // `sources` (and its integrity into the companion lockfile) even when the scan never reached it,
+  // and the nearer one a reached file of it has (scopeManifestOf: a `{"type":"module"}` marker such
+  // as `esm/package.json`), which Metro's resolver reads for the file, as the State path does.
   // Buckets are the ones assembleCodeBundle derives, from the same `packageOf` (its pkgDir, else the
   // '.' workspace bucket). readModuleManifest applies the read/validate rules shared with the State
   // path (containment, UTF-8-aborts); no identity check here -- these buckets are all fresh from disk.
   if (withManifests) {
-    const pkgDirs = new Set()
+    const found = new Map()
+    const exists = (rel) => found.get(rel) ?? found.set(rel, packageJSONStat(host, join(baseDir, rel))?.isFile() ?? false).get(rel)
+    const manifests = new Set()
     for (const abs of reached) {
       const rel = toRel(abs)
-      const meta = packageOf(rel)
-      if (meta) pkgDirs.add(meta.pkgDir)
-      else if (!splitNodeModulesPath(rel)) pkgDirs.add('.')
+      const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
+      if (pkgDir === undefined) continue
+      manifests.add(moduleFileKey(pkgDir, 'package.json'))
+      const nearest = scopeManifestOf(rel, pkgDir, exists)
+      if (nearest !== undefined) manifests.add(nearest)
     }
-    for (const pkgDir of pkgDirs) {
-      const rel = moduleFileKey(pkgDir, 'package.json')
+    for (const rel of manifests) {
       if (sources.has(rel)) continue
       const buf = readModuleManifest({ baseDir, realBase, rel, host })
       if (!buf) continue
