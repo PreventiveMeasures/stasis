@@ -76,7 +76,10 @@ if the run/scan never reached it — so a `bundle = load` of the artifact, or a
 *writing* a bundle (`bundle = add | replace`); its effect is the extra bundled
 files (attested like any other), so the flag itself is not serialized. JS bundles
 only on the `stasis bundle` side (`.sol`/`.php`/`.sh`/`.rs` bundles have no npm
-`package.json`; Rust bundles have `--cargo-manifests`, see below).
+`package.json`; Rust bundles have `--cargo-manifests`, see below): set here, it
+takes effect there as the flag does, for every JS build, from the
+`stasis.config.json` at the bundle's root (the cwd's under `--mainFields`/
+`--metro`), and a bundle of other entries leaves it be.
 
 `extra` names files to attest beside what a run or bundle reaches, the files the
 import graph never does (assets, scripts, data), as `stasis add` takes them:

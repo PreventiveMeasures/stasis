@@ -5785,6 +5785,63 @@ test('buildBundle rejects packageJSON for non-JS entries', async (t) => {
   )
 })
 
+// stasis.config.json's `packageJSON`, as `stasis run` takes it: the same as --package-json, for every
+// JS build, and nothing to the others (JS-only, so a project-wide config can't break them).
+const seedPackageJson = (tmp, config) => {
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify(config))
+  writeFileSync(join(tmp, 'index.js'), "import { hi } from 'dep'\nexport default hi\n")
+  mkdirSync(join(tmp, 'node_modules', 'dep'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep', version: '1.2.3', type: 'module', main: 'main.js' }))
+  writeFileSync(join(tmp, 'node_modules', 'dep', 'main.js'), "export const hi = 'hi'\n")
+}
+
+test('buildBundle takes packageJSON from stasis.config.json, through a State or the field resolver', withTmp(async (t, tmp) => {
+  for (const options of [{}, { mainFields: ['main'] }, { metro: true, platforms: ['ios'] }]) {
+    const what = JSON.stringify(options)
+    seedPackageJson(tmp, { packageJSON: true })
+    // eslint-disable-next-line no-await-in-loop -- each build reads the stasis.config.json just written
+    const files = new Set((await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })).sources.keys())
+    t.assert.ok(files.has('node_modules/dep/package.json'), `${what}: dependency package.json included`)
+    t.assert.ok(files.has('package.json'), `${what}: workspace package.json included`)
+
+    seedPackageJson(tmp, { packageJSON: false })
+    // eslint-disable-next-line no-await-in-loop -- each build reads the stasis.config.json just written
+    const off = new Set((await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })).sources.keys())
+    t.assert.ok(!off.has('node_modules/dep/package.json'), `${what}: false is off`)
+    // --package-json opts in whatever the config says.
+    // eslint-disable-next-line no-await-in-loop -- each build reads the stasis.config.json just written
+    const flagged = new Set((await buildBundle({ cwd: tmp, entries: ['index.js'], ...options, packageJSON: true })).sources.keys())
+    t.assert.ok(flagged.has('node_modules/dep/package.json'), `${what}: --package-json over packageJSON: false`)
+  }
+}))
+
+test('buildBundle refuses a packageJSON in stasis.config.json that is no boolean', withTmp(async (t, tmp) => {
+  for (const options of [{}, { mainFields: ['main'] }]) {
+    seedPackageJson(tmp, { packageJSON: 'yes' })
+    // eslint-disable-next-line no-await-in-loop -- each build reads the stasis.config.json just written
+    await t.assert.rejects(() => buildBundle({ cwd: tmp, entries: ['index.js'], ...options }), /packageJSON/, JSON.stringify(options))
+  }
+}))
+
+test('buildBundle of non-JS entries leaves stasis.config.json\'s packageJSON be', withTmp(async (t, tmp) => {
+  seedPackageJson(tmp, { packageJSON: true })
+  writeFileSync(join(tmp, 'run.sh'), '#!/bin/sh\necho hi\n')
+  const bundle = await buildBundle({ cwd: tmp, entries: ['run.sh'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['run.sh'])
+}))
+
+cliTest('CLI: stasis bundle takes packageJSON from stasis.config.json, for its entries\' builds too', withTmp(async (t, tmp) => {
+  for (const config of [{ packageJSON: true }, { packageJSON: true, entries: { 'index.js': { mainFields: 'main' } } }]) {
+    seedPackageJson(tmp, config)
+    // eslint-disable-next-line no-await-in-loop -- each build reads the stasis.config.json just written
+    const r = await runCli(['bundle', '--output=out.br', 'index.js'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    const bundle = Bundle.parse(brotliDecompressSync(readFileSync(join(tmp, 'out.br'))).toString('utf8'))
+    t.assert.ok(new Set(bundle.sources.keys()).has('node_modules/dep/package.json'), JSON.stringify(config))
+  }
+}))
+
 cliTest('CLI: stasis bundle --package-json includes module manifests; rejected for .sol', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'index.js'), "import { hi } from 'dep'\nexport default hi\n")
