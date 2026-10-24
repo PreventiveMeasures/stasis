@@ -69,6 +69,16 @@ const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
 const isInconsistentPackageJsonException = (file) =>
   INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
 
+// The resolution context a condition list or imports key ('*', or a ', '-joined list with an
+// optional ' (with: {json})' suffix) asserts: 'import' or 'require'. Null for '*' and for a set
+// naming both or neither (a platform's, a source language's).
+function resolutionContext(conditions) {
+  const list = typeof conditions === 'string' ? conditions.split(' (with: ')[0].split(', ') : conditions
+  const asImport = list.includes('import')
+  if (asImport === list.includes('require')) return null
+  return asImport ? 'import' : 'require'
+}
+
 // On globalThis via `Symbol.for` so the registry is shared across duplicate stasis-core copies.
 const STATES_KEY = Symbol.for('@exodus/stasis-core/states')
 const liveStates = () => (globalThis[STATES_KEY] ??= new Set())
@@ -1337,7 +1347,7 @@ export class State {
     if (file === undefined) {
       // The edge may be recorded under a DIFFERENT conditions bucket -- resolveBundled scans every bucket.
       if (this.config.loadBundle) {
-        const abs = this.resolveBundled(parentURL, specifier)
+        const abs = this.resolveBundled(parentURL, specifier, { conditions })
         if (abs !== undefined) return { url: pathToFileURL(abs).toString(), format: this.#loaderFormat(relative(this.root, abs)) }
       }
       // Node's ERR_MODULE_NOT_FOUND shape, not a bare assert: dynamic-import callers guard on that
@@ -1356,18 +1366,27 @@ export class State {
 
   // Resolve a CJS require() target to a bundled absolute path, or undefined to defer to Node (the
   // hooks.js CJS shim needs this: registerHooks can't intercept Module._resolveFilename). Matches
-  // under ANY conditions bucket, since native require gives none; divergent buckets -> defer.
-  resolveBundled(parentURL, specifier) {
+  // under ANY conditions bucket, since native require gives none: a capture's replay can look an edge
+  // up under the other context's conditions than it was recorded under (tsx's CJS lane does).
+  // Divergent buckets are settled by those of the context `conditions` asserts (see
+  // resolutionContext) where they agree -- a --conditions build's require() and import() targets,
+  // each under a key plain node never asks -- else defer.
+  resolveBundled(parentURL, specifier, { conditions = '*' } = {}) {
     const parent = this.#canonicalFileMaybe(parentURL)
     if (parent === undefined) return undefined
     const spec = this.#canonicalSpecifier(parentURL, specifier)
+    const context = resolutionContext(conditions)
     const matches = new Set()
-    for (const [, byParent] of this.imports) {
+    const ownContext = new Set()
+    for (const [key, byParent] of this.imports) {
       const file = byParent.get(parent)?.get(spec)
-      if (file !== undefined) matches.add(file)
+      if (file === undefined) continue
+      matches.add(file)
+      if (context !== null && resolutionContext(key) === context) ownContext.add(file)
     }
-    if (matches.size !== 1) return undefined
-    const [only] = matches
+    const candidates = matches.size === 1 ? matches : ownContext
+    if (candidates.size !== 1) return undefined
+    const [only] = candidates
     // Per-platform { platform: file } Map (--metro) has no single path: defer to native, not resolve()'s TypeError.
     return typeof only === 'string' ? resolve(this.root, only) : undefined
   }
