@@ -1656,7 +1656,10 @@ export function checkVfsOptions(name, options) {
 // would install, or its Solidity options, through the dependencies folder 'soldeer' would install; with
 // nothing read from disk but tarballs and zips, nor from the environment: a Solidity bundle is
 // built with foundry.toml's default profile, whatever FOUNDRY_PROFILE or remappings one sets, and no
-// EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory, commit }`,
+// EXODUS_STASIS_* setting is read. The entries the stasis.config.json in cwd names in its `entries`
+// (every one, where none are given) are built with their options there, as `stasis bundle` builds
+// them, but none that runs a program; an option given has to agree with theirs (configuredBuilds).
+// `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
@@ -1671,6 +1674,7 @@ export function checkVfsOptions(name, options) {
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
 export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, ...options } = {}) {
   const { checkCache, checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { configuredBuilds } = await import('./bundle-options.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
   checkCache('buildVfsBundle', cache)
@@ -1681,10 +1685,17 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   cwd = project.realpath(posix.resolve('/', cwd))
   packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
-  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, generate, cwd, host: project }), [packageManager])
+  // The entries stasis.config.json's `entries` names, every one where none are given, each built
+  // with its options there, the options given agreeing with them (configuredBuilds); else built
+  // with the options given.
+  const configured = configuredBuilds('buildVfsBundle', { cwd, host: project, entries: options.entries, options })
+  const { entries = options.entries } = configured ?? {}
+  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, entries, generate, cwd, host: project }), [packageManager])
+  const builds = configured?.builds ?? [{ ...options, entries }]
+  for (const build of configured?.builds ?? []) checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
-  for (const entry of options.entries) {
+  for (const entry of entries) {
     const abs = posix.resolve(cwd, entry)
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
@@ -1696,11 +1707,23 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
     if (outputs.length > 0) host = treeHost(tree, vfsHost(withPrismaClients(vfs, outputs)))
   }
-  const args = { ...options, cwd, host, env: {} }
-  const { bundle, lockfile, stateBuilt, root } = pm.kind === 'sol' ? { bundle: await buildSolidityBundle(args), root: cwd } : await buildJs({ ...args, innermostRoot })
+  const args = { cwd, host, env: {} }
+  const builts = []
+  for (const build of builds) {
+    // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+    const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot })
+    // Rooted at cwd, where `stasis bundle` detects its repo.
+    if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
+    builts.push(built)
+  }
+  // Merged as bundleCommand merges its builds: rooted where every one of them is.
+  const { root } = builts[0]
+  const other = builts.findIndex((built) => built.root !== root)
+  if (other !== -1) {
+    throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
+  }
+  const { bundle, lockfile } = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
   if (repo !== undefined) bundle.repo = repo
-  // Rooted at cwd, where `stasis bundle` detects its repo.
-  else if (!stateBuilt) bundle.repo ??= detectRepo(cwd, host)
   pinCommits(bundle, root, tree)
   return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
 }

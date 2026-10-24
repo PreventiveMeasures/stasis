@@ -13,7 +13,7 @@ import { pack } from '@preventive/archive/tar.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
-import { Vfs, buildGitHubBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
+import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { HEAD, fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
 
 // @exodus/stasis/vfs-bundle's buildGitHubBundle over a fake @preventive/upstream/github.js client
@@ -378,6 +378,114 @@ test('buildGitHubBundle refuses to build without entries where no package.json n
   }))
   const client = fakeClient({ 'apps/p/pnpm-lock.yaml': lockfile('.'), 'apps/p/src/a.js': '' })
   await t.assert.rejects(build({ client, directory: 'apps/p' }), /: no entries given, and apps\/p has no package\.json naming a JS entry point there$/u)
+})
+
+// A repo whose stasis.config.json's `entries` builds an app with --metro and a CLI without, beside a
+// package.json naming another entry point.
+const configuredRepo = (entries = { 'index.js': { metro: true, platforms: ['ios', 'android'] }, './cli.js': {} }) => ({
+  'package.json': json({ name: 'p', version: '1.0.0', main: 'main.js' }),
+  'pnpm-lock.yaml': lockfile('.'),
+  'main.js': 'module.exports = 0\n',
+  'index.js': "require('./a')\n",
+  'a.ios.js': "module.exports = 'ios'\n",
+  'a.android.js': "module.exports = 'android'\n",
+  'cli.js': "require('./b')\n",
+  'b.js': 'module.exports = 1\n',
+  'stasis.config.json': json({ entries }),
+})
+
+test("buildGitHubBundle takes stasis.config.json's entries without entries, each built with its options there", async (t) => {
+  const { bundle, lockfile: lock } = await build({ client: fakeClient(configuredRepo()) })
+  t.assert.deepStrictEqual([...bundle.entries].toSorted(), ['cli.js', 'index.js'], "the config's, not the package.json's main.js")
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'b.js', 'cli.js', 'index.js'])
+  t.assert.deepStrictEqual(bundle.imports.get('*').get('index.js'), new Map([['./a', new Map([['android', 'a.android.js'], ['ios', 'a.ios.js']])]]), 'index.js with --metro, per platform')
+  t.assert.deepStrictEqual(bundle.imports.get('*').get('cli.js'), new Map([['./b', 'b.js']]), 'cli.js without')
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.android.js', 'a.ios.js', 'index.js'] })
+  t.assert.deepStrictEqual([...lock.entries].toSorted(), ['cli.js', 'index.js'])
+  t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: '', commit: SHA })
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(configuredRepo()) }), ['index.js', 'cli.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configuredRepo()) }), ['index.js', 'cli.js'])
+  // buildVfsBundle's too, which has no others to take.
+  const vfs = await buildVfsBundle({ vfs: vfsOf(configuredRepo()), packageManager: 'pnpm' })
+  t.assert.deepStrictEqual([...vfs.bundle.sources.keys()].toSorted(), [...bundle.sources.keys()].toSorted())
+  const { 'stasis.config.json': _config, ...bare } = configuredRepo()
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(bare), packageManager: 'pnpm' }), /^Error: buildVfsBundle: at least one entry file is required$/u)
+  // The options as `stasis github-bundle` gives them, none of its flags given, are none.
+  const cli = { manifests: false, conditions: [], metro: false, platforms: [], jsx: false, flow: false, typescript: false, packageJSON: false, generate: [] }
+  t.assert.deepStrictEqual([...(await build({ client: fakeClient(configuredRepo()), ...cli })).bundle.sources.keys()], [...bundle.sources.keys()])
+  // An entry it names, given, is built with its options there too; others with the options given.
+  const app = await build({ client: fakeClient(configuredRepo()), entries: ['./index.js'] })
+  t.assert.deepStrictEqual([...app.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'index.js'])
+  const main = await build({ client: fakeClient(configuredRepo()), entries: ['main.js'], jsx: true })
+  t.assert.deepStrictEqual([...main.bundle.sources.keys()], ['main.js'])
+  // The stasis.config.json of the directory, whose paths its entries are.
+  const nested = Object.fromEntries(Object.entries(configuredRepo()).map(([path, text]) => [path.endsWith('.yaml') ? path : `packages/p/${path}`, text]))
+  const inner = await build({ client: fakeClient({ ...nested, 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n', 'pnpm-lock.yaml': lockfile('.', 'packages/p'), 'package.json': json({ name: 'root', version: '1.0.0', private: true, main: 'root.js' }), 'root.js': '' }), directory: 'packages/p' })
+  t.assert.deepStrictEqual([...inner.bundle.entries].toSorted(), ['cli.js', 'index.js'])
+  // An empty one names none.
+  t.assert.deepStrictEqual([...(await build({ client: fakeClient(configuredRepo({})) })).bundle.entries], ['main.js'])
+})
+
+test("buildGitHubBundle bundles the entries stasis.config.json names or others, never both", async (t) => {
+  await t.assert.rejects(build({ client: fakeClient(configuredRepo()), entries: ['index.js', 'main.js'] }), /^Error: buildVfsBundle: stasis\.config\.json's entries name index\.js but not main\.js: bundle either the entries it names or others, not both$/u)
+  await t.assert.rejects(build({ client: fakeClient(configuredRepo()), entries: ['main.js', './cli.js'] }), /^Error: buildVfsBundle: stasis\.config\.json's entries name \.\/cli\.js but not main\.js: /u)
+})
+
+test("buildGitHubBundle refuses an option given that stasis.config.json's entries set otherwise, rather than take it over them", async (t) => {
+  const refused = {
+    '--platforms=ios is given, but stasis.config.json\'s entries build "index.js" with --platforms=ios,android': { entries: ['index.js'], metro: true, platforms: ['ios'] },
+    '--jsx is given, but stasis.config.json\'s entries build "index.js" without --jsx': { jsx: true },
+    '--metro is given, but stasis.config.json\'s entries build "./cli.js" without --metro': { metro: true, platforms: ['ios', 'android'] },
+    '--conditions=browser is given, but stasis.config.json\'s entries build "./cli.js" with --conditions=node': { entries: ['cli.js'], conditions: ['browser'], config: { 'cli.js': { conditions: ['node'] } } },
+    '--define=__DEV__=true is given, but stasis.config.json\'s entries build "./cli.js" with --define=__DEV__=false': { entries: ['cli.js'], define: { __DEV__: true }, config: { 'cli.js': { define: '__DEV__=false' } } },
+  }
+  await Promise.all(Object.entries(refused).map(async ([message, { config, ...options }]) => {
+    const files = configuredRepo(config && { './cli.js': Object.values(config)[0] })
+    const pattern = new RegExp(`^Error: buildVfsBundle: ${RegExp.escape(message)}: an entry it names is built with its options there$`, 'u')
+    // By default, before buildVfsBundle sees them, by buildGitHubBundle.
+    await t.assert.rejects(build({ client: fakeClient(files), ...options }), options.entries ? pattern : new RegExp(pattern.source.replace('buildVfsBundle', 'buildGitHubBundle'), 'u'), message)
+  }))
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo()), jsx: true }), /^Error: suggestedEntries: --jsx is given, but stasis\.config\.json's entries build "index\.js" without --jsx: /u, 'as the build checks it')
+  // One it sets alike is no other: the same platforms in another order, or a define of the same value.
+  const same = await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], metro: true, platforms: ['android', 'ios', 'ios'] })
+  t.assert.deepStrictEqual([...same.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'index.js'])
+  const defined = await build({ client: fakeClient(configuredRepo({ 'cli.js': { define: ['__DEV__=false', 'X="y"'], 'package-json': false } })), define: { X: 'y', __DEV__: false }, packageJSON: false })
+  t.assert.deepStrictEqual([...defined.bundle.entries], ['cli.js'])
+})
+
+test("buildGitHubBundle refuses stasis.config.json's entries that run a program: no option allows them", async (t) => {
+  const running = {
+    babel: [{ 'index.js': { metro: true, babel: true, platforms: ['ios'] } }, "the project's Babel config"],
+    'metro-resolver': [{ 'index.js': { metro: true, 'metro-resolver': true, platforms: ['ios'] } }, "the project's metro-resolver"],
+    cargo: [{ 'src/main.rs': { cargo: true } }, "cargo, and what the project's .cargo/config.toml names"],
+    'cargo-target': [{ 'src/main.rs': { 'cargo-target': 'host' } }, 'rustc'],
+  }
+  await Promise.all(Object.entries(running).map(async ([flag, [entries, what]]) => {
+    const client = fakeClient(configuredRepo(entries))
+    const message = `stasis.config.json: entries ${JSON.stringify(Object.keys(entries)[0])} sets ${flag}, which runs ${what}, and nothing of the project runs here`
+    await t.assert.rejects(build({ client }), new RegExp(`^Error: buildGitHubBundle: ${RegExp.escape(message)}$`, 'u'), flag)
+    // A Rust entry given is refused before anything is fetched: pnpm builds none.
+    const given = flag.startsWith('cargo') ? /^Error: buildGitHubBundle: only JS bundles are built with pnpm$/u : new RegExp(`^Error: buildVfsBundle: ${RegExp.escape(message)}$`, 'u')
+    await t.assert.rejects(build({ client, entries: Object.keys(entries) }), given, flag)
+    await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo(entries)) }), new RegExp(`^Error: suggestedEntries: ${RegExp.escape(message)}$`, 'u'), flag)
+  }))
+  // Its flag given too is no consent here: refused as ever, before anything is fetched.
+  const client = fakeClient(configuredRepo(running.babel[0]))
+  await t.assert.rejects(build({ client, entries: ['index.js'], metro: true, babel: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: babel is not supported$/u)
+  t.assert.deepStrictEqual(client.calls, [])
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configuredRepo(running.babel[0])), entries: ['index.js'], metro: true, babel: true, platforms: ['ios'] }), /^Error: buildVfsBundle: stasis\.config\.json: entries "index\.js" sets babel, which runs /u)
+})
+
+test("buildGitHubBundle builds a Soldeer project's stasis.config.json entries, a directory one too", async (t) => {
+  const files = { ...foundry, 'stasis.config.json': json({ entries: { src: { manifests: true }, 'Root.sol': { manifests: true } } }) }
+  const { bundle } = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient(files) })
+  // As the same entries are built with the same options given, of the repo without it.
+  const flags = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient(foundry), entries: ['src', 'Root.sol'], manifests: true })
+  t.assert.deepStrictEqual([...bundle.entries], [...flags.bundle.entries])
+  t.assert.deepStrictEqual([...bundle.sources.keys()], [...flags.bundle.sources.keys()])
+  t.assert.ok(bundle.sources.has('foundry.toml'), 'with --manifests')
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(files) }), ['src', 'Root.sol'])
+  await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient({ ...files, 'stasis.config.json': json({ entries: { 'index.js': {} } }) }) }), /^Error: buildVfsBundle: only Solidity bundles are built with soldeer$/u)
 })
 
 test('buildGitHubBundle downloads a directory alone when its lockfile is there', async (t) => {

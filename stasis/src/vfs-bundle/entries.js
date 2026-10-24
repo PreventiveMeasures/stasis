@@ -5,6 +5,7 @@ import { readJson } from '@exodus/stasis-core/bundle-util'
 import { isAutoExcludedDir, isPlainObject, posixPathEscapes, relativeEscapes } from '@exodus/stasis-core/util'
 import { Vfs } from '@preventive/vfs'
 import { checkVfsOptions, fieldResolverFor } from '../cmd/bundle.js'
+import { configuredBuilds } from '../cmd/bundle-options.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
 import { resolveConditions } from '../resolve-fields.js'
 import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
@@ -121,6 +122,11 @@ export const KINDS = {
   js: { standIn: 'index.js', entries: packageEntries, none: 'has no package.json naming a JS entry point there' },
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
 }
+
+// The entries a build of the project in `dir` (read through `host`) takes where none are given, as
+// paths from `dir`: those its stasis.config.json's `entries` names, checked with `options` as the
+// build checks them (configuredBuilds), where it names any; else those of `kind` (KINDS').
+export const defaultEntries = (name, host, dir, kind, options) => configuredBuilds(name, { cwd: dir, host, options })?.entries ?? kind.entries(host, dir, options)
 
 const EMPTY = vfsHost(new Vfs())
 

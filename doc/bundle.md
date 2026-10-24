@@ -126,7 +126,8 @@ With it:
   builds' union however many there are, by the config's own `resources` (an
   entry's `resources` is its graph's alone).
 
-`stasis run` takes nothing from it.
+`stasis run` takes nothing from it. `stasis github-bundle` takes it too, but
+runs nothing: see its [Entries](github-bundle.md#entries).
 
 ```sh
 stasis bundle --metro-resolver   # bundles index.js with --metro and bin.js without

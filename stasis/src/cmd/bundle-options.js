@@ -67,12 +67,13 @@ function entryKey(cwd, entry) {
   return relativeEscapes(rel) ? null : toPosix(rel) || '.'
 }
 
-// The language `entries` share, one bundle being built from one: which of them they all are in.
-function entriesLanguage(entries, cwd) {
-  const dirError = directoryEntryError(entries, cwd)
+// The language `entries` share, one bundle being built from one: which of them they all are in, as
+// the project in `cwd`, read through `host`, holds them.
+function entriesLanguage(entries, cwd, host = diskHost) {
+  const dirError = directoryEntryError(entries, cwd, host)
   if (dirError !== null) throw new Error(dirError)
   const lang = {
-    allSol: entries.every((f) => isSolidityEntry(f, cwd)),
+    allSol: entries.every((f) => isSolidityEntry(f, cwd, host)),
     allPhp: entries.every((f) => f.endsWith('.php')),
     allJs: entries.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f)),
     allBash: entries.every((f) => /\.(?:sh|bash)$/u.test(f)),
@@ -318,4 +319,72 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
     else builds.set(id, { entries: [entry], ...options })
   }
   return { ...output, builds: [...builds.values()] }
+}
+
+// buildOptions' options, each by the flag it is given as; and those whose values are a set, in
+// whatever order given (each value of `resources` as parseResourcesOption takes it).
+const OPTION_FLAGS = {
+  mappingFile: 'mapping', manifests: 'manifests', scope: 'scope', conditions: 'conditions', mainFields: 'mainFields', metro: 'metro', metroResolver: 'metro-resolver', babel: 'babel', babelAliases: 'babel-aliases', platforms: 'platforms', jsx: 'jsx', flow: 'flow', typescript: 'typescript', tsconfig: 'tsconfig', resources: 'resources', define: 'define', packageJSON: 'package-json', cargo: 'cargo', cargoFeatures: 'cargo-features', cargoNoDefaultFeatures: 'cargo-no-default-features', cargoAllFeatures: 'cargo-all-features', cargoTarget: 'cargo-target', cargoManifests: 'cargo-manifests',
+}
+const SET_OPTIONS = new Set(['conditions', 'platforms', 'resources', 'cargoFeatures'])
+// buildOptions' options where no flag is given.
+const DEFAULT_OPTIONS = buildOptions({}, {})
+// An option's value as compared: a set's sorted, defines by name, none (null) for no value or no define.
+const comparable = (key, value) => {
+  if (value === undefined || value === null || (key === 'define' && isPlainObject(value) && Object.keys(value).length === 0)) return 'null'
+  if (key === 'resources' && Array.isArray(value)) value = value.map((v) => (typeof v === 'string' ? v.toLowerCase().replace(/^\./u, '') : v))
+  if (SET_OPTIONS.has(key) && Array.isArray(value)) return JSON.stringify([...new Set(value)].toSorted())
+  if (key === 'define' && isPlainObject(value)) return JSON.stringify(Object.entries(value).toSorted(([a], [b]) => (a < b ? -1 : 1)))
+  return JSON.stringify(value)
+}
+// An option as its flags give it: `--jsx`, `--platforms=ios,android`, `--define=__DEV__=false`.
+const optionText = (key, value) => (key === 'define'
+  ? Object.entries(value).map(([name, v]) => `--define=${name}=${JSON.stringify(v)}`).join(' ')
+  : flagText(OPTION_FLAGS[key], Array.isArray(value) ? value.join(',') : value))
+
+// The builds of `entries` that the stasis.config.json in `cwd` (read through `host`) names in its
+// `entries`, for `name`'s bundle, built from a project it runs nothing of
+// (@exodus/stasis/vfs-bundle's): every entry it names where none are given, as paths from `cwd`.
+// -> { entries, builds }, each build `{ entries, ...options }` with the options there (buildOptions'),
+// the entries with the same ones together; null where it names none of them, or there is none: they
+// are built with `options` alone. It may not name only some. Each of `options` (buildOptions'
+// shape) given other than at its default has to be the one each entry's options set, else it is
+// refused, neither taken over them nor left aside. An entry setting one that runs a program
+// (CONSENT_FLAGS') is refused: nothing of the project runs, so no option allows it. A usage error throws.
+export function configuredBuilds(name, { cwd, host = diskHost, entries, options = {} }) {
+  const prefixed = (fn, what = `${name}: `) => {
+    try {
+      return fn()
+    } catch (cause) {
+      throw new Error(`${what}${cause.message}`, { cause })
+    }
+  }
+  const config = prefixed(() => readConfigEntries(cwd, host))
+  if (config === null || config.size === 0 || (entries !== undefined && !Array.isArray(entries))) return null
+  entries ??= [...config.keys()]
+  const keys = entries.map((entry) => entryKey(cwd, entry))
+  const configured = entries.filter((_, i) => config.has(keys[i]))
+  if (configured.length === 0) return null
+  const unnamed = entries.find((_, i) => !config.has(keys[i]))
+  if (unnamed !== undefined) {
+    throw new Error(`${name}: ${CONFIG_FILE}'s entries name ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
+  }
+  const given = Object.keys(OPTION_FLAGS).filter((key) => !CONSENT_FLAGS.has(OPTION_FLAGS[key]) && options[key] !== undefined && comparable(key, options[key]) !== comparable(key, DEFAULT_OPTIONS[key]))
+  const builds = new Map()
+  for (const [i, entry] of entries.entries()) {
+    const { entry: written, values } = config.get(keys[i])
+    const what = `${name}: ${CONFIG_FILE}: entries ${JSON.stringify(written)}`
+    const running = [...CONSENT_FLAGS.keys()].find((flag) => values[flag] !== undefined)
+    if (running !== undefined) throw new Error(`${what} sets ${running}, which runs ${CONSENT_FLAGS.get(running)}, and nothing of the project runs here`)
+    const built = prefixed(() => buildOptions(values, entriesLanguage([entry], cwd, host)), `${what}: `)
+    for (const key of given) {
+      if (comparable(key, options[key]) === comparable(key, built[key])) continue
+      const set = comparable(key, built[key]) === comparable(key, DEFAULT_OPTIONS[key]) ? `without --${OPTION_FLAGS[key]}` : `with ${optionText(key, built[key])}`
+      throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
+    }
+    const id = JSON.stringify(built)
+    if (builds.has(id)) builds.get(id).entries.push(entry)
+    else builds.set(id, { entries: [entry], ...built })
+  }
+  return { entries, builds: [...builds.values()] }
 }

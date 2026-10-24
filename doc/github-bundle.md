@@ -55,7 +55,10 @@ publisher's word, held to no repository.
 
 ## Entries
 
-The entries are paths in `--directory`, or in the repo. Without any:
+The entries are paths in `--directory`, or in the repo. Without any, they are
+those the directory's `stasis.config.json` names in its
+[`entries`](bundle.md#entry-options-stasisconfigjson), where it names any.
+Else:
 
 - a JS bundle takes the JS files the directory's `package.json` names (`main`,
   each subpath of `exports`, each `bin`), resolved as the build resolves them
@@ -63,6 +66,22 @@ The entries are paths in `--directory`, or in the repo. Without any:
 - a Soldeer bundle takes its `.sol` files directly in it, under `contracts/`,
   and under its source directory (`foundry.toml`'s `src`, else `src/`), but not
   its tests, scripts, mocks, or dependency and build directories.
+
+The entries `stasis.config.json`'s `entries` names, given or taken by default,
+are built with their options there, as [`stasis bundle`](bundle.md#entry-options-stasisconfigjson)
+builds them: those with different options apart, their bundles merged into one.
+With it:
+
+- An option given for them must be the one each of them is built with there,
+  or the build is refused: `--platforms=ios` for an entry it builds with
+  `--platforms=ios,android`, or `--jsx` for one it builds without. An option
+  left out leaves each entry's own.
+- The entries given are all named there, or none is, the two never mixed.
+  Where none is, they are built with the options given, as without it.
+- An entry setting `babel`, `metro-resolver`, `cargo` or `cargo-target` is
+  refused, whatever the flags: each runs a program (the project's Babel config,
+  its `metro-resolver`, `cargo`, `rustc`), and nothing of the repo runs here.
+  No flag consents to it, as `stasis bundle`'s do.
 
 ## Roots and paths
 
@@ -119,5 +138,7 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   `setCacheDir`'s cache whatever it is.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`.
+  `buildVfsBundle` takes a project's `stasis.config.json` entries as the
+  command does, and every one where it is given none.
 - `setCacheDir(dir)` is where tarballs, zips and trees are cached; the CLI
   points it at the user cache directory.

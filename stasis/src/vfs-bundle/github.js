@@ -7,7 +7,7 @@ import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle } from '../cmd/bundle.js'
-import { KINDS, checkAhead } from './entries.js'
+import { KINDS, checkAhead, defaultEntries } from './entries.js'
 import { checkCache, checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
@@ -168,7 +168,8 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 // A GitHub repo at a full commit, or the one `tag` names, the default branch's head without either,
 // as buildVfsBundle builds it: `directory` downloaded alone where it stands alone, else the whole
 // repo, and without a `packageManager`, the one whose lockfile installs it, where only one's does
-// (repoTree). Without `entries`, they are the ones suggestedEntries suggests. The bundle's paths are
+// (repoTree). Without `entries`, they are the ones suggestedEntries suggests: those its
+// stasis.config.json's `entries` names, where it names any. The bundle's paths are
 // relative to `directory`, or for a JS bundle, to the innermost package directory at or above it
 // holding every file it bundles (buildJsBundle's innermostRoot), which is the project's root where
 // one is outside the others; `repo` names that directory and the commit. Nothing is read from disk:
@@ -185,7 +186,7 @@ export async function buildGitHubBundle({ github, sha, tag, directory, client, p
   let { entries } = options
   if (entries === undefined) {
     // As suggestedEntries suggests them, from the tree at hand.
-    entries = tree.kind.entries(tree.host, tree.cwd, options)
+    entries = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.kind, options)
     if (entries.length === 0) throw new Error(`${tree.where}: no entries given, and ${directory || 'the repo root'} ${tree.kind.none}`)
   }
   const repo = { github, commit: tree.sha }
@@ -200,5 +201,5 @@ export async function buildGitHubBundle({ github, sha, tag, directory, client, p
 // buildGitHubBundle downloads it.
 export async function suggestedRepoEntries(repo, resolution) {
   const tree = await repoTree('suggestedEntries', repo, resolution)
-  return tree.kind.entries(tree.host, tree.cwd, resolution)
+  return defaultEntries('suggestedEntries', tree.host, tree.cwd, tree.kind, resolution)
 }
