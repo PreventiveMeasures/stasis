@@ -224,11 +224,17 @@ const debugMs = (bundle) => {
 describe('buildVfsBundle with each package manager', { concurrency: true }, () => {
   for (const [packageManager, m] of Object.entries(MANAGERS)) {
     const build = (vfs, options) => buildVfsBundle({ vfs, packageManager, entries: ['src/entry.js'], ...options })
+    // The plain scope=full build three tests check, built once by the first of them: every build here
+    // takes its turn on this file's one thread.
+    let full
+    const fullBuild = () => full ??= (async () => {
+      const vfs = projectVfs(packageManager)
+      return { vfs, built: await build(vfs, { scope: 'full' }) }
+    })()
 
     describe(`buildVfsBundle with ${packageManager}`, { concurrency: 1 }, () => {
       test('builds, from the lockfile alone, the byte-identical bundle + lockfile a real install yields', async (t) => {
-        const vfs = projectVfs(packageManager)
-        const built = await build(vfs, { scope: 'full' })
+        const { vfs, built } = await fullBuild()
         t.assert.ok(built.bundle instanceof Bundle)
         t.assert.equal(unpinned(built.bundle.serialize()), oracles[packageManager].bundle)
         t.assert.ok(built.lockfile instanceof Lockfile)
@@ -238,7 +244,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
       })
 
       test('records each dependency at the commit its version document names, in the repository its package.json does', async (t) => {
-        const { bundle } = await build(projectVfs(packageManager), { scope: 'full' })
+        const { bundle } = (await fullBuild()).built
         const { installed } = await loadNodeModules({ vfs: projectVfs(packageManager), packageManager })
         const named = new Map(installed.filter((pkg) => pkg.commit !== undefined).map((pkg) => [pkg.path, pkg.commit]))
         const pinned = [...bundle.modules].filter(([, { repo }]) => repo?.commit !== undefined)
@@ -256,13 +262,16 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
           [['--scope=node_modules'], { scope: 'node_modules' }],
           [['--metro', '--platforms=ios,android', '--package-json'], { metro: true, platforms: ['ios', 'android'], packageJSON: true }],
         ]
-        const reals = await Promise.all(variants.map(async ([flags]) => {
-          const name = flags.join('_').replaceAll(/[^\w]/gu, '_')
-          const r = await run(['bundle', ...flags, `--output=${join(installedCopy, `${name}.br`)}`, `--lockfile=${join(installedCopy, `${name}.lock.json`)}`, 'src/entry.js'], { cwd: installedCopy })
-          t.assert.equal(r.status, 0, `real ${flags}: ${r.stderr}`)
-          return { bundle: decode(await readFile(join(installedCopy, `${name}.br`))), lockfile: await readFile(join(installedCopy, `${name}.lock.json`), 'utf-8') }
-        }))
-        const builts = await Promise.all(variants.map(([, options]) => build(projectVfs(packageManager), options)))
+        // The real builds run in child processes, so the ones from the lockfile run beside them.
+        const [reals, builts] = await Promise.all([
+          Promise.all(variants.map(async ([flags]) => {
+            const name = flags.join('_').replaceAll(/[^\w]/gu, '_')
+            const r = await run(['bundle', ...flags, `--output=${join(installedCopy, `${name}.br`)}`, `--lockfile=${join(installedCopy, `${name}.lock.json`)}`, 'src/entry.js'], { cwd: installedCopy })
+            t.assert.equal(r.status, 0, `real ${flags}: ${r.stderr}`)
+            return { bundle: decode(await readFile(join(installedCopy, `${name}.br`))), lockfile: await readFile(join(installedCopy, `${name}.lock.json`), 'utf-8') }
+          })),
+          Promise.all(variants.map(([, options]) => build(projectVfs(packageManager), options))),
+        ])
         for (const [i, [flags]] of variants.entries()) {
           t.assert.equal(unpinned(builts[i].bundle.serialize()), reals[i].bundle, `bundle for ${flags.join(' ')}`)
           t.assert.equal(builts[i].lockfile.serialize(), reals[i].lockfile, `lockfile for ${flags.join(' ')}`)
@@ -273,7 +282,7 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
 
       test('the bundle loads (--bundle=load) and its lockfile verifies (--lock=frozen) against the real install', withTmp(async (t, tmp) => {
         const { installedCopy } = oracles[packageManager]
-        const { bundle, lockfile } = await build(projectVfs(packageManager), { scope: 'full' })
+        const { bundle, lockfile } = (await fullBuild()).built
         await writeFile(join(tmp, 'v.br'), encode(bundle.serialize()))
         const load = await run(['run', '--lock=none', '--bundle=load', `--bundle-file=${join(tmp, 'v.br')}`, 'src/entry.js'], { cwd: installedCopy })
         t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
