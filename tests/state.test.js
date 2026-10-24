@@ -968,6 +968,44 @@ test('--package-json manifests inherit the consumers of their bucket', (t) => {
   }
 })
 
+test('--package-json carries the nearest package.json of a bundled file, for the consumers below it', (t) => {
+  // A package's `{"type":"module"}` marker (`esm/package.json`) is the package.json Node and Metro's
+  // resolver read for the files below it, so the fold carries it too, and it belongs to every
+  // consumer that recorded one of those files.
+  const dir = mkdtempSync(join(tmpdir(), 'stasis-pkg-scope-'))
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0' }))
+    writeFileSync(join(dir, 'entry.js'), 'export const e = 1\n')
+    const mdep = join(dir, 'node_modules', 'mdep')
+    for (const sub of ['esm', 'cjs']) mkdirSync(join(mdep, sub), { recursive: true })
+    writeFileSync(join(mdep, 'package.json'), JSON.stringify({ name: 'mdep', version: '1.0.0' }))
+    writeFileSync(join(mdep, 'index.js'), "export const x = 'mdep'\n")
+    writeFileSync(join(mdep, 'esm', 'package.json'), JSON.stringify({ type: 'module' }))
+    writeFileSync(join(mdep, 'esm', 'index.js'), "export const x = 'esm'\n")
+    writeFileSync(join(mdep, 'cjs', 'package.json'), JSON.stringify({ type: 'commonjs' }))
+    writeFileSync(join(mdep, 'cjs', 'index.js'), "exports.x = 'cjs'\n")
+    const bundleFile = join(dir, 'snapshot.br')
+    const s = new State(dir, { scope: 'full', lock: 'none', bundle: 'add', bundleFile, packageJSON: true })
+    const url = (rel) => pathToFileURL(join(dir, rel)).toString()
+    s.addFile(url('entry.js'), { format: 'module', isEntry: true })
+    s.addFile(url('node_modules/mdep/index.js'), { format: 'module' }) // 'run'
+    s.addFile(url('node_modules/mdep/esm/index.js'), { format: 'module', reason: 'metro' })
+    s.write()
+
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundleFile)).toString())
+    const files = bundle.modules['node_modules/mdep'].files
+    t.assert.ok(files['esm/package.json'], 'the marker above a bundled file is folded into its package')
+    t.assert.ok(!files['cjs/package.json'], 'not the marker above no bundled file')
+    // The marker is metro's alone (only metro recorded a file below it); the package's own manifest
+    // is both consumers', as before.
+    t.assert.ok(bundle.reason.metro.includes('node_modules/mdep/esm/package.json'))
+    t.assert.ok(!bundle.reason.run.includes('node_modules/mdep/esm/package.json'))
+    for (const who of ['metro', 'run']) t.assert.ok(bundle.reason[who].includes('node_modules/mdep/package.json'), who)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('bundle `reason`: run does not claim a file it only fs-reads AFTER a plugin attaches that the plugin bundles', (t) => {
   // webpack+babel under `stasis run`: babel reads app source through --fs to transform it, so the
   // loader's --fs hook records those files as 'run' -- but they are the plugin's bundled modules,

@@ -70,8 +70,10 @@ artifact's encoding — the decompressed content, and thus every hash, is identi
 at any quality — so it is inert under read-only bundle modes.
 
 `packageJSON` (equivalent to `--package-json` on `stasis run`/`stasis bundle`)
-auto-includes each bundled module's `package.json` when a bundle is written, even
-if the run/scan never reached it — so a `bundle = load` of the artifact, or a
+auto-includes each bundled module's `package.json` when a bundle is written, and
+the nearest one above each bundled file where that is another (a
+`{"type":"module"}` marker such as `esm/package.json`), even if the run/scan
+never reached it — so a `bundle = load` of the artifact, or a
 `prune`, can still read every dependency's manifest. It only takes effect while
 *writing* a bundle (`bundle = add | replace`); its effect is the extra bundled
 files (attested like any other), so the flag itself is not serialized. JS bundles

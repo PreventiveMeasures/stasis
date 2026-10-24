@@ -67,6 +67,19 @@ export function namedManifestOf(rel, read) {
   return undefined
 }
 
+// The package.json nearest above a file `rel` of the package at `pkgDir` (both project-relative,
+// POSIX), short of the package's own: a `{"type":"module"}` marker such as `esm/package.json`, or a
+// subpackage's or vendored package's, which Node takes the file's `type` from and Metro's resolver
+// (getPackageForModule) the file's fields. `exists(rel)` says whether one is there -> its rel, or
+// undefined where the package's own is the nearest.
+export function scopeManifestOf(rel, pkgDir, exists) {
+  if (pkgDir !== '.' && !rel.startsWith(`${pkgDir}/`)) return undefined
+  for (let dir = posix.dirname(rel); dir !== pkgDir && dir !== '.'; dir = posix.dirname(dir)) {
+    if (exists(`${dir}/package.json`)) return `${dir}/package.json`
+  }
+  return undefined
+}
+
 // Nearest package.json (walking up) that identifies a bucket; pkgDir is relative to baseDir ("."
 // at the root). Inside node_modules both name and version are required; a workspace package
 // outside node_modules may omit version (the name alone claims the bucket, matching

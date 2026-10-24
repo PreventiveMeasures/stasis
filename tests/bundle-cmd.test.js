@@ -5819,12 +5819,51 @@ test('buildBundle (--metro) with packageJSON includes package.json for reached m
   t.assert.equal(bundle.formats.get('node_modules/dep/package.json'), 'json')
 }))
 
+test('buildBundle with packageJSON includes the nearest package.json of each bundled file', withTmp(async (t, tmp) => {
+  // A package's `{"type":"module"}` marker (`esm/package.json`, as @noble/* ship) is the package.json
+  // Node takes its files' `type` from and Metro's resolver their fields, so the Metro plugin's --fs
+  // capture carries it: --package-json carries it too, for a file the build bundles, on every path.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', type: 'module' }))
+  writeFileSync(join(tmp, 'index.js'), "import { hi } from 'dep'\nimport { a } from './src/lib/a.js'\nexport default [hi, a]\n")
+  mkdirSync(join(tmp, 'src', 'lib'), { recursive: true })
+  writeFileSync(join(tmp, 'src', 'lib', 'package.json'), JSON.stringify({ type: 'module' }))
+  writeFileSync(join(tmp, 'src', 'lib', 'a.js'), 'export const a = 1\n')
+  const dep = join(tmp, 'node_modules', 'dep')
+  mkdirSync(join(dep, 'esm'), { recursive: true })
+  mkdirSync(join(dep, 'cjs'), { recursive: true })
+  writeFileSync(join(dep, 'package.json'), JSON.stringify({
+    name: 'dep', version: '1.0.0', main: 'cjs/index.js', module: 'esm/index.js',
+    exports: { '.': { import: './esm/index.js', require: './cjs/index.js' } },
+  }))
+  writeFileSync(join(dep, 'esm', 'package.json'), JSON.stringify({ type: 'module', sideEffects: false }))
+  writeFileSync(join(dep, 'esm', 'index.js'), "export const hi = 'hi'\n")
+  writeFileSync(join(dep, 'cjs', 'package.json'), JSON.stringify({ type: 'commonjs' }))
+  writeFileSync(join(dep, 'cjs', 'index.js'), "exports.hi = 'hi'\n")
+
+  for (const options of [{}, { mainFields: ['module', 'main'] }, { metro: true, platforms: ['ios'] }]) {
+    const what = JSON.stringify(options)
+    // eslint-disable-next-line no-await-in-loop -- one build per resolution mode
+    const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], ...options, packageJSON: true })
+    const files = new Set(bundle.sources.keys())
+    t.assert.ok(files.has('node_modules/dep/esm/index.js'), `${what}: the ESM entry is the one bundled`)
+    t.assert.ok(files.has('node_modules/dep/package.json'), `${what}: the package's own manifest`)
+    t.assert.ok(files.has('node_modules/dep/esm/package.json'), `${what}: the marker above a bundled file`)
+    t.assert.equal(bundle.formats.get('node_modules/dep/esm/package.json'), 'json', what)
+    t.assert.ok(files.has('src/lib/package.json'), `${what}: a marker in the workspace too`)
+    t.assert.ok(!files.has('node_modules/dep/cjs/package.json'), `${what}: not the marker above no bundled file`)
+
+    // eslint-disable-next-line no-await-in-loop -- one build per resolution mode
+    const without = new Set((await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })).sources.keys())
+    t.assert.ok(!without.has('node_modules/dep/esm/package.json'), `${what}: off without packageJSON`)
+  }
+}))
+
 test('buildBundle (--metro) with packageJSON never bakes in an unparseable manifest', withTmp(async (t, tmp) => {
-  // The resolved --package-json fold does not re-parse manifests (unlike the State path), yet can
-  // never bake in unparseable 'json': its fold targets come from findPackageMetadata over *reached*
-  // files, which skips malformed manifests, so a malformed manifest for a package the graph never
-  // reaches is simply never folded. (A malformed manifest for a *reached* package fails earlier,
-  // loudly, at resolution.)
+  // The resolved --package-json fold never bakes in unparseable 'json': its fold targets come from
+  // findPackageMetadata over *reached* files, which skips malformed manifests, so a malformed manifest
+  // for a package the graph never reaches is simply never folded. (A malformed manifest for a
+  // *reached* package fails earlier, loudly, at resolution, and so does a malformed marker such as
+  // `esm/package.json` above a reached file, whose nearest package.json the resolver reads.)
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'rn-app', version: '1.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'index.js'), "import { hi } from 'dep'\nexport default hi\n")
   mkdirSync(join(tmp, 'node_modules', 'dep'), { recursive: true })

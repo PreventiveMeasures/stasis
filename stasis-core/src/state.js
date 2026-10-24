@@ -11,8 +11,8 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
-import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
@@ -1697,32 +1697,55 @@ export class State {
   }
 
   // Add every bundled module's `<dir>/package.json` (config.packageJSON) even if the run never
-  // reached it, so a load/prune can read each dependency's manifest. The skip keys on bundle
-  // membership, NOT this.hashes (which also holds lockfile-absorbed entries and is shared by
-  // reference across sidecars).
+  // reached it, so a load/prune can read each dependency's manifest, and the nearer one a bundled
+  // file of it has (scopeManifestOf: a `{"type":"module"}` marker such as `esm/package.json`), which
+  // Node and Metro's resolver read for the file. The skip keys on bundle membership, NOT this.hashes
+  // (which also holds lockfile-absorbed entries and is shared by reference across sidecars).
   includePackageJson() {
     // Gather first: addFile mutates this.modules, so don't addFile while iterating it.
     const realRoot = this.#host.realpath(this.root)
     const claims = this.#reasonClaims()
+    const bundled = (rel) => this.sources.has(rel) || this.resources.has(rel)
+    const found = new Map()
+    const exists = (rel) => found.get(rel) ?? found.set(rel, packageJSONStat(this.#host, resolve(this.root, rel))?.isFile() ?? false).get(rel)
+    // A manifest's bytes and parsed fields, or null where it's gone or malformed (skipped).
+    const read = (rel) => {
+      const buf = readModuleManifest({ baseDir: this.root, realBase: realRoot, rel, host: this.#host })
+      if (!buf) return null
+      try {
+        const pkg = JSON.parse(packageJSONText(buf))
+        return isPlainObject(pkg) ? { buf, pkg } : null
+      } catch {
+        return null
+      }
+    }
     const toAdd = []
     for (const [dir, module] of this.modules) {
-      const rel = moduleFileKey(dir, 'package.json')
-      if (this.sources.has(rel) || this.resources.has(rel)) continue // already in this bundle
-      const buf = readModuleManifest({ baseDir: this.root, realBase: realRoot, rel, host: this.#host })
-      if (!buf) continue
-      // Only carry a manifest whose on-disk identity still matches the bundled bucket: under
+      const own = moduleFileKey(dir, 'package.json')
+      // Only carry the manifests of a bucket whose on-disk identity still matches: under
       // bundle=add a dep may have drifted, and addFile -> #locateModule would crash on it.
-      let pkg
-      try { pkg = JSON.parse(buf.toString()) } catch { continue } // malformed manifest for an untouched bucket: skip
-      if (pkg?.name !== module.name || pkg?.version !== module.version) continue
-      // The manifest rides along BECAUSE some consumer bundled the bucket, so it inherits every
-      // consumer that claims a file of the bucket (#reasonClaims: not run for a file it merely
-      // fs-read for a plugin) -- nothing observed the manifest itself, but an unattributed file
-      // can't be sorted by provenance downstream. Derived BEFORE the adds below, so one fold's
-      // manifest can't count as another bucket's consumer evidence.
-      const files = Object.keys(module.files)
-      const consumers = [...claims].filter(([, claimed]) => files.some((f) => claimed.has(moduleFileKey(dir, f)))).map(([who]) => who)
-      toAdd.push({ rel, buf, consumers })
+      const manifest = read(own)
+      if (manifest === null || manifest.pkg.name !== module.name || manifest.pkg.version !== module.version) continue
+      // Each manifest -> the files it is the package.json of: the bucket's own, of every file; a
+      // nearer one, of the bundled files below it.
+      const files = Object.keys(module.files).map((f) => moduleFileKey(dir, f))
+      const scopes = new Map([[own, files]])
+      for (const file of files) {
+        const nearest = bundled(file) ? scopeManifestOf(file, dir, exists) : undefined
+        if (nearest !== undefined) (scopes.get(nearest) ?? scopes.set(nearest, []).get(nearest)).push(file)
+      }
+      for (const [rel, of] of scopes) {
+        if (bundled(rel)) continue // already in this bundle
+        const buf = rel === own ? manifest.buf : read(rel)?.buf
+        if (buf === undefined) continue
+        // The manifest rides along BECAUSE some consumer bundled its files, so it inherits every
+        // consumer that claims one (#reasonClaims: not run for a file it merely fs-read for a
+        // plugin) -- nothing observed the manifest itself, but an unattributed file can't be
+        // sorted by provenance downstream. Derived BEFORE the adds below, so one fold's manifest
+        // can't count as another bucket's consumer evidence.
+        const consumers = [...claims].filter(([, claimed]) => of.some((file) => claimed.has(file))).map(([who]) => who)
+        toAdd.push({ rel, buf, consumers })
+      }
     }
     for (const { rel, buf, consumers } of toAdd) {
       this.addFile(pathToFileURL(resolve(this.root, rel)).toString(), { source: buf, reason: null })

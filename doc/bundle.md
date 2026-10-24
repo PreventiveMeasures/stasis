@@ -37,7 +37,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
 | `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. See [Defines](#defines---define). |
-| `--package-json` | Also bundle each bundled module's `package.json`, even ones the scan never reached. |
+| `--package-json` | Also bundle each bundled module's `package.json`, and the nearest one above each bundled file (an `esm/package.json`), even ones the scan never reached. |
 | `--brotli-quality=0..11` | Compression level, default `9`. |
 
 ## Output
@@ -472,7 +472,11 @@ to it.
 
 `--package-json` bundles each bundled module's `package.json`, even one the
 scan never reached, so `stasis run --bundle=load` and `stasis prune` can read
-every dependency's manifest. It is the `packageJSON` key of
+every dependency's manifest. Where a bundled file has a nearer `package.json`
+inside its package, such as the `{"type":"module"}` marker of an
+`esm/package.json`, that one is bundled too: it is the one Node takes the
+file's `type` from, and Metro's resolver its fields, so the Metro plugin
+captures it under `stasis run --fs`. It is the `packageJSON` key of
 [`stasis.config.json`](file-formats.md#stasisconfigjson): `"packageJSON": true`
 there does the same without the flag, for every JS build.
 
