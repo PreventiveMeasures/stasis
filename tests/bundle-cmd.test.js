@@ -4398,7 +4398,7 @@ test('buildBundle --metro --babel resolves the Babel config\'s module-resolver a
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
   await t.assert.rejects(() => buildBundle(options), /unresolved import #local\/abc from index\.js/)
   const bundle = await buildBundle({ ...options, babel: true })
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'src/abc.js', 'src/ios/abc.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['babel.config.js', 'index.js', 'src/abc.js', 'src/ios/abc.js'])
   const edges = [...bundle.imports.values()].map((m) => m.get('index.js')).find(Boolean)
   t.assert.deepStrictEqual(Object.fromEntries(edges.get('#local/abc')), { android: 'src/abc.js', ios: 'src/ios/abc.js' })
 }))
@@ -4436,10 +4436,48 @@ cliTest('CLI: bundle --metro --babel resolves through the Babel config\'s aliase
   const r = await runCli(['bundle', '--metro', '--babel', '--platforms=ios', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   const bundle = Bundle.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf8'))
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'src/ios/abc.js'])
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['babel.config.js', 'index.js', 'src/ios/abc.js'])
   const refused = await runCli(['bundle', '--babel', '--mainFields=main', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.notEqual(refused.status, 0)
   t.assert.match(refused.stderr, /--babel is only valid with --metro/)
+}))
+
+test('buildBundle --metro carries the project\'s Metro and React Native configs, and with --babel(-aliases) its Babel config', withTmp(async (t, tmp) => {
+  // The Metro plugin's run loads them (Metro its config, the RN CLI its own, Metro's transformer the
+  // Babel one), though nothing the app imports reaches them: --metro carries them too, as Node loads
+  // them, attributed to its consumer.
+  jsProject(tmp, {
+    'index.js': 'export default 1\n',
+    'metro.config.js': 'module.exports = {}\n',
+    'react-native.config.cjs': 'module.exports = {}\n',
+    'babel.config.js': "module.exports = { presets: ['module:@react-native/babel-preset'] }\n",
+    'aliases.json': '{}',
+  }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, '.config'))
+  writeFileSync(join(tmp, '.config', 'metro.json'), '{}')
+  const metro = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
+  const configs = ['.config/metro.json', 'metro.config.js', 'react-native.config.cjs']
+
+  const bundle = await buildBundle(metro)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...configs, 'index.js'].toSorted(), 'no Babel config without --babel(-aliases)')
+  t.assert.equal(bundle.formats.get('metro.config.js'), 'commonjs')
+  t.assert.equal(bundle.formats.get('react-native.config.cjs'), 'commonjs')
+  t.assert.equal(bundle.formats.get('.config/metro.json'), 'json')
+  t.assert.equal(bundle.formats.get('index.js'), undefined, 'the app code Metro builds keeps no format')
+  t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), [...configs, 'index.js'].toSorted())
+
+  const aliased = await buildBundle({ ...metro, babelAliases: 'aliases.json' })
+  t.assert.deepStrictEqual([...aliased.sources.keys()].toSorted(), [...configs, 'babel.config.js', 'index.js'].toSorted())
+  t.assert.equal(aliased.formats.get('babel.config.js'), 'commonjs')
+  t.assert.ok(!aliased.sources.has('aliases.json'), 'the aliases file itself is still not carried')
+
+  // A `"type": "module"` project's .js config is an ES module, as Node loads it.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', type: 'module' }))
+  t.assert.equal((await buildBundle(metro)).formats.get('metro.config.js'), 'module')
+
+  // Not without --metro.
+  const plain = await buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'] })
+  t.assert.deepStrictEqual([...plain.sources.keys()], ['index.js'])
 }))
 
 test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does', withTmp(async (t, tmp) => {

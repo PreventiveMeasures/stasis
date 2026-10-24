@@ -90,8 +90,8 @@ test('buildBundle --metro --babel-aliases resolves a JSON file\'s aliases as --b
   await t.assert.rejects(() => buildBundle(options), /unresolved import #local\/abc from index\.js/u)
   const aliased = await buildBundle({ ...options, babelAliases: 'aliases.json' })
   t.assert.deepStrictEqual(edgesOf(aliased), { '#local/abc': 'src/abc.js', '@lib/util': 'lib/util.js' })
-  // Not carried: only the graph's files are.
-  t.assert.deepStrictEqual([...aliased.sources.keys()].toSorted(), ['index.js', 'lib/util.js', 'src/abc.js'])
+  // The aliases file isn't carried; the graph's files are, and the project's Babel config, as with --babel.
+  t.assert.deepStrictEqual([...aliased.sources.keys()].toSorted(), ['babel.config.js', 'index.js', 'lib/util.js', 'src/abc.js'])
   t.assert.equal(aliased.serialize(), (await buildBundle({ ...options, babel: true })).serialize())
 }))
 
