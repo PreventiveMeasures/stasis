@@ -18,7 +18,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
@@ -1030,6 +1030,55 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     t.assert.ok(lock.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'].startsWith('sha512-'))
     t.assert.equal(lock.modules['node_modules/metro-runtime'], undefined, 'unresolvable auto-include is skipped')
+  }))
+
+  // Metro's transform plugins, as metro-transform-plugins lays them out in the node_modules `dir`: its
+  // index names each for the transform cache key, and a build loads one only as its options call for it.
+  // import-export-plugin.js marks, beside the package, that it was loaded.
+  const writeTransformPlugins = (dir) => {
+    const pkg = join(dir, 'metro-transform-plugins')
+    mkdirSync(join(pkg, 'src'), { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'metro-transform-plugins', version: '0.83.8', main: 'src/index.js' }))
+    writeFileSync(join(pkg, 'src', 'index.js'), "module.exports = {\n  getTransformPluginCacheKeyFiles: () => [require.resolve(__filename), require.resolve('./import-export-plugin'), require.resolve('./inline-plugin')],\n}\n")
+    writeFileSync(join(pkg, 'src', 'import-export-plugin.js'), "require('node:fs').writeFileSync(require('node:path').join(__dirname, '..', '..', 'loaded'), '')\nmodule.exports = () => ({})\n")
+    writeFileSync(join(pkg, 'src', 'inline-plugin.js'), 'module.exports = () => ({})\n')
+  }
+
+  test('transform plugins: every one Metro names for its cache key is loaded and carried, under run, whether a build uses it or not', withTmp(async (t, tmp) => {
+    // Installed in the project, and only beside metro's transform worker, as a pnpm install links it.
+    const layouts = [
+      ['node_modules', 'node_modules/metro-transform-plugins'],
+      ['node_modules/metro/node_modules/metro-transform-worker/node_modules', 'node_modules/metro/node_modules/metro-transform-worker/node_modules/metro-transform-plugins'],
+    ]
+    await Promise.all(layouts.map(async ([nodeModules, pkgDir], i) => {
+      const dir = join(tmp, `case${i}`)
+      cpSync(fullFixture, dir, { recursive: true })
+      rmSync(join(dir, 'stasis.lock.json'))
+      writeTransformPlugins(join(dir, nodeModules))
+      for (const name of ['metro', 'metro/node_modules/metro-transform-worker']) {
+        mkdirSync(join(dir, 'node_modules', name), { recursive: true })
+        writeFileSync(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({ name: basename(name), version: '0.83.8', main: 'index.js' }))
+        writeFileSync(join(dir, 'node_modules', name, 'index.js'), 'module.exports = {}\n')
+      }
+      const bundlePath = join(dir, 'snapshot.br')
+      const r = await run('src/entry.js', {
+        cwd: dir,
+        env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_BUNDLE: 'add', EXODUS_STASIS_BUNDLE_FILE: bundlePath },
+      })
+      t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+      // Loaded, as Metro loads one, so that under `stasis run` the loader records what it imports.
+      t.assert.ok(existsSync(join(dir, nodeModules, 'loaded')), 'the capture loads each plugin')
+      const lock = JSON.parse(readFileSync(join(dir, 'stasis.lock.json'), 'utf-8'))
+      const plugins = ['src/import-export-plugin.js', 'src/index.js', 'src/inline-plugin.js']
+      t.assert.deepStrictEqual(Object.keys(lock.modules[pkgDir].files).filter((f) => f !== 'package.json').toSorted(), plugins, pkgDir)
+      // Node modules, in the format Node loads them in, and the build's toolchain: run's, not metro's.
+      for (const f of plugins) t.assert.equal(lock.formats[`${pkgDir}/${f}`], 'commonjs')
+      const { reason } = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+      for (const f of plugins) {
+        t.assert.ok(reason.run.includes(`${pkgDir}/${f}`), `${f} is run's`)
+        t.assert.ok(!reason.metro.includes(`${pkgDir}/${f}`), `${f} is not metro's`)
+      }
+    }))
   }))
 
   test('auto-includes: frozen verifies them and rejects a tampered setup_env.sh', withTmp(async (t, tmp) => {

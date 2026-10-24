@@ -3,7 +3,7 @@ import { isUtf8 } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
@@ -39,6 +39,23 @@ const AUTO_INCLUDES = [
   'metro-runtime/src/modules/asyncRequire.js',
   '@react-native-community/cli/setup_env.sh',
 ]
+
+// Metro's own transform plugins, as its transform worker names them for its cache key: the file
+// `metro-transform-plugins` resolves to from the project, else through metro and its transform
+// worker, which depend on it (a pnpm install links it only beside them). -> [] where none resolves
+function metroTransformPluginFiles(projectDir) {
+  for (const chain of [['metro-transform-plugins'], ['metro', 'metro-transform-worker', 'metro-transform-plugins']]) {
+    let file
+    try {
+      for (const name of chain) file = require.resolve(name, { paths: [file === undefined ? projectDir : dirname(file)] })
+    } catch {
+      continue
+    }
+    const { getTransformPluginCacheKeyFiles } = require(file)
+    return typeof getTransformPluginCacheKeyFiles === 'function' ? getTransformPluginCacheKeyFiles() : []
+  }
+  return []
+}
 
 // The worker-side toolchain that only Metro's transform workers load, named in both the
 // --child-process assert and the transform-cache warning so the two can't describe different sets.
@@ -252,17 +269,18 @@ export class StasisMetro {
     // AFTER the graph so #seen already holds graph modules -- an auto-include that landed in the
     // graph (asyncRequire, when the app uses dynamic import()) is deduped, not re-recorded.
     this.#captureAutoIncludes()
+    this.#captureTransformPlugins()
     // AFTER the graph + auto-includes (same dedupe reason): the native pass only adds the native
     // build-input surface (podspec/gradle/sources) that no module graph carries.
     this.#captureNativeModules()
   }
 
-  // Shared epilogue for the classify-driven capture paths: record under the given format/resource.
-  // `format` null/undefined lets addFile pick (loader format for JS unless `inferFormat` is false,
-  // byte-derived for a resource); addFile already asserts UTF-8 for a non-resource (code) source, so
-  // no guard is needed here.
-  #recordCapture(full, source, { format, resource, inferFormat = true }) {
-    this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason: 'metro' })
+  // Shared epilogue for the classify-driven capture paths: record under the given format/resource,
+  // attributed to `reason`. `format` null/undefined lets addFile pick (loader format for JS unless
+  // `inferFormat` is false, byte-derived for a resource); addFile already asserts UTF-8 for a
+  // non-resource (code) source, so no guard is needed here.
+  #recordCapture(full, source, { format, resource, inferFormat = true, reason = 'metro' }) {
+    this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason })
   }
 
   // Attest the AUTO_INCLUDES list. Per entry, skip: unresolvable, already-seen, or resolving
@@ -290,6 +308,31 @@ export class StasisMetro {
       // JS (asyncRequire.js) is code Metro builds, so it takes no format, as the graph's doesn't.
       const format = classifyFormat(modPath, { content: source })
       this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false })
+    }
+  }
+
+  // Attest each of Metro's own transform plugins (metroTransformPluginFiles). Its transform worker
+  // hashes every one into its cache key, but loads one only as the build's options call for it
+  // (import-export-plugin under `experimentalImportSupport`, inline-requires-plugin under
+  // `inlineRequires`, constant-folding-plugin outside dev, normalizePseudoGlobals when minifying), so
+  // a capture loads them all, as Metro would: under `stasis run` the loader then records each with
+  // what it imports, so a bundle builds under any of those options. Each is recorded besides, as the
+  // Node module it is, where no loader records it, attributed to `run` as one Metro loads is: the
+  // build's toolchain, none of it the app's. One outside the project root is passed over.
+  #captureTransformPlugins() {
+    for (const file of metroTransformPluginFiles(this.#projectDir)) {
+      if (this.#seen.has(file)) continue
+      try {
+        this.#state.relative(file)
+      } catch {
+        continue
+      }
+      this.#seen.add(file)
+      try {
+        require(file)
+      } catch { /* one that can't load can't run under Metro either: its bytes are still recorded */ }
+      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
+      this.#recordCapture(file, realReadFileSync(file), { reason: 'run' })
     }
   }
 
