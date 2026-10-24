@@ -4449,20 +4449,20 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   jsProject(tmp, {
     'index.js': 'export default 1\n',
     'metro.config.js': 'module.exports = {}\n',
-    'react-native.config.cjs': 'module.exports = {}\n',
+    'react-native.config.js': 'module.exports = {}\n',
     'babel.config.js': "module.exports = { presets: ['module:@react-native/babel-preset'] }\n",
     'aliases.json': '{}',
   }, { name: 'app', version: '0.0.0' })
+  // Only those names: not the `.config/metro.*` metro-config also searches, hidden.
   mkdirSync(join(tmp, '.config'))
-  writeFileSync(join(tmp, '.config', 'metro.json'), '{}')
+  writeFileSync(join(tmp, '.config', 'metro.js'), 'module.exports = {}\n')
   const metro = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
-  const configs = ['.config/metro.json', 'metro.config.js', 'react-native.config.cjs']
+  const configs = ['metro.config.js', 'react-native.config.js']
 
   const bundle = await buildBundle(metro)
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...configs, 'index.js'].toSorted(), 'no Babel config without --babel(-aliases)')
   t.assert.equal(bundle.formats.get('metro.config.js'), 'commonjs')
-  t.assert.equal(bundle.formats.get('react-native.config.cjs'), 'commonjs')
-  t.assert.equal(bundle.formats.get('.config/metro.json'), 'json')
+  t.assert.equal(bundle.formats.get('react-native.config.js'), 'commonjs')
   t.assert.equal(bundle.formats.get('index.js'), undefined, 'the app code Metro builds keeps no format')
   t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), [...configs, 'index.js'].toSorted())
 

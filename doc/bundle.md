@@ -297,11 +297,10 @@ contributes nothing unless the app's `package.json` lists it.
 
 It carries the project's Metro and React Native configs too, which the Metro
 plugin's run loads though nothing the app imports reaches them: the
-`metro.config.*` or `.config/metro.*` and the `react-native.config.*` in the
-cwd (`.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, `.mts`, and `.json` for Metro's).
-With `--babel` or `--babel-aliases`, it carries the `babel.config.(js|cjs|mjs|json)`
-there as well. Each is carried as Node loads it (`commonjs` or `module` by the
-package's `type`, `json`), not run, and what it imports isn't followed.
+`metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
+`--babel-aliases`, it carries the `babel.config.js` there as well. Each is
+carried as Node loads it (`commonjs` or `module` by the package's `type`), not
+run, and what it imports isn't followed.
 
 A disabled import (a `browser`/`react-native` map entry set to `false`)
 resolves, as Metro resolves it, to Metro's own empty module: the project's

@@ -130,12 +130,9 @@ export function createBabelConfigTransform({ projectDir }) {
   }
 }
 
-// The project's Babel config files --babel looks for, in the order it takes the first there.
-export const BABEL_CONFIG_FILES = ['babel.config.js', 'babel.config.cjs', 'babel.config.mjs', 'babel.config.json']
-
 // The project's babel.config.(js|cjs|mjs|json), the one --babel takes.
 function findBabelConfig(projectDir, command) {
-  const configFile = BABEL_CONFIG_FILES
+  const configFile = ['babel.config.js', 'babel.config.cjs', 'babel.config.mjs', 'babel.config.json']
     .map((name) => join(projectDir, name))
     .find((file) => existsSync(file))
   if (!configFile) {

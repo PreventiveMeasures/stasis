@@ -12,13 +12,13 @@ import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
-import { BABEL_CONFIG_FILES, createAliases, createBabelAliases } from '../babel.js'
+import { createAliases, createBabelAliases } from '../babel.js'
 import { linkedNativePackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, pathExt, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -962,11 +962,9 @@ const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 
 // The config files a React Native app's build loads from its project root, though nothing the app
-// imports reaches them: Metro's (as metro-config searches for one, `package.json` aside) and the
-// React Native CLI's.
-const CONFIG_EXTS = ['js', 'cjs', 'mjs', 'json', 'ts', 'cts', 'mts']
-const METRO_CONFIG_FILES = ['metro.config', '.config/metro'].flatMap((name) => CONFIG_EXTS.map((ext) => `${name}.${ext}`))
-const REACT_NATIVE_CONFIG_FILES = CONFIG_EXTS.filter((ext) => ext !== 'json').map((ext) => `react-native.config.${ext}`)
+// imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
+const METRO_CONFIG_FILES = ['metro.config.js', 'react-native.config.js']
+const BABEL_CONFIG_FILE = 'babel.config.js'
 // What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
 // `default`, and so `--mainFields` too: `module`, the bundler-only condition a package's ESM build
 // sits under, from an import and a require alike. (esbuild drops it when given conditions of its
@@ -1359,16 +1357,14 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // And the project's configs the Metro plugin's run loads, which nothing the app imports reaches:
     // Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel config Metro's
     // transformer runs. Each file itself, in the format Node loads it in, not what it imports.
-    const configs = [...METRO_CONFIG_FILES, ...REACT_NATIVE_CONFIG_FILES, ...(babel || aliasesFile !== undefined ? BABEL_CONFIG_FILES : [])]
+    const configs = [...METRO_CONFIG_FILES, ...(babel || aliasesFile !== undefined ? [BABEL_CONFIG_FILE] : [])]
     for (const rel of configs) {
       const abs = join(baseDir, rel)
       if (sources.has(rel) || !host.stat(abs)?.isFile()) continue
       assertRealPathWithinBase(realBase, baseDir, rel, host)
       const buf = host.readFile(abs)
       if (!isUtf8(buf)) throw new Error(`config is not valid UTF-8: ${rel}`)
-      const ext = pathExt(rel)
-      const format = ext === 'js' || ext === 'ts' ? `${packageType(abs, host) === 'module' ? 'module' : 'commonjs'}${ext === 'ts' ? '-typescript' : ''}` : classifyFormat(rel)
-      put(rel, buf.toString('utf8'), format, buf)
+      put(rel, buf.toString('utf8'), packageType(abs, host) === 'module' ? 'module' : 'commonjs', buf)
     }
   }
 
