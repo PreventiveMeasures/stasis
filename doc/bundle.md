@@ -322,7 +322,10 @@ in does not. Not with `github-bundle`.
 
 The Metro plugin keys its edges the same way: `withStasis()` runs Metro's
 transformer through stasis's, which records each import as written, before any
-Babel plugin rewrites it.
+Babel plugin rewrites it. An import only Babel or Metro adds (a `@babel/runtime`
+helper, `react/jsx-runtime`, Metro's `asyncRequire`) is written nowhere in the
+source, so the plugin records no edge for it, as the static build doesn't. It
+still carries the file, as it carries every module of Metro's graph.
 
 `--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the
 project instead, running nothing: the object a `babel-plugin-module-resolver`

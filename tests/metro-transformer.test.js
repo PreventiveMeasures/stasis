@@ -273,8 +273,9 @@ const mockWorker = join(here, 'metro-mock-worker.cjs')
 // is done (Program exit), as @babel/plugin-transform-modules-commonjs does in the RN preset -- so
 // the import declarations are gone by the time Babel returns. The type imports are aliased to the
 // file index.js requires by path, which they must not count as written through the alias.
-// `lowerAmongPlugins` lists the lowering first among the config's own plugins instead, so that it
-// runs before the stasis plugin Metro passes.
+// A plugin adds imports as Babel's helpers and the JSX runtime are added: a helper the source never
+// names, and ./src/def, which index.js requires itself. `lowerAmongPlugins` lists the lowering first
+// among the config's own plugins instead, so that it runs before the stasis plugin Metro passes.
 const babelAliasProject = (tmp, { lowerAmongPlugins = false } = {}) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'babel-alias', version: '0.0.0' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
@@ -284,6 +285,15 @@ const stripTypes = () => ({
   visitor: {
     ImportDeclaration(path) {
       if (typesOnly(path.node)) path.remove()
+    },
+  },
+})
+const addImports = ({ types: t }) => ({
+  visitor: {
+    Program(path) {
+      for (const source of ['@babel/runtime/helpers/interopRequireDefault', './src/def']) {
+        path.unshiftContainer('body', t.importDeclaration([], t.stringLiteral(source)))
+      }
     },
   },
 })
@@ -301,10 +311,10 @@ const lower = ({ types: t }) => ({
 })
 module.exports = ${lowerAmongPlugins ? `{
   parserOpts: { plugins: ['flow'] },
-  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports],
 }` : `{
   parserOpts: { plugins: ['flow'] },
-  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes],
+  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports],
   presets: [() => ({ plugins: [lower] })],
 }`}
 `)
@@ -315,13 +325,21 @@ module.exports = ${lowerAmongPlugins ? `{
     "import { type Def2 } from '#local/def'",
     "const def = require('./src/def')",
     "const ghi = require('#local/ghi')",
-    'export default [abc, same, def, ghi]',
+    'const jkl = require(`./src/jkl`)',
+    "const mno = require('./src/' + 'mno')",
+    "const pqrPath = './src/pqr'",
+    'const pqr = require(pqrPath)',
+    'export default [abc, same, def, ghi, jkl, mno, pqr]',
     '',
   ].join('\n'))
+  writeFileSync(join(tmp, 'bare.js'), 'export default 0\n')
   mkdirSync(join(tmp, 'src'))
   writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
   writeFileSync(join(tmp, 'src', 'def.js'), 'module.exports = 2\n')
   writeFileSync(join(tmp, 'src', 'ghi.js'), 'module.exports = 3\n')
+  writeFileSync(join(tmp, 'src', 'jkl.js'), 'module.exports = 4\n')
+  writeFileSync(join(tmp, 'src', 'mno.js'), 'module.exports = 5\n')
+  writeFileSync(join(tmp, 'src', 'pqr.js'), 'module.exports = 6\n')
   symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
 }
 
@@ -337,20 +355,31 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
 ]) {
   test(`a dependency Babel rewrote carries the specifiers written in the source (${variant})`, withTmp((t, tmp) => {
     babelAliasProject(tmp, { lowerAmongPlugins })
-    const r = transform(['index.js'], {
+    const r = transform(['index.js', 'bare.js'], {
       cwd: tmp,
       env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver), ...(babelAsync && { STASIS_TEST_BABEL_ASYNC: '1' }) },
     })
     t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
-    const [out] = JSON.parse(r.stdout)
+    const [out, bare] = JSON.parse(r.stdout)
     // The project's transformer runs on its own config, the stasis Babel transformer standing in.
     t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
     // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
-    // './src/def' only for the path (the type imports are erased).
+    // './src/def' only for the path (the type imports are erased), which the source writes though a
+    // plugin adds it too, and Metro evaluates a template, a concatenation or a constant the source
+    // writes as it does a literal. The helper only a plugin adds is marked so.
     t.assert.deepStrictEqual(out.dependencies, [
-      { name: './src/abc', data: { key: './src/abc' }, stasisAsWritten: ['#local/abc', './src/abc'] },
       { name: './src/def', data: { key: './src/def' } },
+      { name: '@babel/runtime/helpers/interopRequireDefault', data: { key: '@babel/runtime/helpers/interopRequireDefault' }, stasisInserted: true },
+      { name: './src/abc', data: { key: './src/abc' }, stasisAsWritten: ['#local/abc', './src/abc'] },
       { name: './src/ghi', data: { key: './src/ghi' }, stasisAsWritten: ['#local/ghi'] },
+      { name: './src/jkl', data: { key: './src/jkl' } },
+      { name: './src/mno', data: { key: './src/mno' } },
+      { name: './src/pqr', data: { key: './src/pqr' } },
+    ])
+    // A file writing no import of its own: whatever a plugin adds is marked.
+    t.assert.deepStrictEqual(bare.dependencies, [
+      { name: './src/def', data: { key: './src/def' }, stasisInserted: true },
+      { name: '@babel/runtime/helpers/interopRequireDefault', data: { key: '@babel/runtime/helpers/interopRequireDefault' }, stasisInserted: true },
     ])
   }))
 }

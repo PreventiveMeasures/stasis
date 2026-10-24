@@ -88,14 +88,18 @@ function resolveBabelTransformer(base, path) {
   return isAbsolute(path) ? path : createRequire(base.file).resolve(path)
 }
 
-// Each dependency named by a specifier Babel rewrote, with the ones written in the source. One
-// Metro dependency can stand for several, written apart and rewritten alike (`#local/abc` and
-// `./src/abc`); a dependency written as Metro names it is left as is.
+// Each dependency as the source wrote it. One named by a specifier Babel rewrote carries the ones
+// written in the source: one Metro dependency can stand for several, written apart and rewritten
+// alike (`#local/abc` and `./src/abc`). One no specifier in the source names carries
+// `stasisInserted`: Babel added it (a helper from @babel/runtime, the JSX runtime), or Metro did (its
+// asyncRequire for an `import()`, an asset's registry). A dependency written as Metro names it is
+// left as is.
 function withAsWritten(result, asWritten) {
-  if (asWritten.size === 0 || !Array.isArray(result?.dependencies)) return result
+  if (!Array.isArray(result?.dependencies)) return result
   const dependencies = result.dependencies.map((dep) => {
     const written = asWritten.get(dep.name)
-    if (written === undefined || (written.size === 1 && written.has(dep.name))) return dep
+    if (written === undefined) return { ...dep, stasisInserted: true }
+    if (written.size === 1 && written.has(dep.name)) return dep
     return { ...dep, stasisAsWritten: [...written] }
   })
   return { ...result, dependencies }

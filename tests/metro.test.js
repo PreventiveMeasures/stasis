@@ -128,6 +128,32 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
 
+  test('a dependency Babel or Metro added is no edge, its file still carried, and load runs without one', withTmp(async (t, tmp) => {
+    // A Babel helper (@babel/runtime/helpers/*), the JSX runtime, Metro's asyncRequire: the source
+    // writes none, so `stasis bundle --metro` records none, and neither does the capture.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    writeFileSync(join(tmp, 'src', 'helper.js'), 'export default (x) => x\n')
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['@babel/runtime/helpers/interopRequireDefault', 'src/helper.js', { stasisInserted: true }]] },
+        { path: 'src/hello.js', deps: [] },
+        { path: 'src/helper.js', deps: [] },
+      ],
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    const env = { EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_BUNDLE_FILE: bundlePath }
+    const r = await run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_BUNDLE: 'add' }, graph })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.deepStrictEqual(lock.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js' })
+    t.assert.ok(lock.sources['.'].files['src/helper.js'].startsWith('sha512-'), 'the helper is carried')
+
+    // Under load, Metro resolving it finds no edge in the bundle, and that is no miss.
+    const load = await run('src/entry.js', { cwd: tmp, env: { ...env, EXODUS_STASIS_LOCK: 'frozen', EXODUS_STASIS_BUNDLE: 'load' }, graph })
+    t.assert.equal(load.status, 0, `stderr: ${load.stderr}`)
+  }))
+
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
