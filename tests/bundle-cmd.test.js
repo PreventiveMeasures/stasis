@@ -30,6 +30,7 @@ const rustFixtures = join(here, 'fixtures', 'rust-bundle')
 const phpFixtures = join(here, 'fixtures', 'php-bundle')
 const conditionsFixture = join(here, 'fixtures', 'bundle-conditions')
 const fieldsFixture = join(here, 'fixtures', 'resolve-fields')
+const contextMissFixture = join(here, 'fixtures', 'bundle-context-miss')
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-cmd-'))
@@ -2313,6 +2314,35 @@ cliTest('CLI: bundle --conditions --lockfile attests the conditions-selected res
   // The companion lockfile records the react-native target, not the default branch.
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
   t.assert.equal(lock.imports['*']['src/entry.js'].rnpkg, 'node_modules/rnpkg/rn.js')
+}))
+
+cliTest('CLI: bundle refuses a specifier one context resolves and the other fails', withTmp(async (t, tmp) => {
+  // An `exports` map with a `require` branch alone (or an `import` branch alone): Node serves the
+  // one context and fails the other. A bundle can't record that miss -- under --bundle=load,
+  // getImport's fallback would serve the failing context the other's file -- so the build refuses.
+  // Read in place: the builds' --output is in tmp, so a regression writes nothing into the fixture.
+  const node = async (entry) => spawnAsync(process.execPath, [entry], { cwd: contextMissFixture, encoding: 'utf-8', env: cleanEnv })
+  t.assert.equal((await node('src/reqonly.js')).stdout, 'cjs\nimport failed ERR_PACKAGE_PATH_NOT_EXPORTED\n')
+  t.assert.equal((await node('src/imponly.js')).stdout, 'require failed ERR_PACKAGE_PATH_NOT_EXPORTED\nimport ok esm\n')
+
+  const out = join(tmp, 'stasis.code.br')
+  const req = await runCli(['bundle', `--output=${out}`, 'src/reqonly.js'], { cwd: contextMissFixture })
+  t.assert.notEqual(req.status, 0)
+  t.assert.match(req.stderr, /reqonly from src\/reqonly\.js resolves to node_modules\/reqonly\/cjs\.js for its require\(\) but fails for its import\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
+  const imp = await runCli(['bundle', `--output=${out}`, 'src/imponly.js'], { cwd: contextMissFixture })
+  t.assert.notEqual(imp.status, 0)
+  t.assert.match(imp.stderr, /imponly from src\/imponly\.js resolves to node_modules\/imponly\/esm\.mjs for its import\(\) but fails for its require\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
+  t.assert.ok(!existsSync(out))
+
+  // One context alone is no split: the require() bundles, and loads from the bundle's own bytes
+  // (in a copy, whose node_modules is then removed).
+  cpSync(contextMissFixture, tmp, { recursive: true })
+  const build = await runCli(['bundle', 'src/require.js'], { cwd: tmp })
+  t.assert.equal(build.status, 0, build.stderr)
+  rmSync(join(tmp, 'node_modules'), { recursive: true })
+  const load = await runCli(['run', '--lock=none', '--bundle=load', 'src/require.js'], { cwd: tmp })
+  t.assert.equal(load.status, 0, load.stderr)
+  t.assert.equal(load.stdout, 'cjs\n')
 }))
 
 // --- Flow-stripping JS bundling (`--flow`) ---
