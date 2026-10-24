@@ -32,7 +32,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
 | `--babel-aliases=path.json` | With `--metro`: resolve through the import aliases a JSON file of the project lists, as `--babel` would, without running anything. See [Metro](#metro---metro). |
 | `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. See [JSX and Flow](#jsx-and-flow). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. Needs the optional `flow-remove-types` dependency. |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. See [JSX and Flow](#jsx-and-flow). |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
@@ -104,16 +104,16 @@ With it:
   each of them would.
 - An entry it names is built with its options there, and no flag but those four
   and the consent below may be given with it: it is set there instead.
-- `babel`, `metro-resolver`, `flow`, `cargo` and `cargo-target` run a program
-  (the project's Babel config, its `metro-resolver`, the `flow-remove-types` it
-  installs, `cargo` and what its `.cargo/config.toml` names, `rustc`), so set
-  there they take effect only with their flag given too, `cargo-target` with
-  the same value (`--cargo-target=host`), as consent: the config can't make a
-  bare `stasis bundle` run anything. An entry setting one fails without its
+- `babel`, `metro-resolver`, `cargo` and `cargo-target` run a program (the
+  project's Babel config, its `metro-resolver`, `cargo` and what its
+  `.cargo/config.toml` names, `rustc`), so set there they take effect only
+  with their flag given too, `cargo-target` with the same value
+  (`--cargo-target=host`), as consent: the config can't make a bare
+  `stasis bundle` run anything. An entry setting one fails without its
   flag, and its flag fails where no entry given sets it; given, it applies to
   the entries setting it alone. So entries setting different `cargo-target`s
-  are bundled apart. `babel-aliases` reads a JSON file and runs nothing, so it
-  needs no consent.
+  are bundled apart. `babel-aliases` reads a JSON file and runs nothing, and
+  `flow` runs stasis's own `flow-remove-types`, so neither needs consent.
 - The entries given are all named there, or none is, the two never mixed. Where
   none is, whatever else it names, they are built with the flags exactly as
   without it.
@@ -129,8 +129,8 @@ With it:
 `stasis run` takes nothing from it.
 
 ```sh
-stasis bundle --metro-resolver --flow   # bundles index.js with --metro and bin.js without
-stasis bundle --metro-resolver --flow --output=app.br index.js
+stasis bundle --metro-resolver   # bundles index.js with --metro and bin.js without
+stasis bundle --metro-resolver --output=app.br index.js
 ```
 
 ## Resolution
@@ -405,8 +405,9 @@ is stored verbatim, for `stasis build --loader=.js:jsx` to transform later: see
 
 `--flow` strips Flow type syntax from a `.js`/`.cjs`/`.mjs` file oxc can't
 parse and retries, so the import graph resolves; the stored source stays the
-original bytes. It needs the optional `flow-remove-types` dependency, and
-combines with `--jsx`, `--conditions`, `--mainFields` and `--metro`.
+original bytes. It strips with `flow-remove-types`, a dependency of stasis
+resolved from where stasis is installed, never from the project being bundled,
+and combines with `--jsx`, `--conditions`, `--mainFields` and `--metro`.
 
 ## Defines (`--define`)
 

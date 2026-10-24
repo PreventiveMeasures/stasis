@@ -154,11 +154,6 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
   // Given, and set for some: it applies to those alone.
   const plan = bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: { 'metro-resolver': true }, config })
   t.assert.deepStrictEqual(plan.builds.map((b) => [b.entries, b.metroResolver]), [[['index.js'], true], [['cli.js'], false]])
-  // flow loads the flow-remove-types the project installs (stasis's peer), so it needs consent too.
-  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { flow: true } } } })
-  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: {}, config: readConfigEntries(tmp) }),
-    { message: 'stasis.config.json: entries "index.js" sets flow, which runs the flow-remove-types the project installs (stasis\'s peer): pass --flow to allow it' })
-  t.assert.equal(bundlePlan({ cwd: tmp, entries: ['index.js'], values: { flow: true }, config: readConfigEntries(tmp) }).builds[0].flow, true)
   // cargo-target runs rustc: its consent is the flag with the same value.
   writeTree(tmp, { 'stasis.config.json': { entries: { 'a.rs': { 'cargo-target': 'host' }, 'b.rs': {} } } })
   const rust = readConfigEntries(tmp)
@@ -168,6 +163,16 @@ test('bundlePlan takes an option that runs the project\'s code from the config o
     { message: "--cargo-target=aarch64-apple-darwin is given, but stasis.config.json's entries set cargo-target=aarch64-apple-darwin for none of a.rs, b.rs" })
   const targeted = bundlePlan({ cwd: tmp, entries: ['a.rs', 'b.rs'], values: { 'cargo-target': 'host' }, config: rust })
   t.assert.deepStrictEqual(targeted.builds.map((b) => [b.entries, b.cargoTarget]), [[['a.rs'], 'host'], [['b.rs'], null]])
+}))
+
+test('bundlePlan takes an entry\'s flow from the config alone, as stasis strips with its own flow-remove-types', withTmp((t, tmp) => {
+  project(tmp, { 'index.js': { flow: true }, 'cli.js': {} })
+  const config = readConfigEntries(tmp)
+  const plan = bundlePlan({ cwd: tmp, entries: ['index.js', 'cli.js'], values: {}, config })
+  t.assert.deepStrictEqual(plan.builds.map((b) => [b.entries, b.flow]), [[['index.js'], true], [['cli.js'], false]])
+  // It is an entry's option like any other: set there, not as a flag.
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['index.js'], values: { flow: true }, config }),
+    { message: "--flow can't be given for index.js, whose options stasis.config.json's entries set: set it there" })
 }))
 
 test('bundlePlan takes an entry\'s babel-aliases from the config alone, as reading a JSON file runs nothing', withTmp((t, tmp) => {
@@ -272,6 +277,23 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
   const plain = await runCli(['bundle', '--mainFields=main', '--output=plain.br', 'cli.js'], tmp)
   t.assert.equal(plain.status, 0, plain.stderr)
   t.assert.deepStrictEqual(Object.keys(readBundle(join(tmp, 'plain.br')).reason), ['bundle'])
+}))
+
+test('CLI: stasis bundle strips an entry\'s Flow types with stasis\'s own flow-remove-types, no --flow given', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '1.0.0', type: 'module' },
+    'index.js': 'import type { T } from "./types.js"\nimport { dep } from "./dep.js"\nexport const v: number = dep\n',
+    'dep.js': 'export const dep = 1\n',
+    'types.js': 'export const T = 1\n',
+    'stasis.config.json': { entries: { 'index.js': { flow: true } } },
+    // The project's own copy, which marks itself loaded: never the one stasis runs.
+    'node_modules/flow-remove-types/package.json': { name: 'flow-remove-types', version: '2.0.0', main: 'index.js' },
+    'node_modules/flow-remove-types/index.js': "require('fs').writeFileSync(require('path').join(__dirname, 'loaded'), '')\nmodule.exports = () => { throw new Error('the project copy') }\n",
+  })
+  const r = await runCli(['bundle'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual(readBundle(join(tmp, 'stasis.code.br')).reason, { bundle: ['dep.js', 'index.js'] })
+  t.assert.throws(() => readFileSync(join(tmp, 'node_modules/flow-remove-types/loaded')), { code: 'ENOENT' })
 }))
 
 test('readConfigEntries reads an entry\'s define as the --define flags it gives, each one whole', withTmp((t, tmp) => {

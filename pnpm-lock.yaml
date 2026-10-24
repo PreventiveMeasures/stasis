@@ -52,9 +52,6 @@ importers:
       file-loader:
         specifier: ^6.2.0
         version: 6.2.0(webpack@4.47.0)
-      flow-remove-types:
-        specifier: ^2.322.0
-        version: 2.322.0
       metro-resolver:
         specifier: ^0.87.0
         version: 0.87.0
@@ -107,7 +104,7 @@ importers:
         specifier: '*'
         version: 0.27.3
       flow-remove-types:
-        specifier: '*'
+        specifier: ^2.322.0
         version: 2.322.0
       oxc-parser:
         specifier: ^0.152.0
