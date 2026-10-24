@@ -454,11 +454,17 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`).
   Statically built JS bundles use `"*"` per edge, except that a
   `(parent, specifier)` resolving differently under the require() and import()
-  contexts keeps each target under its real condition key. Under
-  `bundle = load`, a lookup missing its exact key takes the `"*"` one, else the
-  edge's one target under any key; where those diverge, the target the keys of
-  its own context (those naming `require`, or `import`) agree on, so a
-  `--conditions` build loads under plain node.
+  contexts keeps each target under its real condition key, as does one that
+  only one of them resolves (or keeps within the root). Under `bundle = load`,
+  a lookup missing its exact key takes the `"*"` one, else the edge's one
+  target under the keys related to its conditions; where those diverge, the
+  target the keys of its own context (those naming `require`, or `import`)
+  agree on, so a `--conditions` build loads under plain node. Related is any
+  key, but that for a bare or `#` specifier, whose resolution reads conditions,
+  a key naming the other context is not: Node asks an edge under its own
+  context's conditions on every version and code path, the rest varying with
+  its flags alone (`--conditions`, `--no-addons`, require(esm) turned off).
+  Lookups that name no conditions (the bundler plugins', Metro's) take any key.
 - When a `stasis.lock.json` is loaded alongside, the bundle's `entries`,
   module/source dirs, `name`/`version`, and per-module file lists must match; each
   loaded source is hash-verified against the lockfile.

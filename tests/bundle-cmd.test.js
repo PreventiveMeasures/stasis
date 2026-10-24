@@ -32,6 +32,7 @@ const conditionsFixture = join(here, 'fixtures', 'bundle-conditions')
 const fieldsFixture = join(here, 'fixtures', 'resolve-fields')
 const contextMissFixture = join(here, 'fixtures', 'bundle-context-miss')
 const contextDivergeFixture = join(here, 'fixtures', 'bundle-context-diverge')
+const contextOutsideFixture = join(here, 'fixtures', 'bundle-context-outside')
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-cmd-'))
@@ -2317,33 +2318,47 @@ cliTest('CLI: bundle --conditions --lockfile attests the conditions-selected res
   t.assert.equal(lock.imports['*']['src/entry.js'].rnpkg, 'node_modules/rnpkg/rn.js')
 }))
 
-cliTest('CLI: bundle refuses a specifier one context resolves and the other fails', withTmp(async (t, tmp) => {
+cliTest('CLI: a specifier one context resolves and the other fails misses there under --bundle=load, bundled or captured', withTmp(async (t, tmp) => {
   // An `exports` map with a `require` branch alone (or an `import` branch alone): Node serves the
-  // one context and fails the other. A bundle can't record that miss -- under --bundle=load,
-  // getImport's fallback would serve the failing context the other's file -- so the build refuses.
-  // Read in place: the builds' --output is in tmp, so a regression writes nothing into the fixture.
+  // one context and fails the other. The edge is kept under the resolving context's conditions,
+  // which --bundle=load serves no lookup of the other context, so the miss replays.
   const node = async (entry) => spawnAsync(process.execPath, [entry], { cwd: contextMissFixture, encoding: 'utf-8', env: cleanEnv })
   t.assert.equal((await node('src/reqonly.js')).stdout, 'cjs\nimport failed ERR_PACKAGE_PATH_NOT_EXPORTED\n')
   t.assert.equal((await node('src/imponly.js')).stdout, 'require failed ERR_PACKAGE_PATH_NOT_EXPORTED\nimport ok esm\n')
 
-  const out = join(tmp, 'stasis.code.br')
-  const req = await runCli(['bundle', `--output=${out}`, 'src/reqonly.js'], { cwd: contextMissFixture })
-  t.assert.notEqual(req.status, 0)
-  t.assert.match(req.stderr, /reqonly from src\/reqonly\.js resolves to node_modules\/reqonly\/cjs\.js for its require\(\) but fails for its import\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
-  const imp = await runCli(['bundle', `--output=${out}`, 'src/imponly.js'], { cwd: contextMissFixture })
-  t.assert.notEqual(imp.status, 0)
-  t.assert.match(imp.stderr, /imponly from src\/imponly\.js resolves to node_modules\/imponly\/esm\.mjs for its import\(\) but fails for its require\(\) \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/)
-  t.assert.ok(!existsSync(out))
+  // Built in place (--output in tmp), loaded where the fixture's node_modules isn't, so nothing
+  // comes from disk.
+  const app = join(tmp, 'app')
+  cpSync(contextMissFixture, app, { recursive: true, filter: (src) => basename(src) !== 'node_modules' })
+  const load = async (entry, bundleFile) => runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${bundleFile}`, entry], { cwd: app })
+  const bundled = async (name, key, target) => {
+    const out = join(tmp, `${name}.br`)
+    const build = await runCli(['bundle', `--output=${out}`, `src/${name}.js`], { cwd: contextMissFixture })
+    t.assert.equal(build.status, 0, build.stderr)
+    t.assert.ok(build.stderr.includes(`${name} from src/${name}.js (ERR_PACKAGE_PATH_NOT_EXPORTED)`), build.stderr)
+    const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+    t.assert.deepStrictEqual([...bundle.imports.keys()], [key])
+    t.assert.equal(bundle.imports.get(key).get(`src/${name}.js`).get(name), target)
+    return load(`src/${name}.js`, out)
+  }
+  const req = await bundled('reqonly', 'require, node, node-addons, module-sync', 'node_modules/reqonly/cjs.js')
+  t.assert.equal(req.status, 0, req.stderr)
+  t.assert.equal(req.stdout, 'cjs\nimport failed ERR_MODULE_NOT_FOUND\n')
+  const imp = await bundled('imponly', 'node, import, module-sync, node-addons', 'node_modules/imponly/esm.mjs')
+  t.assert.equal(imp.status, 0, imp.stderr)
+  // The CJS shim defers the miss to Node's resolver (MODULE_NOT_FOUND), or, where the resolve hook
+  // sees the require() first (Node 24.22), getImport fails it (ERR_MODULE_NOT_FOUND).
+  t.assert.match(imp.stdout, /^require failed (ERR_)?MODULE_NOT_FOUND\nimport ok esm\n$/)
 
-  // One context alone is no split: the require() bundles, and loads from the bundle's own bytes
-  // (in a copy, whose node_modules is then removed).
-  cpSync(contextMissFixture, tmp, { recursive: true })
-  const build = await runCli(['bundle', 'src/require.js'], { cwd: tmp })
-  t.assert.equal(build.status, 0, build.stderr)
-  rmSync(join(tmp, 'node_modules'), { recursive: true })
-  const load = await runCli(['run', '--lock=none', '--bundle=load', 'src/require.js'], { cwd: tmp })
-  t.assert.equal(load.status, 0, load.stderr)
-  t.assert.equal(load.stdout, 'cjs\n')
+  // A `stasis run` capture records the require() alone, under its conditions, and replays the miss too.
+  const full = join(tmp, 'full')
+  cpSync(contextMissFixture, full, { recursive: true })
+  const captured = join(tmp, 'captured.br')
+  const capture = await runCli(['run', '--lock=none', '--bundle=add', `--bundle-file=${captured}`, 'src/reqonly.js'], { cwd: full })
+  t.assert.equal(capture.status, 0, capture.stderr)
+  const replay = await load('src/reqonly.js', captured)
+  t.assert.equal(replay.status, 0, replay.stderr)
+  t.assert.equal(replay.stdout, 'cjs\nimport failed ERR_MODULE_NOT_FOUND\n')
 }))
 
 cliTest('CLI: --bundle=load serves each context its own target of a divergent edge, from the bundle alone', withTmp(async (t, tmp) => {
@@ -2684,25 +2699,22 @@ cliTest('CLI: bundle leaves out, and names, a file a lazy require() reaches abov
   t.assert.equal(load.stdout, 'lib function\n')
 }))
 
-cliTest('CLI: bundle refuses a specifier that resolves within the root in one context and outside it in another', withTmp(async (t, tmp) => {
-  // require() and import() take different `exports` branches, the import one linked out of the root:
-  // leaving it out alone would have load serve import('dual') the require() branch's file instead.
-  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
-  try {
-    writeFileSync(join(outside, 'esm.mjs'), 'export default "outside"\n')
-    mkdirSync(join(tmp, 'node_modules', 'dual'), { recursive: true })
-    writeFileSync(join(tmp, 'node_modules', 'dual', 'package.json'), JSON.stringify({ name: 'dual', version: '1.0.0', exports: { import: './esm.mjs', require: './cjs.js' } }))
-    writeFileSync(join(tmp, 'node_modules', 'dual', 'cjs.js'), 'module.exports = "inside"\n')
-    symlinkSync(join(outside, 'esm.mjs'), join(tmp, 'node_modules', 'dual', 'esm.mjs'))
-    writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0' }))
-    writeFileSync(join(tmp, 'index.js'), "require('dual')\nimport('dual')\n")
-    const r = await runCli(['bundle', '--output=out.br', 'index.js'], { cwd: tmp })
-    t.assert.notEqual(r.status, 0)
-    t.assert.match(r.stderr, /dual from index\.js resolves within the project root in one context and outside it, at .*esm\.mjs, in another: a bundle can't leave out the one without serving the other in its place/)
-    t.assert.ok(!existsSync(join(tmp, 'out.br')))
-  } finally {
-    rmSync(outside, { recursive: true, force: true })
-  }
+cliTest('CLI: a specifier one context resolves outside the root misses there under --bundle=load', withTmp(async (t, tmp) => {
+  // require() and import() take different `exports` branches, the import one linked out of the root
+  // (app/): that one is left out, the require() one kept under its conditions alone, so load serves
+  // import('dual') nothing rather than the require() branch's file.
+  const app = join(contextOutsideFixture, 'app')
+  const node = await spawnAsync(process.execPath, ['index.js'], { cwd: app, encoding: 'utf-8', env: cleanEnv })
+  t.assert.equal(node.stdout, 'require inside\nimport outside\n')
+  const out = join(tmp, 'out.br')
+  const build = await runCli(['bundle', `--output=${out}`, 'index.js'], { cwd: app })
+  t.assert.equal(build.status, 0, build.stderr)
+  t.assert.match(build.stderr, /Bundle leaves out 1 import\(s\) of files outside the project root at \.; they will fall through at load time:\n {2}dynamic-import dual from index\.js \(at \.\.\/outside\/esm\.mjs\)/)
+  const bundle = Bundle.parse(brotliDecompressSync(readFileSync(out)).toString('utf8'))
+  t.assert.deepStrictEqual([...bundle.imports.keys()], ['require, node, node-addons, module-sync'])
+  const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'index.js'], { cwd: app })
+  t.assert.equal(load.status, 0, load.stderr)
+  t.assert.equal(load.stdout, 'require inside\nimport failed ERR_MODULE_NOT_FOUND\n')
 }))
 
 test('buildBundle --metro refuses a specifier one platform resolves within the root and another outside it', withTmp(async (t, tmp) => {

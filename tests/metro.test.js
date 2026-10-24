@@ -373,6 +373,24 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(web.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) is not attested for platform 'ios' by the bundle/)
   }))
 
+  test('bundle=load takes a `stasis bundle --metro` build as its own capture', withTmp(async (t, tmp) => {
+    // Its edges are keyed '*' (per platform where they diverge), which Metro's checks, naming no
+    // conditions, take.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    const bundlePath = join(tmp, 'snapshot.br')
+    const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
+    writeFileSync(bundlePath, brotliCompressSync(bundle.serialize()))
+    const env = { EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_LOCK: 'none', EXODUS_STASIS_BUNDLE: 'load', EXODUS_STASIS_BUNDLE_FILE: bundlePath }
+    const load = await run('src/entry.js', { cwd: tmp, env })
+    t.assert.equal(load.status, 0, `stderr: ${load.stderr}`)
+    // Checked against it: Metro resolving the import elsewhere fails.
+    const graph = { modules: [{ path: 'src/entry.js', deps: [['./hello.js', 'src/entry.js']] }, { path: 'src/hello.js', deps: [] }] }
+    const redirected = await run('src/entry.js', { cwd: tmp, env, graph })
+    t.assert.notEqual(redirected.status, 0)
+    t.assert.match(redirected.stderr, /observed resolution '\.\/hello\.js' from src\/entry\.js \(\*\) mismatches the bundle/)
+  }))
+
   test('bundle=load in node_modules scope tolerates an unknown edge from a workspace file, not from a package', withTmp(async (t, tmp) => {
     // As frozen does: workspace parents are outside what an nm-scope capture attests.
     const loadGraph = (extra) => ({

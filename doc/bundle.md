@@ -151,10 +151,12 @@ falls through at load. An import that resolves to a file outside the project
 root is treated the same way, and that file is never carried. A typical case is
 a lazy `require('typescript')` for an optional peer dependency hoisted above a
 package whose stasis files root the bundle there: it is left out, with a
-warning that names it. An import that resolves within the root for one
-`require()`/`import()` or `--platforms` target and outside it for another
-fails the build, because leaving out the outside file would have load serve
-the inside one in its place.
+warning that names it. Where only one of a file's `require()` and `import()`
+leaves the root, the other's edge is kept and the one left out misses at load,
+as under [Conditions](#conditions). An import that resolves within the root
+for one `--platforms` target and outside it for another fails the build,
+because leaving out the outside file would have load serve the inside one in
+its place.
 
 ### Conditions
 
@@ -174,8 +176,9 @@ lands on the file Node would. An `exports` map listing `node` first therefore
 takes that branch whatever `--conditions` adds. A specifier that a file
 resolves one way and fails the other (an `exports` map with a `require`
 branch alone, say, for a file that both `require()`s and `import()`s it) is
-refused: a bundle can't record a miss in one context alone, and
-`--bundle=load` would serve that context the other's file.
+kept under the resolving one's conditions, and misses in the other under
+`--bundle=load` too: a bare or `#` specifier is never served the other's
+target (see [`imports`](file-formats.md)).
 
 `--mainFields` and `--metro` resolve as a bundler does: `import` or `require`
 follows the importing file's format, and `node`, `node-addons` and

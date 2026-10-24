@@ -349,6 +349,41 @@ test('bundle=load settles a divergent edge by the lookup\'s context', (t) => {
   t.assert.equal(load.getImport(parentURL, './captured', { conditions: ['node', 'import'] }).url, cjs)
 })
 
+// Where conditions decide a resolution (a bare or `#` specifier), bundle=load serves no lookup a key
+// of the other context: that is another resolution, which Node may fail. Node asks an edge under its
+// own context's conditions on every version and code path, the rest of the set varying by flag, so
+// those differences are served; a relative edge resolves alike under either context.
+test('bundle=load serves no lookup the other context\'s key where conditions decide the resolution', (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'stasis-context-load-'))
+  t.after(() => rmSync(tmp, { recursive: true, force: true }))
+  const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'bundle-context-miss')
+  const url = (file) => pathToFileURL(join(fixture, file)).toString()
+  const parentURL = url('src/reqonly.js')
+  const cjs = url('node_modules/reqonly/cjs.js')
+  const requireSet = ['require', 'node', 'node-addons', 'module-sync']
+  const importSet = ['node', 'import', 'module-sync', 'node-addons']
+  const cap = new State(fixture, { scope: 'full', bundle: 'add' })
+  cap.addFile(parentURL, { format: 'commonjs', isEntry: true })
+  cap.addFile(cjs)
+  for (const specifier of ['reqonly', '#internal', './relative']) cap.addImport(parentURL, specifier, cjs, { conditions: requireSet })
+  const bundleFile = join(tmp, 'stasis.code.br')
+  writeFileSync(bundleFile, brotliCompressSync(cap.sourceData))
+
+  const load = new State(fixture, { scope: 'full', lock: 'none', bundle: 'load', bundleFile })
+  const missing = { code: 'ERR_MODULE_NOT_FOUND' }
+  t.assert.throws(() => load.getImport(parentURL, 'reqonly', { conditions: importSet }), missing)
+  t.assert.throws(() => load.getImport(parentURL, '#internal', { conditions: importSet }), missing)
+  t.assert.equal(load.resolveBundled(parentURL, 'reqonly', { conditions: ['import'] }), undefined)
+  // The flags Node varies the rest of a set by: --no-addons, --conditions, require(esm) turned off.
+  for (const conditions of [['require', 'node', 'module-sync'], ['require', 'node', 'node-addons', 'custom', 'module-sync'], ['require', 'node', 'node-addons']]) {
+    t.assert.equal(load.getImport(parentURL, 'reqonly', { conditions }).url, cjs)
+  }
+  t.assert.equal(load.resolveBundled(parentURL, 'reqonly', { conditions: ['require'] }), fileURLToPath(cjs))
+  // A relative edge reads no conditions, and a lookup naming none (the plugins', Metro's) takes any key.
+  t.assert.equal(load.getImport(parentURL, './relative', { conditions: importSet }).url, cjs)
+  t.assert.equal(load.getImport(parentURL, 'reqonly').url, cjs)
+})
+
 // A directory whose name merely CONTAINS `node_modules` (e.g. `foo_node_modules/`) is a workspace
 // source, not a dependency: the marker must match a full path SEGMENT. Regression for the old
 // substring-based lastIndexOf('node_modules/') that bucketed such files as phantom npm deps.
