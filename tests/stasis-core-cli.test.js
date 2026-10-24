@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
-import { brotliCompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 // The zero-dependency `stasis-core` CLI exposes `run`, `prune`, `add` (which packs explicitly
 // listed files into the project's bundles -- no scanner/loaders), and `extract` (which unpacks a
@@ -113,6 +113,32 @@ test('run --lock=none --bundle=frozen verifies a built bundle via the core loade
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.equal(r.stdout, 'hello, world\n')
   t.assert.match(r.stderr, /bundle: 'frozen'/)
+}))
+
+test('run --bundle=add keeps the files a bundle records whether or not a lockfile is written', withTmp((t, tmp) => {
+  // Regression: with no lockfile, an absorbed bundle's buckets listed no files, so a bundle=add run
+  // rewrote the bundle with only what it loaded itself -- a second entry's run dropped the first's
+  // files while still declaring it an entry. With a lockfile, the buckets came from the lockfile.
+  for (const lock of ['none', 'ignore', 'replace', 'add']) {
+    const dir = join(tmp, lock)
+    cpSync(runFixture, dir, { recursive: true })
+    rmSync(join(dir, 'stasis.lock.json'))
+    writeFileSync(join(dir, 'src', 'other.js'), "console.log('other')\n")
+    for (const entry of ['src/entry.js', 'src/other.js']) {
+      const r = run(['run', `--lock=${lock}`, '--bundle=add', entry], { cwd: dir })
+      t.assert.equal(r.status, 0, `${lock} ${entry} stderr: ${r.stderr}`)
+    }
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'stasis.code.br'))))
+    t.assert.deepStrictEqual(bundle.entries, ['src/entry.js', 'src/other.js'], lock)
+    t.assert.deepStrictEqual(Object.keys(bundle.sources['.'].files), ['src/entry.js', 'src/hello.js', 'src/other.js'], lock)
+
+    // The first entry still runs from the bundle alone, verified by the lockfile where one was written.
+    rmSync(join(dir, 'src'), { recursive: true })
+    const verify = existsSync(join(dir, 'stasis.lock.json')) ? 'frozen' : 'none'
+    const r = run(['run', `--lock=${verify}`, '--bundle=load', 'src/entry.js'], { cwd: dir })
+    t.assert.equal(r.status, 0, `${lock} load stderr: ${r.stderr}`)
+    t.assert.equal(r.stdout, 'hello, world\n', lock)
+  }
 }))
 
 test('run does not support --mock (tooling-only flag)', (t) => {

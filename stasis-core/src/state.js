@@ -54,6 +54,9 @@ function upsertFormat(map, file, format) {
   map.set(file, currentFormat === undefined ? format : reconcileFormat(format, currentFormat, file))
 }
 
+// A bundled file's integrity as addFile/addFsDir hash it: a 'resource:base64' payload's is its decoded bytes'.
+const bundledIntegrity = (content, format) => sha512integrity(format === 'resource:base64' ? Buffer.from(content, 'base64') : content)
+
 // Loader formats the extension alone decides; `.js`/`.ts` follow the nearest package `type`.
 const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs': 'commonjs', '.mts': 'module-typescript', '.cts': 'commonjs-typescript' }
 // With no `type`, Node decides .js/.ts by syntax detection: either variant is possible, the first is the default.
@@ -524,6 +527,18 @@ export class State {
           // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
           const withMetadata = withMetadataOf(existing, info)
           if (withMetadata !== existing) this.modules.set(dir, withMetadata)
+        }
+        // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
+        // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't
+        // load again drops out of the rewritten bundle.
+        if (!this.config.writeBundle) continue
+        const { files } = this.modules.get(dir)
+        for (const [rel, content] of Object.entries(info.files)) {
+          const file = moduleFileKey(dir, rel)
+          const integrity = bundledIntegrity(content, bundle.formats.get(file))
+          noupsert(this.hashes, file, integrity)
+          if (!Object.hasOwn(files, rel)) files[rel] = integrity
+          assert.equal(files[rel], integrity, `bundle file ${file} conflicts with its recorded hash`)
         }
       }
     }
