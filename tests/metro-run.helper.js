@@ -23,7 +23,8 @@
 //       "preModules": [ { "path": "runtime/polyfill.js", "deps": [] }, ... ] }
 //   `path` and each dep target are project-relative and resolved against cwd; each
 //   dep is a [specifier, targetRelativePath] pair (target null = unresolved/virtual edge),
-//   optionally with a third element, the specifiers written in the source (`stasisAsWritten`).
+//   optionally with a third element: the specifiers written in the source (`stasisAsWritten`), or
+//   the fields the stasis worker transformer adds to its data otherwise (`{ stasisInserted: true }`).
 //   `preModules` (optional) models Metro's prepended polyfills/runtime.
 // STASIS_TEST_METRO_MODE -- 'hook' (default) | 'customSerializer' | 'withStasis'.
 // STASIS_TEST_METRO_SERIALIZE_TWICE=1 -- serialize twice, modeling a dev-server rebuild
@@ -81,15 +82,16 @@ const buildModule = (mod) => {
   const modPath = abs(mod.path)
   const deps = new Map()
   let depIndex = 0
-  for (const [specifier, targetRel, asWritten] of mod.deps ?? []) {
+  for (const [specifier, targetRel, extra] of mod.deps ?? []) {
     // A null target models an unresolved/virtual edge (no absolutePath). Real Metro
     // (>=0.72) keys module.dependencies by an OPAQUE hash, not the specifier -- key by a
     // synthetic non-specifier value so the plugin can't accidentally come to rely on the
     // key (it must read dep.data.name for the specifier and iterate .values()).
     const absolutePath = targetRel == null ? undefined : abs(targetRel)
-    // An optional third element models a dependency Babel rewrote: the specifiers written in the
-    // source, as the stasis worker transformer carries them (`stasisAsWritten`).
-    const data = asWritten === undefined ? { name: specifier } : { name: specifier, stasisAsWritten: asWritten }
+    // An optional third element models what the stasis worker transformer carries: for a dependency
+    // Babel rewrote, the specifiers written in the source (`stasisAsWritten`); for one Babel or Metro
+    // added, that it did (`stasisInserted`).
+    const data = { name: specifier, ...(Array.isArray(extra) ? { stasisAsWritten: extra } : extra) }
     deps.set(`dep${depIndex++}`, { absolutePath, data })
   }
   return {

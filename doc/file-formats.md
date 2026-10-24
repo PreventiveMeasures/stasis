@@ -237,7 +237,10 @@ files it adds.
   in `scope = node_modules`. Under `bundle = load` the edges are used: the
   loader and the esbuild and webpack plugins resolve through them. Metro
   resolves on its own, so its plugin checks every edge Metro resolved against
-  the bundle's, the same way, before any output.
+  the bundle's, the same way, before any output. An import the source doesn't
+  write, which Babel or Metro adds (a `@babel/runtime` helper, `react/jsx-runtime`,
+  Metro's `asyncRequire`), is no edge: it is neither recorded nor checked, though
+  its file is carried like any other in Metro's graph.
 - Per-platform edges (`stasis bundle --metro --platforms=…`): a resolution target
   is normally a project-relative file string. When `--metro` resolves one
   `(parent, specifier)` edge to **different** files across platforms (e.g.

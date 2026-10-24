@@ -386,9 +386,13 @@ export class StasisMetro {
   // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis transformer
   // (./metro-transformer.js) carries the ones written in the source. Code and resource targets alike,
   // as `stasis bundle --metro` and the esbuild plugin record them: an asset is resolved as code is.
+  // One the source doesn't write (`stasisInserted`: a Babel helper, the JSX runtime, Metro's
+  // asyncRequire) is no edge, as `stasis bundle --metro` has none: its file is carried, as every
+  // module of the graph is, and under load Metro resolves it unasserted.
   #edges(module) {
     const edges = []
     for (const dep of module.dependencies?.values?.() ?? []) {
+      if (dep?.data?.stasisInserted === true) continue
       const target = dep?.absolutePath
       if (typeof target !== 'string' || !isAbsolute(target) || !existsSync(target)) continue
       if (classifyExtension(target, this.#resources) === 'unknown') continue
