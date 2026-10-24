@@ -104,7 +104,7 @@ test('detectRepo treats a non-GitHub package.json repository as authoritative', 
 test('detectRepo prefers git over package.json, and only git yields commit', withTmp((t, tmp) => {
   writeGitConfig(tmp, ORIGIN('git@github.com:o/git.git'))
   writeFileSync(join(tmp, '.git', 'HEAD'), `${SHA}\n`)
-  writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/pkg', directory: 'elsewhere' } })
+  writeJson(join(tmp, 'package.json'), { repository: { url: 'github:o/pkg', directory: 'elsewhere' }, gitHead: SHA2 })
   mkdirSync(join(tmp, 'sub', 'dir'), { recursive: true })
   t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/git', directory: '', commit: SHA }, "the work tree root: `directory: ''`")
   t.assert.deepStrictEqual(detectRepo(join(tmp, 'sub', 'dir')), { github: 'o/git', directory: 'sub/dir', commit: SHA })
@@ -114,6 +114,8 @@ test('detectRepo prefers git over package.json, and only git yields commit', wit
     'only origin is consulted; without it, package.json is used (no commit)')
   writeGitConfig(tmp, ORIGIN('https://gitlab.com/o/n'))
   t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/pkg', directory: 'elsewhere' }, 'a non-GitHub origin falls back too')
+  rmSync(join(tmp, '.git'), { recursive: true })
+  t.assert.deepStrictEqual(detectRepo(tmp), { github: 'o/pkg', directory: 'elsewhere' }, "nor without git is package.json's gitHead taken")
 }))
 
 test('detectRepo reads the commit from a branch ref, loose or packed', withTmp((t, tmp) => {

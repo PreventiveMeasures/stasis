@@ -474,6 +474,26 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.ok(lock.modules['node_modules/fake-esm-pkg'].files['index.js'].startsWith('sha512-'))
   }))
 
+  test("node_modules scope records a dependency's repo at its package.json's gitHead, as stasis run and stasis bundle do", withTmp(async (t, tmp) => {
+    cpSync(nmFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    const commit = 'c'.repeat(40)
+    const pkgJson = join(tmp, 'node_modules', 'fake-esm-pkg', 'package.json')
+    writeFileSync(pkgJson, JSON.stringify({ ...JSON.parse(readFileSync(pkgJson, 'utf-8')), repository: 'github:o/fake-esm-pkg', gitHead: commit }))
+    const bundlePath = join(tmp, 'snapshot.br')
+
+    const r = await run('src/entry.js', {
+      cwd: tmp,
+      env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'node_modules', EXODUS_STASIS_BUNDLE: 'add', EXODUS_STASIS_BUNDLE_FILE: bundlePath },
+      graph: NM_GRAPH,
+    })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    t.assert.deepStrictEqual(decoded.modules['node_modules/fake-esm-pkg'].repo, { github: 'o/fake-esm-pkg', commit })
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.modules['node_modules/fake-esm-pkg'].repo, undefined, 'metadata: never in the lockfile')
+  }))
+
   test('node_modules scope lock=frozen rejects a changed node_modules file', withTmp(async (t, tmp) => {
     cpSync(nmFixture, tmp, { recursive: true })
     writeFileSync(

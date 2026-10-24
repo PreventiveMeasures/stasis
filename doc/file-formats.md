@@ -340,10 +340,16 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
   one with a `..` part, sits at an unknown place in its repository and records
   no `directory`. A `commit` is recorded where what installed a dependency
   names a full one:
+  - Any build records an npm package's at the `gitHead` its `package.json`
+    names, beside the `github` it names, where nothing below names one over
+    it. `npm publish` writes `gitHead` into the registry's version document
+    alone, but lerna writes it into the published `package.json` too, and npm
+    keeps one a `package.json` has, so the two agree.
   - A build from a lockfile alone (`stasis github-bundle`, `buildVfsBundle`)
     records an npm package's at the `gitHead` of the registry's version
     document of it, fetched beside its tarball and held to the lockfile's
-    integrity, and only beside a `github` its `package.json` names.
+    integrity, over its `package.json`'s, and only beside a `github` its
+    `package.json` names.
   - A JS build from disk (`stasis bundle`, `buildBundle`) records a git
     dependency's, read off what the package manager that laid out its
     `node_modules` left there: npm's (7 and later) hidden lockfile,
@@ -360,10 +366,11 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
     records (`#path:`), and the commit, in place of the `repo` its
     `package.json` names: the record is of the repository installed from, a
     fork's where the manifest names the one forked. A registry package records
-    none, as nothing on disk names its commit; nor does another host's
-    repository, an abbreviated commit, or npm's record beside yarn's in one
-    `node_modules`. `package-lock.json` and `pnpm-lock.yaml` are not read: they
-    say what an install would lay out, not what one did.
+    none here: nothing on disk names its commit but its `package.json`'s
+    `gitHead` (above). Nor does another host's repository, an abbreviated
+    commit, or npm's record beside yarn's in one `node_modules` record one.
+    `package-lock.json` and `pnpm-lock.yaml` are not read: they say what an
+    install would lay out, not what one did.
   - A Soldeer git dependency on GitHub records that repository at its root
     (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out: from a
     lockfile alone, the commit deptree fetches; on disk, only where its folder
@@ -531,7 +538,10 @@ SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captur
      (`a/..` is no claim on the root) or a homepage's comes to the root
      (`/tree/main/.`): only `repository.directory` declares the root. Empty and
      `.` parts are dropped, and where `repository.directory` comes to the
-     repository root (`./`, `/`), it is `""`. No `commit` is recorded. A
+     repository root (`./`, `/`), it is `""`. No `commit` is recorded: the
+     bundle's own is git's `HEAD` alone, never a `gitHead` the `package.json`
+     names as a dependency's is, as the project's own files are likely changed
+     since that commit. A
      `package.json` naming a non-GitHub repository records nothing.
 
   A `stasis github-bundle` build records the fetched tree's own layout, `""` at

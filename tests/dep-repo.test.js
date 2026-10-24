@@ -69,6 +69,19 @@ test("a dependency repo is read as a build reads its own: a declared directory a
   t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js').repo, { github: 'o/dep', directory: '' })
 }))
 
+test("a dependency repo is at the commit its package.json's gitHead names, a full one, beside the GitHub repository it names", withTmp((t, dir) => {
+  t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n', gitHead: COMMIT }), { github: 'o/n', commit: COMMIT })
+  t.assert.deepStrictEqual(packageRepo({ repository: { url: 'github:o/n', directory: 'packages/x' }, gitHead: COMMIT }), { github: 'o/n', directory: 'packages/x', commit: COMMIT })
+  for (const gitHead of ['a'.repeat(7), 'A'.repeat(40), ` ${COMMIT}`, 1, null]) {
+    t.assert.deepStrictEqual(packageRepo({ repository: 'github:o/n', gitHead }), { github: 'o/n' }, `${JSON.stringify(gitHead)}: no full commit`)
+  }
+  for (const pkg of [{ gitHead: COMMIT }, { repository: 'https://gitlab.com/o/n', gitHead: COMMIT }]) {
+    t.assert.equal(packageRepo(pkg), undefined, `${JSON.stringify(pkg)}: a commit of no GitHub repository`)
+  }
+  writeProject(dir, { repository: 'github:o/dep', gitHead: COMMIT })
+  t.assert.deepStrictEqual(findPackageMetadata(dir, 'node_modules/dep/index.js').repo, { github: 'o/dep', commit: COMMIT })
+}))
+
 test('a dependency record carries repo after ecosystem in a bundle; a lockfile neither writes nor reads one', (t) => {
   const modules = { 'node_modules/dep': dep({ directory: 'packages/dep', github: 'o/dep' }) }
   const json = JSON.parse(bundleOf(modules).serialize())
@@ -136,6 +149,14 @@ test('State records a dependency repo, from its own package.json, in the bundle 
   t.assert.equal(JSON.parse(state.lockData).repo, undefined, "the build's own repo never reaches the lockfile")
 }))
 
+test("State records a dependency at its package.json's gitHead, never the project at its own", withTmp((t, tmp) => {
+  writeProject(tmp, { repository: 'github:o/dep', gitHead: COMMIT })
+  writeJson(join(tmp, 'package.json'), { name: 'app', version: '1.0.0', repository: 'github:o/app', gitHead: 'b'.repeat(40) })
+  const bundle = JSON.parse(capture(tmp, { bundle: 'replace', lock: 'none' }).sourceData)
+  t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, { github: 'o/dep', commit: COMMIT })
+  t.assert.deepStrictEqual(bundle.repo, { github: 'o/app' }, "the project's commit is git's alone")
+}))
+
 test('State holds a dependency repo to nothing: a package.json naming another, or none, is no mismatch', withTmp((t, tmp) => {
   writeProject(tmp, { repository: 'github:o/dep' })
   capture(tmp, { bundle: 'none', lock: 'replace' }).write()
@@ -176,13 +197,13 @@ test('stasis add records a dependency repo in the bundle, never the lockfile', w
 }))
 
 test('stasis bundle records a dependency repo in the bundle, never its lockfile, through a State and through the field resolver', withTmp(async (t, tmp) => {
-  writeProject(tmp, { repository: { url: 'https://github.com/o/dep', directory: 'packages/dep' } })
+  writeProject(tmp, { repository: { url: 'https://github.com/o/dep', directory: 'packages/dep' }, gitHead: COMMIT })
   const written = await Promise.all([['state', {}], ['resolver', { mainFields: ['main'] }]].map(async ([label, options]) => {
     await bundleCommand({ cwd: tmp, entries: ['index.js'], output: `${label}.br`, lockfile: `${label}.lock.json`, ...options })
     return [label, readBundle(join(tmp, `${label}.br`)), JSON.parse(readFileSync(join(tmp, `${label}.lock.json`), 'utf8'))]
   }))
   for (const [label, bundle, lock] of written) {
-    t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, DEP_REPO, `${label}: bundle`)
+    t.assert.deepStrictEqual(bundle.modules['node_modules/dep'].repo, { ...DEP_REPO, commit: COMMIT }, `${label}: bundle`)
     t.assert.equal(lock.modules['node_modules/dep'].repo, undefined, `${label}: lockfile`)
   }
 }))

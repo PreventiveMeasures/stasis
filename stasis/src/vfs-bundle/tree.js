@@ -395,10 +395,10 @@ const githubRoot = (url) => {
 
 // Each dependency of `bundle`, its paths from `root`, at the commit the tree (layOutTree's) installs
 // it from, where deptree names a full one: an npm package at its gitHead, which the registry's
-// version document names, a commit of the repository its own package.json names, so taken only
-// where the bundle records that one; a Soldeer git dependency at its lockfile's `rev`, the root of
-// the repository it is fetched from, where that is a GitHub one. Metadata, as `repo` is: the
-// publisher's word, held to no repository.
+// version document names, over the one its package.json may name (packageRepo), a commit of the
+// repository its own package.json names, so taken only where the bundle records that one; a
+// Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
+// where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
 export function pinCommits(bundle, root, { root: from, installed }) {
   const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
   for (const [dir, info] of bundle.modules) {
