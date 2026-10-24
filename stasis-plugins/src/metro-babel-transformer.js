@@ -30,11 +30,21 @@ function isDependencyCall(callee) {
     callee.property.type === 'Identifier' && REQUIRE_MEMBERS.has(callee.property.name)
 }
 
-// The specifier a dependency node holds as a string literal: an import/export's source, a call's
-// first argument. A plugin rewriting it replaces the literal, never the node holding it.
+// The string `node` holds as a constant: a literal, a template with no substitutions, or a `+` of
+// such, which Metro's collectDependencies evaluates to the specifier as it does a literal.
+function constantString(node) {
+  if (node?.type === 'StringLiteral') return node.value
+  if (node?.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked ?? undefined
+  if (node?.type !== 'BinaryExpression' || node.operator !== '+') return undefined
+  const left = constantString(node.left)
+  const right = left === undefined ? undefined : constantString(node.right)
+  return right === undefined ? undefined : left + right
+}
+
+// The specifier a dependency node holds as a constant: an import/export's source, a call's first
+// argument. A plugin rewriting it replaces the literal, never the node holding it.
 function specifierOf(node) {
-  const literal = node.type === 'CallExpression' ? node.arguments[0] : node.source
-  return literal?.type === 'StringLiteral' ? literal.value : undefined
+  return constantString(node.type === 'CallExpression' ? node.arguments[0] : node.source)
 }
 
 function asWrittenPlugin({ types: t }) {
@@ -42,10 +52,22 @@ function asWrittenPlugin({ types: t }) {
     name: 'stasis-as-written',
     pre(file) {
       const { slots } = transformContext.getStore()
+      let evaluate = false
       t.traverseFast(file.ast, (node) => {
         if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
         const written = specifierOf(node)
         if (written !== undefined) slots.push({ node, written })
+        else if (node.type === 'CallExpression' && node.arguments.length > 0) evaluate = true
+      })
+      // Metro takes any argument Babel evaluates to a string with confidence, one bound to a constant
+      // too (`const name = './x'; require(name)`), which only a path, and its scope, can evaluate.
+      if (!evaluate) return
+      file.path.traverse({
+        CallExpression(path) {
+          if (!isDependencyCall(path.node.callee) || specifierOf(path.node) !== undefined || path.node.arguments.length === 0) return
+          const { confident, value } = path.get('arguments.0').evaluate()
+          if (confident && typeof value === 'string') slots.push({ node: path.node, written: value })
+        },
       })
     },
     visitor: {
@@ -73,7 +95,8 @@ export function transform(args) {
   const collect = (result) => {
     for (const { node, written } of slots) {
       if (DECLARATIONS.has(node.type) && !kept.has(node)) continue
-      const left = specifierOf(node)
+      // One evaluated through its scope stays as written: no plugin rewrites what isn't a literal.
+      const left = specifierOf(node) ?? (node.type === 'CallExpression' ? written : undefined)
       if (left === undefined) continue
       if (!context.asWritten.has(left)) context.asWritten.set(left, new Set())
       context.asWritten.get(left).add(written)

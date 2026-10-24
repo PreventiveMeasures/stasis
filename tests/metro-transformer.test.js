@@ -325,7 +325,11 @@ module.exports = ${lowerAmongPlugins ? `{
     "import { type Def2 } from '#local/def'",
     "const def = require('./src/def')",
     "const ghi = require('#local/ghi')",
-    'export default [abc, same, def, ghi]',
+    'const jkl = require(`./src/jkl`)',
+    "const mno = require('./src/' + 'mno')",
+    "const pqrPath = './src/pqr'",
+    'const pqr = require(pqrPath)',
+    'export default [abc, same, def, ghi, jkl, mno, pqr]',
     '',
   ].join('\n'))
   writeFileSync(join(tmp, 'bare.js'), 'export default 0\n')
@@ -333,6 +337,9 @@ module.exports = ${lowerAmongPlugins ? `{
   writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
   writeFileSync(join(tmp, 'src', 'def.js'), 'module.exports = 2\n')
   writeFileSync(join(tmp, 'src', 'ghi.js'), 'module.exports = 3\n')
+  writeFileSync(join(tmp, 'src', 'jkl.js'), 'module.exports = 4\n')
+  writeFileSync(join(tmp, 'src', 'mno.js'), 'module.exports = 5\n')
+  writeFileSync(join(tmp, 'src', 'pqr.js'), 'module.exports = 6\n')
   symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
 }
 
@@ -358,12 +365,16 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
     t.assert.deepStrictEqual(out.config, { babelTransformerPath: stasisBabelTransformer })
     // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
     // './src/def' only for the path (the type imports are erased), which the source writes though a
-    // plugin adds it too. The helper only a plugin adds is marked so.
+    // plugin adds it too, and Metro evaluates a template, a concatenation or a constant the source
+    // writes as it does a literal. The helper only a plugin adds is marked so.
     t.assert.deepStrictEqual(out.dependencies, [
       { name: './src/def', data: { key: './src/def' } },
       { name: '@babel/runtime/helpers/interopRequireDefault', data: { key: '@babel/runtime/helpers/interopRequireDefault' }, stasisInserted: true },
       { name: './src/abc', data: { key: './src/abc' }, stasisAsWritten: ['#local/abc', './src/abc'] },
       { name: './src/ghi', data: { key: './src/ghi' }, stasisAsWritten: ['#local/ghi'] },
+      { name: './src/jkl', data: { key: './src/jkl' } },
+      { name: './src/mno', data: { key: './src/mno' } },
+      { name: './src/pqr', data: { key: './src/pqr' } },
     ])
     // A file writing no import of its own: whatever a plugin adds is marked.
     t.assert.deepStrictEqual(bare.dependencies, [
