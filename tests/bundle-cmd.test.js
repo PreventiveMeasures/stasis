@@ -4449,7 +4449,7 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   jsProject(tmp, {
     'index.js': 'export default 1\n',
     'metro.config.js': 'module.exports = {}\n',
-    'react-native.config.js': 'module.exports = {}\n',
+    'react-native.config.js': 'export default {}\n',
     'babel.config.js': "module.exports = { presets: ['module:@react-native/babel-preset'] }\n",
     'aliases.json': '{}',
   }, { name: 'app', version: '0.0.0' })
@@ -4462,7 +4462,8 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   const bundle = await buildBundle(metro)
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...configs, 'index.js'].toSorted(), 'no Babel config without --babel(-aliases)')
   t.assert.equal(bundle.formats.get('metro.config.js'), 'commonjs')
-  t.assert.equal(bundle.formats.get('react-native.config.js'), 'commonjs')
+  // A typeless package's .js is what Node detects from its syntax.
+  t.assert.equal(bundle.formats.get('react-native.config.js'), 'module')
   t.assert.equal(bundle.formats.get('index.js'), undefined, 'the app code Metro builds keeps no format')
   t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), [...configs, 'index.js'].toSorted())
 

@@ -7,7 +7,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { importsTypescriptByOutputName, scan } from '../scan.js'
+import { Scan, importsTypescriptByOutputName, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -1356,15 +1356,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
     // And the project's configs the Metro plugin's run loads, which nothing the app imports reaches:
     // Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel config Metro's
-    // transformer runs. Each file itself, in the format Node loads it in, not what it imports.
+    // transformer runs. Each file itself, in the format Node loads it in (its package's `type`, else
+    // the one Node detects from its syntax, as Scan#parseFile has it), not what it imports.
     const configs = [...METRO_CONFIG_FILES, ...(babel || aliasesFile !== undefined ? [BABEL_CONFIG_FILE] : [])]
+    const configScan = new Scan({ host })
     for (const rel of configs) {
       const abs = join(baseDir, rel)
       if (sources.has(rel) || !host.stat(abs)?.isFile()) continue
       assertRealPathWithinBase(realBase, baseDir, rel, host)
       const buf = host.readFile(abs)
       if (!isUtf8(buf)) throw new Error(`config is not valid UTF-8: ${rel}`)
-      put(rel, buf.toString('utf8'), packageType(abs, host) === 'module' ? 'module' : 'commonjs', buf)
+      const parsed = configScan.parseFile(abs)
+      put(rel, buf.toString('utf8'), parsed.format ?? parsed.declared ?? 'commonjs', buf)
     }
   }
 
