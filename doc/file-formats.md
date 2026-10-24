@@ -138,8 +138,9 @@ file `extra` names is the `extra` consumer's, a file the run or build reached
 itself as well as its own consumer's (`run`, `bundle`). They are never entries.
 
 `entries` names `stasis bundle`'s entries, each with the flags it is built with,
-as [Entry options](bundle.md#entry-options-stasisconfigjson) describes.
-`stasis run` takes nothing from it.
+as [Entry options](bundle.md#entry-options-stasisconfigjson) describes, and
+`stasis github-bundle`'s, but none that runs a program (see its
+[Entries](github-bundle.md#entries)). `stasis run` takes nothing from it.
 
 Unknown keys are rejected. A key set by both file and env var must match. `extra`
 and `entries` are set in the file alone. Only `scope` is persisted into the lockfile/bundle

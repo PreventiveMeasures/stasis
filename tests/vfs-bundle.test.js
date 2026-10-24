@@ -461,7 +461,7 @@ test('createMetroResolver refuses a host that is not the disk: it reads the disk
 // `constants`, which read nothing.
 test('the host-aware modules import nothing from node:fs to read with', (t) => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const modules = ['stasis/src/scan.js', 'stasis/src/resolve-node.js', 'stasis/src/resolve-fields.js', 'stasis/src/resolve-typescript.js', 'stasis-core/src/bundle-util.js', 'stasis/src/vfs-bundle.js', 'stasis/src/vfs-bundle/github.js', 'stasis/src/vfs-bundle/tree.js', 'stasis/src/loaders/foundry.js']
+  const modules = ['stasis/src/scan.js', 'stasis/src/resolve-node.js', 'stasis/src/resolve-fields.js', 'stasis/src/resolve-typescript.js', 'stasis-core/src/bundle-util.js', 'stasis/src/vfs-bundle.js', 'stasis/src/vfs-bundle/github.js', 'stasis/src/vfs-bundle/tree.js', 'stasis/src/vfs-bundle/entries.js', 'stasis/src/cmd/bundle-options.js', 'stasis/src/loaders/foundry.js']
   const FS = /(['"`])(?:node:)?fs(?:\/promises)?\1/gu
   const CONSTANTS = /\bimport\s*\{\s*constants\s*\}\s*from\s*(['"])(?:node:)?fs\1/gu
   for (const file of modules) {

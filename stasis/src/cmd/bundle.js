@@ -1450,7 +1450,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
 // errors. A directory entry (resolved against `cwd`, on `host`) stands for the .sol files under it: Solidity only.
-function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched }) {
+// `partial`: the options may yet be completed by a stasis.config.json entry's (configuredBuilds), so
+// what one needs of another one there could set (`--platforms` of `--metro`) is left to the build.
+function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched, partial = false }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error(`${name}: at least one entry file is required`)
   }
@@ -1497,7 +1499,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
     throw new Error(`${name}: --typescript is only valid for JS bundles`)
   }
   // --tsconfig names the config whose `paths` aliases --typescript honours; meaningless without it.
-  if (tsconfig !== undefined && !typescript) {
+  if (tsconfig !== undefined && !typescript && !partial) {
     throw new Error(`${name}: --tsconfig is only valid with --typescript`)
   }
   // --resources carries allowlisted assets reached through the JS import graph; JS-only. The list
@@ -1537,17 +1539,17 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
     if (mainFields !== undefined) {
       throw new Error(`${name}: --mainFields can't be combined with --metro (it sets its own mainFields)`)
     }
-    if (!Array.isArray(platforms) || platforms.length === 0) {
+    if ((!Array.isArray(platforms) || platforms.length === 0) && !partial) {
       throw new Error(`${name}: --metro requires --platforms (e.g. --platforms=ios,android)`)
     }
     // A platform name becomes an edge key: reject '/' (Bundle/Lockfile parse refuse it) and
     // the reserved '*' placeholder, so the writer never emits a map the readers reject.
-    for (const p of platforms) {
+    for (const p of Array.isArray(platforms) ? platforms : []) {
       if (typeof p !== 'string' || p.length === 0 || p === '*' || p.includes('/')) {
         throw new Error(`${name}: invalid platform '${p}' (a platform name can't be empty, contain '/', or be '*')`)
       }
     }
-  } else if (Array.isArray(platforms) && platforms.length > 0) {
+  } else if (Array.isArray(platforms) && platforms.length > 0 && !partial) {
     throw new Error(`${name}: --platforms is only valid with --metro`)
   }
   // --metro-resolver swaps in the project's real metro-resolver; it only means something under --metro.
@@ -1561,7 +1563,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   // --babel-aliases takes the same aliases from a JSON file instead, so the two don't combine.
   if (babelAliases !== undefined) {
     if (typeof babelAliases !== 'string' || babelAliases === '') throw new TypeError(`${name}: babelAliases must be a path to a JSON file`)
-    if (!metro) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
+    if (!metro && !partial) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
     if (babel) throw new Error(`${name}: --babel-aliases can't be combined with --babel (both set the import aliases)`)
   }
   // metro-resolver has no TS extension substitution, so --typescript would silently not apply -- reject it.
@@ -1656,7 +1658,11 @@ export function checkVfsOptions(name, options) {
 // would install, or its Solidity options, through the dependencies folder 'soldeer' would install; with
 // nothing read from disk but tarballs and zips, nor from the environment: a Solidity bundle is
 // built with foundry.toml's default profile, whatever FOUNDRY_PROFILE or remappings one sets, and no
-// EXODUS_STASIS_* setting is read. `repo`, the informational `{ github, directory, commit }`,
+// EXODUS_STASIS_* setting is read. The entries the stasis.config.json in cwd names in its `entries`
+// (every one, where none are given) are built with their options there, as `stasis bundle` builds
+// them, but none that runs a program; an option given has to agree with theirs, one left out is
+// theirs (configuredBuilds).
+// `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
@@ -1671,6 +1677,7 @@ export function checkVfsOptions(name, options) {
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
 export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, ...options } = {}) {
   const { checkCache, checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { configuredBuilds } = await import('./bundle-options.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
   checkCache('buildVfsBundle', cache)
@@ -1681,10 +1688,15 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   cwd = project.realpath(posix.resolve('/', cwd))
   packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
-  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, generate, cwd, host: project }), [packageManager])
+  // The entries stasis.config.json's `entries` names, every one where none are given, each built
+  // with its options there, which the options given agree with (configuredBuilds); else built with
+  // the options given. Each build is checked with the options it is built with.
+  const builds = configuredBuilds('buildVfsBundle', { cwd, host: project, entries: options.entries, options })?.builds ?? [options]
+  if (builds.length === 0) throw new Error(`buildVfsBundle: no entries given, and ${CONFIG_FILE}'s entries name none`)
+  for (const build of builds) checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
-  for (const entry of options.entries) {
+  for (const entry of builds.flatMap((build) => build.entries)) {
     const abs = posix.resolve(cwd, entry)
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
@@ -1696,11 +1708,23 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
     if (outputs.length > 0) host = treeHost(tree, vfsHost(withPrismaClients(vfs, outputs)))
   }
-  const args = { ...options, cwd, host, env: {} }
-  const { bundle, lockfile, stateBuilt, root } = pm.kind === 'sol' ? { bundle: await buildSolidityBundle(args), root: cwd } : await buildJs({ ...args, innermostRoot })
+  const args = { cwd, host, env: {} }
+  const builts = []
+  for (const build of builds) {
+    // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+    const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot })
+    // Rooted at cwd, where `stasis bundle` detects its repo.
+    if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
+    builts.push(built)
+  }
+  // Merged as bundleCommand merges its builds: rooted where every one of them is.
+  const { root } = builts[0]
+  const other = builts.findIndex((built) => built.root !== root)
+  if (other !== -1) {
+    throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
+  }
+  const { bundle, lockfile } = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
   if (repo !== undefined) bundle.repo = repo
-  // Rooted at cwd, where `stasis bundle` detects its repo.
-  else if (!stateBuilt) bundle.repo ??= detectRepo(cwd, host)
   pinCommits(bundle, root, tree)
   return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
 }
