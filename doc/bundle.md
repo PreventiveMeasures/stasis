@@ -295,6 +295,13 @@ there is the project's own source.
 Reaching a package only for an asset (through `--resources`) doesn't count: it
 contributes nothing unless the app's `package.json` lists it.
 
+It carries the project's Metro and React Native configs too, which the Metro
+plugin's run loads though nothing the app imports reaches them: the
+`metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
+`--babel-aliases`, it carries the `babel.config.js` there as well. Each is
+carried as Node loads it (`commonjs` or `module` by the package's `type`), not
+run, and what it imports isn't followed.
+
 A disabled import (a `browser`/`react-native` map entry set to `false`)
 resolves, as Metro resolves it, to Metro's own empty module: the project's
 `node_modules/metro-runtime/src/modules/empty-module.js`, carried in
@@ -328,7 +335,8 @@ source, so the plugin records no edge for it, as the static build doesn't. It
 still carries the file, as it carries every module of Metro's graph.
 
 `--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the
-project instead, running nothing: the object a `babel-plugin-module-resolver`
+project instead, running nothing (the project's Babel config is still carried,
+as above): the object a `babel-plugin-module-resolver`
 takes as its `alias` option, each alias to the string it maps to, the shape a
 `babel.config.js` can `require` (`alias: require('./aliases.json')`).
 

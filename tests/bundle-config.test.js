@@ -205,6 +205,29 @@ test('bundleCommand builds each of builds and writes their union: bundle:metro b
   t.assert.deepStrictEqual(Object.keys(lock.modules.get('.').files).toSorted(), ['a.android.js', 'a.ios.js', 'b.js', 'cli.js', 'index.js'])
 }))
 
+test('bundleCommand carries an entry\'s Metro, React Native and Babel configs where it builds with --metro', withTmp(async (t, tmp) => {
+  project(tmp)
+  writeTree(tmp, {
+    'metro.config.js': 'module.exports = {}\n',
+    'react-native.config.js': 'module.exports = {}\n',
+    'babel.config.js': 'module.exports = {}\n',
+    'aliases.json': {},
+  })
+  const metro = { entries: ['index.js'], metro: true, platforms: ['ios'] }
+  await bundleCommand({ cwd: tmp, output: 'a.br', lockfile: 'a.lock.json', builds: [metro, { entries: ['cli.js'] }] })
+  t.assert.deepStrictEqual(readBundle(join(tmp, 'a.br')).reason, {
+    'bundle': ['b.js', 'cli.js'],
+    'bundle:metro': ['a.ios.js', 'index.js', 'metro.config.js', 'react-native.config.js'],
+  })
+  const lock = Lockfile.parse(readFileSync(join(tmp, 'a.lock.json'), 'utf8'))
+  t.assert.ok(Object.hasOwn(lock.modules.get('.').files, 'metro.config.js'), 'the lockfile attests a config too')
+  // The Babel config with --babel-aliases (or --babel); a Node build alone carries none of them.
+  await bundleCommand({ cwd: tmp, output: 'b.br', builds: [{ ...metro, babelAliases: 'aliases.json' }, { entries: ['cli.js'] }] })
+  t.assert.ok(readBundle(join(tmp, 'b.br')).reason['bundle:metro'].includes('babel.config.js'))
+  await bundleCommand({ cwd: tmp, output: 'c.br', builds: [{ entries: ['cli.js'] }] })
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'c.br')).sources.keys()].toSorted(), ['b.js', 'cli.js'])
+}))
+
 test('bundleCommand adds the config\'s extra once, beside each build\'s own consumer', withTmp(async (t, tmp) => {
   project(tmp)
   writeTree(tmp, { 'tool.js': 'module.exports = 2\n', 'stasis.config.json': { extra: ['tool.js'] } })

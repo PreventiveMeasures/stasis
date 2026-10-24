@@ -7,7 +7,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { importsTypescriptByOutputName, scan } from '../scan.js'
+import { Scan, importsTypescriptByOutputName, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -960,6 +960,11 @@ function innermostRootOf(baseDir, files, root, host) {
 const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
+
+// The config files a React Native app's build loads from its project root, though nothing the app
+// imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
+const METRO_CONFIG_FILES = ['metro.config.js', 'react-native.config.js']
+const BABEL_CONFIG_FILE = 'babel.config.js'
 // What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
 // `default`, and so `--mainFields` too: `module`, the bundler-only condition a package's ESM build
 // sits under, from an import and a require alike. (esbuild drops it when given conditions of its
@@ -1347,6 +1352,22 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           put(rel, buf.toString('utf8'), packageType(abs, host) === 'module' ? 'module' : 'commonjs', buf)
         }
       }
+    }
+
+    // And the project's configs the Metro plugin's run loads, which nothing the app imports reaches:
+    // Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel config Metro's
+    // transformer runs. Each file itself, in the format Node loads it in (its package's `type`, else
+    // the one Node detects from its syntax, as Scan#parseFile has it), not what it imports.
+    const configs = [...METRO_CONFIG_FILES, ...(babel || aliasesFile !== undefined ? [BABEL_CONFIG_FILE] : [])]
+    const configScan = new Scan({ host })
+    for (const rel of configs) {
+      const abs = join(baseDir, rel)
+      if (sources.has(rel) || !host.stat(abs)?.isFile()) continue
+      assertRealPathWithinBase(realBase, baseDir, rel, host)
+      const buf = host.readFile(abs)
+      if (!isUtf8(buf)) throw new Error(`config is not valid UTF-8: ${rel}`)
+      const parsed = configScan.parseFile(abs)
+      put(rel, buf.toString('utf8'), parsed.format ?? parsed.declared ?? 'commonjs', buf)
     }
   }
 
