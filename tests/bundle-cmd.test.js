@@ -31,6 +31,7 @@ const phpFixtures = join(here, 'fixtures', 'php-bundle')
 const conditionsFixture = join(here, 'fixtures', 'bundle-conditions')
 const fieldsFixture = join(here, 'fixtures', 'resolve-fields')
 const contextMissFixture = join(here, 'fixtures', 'bundle-context-miss')
+const contextDivergeFixture = join(here, 'fixtures', 'bundle-context-diverge')
 
 const withTmp = (fn) => async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-cmd-'))
@@ -2343,6 +2344,27 @@ cliTest('CLI: bundle refuses a specifier one context resolves and the other fail
   const load = await runCli(['run', '--lock=none', '--bundle=load', 'src/require.js'], { cwd: tmp })
   t.assert.equal(load.status, 0, load.stderr)
   t.assert.equal(load.stdout, 'cjs\n')
+}))
+
+cliTest('CLI: --bundle=load serves each context its own target of a divergent edge, from the bundle alone', withTmp(async (t, tmp) => {
+  // dual's `exports` has a require() and an import target (and a `custom` pair), each keyed under
+  // its context's conditions. A lookup missing those keys -- the CJS shim's, which names none, or
+  // plain node's against a --conditions build -- takes the one of its own context.
+  // Loaded where the fixture's node_modules isn't, so nothing comes from disk.
+  const app = join(tmp, 'app')
+  cpSync(contextDivergeFixture, app, { recursive: true, filter: (src) => basename(src) !== 'node_modules' })
+  const roundTrip = async (name, conditions, expected) => {
+    const node = await spawnAsync(process.execPath, [...conditions, 'src/entry.js'], { cwd: contextDivergeFixture, encoding: 'utf-8', env: cleanEnv })
+    t.assert.equal(node.stdout, expected)
+    const out = join(tmp, `${name}.br`)
+    const build = await runCli(['bundle', ...conditions, `--output=${out}`, 'src/entry.js'], { cwd: contextDivergeFixture })
+    t.assert.equal(build.status, 0, build.stderr)
+    const load = await runCli(['run', '--lock=none', '--bundle=load', `--bundle-file=${out}`, 'src/entry.js'], { cwd: app })
+    t.assert.equal(load.status, 0, load.stderr)
+    t.assert.equal(load.stdout, expected)
+  }
+  await roundTrip('plain', [], 'require cjs\nimport esm\n')
+  await roundTrip('custom', ['--conditions=custom'], 'require custom cjs\nimport custom esm\n')
 }))
 
 // --- Flow-stripping JS bundling (`--flow`) ---

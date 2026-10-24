@@ -316,6 +316,39 @@ test('a frozen bundle attests an absolute-specifier edge: match passes, redirect
     frozen.addImport(parentURL, childAbs, parentURL, { conditions: ['require', 'node'] }))
 })
 
+// A bundle=load lookup missing its exact conditions key falls back to the edge's targets under
+// every key: a lone one serves any context, and divergent ones are settled by the keys of the
+// lookup's context.
+test('bundle=load settles a divergent edge by the lookup\'s context', (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'stasis-context-load-'))
+  t.after(() => rmSync(tmp, { recursive: true, force: true }))
+  const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'bundle-context-diverge')
+  const url = (file) => pathToFileURL(join(fixture, file)).toString()
+  const parentURL = url('src/entry.js')
+  const cjs = url('node_modules/dual/cjs.cjs')
+  const esm = url('node_modules/dual/esm.mjs')
+  const cap = new State(fixture, { scope: 'full', bundle: 'add' })
+  cap.addFile(parentURL, { format: 'commonjs', isEntry: true })
+  cap.addFile(cjs)
+  cap.addFile(esm)
+  // As a --conditions=custom build keys them, under sets plain node never asks.
+  cap.addImport(parentURL, 'dual', cjs, { conditions: ['require', 'node', 'custom'] })
+  cap.addImport(parentURL, 'dual', esm, { conditions: ['node', 'import', 'custom'] })
+  // As a capture records a require() that its replay can look up under import conditions.
+  cap.addImport(parentURL, './captured', cjs, { conditions: ['require', 'node'] })
+  const bundleFile = join(tmp, 'stasis.code.br')
+  writeFileSync(bundleFile, brotliCompressSync(cap.sourceData))
+
+  const load = new State(fixture, { scope: 'full', lock: 'none', bundle: 'load', bundleFile })
+  t.assert.equal(load.getImport(parentURL, 'dual', { conditions: ['require', 'node'] }).url, cjs)
+  t.assert.equal(load.getImport(parentURL, 'dual', { conditions: ['node', 'import'] }).url, esm)
+  t.assert.equal(load.resolveBundled(parentURL, 'dual', { conditions: ['require'] }), fileURLToPath(cjs))
+  // A lookup naming no context (the bundler plugins') can't pick one.
+  t.assert.throws(() => load.getImport(parentURL, 'dual'), { code: 'ERR_MODULE_NOT_FOUND' })
+  t.assert.equal(load.resolveBundled(parentURL, 'dual'), undefined)
+  t.assert.equal(load.getImport(parentURL, './captured', { conditions: ['node', 'import'] }).url, cjs)
+})
+
 // A directory whose name merely CONTAINS `node_modules` (e.g. `foo_node_modules/`) is a workspace
 // source, not a dependency: the marker must match a full path SEGMENT. Regression for the old
 // substring-based lastIndexOf('node_modules/') that bucketed such files as phantom npm deps.

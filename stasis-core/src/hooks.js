@@ -565,7 +565,8 @@ function patchCjsResolution() {
       if (typeof parent?.filename === 'string') {
         const parentURL = pathToFileURL(parent.filename).toString()
         if (state.config.full || state.inNodeModules(parentURL)) {
-          const resolved = state.resolveBundled(parentURL, request)
+          // Module._resolveFilename resolves for require(), whose target settles a divergent edge.
+          const resolved = state.resolveBundled(parentURL, request, { conditions: ['require'] })
           if (resolved !== undefined) {
             assertInfraMatchesBundle(pathToFileURL(resolved).toString())
             return resolved
