@@ -123,22 +123,34 @@ export const KINDS = {
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
 }
 
-// The entries a build of the project in `dir` (read through `host`) takes where none are given, as
-// paths from `dir`: those its stasis.config.json's `entries` names, checked with `options` as the
-// build checks them (configuredBuilds), where it names any; else those of `kind` (KINDS').
-export const defaultEntries = (name, host, dir, kind, options) => configuredBuilds(name, { cwd: dir, host, options })?.entries ?? kind.entries(host, dir, options)
-
 const EMPTY = vfsHost(new Vfs())
+
+// What a stasis.config.json's empty `entries` says of the directory holding it.
+const CONFIGURED_NONE = 'has a stasis.config.json whose entries name none'
+
+// -> { entries, none }: the entries a build of the project in `dir` (read through `host`) takes
+// where none are given, as paths from `dir`, and what having none says of `dir`. Those its
+// stasis.config.json's `entries` names, checked with `options` as the build checks them
+// (configuredBuilds), where it has `entries`, whatever it names; else those of `kind` (KINDS'),
+// with `options` then checked on their own, as the build checks them, which nothing completes.
+export function defaultEntries(name, host, dir, kind, options) {
+  const configured = configuredBuilds(name, { cwd: dir, host, options })
+  if (configured !== null) return { entries: configured.entries, none: CONFIGURED_NONE }
+  checkVfsOptions(name, { ...options, entries: [kind.standIn], cwd: '/', host: EMPTY, fetched: false })
+  return { entries: kind.entries(host, dir, options), none: kind.none }
+}
 
 // The build's checks of `options` before anything is fetched, over an empty tree, which never
 // decides them: for the package manager given, else for any; over the entries given, else over one
-// of the kind the default ones are. -> the PACKAGE_MANAGERS entry of the one given
+// of the kind the default ones are. But for what one of them needs of another, which the options of
+// an entry stasis.config.json names may set (`partial`), left to the build, which knows whether it
+// names it. -> the PACKAGE_MANAGERS entry of the one given
 export function checkAhead(name, packageManager, options) {
   checkVersion(name, { packageManager, ...options })
   const pm = packageManager === undefined ? undefined : packageManagerOf(name, packageManager)
   const refusal = (entries) => {
     try {
-      checkKind(name, checkVfsOptions(name, { ...options, entries, cwd: '/', host: EMPTY, fetched: false }), packageManager === undefined ? undefined : [packageManager])
+      checkKind(name, checkVfsOptions(name, { ...options, entries, cwd: '/', host: EMPTY, fetched: false, partial: true }), packageManager === undefined ? undefined : [packageManager])
       return null
     } catch (error) {
       return error

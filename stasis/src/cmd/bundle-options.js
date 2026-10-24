@@ -344,13 +344,15 @@ const optionText = (key, value) => (key === 'define'
 
 // The builds of `entries` that the stasis.config.json in `cwd` (read through `host`) names in its
 // `entries`, for `name`'s bundle, built from a project it runs nothing of
-// (@exodus/stasis/vfs-bundle's): every entry it names where none are given, as paths from `cwd`.
+// (@exodus/stasis/vfs-bundle's): every entry it names where none are given (none, of an empty
+// `entries`: nothing else stands in for them), as paths from `cwd`.
 // -> { entries, builds }, each build `{ entries, ...options }` with the options there (buildOptions'),
-// the entries with the same ones together; null where it names none of them, or there is none: they
-// are built with `options` alone. It may not name only some. Each of `options` (buildOptions'
-// shape) given other than at its default has to be the one each entry's options set, else it is
-// refused, neither taken over them nor left aside. An entry setting one that runs a program
-// (CONSENT_FLAGS') is refused: nothing of the project runs, so no option allows it. A usage error throws.
+// the entries with the same ones together; null where it names none of those given, or has no
+// `entries`: they are built with `options` alone. It may not name only some. Each of `options`
+// (buildOptions' shape) given other than at its default has to be the one each entry's options
+// set, else it is refused, neither taken over them nor left aside; one left out is theirs. One that
+// runs a program (CONSENT_FLAGS'), set by an entry or given, is refused: nothing of the project
+// runs, so no option allows it. A usage error throws.
 export function configuredBuilds(name, { cwd, host = diskHost, entries, options = {} }) {
   const prefixed = (fn, what = `${name}: `) => {
     try {
@@ -360,8 +362,11 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
     }
   }
   const config = prefixed(() => readConfigEntries(cwd, host))
-  if (config === null || config.size === 0 || (entries !== undefined && !Array.isArray(entries))) return null
-  entries ??= [...config.keys()]
+  if (config === null || (entries !== undefined && !Array.isArray(entries))) return null
+  if (entries === undefined) {
+    entries = [...config.keys()]
+    if (entries.length === 0) return { entries, builds: [] }
+  }
   const keys = entries.map((entry) => entryKey(cwd, entry))
   const configured = entries.filter((_, i) => config.has(keys[i]))
   if (configured.length === 0) return null
@@ -369,7 +374,7 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
   if (unnamed !== undefined) {
     throw new Error(`${name}: ${CONFIG_FILE}'s entries name ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
   }
-  const given = Object.keys(OPTION_FLAGS).filter((key) => !CONSENT_FLAGS.has(OPTION_FLAGS[key]) && options[key] !== undefined && comparable(key, options[key]) !== comparable(key, DEFAULT_OPTIONS[key]))
+  const given = Object.keys(OPTION_FLAGS).filter((key) => options[key] !== undefined && comparable(key, options[key]) !== comparable(key, DEFAULT_OPTIONS[key]))
   const builds = new Map()
   for (const [i, entry] of entries.entries()) {
     const { entry: written, values } = config.get(keys[i])
@@ -378,6 +383,7 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
     if (running !== undefined) throw new Error(`${what} sets ${running}, which runs ${CONSENT_FLAGS.get(running)}, and nothing of the project runs here`)
     const built = prefixed(() => buildOptions(values, entriesLanguage([entry], cwd, host)), `${what}: `)
     for (const key of given) {
+      if (CONSENT_FLAGS.has(OPTION_FLAGS[key])) continue
       if (comparable(key, options[key]) === comparable(key, built[key])) continue
       const set = comparable(key, built[key]) === comparable(key, DEFAULT_OPTIONS[key]) ? `without --${OPTION_FLAGS[key]}` : `with ${optionText(key, built[key])}`
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
@@ -386,5 +392,7 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
     if (builds.has(id)) builds.get(id).entries.push(entry)
     else builds.set(id, { entries: [entry], ...built })
   }
+  const running = given.find((key) => CONSENT_FLAGS.has(OPTION_FLAGS[key]))
+  if (running !== undefined) throw new Error(`${name}: ${optionText(running, options[running])} is given, which runs ${CONSENT_FLAGS.get(OPTION_FLAGS[running])}, and nothing of the project runs here`)
   return { entries, builds: [...builds.values()] }
 }

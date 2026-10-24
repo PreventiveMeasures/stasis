@@ -58,15 +58,15 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 }
 
 // -> the entries buildGitHubBundle takes where none are given, as paths from the project's
-// directory: those its stasis.config.json's `entries` names, where it names any, checked with the
-// options as the build checks them; else of the kind its package manager builds: `packageManager`
-// if given, else the one detected as the build detects it. For pnpm and yarn 1, the entry points
-// its package.json names, resolved as the build resolves them with the same `conditions`,
-// `mainFields`, `metro`, `platforms` and `typescript` (packageEntries); for Soldeer, its .sol
-// entry points by name and layout (solidityEntries). The options are checked as the build checks them, and `os`, the
-// one the build is for, detects the package manager as there. Of the project held in `vfs`, from
-// `cwd`; or of a GitHub repo, `{ github, sha, tag, directory, client }` as buildGitHubBundle takes
-// them, downloaded as it downloads them.
+// directory: those its stasis.config.json's `entries` names, where it has `entries` (none of an
+// empty one), checked with the options as the build checks them; else of the kind its package
+// manager builds: `packageManager` if given, else the one detected as the build detects it. For
+// pnpm and yarn 1, the entry points its package.json names, resolved as the build resolves them
+// with the same `conditions`, `mainFields`, `metro`, `platforms` and `typescript` (packageEntries);
+// for Soldeer, its .sol entry points by name and layout (solidityEntries). The options are checked
+// as the build checks them, and `os`, the one the build is for, detects the package manager as
+// there. Of the project held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, tag,
+// directory, client }` as buildGitHubBundle takes them, downloaded as it downloads them.
 export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, os, ...repo } = {}) {
   checkTarget('suggestedEntries', { os })
   const resolution = { conditions, mainFields, metro, platforms, jsx, typescript }
@@ -77,5 +77,5 @@ export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditi
   const host = vfsHost(vfs)
   const at = posix.resolve('/', cwd)
   const pm = checkAhead('suggestedEntries', packageManager ?? detectPackageManager('suggestedEntries', host, at, { os }), resolution)
-  return defaultEntries('suggestedEntries', host, at, KINDS[pm.kind], resolution)
+  return defaultEntries('suggestedEntries', host, at, KINDS[pm.kind], resolution).entries
 }

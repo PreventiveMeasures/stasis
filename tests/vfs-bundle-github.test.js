@@ -422,8 +422,31 @@ test("buildGitHubBundle takes stasis.config.json's entries without entries, each
   const nested = Object.fromEntries(Object.entries(configuredRepo()).map(([path, text]) => [path.endsWith('.yaml') ? path : `packages/p/${path}`, text]))
   const inner = await build({ client: fakeClient({ ...nested, 'pnpm-workspace.yaml': 'packages:\n  - packages/*\n', 'pnpm-lock.yaml': lockfile('.', 'packages/p'), 'package.json': json({ name: 'root', version: '1.0.0', private: true, main: 'root.js' }), 'root.js': '' }), directory: 'packages/p' })
   t.assert.deepStrictEqual([...inner.bundle.entries].toSorted(), ['cli.js', 'index.js'])
-  // An empty one names none.
-  t.assert.deepStrictEqual([...(await build({ client: fakeClient(configuredRepo({})) })).bundle.entries], ['main.js'])
+  // An empty one names none, and nothing stands in for them: not the package.json's.
+  await t.assert.rejects(build({ client: fakeClient(configuredRepo({})) }), new RegExp(`^Error: buildGitHubBundle: ${GITHUB}@${SHA}: no entries given, and the repo root has a stasis\\.config\\.json whose entries name none$`, 'u'))
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configuredRepo({})) }), [])
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configuredRepo({})), packageManager: 'pnpm' }), /^Error: buildVfsBundle: no entries given, and stasis\.config\.json's entries name none$/u)
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configuredRepo()), packageManager: 'pnpm', entries: [] }), /^Error: buildVfsBundle: at least one entry file is required$/u, 'none given is no default')
+  t.assert.deepStrictEqual([...(await build({ client: fakeClient(configuredRepo({})), entries: ['main.js'] })).bundle.entries], ['main.js'], 'given, built with the options given')
+  // Nor a Soldeer project's layout.
+  await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client: fakeClient({ ...foundry, 'stasis.config.json': json({ entries: {} }) }) }), /: no entries given, and the repo root has a stasis\.config\.json whose entries name none$/u)
+})
+
+test("buildGitHubBundle builds stasis.config.json's entries with the options it sets that are left out", async (t) => {
+  const app = ['a.android.js', 'a.ios.js', 'index.js']
+  const sources = async (options) => [...(await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], ...options })).bundle.sources.keys()].toSorted()
+  t.assert.deepStrictEqual(await sources({ metro: true }), app, '--metro, its --platforms the entry\'s')
+  t.assert.deepStrictEqual(await sources({ platforms: ['ios', 'android'] }), app, '--platforms, its --metro the entry\'s')
+  t.assert.deepStrictEqual(await sources({ metro: true, platforms: ['ios', 'android'] }), app)
+  const ts = configuredRepo({ 'src/a.ts': { typescript: true, tsconfig: 'tsconfig.json' } })
+  const typed = await build({ client: fakeClient({ ...ts, 'tsconfig.json': json({ compilerOptions: { paths: { '~/*': ['./src/*'] } } }), 'src/a.ts': "import '~/b.js'\n", 'src/b.ts': 'export default 1\n' }), tsconfig: 'tsconfig.json' })
+  t.assert.deepStrictEqual([...typed.bundle.sources.keys()].toSorted(), ['src/a.ts', 'src/b.ts'], '--tsconfig, its --typescript the entry\'s')
+  // Options given for entries it doesn't name are checked on their own, once the tree shows nothing completes them.
+  await t.assert.rejects(build({ client: fakeClient(configuredRepo()), entries: ['main.js'], metro: true }), /^Error: buildVfsBundle: --metro requires --platforms \(e\.g\. --platforms=ios,android\)$/u)
+  const { 'stasis.config.json': _config, ...bare } = configuredRepo()
+  await t.assert.rejects(build({ client: fakeClient(bare), platforms: ['ios'] }), /^Error: buildGitHubBundle: --platforms is only valid with --metro$/u)
+  await t.assert.rejects(build({ client: fakeClient(bare), packageManager: undefined, tsconfig: 'x.json' }), /^Error: buildGitHubBundle: --tsconfig is only valid with --typescript$/u)
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(bare), packageManager: 'pnpm', entries: ['main.js'], tsconfig: 'x.json' }), /^Error: buildVfsBundle: --tsconfig is only valid with --typescript$/u)
 })
 
 test("buildGitHubBundle bundles the entries stasis.config.json names or others, never both", async (t) => {
@@ -474,6 +497,7 @@ test("buildGitHubBundle refuses stasis.config.json's entries that run a program:
   await t.assert.rejects(build({ client, entries: ['index.js'], metro: true, babel: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: babel is not supported$/u)
   t.assert.deepStrictEqual(client.calls, [])
   await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configuredRepo(running.babel[0])), entries: ['index.js'], metro: true, babel: true, platforms: ['ios'] }), /^Error: buildVfsBundle: stasis\.config\.json: entries "index\.js" sets babel, which runs /u)
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configuredRepo()), entries: ['index.js'], metro: true, babel: true }), /^Error: buildVfsBundle: --babel is given, which runs the project's Babel config, and nothing of the project runs here$/u, 'nor given for an entry it names')
 })
 
 test("buildGitHubBundle builds a Soldeer project's stasis.config.json entries, a directory one too", async (t) => {
@@ -726,7 +750,7 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, entries: [] }), /^Error: buildGitHubBundle: at least one entry file is required/u)
   await t.assert.rejects(build({ client, entries: ['a.js'], scope: 'node_modules', metro: true, platforms: ['ios'] }), /^Error: buildGitHubBundle: --scope=node_modules is not supported with --mainFields or --metro/u)
   // With neither entries nor a package manager, what no kind takes; a version is of one given.
-  await t.assert.rejects(build({ client, packageManager: undefined, tsconfig: 'x.json' }), /^Error: buildGitHubBundle: --tsconfig is only valid with --typescript$/u)
+  await t.assert.rejects(build({ client, packageManager: undefined, define: { '1x': true } }), /^Error: buildGitHubBundle: --define names an identifier or a dotted path of them/u)
   await t.assert.rejects(build({ client, packageManager: undefined, packageManagerVersion: '10.33.4' }), /^TypeError: buildGitHubBundle: packageManagerVersion is only valid with packageManager$/u)
   // Without entries, as for the JS ones suggested.
   await t.assert.rejects(build({ client, mappingFile: 'remappings.txt' }), /^Error: buildGitHubBundle: --mapping is only valid for \.sol bundles$/u)

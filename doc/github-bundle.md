@@ -57,8 +57,8 @@ publisher's word, held to no repository.
 
 The entries are paths in `--directory`, or in the repo. Without any, they are
 those the directory's `stasis.config.json` names in its
-[`entries`](bundle.md#entry-options-stasisconfigjson), where it names any.
-Else:
+[`entries`](bundle.md#entry-options-stasisconfigjson), where it has `entries`:
+nothing else stands in for them, so an empty one is refused. Else:
 
 - a JS bundle takes the JS files the directory's `package.json` names (`main`,
   each subpath of `exports`, each `bin`), resolved as the build resolves them
@@ -75,7 +75,8 @@ With it:
 - An option given for them must be the one each of them is built with there,
   or the build is refused: `--platforms=ios` for an entry it builds with
   `--platforms=ios,android`, or `--jsx` for one it builds without. An option
-  left out leaves each entry's own.
+  left out leaves each entry's own, so `--metro` alone builds an entry it
+  builds with `--metro --platforms=ios,android`.
 - The entries given are all named there, or none is, the two never mixed.
   Where none is, they are built with the options given, as without it.
 - An entry setting `babel`, `metro-resolver`, `cargo` or `cargo-target` is

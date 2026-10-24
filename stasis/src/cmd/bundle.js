@@ -1450,7 +1450,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
 // errors. A directory entry (resolved against `cwd`, on `host`) stands for the .sol files under it: Solidity only.
-function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched }) {
+// `partial`: the options may yet be completed by a stasis.config.json entry's (configuredBuilds), so
+// what one needs of another one there could set (`--platforms` of `--metro`) is left to the build.
+function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, manifests, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, host = diskHost, fetched, partial = false }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error(`${name}: at least one entry file is required`)
   }
@@ -1497,7 +1499,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
     throw new Error(`${name}: --typescript is only valid for JS bundles`)
   }
   // --tsconfig names the config whose `paths` aliases --typescript honours; meaningless without it.
-  if (tsconfig !== undefined && !typescript) {
+  if (tsconfig !== undefined && !typescript && !partial) {
     throw new Error(`${name}: --tsconfig is only valid with --typescript`)
   }
   // --resources carries allowlisted assets reached through the JS import graph; JS-only. The list
@@ -1537,17 +1539,17 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
     if (mainFields !== undefined) {
       throw new Error(`${name}: --mainFields can't be combined with --metro (it sets its own mainFields)`)
     }
-    if (!Array.isArray(platforms) || platforms.length === 0) {
+    if ((!Array.isArray(platforms) || platforms.length === 0) && !partial) {
       throw new Error(`${name}: --metro requires --platforms (e.g. --platforms=ios,android)`)
     }
     // A platform name becomes an edge key: reject '/' (Bundle/Lockfile parse refuse it) and
     // the reserved '*' placeholder, so the writer never emits a map the readers reject.
-    for (const p of platforms) {
+    for (const p of Array.isArray(platforms) ? platforms : []) {
       if (typeof p !== 'string' || p.length === 0 || p === '*' || p.includes('/')) {
         throw new Error(`${name}: invalid platform '${p}' (a platform name can't be empty, contain '/', or be '*')`)
       }
     }
-  } else if (Array.isArray(platforms) && platforms.length > 0) {
+  } else if (Array.isArray(platforms) && platforms.length > 0 && !partial) {
     throw new Error(`${name}: --platforms is only valid with --metro`)
   }
   // --metro-resolver swaps in the project's real metro-resolver; it only means something under --metro.
@@ -1561,7 +1563,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   // --babel-aliases takes the same aliases from a JSON file instead, so the two don't combine.
   if (babelAliases !== undefined) {
     if (typeof babelAliases !== 'string' || babelAliases === '') throw new TypeError(`${name}: babelAliases must be a path to a JSON file`)
-    if (!metro) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
+    if (!metro && !partial) throw new Error(`${name}: --babel-aliases is only valid with --metro`)
     if (babel) throw new Error(`${name}: --babel-aliases can't be combined with --babel (both set the import aliases)`)
   }
   // metro-resolver has no TS extension substitution, so --typescript would silently not apply -- reject it.
@@ -1658,7 +1660,8 @@ export function checkVfsOptions(name, options) {
 // built with foundry.toml's default profile, whatever FOUNDRY_PROFILE or remappings one sets, and no
 // EXODUS_STASIS_* setting is read. The entries the stasis.config.json in cwd names in its `entries`
 // (every one, where none are given) are built with their options there, as `stasis bundle` builds
-// them, but none that runs a program; an option given has to agree with theirs (configuredBuilds).
+// them, but none that runs a program; an option given has to agree with theirs, one left out is
+// theirs (configuredBuilds).
 // `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
@@ -1686,16 +1689,14 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
   // The entries stasis.config.json's `entries` names, every one where none are given, each built
-  // with its options there, the options given agreeing with them (configuredBuilds); else built
-  // with the options given.
-  const configured = configuredBuilds('buildVfsBundle', { cwd, host: project, entries: options.entries, options })
-  const { entries = options.entries } = configured ?? {}
-  checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...options, entries, generate, cwd, host: project }), [packageManager])
-  const builds = configured?.builds ?? [{ ...options, entries }]
-  for (const build of configured?.builds ?? []) checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
+  // with its options there, which the options given agree with (configuredBuilds); else built with
+  // the options given. Each build is checked with the options it is built with.
+  const builds = configuredBuilds('buildVfsBundle', { cwd, host: project, entries: options.entries, options })?.builds ?? [options]
+  if (builds.length === 0) throw new Error(`buildVfsBundle: no entries given, and ${CONFIG_FILE}'s entries name none`)
+  for (const build of builds) checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
-  for (const entry of entries) {
+  for (const entry of builds.flatMap((build) => build.entries)) {
     const abs = posix.resolve(cwd, entry)
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
