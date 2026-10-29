@@ -4481,10 +4481,10 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   t.assert.deepStrictEqual([...plain.sources.keys()], ['index.js'])
 }))
 
-test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does', withTmp(async (t, tmp) => {
+test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but json for JSON', withTmp(async (t, tmp) => {
   // Metro transforms each file from source, whatever Node would load it as: a typeless .js with
-  // import/export, a .ts, a .jsx, an .mjs or a .json alike. An asset keeps the format its bytes are
-  // stored in.
+  // import/export, a .ts, a .jsx or an .mjs alike. A .json is json, which its name alone gives it, and
+  // an asset keeps the format its bytes are stored in.
   jsProject(tmp, {
     'index.js': "import './comp.jsx'\nimport './mod.ts'\nimport './util.mjs'\nimport './data.json'\nimport logo from './logo.png'\nexport default logo\n",
     'comp.jsx': 'export default () => <div />\n',
@@ -4496,7 +4496,7 @@ test('buildBundle --metro records no format for the code Metro builds, as the Me
   const options = { cwd: tmp, entries: ['index.js'], resources: ['png'] }
   const bundle = await buildBundle({ ...options, metro: true, platforms: ['ios', 'android'] })
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'data.json', 'index.js', 'logo.png', 'mod.ts', 'util.mjs'])
-  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), { 'logo.png': 'resource:base64' })
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), { 'data.json': 'json', 'logo.png': 'resource:base64' })
   // --mainFields records each as Node loads it.
   const fields = await buildBundle({ ...options, mainFields: ['main'] })
   t.assert.equal(fields.formats.get('index.js'), 'module')
