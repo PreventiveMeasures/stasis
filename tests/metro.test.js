@@ -1037,6 +1037,10 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       readFileSync(join(tmp, SETUP_ENV), 'utf-8'))
     t.assert.equal(decoded.formats[ASYNC_REQUIRE], undefined)
     t.assert.equal(decoded.formats[SETUP_ENV], 'shell')
+    // asyncRequire.js is the app's, which Metro bundles; setup_env.sh the run's, which the React
+    // Native CLI runs as each command of it starts.
+    t.assert.ok(decoded.reason.metro.includes(ASYNC_REQUIRE) && !decoded.reason.run?.includes(ASYNC_REQUIRE))
+    t.assert.ok(decoded.reason.run.includes(SETUP_ENV) && !decoded.reason.metro.includes(SETUP_ENV))
   }))
 
   test('auto-includes: entries are independent -- a missing one is skipped, the present one attested', withTmp(async (t, tmp) => {
