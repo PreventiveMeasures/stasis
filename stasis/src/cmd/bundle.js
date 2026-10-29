@@ -1165,8 +1165,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       reached.add(abs)
       if (info.resource) resourceRels.add(rel)
       // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
-      // it from source, and Node's module/commonjs isn't what it runs.
-      formatsByRel.set(rel, metro && !info.resource ? undefined : info.format)
+      // it from source, and Node's module/commonjs isn't what it runs. A .json one stays `json`,
+      // which its name alone gives it, as Node loads it too.
+      formatsByRel.set(rel, metro && !info.resource && info.format !== 'json' ? undefined : info.format)
       for (const e of info.edges) {
         if (e.builtin || e.dynamic) continue
         let target
