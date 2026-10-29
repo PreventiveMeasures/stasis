@@ -1611,6 +1611,9 @@ function withExtra(built, cwd, outputs, resources) {
   const allowlist = resources === undefined ? parseResourcesOption(CONFIG_FILE, config.resources) : parseResourcesOption('--resources', resources)
   const added = extraArtifacts({ baseDir, patterns, resources: allowlist, bundle: built.bundle, outputs: written })
   if (added.bundle === null && added.carried.length === 0) return built
+  // The files are the build's own, at its root, so they are where it was built: its `repo`, which a
+  // merge with a side lacking one would drop.
+  if (added.bundle !== null) added.bundle.repo = built.bundle.repo
   // Each file attributed: to the build's own consumer (`bundle`, or `bundle:metro`, as codeBundle
   // stamps it), `extra`, or both, for one `extra` names that the build carries itself.
   const merged = added.bundle === null ? built.bundle : built.bundle.merge(added.bundle)
