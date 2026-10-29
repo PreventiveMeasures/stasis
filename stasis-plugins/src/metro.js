@@ -34,10 +34,13 @@ function entrySet(graph) {
 }
 
 // Files a React Native build requires that Metro's module graph never carries; attested (tagged by
-// the shared classifier, see #captureAutoIncludes) when they resolve from the project.
+// the shared classifier, see #captureAutoIncludes) when they resolve from the project, each under the
+// consumer that uses it: Metro bundles asyncRequire.js into the app (for an `import()`); the React
+// Native CLI runs setup_env.sh (`execFileSync`) as every command of it starts, `react-native config`
+// the plugin runs included, which is the run's toolchain, none of it the app's.
 const AUTO_INCLUDES = [
-  'metro-runtime/src/modules/asyncRequire.js',
-  '@react-native-community/cli/setup_env.sh',
+  { specifier: 'metro-runtime/src/modules/asyncRequire.js', reason: 'metro' },
+  { specifier: '@react-native-community/cli/setup_env.sh', reason: 'run' },
 ]
 
 // Metro's own transform plugins, as its transform worker names them for its cache key: the file
@@ -286,7 +289,7 @@ export class StasisMetro {
   // Attest the AUTO_INCLUDES list. Per entry, skip: unresolvable, already-seen, or resolving
   // outside the project root (keys are root-relative). Attested entries ride the normal addFile path.
   #captureAutoIncludes() {
-    for (const specifier of AUTO_INCLUDES) {
+    for (const { specifier, reason } of AUTO_INCLUDES) {
       let modPath
       try {
         modPath = require.resolve(specifier, { paths: [this.#projectDir] })
@@ -307,7 +310,7 @@ export class StasisMetro {
       // would collide at the format noupsert. Unrecognized -> resource (vetted list, so no allowlist).
       // JS (asyncRequire.js) is code Metro builds, so it takes no format, as the graph's doesn't.
       const format = classifyFormat(modPath, { content: source })
-      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false })
+      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false, reason })
     }
   }
 
