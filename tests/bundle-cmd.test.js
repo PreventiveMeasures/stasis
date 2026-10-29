@@ -4503,6 +4503,65 @@ test('buildBundle --metro records no format for the code Metro builds, as the Me
   t.assert.equal(fields.formats.get('data.json'), 'json')
 }))
 
+// What Babel and Metro add to a React Native build, installed as their packages lay them out:
+// @babel/runtime's helpers (with esm/ ones beside them, which Metro's CommonJS build never takes),
+// metro-runtime's module system and asyncRequire, @react-native/js-polyfills listing two of its
+// three files for Metro to prepend, and react's JSX runtime.
+const writeMetroAddedPackages = (tmp) => {
+  const files = {
+    '@babel/runtime/package.json': JSON.stringify({ name: '@babel/runtime', version: '7.28.0' }),
+    '@babel/runtime/helpers/interopRequireDefault.js': 'module.exports = (o) => o\n',
+    '@babel/runtime/helpers/toPropertyKey.js': "var _typeof = require('./typeof.js')\nmodule.exports = (k) => _typeof(k)\n",
+    '@babel/runtime/helpers/typeof.js': 'module.exports = (o) => typeof o\n',
+    '@babel/runtime/helpers/esm/typeof.js': 'export default (o) => typeof o\n',
+    'metro-runtime/package.json': JSON.stringify({ name: 'metro-runtime', version: '0.83.0' }),
+    'metro-runtime/src/polyfills/require.js': 'global.__r = () => {}\n',
+    'metro-runtime/src/modules/asyncRequire.js': 'module.exports = () => {}\n',
+    '@react-native/js-polyfills/package.json': JSON.stringify({ name: '@react-native/js-polyfills', version: '0.81.0' }),
+    '@react-native/js-polyfills/index.js': "'use strict'\nmodule.exports = () => [\n  require.resolve('./console.js'),\n  require.resolve('./error-guard.js'),\n]\n",
+    '@react-native/js-polyfills/console.js': 'global.console = global.console\n',
+    '@react-native/js-polyfills/error-guard.js': 'global.ErrorUtils = {}\n',
+    '@react-native/js-polyfills/Object.es8.js': 'Object.entries = Object.entries\n',
+    'react/package.json': JSON.stringify({ name: 'react', version: '19.1.0' }),
+    'react/jsx-runtime.js': "if (process.env.NODE_ENV === 'production') module.exports = require('./cjs/react-jsx-runtime.production.js')\nelse module.exports = require('./cjs/react-jsx-runtime.development.js')\n",
+    'react/cjs/react-jsx-runtime.production.js': 'exports.jsx = 1\n',
+    'react/cjs/react-jsx-runtime.development.js': 'exports.jsx = 2\n',
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, 'node_modules', rel)), { recursive: true })
+    writeFileSync(join(tmp, 'node_modules', rel), content)
+  }
+}
+
+const METRO_ADDED = {
+  helpers: ['node_modules/@babel/runtime/helpers/interopRequireDefault.js', 'node_modules/@babel/runtime/helpers/toPropertyKey.js', 'node_modules/@babel/runtime/helpers/typeof.js'],
+  runtime: ['node_modules/metro-runtime/src/modules/asyncRequire.js', 'node_modules/metro-runtime/src/polyfills/require.js'],
+  polyfills: ['node_modules/@react-native/js-polyfills/console.js', 'node_modules/@react-native/js-polyfills/error-guard.js'],
+  jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
+}
+
+test('buildBundle --metro carries what Babel and Metro add to the build, as Metro bundles it, though the source imports none of it', withTmp(async (t, tmp) => {
+  jsProject(tmp, { 'index.js': 'export default () => <div />\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
+  writeMetroAddedPackages(tmp)
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
+  // Babel's (--babel-aliases): its helpers, all of them, which ones it adds hanging on the syntax a
+  // file uses; Metro's module system and asyncRequire; the polyfills React Native's Metro config
+  // prepends, as js-polyfills lists them (read, never run). And the JSX runtime for JSX (--jsx).
+  const bundle = await buildBundle({ ...options, babelAliases: 'aliases.json', jsx: true })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...Object.values(METRO_ADDED).flat(), 'index.js'].toSorted())
+  // No edge to any from the source, which imports none; theirs among themselves, written in theirs.
+  t.assert.equal(bundle.imports.get('*').get('index.js'), undefined)
+  t.assert.equal(importTarget(bundle, 'node_modules/@babel/runtime/helpers/toPropertyKey.js', './typeof.js'), 'node_modules/@babel/runtime/helpers/typeof.js')
+  // Metro's code: no format.
+  t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), undefined)
+  // Plain --metro adds none of it; a .tsx file, JSX itself, takes the JSX runtime without --jsx.
+  writeFileSync(join(tmp, 'plain.js'), 'export default 1\n')
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()], ['plain.js'])
+  writeFileSync(join(tmp, 'view.tsx'), 'export const View = () => <div />\n')
+  const tsx = await buildBundle({ ...options, entries: ['view.tsx'] })
+  t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
+}))
+
 // --- the empty module under --metro --------------------------------------------------------
 //
 // A disabled import (a `browser`/`react-native` map entry set to `false`) resolves, under --metro, to

@@ -335,6 +335,19 @@ helper, `react/jsx-runtime`, Metro's `asyncRequire`) is written nowhere in the
 source, so the plugin records no edge for it, as the static build doesn't. It
 still carries the file, as it carries every module of Metro's graph.
 
+The static build carries those files too, as Metro's code, each scanned for
+what it imports in turn:
+
+- under `--babel` or `--babel-aliases`, Babel's helpers: every
+  `@babel/runtime/helpers/*.js` of each `@babel/runtime` a bundled file
+  finds, since which ones Babel adds depends on the syntax each file uses;
+- also under either, Metro's module system and `asyncRequire`
+  (`metro-runtime`), and the polyfills React Native's Metro config prepends:
+  the files `@react-native/js-polyfills`' `index.js` lists, which is read but
+  never run;
+- for JSX (`--jsx`, or a `.jsx` or `.tsx` file), the JSX runtime Babel
+  imports, `react/jsx-runtime`.
+
 `--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the
 project instead, running nothing (the project's Babel config is still carried,
 as above): the object a `babel-plugin-module-resolver`
