@@ -226,10 +226,12 @@ Its files are attributed to the `bundle:metro` consumer in the bundle's
 `stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
 
 The code it carries has no format, as the Metro plugin records it: Metro
-transforms each file from source, so how Node would load it (`module`,
-`commonjs`, `json`) doesn't apply. Assets keep their `resource` formats and
-native build inputs theirs. Such a bundle is for Metro: `stasis run
---bundle=load` refuses to run its code under Node.
+transforms each file from source, so how Node would load it (`module` or
+`commonjs`) doesn't apply. A `.json` file is `json`, which its name alone gives
+it, Metro and Node reading it alike, so one the build's own Node process loads
+too (a config requiring it) is recorded the same on both sides. Assets keep
+their `resource` formats and native build inputs theirs. Such a bundle is for
+Metro: `stasis run --bundle=load` refuses to run its code under Node.
 
 It takes Metro's own steps, as `metro-resolver` takes them, where they differ
 from Node's and esbuild's:

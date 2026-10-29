@@ -266,8 +266,9 @@ files it adds.
   `directory`, `stat:file`, `stat:directory` (see "Filesystem captures"). Native
   tags come from the Metro native capture and aren't runnable by Node; `pbxproj`
   is an Xcode project file added via `stasis add`. The code Metro builds has no
-  format, from the Metro plugin or `stasis bundle --metro`: Metro transforms it
-  from source, and `stasis run --bundle=load` refuses to run it. The loader picks
+  format, from the Metro plugin or `stasis bundle --metro`, but a `.json` file's
+  `json`: Metro transforms it from source, and `stasis run --bundle=load` refuses
+  to run it. The loader picks
   module-vs-commonjs and (for `*-typescript`) type-stripping purely from this
   value. Checked like `imports`: a mismatch is fatal, and on disk only the attested
   zone is enforced (`node_modules` files in `node_modules` scope, everything in

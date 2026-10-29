@@ -128,6 +128,24 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(lock.imports['*']['src/entry.js']['./hello.js'], 'src/hello.js')
   }))
 
+  test('a JSON module is recorded as json, which its name gives it, the rest of Metro\'s code with no format', withTmp(async (t, tmp) => {
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    writeFileSync(join(tmp, 'src', 'data.json'), '{"a":1}\n')
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./data.json', 'src/data.json']] },
+        { path: 'src/hello.js', deps: [] },
+        { path: 'src/data.json', deps: [] },
+      ],
+    }
+    const r = await run('src/entry.js', { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' }, graph })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
+    t.assert.equal(lock.formats['src/data.json'], 'json')
+    t.assert.equal(lock.formats['src/entry.js'], undefined)
+  }))
+
   test('a dependency Babel or Metro added is no edge, its file still carried, and load runs without one', withTmp(async (t, tmp) => {
     // A Babel helper (@babel/runtime/helpers/*), the JSX runtime, Metro's asyncRequire: the source
     // writes none, so `stasis bundle --metro` records none, and neither does the capture.
@@ -1037,6 +1055,10 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       readFileSync(join(tmp, SETUP_ENV), 'utf-8'))
     t.assert.equal(decoded.formats[ASYNC_REQUIRE], undefined)
     t.assert.equal(decoded.formats[SETUP_ENV], 'shell')
+    // asyncRequire.js is the app's, which Metro bundles; setup_env.sh the run's, which the React
+    // Native CLI runs as each command of it starts.
+    t.assert.ok(decoded.reason.metro.includes(ASYNC_REQUIRE) && !decoded.reason.run?.includes(ASYNC_REQUIRE))
+    t.assert.ok(decoded.reason.run.includes(SETUP_ENV) && !decoded.reason.metro.includes(SETUP_ENV))
   }))
 
   test('auto-includes: entries are independent -- a missing one is skipped, the present one attested', withTmp(async (t, tmp) => {
