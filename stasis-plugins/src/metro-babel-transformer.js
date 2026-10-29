@@ -9,7 +9,7 @@ import { createRequire } from 'node:module'
 // rewrite. This adds one plugin that records every specifier in its `pre` -- Babel runs every
 // plugin's `pre` before any plugin's visitor, so nothing has rewritten one yet -- and reads each
 // again once Babel is done, before Metro's own passes replace them in the AST, but one importing
-// types alone, which Babel erases. The real transformer runs as it would; its output is untouched.
+// types alone that Babel erased. The real transformer runs as it would; its output is untouched.
 
 const require = createRequire(import.meta.url)
 
@@ -49,9 +49,10 @@ function specifierOf(node) {
 
 const TYPE_KINDS = new Set(['type', 'typeof'])
 
-// A declaration of types alone, which Babel erases, so that it names no module Metro depends on:
+// A declaration of types alone, which Babel may erase, and then it names no module Metro depends on:
 // Flow's `import type`/`import typeof`, TypeScript's `import type`, `export type ... from`, and one
-// whose every specifier is a type (`import { type A }`).
+// whose every specifier is a type (`import { type A }`, which TypeScript's `onlyRemoveTypeImports`
+// keeps as `import {} from`).
 function typesOnly(node) {
   if (TYPE_KINDS.has(node.importKind ?? node.exportKind)) return true
   const specifiers = node.specifiers ?? []
@@ -65,9 +66,9 @@ function asWrittenPlugin({ types: t }) {
       const { slots } = transformContext.getStore()
       let evaluate = false
       t.traverseFast(file.ast, (node) => {
-        if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type) || typesOnly(node)) return
+        if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
         const written = specifierOf(node)
-        if (written !== undefined) slots.push({ node, written })
+        if (written !== undefined) slots.push({ node, written, types: node.type !== 'CallExpression' && typesOnly(node) })
         else if (node.type === 'CallExpression' && node.arguments.length > 0) evaluate = true
       })
       // Metro takes any argument Babel evaluates to a string with confidence, one bound to a constant
@@ -81,6 +82,17 @@ function asWrittenPlugin({ types: t }) {
         },
       })
     },
+    visitor: {
+      // Babel exits a node only if no plugin removed it on the way in, so a declaration of types
+      // alone that Babel erased never exits: flow-strip-types removes it as it enters it, the TS
+      // plugin before the traversal gets there. One it kept (`import {} from` under
+      // `onlyRemoveTypeImports`) exits, still naming its module.
+      'ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration': {
+        exit(path) {
+          transformContext.getStore().kept.add(path.node)
+        },
+      },
+    },
   }
 }
 
@@ -88,14 +100,16 @@ export function transform(args) {
   const context = transformContext.getStore()
   assert.ok(context, 'StasisMetro: the stasis Babel transformer runs only under the stasis metro-transformer')
   const slots = []
-  Object.assign(context, { slots })
-  // Once Babel is done: each specifier as it left it, from the node that held it as written. A
-  // declaration a plugin replaced keeps it too: lowered to a require (the commonjs transform), or
-  // split in two (`export * as ns from` into an import and an export, the export-namespace-from
-  // transform), it names the same module, its specifier as rewritten before (module-resolver rewrites
-  // every one as the program enters).
+  const kept = new Set()
+  Object.assign(context, { slots, kept })
+  // Once Babel is done: each specifier as it left it, from the node that held it as written, but a
+  // declaration of types alone Babel erased. One a plugin replaced keeps it too: lowered to a require
+  // (the commonjs transform), or split in two (`export * as ns from` into an import and an export,
+  // the export-namespace-from transform), it names the same module, its specifier as rewritten
+  // before (module-resolver rewrites every one as the program enters).
   const collect = (result) => {
-    for (const { node, written } of slots) {
+    for (const { node, written, types } of slots) {
+      if (types && !kept.has(node)) continue
       // One evaluated through its scope stays as written: no plugin rewrites what isn't a literal.
       const left = specifierOf(node) ?? (node.type === 'CallExpression' ? written : undefined)
       if (left === undefined) continue

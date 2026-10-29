@@ -402,6 +402,33 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
   }))
 }
 
+test('a declaration of types alone counts where Babel keeps it, as TypeScript\'s onlyRemoveTypeImports does', withTmp((t, tmp) => {
+  // `import { type A } from './src/a'` is kept as `import {} from './src/a'`, a dependency Metro has;
+  // `import type { B } from './src/b'` is erased, as always.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'types-kept', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), `const keepTypeImports = () => ({
+  visitor: {
+    ImportDeclaration(path) {
+      const { node } = path
+      if (node.importKind === 'type') path.remove()
+      else if (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.importKind === 'type')) node.specifiers = []
+    },
+  },
+})
+module.exports = { parserOpts: { plugins: ['flow'] }, plugins: [keepTypeImports] }
+`)
+  writeFileSync(join(tmp, 'index.js'), "import { type A } from './src/a'\nimport type { B } from './src/b'\nexport default 1\n")
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'a.js'), 'export default 1\n')
+  writeFileSync(join(tmp, 'src', 'b.js'), 'export default 2\n')
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+  const r = transform(['index.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver) } })
+  t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+  const [out] = JSON.parse(r.stdout)
+  t.assert.deepStrictEqual(out.dependencies, [{ name: './src/a', data: { key: './src/a' } }])
+}))
+
 test('a project transformer that is this one itself, wired by hand as well, gives way to Metro\'s default', withTmp((t, tmp) => {
   // withStasis() hands over the project's transformerPath, which a project that wired
   // @exodus/stasis/metro-transformer by hand points at this transformer: running it as its own
