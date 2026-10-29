@@ -274,7 +274,8 @@ const mockWorker = join(here, 'metro-mock-worker.cjs')
 // the import declarations are gone by the time Babel returns. The type imports are aliased to the
 // file index.js requires by path, which they must not count as written through the alias.
 // A plugin adds imports as Babel's helpers and the JSX runtime are added: a helper the source never
-// names, and ./src/def, which index.js requires itself. `lowerAmongPlugins` lists the lowering first
+// names, and ./src/def, which index.js requires itself. Another splits each `export * as` into an
+// import and an export as it enters it, as @babel/plugin-transform-export-namespace-from does. `lowerAmongPlugins` lists the lowering first
 // among the config's own plugins instead, so that it runs before the stasis plugin Metro passes.
 const babelAliasProject = (tmp, { lowerAmongPlugins = false } = {}) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'babel-alias', version: '0.0.0' }))
@@ -297,6 +298,19 @@ const addImports = ({ types: t }) => ({
     },
   },
 })
+const splitNamespace = ({ types: t }) => ({
+  visitor: {
+    ExportNamedDeclaration(path) {
+      const [specifier] = path.node.specifiers
+      if (!t.isExportNamespaceSpecifier(specifier)) return
+      const uid = path.scope.generateUidIdentifier(specifier.exported.name)
+      path.replaceWithMultiple([
+        t.importDeclaration([t.importNamespaceSpecifier(uid)], t.cloneNode(path.node.source)),
+        t.exportNamedDeclaration(null, [t.exportSpecifier(t.cloneNode(uid), specifier.exported)]),
+      ])
+    },
+  },
+})
 const lower = ({ types: t }) => ({
   visitor: {
     Program: {
@@ -311,10 +325,10 @@ const lower = ({ types: t }) => ({
 })
 module.exports = ${lowerAmongPlugins ? `{
   parserOpts: { plugins: ['flow'] },
-  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports],
+  plugins: [lower, ['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports, splitNamespace],
 }` : `{
   parserOpts: { plugins: ['flow'] },
-  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports],
+  plugins: [['module-resolver', { alias: { '#local': './src' } }], stripTypes, addImports, splitNamespace],
   presets: [() => ({ plugins: [lower] })],
 }`}
 `)
@@ -329,6 +343,7 @@ module.exports = ${lowerAmongPlugins ? `{
     "const mno = require('./src/' + 'mno')",
     "const pqrPath = './src/pqr'",
     'const pqr = require(pqrPath)',
+    "export * as stu from '#local/stu'",
     'export default [abc, same, def, ghi, jkl, mno, pqr]',
     '',
   ].join('\n'))
@@ -340,6 +355,7 @@ module.exports = ${lowerAmongPlugins ? `{
   writeFileSync(join(tmp, 'src', 'jkl.js'), 'module.exports = 4\n')
   writeFileSync(join(tmp, 'src', 'mno.js'), 'module.exports = 5\n')
   writeFileSync(join(tmp, 'src', 'pqr.js'), 'module.exports = 6\n')
+  writeFileSync(join(tmp, 'src', 'stu.js'), 'export const stu = 7\n')
   symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
 }
 
@@ -366,7 +382,8 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
     // Metro names each by the rewrite; './src/abc' stands for both the alias and the literal path,
     // './src/def' only for the path (the type imports are erased), which the source writes though a
     // plugin adds it too, and Metro evaluates a template, a concatenation or a constant the source
-    // writes as it does a literal. The helper only a plugin adds is marked so.
+    // writes as it does a literal; './src/stu' for the alias the `export * as` a plugin split wrote.
+    // The helper only a plugin adds is marked so.
     t.assert.deepStrictEqual(out.dependencies, [
       { name: './src/def', data: { key: './src/def' } },
       { name: '@babel/runtime/helpers/interopRequireDefault', data: { key: '@babel/runtime/helpers/interopRequireDefault' }, stasisInserted: true },
@@ -375,6 +392,7 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
       { name: './src/jkl', data: { key: './src/jkl' } },
       { name: './src/mno', data: { key: './src/mno' } },
       { name: './src/pqr', data: { key: './src/pqr' } },
+      { name: './src/stu', data: { key: './src/stu' }, stasisAsWritten: ['#local/stu'] },
     ])
     // A file writing no import of its own: whatever a plugin adds is marked.
     t.assert.deepStrictEqual(bare.dependencies, [
@@ -383,6 +401,33 @@ for (const [variant, { babelAsync = false, lowerAmongPlugins = false }] of [
     ])
   }))
 }
+
+test('a declaration of types alone counts where Babel keeps it, as TypeScript\'s onlyRemoveTypeImports does', withTmp((t, tmp) => {
+  // `import { type A } from './src/a'` is kept as `import {} from './src/a'`, a dependency Metro has;
+  // `import type { B } from './src/b'` is erased, as always.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'types-kept', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), `const keepTypeImports = () => ({
+  visitor: {
+    ImportDeclaration(path) {
+      const { node } = path
+      if (node.importKind === 'type') path.remove()
+      else if (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.importKind === 'type')) node.specifiers = []
+    },
+  },
+})
+module.exports = { parserOpts: { plugins: ['flow'] }, plugins: [keepTypeImports] }
+`)
+  writeFileSync(join(tmp, 'index.js'), "import { type A } from './src/a'\nimport type { B } from './src/b'\nexport default 1\n")
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'a.js'), 'export default 1\n')
+  writeFileSync(join(tmp, 'src', 'b.js'), 'export default 2\n')
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+  const r = transform(['index.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver) } })
+  t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+  const [out] = JSON.parse(r.stdout)
+  t.assert.deepStrictEqual(out.dependencies, [{ name: './src/a', data: { key: './src/a' } }])
+}))
 
 test('a project transformer that is this one itself, wired by hand as well, gives way to Metro\'s default', withTmp((t, tmp) => {
   // withStasis() hands over the project's transformerPath, which a project that wired
