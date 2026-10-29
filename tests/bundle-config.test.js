@@ -238,6 +238,30 @@ test('bundleCommand adds the config\'s extra once, beside each build\'s own cons
   t.assert.deepStrictEqual(readBundle(join(tmp, 'both.br')).reason, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['tool.js'] })
 }))
 
+test('bundleCommand keeps the repo its builds detect where it adds the config\'s extra to them', withTmp(async (t, tmp) => {
+  project(tmp)
+  const commit = 'a'.repeat(40)
+  writeTree(tmp, {
+    'tool.js': 'module.exports = 2\n',
+    'stasis.config.json': { extra: ['tool.js'] },
+    '.git/config': '[remote "origin"]\n\turl = git@github.com:o/app.git\n',
+    '.git/HEAD': `${commit}\n`,
+  })
+  const repo = { github: 'o/app', directory: '', commit }
+  const cases = [
+    ['one entry', { entries: ['cli.js'] }],
+    ['one build', { builds: [{ entries: ['cli.js'] }] }],
+    ['two builds', { builds: [{ entries: ['index.js'], metro: true, platforms: ['ios'] }, { entries: ['cli.js'] }] }],
+  ]
+  for (const [label, options] of cases) {
+    // eslint-disable-next-line no-await-in-loop -- one build at a time, over the same tree
+    await bundleCommand({ cwd: tmp, output: 'out.br', ...options })
+    const bundle = readBundle(join(tmp, 'out.br'))
+    t.assert.deepStrictEqual(bundle.reason.extra, ['tool.js'], `${label}: extra added`)
+    t.assert.deepStrictEqual({ ...bundle.repo }, repo, `${label}: repo kept`)
+  }
+}))
+
 test('bundleCommand adds builds\' extra by the config\'s resources, whatever their number and order', withTmp(async (t, tmp) => {
   project(tmp)
   writeTree(tmp, { 'logo.png': 'png\n', 'stasis.config.json': { extra: ['logo.png'] } })
