@@ -1157,7 +1157,8 @@ function memberCall(node, object) {
 function requireResolutions(file, host) {
   const resolved = []
   const source = host.readFile(file).toString('utf8')
-  if (!source.includes('require.resolve')) return resolved
+  // Parsed only where both words occur, however the call spaces them (`require\n  .resolve(`).
+  if (!source.includes('require') || !source.includes('resolve')) return resolved
   walkAst(getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program, (node) => {
     const spec = memberCall(node, 'require') === 'resolve' ? literalSpec(node.arguments[0]) : null
     const path = spec === null ? null : babelPathCall(node, file, host)
