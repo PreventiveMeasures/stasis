@@ -313,6 +313,14 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     await drift('logo@3x.png')
     await drift('logo.png')
 
+    // A scale the bundle carries gone from disk builds another asset (its `scales`, its `hash`).
+    const scale2x = join(tmp, 'src', 'img', 'logo@2x.png')
+    rmSync(scale2x)
+    const gone = await load()
+    t.assert.notEqual(gone.status, 0)
+    t.assert.match(gone.stderr, /'.*logo@2x\.png', a file of the asset '.*logo\.png' Metro builds as the bundle carries it, is gone/)
+    writeFileSync(scale2x, png(1))
+
     // Under --fs=async Metro lists the directory as the bundle captured it, so a scale added on disk
     // since is no file of the asset; without --fs it reads the disk's, the new scale unattested.
     const captured = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
@@ -322,8 +330,11 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     rmSync(join(tmp, 'stasis.lock.json')) // the bundle alone is the trust root for the added listing
     writeFileSync(join(tmp, 'src', 'img', 'logo@4x.png'), png(8))
     const added = (extra) => run('src/entry.js', { cwd: tmp, env: withOpts(opts('none', 'load'), extra), graph })
+    // A scale gone from disk that --fs=async serves, listing and bytes, is the asset's as captured.
+    rmSync(scale2x)
     const listed = await added({ EXODUS_STASIS_FS: 'async' })
     t.assert.equal(listed.status, 0, `stderr: ${listed.stderr}`)
+    writeFileSync(scale2x, png(1))
     const unlisted = await added()
     t.assert.notEqual(unlisted.status, 0)
     t.assert.match(unlisted.stderr, /not attested in bundle: .*logo@4x\.png/)
