@@ -319,6 +319,20 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const gone = await load()
     t.assert.notEqual(gone.status, 0)
     t.assert.match(gone.stderr, /'.*logo@2x\.png', a file of the asset '.*logo\.png' Metro builds as the bundle carries it, is gone/)
+
+    // One redirected through a symlink, out of the project or to another of its files, reads other bytes.
+    const outside = mkdtempSync(join(tmpdir(), 'stasis-metro-outside-'))
+    t.after(() => rmSync(outside, { recursive: true, force: true }))
+    writeFileSync(join(outside, 'logo@2x.png'), png(7))
+    const redirect = async (target) => {
+      symlinkSync(target, scale2x)
+      const redirected = await load()
+      t.assert.notEqual(redirected.status, 0, target)
+      t.assert.match(redirected.stderr, /'.*logo@2x\.png', a file of the asset '.*logo\.png' Metro builds, differs on disk from the bundle/)
+      rmSync(scale2x)
+    }
+    await redirect(join(outside, 'logo@2x.png'))
+    await redirect('logo@3x.png')
     writeFileSync(scale2x, png(1))
 
     // Under --fs=async Metro lists the directory as the bundle captured it, so a scale added on disk

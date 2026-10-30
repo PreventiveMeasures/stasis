@@ -626,11 +626,24 @@ export class StasisMetro {
     }
   }
 
-  // Load: Metro's asset transformer reads each from disk (fs.promises), the module itself too, past
-  // the stasis transformer, which serves the module's `data` that it never reads (#assertOnDisk).
+  // Load: Metro's asset transformer reads each of its files from disk (fs.promises), the module itself
+  // too, past the stasis transformer, which serves the module's `data` that it never reads. Each Metro
+  // reads (#assetDirHost) by the name it reads it by, in scope (#assertOnDisk's), must be in the bundle
+  // and its bytes there those it reads, symlinks followed (one redirected out of the project or to
+  // another file reads other bytes) -- unless --fs=async serves it by that name. The bundle's file for
+  // a name is that name's, else (one captured through a symlink) its real path's within the project;
+  // getFile throws on one it carries neither (a scale added since the capture). Gone from disk, one is
+  // served or #assertAssetMembers refuses it.
   #assertAssetFiles(module, modPath, platform) {
-    for (const files of this.#assetFiles(module, modPath, platform)) {
-      this.#assertOnDisk(files, { what: `a file of the asset '${modPath}' Metro builds`, servedBy: ['async'] })
+    if (module.output?.[0]?.type !== 'js/module/asset') return
+    const state = this.#state
+    for (const read of metroAssetFiles(modPath, platform, this.#assetDirHost())) {
+      if (diskHost.stat(read)?.isFile() !== true) continue
+      const url = pathToFileURL(read).toString()
+      if (!state.config.full && !state.inNodeModules(url)) continue
+      if (state.config.fs === 'async' && state.getFsFileFamily(url) !== undefined) continue
+      const { source } = state.getFile(state.hasFsFileContent(url) ? url : pathToFileURL(diskHost.realpath(read)).toString())
+      this.#assertBytes(read, source, `a file of the asset '${modPath}' Metro builds`)
     }
   }
 
@@ -661,12 +674,16 @@ export class StasisMetro {
     if (!this.#state.config.full && !this.#state.inNodeModules(url)) return
     const { source } = this.#state.getFile(url)
     if (servedBy.includes(this.#state.config.fs) && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) return
-    if (!realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
-      throw new Error(
-        `StasisMetro: '${file}', ${what}, differs on disk from the bundle -- ` +
-        'Metro\'s build reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
-      )
-    }
+    this.#assertBytes(file, source, what)
+  }
+
+  // Load: `path` on disk holds `source`, the bundle's bytes for it, else fail closed on drift.
+  #assertBytes(path, source, what) {
+    if (realReadFileSync(path).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) return
+    throw new Error(
+      `StasisMetro: '${path}', ${what}, differs on disk from the bundle -- ` +
+      'Metro\'s build reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
+    )
   }
 }
 
