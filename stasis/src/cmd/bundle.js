@@ -1174,35 +1174,153 @@ const BABEL_MODULE_STRING = /^module:|babel[-/](?:plugin|preset)/u
 const BABEL_CONFIG_NAME = /babel.*config|config.*babel/iu
 const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel)) || BABEL_CONFIG_NAME.test(splitNodeModulesPath(rel)?.name ?? '')
 
-// The plugins and presets the module `file` names, read off its source, never run: each string (or the
-// first of a `[name, options]` pair) in an array under a `plugins` or `presets` key, at any depth (`env`,
-// `overrides`), standardized as Babel requires it; and with `anyString`, any string that names one by its
-// form (BABEL_MODULE_STRING) wherever it is (`const plugins = ['@babel/plugin-x']`,
-// `path.resolve(__dirname, 'node_modules/@org/x-babel/babel/plugin-inline.js')`), as written.
-// -> the names
+// The lists a Babel config names its plugins and presets in, by the name of the key, variable or object
+// holding one, and what Babel takes each of them as.
+const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
+// The array methods making a list of the one they're called on: `concat` (with its arguments'),
+// `filter`, `flat`, `slice`.
+const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
+// A path the module `file` computes from its own directory and strings: `__dirname`, a string, or a
+// `path.resolve(...)` or `path.join(...)` of them. -> the path (a relative one from Babel's cwd), or null
+function staticPath(node, file) {
+  if (node?.type === 'Identifier' && node.name === '__dirname') return dirname(file)
+  const string = literalSpec(node)
+  if (string !== null) return string
+  if (node?.type !== 'CallExpression') return null
+  const { callee } = node
+  const member = callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier'
+  const name = member ? callee.property.name : callee.type === 'Identifier' ? callee.name : undefined
+  if ((name !== 'resolve' && name !== 'join') || (member && callee.object.name === 'require')) return null
+  const parts = node.arguments.map((arg) => staticPath(arg, file))
+  if (parts.length === 0 || parts.includes(null)) return null
+  return name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
+}
+
+// The path a call computes, as Babel takes a plugin or preset named by path:
+// `path.resolve(__dirname, 'node_modules/@org/x/plugin')`, `path.join(__dirname, 'x')` (staticPath), or
+// what `require.resolve('x')` resolves to as Node resolves it: from the module, else from each of the
+// `paths` it gives (`{ paths: [path.join(__dirname, 'shared')] }`) in turn. -> it, or null
+function babelPathCall(node, file, host) {
+  if (node?.type !== 'CallExpression') return null
+  const { callee } = node
+  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier' && callee.object.name === 'require') {
+    const spec = callee.property.name === 'resolve' ? literalSpec(node.arguments[0]) : null
+    if (spec === null) return null
+    const option = node.arguments[1]
+    const paths = option?.type === 'ObjectExpression'
+      ? option.properties.find((property) => property.type === 'Property' && !property.computed && (property.key.name ?? property.key.value) === 'paths')
+      : undefined
+    let froms = [file]
+    if (paths !== undefined) {
+      const dirs = paths.value.type === 'ArrayExpression' ? paths.value.elements.map((element) => staticPath(element, file)) : [null]
+      // One only the run knows, or one relative to its cwd: no telling where Node looks.
+      if (dirs.some((dir) => dir === null || !isAbsolute(dir))) return null
+      froms = dirs.map((dir) => join(dir, 'index.js'))
+    }
+    for (const from of froms) {
+      try {
+        return host.resolve(from, spec, NODE_REQUIRE_CONDITIONS)
+      } catch { /* not from here: the next */ }
+    }
+    return null
+  }
+  const path = staticPath(node, file)
+  if (path === null) return null
+  return isAbsolute(path) || path.startsWith('.') ? path : `./${path}`
+}
+
+// The plugins and presets the module `file` names, read off its source, never run: each in a list of them
+// (an array under a `plugins` or `presets` key at any depth, a variable or property so named or assigned,
+// one pushed onto either), through spreads, variables, branches and the array methods making a list of
+// another (LIST_METHODS); named by a string (or the first of a `[name, options]` pair), standardized as
+// Babel requires it, or by a path the module computes (babelPathCall), as is. With `anyString`, also any
+// string naming one by its form (BABEL_MODULE_STRING) wherever it is, as written. -> the names
 function babelNamedModules(file, host, { anyString = false } = {}) {
   const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
-  const named = new Set()
-  const visit = (node) => {
+  const walk = (node, fn) => {
     if (Array.isArray(node)) {
-      for (const child of node) visit(child)
+      for (const child of node) walk(child, fn)
       return
     }
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+    fn(node)
+    for (const child of Object.keys(node)) if (child !== 'type') walk(node[child], fn)
+  }
+  // Each variable's initializers, by its name.
+  const inits = new Map()
+  walk(program, (node) => {
+    if (node.type !== 'VariableDeclarator' || node.id.type !== 'Identifier' || !node.init) return
+    if (!inits.has(node.id.name)) inits.set(node.id.name, [])
+    inits.get(node.id.name).push(node.init)
+  })
+  const named = new Set()
+  const seen = new Map()
+  // Read `node` for the `type`s (plugin or preset) it names: `depth` levels of arrays in it lists (1 a
+  // list, 2 one `.flat()` flattens), and an array below them an entry's `[name, options]` pair. A spread
+  // joins its elements to the array spreading it; a variable is its initializers; a branch (`a ? b : c`,
+  // `a && b`) either side.
+  const read = (node, type, depth) => {
+    if (!node || depth > MAX_LIST_DEPTH) return
+    const key = `${type}${depth}`
+    if (!seen.has(node)) seen.set(node, new Set())
+    if (seen.get(node).has(key)) return
+    seen.get(node).add(key)
+    if (node.type === 'ArrayExpression') {
+      if (depth === 0) return read(node.elements[0], type, 0)
+      for (const element of node.elements) {
+        if (element?.type === 'SpreadElement') read(element.argument, type, depth)
+        else read(element, type, depth - 1)
+      }
+    } else if (node.type === 'Identifier') {
+      for (const init of inits.get(node.name) ?? []) read(init, type, depth)
+    } else if (node.type === 'ConditionalExpression' || node.type === 'LogicalExpression') {
+      for (const side of node.type === 'LogicalExpression' ? [node.left, node.right] : [node.consequent, node.alternate]) read(side, type, depth)
+    } else if (depth > 0 && LIST_METHODS.has(arrayMethod(node))) {
+      // `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, `[[a], b].flat()` of its own
+      // flattened, as many levels as it says (`flat(2)`, `flat(Infinity)`).
+      const method = arrayMethod(node)
+      const levels = method === 'flat' ? flatDepth(node.arguments[0]) : 0
+      read(node.callee.object, type, Math.min(depth + levels, MAX_LIST_DEPTH))
+      if (method === 'concat') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? depth + 1 : depth)
+    } else {
+      const name = literalSpec(node)
+      const path = name ? null : babelPathCall(node, file, host)
+      if (name) named.add(standardizeBabelName(type, name))
+      else if (path) named.add(path)
+    }
+  }
+  const listName = (node) => (node.type === 'Identifier' ? node.name : node.type === 'MemberExpression' && !node.computed ? node.property.name : undefined)
+  walk(program, (node) => {
     const string = anyString ? literalSpec(node) : null
     if (string && BABEL_MODULE_STRING.test(string)) named.add(string.replace(/^module:/u, ''))
-    const key = node.type === 'Property' && !node.computed ? (node.key.name ?? node.key.value) : undefined
-    if ((key === 'plugins' || key === 'presets') && node.value.type === 'ArrayExpression') {
-      const type = key === 'plugins' ? 'plugin' : 'preset'
-      for (const element of node.value.elements) {
-        const name = literalSpec(element?.type === 'ArrayExpression' ? element.elements[0] : element)
-        if (name) named.add(standardizeBabelName(type, name))
-      }
-    }
-    for (const child of Object.keys(node)) if (child !== 'type') visit(node[child])
-  }
-  visit(program)
+    // A list: under a key, held in a variable or assigned to a property, so named.
+    const [name, value] = node.type === 'Property' && !node.computed ? [node.key.name ?? node.key.value, node.value]
+      : node.type === 'VariableDeclarator' ? [listName(node.id), node.init]
+      : node.type === 'AssignmentExpression' ? [listName(node.left), node.right]
+      : []
+    if (BABEL_LISTS.has(name)) read(value, BABEL_LISTS.get(name), 1)
+    // Or added to one: `push` and `unshift` each argument an entry, `concat` as it concatenates.
+    const method = arrayMethod(node)
+    const type = method && BABEL_LISTS.get(listName(node.callee.object))
+    if (!type) return
+    if (method === 'concat') read(node, type, 1)
+    else if (method === 'push' || method === 'unshift') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? 1 : 0)
+  })
   return named
+}
+
+// How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
+const MAX_LIST_DEPTH = 8
+// The levels `.flat(arg)` flattens: 1 by default, else the number written (Infinity as deep as read).
+function flatDepth(arg) {
+  if (arg === undefined) return 1
+  if (arg.type === 'Identifier' && arg.name === 'Infinity') return MAX_LIST_DEPTH
+  return arg.type === 'Literal' && typeof arg.value === 'number' ? arg.value : 1
+}
+
+// The array method `node` calls (`x.concat(...)` -> 'concat'), or undefined.
+function arrayMethod(node) {
+  return node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed ? node.callee.property.name : undefined
 }
 
 const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])

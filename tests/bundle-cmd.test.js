@@ -4708,6 +4708,120 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
   t.assert.ok(!bundle.sources.has('node_modules/babel-plugin-unreached/index.js'))
 }))
 
+test('buildBundle --metro traces the plugins and presets a Babel config\'s modules name by a path they compute, in the lists Babel takes them from', withTmp(async (t, tmp) => {
+  // A plugin named by a path into its package, joined to the module's own directory, or resolved by
+  // require.resolve, from the module calling it: written in `plugins`, held in a variable, pushed onto a
+  // list so named, or in an array concatenated onto one. A path the config computes for anything else
+  // (a module-resolver alias or root) names no plugin.
+  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
+  const files = {
+    'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
+    'pnpm-workspace.yaml': '',
+    'index.js': 'export default 1\n',
+    'aliases.json': '{}',
+    'babel.config.js': "module.exports = require('./create-babel-config.js')()\n",
+    'create-babel-config.js': [
+      "const path = require('path')",
+      "const shared = require('@org/babel-config-shared')",
+      "const ticker = path.join(__dirname, 'node_modules', '@org/ticker', 'plugin.js')",
+      "const more = [path.resolve(__dirname, 'node_modules/@org/tail/plugin.js'), 'two']",
+      // One array named as plugins and as presets: each name is read as both.
+      "const both = ['@org/both']",
+      // A list made of another: concatenated onto, filtered.
+      "const base = [path.resolve(__dirname, 'node_modules/@org/first/plugin.js')]",
+      'const production = true',
+      "const groups = [['sixth', 'seventh']]",
+      'module.exports = () => {',
+      "  const plugins = [path.resolve(__dirname, 'node_modules/@org/motion/plugin')]",
+      '  plugins.push(ticker)',
+      '  return {',
+      "    presets: [require.resolve('@org/preset-native'), ...shared.presets, ...both],",
+      '    plugins: [',
+      '      ...plugins.concat(more),',
+      '      ...both,',
+      "      ...base.concat(['second']),",
+      "      ...[production && 'third', null].filter(Boolean),",
+      "      ...[['fourth', 'fifth']].flat(),",
+      "      ...[...groups].flat(),",
+      "      ...[[['eighth', 'ninth']]].flat(2),",
+      "      ['module-resolver', { root: [path.resolve(__dirname, 'src')], alias: { lib: path.resolve(__dirname, 'node_modules/@org/aliased') } }],",
+      '    ],',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.js': 'module.exports = 1\n',
+    ...pkg('node_modules/@org/motion', '@org/motion', 'src/index.js', 'module.exports = 1\n'),
+    'node_modules/@org/motion/plugin/index.js': "module.exports = require('./build/plugin.js')\n",
+    'node_modules/@org/motion/plugin/build/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/tail', '@org/tail', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/tail/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/babel-plugin-two', 'babel-plugin-two', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@org/babel-plugin-both', '@org/babel-plugin-both', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@org/first', '@org/first', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/first/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/babel-plugin-second', 'babel-plugin-second', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-third', 'babel-plugin-third', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-fourth', 'babel-plugin-fourth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-fifth', 'babel-plugin-fifth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-sixth', 'babel-plugin-sixth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-seventh', 'babel-plugin-seventh', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-eighth', 'babel-plugin-eighth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-ninth', 'babel-plugin-ninth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
+    // A shared config whose require.resolve finds its own copy of a preset, not the project's.
+    ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', [
+      "const path = require('path')",
+      "exports.presets = [require.resolve('@org/preset-inner'), require.resolve('@org/preset-vendored', { paths: [path.join(__dirname, 'vendor')] })]",
+      '',
+    ].join('\n')),
+    // Where its require.resolve looks, in the paths it gives, not the project's copy.
+    ...pkg('node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/babel-config-shared/node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
+    ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
+  t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
+    'babel.config.js',
+    'create-babel-config.js',
+    'node_modules/@org/babel-config-shared/index.js',
+    'node_modules/@org/babel-config-shared/node_modules/@org/preset-inner/index.js',
+    'node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored/index.js',
+    'node_modules/@org/babel-plugin-both/index.js',
+    'node_modules/@org/babel-preset-both/index.js',
+    'node_modules/@org/first/plugin.js',
+    'node_modules/@org/motion/plugin/build/plugin.js',
+    'node_modules/@org/motion/plugin/index.js',
+    'node_modules/@org/preset-native/index.js',
+    'node_modules/@org/tail/plugin.js',
+    'node_modules/@org/ticker/plugin.js',
+    'node_modules/babel-plugin-eighth/index.js',
+    'node_modules/babel-plugin-fifth/index.js',
+    'node_modules/babel-plugin-fourth/index.js',
+    'node_modules/babel-plugin-module-resolver/lib/index.js',
+    'node_modules/babel-plugin-ninth/index.js',
+    'node_modules/babel-plugin-second/index.js',
+    'node_modules/babel-plugin-seventh/index.js',
+    'node_modules/babel-plugin-sixth/index.js',
+    'node_modules/babel-plugin-third/index.js',
+    'node_modules/babel-plugin-two/index.js',
+  ])
+  t.assert.ok(!bundle.sources.has('node_modules/@org/preset-inner/index.js'))
+  t.assert.ok(!bundle.sources.has('node_modules/@org/preset-vendored/index.js'))
+  t.assert.ok(!bundle.sources.has('node_modules/@org/aliased/index.js'))
+  t.assert.ok(!bundle.sources.has('src/index.js'))
+}))
+
 test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
   // The run of `react-native bundle` loads React Native's CLI, the React Native config of each of the
   // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's
