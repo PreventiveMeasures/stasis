@@ -4639,7 +4639,7 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
 test('buildBundle --metro traces Metro\'s minifier as its transform worker finds it, the stub a pnpm override puts there too', withTmp(async (t, tmp) => {
   // The worker requires its minifier (metro-config's default `minifierPath`) from its own directory, by a
   // name no import holds, as it minifies: carried as the bundler's, with what it imports, whether or
-  // not this build minifies, as the Metro plugin carries it.
+  // not this build minifies.
   const minifierDir = 'node_modules/metro-transform-worker/node_modules/metro-minify-terser'
   // A project with `files`, its minifier only beside the worker, as a pnpm install links it (to `link`).
   const project = async (dir, files, link) => {

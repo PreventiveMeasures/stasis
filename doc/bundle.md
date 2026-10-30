@@ -364,10 +364,9 @@ child process `jest-worker` forks it in and `metro-file-map`'s Haste worker; the
 requires it (`withStasis()`); Metro's transform worker (`metro-transform-worker`,
 metro-config's default `transformerPath`) and its minifier (`metro-minify-terser`,
 metro-config's default `minifierPath`, which the worker requires from its own
-directory as it minifies and resolves for its cache key in any build: what that
-`require()` finds, a stub a pnpm override puts in its stead too, as the Metro
-plugin records it under `run` whether or not the build minifies, without loading
-it); and with `--babel` or
+directory as it minifies: what that `require()` finds, a stub a pnpm override
+puts in its stead too, whether or not the build minifies; the Metro plugin's run
+records it as Metro loads it); and with `--babel` or
 `--babel-aliases` the Babel transformer React Native's Metro config names
 (`@react-native/metro-babel-transformer`, its `babelTransformerPath`, resolved
 from `@react-native/metro-config`), which runs `@babel/core` and React Native's
