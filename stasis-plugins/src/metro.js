@@ -552,7 +552,7 @@ export class StasisMetro {
   // edge. One whose real path is outside the project root is passed over. -> as #consumedResources
   * #assetFiles(module, modPath, platform) {
     if (module.output?.[0]?.type !== 'js/module/asset') return
-    for (const read of metroAssetFiles(modPath, platform, diskHost)) {
+    for (const read of metroAssetFiles(modPath, platform, this.#assetDirHost())) {
       const file = diskHost.realpath(read)
       this.#realRoot ??= diskHost.realpath(this.#state.root)
       if (!isPathWithin(this.#realRoot, file)) continue
@@ -562,6 +562,19 @@ export class StasisMetro {
         continue
       }
       yield { file, read }
+    }
+  }
+
+  // The directory listing Metro finds an asset's files in (fs.promises.readdir): the disk's, but under
+  // load with --fs=async, which serves it, the bundle's where it has one (a file added on disk since
+  // is no file of the asset Metro builds), each name in it a file where it is one on disk (one gone
+  // from disk is served, so holds no drift).
+  #assetDirHost() {
+    const state = this.#state
+    if (!state.config.loadBundle || state.config.fs !== 'async') return diskHost
+    return {
+      readdir: (dir) => state.getFsDirFamily(pathToFileURL(dir).toString())?.map((name) => ({ name })) ?? diskHost.readdir(dir),
+      stat: (path) => diskHost.stat(path),
     }
   }
 

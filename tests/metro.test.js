@@ -312,6 +312,21 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     }
     await drift('logo@3x.png')
     await drift('logo.png')
+
+    // Under --fs=async Metro lists the directory as the bundle captured it, so a scale added on disk
+    // since is no file of the asset; without --fs it reads the disk's, the new scale unattested.
+    const captured = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    captured.sources['.'].files['src/img'] = JSON.stringify(['logo.png', 'logo.svg', 'logo@2x.android.png', 'logo@2x.png', 'logo@3x.png', 'other.png'])
+    captured.formats['src/img'] = 'directory'
+    writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(captured)))
+    rmSync(join(tmp, 'stasis.lock.json')) // the bundle alone is the trust root for the added listing
+    writeFileSync(join(tmp, 'src', 'img', 'logo@4x.png'), png(8))
+    const added = (extra) => run('src/entry.js', { cwd: tmp, env: withOpts(opts('none', 'load'), extra), graph })
+    const listed = await added({ EXODUS_STASIS_FS: 'async' })
+    t.assert.equal(listed.status, 0, `stderr: ${listed.stderr}`)
+    const unlisted = await added()
+    t.assert.notEqual(unlisted.status, 0)
+    t.assert.match(unlisted.stderr, /not attested in bundle: .*logo@4x\.png/)
   }))
 
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {

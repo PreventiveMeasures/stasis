@@ -427,7 +427,8 @@ bundle carries). An asset module's other files (its other scales, as above) are
 carried the same way, under `metro`, with no edge. Under `--bundle=load` Metro
 reads every file of an asset from disk (through `fs.promises`), the module's
 own too, so the Metro plugin holds each to the bundle's bytes, unless
-`--fs=async` serves it.
+`--fs=async` serves it (and the directory listing Metro finds them in, so a
+scale added on disk since the capture is none of the asset's).
 
 The static build carries those files too, as Metro's code, each scanned for
 what it imports in turn:
