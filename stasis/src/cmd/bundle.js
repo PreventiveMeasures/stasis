@@ -1260,7 +1260,7 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
   // joins its elements to the array spreading it; a variable is its initializers; a branch (`a ? b : c`,
   // `a && b`) either side.
   const read = (node, type, depth) => {
-    if (!node || depth > 3) return
+    if (!node || depth > MAX_LIST_DEPTH) return
     const key = `${type}${depth}`
     if (!seen.has(node)) seen.set(node, new Set())
     if (seen.get(node).has(key)) return
@@ -1276,9 +1276,11 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     } else if (node.type === 'ConditionalExpression' || node.type === 'LogicalExpression') {
       for (const side of node.type === 'LogicalExpression' ? [node.left, node.right] : [node.consequent, node.alternate]) read(side, type, depth)
     } else if (depth > 0 && LIST_METHODS.has(arrayMethod(node))) {
-      // `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, `[[a], b].flat()` of its own flattened.
+      // `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, `[[a], b].flat()` of its own
+      // flattened, as many levels as it says (`flat(2)`, `flat(Infinity)`).
       const method = arrayMethod(node)
-      read(node.callee.object, type, method === 'flat' ? depth + 1 : depth)
+      const levels = method === 'flat' ? flatDepth(node.arguments[0]) : 0
+      read(node.callee.object, type, Math.min(depth + levels, MAX_LIST_DEPTH))
       if (method === 'concat') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? depth + 1 : depth)
     } else {
       const name = literalSpec(node)
@@ -1305,6 +1307,15 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     else if (method === 'push' || method === 'unshift') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? 1 : 0)
   })
   return named
+}
+
+// How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
+const MAX_LIST_DEPTH = 8
+// The levels `.flat(arg)` flattens: 1 by default, else the number written (Infinity as deep as read).
+function flatDepth(arg) {
+  if (arg === undefined) return 1
+  if (arg.type === 'Identifier' && arg.name === 'Infinity') return MAX_LIST_DEPTH
+  return arg.type === 'Literal' && typeof arg.value === 'number' ? arg.value : 1
 }
 
 // The array method `node` calls (`x.concat(...)` -> 'concat'), or undefined.
