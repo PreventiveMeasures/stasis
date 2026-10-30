@@ -74,7 +74,8 @@ function assertLockfileMatches(lockAbs, derived) {
 }
 
 // lock=add: the derived lockfile is merged into the one in the output dir, which must agree with it on all
-// both record -- Lockfile.merge refuses any other conflict -- so what is new is recorded and nothing recorded changes.
+// both record -- Lockfile.merge refuses any other conflict -- so what is new is recorded and nothing recorded changes,
+// save a payload-free stat:* record, which content of the same kind upgrades as a run's lock=add does.
 function addToLockfile(lockAbs, derived) {
   const lock = readLockfile(lockAbs)
   let merged

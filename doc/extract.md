@@ -72,7 +72,11 @@ fails without a lockfile in the output dir.
 split layout's code bundle and its `--resources-bundle-file`: each adds its
 files to one lockfile. A file both record must carry the same hash, format and
 execute bit, a package the same name and version, and an import the same
-target; anything else is refused before the first write.
+target; anything else is refused before the first write. The one record that
+does change is a payload-free `stat:file` or `stat:directory`, a path's kind
+alone: content the bundle carries for that path, of the same kind, takes its
+place, as a `stasis run --lock=add` that reads the path does (see [filesystem
+captures](file-formats.md#filesystem-captures-stasis-run---fssync----fsasync)).
 
 A legacy `version: 0` bundle derives no lockfile, so it extracts only into a
 directory without one, or with `--lock=ignore`.

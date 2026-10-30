@@ -703,6 +703,31 @@ test('extract --lock=add refuses to change anything the lockfile records, before
   }
 }))
 
+test('extract --lock=add upgrades a stat record to the content the bundle carries, of the same kind alone', withTmp((t, tmp) => {
+  // A run's statSync records a path's kind with no content, and its lock=add upgrades that record once a run
+  // reads the path (file-formats.md); content for a path the lockfile holds no hash for is new to it either way.
+  const files = { 'src/a.js': 'a\n', 'src/b.js': '' }
+  const bundlePath = join(tmp, 'app.code.br')
+  writeRawBundle(bundlePath, appBundle(files))
+  for (const [stat, upgraded] of [['stat:file', true], ['stat:directory', false]]) {
+    const outDir = join(tmp, stat.replace(':', '-'))
+    const locked = JSON.parse(derivedLockfile(appBundle({ 'src/a.js': 'a\n' })))
+    locked.formats['src/b.js'] = stat
+    mkdirSync(outDir)
+    writeFileSync(join(outDir, 'stasis.lock.json'), JSON.stringify(locked))
+    if (upgraded) {
+      extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'add' })
+      t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), derivedLockfile(appBundle(files)))
+    } else {
+      t.assert.throws(
+        () => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'add' }),
+        /--lock=add: the bundle conflicts with .*: lockfile merge: format conflict for 'src\/b\.js' \('stat:directory' vs 'module'\)/,
+      )
+      t.assert.ok(!existsSync(join(outDir, 'src')), 'nothing may be written for a refused bundle')
+    }
+  }
+}))
+
 test('extract --lock=ignore neither reads nor writes the lockfile', withTmp((t, tmp) => {
   const bundlePath = join(tmp, 'app.code.br')
   writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n' }))
