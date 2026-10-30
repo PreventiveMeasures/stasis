@@ -4936,6 +4936,26 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
 }))
 
+test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input: the bundler\'s, with no edge', withTmp(async (t, tmp) => {
+  // Metro can't resolve `require('./locales/de/messages.po')` (.po is in neither its sourceExts nor its
+  // assetExts): a Babel plugin (@exodus/i18n's plugin-inline-po) reads the file and inlines it before
+  // Metro collects dependencies, so the Metro plugin records it under `run`, with no edge. An asset
+  // (.png) stays a module of Metro's, with its edge.
+  jsProject(tmp, { 'index.js': "const de = require('./locales/de/messages.po')\nconst logo = require('./logo.png')\nmodule.exports = [de, logo]\n" }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, 'locales', 'de'), { recursive: true })
+  writeFileSync(join(tmp, 'locales', 'de', 'messages.po'), 'msgid "Hello"\nmsgstr "Hallo"\n')
+  writeAssets(tmp)
+  const options = { cwd: tmp, entries: ['index.js'], resources: ['po', 'png'] }
+  const bundle = await buildBundle({ ...options, metro: true, platforms: ['ios'] })
+  t.assert.ok(bundle.sources.has('locales/de/messages.po'))
+  t.assert.equal(bundle.formats.get('locales/de/messages.po'), 'resource')
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './logo.png': 'logo.png' })
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': ['locales/de/messages.po'], 'bundle:metro': ['index.js', 'logo.png'] })
+  // A Node build keeps the edge: Node requires what the source names.
+  const node = await buildBundle({ ...options, mainFields: ['main'] })
+  t.assert.equal(node.imports.get('*').get('index.js').get('./locales/de/messages.po'), 'locales/de/messages.po')
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React

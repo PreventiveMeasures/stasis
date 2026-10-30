@@ -237,6 +237,15 @@ loads too (a config requiring it) is recorded the same on both sides. Assets kee
 their `resource` formats and native build inputs theirs. Such a bundle is for
 Metro: `stasis run --bundle=load` refuses to run its code under Node.
 
+A resource the app imports that is no asset of Metro's (its extension not in
+Metro's default `assetExts`: `png`, `jpg`, `svg`, `ttf` and the like) is no
+module of Metro's, which can't resolve it: a Babel plugin consumes it before
+Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
+`require('./messages.po')` and inlines it. So, as the Metro plugin records it
+(`run`, no edge), it's carried as the build's transform's input, attributed to
+`bundle`, with no edge from its importer, and it makes no asset registry. It
+still needs `--resources` to be carried.
+
 An import or re-export listing types alone (`import { type A } from`, Flow's
 `import { typeof B } from`, `export { type C } from`) is no edge under
 `--metro`, as Babel's Flow and TypeScript transforms erase it whole and the

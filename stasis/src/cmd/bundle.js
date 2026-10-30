@@ -959,6 +959,15 @@ function innermostRootOf(baseDir, files, root, host) {
 // Foo.jsx/Foo.tsx, as it does under Metro. Like Metro's default, this doesn't track a project's
 // own sourceExts.
 const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
+// Metro's default `assetExts` (metro-config's, which React Native's Metro config keeps): a file Metro
+// bundles as an asset module. A resource of any other extension is no module of Metro's, which can't
+// resolve it: one the app imports reaches the build only as a transform's input, read and inlined by
+// a Babel plugin (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin
+// sees it (`run`, no edge).
+const METRO_ASSET_EXTS = new Set([
+  'bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm',
+  'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip',
+])
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 
@@ -1318,6 +1327,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
+  // --metro: the resources the app imports that are no asset of Metro's (METRO_ASSET_EXTS), a
+  // transform's inputs (rel): no edge to one, and each the bundler's, attributed to `bundle`.
+  const transformInputs = new Set()
+  const isTransformInput = (abs, info) => metro && info?.resource === true && !METRO_ASSET_EXTS.has(extname(abs).slice(1).toLowerCase())
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1352,6 +1365,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const rel = toRel(abs)
         reached.add(abs)
         if (info.resource) resourceRels.add(rel)
+        if (isTransformInput(abs, info)) transformInputs.add(rel)
         // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
         // it from source, and Node's module/commonjs isn't what it runs. But the one its name alone
         // gives it (.json, .mjs, .cjs: nodeExtFormat), as Node loads it too.
@@ -1362,6 +1376,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (e.empty) { usesEmpty = true; target = emptyTarget }
           else if (e.child) target = toRel(fileURLToPath(e.child))
           else continue // unresolved (already warned/thrown by reportScanIssues)
+          // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
+          if (e.child && isTransformInput(fileURLToPath(e.child), scanner.files.get(e.child))) continue
           if (!edges.has(rel)) edges.set(rel, new Map())
           const bySpec = edges.get(rel)
           if (!bySpec.has(e.spec)) bySpec.set(e.spec, new Map())
@@ -1376,7 +1392,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // passes one over.
     if (metro) {
       const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => fileURLToPath(url))
-      const assets = [...scanner.files].filter(([, info]) => info.resource).map(([url]) => fileURLToPath(url))
+      const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(fileURLToPath(url), info)).map(([url]) => fileURLToPath(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
       const added = [...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host })]
@@ -1781,10 +1797,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     host,
     packageOf,
     consumer: metro ? 'bundle:metro' : 'bundle',
-    consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel)),
+    consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel) && !transformInputs.has(rel)),
   })
-  // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
-  const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
+  // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are; so
+  // is a transform's input.
+  const bundler = [...configReached, ...transformInputs]
+  const bundle = bundler.length === 0 ? assembled : assembled.withReason('bundle', bundler)
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
   const lockModules = new Map()
