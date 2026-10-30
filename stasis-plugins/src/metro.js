@@ -3,7 +3,7 @@ import { isUtf8 } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, extname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
@@ -11,7 +11,7 @@ import { looksNative, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -475,9 +475,10 @@ export class StasisMetro {
         assert.ok(isUtf8(source), `StasisMetro: code-classified file has non-UTF-8 bytes: ${modPath}`)
       }
       // No format for a code file: Metro transforms it from source, so Node's module/commonjs isn't
-      // what runs. A .json one is `json`, which its name alone gives it, as Node loads it too (a
-      // resource still takes its byte-derived format).
-      const format = kind === 'code' && extname(modPath) === '.json' ? 'json' : undefined
+      // what runs. But the one its name alone gives it (.json, .mjs, .cjs: nodeExtFormat), as Node
+      // loads it too, which a --fs read of it records besides (a resource still takes its
+      // byte-derived format).
+      const format = kind === 'code' ? nodeExtFormat(modPath) : undefined
       this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
     }
   }
