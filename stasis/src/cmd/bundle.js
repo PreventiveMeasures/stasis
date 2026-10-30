@@ -1165,24 +1165,38 @@ const standardizeBabelName = (type, name) => (isAbsolute(name) ? name : name
   .replace(OTHER_ORG_DEFAULT, `$1/babel-${type}`)
   .replace(/^module:/u, ''))
 
-// The plugins and presets the module `file` names in a Babel config's `plugins` and `presets` (at any
-// depth: `env`, `overrides`), each a string or the first of a `[name, options]` pair, read off its
-// source, never run. -> [{ type, name }], `name` standardized as Babel requires it
-function babelNamedModules(file, host) {
+// A string that names a Babel plugin or preset by its form, a package or a path: `module:x`,
+// `@babel/plugin-x`, `babel-plugin-x`, `@react-native/babel-preset`,
+// `node_modules/@org/x-babel/babel/plugin-inline.js`.
+const BABEL_MODULE_STRING = /^module:|babel[-/](?:plugin|preset)/u
+// A module of a Babel config by its name: `babel` and `config` in its file's name (babel.config.js,
+// create-babel-config.js), or in its package's (a shared config, @org/babel-config).
+const BABEL_CONFIG_NAME = /babel.*config|config.*babel/iu
+const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel)) || BABEL_CONFIG_NAME.test(splitNodeModulesPath(rel)?.name ?? '')
+
+// The plugins and presets the module `file` names, read off its source, never run: each string (or the
+// first of a `[name, options]` pair) in an array under a `plugins` or `presets` key, at any depth (`env`,
+// `overrides`), standardized as Babel requires it; and with `anyString`, any string that names one by its
+// form (BABEL_MODULE_STRING) wherever it is (`const plugins = ['@babel/plugin-x']`,
+// `path.resolve(__dirname, 'node_modules/@org/x-babel/babel/plugin-inline.js')`), as written.
+// -> the names
+function babelNamedModules(file, host, { anyString = false } = {}) {
   const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
-  const named = []
+  const named = new Set()
   const visit = (node) => {
     if (Array.isArray(node)) {
       for (const child of node) visit(child)
       return
     }
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+    const string = anyString ? literalSpec(node) : null
+    if (string && BABEL_MODULE_STRING.test(string)) named.add(string.replace(/^module:/u, ''))
     const key = node.type === 'Property' && !node.computed ? (node.key.name ?? node.key.value) : undefined
     if ((key === 'plugins' || key === 'presets') && node.value.type === 'ArrayExpression') {
       const type = key === 'plugins' ? 'plugin' : 'preset'
       for (const element of node.value.elements) {
         const name = literalSpec(element?.type === 'ArrayExpression' ? element.elements[0] : element)
-        if (name) named.push({ type, name: standardizeBabelName(type, name) })
+        if (name) named.add(standardizeBabelName(type, name))
       }
     }
     for (const child of Object.keys(node)) if (child !== 'type') visit(node[child])
@@ -1468,24 +1482,46 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       if (readJson(join(dirname(dirname(file)), 'package.json'), host)?.name !== '@exodus/stasis-plugins') continue
       for (const name of STASIS_METRO_TRANSFORMERS) addTraced(host.stat(join(dirname(file), name))?.isFile() ? join(dirname(file), name) : undefined)
     }
-    // And the plugins and presets the Babel config names, which @babel/core requires by name, resolved
-    // as it resolves them, from the config's directory: as the project's files the config reaches
-    // name them (a config made in a module of its own, `require('./create-babel-config.js')()`).
+    if (more.size > 0) traceNode([...more])
+    // And the plugins and presets the Babel config names, which @babel/core requires by name: as each
+    // module the config reaches names them, in `plugins` and `presets` where it is the project's own or a
+    // Babel config's by its name (isBabelConfigModule), and anywhere, by their form, where it is a Babel
+    // config's. Each resolved as @babel/core resolves it, from the config's directory, else from the
+    // module naming it, a path from either; and what each reaches, in turn.
     const babelConfig = pathToFileURL(join(baseDir, BABEL_CONFIG_FILE)).toString()
     if (traced?.files.has(babelConfig)) {
-      const ownFiles = new Set([babelConfig])
-      for (const url of ownFiles) {
-        for (const e of traced.files.get(url)?.edges ?? []) {
-          if (e.child && traced.files.has(e.child) && !splitNodeModulesPath(toRel(fileURLToPath(e.child)))) ownFiles.add(e.child)
+      const files = new Map(traced.files)
+      const visited = new Set()
+      const resolveNamed = (name, from) => {
+        const pathLike = name.startsWith('.') || isAbsolute(name) || name.startsWith('node_modules/')
+        for (const dir of [baseDir, dirname(from)]) {
+          const file = requireFrom(dir, pathLike ? resolve(dir, name) : name)
+          if (file !== undefined) return file
         }
+        return undefined
       }
-      for (const url of ownFiles) {
-        const info = traced.files.get(url)
-        if (info.resource || info.format === 'json') continue
-        for (const { name } of babelNamedModules(fileURLToPath(url), host)) addTraced(requireFrom(baseDir, name))
+      for (let frontier = [babelConfig]; frontier.length > 0;) {
+        const named = new Set()
+        for (let i = 0; i < frontier.length; i++) {
+          const url = frontier[i]
+          const info = files.get(url)
+          if (visited.has(url) || info === undefined) continue
+          visited.add(url)
+          for (const e of info.edges) if (e.child) frontier.push(e.child)
+          const file = fileURLToPath(url)
+          const rel = toRel(file)
+          const configModule = isBabelConfigModule(rel)
+          if (info.resource || info.format === 'json' || !(configModule || !splitNodeModulesPath(rel))) continue
+          for (const name of babelNamedModules(file, host, { anyString: configModule })) {
+            const found = resolveNamed(name, file)
+            if (found !== undefined && JS_EXTS.has(extname(found)) && relWithin(found) !== null) named.add(found)
+          }
+        }
+        const fresh = [...named].filter((file) => !files.has(pathToFileURL(file).toString()))
+        if (fresh.length > 0) for (const [url, info] of traceNode(fresh).files) files.set(url, info)
+        frontier = [...named].map((file) => pathToFileURL(file).toString())
       }
     }
-    if (more.size > 0) traceNode([...more])
   }
 
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is

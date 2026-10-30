@@ -4640,6 +4640,69 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
   t.assert.ok(!configured.sources.has('node_modules/module-resolver/index.js'))
 }))
 
+test('buildBundle --metro traces what a Babel config\'s modules name as Babel plugins or presets by their form, anywhere in them', withTmp(async (t, tmp) => {
+  // A module of the Babel config by its name (create-babel-config.js, @org/babel-config) names its plugins
+  // as strings it builds the config of: in a variable, joined to a path, spread into `plugins`, wherever.
+  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
+  const files = {
+    'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
+    'pnpm-workspace.yaml': '',
+    'index.js': 'export default 1\n',
+    'aliases.json': '{}',
+    'babel.config.js': "module.exports = require('./create-babel-config.js')()\n",
+    'create-babel-config.js': [
+      "const path = require('path')",
+      "const shared = require('@org/babel-config')",
+      "const { alias } = require('./aliases.js')",
+      "const inline = path.resolve(__dirname, 'node_modules/@org/foo-babel-whatever/babel/plugin-inline.js')",
+      "const extra = ['@babel/plugin-transform-arrow-functions', '@babel/plugin-transform-numeric-separator']",
+      "const production = ['babel-plugin-transform-remove-console', 'babel-plugin-missing']",
+      'module.exports = () => ({',
+      "  presets: ['module:@org/babel-config-native'],",
+      "  plugins: [inline, ...extra, ...shared, ['module-resolver', { alias }]],",
+      '  env: { production: { plugins: production } },',
+      '})',
+      '',
+    ].join('\n'),
+    // Not a Babel config's by its name: what it names isn't read.
+    'aliases.js': "exports.alias = {}\nexports.unused = 'babel-plugin-unused'\n",
+    ...pkg('node_modules/@org/babel-config', '@org/babel-config', 'index.js', "module.exports = ['@babel/plugin-transform-export-namespace-from']\n"),
+    // A shared config found by its name alone, which names a plugin in turn.
+    ...pkg('node_modules/@org/babel-config-native', '@org/babel-config-native', 'index.js', "module.exports = () => ({ plugins: ['babel-plugin-from-shared'] })\n"),
+    ...pkg('node_modules/@org/foo-babel-whatever', '@org/foo-babel-whatever', 'index.js', 'module.exports = {}\n'),
+    'node_modules/@org/foo-babel-whatever/babel/plugin-inline.js': "module.exports = require('./helper.js')\n",
+    'node_modules/@org/foo-babel-whatever/babel/helper.js': 'module.exports = {}\n',
+    ...pkg('node_modules/@babel/plugin-transform-arrow-functions', '@babel/plugin-transform-arrow-functions', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@babel/plugin-transform-numeric-separator', '@babel/plugin-transform-numeric-separator', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@babel/plugin-transform-export-namespace-from', '@babel/plugin-transform-export-namespace-from', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-transform-remove-console', 'babel-plugin-transform-remove-console', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-from-shared', 'babel-plugin-from-shared', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-unused', 'babel-plugin-unused', 'index.js', 'module.exports = {}\n'),
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
+  t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
+    'aliases.js',
+    'babel.config.js',
+    'create-babel-config.js',
+    'node_modules/@babel/plugin-transform-arrow-functions/lib/index.js',
+    'node_modules/@babel/plugin-transform-export-namespace-from/lib/index.js',
+    'node_modules/@babel/plugin-transform-numeric-separator/lib/index.js',
+    'node_modules/@org/babel-config-native/index.js',
+    'node_modules/@org/babel-config/index.js',
+    'node_modules/@org/foo-babel-whatever/babel/helper.js',
+    'node_modules/@org/foo-babel-whatever/babel/plugin-inline.js',
+    'node_modules/babel-plugin-from-shared/index.js',
+    'node_modules/babel-plugin-module-resolver/lib/index.js',
+    'node_modules/babel-plugin-transform-remove-console/lib/index.js',
+  ])
+  t.assert.ok(!bundle.sources.has('node_modules/babel-plugin-unused/index.js'))
+}))
+
 test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
   // The run of `react-native bundle` loads React Native's CLI, the React Native config of each of the
   // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's

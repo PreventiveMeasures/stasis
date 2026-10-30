@@ -320,15 +320,29 @@ metro-config's default `transformerPath`); and with `--babel` or
 (`@react-native/metro-babel-transformer`, its `babelTransformerPath`, resolved
 from `@react-native/metro-config`), which runs `@babel/core` and React Native's
 Babel preset with its plugins; and the plugins and presets the Babel config
-names, which `@babel/core` requires by name: each string (or the first of a
-`[name, options]` pair) under a `plugins` or `presets` key, at any depth, in
-`babel.config.js` and the project's own modules it requires (a config made by
-`require('./create-babel-config.js')()`), read off their source, never run,
-under the name Babel requires (`module-resolver` as
-`babel-plugin-module-resolver`, `module:@react-native/babel-preset` as
-`@react-native/babel-preset`), resolved from the project. A project's own
+names, which `@babel/core` requires by name, read off the source of the modules
+`babel.config.js` reaches, never run:
+
+- each string (or the first of a `[name, options]` pair) under a `plugins` or
+  `presets` key, at any depth, in the project's own modules and a Babel
+  config's, under the name Babel requires (`module-resolver` as
+  `babel-plugin-module-resolver`, `module:@react-native/babel-preset` as
+  `@react-native/babel-preset`);
+- and in a Babel config's module, by its name (`babel` and `config` in its
+  file's name, as `babel.config.js` and `create-babel-config.js`, or its
+  package's, as `@org/babel-config`), any string that names a plugin or preset
+  by its form, wherever it is: `module:` names, `babel-plugin-` and
+  `babel-preset-` packages, `@babel/plugin-` and `@babel/preset-` ones, paths
+  through a `babel/plugin` or `babel-plugin` directory
+  (`path.resolve(__dirname, 'node_modules/@org/x-babel/babel/plugin-inline.js')`),
+  in an array kept in a variable (`['babel-plugin-transform-remove-console']`)
+  or spread into `plugins`.
+
+Each is resolved as `@babel/core` resolves it, from the project, else from the
+module naming it (a path from either), and what it reaches is read in turn: a
+shared config found by its name can name more. A project's own
 `transformerPath` or `babelTransformerPath` isn't read, its Metro config being
-code, nor is a name the config computes rather than writes. Node runs
+code, nor is a name a config computes rather than writes. Node runs
 each, not Metro, so each is bundled as `stasis bundle` bundles a Node entry,
 parsed, not run: with everything it imports, resolved as Node resolves it
 (`@react-native/metro-config` and what it requires, say), each file in the
