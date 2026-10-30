@@ -309,12 +309,15 @@ each, not Metro, so each is bundled as `stasis bundle` bundles a Node entry,
 parsed, not run: with everything it imports, resolved as Node resolves it
 (`@react-native/metro-config` and what it requires, say), each file in the
 format Node loads it in (`commonjs` or `module` by its package's `type` or
-syntax, `json`), a file the app imports too included. Their edges are keyed as
-a Node build keys them: under `*` where every context resolves one alike, else
-under the conditions that resolve it, as also where the app's build resolves
-the same import of a file both reach to another file. One Node misses there
-where Metro resolves it is refused: no miss is recorded, so Metro's edge would
-serve Node its file in place of the miss. A package only they reach
+syntax, `json`), a file the app imports too included. In a file only they
+reach, their edges are keyed as a Node build keys them: under `*` where every
+context resolves one alike, else under the conditions that resolve it. In a
+file the app's build reaches too, Node's edges are always keyed under Node's
+conditions (`node, import, module-sync, node-addons` for an ES module's), apart
+from Metro's under `*`, as the Metro plugin's run records the two, though they
+resolve alike. An import Node misses there where Metro resolves it is refused:
+no miss is recorded, so Metro's edge would serve Node its file in place of the
+miss. A package only they reach
 isn't a native dependency of the app, and its native build inputs aren't
 carried. What a config names as data, not an import (a Babel preset's name,
 say), isn't followed.

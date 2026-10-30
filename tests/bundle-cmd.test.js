@@ -4540,6 +4540,33 @@ test('buildBundle --metro traces its configs as Node runs them, with all they im
   t.assert.ok(![...bundle.sources.keys()].some((rel) => rel.endsWith('.m')), 'no native walk of a package only a config runs')
 }))
 
+test('buildBundle --metro keeps Node\'s edges of a file the configs and the app both reach apart from Metro\'s, as the plugin\'s run records them', withTmp(async (t, tmp) => {
+  // The run records the package's edges twice: Metro's under '*', Node's (the config's require of
+  // it) under Node's conditions. Folded into Metro's where they agree, Node's would be lost.
+  jsProject(tmp, {
+    'index.js': "import { a } from 'esm-utils'\nexport default a\n",
+    'metro.config.js': "const { a } = require('esm-utils')\nmodule.exports = { a }\n",
+  }, { name: 'app', version: '0.0.0' })
+  const files = {
+    'node_modules/esm-utils/package.json': JSON.stringify({ name: 'esm-utils', version: '1.0.0', type: 'module', main: 'lib/index.js' }),
+    'node_modules/esm-utils/lib/index.js': "export * from './array.js'\nexport { b } from './b.js'\n",
+    'node_modules/esm-utils/lib/array.js': 'export const a = 1\n',
+    'node_modules/esm-utils/lib/b.js': 'export const b = 2\n',
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] })
+  const index = 'node_modules/esm-utils/lib/index.js'
+  const edges = { './array.js': 'node_modules/esm-utils/lib/array.js', './b.js': 'node_modules/esm-utils/lib/b.js' }
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get(index)), edges, 'Metro\'s')
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('node, import, module-sync, node-addons').get(index)), edges, 'Node\'s')
+  // A file the configs alone reach keys Node's under '*', as a Node build does.
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('metro.config.js')), { 'esm-utils': index })
+  t.assert.ok(![...bundle.imports].some(([key, byParent]) => key !== '*' && byParent.has('metro.config.js')))
+}))
+
 test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
   // No miss is recorded, so Metro's edge would serve Node, which the config catches the miss of,
   // the package's React Native file. A miss in a file the configs alone reach is only warned of.
