@@ -4708,6 +4708,61 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
   t.assert.ok(!bundle.sources.has('node_modules/babel-plugin-unreached/index.js'))
 }))
 
+test('buildBundle --metro traces the plugins and presets a Babel config\'s modules name by a path they compute, in the lists Babel takes them from', withTmp(async (t, tmp) => {
+  // A plugin named by a path into its package, joined to the module's own directory, or resolved by
+  // require.resolve: written in `plugins`, held in a variable, pushed onto a list so named. A path the
+  // config computes for anything else (a module-resolver alias or root) names no plugin.
+  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
+  const files = {
+    'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
+    'pnpm-workspace.yaml': '',
+    'index.js': 'export default 1\n',
+    'aliases.json': '{}',
+    'babel.config.js': "module.exports = require('./create-babel-config.js')()\n",
+    'create-babel-config.js': [
+      "const path = require('path')",
+      "const ticker = path.join(__dirname, 'node_modules', '@org/ticker', 'plugin.js')",
+      'module.exports = () => {',
+      "  const plugins = [path.resolve(__dirname, 'node_modules/@org/motion/plugin')]",
+      '  plugins.push(ticker)',
+      '  return {',
+      "    presets: [require.resolve('@org/preset-native')],",
+      '    plugins: [',
+      '      ...plugins,',
+      "      ['module-resolver', { root: [path.resolve(__dirname, 'src')], alias: { lib: path.resolve(__dirname, 'node_modules/@org/aliased') } }],",
+      '    ],',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.js': 'module.exports = 1\n',
+    ...pkg('node_modules/@org/motion', '@org/motion', 'src/index.js', 'module.exports = 1\n'),
+    'node_modules/@org/motion/plugin/index.js': "module.exports = require('./build/plugin.js')\n",
+    'node_modules/@org/motion/plugin/build/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
+    ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
+  t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
+    'babel.config.js',
+    'create-babel-config.js',
+    'node_modules/@org/motion/plugin/build/plugin.js',
+    'node_modules/@org/motion/plugin/index.js',
+    'node_modules/@org/preset-native/index.js',
+    'node_modules/@org/ticker/plugin.js',
+    'node_modules/babel-plugin-module-resolver/lib/index.js',
+  ])
+  t.assert.ok(!bundle.sources.has('node_modules/@org/aliased/index.js'))
+  t.assert.ok(!bundle.sources.has('src/index.js'))
+}))
+
 test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
   // The run of `react-native bundle` loads React Native's CLI, the React Native config of each of the
   // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's

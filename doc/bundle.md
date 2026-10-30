@@ -344,11 +344,18 @@ Babel preset with its plugins; and the plugins and presets the Babel config
 names, which `@babel/core` requires by name, read off the source of the modules
 `babel.config.js` reaches, never run:
 
-- each string (or the first of a `[name, options]` pair) under a `plugins` or
-  `presets` key, at any depth, in the project's own modules and a Babel
-  config's, under the name Babel requires (`module-resolver` as
-  `babel-plugin-module-resolver`, `module:@react-native/babel-preset` as
-  `@react-native/babel-preset`);
+- each string (or the first of a `[name, options]` pair) in a list of plugins
+  or presets, in the project's own modules and a Babel config's, under the name
+  Babel requires (`module-resolver` as `babel-plugin-module-resolver`,
+  `module:@react-native/babel-preset` as `@react-native/babel-preset`); a list
+  being an array under a `plugins` or `presets` key at any depth, a variable so
+  named, or one pushed onto either (`plugins.push(x)`, `unshift`, `concat`),
+  spread in or held in a variable;
+- in such a list too, a path the module computes from its own directory and
+  strings (`path.resolve(__dirname, 'node_modules/@org/x/plugin')`,
+  `path.join(__dirname, ...)`) or a name `require.resolve('x')` resolves, as
+  is. A path computed for anything else (a module-resolver `alias` or `root`)
+  names no plugin;
 - and in a Babel config's module, by its name (`babel` and `config` in its
   file's name, as `babel.config.js` and `create-babel-config.js`, or its
   package's, as `@org/babel-config`), any string that names a plugin or preset
