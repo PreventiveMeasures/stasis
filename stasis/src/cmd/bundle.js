@@ -1440,8 +1440,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // which React Native's Metro config keeps) are no module of Metro's, which can't resolve one: one
   // reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
-  // (`metro`, no edge). Those (rel): no edge to one, and no asset registry for one.
-  const transformInputs = new Set()
+  // (`metro`, no edge): no edge to one, and no asset registry for one.
   const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
@@ -1477,7 +1476,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const rel = toRel(abs)
         reached.add(abs)
         if (info.resource) resourceRels.add(rel)
-        if (isTransformInput(abs, info)) transformInputs.add(rel)
         // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
         // it from source, and Node's module/commonjs isn't what it runs. But the one its name alone
         // gives it (.json, .mjs, .cjs: nodeExtFormat), as Node loads it too.

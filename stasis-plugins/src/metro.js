@@ -435,7 +435,6 @@ export class StasisMetro {
       for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
       this.#assertConsumed(module, modPath)
       this.#assertAssetFiles(module, modPath, platform ?? null)
-      this.#assertAssetMembers(module, modPath, platform ?? null)
     }
   }
 
@@ -496,32 +495,32 @@ export class StasisMetro {
     }
   }
 
+  // `path`'s real path, where it lies within the project root (not linked out of it), else null.
+  #realWithin(path) {
+    let real
+    try {
+      real = diskHost.realpath(path)
+      this.#realRoot ??= diskHost.realpath(this.#state.root)
+      this.#state.relative(real)
+    } catch {
+      return null
+    }
+    return isPathWithin(this.#realRoot, real) ? real : null
+  }
+
   // The resources a Babel plugin consumed in transforming `module`, read and inlined in their imports'
   // stead (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the stasis transformer
   // carries them (`stasisConsumed`): no module of Metro's, so no edge, but the build's input all the
   // same. One named by path, as such a plugin reads it, from the module's dir, by its real path, as
   // Metro names its modules. One naming code (an import a plugin split into others, as
-  // babel-plugin-lodash does), no file, or one whose real path is outside the project root (a
-  // symlink out of it too) is passed over; one the resources don't carry is refused. -> each as
-  // { file: its real path, read: the path the plugin reads it by }
+  // babel-plugin-lodash does), no file, or one outside the project root is passed over; one the
+  // resources don't carry is refused. -> each as { file: its real path, read: the path read }
   * #consumedResources(module, modPath) {
     for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
       if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
-      const lexical = resolve(dirname(modPath), specifier)
-      if (diskHost.stat(lexical)?.isFile() !== true) continue
-      let file
-      try {
-        file = diskHost.realpath(lexical)
-      } catch {
-        continue
-      }
-      this.#realRoot ??= diskHost.realpath(this.#state.root)
-      if (!isPathWithin(this.#realRoot, file)) continue
-      try {
-        this.#state.relative(file)
-      } catch {
-        continue
-      }
+      const read = resolve(dirname(modPath), specifier)
+      const file = diskHost.stat(read)?.isFile() ? this.#realWithin(read) : null
+      if (file === null) continue
       const kind = classifyExtension(file, this.#resources)
       if (kind === 'code') continue
       if (kind === 'unknown') {
@@ -530,7 +529,7 @@ export class StasisMetro {
           `add its extension or filename to the plugin's resources option or stop importing it`
         )
       }
-      yield { file, read: lexical }
+      yield { file, read }
     }
   }
 
@@ -551,25 +550,12 @@ export class StasisMetro {
     }
   }
 
-  // The files of the asset module `module` Metro builds: as Metro reads them to build it (its
-  // `scales` and `hash`) and copies them out with it, it and its other scales (`logo@2x.png`,
-  // `logo@3x.png`; metroAssetFiles, Metro's own rule for `platform`). No import names one, so no
-  // edge. One whose real path is outside the project root (linked out of it) is passed over.
-  // -> as #consumedResources
-  * #assetFiles(module, modPath, platform) {
-    if (module.output?.[0]?.type !== 'js/module/asset') return
-    for (const read of metroAssetFiles(modPath, platform, this.#assetDirHost())) {
-      if (diskHost.stat(read)?.isFile() !== true) continue // gone from disk, served (#assetDirHost)
-      const file = diskHost.realpath(read)
-      this.#realRoot ??= diskHost.realpath(this.#state.root)
-      if (!isPathWithin(this.#realRoot, file)) continue
-      try {
-        this.#state.relative(file)
-      } catch {
-        continue
-      }
-      yield { file, read }
-    }
+  // The files of the asset module `module` Metro builds, by the names it reads them by (#assetDirHost):
+  // as Metro reads them to build it (its `scales` and `hash`) and copies them out with it, it and its
+  // other scales (`logo@2x.png`, `logo@3x.png`; metroAssetFiles, Metro's own rule for `platform`). No
+  // import names one, so no edge. -> their paths, none for a module no asset
+  #assetFiles(module, modPath, platform) {
+    return module.output?.[0]?.type === 'js/module/asset' ? metroAssetFiles(modPath, platform, this.#assetDirHost()) : []
   }
 
   // The directory listing Metro finds an asset's files in (fs.promises.readdir): the disk's, but under
@@ -593,32 +579,19 @@ export class StasisMetro {
       this.#bundleDirs = new Map()
       for (const rel of [...state.sources.keys(), ...state.resources.keys()]) {
         const dir = posix.dirname(rel)
-        if (!this.#bundleDirs.has(dir)) this.#bundleDirs.set(dir, new Set())
-        this.#bundleDirs.get(dir).add(posix.basename(rel))
+        if (!this.#bundleDirs.has(dir)) this.#bundleDirs.set(dir, [])
+        this.#bundleDirs.get(dir).push({ name: posix.basename(rel) })
       }
     }
-    const relOf = (path) => {
-      try {
-        return toPosix(state.relative(path))
-      } catch {
-        return null
-      }
-    }
-    return {
-      readdir: (dir) => [...(this.#bundleDirs.get(relOf(dir)) ?? [])].map((name) => ({ name })),
-      stat: (path) => {
-        const rel = relOf(path)
-        return rel !== null && (state.sources.has(rel) || state.resources.has(rel)) ? FILE_STAT : null
-      },
-    }
+    return { readdir: (dir) => this.#bundleDirs.get(toPosix(state.relative(dir))) ?? [], stat: () => FILE_STAT }
   }
 
   // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:
   // by the name Metro reads it by, with the bytes it reads there (one linked in, its target's), so a
-  // load holds that name to them.
+  // load holds that name to them. One linked from outside the project is passed over.
   #captureAssetFiles(module, modPath, platform) {
-    for (const { read } of this.#assetFiles(module, modPath, platform)) {
-      if (this.#seen.has(read)) continue
+    for (const read of this.#assetFiles(module, modPath, platform)) {
+      if (this.#seen.has(read) || this.#realWithin(read) === null) continue
       const kind = classifyExtension(read, this.#resources)
       if (kind === 'unknown') continue // as the module itself, which the graph capture refused
       this.#seen.add(read)
@@ -628,61 +601,41 @@ export class StasisMetro {
     }
   }
 
-  // Load: Metro's asset transformer reads each of its files from disk (fs.promises), the module itself
-  // too, past the stasis transformer, which serves the module's `data` that it never reads. Each Metro
-  // reads (#assetDirHost), by the name it reads it by (as the capture records it), in scope
-  // (#assertOnDisk's), must be in the bundle under that name (getFile throws on one it doesn't carry:
-  // a scale added since the capture) and its bytes there those it reads, symlinks followed (one
-  // redirected out of the project or to another file reads other bytes) -- unless --fs=async serves
-  // it by that name. Gone from disk, one is served or #assertAssetMembers refuses it.
+  // Load: Metro's asset transformer reads each of an asset's files from disk (fs.promises), the module's
+  // own too, past the stasis transformer, which serves the module's `data` that it never reads. Each it
+  // reads on disk must be the bundle's under the name it reads it by (#assertOnDisk: a scale added since
+  // the capture, or one a symlink redirects, reads bytes the bundle doesn't carry there); and each the
+  // bundle carries must be among those it reads (one gone builds another asset, its `scales` and `hash`,
+  // from what remains) -- unless --fs=async serves them.
   #assertAssetFiles(module, modPath, platform) {
-    if (module.output?.[0]?.type !== 'js/module/asset') return
-    const state = this.#state
-    for (const read of metroAssetFiles(modPath, platform, this.#assetDirHost())) {
-      if (diskHost.stat(read)?.isFile() !== true) continue
-      const url = pathToFileURL(read).toString()
-      if (!state.config.full && !state.inNodeModules(url)) continue
-      if (state.config.fs === 'async' && state.getFsFileFamily(url) !== undefined) continue
-      const { source } = state.getFile(url)
-      this.#assertBytes(read, source, `a file of the asset '${modPath}' Metro builds`)
+    const read = this.#assetFiles(module, modPath, platform)
+    if (read.length === 0) return
+    const what = `a file of the asset '${modPath}' Metro builds`
+    for (const path of read) {
+      if (diskHost.stat(path)?.isFile()) this.#assertOnDisk({ file: path, read: path }, { what, servedBy: ['async'] })
     }
-  }
-
-  // Load: and each of the asset's files the bundle carries among those Metro reads (#assetDirHost): one
-  // gone builds another asset (its `scales`, its `hash`) from what remains. One Metro reads that the
-  // bundle doesn't carry, #assertAssetFiles refuses.
-  #assertAssetMembers(module, modPath, platform) {
-    if (module.output?.[0]?.type !== 'js/module/asset') return
     if (!this.#state.config.full && !this.#state.inNodeModules(pathToFileURL(modPath).toString())) return
-    const read = new Set(metroAssetFiles(modPath, platform, this.#assetDirHost()))
     for (const file of metroAssetFiles(modPath, platform, this.#bundleDirHost())) {
-      if (read.has(file)) continue
-      throw new Error(
-        `StasisMetro: '${file}', a file of the asset '${modPath}' Metro builds as the bundle carries it, is gone -- ` +
-        'Metro would build the asset without it under load; restore it'
-      )
+      if (read.includes(file)) continue
+      throw new Error(`StasisMetro: '${file}', ${what} as the bundle carries it, is gone -- Metro would build the asset without it under load; restore it`)
     }
   }
 
   // Load: a file Metro's build reads from disk by `read`, past the stasis transformer, which serves only
   // the module it transforms. One in scope (as the transformer's: any under scope=full, else one in
-  // node_modules) must be in the bundle (getFile throws on one it doesn't carry), and its disk bytes the
-  // bundle's -- unless --fs, in a mode of `servedBy` (async patches fs.promises too), serves the read
-  // from the bundle itself, which it does by the path read (not a symlink to the file the bundle
-  // carries). Fail closed on drift.
+  // node_modules) is held to the bundle's bytes for `file` (getFile throws on one it doesn't carry),
+  // fail closed on drift -- unless --fs, in a mode of `servedBy` (async patches fs.promises too), serves
+  // the read from the bundle itself, which it does by the path read (not a symlink to the file the
+  // bundle carries).
   #assertOnDisk({ file, read }, { what, servedBy }) {
+    const state = this.#state
     const url = pathToFileURL(file).toString()
-    if (!this.#state.config.full && !this.#state.inNodeModules(url)) return
-    const { source } = this.#state.getFile(url)
-    if (servedBy.includes(this.#state.config.fs) && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) return
-    this.#assertBytes(file, source, what)
-  }
-
-  // Load: `path` on disk holds `source`, the bundle's bytes for it, else fail closed on drift.
-  #assertBytes(path, source, what) {
-    if (realReadFileSync(path).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) return
+    if (!state.config.full && !state.inNodeModules(url)) return
+    if (servedBy.includes(state.config.fs) && state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) return
+    const { source } = state.getFile(url)
+    if (realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) return
     throw new Error(
-      `StasisMetro: '${path}', ${what}, differs on disk from the bundle -- ` +
+      `StasisMetro: '${file}', ${what}, differs on disk from the bundle -- ` +
       'Metro\'s build reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
     )
   }
