@@ -1125,28 +1125,38 @@ function packageDirFrom(dir, name, host, via = []) {
   return from
 }
 
+// The AST of the module `file`, read through `host`.
+const parseModule = (file, host) => getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' }).program
+
+// Calls `fn` on each node of the AST `node`, depth first.
+function walkAst(node, fn) {
+  if (Array.isArray(node)) {
+    for (const child of node) walkAst(child, fn)
+    return
+  }
+  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+  fn(node)
+  for (const key of Object.keys(node)) if (key !== 'type') walkAst(node[key], fn)
+}
+
+// The method `node` calls on an object (`x.concat(...)` -> 'concat'), on the one named `object` where
+// given (`require.resolve(...)`), or undefined.
+function memberCall(node, object) {
+  if (node?.type !== 'CallExpression' || node.callee.type !== 'MemberExpression' || node.callee.computed) return undefined
+  if (object !== undefined && (node.callee.object.type !== 'Identifier' || node.callee.object.name !== object)) return undefined
+  return node.callee.property.name
+}
+
 // The files the module `file` names as `require.resolve('./x')`, read off its source, never run:
 // @react-native/js-polyfills' index.js lists so the polyfills React Native's Metro config prepends
 // (`getPolyfills`). -> absolute paths, those that are files
 function requireResolvedFiles(file, host) {
-  const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
   const files = []
-  const visit = (node) => {
-    if (Array.isArray(node)) {
-      for (const child of node) visit(child)
-      return
-    }
-    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
-    const { callee } = node
-    if (node.type === 'CallExpression' && callee.type === 'MemberExpression' && !callee.computed &&
-      callee.object.type === 'Identifier' && callee.object.name === 'require' && callee.property.name === 'resolve') {
-      const spec = literalSpec(node.arguments[0])
-      const path = spec?.startsWith('.') ? join(dirname(file), spec) : undefined
-      if (path !== undefined && host.stat(path)?.isFile()) files.push(path)
-    }
-    for (const key of Object.keys(node)) if (key !== 'type') visit(node[key])
-  }
-  visit(program)
+  walkAst(parseModule(file, host), (node) => {
+    const spec = memberCall(node, 'require') === 'resolve' ? literalSpec(node.arguments[0]) : null
+    const path = spec?.startsWith('.') ? join(dirname(file), spec) : undefined
+    if (path !== undefined && host.stat(path)?.isFile()) files.push(path)
+  })
   return files
 }
 
@@ -1185,12 +1195,9 @@ const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
 function staticPath(node, file) {
   if (node?.type === 'Identifier' && node.name === '__dirname') return dirname(file)
   const string = literalSpec(node)
-  if (string !== null) return string
-  if (node?.type !== 'CallExpression') return null
-  const { callee } = node
-  const member = callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier'
-  const name = member ? callee.property.name : callee.type === 'Identifier' ? callee.name : undefined
-  if ((name !== 'resolve' && name !== 'join') || (member && callee.object.name === 'require')) return null
+  if (string !== null || node?.type !== 'CallExpression' || memberCall(node, 'require') !== undefined) return string
+  const name = node.callee.type === 'Identifier' ? node.callee.name : memberCall(node)
+  if (name !== 'resolve' && name !== 'join') return null
   const parts = node.arguments.map((arg) => staticPath(arg, file))
   if (parts.length === 0 || parts.includes(null)) return null
   return name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
@@ -1201,32 +1208,24 @@ function staticPath(node, file) {
 // what `require.resolve('x')` resolves to as Node resolves it: from the module, else from each of the
 // `paths` it gives (`{ paths: [path.join(__dirname, 'shared')] }`) in turn. -> it, or null
 function babelPathCall(node, file, host) {
-  if (node?.type !== 'CallExpression') return null
-  const { callee } = node
-  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier' && callee.object.name === 'require') {
-    const spec = callee.property.name === 'resolve' ? literalSpec(node.arguments[0]) : null
-    if (spec === null) return null
-    const option = node.arguments[1]
-    const paths = option?.type === 'ObjectExpression'
-      ? option.properties.find((property) => property.type === 'Property' && !property.computed && (property.key.name ?? property.key.value) === 'paths')
-      : undefined
-    let froms = [file]
-    if (paths !== undefined) {
-      const dirs = paths.value.type === 'ArrayExpression' ? paths.value.elements.map((element) => staticPath(element, file)) : [null]
-      // One only the run knows, or one relative to its cwd: no telling where Node looks.
-      if (dirs.some((dir) => dir === null || !isAbsolute(dir))) return null
-      froms = dirs.map((dir) => join(dir, 'index.js'))
-    }
-    for (const from of froms) {
-      try {
-        return host.resolve(from, spec, NODE_REQUIRE_CONDITIONS)
-      } catch { /* not from here: the next */ }
-    }
-    return null
+  if (memberCall(node, 'require') !== 'resolve') {
+    const path = node?.type === 'CallExpression' ? staticPath(node, file) : null
+    return path === null || isAbsolute(path) || path.startsWith('.') ? path : `./${path}`
   }
-  const path = staticPath(node, file)
-  if (path === null) return null
-  return isAbsolute(path) || path.startsWith('.') ? path : `./${path}`
+  const spec = literalSpec(node.arguments[0])
+  const option = node.arguments[1]
+  const paths = option?.type === 'ObjectExpression'
+    ? option.properties.find((property) => property.type === 'Property' && !property.computed && (property.key.name ?? property.key.value) === 'paths')
+    : undefined
+  const dirs = paths === undefined ? [dirname(file)] : paths.value.type === 'ArrayExpression' ? paths.value.elements.map((element) => staticPath(element, file)) : [null]
+  // One only the run knows, or one relative to its cwd: no telling where Node looks.
+  if (spec === null || dirs.some((dir) => dir === null || !isAbsolute(dir))) return null
+  for (const dir of dirs) {
+    try {
+      return host.resolve(join(dir, 'index.js'), spec, NODE_REQUIRE_CONDITIONS)
+    } catch { /* not from here: the next */ }
+  }
+  return null
 }
 
 // The plugins and presets the module `file` names, read off its source, never run: each in a list of them
@@ -1236,19 +1235,10 @@ function babelPathCall(node, file, host) {
 // Babel requires it, or by a path the module computes (babelPathCall), as is. With `anyString`, also any
 // string naming one by its form (BABEL_MODULE_STRING) wherever it is, as written. -> the names
 function babelNamedModules(file, host, { anyString = false } = {}) {
-  const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
-  const walk = (node, fn) => {
-    if (Array.isArray(node)) {
-      for (const child of node) walk(child, fn)
-      return
-    }
-    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
-    fn(node)
-    for (const child of Object.keys(node)) if (child !== 'type') walk(node[child], fn)
-  }
+  const program = parseModule(file, host)
   // Each variable's initializers, by its name.
   const inits = new Map()
-  walk(program, (node) => {
+  walkAst(program, (node) => {
     if (node.type !== 'VariableDeclarator' || node.id.type !== 'Identifier' || !node.init) return
     if (!inits.has(node.id.name)) inits.set(node.id.name, [])
     inits.get(node.id.name).push(node.init)
@@ -1275,10 +1265,10 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
       for (const init of inits.get(node.name) ?? []) read(init, type, depth)
     } else if (node.type === 'ConditionalExpression' || node.type === 'LogicalExpression') {
       for (const side of node.type === 'LogicalExpression' ? [node.left, node.right] : [node.consequent, node.alternate]) read(side, type, depth)
-    } else if (depth > 0 && LIST_METHODS.has(arrayMethod(node))) {
+    } else if (depth > 0 && LIST_METHODS.has(memberCall(node))) {
       // `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, `[[a], b].flat()` of its own
       // flattened, as many levels as it says (`flat(2)`, `flat(Infinity)`).
-      const method = arrayMethod(node)
+      const method = memberCall(node)
       const levels = method === 'flat' ? flatDepth(node.arguments[0]) : 0
       read(node.callee.object, type, Math.min(depth + levels, MAX_LIST_DEPTH))
       if (method === 'concat') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? depth + 1 : depth)
@@ -1290,7 +1280,7 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     }
   }
   const listName = (node) => (node.type === 'Identifier' ? node.name : node.type === 'MemberExpression' && !node.computed ? node.property.name : undefined)
-  walk(program, (node) => {
+  walkAst(program, (node) => {
     const string = anyString ? literalSpec(node) : null
     if (string && BABEL_MODULE_STRING.test(string)) named.add(string.replace(/^module:/u, ''))
     // A list: under a key, held in a variable or assigned to a property, so named.
@@ -1300,7 +1290,7 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
       : []
     if (BABEL_LISTS.has(name)) read(value, BABEL_LISTS.get(name), 1)
     // Or added to one: `push` and `unshift` each argument an entry, `concat` as it concatenates.
-    const method = arrayMethod(node)
+    const method = memberCall(node)
     const type = method && BABEL_LISTS.get(listName(node.callee.object))
     if (!type) return
     if (method === 'concat') read(node, type, 1)
@@ -1316,11 +1306,6 @@ function flatDepth(arg) {
   if (arg === undefined) return 1
   if (arg.type === 'Identifier' && arg.name === 'Infinity') return MAX_LIST_DEPTH
   return arg.type === 'Literal' && typeof arg.value === 'number' ? arg.value : 1
-}
-
-// The array method `node` calls (`x.concat(...)` -> 'concat'), or undefined.
-function arrayMethod(node) {
-  return node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed ? node.callee.property.name : undefined
 }
 
 const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
@@ -1527,8 +1512,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // from the project. Node loads each, not Metro, so each is traced as a Node entry is
   // (buildJsBundle): with all it imports, resolved as Node resolves it, each file in the format Node
   // loads it in, which one the app's build reaches too keeps (Metro needs none).
-  // parentRel -> specifier -> Map<conditions key, targetRel>, merged into the bundle's edges below.
-  const configEdges = new Map()
+  // Their edges, each under the conditions Node resolves it with, as the Metro plugin's run records
+  // them (Node's loader keys every edge so), apart from Metro's under '*' in a file both reach, though
+  // they agree: under '*', they'd be none of the edges the run records.
+  // conditions key -> parentRel -> specifier -> targetRel, beside the bundle's '*' edges.
+  const keyedResolutions = new Map()
   // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
   const configMissed = new Map()
   // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
@@ -1591,32 +1579,24 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         if (u.spec !== undefined) configMissed.set(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`, u)
       }
       for (const [key, byParent] of scanner.imports) {
+        if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
+        const keyed = keyedResolutions.get(key)
         for (const [parentURL, specs] of byParent) {
           const parent = toRel(fileURLToPath(parentURL))
-          if (!configEdges.has(parent)) configEdges.set(parent, new Map())
-          const bySpec = configEdges.get(parent)
-          for (const [spec, childURL] of specs) {
-            if (!bySpec.has(spec)) bySpec.set(spec, new Map())
-            bySpec.get(spec).set(key, toRel(fileURLToPath(childURL)))
-          }
+          if (!keyed.has(parent)) keyed.set(parent, new Map())
+          for (const [spec, childURL] of specs) keyed.get(parent).set(spec, toRel(fileURLToPath(childURL)))
         }
       }
       return scanner
     }
     const traced = configs.length > 0 ? traceNode(configs) : null
-    // What those load by a path or name, traced in turn.
-    const more = new Set()
-    const addTraced = (file) => {
-      if (file !== undefined && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString())) more.add(file)
-    }
-    // The transformers of stasis's Metro plugin, where a config requires it.
-    for (const url of traced?.files.keys() ?? []) {
-      const file = fileURLToPath(url)
-      if (basename(file) !== 'metro.js' || basename(dirname(file)) !== 'src') continue
-      if (readJson(join(dirname(dirname(file)), 'package.json'), host)?.name !== '@exodus/stasis-plugins') continue
-      for (const name of STASIS_METRO_TRANSFORMERS) addTraced(host.stat(join(dirname(file), name))?.isFile() ? join(dirname(file), name) : undefined)
-    }
-    if (more.size > 0) traceNode([...more])
+    // And the transformers of stasis's Metro plugin beside it, where a config requires it, in turn.
+    const transformers = [...(traced?.files.keys() ?? [])].map((url) => fileURLToPath(url))
+      .filter((file) => basename(file) === 'metro.js' && basename(dirname(file)) === 'src' &&
+        readJson(join(dirname(dirname(file)), 'package.json'), host)?.name === '@exodus/stasis-plugins')
+      .flatMap((file) => STASIS_METRO_TRANSFORMERS.map((name) => join(dirname(file), name)))
+      .filter((file) => host.stat(file)?.isFile() && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString()))
+    if (transformers.length > 0) traceNode(transformers)
     // And the plugins and presets the Babel config names, which @babel/core requires by name: as each
     // module the config reaches names them, in `plugins` and `presets` where it is the project's own or a
     // Babel config's by its name (isBabelConfigModule), and anywhere, by their form, where it is a Babel
@@ -1882,20 +1862,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       `${spec} from ${displayPath(parentURL, baseDir)} resolves under Metro, for the app, and not under Node, for the ` +
       "project's configs: a bundle can't keep Node's miss without serving Node Metro's file in its place"
     )
-  }
-  // The configs' edges, each under the conditions Node resolves it with, as the Metro plugin's run
-  // records them (Node's loader keys every edge so), apart from Metro's under '*' in a file both
-  // reach, though they agree: under '*', they'd be none of the edges the run records.
-  const keyedResolutions = new Map()
-  for (const [parent, bySpec] of configEdges) {
-    for (const [spec, byKey] of bySpec) {
-      for (const [key, child] of byKey) {
-        if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
-        const byParent = keyedResolutions.get(key)
-        if (!byParent.has(parent)) byParent.set(parent, new Map())
-        byParent.get(parent).set(spec, child)
-      }
-    }
   }
 
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}

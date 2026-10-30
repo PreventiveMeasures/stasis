@@ -141,21 +141,38 @@ function findBabelConfig(projectDir, command) {
   return configFile
 }
 
-// The file a plugin item names babel-plugin-module-resolver by resolves into this.
-const MODULE_RESOLVER = /[\\/]node_modules[\\/]babel-plugin-module-resolver[\\/]/u
-
-// --babel for `stasis bundle --metro`: the import aliases babel-plugin-module-resolver applies to
-// each file under the project's babel.config.*, loaded as Metro's transformer loads it (its `metro`
-// caller, for `platform`) -- the config is project code, run here. The plugin's own resolvePath (or
-// the config's custom one) maps each specifier, its `cwd` the project's where the config sets none,
-// as Metro started there has it. Every instance the config lists, by name or as a value (`require`d
-// or imported), counts, in order; one a preset adds doesn't.
-// -> (file, specifier) => the specifier the plugin rewrites it to, else null
-export function createBabelAliases({ projectDir, platform }) {
+// --babel for `stasis bundle --metro`: the project's babel.config.* for each file, loaded as Metro's
+// transformer loads it (its `metro` caller, for `platform`) by @babel/core's `method` (loadPartialConfig,
+// loadOptions) -- the config is project code, run here. -> (file) => what it loads, once a file
+function projectBabelConfig({ projectDir, platform }, method) {
   const configFile = findBabelConfig(projectDir, 'stasis bundle')
   const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
   const babel = require(babelPath)
   const caller = { name: 'metro', bundler: 'metro', platform }
+  const byFile = new Map()
+  return (file) => {
+    if (!byFile.has(file)) {
+      try {
+        byFile.set(file, babel[method]({ cwd: projectDir, root: projectDir, configFile, filename: file, caller }))
+      } catch (cause) {
+        throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
+      }
+    }
+    return byFile.get(file)
+  }
+}
+
+// The file a plugin item names babel-plugin-module-resolver by resolves into this.
+const MODULE_RESOLVER = /[\\/]node_modules[\\/]babel-plugin-module-resolver[\\/]/u
+
+// --babel for `stasis bundle --metro`: the import aliases babel-plugin-module-resolver applies to
+// each file under the project's babel.config.* (projectBabelConfig's partial config). The plugin's own
+// resolvePath (or the config's custom one) maps each specifier, its `cwd` the project's where the
+// config sets none, as Metro started there has it. Every instance the config lists, by name or as a
+// value (`require`d or imported), counts, in order; one a preset adds doesn't.
+// -> (file, specifier) => the specifier the plugin rewrites it to, else null
+export function createBabelAliases({ projectDir, platform }) {
+  const partialConfig = projectBabelConfig({ projectDir, platform }, 'loadPartialConfig')
   // The project's own copy, which a config passing the plugin as a value passes; none where the
   // project installs none.
   let projectPlugin
@@ -170,29 +187,13 @@ export function createBabelAliases({ projectDir, platform }) {
     if (resolved !== undefined) return MODULE_RESOLVER.test(resolved) ? require(resolved) : null
     return plugin.value === projectPlugin?.default ? projectPlugin : null
   }
-  // file -> [{ resolvePath, options }] of the module-resolver instances its config applies.
-  const byFile = new Map()
-  const aliasingOf = (file) => {
-    if (byFile.has(file)) return byFile.get(file)
-    let partial
-    try {
-      partial = babel.loadPartialConfig({ cwd: projectDir, root: projectDir, configFile, filename: file, caller })
-    } catch (cause) {
-      throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
-    }
-    const instances = []
+  return (file, specifier) => {
     // No partial config: the config ignores the file.
-    for (const plugin of partial?.options.plugins ?? []) {
+    for (const plugin of partialConfig(file)?.options.plugins ?? []) {
       const module = moduleOf(plugin)
       if (module === null) continue
       const options = { cwd: projectDir, ...plugin.options }
-      instances.push({ resolvePath: typeof options.resolvePath === 'function' ? options.resolvePath : module.resolvePath, options })
-    }
-    byFile.set(file, instances)
-    return instances
-  }
-  return (file, specifier) => {
-    for (const { resolvePath, options } of aliasingOf(file)) {
+      const resolvePath = typeof options.resolvePath === 'function' ? options.resolvePath : module.resolvePath
       const mapped = resolvePath(specifier, file, options)
       // The first instance mapping it wins: the plugin marks the path it writes resolved, which
       // later instances leave as it is.
@@ -204,27 +205,12 @@ export function createBabelAliases({ projectDir, platform }) {
 
 // --babel for `stasis bundle --metro`: whether Babel keeps a statement listing types alone in `file`
 // (`import { type A } from` as `import {} from`), as its TypeScript transform does under
-// `onlyRemoveTypeImports`, under the project's babel.config.*, loaded as Metro's transformer loads it
-// -- the config is project code, run here. -> (file) => boolean
+// `onlyRemoveTypeImports`, under the project's babel.config.* (projectBabelConfig's options).
+// -> (file) => boolean
 export function createBabelTypeImportsKept({ projectDir, platform }) {
-  const configFile = findBabelConfig(projectDir, 'stasis bundle')
-  const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
-  const babel = require(babelPath)
-  const caller = { name: 'metro', bundler: 'metro', platform }
-  const byFile = new Map()
-  return (file) => {
-    if (!byFile.has(file)) {
-      let options
-      try {
-        options = babel.loadOptions({ cwd: projectDir, root: projectDir, configFile, filename: file, caller })
-      } catch (cause) {
-        throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
-      }
-      // No options: the config ignores the file.
-      byFile.set(file, (options?.plugins ?? []).some((plugin) => plugin.key === 'transform-typescript' && plugin.options?.onlyRemoveTypeImports === true))
-    }
-    return byFile.get(file)
-  }
+  const options = projectBabelConfig({ projectDir, platform }, 'loadOptions')
+  // No options: the config ignores the file.
+  return (file) => (options(file)?.plugins ?? []).some((plugin) => plugin.key === 'transform-typescript' && plugin.options?.onlyRemoveTypeImports === true)
 }
 
 // babel-plugin-module-resolver's path tests, as it writes them.
