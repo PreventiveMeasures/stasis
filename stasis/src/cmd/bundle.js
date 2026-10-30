@@ -1136,8 +1136,8 @@ function requireFrom(dir, spec, host) {
   }
 }
 
-// The AST of the module `file`, read through `host`.
-const parseModule = (file, host) => getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' }).program
+// The AST of the module `file`, read through `host` (`source` where read already).
+const parseModule = (file, host, source = host.readFile(file).toString('utf8')) => getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program
 
 // Calls `fn` on each node of the AST `node`, depth first.
 function walkAst(node, fn) {
@@ -1169,7 +1169,7 @@ function requireResolutions(file, host) {
   const source = host.readFile(file).toString('utf8')
   // Parsed only where both words occur, however the call spaces them (`require\n  .resolve(`).
   if (!source.includes('require') || !source.includes('resolve')) return resolved
-  walkAst(getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program, (node) => {
+  walkAst(parseModule(file, host, source), (node) => {
     const spec = memberCall(node, 'require') === 'resolve' ? literalSpec(node.arguments[0]) : null
     const path = spec === null ? null : babelPathCall(node, file, host)
     if (path !== null) resolved.push([spec, path])
@@ -1345,15 +1345,15 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // paths
 function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolver, platformResolver = resolver, conditions: conds, host }) {
   const inserted = new Set()
-  // One file of each directory: a specifier resolves alike from every file of one.
-  const byDir = new Map(files.map((file) => [dirname(file), file]))
+  // One file of each directory of `list`'s: a specifier resolves alike from every file of one.
+  const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
   const resolveFrom = (from, spec, by = resolver) => {
     const url = by(from, spec, conds)?.url
     return url === undefined ? undefined : fileURLToPath(url)
   }
   if (babelled) {
     const helpersDirs = new Set()
-    for (const from of byDir.values()) {
+    for (const from of onePerDir(files)) {
       const probe = resolveFrom(from, '@babel/runtime/helpers/interopRequireDefault')
       if (probe !== undefined) helpersDirs.add(dirname(probe))
     }
@@ -1378,12 +1378,11 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
   // .jsx/.tsx one.
-  const jsxFiles = jsx ? [...byDir.values()] : [...new Map(files.filter((file) => JSX_FILE_EXTS.has(extname(file))).map((file) => [dirname(file), file])).values()]
-  for (const from of jsxFiles) {
+  for (const from of onePerDir(jsx ? files : files.filter((file) => JSX_FILE_EXTS.has(extname(file))))) {
     const runtime = resolveFrom(from, 'react/jsx-runtime')
     if (runtime !== undefined) inserted.add(runtime)
   }
-  for (const from of new Map(assets.map((file) => [dirname(file), file])).values()) {
+  for (const from of onePerDir(assets)) {
     const registry = resolveFrom(from, ASSET_REGISTRY, platformResolver)
     if (registry !== undefined) inserted.add(registry)
   }
@@ -1453,6 +1452,14 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
   // (`metro`, no edge): no edge to one, and no asset registry for one.
   const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
+  // Scan from `roots` with `options`, keeping what lies within the root (one the entries link eagerly
+  // is refused, see withinRoot), its issues reported under `label`. -> { scanner, leftOut }
+  const scanWithin = (roots, options, label) => {
+    const { scanner, outside, leftOut } = withinRoot(scan(roots, options), (url) => relWithin(fileURLToPath(url)) !== null)
+    for (const url of outside) toRel(fileURLToPath(url))
+    reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
+    return { scanner, leftOut }
+  }
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1477,10 +1484,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
     const absorb = (roots) => {
-      // Only what lies within the root is carried; one the entries link eagerly is refused (see withinRoot).
-      const { scanner, outside, leftOut } = withinRoot(scan(roots, scanOptions), (url) => relWithin(fileURLToPath(url)) !== null)
-      for (const url of outside) toRel(fileURLToPath(url))
-      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
+      const { scanner, leftOut } = scanWithin(roots, scanOptions, platform ?? 'mainFields')
       leftOutEdges.push(...leftOut)
       for (const [url, info] of scanner.files) {
         const abs = fileURLToPath(url)
@@ -1543,6 +1547,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // they agree: under '*', they'd be none of the edges the run records.
   // conditions key -> parentRel -> specifier -> targetRel, beside the bundle's '*' edges.
   const keyedResolutions = new Map()
+  // The edges from `parent` (rel) keyed `key`: specifier -> targetRel.
+  const keyedFrom = (key, parent) => {
+    if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
+    const keyed = keyedResolutions.get(key)
+    if (!keyed.has(parent)) keyed.set(parent, new Map())
+    return keyed.get(parent)
+  }
   // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
   const configMissed = new Map()
   // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
@@ -1582,9 +1593,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     // Trace `roots` as Node entries, recording what they reach. -> the scan
     const traceNode = (roots) => {
-      const { scanner, outside, leftOut } = withinRoot(scan(roots, { resources: resourceSet, host }), (url) => relWithin(fileURLToPath(url)) !== null)
-      for (const url of outside) toRel(fileURLToPath(url))
-      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: 'configs and toolchain', root: ' at .' })
+      const { scanner, leftOut } = scanWithin(roots, { resources: resourceSet, host }, 'configs and toolchain')
       for (const [url, info] of scanner.files) {
         const abs = fileURLToPath(url)
         const rel = toRel(abs)
@@ -1598,12 +1607,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         if (u.spec !== undefined) configMissed.set(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`, u)
       }
       for (const [key, byParent] of scanner.imports) {
-        if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
-        const keyed = keyedResolutions.get(key)
         for (const [parentURL, specs] of byParent) {
-          const parent = toRel(fileURLToPath(parentURL))
-          if (!keyed.has(parent)) keyed.set(parent, new Map())
-          for (const [spec, childURL] of specs) keyed.get(parent).set(spec, toRel(fileURLToPath(childURL)))
+          const keyed = keyedFrom(key, toRel(fileURLToPath(parentURL)))
+          for (const [spec, childURL] of specs) keyed.set(spec, toRel(fileURLToPath(childURL)))
         }
       }
       return scanner
@@ -1628,8 +1634,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     if (traced?.files.has(babelConfig)) {
       const files = new Map(traced.files)
       const visited = new Set()
-      // The `require.resolve` edges of the modules read: [parentRel, specifier, target].
-      const resolvedEdges = []
       const resolveNamed = (name, from) => {
         const pathLike = name.startsWith('.') || isAbsolute(name) || name.startsWith('node_modules/')
         for (const dir of [baseDir, dirname(from)]) {
@@ -1652,7 +1656,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           for (const [spec, target] of requireResolutions(file, host)) {
             if (!JS_EXTS.has(extname(target)) || relWithin(target) === null) continue
             named.add(target)
-            resolvedEdges.push([rel, spec, target])
+            // A specifier keeps one edge, the first recorded, as a run records a resolution only where no
+            // edge is: one the module also require()s keeps that edge, Node's loader's (traced, so
+            // recorded, before the module is read), and one resolved again in other `paths` its first.
+            // Every copy they find (`require.resolve('x', { paths })` another than `require('x')`) is
+            // still traced.
+            const keyed = keyedFrom(REQUIRE_KEY, rel)
+            if (!keyed.has(spec)) keyed.set(spec, toRel(target))
           }
           const configModule = isBabelConfigModule(rel)
           if (!configModule && splitNodeModulesPath(rel)) continue
@@ -1664,16 +1674,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const fresh = [...named].filter((file) => !files.has(pathToFileURL(file).toString()))
         if (fresh.length > 0) for (const [url, info] of traceNode(fresh).files) files.set(url, info)
         frontier = [...named].map((file) => pathToFileURL(file).toString())
-      }
-      if (resolvedEdges.length > 0 && !keyedResolutions.has(REQUIRE_KEY)) keyedResolutions.set(REQUIRE_KEY, new Map())
-      const keyed = keyedResolutions.get(REQUIRE_KEY)
-      // A specifier keeps one edge, the first recorded, as a run records a resolution only where no edge
-      // is: one the module also require()s keeps that edge, Node's loader's, and one resolved again in
-      // other `paths` its first. Every copy they find (`require.resolve('x', { paths })` another than
-      // `require('x')`) is still traced.
-      for (const [parent, spec, target] of resolvedEdges) {
-        if (!keyed.has(parent)) keyed.set(parent, new Map())
-        if (!keyed.get(parent).has(spec)) keyed.get(parent).set(spec, toRel(target))
       }
     }
     // And the files of the toolchain the Metro plugin carries for every build, which nothing here
