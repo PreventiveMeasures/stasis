@@ -4666,6 +4666,8 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
     ].join('\n'),
     // Not a Babel config's by its name: what it names isn't read.
     'aliases.js': "exports.alias = {}\nexports.unused = 'babel-plugin-unused'\n",
+    // A Babel config's by its name, but one the config doesn't reach: neither carried nor read.
+    'old-babel-config.js': "module.exports = { plugins: ['babel-plugin-unreached'] }\n",
     ...pkg('node_modules/@org/babel-config', '@org/babel-config', 'index.js', "module.exports = ['@babel/plugin-transform-export-namespace-from']\n"),
     // A shared config found by its name alone, which names a plugin in turn.
     ...pkg('node_modules/@org/babel-config-native', '@org/babel-config-native', 'index.js', "module.exports = () => ({ plugins: ['babel-plugin-from-shared'] })\n"),
@@ -4679,6 +4681,7 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
     ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/babel-plugin-from-shared', 'babel-plugin-from-shared', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/babel-plugin-unused', 'babel-plugin-unused', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-unreached', 'babel-plugin-unreached', 'index.js', 'module.exports = {}\n'),
   }
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(tmp, rel)), { recursive: true })
@@ -4701,6 +4704,8 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
     'node_modules/babel-plugin-transform-remove-console/lib/index.js',
   ])
   t.assert.ok(!bundle.sources.has('node_modules/babel-plugin-unused/index.js'))
+  t.assert.ok(!bundle.sources.has('old-babel-config.js'))
+  t.assert.ok(!bundle.sources.has('node_modules/babel-plugin-unreached/index.js'))
 }))
 
 test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
