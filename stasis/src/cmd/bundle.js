@@ -1180,28 +1180,52 @@ const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
 // The array methods making a list of the one they're called on: `concat` (with its arguments'),
 // `filter`, `flat`, `slice`.
 const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
-// The path a call computes from the module's own directory and strings, as Babel takes a plugin or preset
-// named by path: `path.resolve(__dirname, 'node_modules/@org/x/plugin')`, `path.join(__dirname, 'x')` (a
-// relative one from the project, Babel's cwd), or what `require.resolve('x')` resolves to, from the module
-// as Node resolves it. -> it, or null
-function babelPathCall(node, file, host) {
+// A path the module `file` computes from its own directory and strings: `__dirname`, a string, or a
+// `path.resolve(...)` or `path.join(...)` of them. -> the path (a relative one from Babel's cwd), or null
+function staticPath(node, file) {
+  if (node?.type === 'Identifier' && node.name === '__dirname') return dirname(file)
+  const string = literalSpec(node)
+  if (string !== null) return string
   if (node?.type !== 'CallExpression') return null
   const { callee } = node
   const member = callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier'
   const name = member ? callee.property.name : callee.type === 'Identifier' ? callee.name : undefined
-  if (name !== 'resolve' && name !== 'join') return null
-  if (member && callee.object.name === 'require') {
-    const spec = name === 'resolve' ? literalSpec(node.arguments[0]) : null
-    if (spec === null) return null
-    try {
-      return host.resolve(file, spec, NODE_REQUIRE_CONDITIONS)
-    } catch {
-      return null
-    }
-  }
-  const parts = node.arguments.map((arg) => (arg.type === 'Identifier' && arg.name === '__dirname' ? dirname(file) : literalSpec(arg)))
+  if ((name !== 'resolve' && name !== 'join') || (member && callee.object.name === 'require')) return null
+  const parts = node.arguments.map((arg) => staticPath(arg, file))
   if (parts.length === 0 || parts.includes(null)) return null
-  const path = name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
+  return name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
+}
+
+// The path a call computes, as Babel takes a plugin or preset named by path:
+// `path.resolve(__dirname, 'node_modules/@org/x/plugin')`, `path.join(__dirname, 'x')` (staticPath), or
+// what `require.resolve('x')` resolves to as Node resolves it: from the module, else from each of the
+// `paths` it gives (`{ paths: [path.join(__dirname, 'shared')] }`) in turn. -> it, or null
+function babelPathCall(node, file, host) {
+  if (node?.type !== 'CallExpression') return null
+  const { callee } = node
+  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier' && callee.object.name === 'require') {
+    const spec = callee.property.name === 'resolve' ? literalSpec(node.arguments[0]) : null
+    if (spec === null) return null
+    const option = node.arguments[1]
+    const paths = option?.type === 'ObjectExpression'
+      ? option.properties.find((property) => property.type === 'Property' && !property.computed && (property.key.name ?? property.key.value) === 'paths')
+      : undefined
+    let froms = [file]
+    if (paths !== undefined) {
+      const dirs = paths.value.type === 'ArrayExpression' ? paths.value.elements.map((element) => staticPath(element, file)) : [null]
+      // One only the run knows, or one relative to its cwd: no telling where Node looks.
+      if (dirs.some((dir) => dir === null || !isAbsolute(dir))) return null
+      froms = dirs.map((dir) => join(dir, 'index.js'))
+    }
+    for (const from of froms) {
+      try {
+        return host.resolve(from, spec, NODE_REQUIRE_CONDITIONS)
+      } catch { /* not from here: the next */ }
+    }
+    return null
+  }
+  const path = staticPath(node, file)
+  if (path === null) return null
   return isAbsolute(path) || path.startsWith('.') ? path : `./${path}`
 }
 

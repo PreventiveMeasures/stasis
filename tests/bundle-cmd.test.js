@@ -4766,7 +4766,14 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     ...pkg('node_modules/babel-plugin-fifth', 'babel-plugin-fifth', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
     // A shared config whose require.resolve finds its own copy of a preset, not the project's.
-    ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', "exports.presets = [require.resolve('@org/preset-inner')]\n"),
+    ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', [
+      "const path = require('path')",
+      "exports.presets = [require.resolve('@org/preset-inner'), require.resolve('@org/preset-vendored', { paths: [path.join(__dirname, 'vendor')] })]",
+      '',
+    ].join('\n')),
+    // Where its require.resolve looks, in the paths it gives, not the project's copy.
+    ...pkg('node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
     ...pkg('node_modules/@org/babel-config-shared/node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
     ...pkg('node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
     ...pkg('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
@@ -4782,6 +4789,7 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'create-babel-config.js',
     'node_modules/@org/babel-config-shared/index.js',
     'node_modules/@org/babel-config-shared/node_modules/@org/preset-inner/index.js',
+    'node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored/index.js',
     'node_modules/@org/babel-plugin-both/index.js',
     'node_modules/@org/babel-preset-both/index.js',
     'node_modules/@org/first/plugin.js',
@@ -4798,6 +4806,7 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/babel-plugin-two/index.js',
   ])
   t.assert.ok(!bundle.sources.has('node_modules/@org/preset-inner/index.js'))
+  t.assert.ok(!bundle.sources.has('node_modules/@org/preset-vendored/index.js'))
   t.assert.ok(!bundle.sources.has('node_modules/@org/aliased/index.js'))
   t.assert.ok(!bundle.sources.has('src/index.js'))
 }))
