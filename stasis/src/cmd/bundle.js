@@ -13,7 +13,7 @@ import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditi
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
-import { AUTO_INCLUDES, METRO_MINIFIER, linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
+import { AUTO_INCLUDES, linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
@@ -980,9 +980,10 @@ const METRO_TOOLCHAIN = [
   { name: 'metro-transform-worker', via: METRO_VIA },
   { name: 'jest-worker', file: 'build/workers/processChild.js', via: METRO_VIA },
   { name: 'metro-file-map', file: 'src/plugins/haste/worker.js', via: METRO_VIA },
-  // And its minifier (METRO_MINIFIER), which the worker requires from its own directory as it minifies,
-  // and resolves for its transform cache key in any build: what a pnpm override puts there too.
-  { name: METRO_MINIFIER, via: [...METRO_VIA, 'metro-transform-worker'] },
+  // And its minifier, metro-config's default `minifierPath` (DEFAULT_METRO_MINIFIER_PATH), which the
+  // worker requires from its own directory, by that name, as it minifies: what a pnpm override puts there
+  // in its stead too (`module.exports = {}`).
+  { name: 'metro-minify-terser', via: [...METRO_VIA, 'metro-transform-worker'] },
 ]
 // With --babel(-aliases), the Babel transformer React Native's Metro config names
 // (`babelTransformerPath`, require.resolve'd from @react-native/metro-config), which runs @babel/core

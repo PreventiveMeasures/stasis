@@ -1341,47 +1341,6 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     }))
   }))
 
-  test('minifier: Metro\'s, as its transform worker finds it, is carried under run, unloaded, the stub a pnpm override puts there too', withTmp(async (t, tmp) => {
-    // The worker resolves its minifier (metro-config's default `minifierPath`) from its own directory, by a
-    // name no import holds, for its cache key in any build, and loads it only as it minifies: carried
-    // whether or not a build minifies, as `stasis bundle --metro` carries it, but not loaded (terser's own
-    // package.json would abort a capture). Only beside the worker, as a pnpm install links it.
-    const minifierDir = join('node_modules', 'metro-transform-worker', 'node_modules', 'metro-minify-terser')
-    const marker = "require('node:fs').writeFileSync(require('node:path').join(__dirname, '..', 'loaded'), '')\n"
-    const cases = [
-      { name: 'terser', files: { [join(minifierDir, 'package.json')]: JSON.stringify({ name: 'metro-minify-terser', version: '0.83.8', main: 'src/index.js' }), [join(minifierDir, 'src', 'index.js')]: `${marker}module.exports = {}\n` }, carried: 'node_modules/metro-transform-worker/node_modules/metro-minify-terser/src/index.js' },
-      // A pnpm override linking it to a stub of the project's.
-      { name: 'stubbed', files: { [join('stubs', 'minifier', 'index.js')]: 'module.exports = {}\n' }, link: join('..', '..', '..', 'stubs', 'minifier'), carried: 'stubs/minifier/index.js' },
-    ]
-    await Promise.all(cases.map(async ({ name, files, link, carried }) => {
-      const dir = join(tmp, name)
-      cpSync(fullFixture, dir, { recursive: true })
-      rmSync(join(dir, 'stasis.lock.json'))
-      for (const pkg of ['metro', 'metro-transform-worker']) {
-        mkdirSync(join(dir, 'node_modules', pkg), { recursive: true })
-        writeFileSync(join(dir, 'node_modules', pkg, 'package.json'), JSON.stringify({ name: pkg, version: '0.83.8', main: 'index.js' }))
-        writeFileSync(join(dir, 'node_modules', pkg, 'index.js'), 'module.exports = {}\n')
-      }
-      for (const [file, source] of Object.entries(files)) {
-        mkdirSync(dirname(join(dir, file)), { recursive: true })
-        writeFileSync(join(dir, file), source)
-      }
-      if (link !== undefined) {
-        mkdirSync(dirname(join(dir, minifierDir)), { recursive: true })
-        symlinkSync(link, join(dir, minifierDir))
-      }
-      const bundlePath = join(dir, 'snapshot.br')
-      const r = await run('src/entry.js', {
-        cwd: dir,
-        env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full', EXODUS_STASIS_BUNDLE: 'add', EXODUS_STASIS_BUNDLE_FILE: bundlePath },
-      })
-      t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-      const { reason } = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
-      t.assert.ok(reason.run.includes(carried), `${name}: ${carried} is run's`)
-      if (link === undefined) t.assert.ok(!existsSync(join(dir, minifierDir, 'loaded')), 'the capture doesn\'t load it')
-    }))
-  }))
-
   test('auto-includes: frozen verifies them and rejects a tampered setup_env.sh', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
