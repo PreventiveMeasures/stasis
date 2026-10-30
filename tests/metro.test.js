@@ -298,7 +298,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const load = (extra) => run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load'), extra), graph })
     const same = await load()
     t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
-    for (const name of ['logo@3x.png', 'logo.png']) {
+    const drift = async (name) => {
       const file = join(tmp, 'src', 'img', name)
       const before = readFileSync(file)
       writeFileSync(file, png(9))
@@ -310,6 +310,8 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
       t.assert.notEqual((await load({ EXODUS_STASIS_FS: 'sync' })).status, 0, name)
       writeFileSync(file, before)
     }
+    await drift('logo@3x.png')
+    await drift('logo.png')
   }))
 
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
