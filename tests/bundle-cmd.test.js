@@ -4730,6 +4730,7 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       // A list made of another: concatenated onto, filtered.
       "const base = [path.resolve(__dirname, 'node_modules/@org/first/plugin.js')]",
       'const production = true',
+      "const groups = [['sixth', 'seventh']]",
       'module.exports = () => {',
       "  const plugins = [path.resolve(__dirname, 'node_modules/@org/motion/plugin')]",
       '  plugins.push(ticker)',
@@ -4741,6 +4742,7 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       "      ...base.concat(['second']),",
       "      ...[production && 'third', null].filter(Boolean),",
       "      ...[['fourth', 'fifth']].flat(),",
+      "      ...[...groups].flat(),",
       "      ['module-resolver', { root: [path.resolve(__dirname, 'src')], alias: { lib: path.resolve(__dirname, 'node_modules/@org/aliased') } }],",
       '    ],',
       '  }',
@@ -4764,6 +4766,8 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     ...pkg('node_modules/babel-plugin-third', 'babel-plugin-third', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/babel-plugin-fourth', 'babel-plugin-fourth', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/babel-plugin-fifth', 'babel-plugin-fifth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-sixth', 'babel-plugin-sixth', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-seventh', 'babel-plugin-seventh', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
     // A shared config whose require.resolve finds its own copy of a preset, not the project's.
     ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', [
@@ -4802,6 +4806,8 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/babel-plugin-fourth/index.js',
     'node_modules/babel-plugin-module-resolver/lib/index.js',
     'node_modules/babel-plugin-second/index.js',
+    'node_modules/babel-plugin-seventh/index.js',
+    'node_modules/babel-plugin-sixth/index.js',
     'node_modules/babel-plugin-third/index.js',
     'node_modules/babel-plugin-two/index.js',
   ])
