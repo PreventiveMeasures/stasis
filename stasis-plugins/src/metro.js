@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
-import { AUTO_INCLUDES, looksNative, nativeInputs } from './metro-native.js'
+import { AUTO_INCLUDES, METRO_MINIFIER, looksNative, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
@@ -36,21 +36,28 @@ function entrySet(graph) {
   return new Set()
 }
 
-// Metro's own transform plugins, as its transform worker names them for its cache key: the file
-// `metro-transform-plugins` resolves to from the project, else through metro and its transform
-// worker, which depend on it (a pnpm install links it only beside them). -> [] where none resolves
-function metroTransformPluginFiles(projectDir) {
-  for (const chain of [['metro-transform-plugins'], ['metro', 'metro-transform-worker', 'metro-transform-plugins']]) {
+// The file the first of `chains` that resolves resolves to: each name of one a require() from the file
+// of the one before it, the first's from the project. -> undefined where none does
+function resolveChain(projectDir, chains) {
+  for (const chain of chains) {
     let file
     try {
       for (const name of chain) file = require.resolve(name, { paths: [file === undefined ? projectDir : dirname(file)] })
     } catch {
       continue
     }
-    const { getTransformPluginCacheKeyFiles } = require(file)
-    return typeof getTransformPluginCacheKeyFiles === 'function' ? getTransformPluginCacheKeyFiles() : []
+    return file
   }
-  return []
+  return undefined
+}
+
+// Metro's own transform plugins, as its transform worker names them for its cache key: the files
+// `metro-transform-plugins` lists, as the project resolves it, else through metro and its transform
+// worker, which depend on it (a pnpm install links it only beside them). -> [] where none resolves
+function metroTransformPluginFiles(projectDir) {
+  const index = resolveChain(projectDir, [['metro-transform-plugins'], ['metro', 'metro-transform-worker', 'metro-transform-plugins']])
+  const { getTransformPluginCacheKeyFiles } = index === undefined ? {} : require(index)
+  return typeof getTransformPluginCacheKeyFiles === 'function' ? getTransformPluginCacheKeyFiles() : []
 }
 
 // The worker-side toolchain that only Metro's transform workers load, named in both the
@@ -270,7 +277,7 @@ export class StasisMetro {
     // AFTER the graph so #seen already holds graph modules -- an auto-include that landed in the
     // graph (asyncRequire, when the app uses dynamic import()) is deduped, not re-recorded.
     this.#captureAutoIncludes()
-    this.#captureTransformPlugins()
+    this.#captureTransformFiles()
     // AFTER the graph + auto-includes (same dedupe reason): the native pass only adds the native
     // build-input surface (podspec/gradle/sources) that no module graph carries.
     this.#captureNativeModules()
@@ -316,12 +323,19 @@ export class StasisMetro {
   // what it imports, so a bundle builds under any of those options. Each is recorded besides, as the
   // Node module it is, where no loader records it, attributed to `run` as one Metro loads is: the
   // build's toolchain, none of it the app's. One outside the project root is passed over.
-  #captureTransformPlugins() {
-    for (const file of metroTransformPluginFiles(this.#projectDir)) {
+  // And Metro's minifier (METRO_MINIFIER), as its transform worker finds it, from the project's worker,
+  // else metro's: the worker resolves it for its cache key in any build, so it's recorded as those are,
+  // but not loaded, as the worker loads it, with what it imports, only as it minifies, which the run's
+  // loader records then (metro-minify-terser's terser ships a nested package.json stasis refuses, which
+  // would abort a capture that never minifies; a pnpm override's stub, `module.exports = {}`, is
+  // recorded as it is).
+  #captureTransformFiles() {
+    const minifier = resolveChain(this.#projectDir, [['metro-transform-worker', METRO_MINIFIER], ['metro', 'metro-transform-worker', METRO_MINIFIER]])
+    for (const file of [...metroTransformPluginFiles(this.#projectDir), ...(minifier === undefined ? [] : [minifier])]) {
       if (this.#seen.has(file) || !this.#within(file)) continue
       this.#seen.add(file)
       try {
-        require(file)
+        if (file !== minifier) require(file)
       } catch { /* one that can't load can't run under Metro either: its bytes are still recorded */ }
       // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
       this.#recordCapture(file, realReadFileSync(file), { reason: 'run' })
