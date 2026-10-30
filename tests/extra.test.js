@@ -156,13 +156,22 @@ test('run never takes the artifacts it writes into extra, even matched by a glob
 }))
 
 test('run takes a stasis artifact it does not write when extra names it', withTmp(async (t, tmp) => {
+  seed(tmp, { resources: ['br'], extra: ['vendor.stasis.code.br'] })
+  writeFileSync(join(tmp, 'vendor.stasis.code.br'), PNG)
+  const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'vendor.stasis.code.br'])
+}))
+
+test('run never takes the lockfile into a bundle, even one it only tolerates and extra names', withTmp(async (t, tmp) => {
   seed(tmp, { extra: ['stasis.lock.json'] })
   // Written by this run: never taken.
   t.assert.equal(runCli(stasisCli, ['run', '--lock=add', 'src/entry.js'], tmp).status, 0)
-  // Only tolerated by this one: taken as named.
+  // Only tolerated by this one, but no bundle carries a stasis.lock.json (see bundle-lockfile.test.js).
   const r = runCli(stasisCli, ['run', '--lock=ignore', '--bundle=add', 'src/entry.js'], tmp)
-  t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.lock.json'])
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /bundle: stasis\.lock\.json is a stasis lockfile, which no bundle may carry/)
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
 }))
 
 test('extra never takes a file it writes under another name, a symlink or hard link to it', withTmp(async (t, tmp) => {

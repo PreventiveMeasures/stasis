@@ -674,7 +674,7 @@ test('extract chmods the files the bundle marks executable and leaves the rest a
   await bundleCommand({ cwd: src, entries: ['main.sh'], output: bundlePath })
 
   const out = join(tmp, 'out')
-  const result = extractCommand({ cwd: tmp, bundleFile: bundlePath, output: out })
+  const result = extractCommand({ cwd: tmp, bundleFile: bundlePath, output: out, lock: 'add' })
   t.assert.equal(result.executable, 1)
 
   t.assert.ok(isExec(join(out, 'main.sh')), 'the executable script comes back runnable')

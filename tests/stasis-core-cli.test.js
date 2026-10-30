@@ -211,7 +211,7 @@ test('extract unpacks a bundle to disk with a derived lockfile, labelled [stasis
     imports: {},
   })
   const outDir = join(tmp, 'extracted')
-  const r = run(['extract', '-o', outDir, bundlePath])
+  const r = run(['extract', '--lock=add', '-o', outDir, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   // Self-labelled [stasis-core] (like `add`), not the tooling CLI's [stasis].
   t.assert.match(r.stderr, /\[stasis-core\] Extracted 1 file\(s\) and stasis\.lock\.json to /)
@@ -231,8 +231,43 @@ test('extract accepts the --output= long form', withTmp((t, tmp) => {
     imports: {},
   })
   const outDir = join(tmp, 'extracted')
-  const r = run(['extract', `--output=${outDir}`, bundlePath])
+  const r = run(['extract', '--lock=add', `--output=${outDir}`, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.ok(existsSync(join(outDir, 'src', 'entry.js')))
   t.assert.ok(existsSync(join(outDir, 'stasis.lock.json')))
+}))
+
+test('extract asserts the lockfile already in the output dir unless --lock=replace', withTmp((t, tmp) => {
+  const bundle = (content) => ({
+    version: 1,
+    config: { scope: 'full' },
+    entries: ['src/entry.js'],
+    sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/entry.js': content } } },
+    modules: {},
+    formats: { 'src/entry.js': 'module' },
+    imports: {},
+  })
+  const bundlePath = join(tmp, 'out.code.br')
+  writeRawBundle(bundlePath, bundle('export const x = 1\n'))
+  const outDir = join(tmp, 'extracted')
+  t.assert.equal(run(['extract', '--lock=add', '-o', outDir, bundlePath]).status, 0)
+  const verified = run(['extract', '-o', outDir, bundlePath])
+  t.assert.equal(verified.status, 0, `stderr: ${verified.stderr}`)
+  t.assert.match(verified.stderr, /\[stasis-core\] Extracted 1 file\(s\) to .*, verified against stasis\.lock\.json/)
+
+  writeRawBundle(bundlePath, bundle('export const x = 2\n'))
+  const refused = run(['extract', '-o', outDir, bundlePath])
+  t.assert.notEqual(refused.status, 0)
+  t.assert.match(refused.stderr, /--lock=frozen: the bundle does not match .*stasis\.lock\.json: \["sources"\]\["\."\]\["files"\]\["src\/entry\.js"\] differs/)
+  t.assert.match(run(['extract', '--lock=none', '-o', outDir, bundlePath]).stderr, /unexpected .*stasis\.lock\.json with --lock=none/)
+  t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 1\n')
+
+  const replaced = run(['extract', '--lock=replace', '-o', outDir, bundlePath])
+  t.assert.equal(replaced.status, 0, `stderr: ${replaced.stderr}`)
+  t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 2\n')
+  t.assert.equal(run(['extract', '-o', outDir, bundlePath]).status, 0, 'the replaced lockfile attests the new bundle')
+
+  const bad = run(['extract', '--lock=bogus', '-o', outDir, bundlePath])
+  t.assert.equal(bad.status, 1)
+  t.assert.match(bad.stderr, /Error: invalid --lock value/)
 }))

@@ -28,7 +28,7 @@ const HELP = `Usage:
  stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
- stasis extract [--output=path/to/dir] path/to/bundle.stasis.code.br
+ stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
@@ -362,12 +362,15 @@ if (command === '-v' || command === '--version') {
 } else if (command === 'extract') {
   const options = {
     output: { type: 'string', short: 'o' },
+    lock: { type: 'string' },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o'], onError: fail })
+  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o', '--lock'], onError: fail })
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
+  // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
+  if (values.lock !== undefined && !['frozen', 'add', 'replace', 'ignore', 'none'].includes(values.lock)) fail('Error: invalid --lock value')
   const { extractCommand } = await import('@exodus/stasis-core/extract')
-  extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, logLabel: 'stasis' })
+  extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: 'stasis' })
 } else if (command === 'diff') {
   const options = {
     stat: { type: 'boolean' },

@@ -291,6 +291,14 @@ detected mismatch can never be baked into the artifact. The write is gated on
 verification, not exit code: a run that exits non-zero for its own reasons (a
 SIGINT shutdown, a CLI reporting failures) still persists what it cleanly captured.
 
+A bundle never carries a `stasis.lock.json`, at any depth and in any case
+(`STASIS.LOCK.JSON` is the same file on a case-insensitive disk). Extracted, one
+would replace the lockfile [`stasis extract`](extract.md#the-lockfile---lock)
+checks the bundle against, or root a stasis project of its own (see
+[discovery](#discovery)). Writing such a bundle is refused, so a run, `stasis
+bundle` or `stasis add` whose files reach the project's lockfile fails rather
+than ship it, and reading one is refused as well.
+
 ```json
 {
   "version": 1,

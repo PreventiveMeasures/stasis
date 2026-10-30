@@ -3521,7 +3521,7 @@ cliTest('CLI: extract unpacks a --metro multi-platform bundle (both variants + a
   const out = join(tmp, 'metro.br')
   t.assert.equal((await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${out}`, 'src/entry.js'], { cwd: fieldsFixture })).status, 0)
   const dir = join(tmp, 'ex')
-  t.assert.equal((await runCli(['extract', `--output=${dir}`, out])).status, 0)
+  t.assert.equal((await runCli(['extract', '--lock=add', `--output=${dir}`, out])).status, 0)
   t.assert.ok(existsSync(join(dir, 'src', 'Button.ios.js')) && existsSync(join(dir, 'src', 'Button.android.js')))
   const lock = JSON.parse(readFileSync(join(dir, 'stasis.lock.json'), 'utf8'))
   t.assert.deepStrictEqual(lock.imports['*']['src/entry.js']['./Button'], { android: 'src/Button.android.js', ios: 'src/Button.ios.js' })

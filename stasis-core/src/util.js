@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { NODE_FORMATS } from './artifact-util.js'
+import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
@@ -257,7 +257,7 @@ export function stripTypeDeclaration(name) {
 // and the later capture conflicts.
 export function isStasisArtifactName(name) {
   const base = basename(name).toLowerCase()
-  return base === 'stasis.lock.json' || (base.includes('stasis') && base.endsWith('.br'))
+  return isLockfileName(base) || (base.includes('stasis') && base.endsWith('.br'))
 }
 
 // Dirs no walk descends into: VCS/CI/IDE metadata, sample apps, test scaffolding -- none of it is the

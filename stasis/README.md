@@ -69,7 +69,7 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis github-bundle --github=owner/name --sha=<commit> src/index.js` | statically bundle a GitHub repo at a commit, with nothing installed |
 | `stasis build --output=out.js app.stasis.code.br [entry]` | rebuild a runnable JS bundle with esbuild, following the bundle's recorded import graph exactly |
 | `stasis build --output=out.js stasis.lock.json [entry]` | same, reading + verifying sources from disk against the lockfile |
-| `stasis extract app.stasis.code.br` | unpack a bundle back to sources + a `stasis.lock.json` |
+| `stasis extract --lock=add app.stasis.code.br` | unpack a bundle back to sources + a `stasis.lock.json` |
 | `stasis diff --stat a.lock.json b.stasis.code.br` | summarize module/file differences between two lockfiles/bundles |
 | `stasis prune` | trim `node_modules` to the lockfile, verifying the rest |
 | `stasis audit stasis.lock.json` | report advisories for a lockfile's or bundle's dependencies |

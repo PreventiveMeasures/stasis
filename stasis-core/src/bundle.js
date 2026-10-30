@@ -8,6 +8,7 @@ import {
   flatFileKeys,
   groupModules,
   hasNodeModulesSegment,
+  isLockfileName,
   isPlainObject,
   mergeFormatMaps,
   mergeImportMaps,
@@ -36,6 +37,12 @@ const VERSION = 1
 const LEGACY_VERSION = 0
 
 const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
+
+// No bundle carries a stasis lockfile: extracted, one would replace the lockfile there (the attestation a frozen
+// extract checks the bundle against), or root a stasis project of its own wherever it lands.
+const assertNoLockfile = (keys) => {
+  for (const key of keys) assert(!isLockfileName(key), `bundle: ${key} is a stasis lockfile, which no bundle may carry`)
+}
 
 // A v0 path's bucket split; '' and '.' both spell the root listing (rel '').
 const inferModuleDir = (path) =>
@@ -241,6 +248,7 @@ export class Bundle {
 
     // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and the `sources` getter would serve either payload.
     const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
+    assertNoLockfile(flatKeys.keys())
     const imports = parseImports(json.imports)
 
     if (!contents) for (const [dir, info] of modules) modules.set(dir, lockModule(dir, info))
@@ -264,7 +272,7 @@ export class Bundle {
 
   serialize() {
     // Never write an artifact that parse would reject.
-    flatFileKeys(this.modules, 'bundle', duplicateKey)
+    assertNoLockfile(flatFileKeys(this.modules, 'bundle', duplicateKey).keys())
     const { modules, sources } = groupModules(this.modules, { skipEmpty: true, what: 'bundle' })
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }

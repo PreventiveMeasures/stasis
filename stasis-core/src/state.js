@@ -1779,24 +1779,33 @@ export class State {
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
 
-    // Sidecars never write the lockfile (parent owns it); they only emit their bundle.
-    if (this.config.writeLockfile && !this.#parent) {
-      const lockText = this.lockData
-      if (lockText !== this.#lastLockData) {
-        const lockPath = this.config.lockFile || join(this.root, FILE_LOCK)
-        mkdirSync(dirname(lockPath), { recursive: true })
-        writeFileSync(lockPath, lockText)
-        this.#lastLockData = lockText
-      }
-    }
+    // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
+    // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
+    const lockText = this.config.writeLockfile && !this.#parent ? this.lockData : null
+    const sourcesPath = this.config.bundleFile || join(this.root, FILE_CODE)
+    let codeText, resourcesText, unifiedText
     if (this.config.writeBundle) {
-      const sourcesPath = this.config.bundleFile || join(this.root, FILE_CODE)
       if (this.config.resourcesBundleFile) {
         // hasContent gates each half so an empty one is dropped under bundle=replace.
-        this.#lastCodeBundle = this.#emitBundle(sourcesPath, this.sources.size > 0, this.#lastCodeBundle, () => this.codeBundle.serialize())
-        this.#lastResourcesBundle = this.#emitBundle(this.config.resourcesBundleFile, this.resources.size > 0, this.#lastResourcesBundle, () => this.resourcesBundle.serialize())
+        codeText = this.#bundleText(this.sources.size > 0, () => this.codeBundle.serialize())
+        resourcesText = this.#bundleText(this.resources.size > 0, () => this.resourcesBundle.serialize())
       } else {
-        this.#lastUnifiedBundle = this.#emitBundle(sourcesPath, this.sources.size > 0 || this.resources.size > 0, this.#lastUnifiedBundle, () => this.sourceData)
+        unifiedText = this.#bundleText(this.sources.size > 0 || this.resources.size > 0, () => this.sourceData)
+      }
+    }
+
+    if (lockText !== null && lockText !== this.#lastLockData) {
+      const lockPath = this.config.lockFile || join(this.root, FILE_LOCK)
+      mkdirSync(dirname(lockPath), { recursive: true })
+      writeFileSync(lockPath, lockText)
+      this.#lastLockData = lockText
+    }
+    if (this.config.writeBundle) {
+      if (this.config.resourcesBundleFile) {
+        this.#lastCodeBundle = this.#emitBundle(sourcesPath, codeText, this.#lastCodeBundle)
+        this.#lastResourcesBundle = this.#emitBundle(this.config.resourcesBundleFile, resourcesText, this.#lastResourcesBundle)
+      } else {
+        this.#lastUnifiedBundle = this.#emitBundle(sourcesPath, unifiedText, this.#lastUnifiedBundle)
       }
     }
   }
@@ -1926,13 +1935,15 @@ export class State {
 
   // Emit one bundle artifact, returning its new "last serialized" cache. Empty under bundle=replace
   // DELETES the file (a replace run is authoritative); unchanged text skips brotli + writeFileSync.
-  #emitBundle(path, hasContent, lastText, serialize) {
-    if (!hasContent && this.config.replaceBundle) {
+  // What a bundle write leaves at its path: the serialized bundle, or null to drop an empty one under bundle=replace.
+  #bundleText(hasContent, serialize) {
+    return !hasContent && this.config.replaceBundle ? null : serialize()
+  }
+
+  #emitBundle(path, text, lastText) {
+    if (text === null) {
       rmSync(path, { force: true })
-      return null
-    }
-    const text = serialize()
-    if (text !== lastText) {
+    } else if (text !== lastText) {
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(path, brotliCompressSync(text, brotliOptions(this.config.brotliQuality)))
     }
