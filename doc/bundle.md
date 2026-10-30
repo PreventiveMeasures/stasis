@@ -456,8 +456,10 @@ what it imports in turn:
   `@react-native/js-polyfills`' `index.js` lists, which is read but never run;
 - in any build, Metro's `asyncRequire`
   (`metro-runtime/src/modules/asyncRequire.js`), which the Metro plugin
-  carries for every build, resolved as it resolves it, as a `require()` from
-  the project does (one outside the project root passed over);
+  carries for every build, resolved as a `require()` from the project
+  resolves it, else from Metro's package, which depends on `metro-runtime`
+  (an install that nests it, or a pnpm one, links it only there); one outside
+  the project root is passed over;
 - for JSX (`--jsx`, or a `.jsx` or `.tsx` file), the JSX runtime Babel
   imports, `react/jsx-runtime`;
 - for an asset (a file `--resources` carries, `require('./logo.png')`), the

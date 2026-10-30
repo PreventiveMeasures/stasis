@@ -5068,6 +5068,21 @@ test('buildBundle --metro carries the files the Metro plugin auto-includes, each
   jsProject(other, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
   cpSync(join(app, 'node_modules', '@react-native-community'), join(tmp, 'other', 'node_modules', '@react-native-community'), { recursive: true })
   t.assert.deepStrictEqual([...(await buildBundle({ ...options, cwd: other })).sources.keys()], ['index.js'])
+
+  // Where metro-runtime lies only beside Metro (nested under it, as a pnpm install links it), it is
+  // found through Metro, which depends on it.
+  const nested = join(tmp, 'nested')
+  mkdirSync(nested)
+  jsProject(nested, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  const NESTED = 'node_modules/metro/node_modules/metro-runtime/src/modules/asyncRequire.js'
+  writeTree(nested, {
+    'node_modules/metro/package.json': { name: 'metro', version: '0.83.0' },
+    'node_modules/metro/node_modules/metro-runtime/package.json': { name: 'metro-runtime', version: '0.83.0' },
+    [NESTED]: 'module.exports = () => {}\n',
+  })
+  const viaMetro = await buildBundle({ ...options, cwd: nested })
+  t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), ['index.js', NESTED])
+  t.assert.deepStrictEqual({ ...viaMetro.reason }, { 'bundle:metro': ['index.js', NESTED] })
 }))
 
 test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input, with no edge', withTmp(async (t, tmp) => {

@@ -1331,7 +1331,7 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // @babel/runtime a file finds, which ones Babel adds hanging on the syntax the file uses), Metro's
 // module system (metro-runtime), and React Native's polyfills (the files @react-native/js-polyfills
 // lists); in any build, the Metro code the Metro plugin carries for every one (AUTO_INCLUDES'
-// `metro` ones: asyncRequire), as it resolves it, from the project; with JSX (`jsx`, else a
+// `metro` ones: asyncRequire), from the project, else through Metro; with JSX (`jsx`, else a
 // .jsx/.tsx file), the JSX runtime Babel imports for it; for an asset, the asset registry
 // (ASSET_REGISTRY) the module Metro builds of it, `require(registry).registerAsset({...})`, requires,
 // which Metro builds past Babel, so no alias of Babel's applies to it (platformResolver). -> absolute
@@ -1361,8 +1361,12 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
       for (const file of requireResolvedFiles(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
   }
+  // From the project, else through Metro, which depends on metro-runtime (an install that nests it,
+  // or a pnpm one, links it only beside Metro).
+  const metroDir = packageDirFrom(baseDir, 'metro', host)
   for (const { specifier, reason } of AUTO_INCLUDES) {
-    const file = reason === 'metro' ? requireFrom(baseDir, specifier, host) : undefined
+    if (reason !== 'metro') continue
+    const file = requireFrom(baseDir, specifier, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, specifier, host))
     if (file !== undefined) inserted.add(file)
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
