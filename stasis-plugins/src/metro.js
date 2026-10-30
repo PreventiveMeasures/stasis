@@ -295,12 +295,7 @@ export class StasisMetro {
       } catch {
         continue
       }
-      if (this.#seen.has(modPath)) continue
-      try {
-        this.#state.relative(modPath)
-      } catch {
-        continue
-      }
+      if (this.#seen.has(modPath) || !this.#within(modPath)) continue
       this.#seen.add(modPath)
       // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
       const source = realReadFileSync(modPath)
@@ -323,12 +318,7 @@ export class StasisMetro {
   // build's toolchain, none of it the app's. One outside the project root is passed over.
   #captureTransformPlugins() {
     for (const file of metroTransformPluginFiles(this.#projectDir)) {
-      if (this.#seen.has(file)) continue
-      try {
-        this.#state.relative(file)
-      } catch {
-        continue
-      }
+      if (this.#seen.has(file) || !this.#within(file)) continue
       this.#seen.add(file)
       try {
         require(file)
@@ -355,23 +345,12 @@ export class StasisMetro {
     // RN CORE isn't a `dependencies` entry (config reports only reactNativePath) and autolinking
     // never lists it, but its native source (React/, ReactCommon/, ReactAndroid/, sdks/, ...) is a
     // build input like any other dep's -- walk it in full, the same way.
-    const rnPath = config.reactNativePath
-    if (typeof rnPath === 'string' && isAbsolute(rnPath)) roots.add(rnPath)
-    for (const root of roots) {
-      try {
-        this.#state.relative(root) // asserts the package lives inside the project root
-      } catch {
-        continue
-      }
-      this.#captureNativeTree(root)
-    }
+    const rnPath = typeof config.reactNativePath === 'string' && isAbsolute(config.reactNativePath) ? config.reactNativePath : null
+    if (rnPath !== null) roots.add(rnPath)
+    // One outside the project root is unattestable.
+    for (const root of roots) if (this.#within(root)) this.#captureNativeTree(root)
     // RN core's `.js` build scripts the walk skips (Metro-owned by extension, but never in the graph).
-    if (typeof rnPath === 'string' && isAbsolute(rnPath)) {
-      try {
-        this.#state.relative(rnPath)
-        for (const file of RN_CORE_INCLUDE_FILES) this.#captureNativeFile(join(rnPath, file))
-      } catch { /* react-native resolved outside the project root -- unattestable */ }
-    }
+    if (rnPath !== null && this.#within(rnPath)) for (const file of RN_CORE_INCLUDE_FILES) this.#captureNativeFile(join(rnPath, file))
   }
 
   // Attest a single vetted file (RN_CORE_INCLUDE_FILES) the tree walk skips; absent -> skipped.
@@ -483,6 +462,16 @@ export class StasisMetro {
       this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
       this.#captureConsumed(module, modPath)
       this.#captureAssetFiles(module, modPath, platform)
+    }
+  }
+
+  // Whether `path` lies within the project root, as the State's root-relative keys need.
+  #within(path) {
+    try {
+      this.#state.relative(path)
+      return true
+    } catch {
+      return false
     }
   }
 
