@@ -351,7 +351,8 @@ names, which `@babel/core` requires by name, read off the source of the modules
   being an array under a `plugins` or `presets` key at any depth, a variable or
   property so named or assigned (`exports.presets = [...]`), or one pushed onto
   either (`plugins.push(x)`, `unshift`, or `concat` of an array, inline or held
-  in a variable), spread in or held in a variable;
+  in a variable), spread in or held in a variable, or made of another
+  (`base.concat(more)`, `[a, isProd && b].filter(Boolean)`, `flat`, `slice`);
 - in such a list too, a path the module computes from its own directory and
   strings (`path.resolve(__dirname, 'node_modules/@org/x/plugin')`,
   `path.join(__dirname, ...)`), or what `require.resolve('x')` resolves to from

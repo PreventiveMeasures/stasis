@@ -1177,6 +1177,9 @@ const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel))
 // The lists a Babel config names its plugins and presets in, by the name of the key, variable or object
 // holding one, and what Babel takes each of them as.
 const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
+// The array methods making a list of the one they're called on: `concat` (with its arguments'),
+// `filter`, `flat`, `slice`.
+const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
 // The path a call computes from the module's own directory and strings, as Babel takes a plugin or preset
 // named by path: `path.resolve(__dirname, 'node_modules/@org/x/plugin')`, `path.join(__dirname, 'x')` (a
 // relative one from the project, Babel's cwd), or what `require.resolve('x')` resolves to, from the module
@@ -1250,6 +1253,10 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     } else if (node.type === 'LogicalExpression') {
       list(node.left, type)
       list(node.right, type)
+    } else if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed && LIST_METHODS.has(node.callee.property.name)) {
+      // A list made of another: `base.concat(more)` of both, `[a, b].filter(Boolean)` or `.flat()` of its own.
+      list(node.callee.object, type)
+      if (node.callee.property.name === 'concat') for (const arg of node.arguments) list(arg.type === 'SpreadElement' ? arg.argument : arg, type)
     } else {
       entry(node, type)
     }
@@ -1265,6 +1272,12 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     if (node.type === 'ConditionalExpression') {
       entry(node.consequent, type)
       entry(node.alternate, type)
+      return
+    }
+    // `isProduction && 'transform-remove-console'`, as a list `.filter(Boolean)` keeps.
+    if (node.type === 'LogicalExpression') {
+      entry(node.left, type)
+      entry(node.right, type)
       return
     }
     const name = literalSpec(node)

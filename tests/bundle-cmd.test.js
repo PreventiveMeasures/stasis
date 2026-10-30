@@ -4727,6 +4727,9 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       "const more = [path.resolve(__dirname, 'node_modules/@org/tail/plugin.js'), 'babel-plugin-two']",
       // One array named as plugins and as presets: each name is read as both.
       "const both = ['@org/both']",
+      // A list made of another: concatenated onto, filtered.
+      "const base = [path.resolve(__dirname, 'node_modules/@org/first/plugin.js')]",
+      'const production = true',
       'module.exports = () => {',
       "  const plugins = [path.resolve(__dirname, 'node_modules/@org/motion/plugin')]",
       '  plugins.push(ticker)',
@@ -4735,6 +4738,8 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       '    plugins: [',
       '      ...plugins.concat(more),',
       '      ...both,',
+      "      ...base.concat(['babel-plugin-second']),",
+      "      ...[production && 'babel-plugin-third', null].filter(Boolean),",
       "      ['module-resolver', { root: [path.resolve(__dirname, 'src')], alias: { lib: path.resolve(__dirname, 'node_modules/@org/aliased') } }],",
       '    ],',
       '  }',
@@ -4752,6 +4757,10 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/@org/tail/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
     ...pkg('node_modules/babel-plugin-two', 'babel-plugin-two', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/@org/babel-plugin-both', '@org/babel-plugin-both', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@org/first', '@org/first', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/first/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/babel-plugin-second', 'babel-plugin-second', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/babel-plugin-third', 'babel-plugin-third', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
     // A shared config whose require.resolve finds its own copy of a preset, not the project's.
     ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', "exports.presets = [require.resolve('@org/preset-inner')]\n"),
@@ -4772,12 +4781,15 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/@org/babel-config-shared/node_modules/@org/preset-inner/index.js',
     'node_modules/@org/babel-plugin-both/index.js',
     'node_modules/@org/babel-preset-both/index.js',
+    'node_modules/@org/first/plugin.js',
     'node_modules/@org/motion/plugin/build/plugin.js',
     'node_modules/@org/motion/plugin/index.js',
     'node_modules/@org/preset-native/index.js',
     'node_modules/@org/tail/plugin.js',
     'node_modules/@org/ticker/plugin.js',
     'node_modules/babel-plugin-module-resolver/lib/index.js',
+    'node_modules/babel-plugin-second/index.js',
+    'node_modules/babel-plugin-third/index.js',
     'node_modules/babel-plugin-two/index.js',
   ])
   t.assert.ok(!bundle.sources.has('node_modules/@org/preset-inner/index.js'))
