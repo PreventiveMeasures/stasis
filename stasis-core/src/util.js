@@ -289,15 +289,19 @@ export function isAutoExcludedFile(name) {
   return isTypeDeclaration(name) || isDotEnvFile(name) || isStasisArtifactName(name) || isExcludedNativeFile(name)
 }
 
+// The format a file's name alone gives it, whatever its extension (pathExt) would: a `*.podspec.json`
+// is `json`, a `*.cmake.in` `cmake`. -> it, or undefined
+function nameFormat(name) {
+  const base = basename(name).toLowerCase()
+  if (base === 'package.json' || base.endsWith('.podspec.json')) return 'json'
+  if (base.endsWith('.cmake.in')) return 'cmake'
+  return CODE_NAME_FORMATS.get(base)
+}
+
 // The single name->format classifier every capture path is a policy view of. Returns a concrete format
 // when the name determines one; null for a JS-family file (.js/.ts/.jsx/.tsx); undefined if unrecognized.
 export function classifyFormat(name, { content } = {}) {
-  const base = basename(name).toLowerCase()
-  // Before the extension rules, so a `*.podspec.json` isn't shadowed.
-  if (base === 'package.json' || base.endsWith('.podspec.json')) return 'json'
-  // Compound suffix: pathExt only sees the trailing `in`.
-  if (base.endsWith('.cmake.in')) return 'cmake'
-  const byName = CODE_NAME_FORMATS.get(base)
+  const byName = nameFormat(name)
   if (byName !== undefined) return byName
   const ext = pathExt(name)
   if (JS_UNRESOLVED_EXTS.has(ext)) return null
@@ -312,11 +316,9 @@ export function classifyFormat(name, { content } = {}) {
 export function classifyNativeCapture(name, { win32 = process.platform === 'win32', content } = {}) {
   // `.env` files carry secrets: an automated capture must never sweep them in.
   if (isExcludedNativeFile(name, { win32 }) || isDotEnvFile(name)) return { action: 'skip' }
-  const base = basename(name).toLowerCase()
   // Name-matched code is always a native build input, even when its tag is a Node format the JS
   // graph would otherwise own.
-  if (base === 'package.json' || base.endsWith('.podspec.json')) return { action: 'code', format: 'json' }
-  const byName = CODE_NAME_FORMATS.get(base)
+  const byName = nameFormat(name)
   if (byName !== undefined) return { action: 'code', format: byName }
   if (CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
   const format = classifyFormat(name, { content })
