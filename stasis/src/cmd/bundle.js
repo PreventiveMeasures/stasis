@@ -1151,16 +1151,17 @@ function memberCall(node, object) {
 // What the module `file` names by `require.resolve('x')`, read off its source, never run, each where
 // Node resolves it (babelPathCall: from the module, or the `paths` it gives): the polyfills
 // @react-native/js-polyfills' index.js lists for React Native's Metro config to prepend
-// (`getPolyfills`), the Babel plugins a plugin runs Babel with itself.
-// -> Map<specifier, absolute path>, of those that resolve
+// (`getPolyfills`), the Babel plugins a plugin runs Babel with itself. A specifier resolved more than
+// once (in other `paths` too) is each of its resolutions.
+// -> [specifier, absolute path][] of those that resolve, in source order
 function requireResolutions(file, host) {
-  const resolved = new Map()
+  const resolved = []
   const source = host.readFile(file).toString('utf8')
   if (!source.includes('require.resolve')) return resolved
   walkAst(getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program, (node) => {
     const spec = memberCall(node, 'require') === 'resolve' ? literalSpec(node.arguments[0]) : null
     const path = spec === null ? null : babelPathCall(node, file, host)
-    if (path !== null) resolved.set(spec, path)
+    if (path !== null) resolved.push([spec, path])
   })
   return resolved
 }
@@ -1352,7 +1353,7 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
     }
     const polyfills = packageDirFrom(baseDir, '@react-native/js-polyfills', host) ?? packageDirFrom(baseDir, '@react-native/js-polyfills', host, ['react-native'])
     if (polyfills !== undefined && host.stat(join(polyfills, 'index.js'))?.isFile()) {
-      for (const file of requireResolutions(join(polyfills, 'index.js'), host).values()) inserted.add(file)
+      for (const [, file] of requireResolutions(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
@@ -1653,9 +1654,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
       if (resolvedEdges.length > 0 && !keyedResolutions.has(REQUIRE_KEY)) keyedResolutions.set(REQUIRE_KEY, new Map())
       const keyed = keyedResolutions.get(REQUIRE_KEY)
-      // One the module also require()s keeps that edge, as a run keeps it: Node's loader records the
-      // require(), and a resolution only where no edge is recorded (`require.resolve('x', { paths })`
-      // can find another copy than `require('x')`, which is still traced).
+      // A specifier keeps one edge, the first recorded, as a run records a resolution only where no edge
+      // is: one the module also require()s keeps that edge, Node's loader's, and one resolved again in
+      // other `paths` its first. Every copy they find (`require.resolve('x', { paths })` another than
+      // `require('x')`) is still traced.
       for (const [parent, spec, target] of resolvedEdges) {
         if (!keyed.has(parent)) keyed.set(parent, new Map())
         if (!keyed.get(parent).has(spec)) keyed.get(parent).set(spec, toRel(target))

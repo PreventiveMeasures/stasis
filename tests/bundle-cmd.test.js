@@ -4752,6 +4752,8 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       // A copy of its own it resolves in `paths`, besides the one it require()s: traced, the require()'s edge kept.
       "const own = require('@org/inner-transform')",
       "const vendored = require.resolve('@org/inner-transform', { paths: [path.join(__dirname, 'vendor')] })",
+      // One it only resolves, in either place: both copies traced, the first resolution's edge kept.
+      "const lint = [require.resolve('@org/lint-transform'), require.resolve('@org/lint-transform', { paths: [path.join(__dirname, 'vendor')] })]",
       "const optional = (() => { try { return require.resolve('@org/not-installed') } catch { return null } })()",
       'module.exports = () => ({ visitor: {} })',
       '',
@@ -4759,6 +4761,8 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     ...pkgFiles('node_modules/@org/inner-transform', '@org/inner-transform', 'index.js', "module.exports = require('./helper.js')\n"),
     'node_modules/@org/inner-transform/helper.js': 'module.exports = {}\n',
     ...pkgFiles('node_modules/@org/motion/plugin/build/vendor/node_modules/@org/inner-transform', '@org/inner-transform', 'index.js', 'module.exports = 2\n'),
+    ...pkgFiles('node_modules/@org/lint-transform', '@org/lint-transform', 'index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/@org/motion/plugin/build/vendor/node_modules/@org/lint-transform', '@org/lint-transform', 'index.js', 'module.exports = 2\n'),
     ...pkgFiles('node_modules/@org/inner-preset', '@org/inner-preset', 'lib/index.js', 'module.exports = () => ({})\n'),
     ...pkgFiles('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
@@ -4806,8 +4810,10 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/@org/inner-preset/lib/index.js',
     'node_modules/@org/inner-transform/helper.js',
     'node_modules/@org/inner-transform/index.js',
+    'node_modules/@org/lint-transform/index.js',
     'node_modules/@org/motion/plugin/build/plugin.js',
     'node_modules/@org/motion/plugin/build/vendor/node_modules/@org/inner-transform/index.js',
+    'node_modules/@org/motion/plugin/build/vendor/node_modules/@org/lint-transform/index.js',
     'node_modules/@org/motion/plugin/index.js',
     'node_modules/@org/preset-native/index.js',
     'node_modules/@org/tail/plugin.js',
@@ -4830,6 +4836,7 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('require, node, node-addons, module-sync').get('node_modules/@org/motion/plugin/build/plugin.js')), {
     '@org/inner-preset': 'node_modules/@org/inner-preset/lib/index.js',
     '@org/inner-transform': 'node_modules/@org/inner-transform/index.js',
+    '@org/lint-transform': 'node_modules/@org/lint-transform/index.js',
   })
   t.assert.ok(!bundle.sources.has('src/index.js'))
 }))
