@@ -331,12 +331,6 @@ export function refineNativeCapture(classified, name, content, resources = new S
   return classified
 }
 
-// Files `pod install` reads while loading podspecs (Ruby helpers, package.json) -- NOT the native
-// source those podspecs compile.
-export function isNativeManifest(name) {
-  return isPodspec(name) || pathExt(name) === 'rb' || name === 'package.json'
-}
-
 // RN core build scripts the native walk would defer to Metro as `.js`, but Metro never sees them (RN's
 // podspecs invoke them at pod-install). Project-relative, so react-native's `exports` can't hide them.
 export const RN_CORE_INCLUDE_FILES = ['sdks/hermes-engine/utils/replace_hermes_version.js']
