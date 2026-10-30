@@ -4567,6 +4567,75 @@ test('buildBundle --metro keeps Node\'s edges of a file the configs and the app 
   t.assert.ok(![...bundle.imports].some(([key, byParent]) => key !== '*' && byParent.has('metro.config.js')))
 }))
 
+test('buildBundle --metro traces the toolchain Metro loads by name, its transform worker and with --babel(-aliases) its Babel transformer and the plugins and presets the Babel config names, as the bundler\'s', withTmp(async (t, tmp) => {
+  // Metro requires its worker by `transformerPath`, the worker the Babel transformer by
+  // `babelTransformerPath` (React Native's Metro config require.resolve's it): names, which no import
+  // of the configs reaches, but the plugin's run loads, with @babel/core, the preset and its plugins.
+  jsProject(tmp, { 'index.js': 'export default 1\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
+  const pkg = (name, main, source) => ({ [`node_modules/${name}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`node_modules/${name}/${main}`]: source })
+  const files = {
+    ...pkg('metro', 'src/index.js', 'module.exports = {}\n'),
+    ...pkg('metro-transform-worker', 'src/index.js', "const babel = require('@babel/core')\nmodule.exports = { babel }\n"),
+    ...pkg('@babel/core', 'lib/index.js', "module.exports = require('./config/resolve-targets.js')\n"),
+    'node_modules/@babel/core/lib/config/resolve-targets.js': "module.exports = require('@babel/helper-compilation-targets')\n",
+    ...pkg('@babel/helper-compilation-targets', 'lib/index.js', 'exports.TargetNames = {}\n'),
+    ...pkg('@react-native/metro-config', 'dist/index.js', 'module.exports = {}\n'),
+    // The copy React Native's Metro config require.resolve's, not the project's.
+    ...pkg('@react-native/metro-config/node_modules/@react-native/metro-babel-transformer', 'src/index.js', "require('@babel/core')\nmodule.exports = require('@react-native/babel-preset')\n"),
+    ...pkg('@react-native/metro-babel-transformer', 'src/index.js', 'module.exports = {}\n'),
+    ...pkg('@react-native/babel-preset', 'src/index.js', "module.exports = () => [require('@babel/plugin-transform-classes')]\n"),
+    ...pkg('@babel/plugin-transform-classes', 'lib/index.js', "require('@babel/helper-compilation-targets')\nmodule.exports = {}\n"),
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
+  const worker = ['node_modules/@babel/core/lib/config/resolve-targets.js', 'node_modules/@babel/core/lib/index.js', 'node_modules/@babel/helper-compilation-targets/lib/index.js', 'node_modules/metro-transform-worker/src/index.js']
+  const transformer = [
+    'node_modules/@babel/plugin-transform-classes/lib/index.js',
+    'node_modules/@react-native/babel-preset/src/index.js',
+    'node_modules/@react-native/metro-config/node_modules/@react-native/metro-babel-transformer/src/index.js',
+  ]
+
+  // The worker Metro always runs, as the bundler's, in Node's format.
+  const bundle = await buildBundle(options)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...worker, 'index.js'].toSorted())
+  t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), worker)
+  t.assert.ok(worker.every((rel) => bundle.formats.get(rel) === 'commonjs'))
+
+  // The Babel transformer, the copy @react-native/metro-config resolves, with what it runs.
+  const babelled = await buildBundle({ ...options, babelAliases: 'aliases.json' })
+  t.assert.deepStrictEqual([...babelled.sources.keys()].toSorted(), [...worker, ...transformer, 'index.js'].toSorted())
+  t.assert.deepStrictEqual([...babelled.reason.bundle].toSorted(), [...worker, ...transformer].toSorted())
+
+  // And the plugins and presets the Babel config names, by the names Babel requires them by, as the
+  // project's own modules the config reaches name them.
+  const named = {
+    'babel.config.js': "module.exports = require('./create-babel-config.js')()\n",
+    'create-babel-config.js': "module.exports = () => ({\n  presets: ['module:@react-native/babel-preset', '@acme'],\n" +
+      "  plugins: [['module-resolver', { alias: {} }]],\n  env: { production: { plugins: ['@acme/strip', '@babel/x'] } },\n})\n",
+    ...pkg('babel-plugin-module-resolver', 'lib/index.js', "module.exports = require('find-babel-config')\n"),
+    ...pkg('find-babel-config', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkg('@acme/babel-preset', 'index.js', 'module.exports = {}\n'),
+    ...pkg('@acme/babel-plugin-strip', 'index.js', 'module.exports = {}\n'),
+    ...pkg('@babel/plugin-x', 'lib/index.js', 'module.exports = {}\n'),
+    // Named by none: carried only as named.
+    ...pkg('module-resolver', 'index.js', 'module.exports = {}\n'),
+  }
+  for (const [rel, content] of Object.entries(named)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const configured = await buildBundle({ ...options, babelAliases: 'aliases.json' })
+  const babel = [
+    'babel.config.js', 'create-babel-config.js', 'node_modules/@acme/babel-plugin-strip/index.js', 'node_modules/@acme/babel-preset/index.js',
+    'node_modules/@babel/plugin-x/lib/index.js', 'node_modules/babel-plugin-module-resolver/lib/index.js', 'node_modules/find-babel-config/lib/index.js',
+  ]
+  t.assert.deepStrictEqual([...configured.reason.bundle].toSorted(), [...worker, ...transformer, ...babel].toSorted())
+  t.assert.ok(!configured.sources.has('node_modules/module-resolver/index.js'))
+}))
+
 test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
   // No miss is recorded, so Metro's edge would serve Node, which the config catches the miss of,
   // the package's React Native file. A miss in a file the configs alone reach is only warned of.

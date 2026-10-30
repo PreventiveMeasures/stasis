@@ -304,7 +304,23 @@ contributes nothing unless the app's `package.json` lists it.
 It bundles the project's Metro and React Native configs too, which the Metro
 plugin's run loads though nothing the app imports reaches them: the
 `metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
-`--babel-aliases`, it bundles the `babel.config.js` there as well. Node runs
+`--babel-aliases`, it bundles the `babel.config.js` there as well. And the
+toolchain Metro loads by a name it is given as a string, which no import of the
+configs reaches: its transform worker (`metro-transform-worker`, metro-config's
+default `transformerPath`, resolved from `metro`), and with `--babel` or
+`--babel-aliases` the Babel transformer React Native's Metro config names
+(`@react-native/metro-babel-transformer`, its `babelTransformerPath`, resolved
+from `@react-native/metro-config`), which runs `@babel/core` and React Native's
+Babel preset with its plugins; and the plugins and presets the Babel config
+names, which `@babel/core` requires by name: each string (or the first of a
+`[name, options]` pair) under a `plugins` or `presets` key, at any depth, in
+`babel.config.js` and the project's own modules it requires (a config made by
+`require('./create-babel-config.js')()`), read off their source, never run,
+under the name Babel requires (`module-resolver` as
+`babel-plugin-module-resolver`, `module:@react-native/babel-preset` as
+`@react-native/babel-preset`), resolved from the project. A project's own
+`transformerPath` or `babelTransformerPath` isn't read, its Metro config being
+code, nor is a name the config computes rather than writes. Node runs
 each, not Metro, so each is bundled as `stasis bundle` bundles a Node entry,
 parsed, not run: with everything it imports, resolved as Node resolves it
 (`@react-native/metro-config` and what it requires, say), each file in the
@@ -319,8 +335,7 @@ resolve alike. An import Node misses there where Metro resolves it is refused:
 no miss is recorded, so Metro's edge would serve Node its file in place of the
 miss. A package only they reach
 isn't a native dependency of the app, and its native build inputs aren't
-carried. What a config names as data, not an import (a Babel preset's name,
-say), isn't followed.
+carried.
 
 A disabled import (a `browser`/`react-native` map entry set to `false`)
 resolves, as Metro resolves it, to Metro's own empty module: the project's

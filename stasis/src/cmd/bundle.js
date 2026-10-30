@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, dirname, extname, join, posix, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -966,6 +966,16 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 // imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
 const METRO_CONFIG_FILES = ['metro.config.js', 'react-native.config.js']
 const BABEL_CONFIG_FILE = 'babel.config.js'
+// What else a React Native app's build runs in Node, which neither the app nor the configs import:
+// each a module Metro loads by a name it is given as a string. Metro's transform worker
+// (metro-config's default `transformerPath`, required from metro), and with --babel(-aliases) the
+// Babel transformer React Native's Metro config names (`babelTransformerPath`, require.resolve'd
+// from @react-native/metro-config), which runs @babel/core and React Native's Babel preset, with its
+// plugins. Each [the specifier, the package it is resolved from, else the project].
+const METRO_TOOLCHAIN = [['metro-transform-worker', 'metro']]
+const BABEL_TOOLCHAIN = [['@react-native/metro-babel-transformer', '@react-native/metro-config']]
+// The conditions a require() resolves with in Node.
+const NODE_REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'module-sync'])
 // What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
 // `default`, and so `--mainFields` too: `module`, the bundler-only condition a package's ESM build
 // sits under, from an import and a require alike. (esbuild drops it when given conditions of its
@@ -1120,6 +1130,47 @@ function requireResolvedFiles(file, host) {
   }
   visit(program)
   return files
+}
+
+// The name Babel requires a plugin or preset its config names by (@babel/core's standardizeName):
+// a `module:` name as written, else a short one prefixed (`module-resolver` ->
+// babel-plugin-module-resolver, `@babel/env` -> @babel/preset-env, `@scope/x` -> @scope/babel-plugin-x,
+// `@scope` -> @scope/babel-plugin); a path as is.
+const BABEL_PREFIX = { plugin: /^(?!@|module:|[^/]+\/|babel-plugin-)/u, preset: /^(?!@|module:|[^/]+\/|babel-preset-)/u }
+const BABEL_ORG = { plugin: /^(@babel\/)(?!plugin-|[^/]+\/)/u, preset: /^(@babel\/)(?!preset-|[^/]+\/)/u }
+const OTHER_ORG = { plugin: /^(@(?!babel\/)[^/]+\/)(?![^/]*babel-plugin(?:-|\/|$)|[^/]+\/)/u, preset: /^(@(?!babel\/)[^/]+\/)(?![^/]*babel-preset(?:-|\/|$)|[^/]+\/)/u }
+const OTHER_ORG_DEFAULT = /^(@(?!babel$)[^/]+)$/u
+const standardizeBabelName = (type, name) => (isAbsolute(name) ? name : name
+  .replace(BABEL_PREFIX[type], `babel-${type}-`)
+  .replace(BABEL_ORG[type], `$1${type}-`)
+  .replace(OTHER_ORG[type], `$1babel-${type}-`)
+  .replace(OTHER_ORG_DEFAULT, `$1/babel-${type}`)
+  .replace(/^module:/u, ''))
+
+// The plugins and presets the module `file` names in a Babel config's `plugins` and `presets` (at any
+// depth: `env`, `overrides`), each a string or the first of a `[name, options]` pair, read off its
+// source, never run. -> [{ type, name }], `name` standardized as Babel requires it
+function babelNamedModules(file, host) {
+  const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
+  const named = []
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child)
+      return
+    }
+    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+    const key = node.type === 'Property' && !node.computed ? (node.key.name ?? node.key.value) : undefined
+    if ((key === 'plugins' || key === 'presets') && node.value.type === 'ArrayExpression') {
+      const type = key === 'plugins' ? 'plugin' : 'preset'
+      for (const element of node.value.elements) {
+        const name = literalSpec(element?.type === 'ArrayExpression' ? element.elements[0] : element)
+        if (name) named.push({ type, name: standardizeBabelName(type, name) })
+      }
+    }
+    for (const child of Object.keys(node)) if (child !== 'type') visit(node[child])
+  }
+  visit(program)
+  return named
 }
 
 const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
@@ -1305,7 +1356,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --metro: and the project's configs a React Native build loads, though nothing the app imports
   // reaches them: Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel
-  // config Metro's transformer runs. Node loads each, not Metro, so each is traced as a Node entry is
+  // config Metro's transformer runs; and the toolchain Metro loads by name (METRO_TOOLCHAIN, and
+  // under either BABEL_TOOLCHAIN), as Node resolves a require() of it from the package naming it, else
+  // from the project. Node loads each, not Metro, so each is traced as a Node entry is
   // (buildJsBundle): with all it imports, resolved as Node resolves it, each file in the format Node
   // loads it in, which one the app's build reaches too keeps (Metro needs none).
   // parentRel -> specifier -> Map<conditions key, targetRel>, merged into the bundle's edges below.
@@ -1318,10 +1371,23 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const configOnly = new Set()
   if (metro) {
     const configs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)).filter((abs) => host.stat(abs)?.isFile())
-    if (configs.length > 0) {
-      const { scanner, outside, leftOut } = withinRoot(scan(configs, { resources: resourceSet, host }), (url) => relWithin(fileURLToPath(url)) !== null)
+    const requireFrom = (dir, spec) => {
+      try {
+        return host.resolve(join(dir, 'package.json'), spec, NODE_REQUIRE_CONDITIONS)
+      } catch {
+        return undefined
+      }
+    }
+    for (const [spec, from] of [...METRO_TOOLCHAIN, ...(babelled ? BABEL_TOOLCHAIN : [])]) {
+      const dir = packageDirFrom(baseDir, from, host)
+      const file = (dir === undefined ? undefined : requireFrom(dir, spec)) ?? requireFrom(baseDir, spec)
+      if (file !== undefined && relWithin(file) !== null) configs.push(file)
+    }
+    // Trace `roots` as Node entries, recording what they reach. -> the scan
+    const traceNode = (roots) => {
+      const { scanner, outside, leftOut } = withinRoot(scan(roots, { resources: resourceSet, host }), (url) => relWithin(fileURLToPath(url)) !== null)
       for (const url of outside) toRel(fileURLToPath(url))
-      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: 'configs', root: ' at .' })
+      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: 'configs and toolchain', root: ' at .' })
       for (const [url, info] of scanner.files) {
         const abs = fileURLToPath(url)
         const rel = toRel(abs)
@@ -1345,6 +1411,30 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           }
         }
       }
+      return scanner
+    }
+    const traced = configs.length > 0 ? traceNode(configs) : null
+    // And the plugins and presets the Babel config names, which @babel/core requires by name, resolved
+    // as it resolves them, from the config's directory: as the project's files the config reaches
+    // name them (a config made in a module of its own, `require('./create-babel-config.js')()`).
+    const babelConfig = pathToFileURL(join(baseDir, BABEL_CONFIG_FILE)).toString()
+    if (traced?.files.has(babelConfig)) {
+      const ownFiles = new Set([babelConfig])
+      for (const url of ownFiles) {
+        for (const e of traced.files.get(url)?.edges ?? []) {
+          if (e.child && traced.files.has(e.child) && !splitNodeModulesPath(toRel(fileURLToPath(e.child)))) ownFiles.add(e.child)
+        }
+      }
+      const named = new Set()
+      for (const url of ownFiles) {
+        const info = traced.files.get(url)
+        if (info.resource || info.format === 'json') continue
+        for (const { name } of babelNamedModules(fileURLToPath(url), host)) {
+          const file = requireFrom(baseDir, name)
+          if (file !== undefined && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString())) named.add(file)
+        }
+      }
+      if (named.size > 0) traceNode([...named])
     }
   }
 
