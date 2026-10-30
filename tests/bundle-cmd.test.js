@@ -4857,6 +4857,38 @@ const METRO_ADDED = {
   jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
 }
 
+test('buildBundle --metro records no edge for an import listing types alone, which Babel erases, as the Metro plugin records none', withTmp(async (t, tmp) => {
+  // `import { type A } from` loads its module under Node (`import {} from`), but Babel's Flow and
+  // TypeScript transforms erase it whole, so Metro depends on nothing there.
+  jsProject(tmp, {
+    'index.js': [
+      '// @flow',
+      "import {type A, typeof B} from './types.js'",
+      "import {type C, D} from './mixed.js'",
+      "import {} from './side.js'",
+      "import type {E} from './erased.js'",
+      "import view from './view.ts'",
+      'export default [D, view]',
+      '',
+    ].join('\n'),
+    'types.js': '// @flow\nexport type A = number\nexport const B = 1\n',
+    'mixed.js': '// @flow\nexport type C = number\nexport const D = 1\n',
+    'side.js': 'globalThis.side = 1\n',
+    'erased.js': '// @flow\nexport type E = number\n',
+    'view.ts': "import {type F} from './ts-types.ts'\nexport {type G} from './ts-more.ts'\nconst f: F = 1\nexport default f\n",
+    'ts-types.ts': 'export type F = number\n',
+    'ts-more.ts': 'export type G = number\n',
+  }, { name: 'app', version: '0.0.0' })
+  const metro = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], flow: true })
+  t.assert.deepStrictEqual([...metro.sources.keys()].toSorted(), ['index.js', 'mixed.js', 'side.js', 'view.ts'])
+  t.assert.deepStrictEqual(Object.fromEntries(metro.imports.get('*').get('index.js')), { './mixed.js': 'mixed.js', './side.js': 'side.js', './view.ts': 'view.ts' })
+  t.assert.equal(metro.imports.get('*').get('view.ts'), undefined)
+
+  // Node keeps each (but `import type`), as `import {} from`.
+  const node = await buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'], flow: true })
+  t.assert.deepStrictEqual([...node.sources.keys()].toSorted(), ['index.js', 'mixed.js', 'side.js', 'ts-more.ts', 'ts-types.ts', 'types.js', 'view.ts'])
+}))
+
 test('buildBundle --metro carries what Babel and Metro add to the build, as Metro bundles it, though the source imports none of it', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': 'export default () => <div />\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
   writeMetroAddedPackages(tmp)

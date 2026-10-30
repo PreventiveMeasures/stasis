@@ -1335,7 +1335,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
-    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host }
+    // --metro: built through Babel, which erases an import listing types alone (Scan's `babel`).
+    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, host }
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
     const absorb = (roots) => {
