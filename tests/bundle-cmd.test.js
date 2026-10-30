@@ -4540,6 +4540,27 @@ test('buildBundle --metro traces its configs as Node runs them, with all they im
   t.assert.ok(![...bundle.sources.keys()].some((rel) => rel.endsWith('.m')), 'no native walk of a package only a config runs')
 }))
 
+test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
+  // No miss is recorded, so Metro's edge would serve Node, which the config catches the miss of,
+  // the package's React Native file. A miss in a file the configs alone reach is only warned of.
+  jsProject(tmp, {
+    'index.js': "import shared from './shared.js'\nexport default shared\n",
+    'shared.js': "let rn = null\ntry { rn = require('rn-only') } catch {}\nmodule.exports = rn\n",
+    'metro.config.js': "try { require('rn-only') } catch {}\nmodule.exports = {}\n",
+  }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, 'node_modules', 'rn-only'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'rn-only', 'package.json'), JSON.stringify({ name: 'rn-only', version: '1.0.0', exports: { 'react-native': './rn.js' } }))
+  writeFileSync(join(tmp, 'node_modules', 'rn-only', 'rn.js'), "module.exports = 'rn'\n")
+  const metro = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
+
+  const bundle = await buildBundle(metro)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'metro.config.js', 'node_modules/rn-only/rn.js', 'shared.js'])
+  t.assert.ok(!bundle.imports.get('*').has('metro.config.js'), 'the config\'s miss is none of the edges')
+
+  writeFileSync(join(tmp, 'metro.config.js'), "require('./shared.js')\nmodule.exports = {}\n")
+  await t.assert.rejects(() => buildBundle(metro), /rn-only from shared\.js resolves under Metro, for the app, and not under Node/u)
+}))
+
 test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but json for JSON', withTmp(async (t, tmp) => {
   // Metro transforms each file from source, whatever Node would load it as: a typeless .js with
   // import/export, a .ts, a .jsx or an .mjs alike. A .json is json, which its name alone gives it, and

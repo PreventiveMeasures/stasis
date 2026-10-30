@@ -1298,8 +1298,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // loads it in, which one the app's build reaches too keeps (Metro needs none).
   // parentRel -> specifier -> Map<conditions key, targetRel>, merged into the bundle's edges below.
   const configEdges = new Map()
-  // The configs' edges some context misses or leaves out (`${parentRel}\0${specifier}`).
-  const configMissed = new Set()
+  // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
+  const configMissed = new Map()
   // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
   // attributed to `bundle`, not to `bundle:metro` with the app's source Metro bundles.
   const configReached = new Set()
@@ -1320,7 +1320,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         formatsByRel.set(rel, info.format)
       }
       for (const u of [...scanner.unresolved, ...leftOut]) {
-        if (u.spec !== undefined) configMissed.add(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`)
+        if (u.spec !== undefined) configMissed.set(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`, u)
       }
       for (const [key, byParent] of scanner.imports) {
         for (const [parentURL, specs] of byParent) {
@@ -1550,6 +1550,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
     }
     resolutions.set(parent, specMap)
+  }
+  // A config's import Node misses or leaves out in a context, from a file the app's build reaches
+  // too, where Metro resolves it: no miss is recorded, so the app's edge under '*' would serve that
+  // context Metro's file in its place -- refused, as refuseSplit refuses a split.
+  for (const [key, { parentURL, spec }] of configMissed) {
+    if (!resolutions.get(key.slice(0, key.indexOf('\0')))?.has(spec)) continue
+    throw new Error(
+      `${spec} from ${displayPath(parentURL, baseDir)} resolves under Metro, for the app, and not under Node, for the ` +
+      "project's configs: a bundle can't keep Node's miss without serving Node Metro's file in its place"
+    )
   }
   // The configs' edges, keyed as buildJsBundle keys Node's: under '*' where every context resolves
   // one alike, else under each context's conditions, as also where the app's build resolves the
