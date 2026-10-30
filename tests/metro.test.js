@@ -1424,9 +1424,14 @@ process.exit(1)
     mkdirSync(join(dir, 'React', 'Base'), { recursive: true })
     // Its codegen sources named as React Native names its own, in `libraries`: carried, as the codegen
     // of an app's build reads them.
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'react-native', version: '0.76.0', codegenConfig: { libraries: [{ name: 'FBReactNativeSpec', type: 'all', jsSrcsDir: 'src' }] } }))
+    // One under a symlink isn't, as the walk follows none.
+    const libraries = [{ name: 'FBReactNativeSpec', type: 'all', jsSrcsDir: 'src' }, { name: 'LinkedSpec', type: 'all', jsSrcsDir: 'linked/spec' }]
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'react-native', version: '0.76.0', codegenConfig: { libraries } }))
     mkdirSync(join(dir, 'src', 'private', 'specs'), { recursive: true })
     writeFileSync(join(dir, 'src', 'private', 'specs', 'NativeCoreThing.js'), "export default TurboModuleRegistry.get('CoreThing')\n")
+    mkdirSync(join(tmp, 'elsewhere', 'spec'), { recursive: true })
+    writeFileSync(join(tmp, 'elsewhere', 'spec', 'NativeLinked.js'), 'export default null\n')
+    symlinkSync(join('..', '..', 'elsewhere'), join(dir, 'linked'))
     writeFileSync(join(dir, 'cli.js'), RN_CLI_JS)
     // react-native core's own podspecs, in the scattered subdirs config never enumerates:
     writeFileSync(join(dir, 'third-party-podspecs', 'DoubleConversion.podspec'), "Pod::Spec.new { |s| s.name = 'DoubleConversion' }\n")
@@ -1862,6 +1867,7 @@ process.exit(1)
     t.assert.equal(bundle.formats.get('node_modules/react-native-native-lib/fastlane/Fastfile'), 'fastlane')
     t.assert.ok(lock.modules['node_modules/react-native-native-lib'].files['src/spec/NativeThing.ts'])
     t.assert.ok(lock.modules['node_modules/react-native'].files['src/private/specs/NativeCoreThing.js'])
+    t.assert.equal(lock.modules['node_modules/react-native'].files['linked/spec/NativeLinked.js'], undefined, 'none through a symlink')
   }))
 
   test('native modules: a native dep whose JS is imported is captured once; its native surface is still added', withTmp(async (t, tmp) => {

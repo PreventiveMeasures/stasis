@@ -1,6 +1,6 @@
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 
-import { classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPathWithin, isPodspec, isSkippedNativeWalkDir, refineNativeCapture } from '@exodus/stasis-core/util'
+import { classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture } from '@exodus/stasis-core/util'
 
 // The native build inputs of a React Native app's packages, shared by the Metro plugin's capture and
 // `stasis bundle --metro` so the two carry the same files. Both read through `fs`:
@@ -100,11 +100,11 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
 }
 
 // The directories of the package at `root` its package.json's `codegenConfig` names as its JS sources
-// (`jsSrcsDir`, or each of its `libraries`', as React Native's own names `src`), within it: React
-// Native's codegen parses the specs there to generate the native code a build compiles (a missing one
-// fails it), and `react-native config` reads each file there for the components it declares (where
-// none is named, the whole package's JS, which a codegen-less package declares none in).
-// -> the absolute dirs
+// (`jsSrcsDir`, or each of its `libraries`', as React Native's own names `src`), each reached within it
+// through no symlink, as the walk follows none: React Native's codegen parses the specs there to
+// generate the native code a build compiles (a missing one fails it), and `react-native config` reads
+// each file there for the components it declares (where none is named, the whole package's JS, which a
+// codegen-less package declares none in). -> the absolute dirs
 function codegenSources(root, fs) {
   let config
   try {
@@ -113,7 +113,25 @@ function codegenSources(root, fs) {
     return []
   }
   const named = [config?.jsSrcsDir, ...(Array.isArray(config?.libraries) ? config.libraries.map((library) => library?.jsSrcsDir) : [])]
-  return named.filter((dir) => typeof dir === 'string' && dir !== '').map((dir) => join(root, dir)).filter((dir) => isPathWithin(root, dir))
+  return named.filter((dir) => typeof dir === 'string' && dir !== '').map((dir) => packageDir(root, dir, fs)).filter((dir) => dir !== null)
+}
+
+// The directory `rel` names in the package at `root`, each step of it one (a link's entry is none, and
+// none is `..`). -> its absolute path, or null
+function packageDir(root, rel, fs) {
+  let dir = root
+  for (const name of relative(root, join(root, rel)).split(sep)) {
+    if (name === '') continue
+    let entries
+    try {
+      entries = fs.readdir(dir)
+    } catch {
+      return null
+    }
+    if (!entries.some((ent) => ent.name === name && ent.isDirectory())) return null
+    dir = join(dir, name)
+  }
+  return dir
 }
 
 // A package name as npm takes one (`name` or `@scope/name`), which a path can't climb out with.
