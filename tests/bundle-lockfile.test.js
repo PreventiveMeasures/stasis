@@ -81,20 +81,25 @@ const lockReadingProject = (dir) => {
   return readFileSync(join(dir, 'stasis.lock.json'), 'utf8')
 }
 
-test('no producer ships the project lockfile: run, bundle and add all refuse, writing no bundle', withTmp((t, tmp) => {
+test('no producer ships the project lockfile: run, bundle and add all refuse, writing nothing', withTmp((t, tmp) => {
   const lockText = lockReadingProject(tmp)
   for (const [bin, args] of [
     [cli, ['run', '--lock=ignore', '--bundle=add', '--fs=sync', 'src/read.js']],
     [cli, ['run', '--lock=ignore', '--bundle=add', 'src/import.js']],
+    // A run writing the lockfile as well serializes the bundle before writing either, so it changes neither.
+    [cli, ['run', '--lock=add', '--bundle=add', 'src/import.js']],
+    [coreCli, ['run', '--lock=add', '--bundle=add', 'src/import.js']],
+    [cli, ['run', '--lock=add', '--bundle=add', '--resources-bundle-file=resources.br', 'src/import.js']],
     [cli, ['bundle', '--output=stasis.code.br', 'src/import.js']],
+    [cli, ['bundle', '--lockfile=stasis.lock.json', '--add', '--output=stasis.code.br', 'src/import.js']],
     [coreCli, ['add', 'stasis.lock.json']],
   ]) {
-    if (bin === coreCli) writeFileSync(join(tmp, 'stasis.config.json'), '{}\n')
+    if (bin === coreCli && args[0] === 'add') writeFileSync(join(tmp, 'stasis.config.json'), '{}\n')
     const r = spawnSync(process.execPath, [bin, ...args], { cwd: tmp, env: cleanEnv, encoding: 'utf-8' })
     const what = args.join(' ')
     t.assert.notEqual(r.status, 0, `${what} must fail`)
     t.assert.match(stripVTControlCharacters(r.stderr), refusal('stasis.lock.json'), what)
-    t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), `${what} must write no bundle`)
+    t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')) && !existsSync(join(tmp, 'resources.br')), `${what} must write no bundle`)
     t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'), lockText, `${what} must leave the lockfile alone`)
   }
 }))
