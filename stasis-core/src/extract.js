@@ -213,7 +213,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
     // Top-down, so a stat never runs into a file higher up (ENOTDIR); the first missing one ends the walk.
     const dirs = []
     for (let d = dirname(abs); d.length > outDir.length; d = dirname(d)) dirs.push(d)
-    for (const d of dirs.reverse()) {
+    for (const d of dirs.toReversed()) {
       if (checkedDirs.has(d)) continue
       const stats = statSync(d, { throwIfNoEntry: false })
       if (stats === undefined && lstatSync(d, { throwIfNoEntry: false }) === undefined) break
