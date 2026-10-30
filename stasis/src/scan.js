@@ -181,15 +181,14 @@ const TYPE_KINDS = new Set(['type', 'typeof'])
 // Whether the import or re-export statement `node` lists specifiers, every one an inline type
 // (`import { type A, typeof B } from`, `export { type C } from`), which Babel's Flow and TypeScript
 // transforms erase whole, as Metro builds (Node keeps one, as `import {} from`). A file --flow
-// stripped (`stripped`) has lost them, blanked to whitespace in place, so there they're read off
-// its `source` at the statement's offsets; a statement written with none (`import {} from`) lists
-// no types. The Metro plugin's transformer draws the same line (typesOnly).
-function listsTypesOnly(node, { source, stripped }) {
+// stripped has lost them, blanked to whitespace in place in its `strippedSource`, so there the
+// statement lists types alone where it reads otherwise in its `source` (a comment in it stays);
+// a statement written with none (`import {} from`) lists no types. The Metro plugin's transformer
+// draws the same line (typesOnly).
+function listsTypesOnly(node, { source, strippedSource }) {
   const specifiers = node.specifiers ?? []
   if (specifiers.length > 0) return specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))
-  if (!stripped) return false
-  const braces = /^(?:import|export)\s*\{([^}]*)\}/u.exec(source.slice(node.start, node.end))
-  return braces !== null && braces[1].trim() !== ''
+  return strippedSource !== null && source.slice(node.start, node.end) !== strippedSource.slice(node.start, node.end)
 }
 
 function condKey(set) {
@@ -222,8 +221,10 @@ export class Scan {
   // `define` (each global name -> its value, see define.js): a require()/import() in a branch they
   // keep from running (`if (__DEV__)` under `{ __DEV__: false }`) is no edge.
   // `babel`: the files are built through Babel (Metro), whose Flow and TypeScript transforms erase an
-  // import or re-export listing types alone (`import { type A } from`), so it's no edge either.
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, host = diskHost } = {}) {
+  // import or re-export listing types alone (`import { type A } from`), so it's no edge either, but
+  // in a TypeScript file `keepsTypeImports(file)` holds Babel keeps them for (its transform's
+  // `onlyRemoveTypeImports`, as --babel reads the project's config); Flow's erases them always.
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.typescriptResolve = typescriptResolve
@@ -234,6 +235,7 @@ export class Scan {
     this.resources = resources
     this.defines = parseDefine('scan', define)
     this.babel = babel
+    this.keepsTypeImports = keepsTypeImports
     this.host = host
   }
 
@@ -404,7 +406,7 @@ export class Scan {
     // the bundle stores the pristine on-disk source (State/buildResolvedJsBundle re-read it), so
     // attestation still covers the real bytes. A clean re-parse replaces the errored one; otherwise
     // we keep the original result so a genuine (non-Flow) parse error still surfaces.
-    let stripped = false
+    let strippedSource = null
     if (errors.length > 0 && this.flow && FLOW_EXTS.has(ext)) {
       const flowSrc = this.#stripFlow(src, file)
       if (flowSrc !== null) {
@@ -414,14 +416,14 @@ export class Scan {
             parsed = asFlow
             format = declared ?? detectedFormat(parsed)
             errors = []
-            stripped = true
+            strippedSource = flowSrc
           }
         } catch { /* keep the original parse + its errors */ }
       }
     }
 
-    // `source` and `stripped` (whether `parsed` is of its Flow-stripped form) for listsTypesOnly.
-    return { format, parsed, errors, source: src, stripped }
+    // `source`, and `strippedSource` where `parsed` is of its Flow-stripped form, for listsTypesOnly.
+    return { format, parsed, errors, source: src, strippedSource }
   }
 
   #scanFile(url, queue) {
@@ -462,7 +464,8 @@ export class Scan {
       this.parseErrors.push({ url, format, message: parseError, recovered: true })
     }
 
-    const specs = collectSpecifiers(parsed.program, this.defines, this.babel ? (node) => listsTypesOnly(node, result) : undefined)
+    const typesErased = () => result.strippedSource !== null || !this.keepsTypeImports?.(file)
+    const specs = collectSpecifiers(parsed.program, this.defines, this.babel ? (node) => listsTypesOnly(node, result) && typesErased() : undefined)
 
     // The edge KIND picks the resolution context, not the parent's format: createRequire()d
     // require() inside ESM resolves under REQUIRE conditions, literal import() inside CJS under

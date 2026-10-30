@@ -12,7 +12,7 @@ import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
-import { createAliases, createBabelAliases } from '../babel.js'
+import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
@@ -1334,9 +1334,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
+    // --babel: and whether it keeps a TypeScript import listing types alone (onlyRemoveTypeImports).
+    const keepsTypeImports = babel ? createBabelTypeImportsKept({ projectDir: baseDir, platform }) : null
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
     // --metro: built through Babel, which erases an import listing types alone (Scan's `babel`).
-    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, host }
+    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, keepsTypeImports, host }
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
     const absorb = (roots) => {
