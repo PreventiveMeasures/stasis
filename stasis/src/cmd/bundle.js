@@ -13,7 +13,7 @@ import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases } from '../babel.js'
-import { linkedNativePackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
+import { linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
@@ -967,13 +967,31 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 const METRO_CONFIG_FILES = ['metro.config.js', 'react-native.config.js']
 const BABEL_CONFIG_FILE = 'babel.config.js'
 // What else a React Native app's build runs in Node, which neither the app nor the configs import:
-// each a module Metro loads by a name it is given as a string. Metro's transform worker
-// (metro-config's default `transformerPath`, required from metro), and with --babel(-aliases) the
-// Babel transformer React Native's Metro config names (`babelTransformerPath`, require.resolve'd
-// from @react-native/metro-config), which runs @babel/core and React Native's Babel preset, with its
-// plugins. Each [the specifier, the package it is resolved from, else the project].
-const METRO_TOOLCHAIN = [['metro-transform-worker', 'metro']]
-const BABEL_TOOLCHAIN = [['@react-native/metro-babel-transformer', '@react-native/metro-config']]
+// the CLI that runs Metro and Metro itself, and what they load by a name or path given as a string.
+// Each { name, file, via }: the package `name` as the packages `via` find it, each the next in turn
+// (as each requires it), else as fewer of them do, the last ones, down to the project alone; `file`
+// in it, else its entry, as a require() of it from the last of `via` resolves.
+// Metro, as React Native's CLI plugin runs it (`react-native bundle`, `start`).
+const METRO_VIA = ['react-native', '@react-native/community-cli-plugin', 'metro']
+const METRO_TOOLCHAIN = [
+  // React Native's CLI, which an app runs Metro through.
+  { name: 'react-native', file: 'cli.js', via: [] },
+  { name: 'metro', via: METRO_VIA.slice(0, -1) },
+  // Metro's worker, which its workers run (require.resolve'd, to fork), its transform worker
+  // (metro-config's default `transformerPath`), the child process jest-worker forks them in, and
+  // metro-file-map's Haste worker: each loaded by a path.
+  { name: 'metro', file: 'src/DeltaBundler/Worker.js', via: METRO_VIA.slice(0, -1) },
+  { name: 'metro-transform-worker', via: METRO_VIA },
+  { name: 'jest-worker', file: 'build/workers/processChild.js', via: METRO_VIA },
+  { name: 'metro-file-map', file: 'src/plugins/haste/worker.js', via: METRO_VIA },
+]
+// With --babel(-aliases), the Babel transformer React Native's Metro config names
+// (`babelTransformerPath`, require.resolve'd from @react-native/metro-config), which runs @babel/core
+// and React Native's Babel preset, with its plugins.
+const BABEL_TOOLCHAIN = [{ name: '@react-native/metro-babel-transformer', via: ['@react-native/metro-config'] }]
+// The transformers stasis's Metro plugin (src/metro.js) points Metro at by path, beside it, which
+// Metro's workers run when a config wraps its own in withStasis().
+const STASIS_METRO_TRANSFORMERS = ['metro-transformer.js', 'metro-babel-transformer.js']
 // The conditions a require() resolves with in Node.
 const NODE_REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'module-sync'])
 // What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
@@ -1378,10 +1396,34 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         return undefined
       }
     }
-    for (const [spec, from] of [...METRO_TOOLCHAIN, ...(babelled ? BABEL_TOOLCHAIN : [])]) {
-      const dir = packageDirFrom(baseDir, from, host)
-      const file = (dir === undefined ? undefined : requireFrom(dir, spec)) ?? requireFrom(baseDir, spec)
+    // A METRO_TOOLCHAIN entry's file. -> absolute path, or undefined
+    const toolchainFile = ({ name, file, via }) => {
+      for (let i = 0; i <= via.length; i++) {
+        const chain = via.slice(i)
+        if (file !== undefined) {
+          const dir = packageDirFrom(baseDir, name, host, chain)
+          if (dir !== undefined && host.stat(join(dir, file))?.isFile()) return join(dir, file)
+          continue
+        }
+        const from = chain.length === 0 ? baseDir : packageDirFrom(baseDir, chain.at(-1), host, chain.slice(0, -1))
+        const found = from === undefined ? undefined : requireFrom(from, name)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    for (const entry of [...METRO_TOOLCHAIN, ...(babelled ? BABEL_TOOLCHAIN : [])]) {
+      const file = toolchainFile(entry)
       if (file !== undefined && relWithin(file) !== null) configs.push(file)
+    }
+    // And the React Native configs of the app's packages, which React Native's CLI requires as it
+    // loads its own (`react-native config`'s packages, read as data).
+    // Each by its real path, as Node loads it (a pnpm install's package linked into node_modules
+    // requires what lies beside it in the store).
+    for (const dir of linkedPackages(baseDir, host)) {
+      const file = join(dir, 'react-native.config.js')
+      if (!host.stat(file)?.isFile()) continue
+      const real = host.realpath(file)
+      if (relWithin(real) !== null) configs.push(real)
     }
     // Trace `roots` as Node entries, recording what they reach. -> the scan
     const traceNode = (roots) => {
@@ -1414,6 +1456,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       return scanner
     }
     const traced = configs.length > 0 ? traceNode(configs) : null
+    // What those load by a path or name, traced in turn.
+    const more = new Set()
+    const addTraced = (file) => {
+      if (file !== undefined && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString())) more.add(file)
+    }
+    // The transformers of stasis's Metro plugin, where a config requires it.
+    for (const url of traced?.files.keys() ?? []) {
+      const file = fileURLToPath(url)
+      if (basename(file) !== 'metro.js' || basename(dirname(file)) !== 'src') continue
+      if (readJson(join(dirname(dirname(file)), 'package.json'), host)?.name !== '@exodus/stasis-plugins') continue
+      for (const name of STASIS_METRO_TRANSFORMERS) addTraced(host.stat(join(dirname(file), name))?.isFile() ? join(dirname(file), name) : undefined)
+    }
     // And the plugins and presets the Babel config names, which @babel/core requires by name, resolved
     // as it resolves them, from the config's directory: as the project's files the config reaches
     // name them (a config made in a module of its own, `require('./create-babel-config.js')()`).
@@ -1425,17 +1479,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (e.child && traced.files.has(e.child) && !splitNodeModulesPath(toRel(fileURLToPath(e.child)))) ownFiles.add(e.child)
         }
       }
-      const named = new Set()
       for (const url of ownFiles) {
         const info = traced.files.get(url)
         if (info.resource || info.format === 'json') continue
-        for (const { name } of babelNamedModules(fileURLToPath(url), host)) {
-          const file = requireFrom(baseDir, name)
-          if (file !== undefined && relWithin(file) !== null && !traced.files.has(pathToFileURL(file).toString())) named.add(file)
-        }
+        for (const { name } of babelNamedModules(fileURLToPath(url), host)) addTraced(requireFrom(baseDir, name))
       }
-      if (named.size > 0) traceNode([...named])
     }
+    if (more.size > 0) traceNode([...more])
   }
 
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is

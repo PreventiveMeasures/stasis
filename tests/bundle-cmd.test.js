@@ -4592,14 +4592,17 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
     writeFileSync(join(tmp, rel), content)
   }
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
-  const worker = ['node_modules/@babel/core/lib/config/resolve-targets.js', 'node_modules/@babel/core/lib/index.js', 'node_modules/@babel/helper-compilation-targets/lib/index.js', 'node_modules/metro-transform-worker/src/index.js']
+  const worker = [
+    'node_modules/@babel/core/lib/config/resolve-targets.js', 'node_modules/@babel/core/lib/index.js', 'node_modules/@babel/helper-compilation-targets/lib/index.js',
+    'node_modules/metro-transform-worker/src/index.js', 'node_modules/metro/src/index.js',
+  ]
   const transformer = [
     'node_modules/@babel/plugin-transform-classes/lib/index.js',
     'node_modules/@react-native/babel-preset/src/index.js',
     'node_modules/@react-native/metro-config/node_modules/@react-native/metro-babel-transformer/src/index.js',
   ]
 
-  // The worker Metro always runs, as the bundler's, in Node's format.
+  // Metro and the worker it always runs, as the bundler's, in Node's format.
   const bundle = await buildBundle(options)
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...worker, 'index.js'].toSorted())
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), worker)
@@ -4635,6 +4638,75 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
   ]
   t.assert.deepStrictEqual([...configured.reason.bundle].toSorted(), [...worker, ...transformer, ...babel].toSorted())
   t.assert.ok(!configured.sources.has('node_modules/module-resolver/index.js'))
+}))
+
+test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
+  // The run of `react-native bundle` loads React Native's CLI, the React Native config of each of the
+  // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's
+  // worker, the child process jest-worker forks it in and metro-file-map's Haste worker, and the
+  // transformers withStasis() points Metro at: each by a name or path, as the bundler's.
+  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
+  const cliPlugin = 'node_modules/react-native/node_modules/@react-native/community-cli-plugin'
+  const someLib = 'node_modules/.pnpm/some-lib@1.0.0/node_modules'
+  const files = {
+    'package.json': JSON.stringify({ name: 'app', version: '0.0.0', dependencies: { 'react-native': '*', 'some-lib': '*', 'plain-lib': '*' } }),
+    'pnpm-workspace.yaml': '',
+    'index.js': 'export default 1\n',
+    'metro.config.js': "module.exports = require('@exodus/stasis-plugins/src/metro.js').withStasis({})\n",
+    ...pkg('node_modules/react-native', 'react-native', 'index.js', 'module.exports = {}\n'),
+    'node_modules/react-native/cli.js': "require('@react-native-community/cli').run()\n",
+    'node_modules/react-native/react-native.config.js': "module.exports = { commands: require('@react-native/community-cli-plugin').commands }\n",
+    ...pkg('node_modules/@react-native-community/cli', '@react-native-community/cli', 'build/index.js', 'exports.run = () => {}\n'),
+    ...pkg(cliPlugin, '@react-native/community-cli-plugin', 'dist/index.js', "exports.commands = [require('metro')]\n"),
+    // The Metro React Native's CLI plugin finds, not the project's.
+    ...pkg(`${cliPlugin}/node_modules/metro`, 'metro', 'src/index.js', 'module.exports = {}\n'),
+    // Metro's worker, which Metro forks by path alone.
+    [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.js`]: "module.exports = require('./Worker.flow')\n",
+    [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.flow.js`]: 'exports.transform = () => {}\n',
+    ...pkg('node_modules/metro', 'metro', 'src/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/metro-transform-worker', 'metro-transform-worker', 'src/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/jest-worker', 'jest-worker', 'build/index.js', 'module.exports = {}\n'),
+    'node_modules/jest-worker/build/workers/processChild.js': "require('jest-util')\n",
+    ...pkg('node_modules/jest-util', 'jest-util', 'build/index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/metro-file-map', 'metro-file-map', 'src/index.js', 'module.exports = {}\n'),
+    'node_modules/metro-file-map/src/plugins/haste/worker.js': 'module.exports = {}\n',
+    // Installed by pnpm: linked into node_modules from the store, beside what it requires.
+    ...pkg(`${someLib}/some-lib`, 'some-lib', 'index.js', 'module.exports = {}\n'),
+    [`${someLib}/some-lib/react-native.config.js`]: "module.exports = { dependency: require('lib-dep') }\n",
+    ...pkg(`${someLib}/lib-dep`, 'lib-dep', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/plain-lib', 'plain-lib', 'index.js', 'module.exports = {}\n'),
+    ...pkg('node_modules/@exodus/stasis-plugins', '@exodus/stasis-plugins', 'src/metro.js', 'exports.withStasis = (config) => config\n'),
+    'node_modules/@exodus/stasis-plugins/src/metro-transformer.js': 'exports.transform = () => {}\n',
+    'node_modules/@exodus/stasis-plugins/src/metro-babel-transformer.js': 'exports.transform = () => {}\n',
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  symlinkSync(join(tmp, someLib, 'some-lib'), join(tmp, 'node_modules', 'some-lib'), 'dir')
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] })
+  t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
+    `${cliPlugin}/dist/index.js`,
+    `${cliPlugin}/node_modules/metro/src/index.js`,
+    `${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.js`,
+    `${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.flow.js`,
+    'metro.config.js',
+    'node_modules/@exodus/stasis-plugins/src/metro-babel-transformer.js',
+    'node_modules/@exodus/stasis-plugins/src/metro-transformer.js',
+    'node_modules/@exodus/stasis-plugins/src/metro.js',
+    'node_modules/@react-native-community/cli/build/index.js',
+    'node_modules/jest-util/build/index.js',
+    'node_modules/jest-worker/build/workers/processChild.js',
+    'node_modules/metro-file-map/src/plugins/haste/worker.js',
+    'node_modules/metro-transform-worker/src/index.js',
+    'node_modules/react-native/cli.js',
+    'node_modules/react-native/react-native.config.js',
+    // By its real path, and what it requires beside it in the store.
+    `${someLib}/some-lib/react-native.config.js`,
+    `${someLib}/lib-dep/index.js`,
+  ].toSorted())
+  t.assert.ok(!bundle.sources.has('node_modules/metro/src/index.js'), 'not the project\'s metro')
+  t.assert.equal(bundle.formats.get('node_modules/react-native/cli.js'), 'commonjs')
 }))
 
 test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
