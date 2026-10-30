@@ -20,6 +20,14 @@ export const AUTO_INCLUDES = [
   { specifier: '@react-native-community/cli/setup_env.sh', reason: 'run' },
 ]
 
+// Metro's minifier, its default `transformer.minifierPath` (metro-config's DEFAULT_METRO_MINIFIER_PATH),
+// which its transform worker requires from its own directory as it minifies (`require(minifierPath)`),
+// and resolves for its transform cache key in any build: by a name no import holds, so the Metro plugin
+// and `stasis bundle --metro` each carry it, as that require() finds it, a stub a pnpm override puts
+// there in its stead (`module.exports = {}`) as much as metro-minify-terser itself, as the build's
+// toolchain (`run`, `bundle`).
+export const METRO_MINIFIER = 'metro-minify-terser'
+
 // The entries of the directory `dir`, none where it's missing or no directory.
 function listing(dir, fs) {
   try {

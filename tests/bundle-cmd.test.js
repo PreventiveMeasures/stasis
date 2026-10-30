@@ -4636,6 +4636,38 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
   t.assert.ok(!configured.sources.has('node_modules/module-resolver/index.js'))
 }))
 
+test('buildBundle --metro traces Metro\'s minifier as its transform worker finds it, the stub a pnpm override puts there too', withTmp(async (t, tmp) => {
+  // The worker requires its minifier (metro-config's default `minifierPath`) from its own directory, by a
+  // name no import holds, as it minifies: carried as the bundler's, with what it imports, whether or
+  // not this build minifies, as the Metro plugin carries it.
+  const minifierDir = 'node_modules/metro-transform-worker/node_modules/metro-minify-terser'
+  // A project with `files`, its minifier only beside the worker, as a pnpm install links it (to `link`).
+  const project = async (dir, files, link) => {
+    mkdirSync(dir)
+    jsProject(dir, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+    writeTree(dir, {
+      ...pkgFiles('node_modules/metro', 'metro', 'src/index.js', 'module.exports = {}\n'),
+      ...pkgFiles('node_modules/metro-transform-worker', 'metro-transform-worker', 'src/index.js', 'module.exports = {}\n'),
+      ...pkgFiles('node_modules/terser', 'terser', 'dist/bundle.min.js', 'exports.minify = () => {}\n'),
+      ...files,
+    })
+    if (link !== undefined) {
+      mkdirSync(dirname(join(dir, minifierDir)), { recursive: true })
+      symlinkSync(link, join(dir, minifierDir))
+    }
+    return buildBundle({ cwd: dir, entries: ['index.js'], metro: true, platforms: ['ios'] })
+  }
+  const bundle = await project(join(tmp, 'terser'), pkgFiles(minifierDir, 'metro-minify-terser', 'src/index.js', "module.exports = require('terser')\n"))
+  const minifier = [`${minifierDir}/src/index.js`, 'node_modules/terser/dist/bundle.min.js']
+  t.assert.deepStrictEqual(minifier.filter((rel) => !bundle.reason.bundle.includes(rel)), [])
+  t.assert.equal(bundle.formats.get(minifier[0]), 'commonjs')
+
+  // A pnpm override linking it to a stub of the project's: that stub, and nothing of terser's.
+  const stubbed = await project(join(tmp, 'stubbed'), { 'stubs/minifier/index.js': 'module.exports = {}\n' }, join('..', '..', '..', 'stubs', 'minifier'))
+  t.assert.ok(stubbed.reason.bundle.includes('stubs/minifier/index.js'))
+  t.assert.ok(!stubbed.sources.has(minifier[1]))
+}))
+
 test('buildBundle --metro traces what a Babel config\'s modules name as Babel plugins or presets by their form, anywhere in them', withTmp(async (t, tmp) => {
   // A module of the Babel config by its name (create-babel-config.js, @org/babel-config) names its plugins
   // as strings it builds the config of: in a variable, joined to a path, spread into `plugins`, wherever.
