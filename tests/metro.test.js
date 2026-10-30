@@ -178,6 +178,38 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(load.status, 0, `stderr: ${load.stderr}`)
   }))
 
+  test('a resource a Babel plugin consumed is carried as Metro\'s, with no edge', withTmp(async (t, tmp) => {
+    // `require('./locales/de/messages.po')`, which @exodus/i18n's plugin-inline-po reads and inlines:
+    // no dependency of Metro's, but the stasis worker transformer carries it as consumed, so it's
+    // recorded under `metro`, as `stasis bundle --metro` records it. One naming code (an import a
+    // plugin split), no file, or no path is passed over.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    mkdirSync(join(tmp, 'src', 'locales', 'de'), { recursive: true })
+    writeFileSync(join(tmp, 'src', 'locales', 'de', 'messages.po'), 'msgid "Hello"\nmsgstr "Hallo"\n')
+    writeFileSync(join(tmp, 'src', 'all.js'), 'export const a = 1\n')
+    const consumed = ['./locales/de/messages.po', './all.js', './missing.po', '@env']
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js']], consumed },
+        { path: 'src/hello.js', deps: [] },
+      ],
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    const env = withOpts({ lock: 'add', bundle: 'add', bundleFile: bundlePath, scope: 'full', resources: ['po'] })
+    const r = await run('src/entry.js', { cwd: tmp, env, graph })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    t.assert.deepStrictEqual(Object.keys(bundle.sources['.'].files).toSorted(), ['src/entry.js', 'src/hello.js', 'src/locales/de/messages.po'])
+    t.assert.equal(bundle.formats['src/locales/de/messages.po'], 'resource')
+    t.assert.deepStrictEqual(bundle.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js' })
+
+    // One the resources don't carry is refused, as a module of the graph is.
+    const refused = await run('src/entry.js', { cwd: tmp, env: withOpts({ lock: 'add', bundle: 'add', bundleFile: bundlePath, scope: 'full' }), graph })
+    t.assert.notEqual(refused.status, 0)
+    t.assert.match(refused.stderr, /unsupported extension for '.*messages\.po', which a Babel plugin inlines into '.*entry\.js'/)
+  }))
+
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))

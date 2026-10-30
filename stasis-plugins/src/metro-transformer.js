@@ -11,7 +11,8 @@ import { transformContext } from './metro-babel-transformer.js'
 // wraps the project's own transformer, and does two things in each worker:
 //  - keeps each import as written for the serializer, through the Babel transformer it swaps in
 //    (./metro-babel-transformer.js): a dependency Babel rewrote (e.g. through
-//    babel-plugin-module-resolver) carries the specifiers written in the source as `stasisAsWritten`;
+//    babel-plugin-module-resolver) carries the specifiers written in the source as `stasisAsWritten`,
+//    and the output, the ones of the imports a Babel plugin consumed as `stasisConsumed`;
 //  - is the LOAD half of stasis for Metro (under load the serializer only asserts edges). Load only
 //    READS an immutable bundle and every worker reads the same bytes (no IPC), so a per-worker
 //    transformer is the natural seam: it replaces Metro's on-disk `data` with the bundle's
@@ -93,8 +94,10 @@ function resolveBabelTransformer(base, path) {
 // alike (`#local/abc` and `./src/abc`). One no specifier in the source names carries
 // `stasisInserted`: Babel added it (a helper from @babel/runtime, the JSX runtime), or Metro did (its
 // asyncRequire for an `import()`, an asset's registry). A dependency written as Metro names it is
-// left as is.
-function withAsWritten(result, asWritten) {
+// left as is. The imports a Babel plugin consumed, read and inlined in their stead
+// (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), no dependency of Metro's, ride on
+// the output Metro keeps for the module, its first entry's data, as `stasisConsumed`.
+function withAsWritten(result, { asWritten, consumed }) {
   if (!Array.isArray(result?.dependencies)) return result
   const dependencies = result.dependencies.map((dep) => {
     const written = asWritten.get(dep.name)
@@ -102,7 +105,9 @@ function withAsWritten(result, asWritten) {
     if (written.size === 1 && written.has(dep.name)) return dep
     return { ...dep, stasisAsWritten: [...written] }
   })
-  return { ...result, dependencies }
+  if (consumed.size === 0 || !Array.isArray(result.output) || result.output.length === 0) return { ...result, dependencies }
+  const [first, ...rest] = result.output
+  return { ...result, dependencies, output: [{ ...first, data: { ...first.data, stasisConsumed: [...consumed] } }, ...rest] }
 }
 
 export async function transform(config, projectRoot, filename, data, options) {
@@ -120,10 +125,10 @@ export async function transform(config, projectRoot, filename, data, options) {
     }
   }
   if (typeof config.babelTransformerPath !== 'string') return base.transformer.transform(config, projectRoot, filename, data, options)
-  const context = { babelTransformerPath: resolveBabelTransformer(base, config.babelTransformerPath), asWritten: new Map() }
+  const context = { babelTransformerPath: resolveBabelTransformer(base, config.babelTransformerPath), asWritten: new Map(), consumed: new Set() }
   const result = await transformContext.run(context, () =>
     base.transformer.transform({ ...config, babelTransformerPath: BABEL_TRANSFORMER }, projectRoot, filename, data, options))
-  return withAsWritten(result, context.asWritten)
+  return withAsWritten(result, context)
 }
 
 export function getCacheKey(config, opts) {

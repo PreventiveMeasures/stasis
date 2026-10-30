@@ -4936,10 +4936,10 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
 }))
 
-test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input: the bundler\'s, with no edge', withTmp(async (t, tmp) => {
+test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input, with no edge', withTmp(async (t, tmp) => {
   // Metro can't resolve `require('./locales/de/messages.po')` (.po is in neither its sourceExts nor its
   // assetExts): a Babel plugin (@exodus/i18n's plugin-inline-po) reads the file and inlines it before
-  // Metro collects dependencies, so the Metro plugin records it under `run`, with no edge. An asset
+  // Metro collects dependencies, so the Metro plugin records it under `metro`, with no edge. An asset
   // (.png) stays a module of Metro's, with its edge.
   jsProject(tmp, { 'index.js': "const de = require('./locales/de/messages.po')\nconst logo = require('./logo.png')\nmodule.exports = [de, logo]\n" }, { name: 'app', version: '0.0.0' })
   mkdirSync(join(tmp, 'locales', 'de'), { recursive: true })
@@ -4950,7 +4950,7 @@ test('buildBundle --metro carries a resource no asset of Metro\'s as a transform
   t.assert.ok(bundle.sources.has('locales/de/messages.po'))
   t.assert.equal(bundle.formats.get('locales/de/messages.po'), 'resource')
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './logo.png': 'logo.png' })
-  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': ['locales/de/messages.po'], 'bundle:metro': ['index.js', 'logo.png'] })
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle:metro': ['index.js', 'logo.png', 'locales/de/messages.po'] })
   // A Node build keeps the edge: Node requires what the source names.
   const node = await buildBundle({ ...options, mainFields: ['main'] })
   t.assert.equal(node.imports.get('*').get('index.js').get('./locales/de/messages.po'), 'locales/de/messages.po')

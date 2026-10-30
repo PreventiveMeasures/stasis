@@ -241,10 +241,10 @@ A resource the app imports that is no asset of Metro's (its extension not in
 Metro's default `assetExts`: `png`, `jpg`, `svg`, `ttf` and the like) is no
 module of Metro's, which can't resolve it: a Babel plugin consumes it before
 Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
-`require('./messages.po')` and inlines it. So, as the Metro plugin records it
-(`run`, no edge), it's carried as the build's transform's input, attributed to
-`bundle`, with no edge from its importer, and it makes no asset registry. It
-still needs `--resources` to be carried.
+`require('./messages.po')` and inlines it. So it's carried as the input of the
+build's transform: attributed to `bundle:metro`, as the app's files are, with
+no edge from its importer, and with no asset registry. The Metro plugin records
+it the same way (below). It still needs `--resources` to be carried.
 
 An import or re-export listing types alone (`import { type A } from`, Flow's
 `import { typeof B } from`, `export { type C } from`) is no edge under
@@ -409,7 +409,11 @@ transformer through stasis's, which records each import as written, before any
 Babel plugin rewrites it. An import only Babel or Metro adds (a `@babel/runtime`
 helper, `react/jsx-runtime`, Metro's `asyncRequire`, an asset's registry) is written nowhere in the
 source, so the plugin records no edge for it, as the static build doesn't. It
-still carries the file, as it carries every module of Metro's graph.
+still carries the file, as it carries every module of Metro's graph. An import
+a Babel plugin consumes, gone from Babel's output with nothing there naming its
+module (the `.po` above), is no dependency of Metro's: the plugin records no
+edge for it either, but carries a resource it names by path from the importer,
+under `metro`, as the static build carries it under `bundle:metro`.
 
 The static build carries those files too, as Metro's code, each scanned for
 what it imports in turn:

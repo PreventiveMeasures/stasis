@@ -3,7 +3,7 @@ import { isUtf8 } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
@@ -480,6 +480,37 @@ export class StasisMetro {
       // byte-derived format).
       const format = kind === 'code' ? nodeExtFormat(modPath) : undefined
       this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
+      this.#captureConsumed(module, modPath)
+    }
+  }
+
+  // The resources a Babel plugin consumed in transforming `module`, read and inlined in their imports'
+  // stead (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the stasis transformer
+  // carries them (`stasisConsumed`): no module of Metro's, so no edge, but the build's input all the
+  // same, attributed to `metro`, as `stasis bundle --metro` records them. One named by path, as such
+  // a plugin reads it, from the module's dir. One naming code (an import a plugin split into others,
+  // as babel-plugin-lodash does), no file, or one outside the project root is passed over.
+  #captureConsumed(module, modPath) {
+    for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
+      if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
+      const file = resolve(dirname(modPath), specifier)
+      if (this.#seen.has(file) || diskHost.stat(file)?.isFile() !== true) continue
+      try {
+        this.#state.relative(file)
+      } catch {
+        continue
+      }
+      const kind = classifyExtension(file, this.#resources)
+      if (kind === 'code') continue
+      if (kind === 'unknown') {
+        throw new Error(
+          `StasisMetro: unsupported extension for '${file}', which a Babel plugin inlines into '${modPath}' -- ` +
+          `add its extension or filename to the plugin's resources option or stop importing it`
+        )
+      }
+      this.#seen.add(file)
+      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
+      this.#recordCapture(file, realReadFileSync(file), { resource: true, inferFormat: false })
     }
   }
 }

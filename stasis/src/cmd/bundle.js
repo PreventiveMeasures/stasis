@@ -1321,8 +1321,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // --metro: the resources the app imports that are no asset of Metro's (its default `assetExts`,
   // which React Native's Metro config keeps) are no module of Metro's, which can't resolve one: one
   // reaches the build only as a transform's input, read and inlined by a Babel plugin
-  // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin sees it
-  // (`run`, no edge). Those (rel): no edge to one, and each the bundler's, attributed to `bundle`.
+  // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
+  // (`metro`, no edge). Those (rel): no edge to one, and no asset registry for one.
   const transformInputs = new Set()
   const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
   for (const platform of platforms) {
@@ -1791,12 +1791,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     host,
     packageOf,
     consumer: metro ? 'bundle:metro' : 'bundle',
-    consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel) && !transformInputs.has(rel)),
+    consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel)),
   })
-  // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are; so
-  // is a transform's input.
-  const bundler = [...configReached, ...transformInputs]
-  const bundle = bundler.length === 0 ? assembled : assembled.withReason('bundle', bundler)
+  // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
+  const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
   const lockModules = new Map()
