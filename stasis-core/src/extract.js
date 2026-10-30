@@ -152,10 +152,8 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       }
       // A non-canonical path changes under the resolve+relative round-trip; writing it desyncs tree from lockfile.
       if (relToOut !== file) throw new Error(`extract: non-canonical bundle path: ${file}`)
+      // No bundle Bundle.parse takes carries a stasis.lock.json, so no write lands on the lockfile.
       if (targets.has(abs)) throw new Error(`extract: duplicate bundle path: ${file}`)
-      if (withLockfile && abs === lockAbs) {
-        throw new Error(`extract: bundle contains ${FILE_LOCK}, which would collide with the lockfile`)
-      }
       targets.add(abs)
       // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)

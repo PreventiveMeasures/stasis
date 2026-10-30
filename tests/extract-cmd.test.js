@@ -446,9 +446,12 @@ test('extractCommand refuses non-string file content', withTmp((t, tmp) => {
   )
 }))
 
+// No bundle carries one (see tests/bundle-lockfile.test.js), so extract refuses it as it parses the bundle.
+const lockfileRefusal = (err) => /extract: not a valid stasis bundle: /.test(err.message) &&
+  /bundle: stasis\.lock\.json is a stasis lockfile, which no bundle may carry/.test(err.cause?.message)
+
 test('extractCommand refuses a bundle that contains stasis.lock.json', withTmp((t, tmp) => {
-  // The bundled file would first be written, then clobbered by the derived
-  // lockfile -- which itself records a hash for it that no longer matches disk.
+  // The bundled file would replace the lockfile there, or plant one the next frozen extract trusts.
   const evil = {
     version: 1,
     config: { scope: 'full' },
@@ -463,11 +466,33 @@ test('extractCommand refuses a bundle that contains stasis.lock.json', withTmp((
   const bundlePath = join(tmp, 'lockclash.code.br')
   writeRawBundle(bundlePath, evil)
   const outDir = join(tmp, 'out')
-  t.assert.throws(
-    () => extractCommand({ bundleFile: bundlePath, output: outDir }),
-    /bundle contains stasis\.lock\.json/,
-  )
+  t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'add' }), lockfileRefusal)
   t.assert.ok(!existsSync(outDir), 'nothing may be written for a refused bundle')
+}))
+
+test('extractCommand refuses a legacy v0 bundle that contains stasis.lock.json, in every lock mode', withTmp((t, tmp) => {
+  // A v0 bundle derives no lockfile, but its file would still overwrite the one there (ignore) or plant one
+  // in a fresh dir (none) that the next default extract then takes for the trusted attestation.
+  const bundlePath = join(tmp, 'v0-lockclash.code.br')
+  writeRawBundle(bundlePath, {
+    version: 0,
+    config: { scope: 'full' },
+    sources: { 'a.js': 'x\n', 'stasis.lock.json': '{"planted":true}\n' },
+    formats: {},
+    imports: {},
+  })
+  const outDir = join(tmp, 'out')
+  mkdirSync(outDir)
+  writeFileSync(join(outDir, 'stasis.lock.json'), 'trusted\n')
+  t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'ignore' }), lockfileRefusal)
+  t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), 'trusted\n')
+  t.assert.ok(!existsSync(join(outDir, 'a.js')), 'nothing may be written for a refused bundle')
+
+  for (const lock of [undefined, 'none', 'add', 'replace', 'ignore']) {
+    const fresh = join(tmp, `fresh-${lock}`)
+    t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: fresh, lock }), lockfileRefusal)
+    t.assert.ok(!existsSync(fresh), 'nothing may be written for a refused bundle')
+  }
 }))
 
 test('extractCommand reports a clear error for a file that is not a valid stasis bundle', withTmp((t, tmp) => {

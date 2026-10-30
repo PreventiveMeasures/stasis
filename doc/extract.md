@@ -117,7 +117,7 @@ anything, so a malformed bundle fails before the first write. It refuses bundles
 - paths holding a `\` (no stasis path does: see [file formats](file-formats.md)),
 - duplicate paths, or a path used as both a file and a directory,
 - non-string file contents,
-- a bundled file named `stasis.lock.json` (collides with the lockfile).
+- a file named `stasis.lock.json`, at any depth and in any case, which no bundle carries (see [file formats](file-formats.md#stasiscodebr)).
 
 The path checks are lexical: `extract` does not resolve symlinks, so writes pass
 through any symlink already present inside the output directory (e.g. a

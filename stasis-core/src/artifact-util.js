@@ -312,6 +312,9 @@ export function assert(condition, msg) {
   if (!condition) throw new Error(msg)
 }
 
+// stasis's lockfile, by name at any depth and in any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
+export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === 'stasis.lock.json'
+
 export function sortPaths(a, b) {
   const [al, bl] = [a.split('/'), b.split('/')]
   while (al.length > 0 && al[0] === bl[0]) {
