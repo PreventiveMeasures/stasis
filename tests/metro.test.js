@@ -1465,11 +1465,17 @@ process.exit(1)
     mkdirSync(join(dir, 'React', 'Base'), { recursive: true })
     // Its codegen sources named as React Native names its own, in `libraries`: carried, as the codegen
     // of an app's build reads them.
-    // One under a symlink isn't, as the walk follows none.
-    const libraries = [{ name: 'FBReactNativeSpec', type: 'all', jsSrcsDir: 'src' }, { name: 'LinkedSpec', type: 'all', jsSrcsDir: 'linked/spec' }]
+    // One under a symlink isn't, as the walk follows none. One naming the package's root (as
+    // react-native-change-icon's does) carries its specs alone, not its react-native.config.js.
+    const libraries = [
+      { name: 'FBReactNativeSpec', type: 'all', jsSrcsDir: 'src' },
+      { name: 'LinkedSpec', type: 'all', jsSrcsDir: 'linked/spec' },
+      { name: 'RootSpec', type: 'all', jsSrcsDir: '.' },
+    ]
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'react-native', version: '0.76.0', codegenConfig: { libraries } }))
     mkdirSync(join(dir, 'src', 'private', 'specs'), { recursive: true })
     writeFileSync(join(dir, 'src', 'private', 'specs', 'NativeCoreThing.js'), "export default TurboModuleRegistry.get('CoreThing')\n")
+    writeFileSync(join(dir, 'react-native.config.js'), 'module.exports = {}\n')
     mkdirSync(join(tmp, 'elsewhere', 'spec'), { recursive: true })
     writeFileSync(join(tmp, 'elsewhere', 'spec', 'NativeLinked.js'), 'export default null\n')
     symlinkSync(join('..', '..', 'elsewhere'), join(dir, 'linked'))
@@ -1530,6 +1536,11 @@ process.exit(1)
     writeFileSync(join(root, 'src', 'spec', 'NativeThing.ts'), "export default TurboModuleRegistry.getEnforcing<Spec>('Thing')\n")
     writeFileSync(join(root, 'src', 'spec', 'nested', 'ThingNativeComponent.js'), "export default codegenNativeComponent('Thing')\n")
     writeFileSync(join(root, 'src', 'spec', '.cache', 'NativeStale.ts'), 'export default null\n')
+    // The rest there codegen never reads: no spec by its name, a type declaration, a test's.
+    mkdirSync(join(root, 'src', 'spec', '__tests__'), { recursive: true })
+    writeFileSync(join(root, 'src', 'spec', 'types.ts'), 'export type Thing = string\n')
+    writeFileSync(join(root, 'src', 'spec', 'NativeThing.d.ts'), 'export declare const Thing: unknown\n')
+    writeFileSync(join(root, 'src', 'spec', '__tests__', 'NativeTested.js'), 'export default null\n')
     writeFileSync(join(root, `${name}.podspec`), `Pod::Spec.new do |s|\n  s.name = "${name}"\nend\n`)
     writeFileSync(join(root, 'Extra.podspec.json'), JSON.stringify({ name: 'Extra', version: '1.0.0' })) // JSON podspec -> json
     writeFileSync(join(root, 'ios', 'RNThing.h'), '#import <React/RCTBridgeModule.h>\n')
@@ -1684,6 +1695,9 @@ process.exit(1)
       t.assert.equal(lock.formats[`node_modules/react-native-native-lib/${f}`], undefined, f)
     }
     t.assert.equal(mod.files['src/spec/.cache/NativeStale.ts'], undefined, 'nor one in a dot directory')
+    for (const f of ['src/spec/types.ts', 'src/spec/NativeThing.d.ts', 'src/spec/__tests__/NativeTested.js']) {
+      t.assert.equal(mod.files[f], undefined, `${f} is no spec codegen parses`)
+    }
     // Other TypeScript source (.ts/.tsx/.d.ts) is never emitted by the native capture (Metro owns the JS graph):
     for (const f of ['src/index.ts', 'src/widget.tsx', 'src/types.d.ts']) {
       t.assert.equal(mod.files[f], undefined, `expected TS source ${f} to be excluded from native capture`)
@@ -1909,6 +1923,8 @@ process.exit(1)
     t.assert.ok(lock.modules['node_modules/react-native-native-lib'].files['src/spec/NativeThing.ts'])
     t.assert.ok(lock.modules['node_modules/react-native'].files['src/private/specs/NativeCoreThing.js'])
     t.assert.equal(lock.modules['node_modules/react-native'].files['linked/spec/NativeLinked.js'], undefined, 'none through a symlink')
+    t.assert.equal(lock.modules['node_modules/react-native'].files['react-native.config.js'], undefined, 'no config as a spec')
+    t.assert.ok(!bundle.reason['bundle:metro'].includes('node_modules/react-native/react-native.config.js'), 'carried as a config, the bundler\'s')
   }))
 
   test('native modules: a native dep whose JS is imported is captured once; its native surface is still added', withTmp(async (t, tmp) => {
