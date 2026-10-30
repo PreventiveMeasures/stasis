@@ -183,11 +183,12 @@ function parseBare(spec) {
 export const METRO_ASSET_EXTS = new Set(['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', 'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip'])
 const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4']
 
-// Metro's isAssetFile: any of the file name's dot-suffixes (`png`, or `tar.gz` and `gz`) an asset extension.
-export function isMetroAssetFile(path) {
+// Metro's isAssetFile: any of the file name's dot-suffixes (`png`, or `tar.gz` and `gz`) one of
+// `assetExts` (Metro's defaults, else the project's).
+export function isMetroAssetFile(path, assetExts = METRO_ASSET_EXTS) {
   const name = basename(path)
   for (let i = name.length - 1; i >= 0; i--) {
-    if (name[i] === '.' && METRO_ASSET_EXTS.has(name.slice(i + 1))) return true
+    if (name[i] === '.' && assetExts.has(name.slice(i + 1))) return true
   }
   return false
 }
@@ -323,7 +324,7 @@ function resolveSourceFile(base, opts) {
   // outright by falling back to a different index. The probe below still refuses a literal hit.
   base = stripTypeDeclaration(base)
   // Metro resolves an asset by its own rule, scale variants and all, not as a source file.
-  if (opts.metro && isMetroAssetFile(base)) return metroAsset(base, opts.host)
+  if (opts.metro && isMetroAssetFile(base, opts.assetExts)) return metroAsset(base, opts.host)
   // Candidates share base's directory, hence its package scope; resolve it lazily, once.
   let scope
   const redirectCandidate = (p) => {
@@ -419,8 +420,8 @@ function resolveFileOrDir(base, opts) {
 // packages (delegated to Node's algorithm), `mainFields`/`platform`/`preferNative`/`sourceExts`
 // drive the legacy-field + suffix probing.
 // `metro` opts into Metro's package-entry + candidate-redirect semantics (see
-// resolveEntryThroughMap and resolveSourceFile); leave it off for the esbuild-parity
-// `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
+// resolveEntryThroughMap and resolveSourceFile), and its asset rule for `assetExts` (Metro's
+// defaults, else the project's); leave it off for the esbuild-parity `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
 // its `x.ts` sibling; see resolveSourceFile) plus the shared miss fallback (see below), and
 // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
 // `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
@@ -433,12 +434,13 @@ export function createFieldResolver({
   preferNative = false,
   sourceExts = ['js', 'jsx', 'json', 'ts', 'tsx'],
   metro = false,
+  assetExts = METRO_ASSET_EXTS,
   typescript = false,
   typescriptPaths = null,
   metroKeepEntryOnBrowserFalse = METRO_KEEP_ENTRY_ON_BROWSER_FALSE,
   host = diskHost,
 } = {}) {
-  const opts = { platform, preferNative, sourceExts, mainFields, metro, typescript, metroKeepEntryOnBrowserFalse, host }
+  const opts = { platform, preferNative, sourceExts, mainFields, metro, assetExts, typescript, metroKeepEntryOnBrowserFalse, host }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
@@ -451,7 +453,7 @@ export function createFieldResolver({
   // else that file itself, no probing; null where it names none.
   const metroTargetFile = (pkgDir, target) => {
     const path = join(pkgDir, target)
-    const asset = isMetroAssetFile(path) ? metroAsset(path, host) : null
+    const asset = isMetroAssetFile(path, assetExts) ? metroAsset(path, host) : null
     if (asset !== null) return fileResolution(asset, host)
     return isFile(path, host) && !isTypeDeclaration(path) ? fileResolution(path, host) : null
   }
@@ -611,7 +613,7 @@ export function createFieldResolver({
     const resolved = resolve(parentFile, specifier, callConditions)
     if (resolved) return resolved
     // Under --metro an asset is Metro's asset rule's to resolve (resolveSourceFile), as tsc never does.
-    if (metro && isMetroAssetFile(specifier)) return null
+    if (metro && isMetroAssetFile(specifier, assetExts)) return null
     const hit = resolveTypescriptFallback(parentFile, specifier, {
       conditions: new Set(callConditions ?? conditions),
       paths: typescriptPaths,

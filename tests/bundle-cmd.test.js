@@ -5146,6 +5146,39 @@ test('buildBundle --metro carries a resource no asset of Metro\'s as a transform
   t.assert.equal(node.imports.get('*').get('index.js').get('./locales/de/messages.po'), 'locales/de/messages.po')
 }))
 
+test('buildBundle --metro takes an extension the project\'s Metro config adds to its assetExts as an asset, read off the config', withTmp(async (t, tmp) => {
+  // metro.config.js adds `riv` to Metro's assetExts by a spread of the defaults and `lottie` by a push,
+  // so Metro resolves each as an asset, scale variants and all, and the Metro plugin records the edge
+  // to it: read off the config, never run (its getDefaultConfig would throw). A .po it doesn't add stays
+  // a transform's input, with no edge.
+  jsProject(tmp, { 'index.js': "const spin = require('./anim/spin.riv')\nconst wave = require('./anim/wave.lottie')\nconst de = require('./messages.po')\nmodule.exports = [spin, wave, de]\n" }, { name: 'app', version: '0.0.0' })
+  const config = [
+    "const { getDefaultConfig } = require('@react-native/metro-config')",
+    'const defaultConfig = getDefaultConfig(__dirname)',
+    "const config = { resolver: { assetExts: [...defaultConfig.resolver.assetExts, 'riv'] } }",
+    "config.resolver.assetExts.push('lottie')",
+    'module.exports = config',
+  ].join('\n')
+  writeTree(tmp, {
+    'metro.config.js': `${config}\n`,
+    ...pkgFiles('node_modules/@react-native/metro-config', '@react-native/metro-config', 'index.js', "exports.getDefaultConfig = () => { throw new Error('never run') }\n"),
+    'anim/spin.riv': 'RIVE',
+    'anim/spin@2x.riv': 'RIVE@2x',
+    'anim/wave.lottie': 'PK',
+    'messages.po': 'msgid "Hello"\nmsgstr "Hallo"\n',
+  })
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['riv', 'lottie', 'po'] }
+  const bundle = await buildBundle(options)
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './anim/spin.riv': 'anim/spin.riv', './anim/wave.lottie': 'anim/wave.lottie' })
+  t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), ['anim/spin.riv', 'anim/spin@2x.riv', 'anim/wave.lottie', 'index.js', 'messages.po'], 'the asset\'s other scale too')
+
+  // Without them, Metro's defaults alone: each a transform's input, as the .po is.
+  writeFileSync(join(tmp, 'metro.config.js'), 'module.exports = {}\n')
+  const defaults = await buildBundle(options)
+  t.assert.equal(defaults.imports.get('*').get('index.js'), undefined)
+  t.assert.ok(!defaults.sources.has('anim/spin@2x.riv'))
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React
