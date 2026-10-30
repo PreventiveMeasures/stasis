@@ -4562,6 +4562,38 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
 }))
 
+test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
+  // Metro builds `require('./img/logo.png')` into a module of its own,
+  // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React
+  // Native's Metro config's registry: carried, with what it imports, and no edge from the asset.
+  jsProject(tmp, { 'index.js': "module.exports = require('./img/logo.png')\n", 'plain.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  const files = {
+    'img/logo.png': '\x89PNG\r\n',
+    'node_modules/react-native/package.json': JSON.stringify({ name: 'react-native', version: '0.81.0' }),
+    'node_modules/react-native/Libraries/Image/AssetRegistry.js': "'use strict'\nmodule.exports = require('@react-native/assets-registry/registry')\n",
+    'node_modules/@react-native/assets-registry/package.json': JSON.stringify({ name: '@react-native/assets-registry', version: '0.81.0' }),
+    'node_modules/@react-native/assets-registry/registry.js': 'module.exports = { registerAsset: () => 1 }\n',
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'], resources: ['png'] }
+  const registry = ['node_modules/@react-native/assets-registry/registry.js', 'node_modules/react-native/Libraries/Image/AssetRegistry.js']
+
+  const bundle = await buildBundle(options)
+  t.assert.deepStrictEqual(registry.filter((rel) => !bundle.sources.has(rel)), [], 'the registry and what it imports')
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './img/logo.png': 'img/logo.png' })
+  t.assert.equal(bundle.imports.get('*').get('img/logo.png'), undefined, 'no edge from the asset, as the Metro plugin records none')
+  t.assert.equal(importTarget(bundle, registry[1], '@react-native/assets-registry/registry'), registry[0])
+  t.assert.equal(bundle.formats.get(registry[1]), undefined, 'Metro\'s code: no format')
+  t.assert.ok(registry.every((rel) => bundle.reason['bundle:metro'].includes(rel)))
+
+  // Without an asset, none of it.
+  const plain = await buildBundle({ ...options, entries: ['plain.js'] })
+  t.assert.deepStrictEqual([...plain.sources.keys()], ['plain.js'])
+}))
+
 // --- the empty module under --metro --------------------------------------------------------
 //
 // A disabled import (a `browser`/`react-native` map entry set to `false`) resolves, under --metro, to
