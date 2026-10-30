@@ -4642,8 +4642,8 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
 
 test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what they load by path, and the React Native configs of the app\'s packages', withTmp(async (t, tmp) => {
   // The run of `react-native bundle` loads React Native's CLI, the React Native config of each of the
-  // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, the
-  // child process jest-worker forks Metro's workers in and metro-file-map's Haste worker, and the
+  // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's
+  // worker, the child process jest-worker forks it in and metro-file-map's Haste worker, and the
   // transformers withStasis() points Metro at: each by a name or path, as the bundler's.
   const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const cliPlugin = 'node_modules/react-native/node_modules/@react-native/community-cli-plugin'
@@ -4659,6 +4659,9 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
     ...pkg(cliPlugin, '@react-native/community-cli-plugin', 'dist/index.js', "exports.commands = [require('metro')]\n"),
     // The Metro React Native's CLI plugin finds, not the project's.
     ...pkg(`${cliPlugin}/node_modules/metro`, 'metro', 'src/index.js', 'module.exports = {}\n'),
+    // Metro's worker, which Metro forks by path alone.
+    [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.js`]: "module.exports = require('./Worker.flow')\n",
+    [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.flow.js`]: 'exports.transform = () => {}\n',
     ...pkg('node_modules/metro', 'metro', 'src/index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/metro-transform-worker', 'metro-transform-worker', 'src/index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/jest-worker', 'jest-worker', 'build/index.js', 'module.exports = {}\n'),
@@ -4681,6 +4684,8 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
     `${cliPlugin}/dist/index.js`,
     `${cliPlugin}/node_modules/metro/src/index.js`,
+    `${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.js`,
+    `${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.flow.js`,
     'metro.config.js',
     'node_modules/@exodus/stasis-plugins/src/metro-babel-transformer.js',
     'node_modules/@exodus/stasis-plugins/src/metro-transformer.js',

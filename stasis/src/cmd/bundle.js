@@ -977,8 +977,10 @@ const METRO_TOOLCHAIN = [
   // React Native's CLI, which an app runs Metro through.
   { name: 'react-native', file: 'cli.js', via: [] },
   { name: 'metro', via: METRO_VIA.slice(0, -1) },
-  // Metro's transform worker (metro-config's default `transformerPath`), the child process jest-worker
-  // forks Metro's workers in, and metro-file-map's Haste worker: each loaded by a path.
+  // Metro's worker, which its workers run (require.resolve'd, to fork), its transform worker
+  // (metro-config's default `transformerPath`), the child process jest-worker forks them in, and
+  // metro-file-map's Haste worker: each loaded by a path.
+  { name: 'metro', file: 'src/DeltaBundler/Worker.js', via: METRO_VIA.slice(0, -1) },
   { name: 'metro-transform-worker', via: METRO_VIA },
   { name: 'jest-worker', file: 'build/workers/processChild.js', via: METRO_VIA },
   { name: 'metro-file-map', file: 'src/plugins/haste/worker.js', via: METRO_VIA },
