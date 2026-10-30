@@ -535,12 +535,16 @@ export class StasisMetro {
 
   // Capture: each, attributed to `metro`, as `stasis bundle --metro` records them under `bundle:metro`.
   #captureConsumed(module, modPath) {
-    for (const { file } of this.#consumedResources(module, modPath)) {
-      if (this.#seen.has(file)) continue
-      this.#seen.add(file)
-      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
-      this.#recordCapture(file, realReadFileSync(file), { resource: true, inferFormat: false })
-    }
+    for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
+  }
+
+  // Capture `path`, a file Metro's build reads that its graph doesn't carry, once, attributed to
+  // `metro`, as the `kind` classifyExtension gives it.
+  #captureRead(path, kind) {
+    if (this.#seen.has(path)) return
+    this.#seen.add(path)
+    // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
+    this.#recordCapture(path, realReadFileSync(path), { format: kind === 'code' ? nodeExtFormat(path) : undefined, resource: kind === 'resource', inferFormat: false })
   }
 
   // Load: the Babel plugin reads each from disk, past the stasis transformer (#assertOnDisk).
@@ -591,13 +595,9 @@ export class StasisMetro {
   // load holds that name to them. One linked from outside the project is passed over.
   #captureAssetFiles(module, modPath, platform) {
     for (const read of this.#assetFiles(module, modPath, platform)) {
-      if (this.#seen.has(read) || this.#realWithin(read) === null) continue
       const kind = classifyExtension(read, this.#resources)
-      if (kind === 'unknown') continue // as the module itself, which the graph capture refused
-      this.#seen.add(read)
-      const format = kind === 'code' ? nodeExtFormat(read) : undefined
-      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
-      this.#recordCapture(read, realReadFileSync(read), { format, resource: kind === 'resource', inferFormat: false })
+      // One of a kind unknown, as the module itself, which the graph capture refused.
+      if (kind !== 'unknown' && this.#realWithin(read) !== null) this.#captureRead(read, kind)
     }
   }
 

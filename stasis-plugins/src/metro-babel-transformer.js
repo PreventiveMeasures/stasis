@@ -25,7 +25,10 @@ export const transformContext = new AsyncLocalStorage()
 const DECLARATIONS = new Set(['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'])
 const REQUIRE_MEMBERS = new Set(['context', 'resolveWeak', 'unstable_importMaybeSync'])
 
-function isDependencyCall(callee) {
+// Whether `node` is one of them.
+function isDependency(node) {
+  if (node.type !== 'CallExpression') return DECLARATIONS.has(node.type)
+  const { callee } = node
   if (callee.type === 'Import') return true
   if (callee.type === 'Identifier') return callee.name === 'require' || callee.name === '__prefetchImport'
   return callee.type === 'MemberExpression' && !callee.computed &&
@@ -67,7 +70,7 @@ function dependenciesLeft(t, ast) {
   const nodes = new Set()
   const specifiers = new Set()
   t.traverseFast(ast, (node) => {
-    if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
+    if (!isDependency(node)) return
     nodes.add(node)
     const specifier = specifierOf(node)
     if (specifier !== undefined) specifiers.add(specifier)
@@ -84,7 +87,7 @@ function asWrittenPlugin({ types: t }) {
       const { slots } = context
       let evaluate = false
       t.traverseFast(file.ast, (node) => {
-        if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
+        if (!isDependency(node)) return
         const written = specifierOf(node)
         if (written !== undefined) slots.push({ node, written, types: node.type !== 'CallExpression' && typesOnly(node) })
         else if (node.type === 'CallExpression' && node.arguments.length > 0) evaluate = true
@@ -94,7 +97,7 @@ function asWrittenPlugin({ types: t }) {
       if (!evaluate) return
       file.path.traverse({
         CallExpression(path) {
-          if (!isDependencyCall(path.node.callee) || specifierOf(path.node) !== undefined || path.node.arguments.length === 0) return
+          if (!isDependency(path.node) || specifierOf(path.node) !== undefined || path.node.arguments.length === 0) return
           const { confident, value } = path.get('arguments.0').evaluate()
           if (confident && typeof value === 'string') slots.push({ node: path.node, written: value })
         },
@@ -131,8 +134,7 @@ export function transform(args) {
     for (const { node, written, types } of slots) {
       if (types && !kept.has(node)) continue
       // One evaluated through its scope stays as written: no plugin rewrites what isn't a literal.
-      const specifier = specifierOf(node) ?? (node.type === 'CallExpression' ? written : undefined)
-      if (specifier === undefined) continue
+      const specifier = specifierOf(node) ?? written
       if (left !== null && !left.nodes.has(node) && !left.specifiers.has(specifier)) {
         context.consumed.add(specifier)
         continue

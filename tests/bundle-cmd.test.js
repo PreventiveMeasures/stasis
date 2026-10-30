@@ -43,6 +43,17 @@ const withTmp = (fn) => async (t) => {
   }
 }
 
+// Write `files` (a path from `dir` -> its content, an object as JSON) under `dir`, with their directories.
+const writeTree = (dir, files) => {
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true })
+    writeFileSync(join(dir, rel), typeof content === 'string' || Buffer.isBuffer(content) ? content : JSON.stringify(content))
+  }
+}
+
+// The files of a package `name` at `dir`: its package.json, its `main` and `source` that.
+const pkgFiles = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
+
 // Strip ANSI for stderr comparisons that travel through util.inspect.
 const cleanEnv = (() => {
   const {
@@ -2230,10 +2241,7 @@ const writeDefineProject = (dir) => {
     'node_modules/lib/lib.production.js': 'module.exports = 1\n',
     'node_modules/lib/lib.development.js': 'module.exports = 2\n',
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(dir, rel)), { recursive: true })
-    writeFileSync(join(dir, rel), typeof content === 'string' ? content : JSON.stringify(content))
-  }
+  writeTree(dir, files)
 }
 
 test('buildBundle (JS) define leaves out what only the branches it keeps from running import, under Node and --metro', withTmp(async (t, tmp) => {
@@ -3415,10 +3423,7 @@ const writeNativePackage = (dir, files = {}) => {
   writeFileSync(join(dir, 'index.js'), 'module.exports = 1\n')
   writeFileSync(join(dir, `${basename(dir)}.podspec`), 'Pod::Spec.new {}\n')
   writeFileSync(join(dir, 'ios', 'Thing.m'), '// objc\n')
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(dir, rel)), { recursive: true })
-    writeFileSync(join(dir, rel), content)
-  }
+  writeTree(dir, files)
 }
 
 test('buildBundle --metro carries a native package\'s inputs outside ios/ and android/, as the Metro plugin does', withTmp(async (t, tmp) => {
@@ -4554,10 +4559,7 @@ test('buildBundle --metro keeps Node\'s edges of a file the configs and the app 
     'node_modules/esm-utils/lib/array.js': 'export const a = 1\n',
     'node_modules/esm-utils/lib/b.js': 'export const b = 2\n',
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] })
   const index = 'node_modules/esm-utils/lib/index.js'
   const edges = { './array.js': 'node_modules/esm-utils/lib/array.js', './b.js': 'node_modules/esm-utils/lib/b.js' }
@@ -4573,7 +4575,7 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
   // `babelTransformerPath` (React Native's Metro config require.resolve's it): names, which no import
   // of the configs reaches, but the plugin's run loads, with @babel/core, the preset and its plugins.
   jsProject(tmp, { 'index.js': 'export default 1\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
-  const pkg = (name, main, source) => ({ [`node_modules/${name}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`node_modules/${name}/${main}`]: source })
+  const pkg = (name, main, source) => pkgFiles(`node_modules/${name}`, name, main, source)
   const files = {
     ...pkg('metro', 'src/index.js', 'module.exports = {}\n'),
     ...pkg('metro-transform-worker', 'src/index.js', "const babel = require('@babel/core')\nmodule.exports = { babel }\n"),
@@ -4587,10 +4589,7 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
     ...pkg('@react-native/babel-preset', 'src/index.js', "module.exports = () => [require('@babel/plugin-transform-classes')]\n"),
     ...pkg('@babel/plugin-transform-classes', 'lib/index.js', "require('@babel/helper-compilation-targets')\nmodule.exports = {}\n"),
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
   const worker = [
     'node_modules/@babel/core/lib/config/resolve-targets.js', 'node_modules/@babel/core/lib/index.js', 'node_modules/@babel/helper-compilation-targets/lib/index.js',
@@ -4627,10 +4626,7 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
     // Named by none: carried only as named.
     ...pkg('module-resolver', 'index.js', 'module.exports = {}\n'),
   }
-  for (const [rel, content] of Object.entries(named)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, named)
   const configured = await buildBundle({ ...options, babelAliases: 'aliases.json' })
   const babel = [
     'babel.config.js', 'create-babel-config.js', 'node_modules/@acme/babel-plugin-strip/index.js', 'node_modules/@acme/babel-preset/index.js',
@@ -4643,7 +4639,6 @@ test('buildBundle --metro traces the toolchain Metro loads by name, its transfor
 test('buildBundle --metro traces what a Babel config\'s modules name as Babel plugins or presets by their form, anywhere in them', withTmp(async (t, tmp) => {
   // A module of the Babel config by its name (create-babel-config.js, @org/babel-config) names its plugins
   // as strings it builds the config of: in a variable, joined to a path, spread into `plugins`, wherever.
-  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const files = {
     'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
     'pnpm-workspace.yaml': '',
@@ -4668,25 +4663,22 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
     'aliases.js': "exports.alias = {}\nexports.unused = 'babel-plugin-unused'\n",
     // A Babel config's by its name, but one the config doesn't reach: neither carried nor read.
     'old-babel-config.js': "module.exports = { plugins: ['babel-plugin-unreached'] }\n",
-    ...pkg('node_modules/@org/babel-config', '@org/babel-config', 'index.js', "module.exports = ['@babel/plugin-transform-export-namespace-from']\n"),
+    ...pkgFiles('node_modules/@org/babel-config', '@org/babel-config', 'index.js', "module.exports = ['@babel/plugin-transform-export-namespace-from']\n"),
     // A shared config found by its name alone, which names a plugin in turn.
-    ...pkg('node_modules/@org/babel-config-native', '@org/babel-config-native', 'index.js', "module.exports = () => ({ plugins: ['babel-plugin-from-shared'] })\n"),
-    ...pkg('node_modules/@org/foo-babel-whatever', '@org/foo-babel-whatever', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@org/babel-config-native', '@org/babel-config-native', 'index.js', "module.exports = () => ({ plugins: ['babel-plugin-from-shared'] })\n"),
+    ...pkgFiles('node_modules/@org/foo-babel-whatever', '@org/foo-babel-whatever', 'index.js', 'module.exports = {}\n'),
     'node_modules/@org/foo-babel-whatever/babel/plugin-inline.js': "module.exports = require('./helper.js')\n",
     'node_modules/@org/foo-babel-whatever/babel/helper.js': 'module.exports = {}\n',
-    ...pkg('node_modules/@babel/plugin-transform-arrow-functions', '@babel/plugin-transform-arrow-functions', 'lib/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@babel/plugin-transform-numeric-separator', '@babel/plugin-transform-numeric-separator', 'lib/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@babel/plugin-transform-export-namespace-from', '@babel/plugin-transform-export-namespace-from', 'lib/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-transform-remove-console', 'babel-plugin-transform-remove-console', 'lib/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-from-shared', 'babel-plugin-from-shared', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-unused', 'babel-plugin-unused', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-unreached', 'babel-plugin-unreached', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@babel/plugin-transform-arrow-functions', '@babel/plugin-transform-arrow-functions', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@babel/plugin-transform-numeric-separator', '@babel/plugin-transform-numeric-separator', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@babel/plugin-transform-export-namespace-from', '@babel/plugin-transform-export-namespace-from', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-transform-remove-console', 'babel-plugin-transform-remove-console', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-from-shared', 'babel-plugin-from-shared', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-unused', 'babel-plugin-unused', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-unreached', 'babel-plugin-unreached', 'index.js', 'module.exports = {}\n'),
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
     'aliases.js',
@@ -4713,7 +4705,6 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
   // require.resolve, from the module calling it: written in `plugins`, held in a variable, pushed onto a
   // list so named, or in an array concatenated onto one. A path the config computes for anything else
   // (a module-resolver alias or root) names no plugin.
-  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const files = {
     'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
     'pnpm-workspace.yaml': '',
@@ -4751,45 +4742,42 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
       '',
     ].join('\n'),
     'src/index.js': 'module.exports = 1\n',
-    ...pkg('node_modules/@org/motion', '@org/motion', 'src/index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/@org/motion', '@org/motion', 'src/index.js', 'module.exports = 1\n'),
     'node_modules/@org/motion/plugin/index.js': "module.exports = require('./build/plugin.js')\n",
     'node_modules/@org/motion/plugin/build/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
-    ...pkg('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
-    ...pkg('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
-    ...pkg('node_modules/@org/tail', '@org/tail', 'index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkgFiles('node_modules/@org/tail', '@org/tail', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/tail/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
-    ...pkg('node_modules/babel-plugin-two', 'babel-plugin-two', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@org/babel-plugin-both', '@org/babel-plugin-both', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@org/first', '@org/first', 'index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/babel-plugin-two', 'babel-plugin-two', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@org/babel-plugin-both', '@org/babel-plugin-both', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@org/first', '@org/first', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/first/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
-    ...pkg('node_modules/babel-plugin-second', 'babel-plugin-second', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-third', 'babel-plugin-third', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-fourth', 'babel-plugin-fourth', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-fifth', 'babel-plugin-fifth', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-sixth', 'babel-plugin-sixth', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-seventh', 'babel-plugin-seventh', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-eighth', 'babel-plugin-eighth', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/babel-plugin-ninth', 'babel-plugin-ninth', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-second', 'babel-plugin-second', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-third', 'babel-plugin-third', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-fourth', 'babel-plugin-fourth', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-fifth', 'babel-plugin-fifth', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-sixth', 'babel-plugin-sixth', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-seventh', 'babel-plugin-seventh', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-eighth', 'babel-plugin-eighth', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/babel-plugin-ninth', 'babel-plugin-ninth', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@org/babel-preset-both', '@org/babel-preset-both', 'index.js', 'module.exports = {}\n'),
     // A shared config whose require.resolve finds its own copy of a preset, not the project's.
-    ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', [
+    ...pkgFiles('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', [
       "const path = require('path')",
       "exports.presets = [require.resolve('@org/preset-inner'), require.resolve('@org/preset-vendored', { paths: [path.join(__dirname, 'vendor')] })]",
       '',
     ].join('\n')),
     // Where its require.resolve looks, in the paths it gives, not the project's copy.
-    ...pkg('node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
-    ...pkg('node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
-    ...pkg('node_modules/@org/babel-config-shared/node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
-    ...pkg('node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
-    ...pkg('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
-    ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@org/babel-config-shared/vendor/node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkgFiles('node_modules/@org/preset-vendored', '@org/preset-vendored', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkgFiles('node_modules/@org/babel-config-shared/node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkgFiles('node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkgFiles('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
+    ...pkgFiles('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
     'babel.config.js',
@@ -4827,7 +4815,6 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
   // app's packages (react-native's own naming its CLI plugin), Metro as that plugin finds it, Metro's
   // worker, the child process jest-worker forks it in and metro-file-map's Haste worker, and the
   // transformers withStasis() points Metro at: each by a name or path, as the bundler's.
-  const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const cliPlugin = 'node_modules/react-native/node_modules/@react-native/community-cli-plugin'
   const someLib = 'node_modules/.pnpm/some-lib@1.0.0/node_modules'
   const files = {
@@ -4835,36 +4822,33 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
     'pnpm-workspace.yaml': '',
     'index.js': 'export default 1\n',
     'metro.config.js': "module.exports = require('@exodus/stasis-plugins/src/metro.js').withStasis({})\n",
-    ...pkg('node_modules/react-native', 'react-native', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/react-native', 'react-native', 'index.js', 'module.exports = {}\n'),
     'node_modules/react-native/cli.js': "require('@react-native-community/cli').run()\n",
     'node_modules/react-native/react-native.config.js': "module.exports = { commands: require('@react-native/community-cli-plugin').commands }\n",
-    ...pkg('node_modules/@react-native-community/cli', '@react-native-community/cli', 'build/index.js', 'exports.run = () => {}\n'),
-    ...pkg(cliPlugin, '@react-native/community-cli-plugin', 'dist/index.js', "exports.commands = [require('metro')]\n"),
+    ...pkgFiles('node_modules/@react-native-community/cli', '@react-native-community/cli', 'build/index.js', 'exports.run = () => {}\n'),
+    ...pkgFiles(cliPlugin, '@react-native/community-cli-plugin', 'dist/index.js', "exports.commands = [require('metro')]\n"),
     // The Metro React Native's CLI plugin finds, not the project's.
-    ...pkg(`${cliPlugin}/node_modules/metro`, 'metro', 'src/index.js', 'module.exports = {}\n'),
+    ...pkgFiles(`${cliPlugin}/node_modules/metro`, 'metro', 'src/index.js', 'module.exports = {}\n'),
     // Metro's worker, which Metro forks by path alone.
     [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.js`]: "module.exports = require('./Worker.flow')\n",
     [`${cliPlugin}/node_modules/metro/src/DeltaBundler/Worker.flow.js`]: 'exports.transform = () => {}\n',
-    ...pkg('node_modules/metro', 'metro', 'src/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/metro-transform-worker', 'metro-transform-worker', 'src/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/jest-worker', 'jest-worker', 'build/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/metro', 'metro', 'src/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/metro-transform-worker', 'metro-transform-worker', 'src/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/jest-worker', 'jest-worker', 'build/index.js', 'module.exports = {}\n'),
     'node_modules/jest-worker/build/workers/processChild.js': "require('jest-util')\n",
-    ...pkg('node_modules/jest-util', 'jest-util', 'build/index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/metro-file-map', 'metro-file-map', 'src/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/jest-util', 'jest-util', 'build/index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/metro-file-map', 'metro-file-map', 'src/index.js', 'module.exports = {}\n'),
     'node_modules/metro-file-map/src/plugins/haste/worker.js': 'module.exports = {}\n',
     // Installed by pnpm: linked into node_modules from the store, beside what it requires.
-    ...pkg(`${someLib}/some-lib`, 'some-lib', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles(`${someLib}/some-lib`, 'some-lib', 'index.js', 'module.exports = {}\n'),
     [`${someLib}/some-lib/react-native.config.js`]: "module.exports = { dependency: require('lib-dep') }\n",
-    ...pkg(`${someLib}/lib-dep`, 'lib-dep', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/plain-lib', 'plain-lib', 'index.js', 'module.exports = {}\n'),
-    ...pkg('node_modules/@exodus/stasis-plugins', '@exodus/stasis-plugins', 'src/metro.js', 'exports.withStasis = (config) => config\n'),
+    ...pkgFiles(`${someLib}/lib-dep`, 'lib-dep', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/plain-lib', 'plain-lib', 'index.js', 'module.exports = {}\n'),
+    ...pkgFiles('node_modules/@exodus/stasis-plugins', '@exodus/stasis-plugins', 'src/metro.js', 'exports.withStasis = (config) => config\n'),
     'node_modules/@exodus/stasis-plugins/src/metro-transformer.js': 'exports.transform = () => {}\n',
     'node_modules/@exodus/stasis-plugins/src/metro-babel-transformer.js': 'exports.transform = () => {}\n',
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   symlinkSync(join(tmp, someLib, 'some-lib'), join(tmp, 'node_modules', 'some-lib'), 'dir')
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] })
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
@@ -4959,10 +4943,7 @@ const writeMetroAddedPackages = (tmp) => {
     'react/cjs/react-jsx-runtime.production.js': 'exports.jsx = 1\n',
     'react/cjs/react-jsx-runtime.development.js': 'exports.jsx = 2\n',
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, 'node_modules', rel)), { recursive: true })
-    writeFileSync(join(tmp, 'node_modules', rel), content)
-  }
+  writeTree(join(tmp, 'node_modules'), files)
 }
 
 const METRO_ADDED = {
@@ -5082,10 +5063,7 @@ test('buildBundle --metro carries the asset registry the module Metro builds of 
     'node_modules/@react-native/assets-registry/package.json': JSON.stringify({ name: '@react-native/assets-registry', version: '0.81.0' }),
     'node_modules/@react-native/assets-registry/registry.js': 'module.exports = { registerAsset: () => 1 }\n',
   }
-  for (const [rel, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  writeTree(tmp, files)
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'], resources: ['png'] }
   const registry = ['node_modules/@react-native/assets-registry/registry.js', 'node_modules/react-native/Libraries/Image/AssetRegistry.js']
 
