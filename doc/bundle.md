@@ -294,6 +294,13 @@ from Node's and esbuild's:
   target naming one (`"./logo": "./logo.png"`). A path naming a scale variant itself
   (`./logo@2x.png`) resolves nowhere, as in Metro. `--metro-resolver` resolves
   assets the same way. Carrying one needs `--resources` (e.g. `--resources=png`).
+  An asset's other files are carried with it, with no edge to one, as Metro
+  reads them all to build its module (its `scales` and `hash`) and copies them
+  out: in its directory, each of its name and type at any scale (`logo.png`,
+  `logo@2x.png`, `logo@3x.png`), those for the platform (`logo.ios.png`,
+  `logo@3x.ios.png`) where it has any, else the generic ones; each by the name
+  Metro reads it by (one linked in, with its target's bytes; one linked from
+  outside the project passed over).
 
 It also carries the native build inputs of the packages the app links, as the
 Metro plugin does:
@@ -418,7 +425,12 @@ build carries it under `bundle:metro`. Under `--bundle=load` the Babel plugin
 reads it from disk, so the Metro plugin refuses one the bundle doesn't carry or
 whose bytes on disk differ from the bundle's, unless `--fs` serves it from the
 bundle (by the path the plugin reads it by, not a symlink to the file the
-bundle carries).
+bundle carries). An asset module's other files (its other scales, as above) are
+carried the same way, under `metro`, with no edge. Under `--bundle=load` Metro
+reads every file of an asset from disk (through `fs.promises`), the module's
+own too, so the Metro plugin holds each to the bundle's bytes, unless
+`--fs=async` serves it (and the directory listing Metro finds them in, so a
+scale added on disk since the capture is none of the asset's).
 
 The static build carries those files too, as Metro's code, each scanned for
 what it imports in turn:

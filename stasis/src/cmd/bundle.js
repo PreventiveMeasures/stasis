@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, metroAssetFiles, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -1389,7 +1389,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(fileURLToPath(url), info)).map(([url]) => fileURLToPath(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
-      const added = [...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host })]
+      // And each asset's files Metro reads to build its module (`scales`, `hash`) and copies out with
+      // it, its other scales (`logo@2x.png`, `logo@3x.png`), by the name Metro reads it by (one linked
+      // in, its target's bytes; one linked from outside the root passed over, as the Metro plugin
+      // passes it over): no import names one, so no edge, carried as the asset is.
+      const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).filter((file) => relWithin(host.realpath(file)) !== null)
+      const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
       if (added.length > 0) absorb(added)
     }
