@@ -1653,9 +1653,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
       if (resolvedEdges.length > 0 && !keyedResolutions.has(REQUIRE_KEY)) keyedResolutions.set(REQUIRE_KEY, new Map())
       const keyed = keyedResolutions.get(REQUIRE_KEY)
+      // One the module also require()s keeps that edge, as a run keeps it: Node's loader records the
+      // require(), and a resolution only where no edge is recorded (`require.resolve('x', { paths })`
+      // can find another copy than `require('x')`, which is still traced).
       for (const [parent, spec, target] of resolvedEdges) {
         if (!keyed.has(parent)) keyed.set(parent, new Map())
-        keyed.get(parent).set(spec, toRel(target))
+        if (!keyed.get(parent).has(spec)) keyed.get(parent).set(spec, toRel(target))
       }
     }
   }
