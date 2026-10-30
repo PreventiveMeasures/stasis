@@ -7,18 +7,13 @@ import { classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec
 //   readdir(dir) -> Dirent[] (throws where `dir` isn't one), readFile(file) -> Buffer,
 //   stat(path) -> Stats, or null where nothing is there.
 
-// Files a React Native build requires that Metro's module graph never carries, each as a require() of
-// `specifier` from the project root resolves it (one that doesn't, or lies outside the root, is passed
-// over), tagged by the shared classifier, under the consumer that uses it: Metro bundles
-// asyncRequire.js into the app (for an `import()`); the React Native CLI runs setup_env.sh
-// (`execFileSync`) as every command of it starts, `react-native config` the Metro plugin runs
-// included, which is the run's toolchain, none of it the app's.
-// The Metro plugin records a `reason` as is; `stasis bundle --metro` carries a `metro` one as Metro's
-// code (`bundle:metro`), any other as its own (`bundle`).
-export const AUTO_INCLUDES = [
-  { specifier: 'metro-runtime/src/modules/asyncRequire.js', reason: 'metro' },
-  { specifier: '@react-native-community/cli/setup_env.sh', reason: 'run' },
-]
+// Files a React Native build requires that neither Metro's module graph nor a run's loader carries,
+// each as a require() of it from the project root resolves it (one that doesn't, or lies outside the
+// root, is passed over), tagged by the shared classifier: setup_env.sh, which the React Native CLI runs
+// (`execFileSync`) as every command of it starts, `react-native config` the Metro plugin runs included.
+// The run's toolchain, none of it the app's: the Metro plugin records each under `run`, `stasis bundle
+// --metro` as its own (`bundle`).
+export const AUTO_INCLUDES = ['@react-native-community/cli/setup_env.sh']
 
 // The entries of the directory `dir`, none where it's missing or no directory.
 function listing(dir, fs) {

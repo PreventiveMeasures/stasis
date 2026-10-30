@@ -5022,7 +5022,7 @@ const writeMetroAddedPackages = (tmp) => {
 const METRO_ADDED = {
   helpers: ['node_modules/@babel/runtime/helpers/interopRequireDefault.js', 'node_modules/@babel/runtime/helpers/toPropertyKey.js', 'node_modules/@babel/runtime/helpers/typeof.js'],
   runtime: ['node_modules/metro-runtime/src/polyfills/require.js'],
-  // In any --metro build, as the Metro plugin carries it in every one (AUTO_INCLUDES).
+  // For an `import()`, as Metro adds it then (its graph, the Metro plugin's).
   asyncRequire: ['node_modules/metro-runtime/src/modules/asyncRequire.js'],
   polyfills: ['node_modules/@react-native/js-polyfills/console.js', 'node_modules/@react-native/js-polyfills/error-guard.js'],
   jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
@@ -5085,34 +5085,36 @@ test('buildBundle --metro --babel keeps an import listing types alone where the 
 }))
 
 test('buildBundle --metro carries what Babel and Metro add to the build, as Metro bundles it, though the source imports none of it', withTmp(async (t, tmp) => {
-  jsProject(tmp, { 'index.js': 'export default () => <div />\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
+  jsProject(tmp, { 'index.js': "export default () => <div />\nexport const lazy = () => import('./plain.js')\n", 'plain.js': 'export default 1\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
   writeMetroAddedPackages(tmp)
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
   // Babel's (--babel-aliases): its helpers, all of them, which ones it adds hanging on the syntax a
-  // file uses; Metro's module system and asyncRequire; the polyfills React Native's Metro config
-  // prepends, as js-polyfills lists them (read, never run). And the JSX runtime for JSX (--jsx).
+  // file uses; Metro's module system; the polyfills React Native's Metro config prepends, as
+  // js-polyfills lists them (read, never run). And the JSX runtime for JSX (--jsx), and Metro's
+  // asyncRequire for the `import()`.
   const bundle = await buildBundle({ ...options, babelAliases: 'aliases.json', jsx: true })
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...Object.values(METRO_ADDED).flat(), 'index.js'].toSorted())
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...Object.values(METRO_ADDED).flat(), 'index.js', 'plain.js'].toSorted())
   // No edge to any from the source, which imports none; theirs among themselves, written in theirs.
-  t.assert.equal(bundle.imports.get('*').get('index.js'), undefined)
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './plain.js': 'plain.js' })
   t.assert.equal(importTarget(bundle, 'node_modules/@babel/runtime/helpers/toPropertyKey.js', './typeof.js'), 'node_modules/@babel/runtime/helpers/typeof.js')
   // Metro's code: no format.
   t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), undefined)
-  // Plain --metro adds none of it but asyncRequire; a .tsx file, JSX itself, takes the JSX runtime
-  // without --jsx.
-  writeFileSync(join(tmp, 'plain.js'), 'export default 1\n')
-  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()].toSorted(), [...METRO_ADDED.asyncRequire, 'plain.js'])
+  // Plain --metro adds none of it for a file with no `import()`; a .tsx file, JSX itself, takes the
+  // JSX runtime without --jsx.
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()], ['plain.js'])
   writeFileSync(join(tmp, 'view.tsx'), 'export const View = () => <div />\n')
   const tsx = await buildBundle({ ...options, entries: ['view.tsx'] })
-  t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.asyncRequire, ...METRO_ADDED.jsx, 'view.tsx'].toSorted())
+  t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
 }))
 
-test('buildBundle --metro carries the files the Metro plugin auto-includes, each under the consumer the plugin\'s maps to', withTmp(async (t, tmp) => {
-  // Under the project at app/: asyncRequire, which Metro bundles, and setup_env.sh, which React Native's
-  // CLI runs as each command of it starts. Each as a require() from the project resolves it.
+test('buildBundle --metro carries the file the Metro plugin auto-includes as the bundler\'s, and Metro\'s asyncRequire for an import() as the app\'s', withTmp(async (t, tmp) => {
+  // Under the project at app/: setup_env.sh, which React Native's CLI runs as each command of it
+  // starts, and asyncRequire, which Metro adds for an `import()`. Each as a require() from the project
+  // resolves it.
   const app = join(tmp, 'app')
   mkdirSync(app)
-  jsProject(app, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  const lazy = { 'index.js': "export const lazy = () => import('./lazy.js')\n", 'lazy.js': 'export default 1\n' }
+  jsProject(app, lazy, { name: 'app', version: '0.0.0' })
   const ASYNC_REQUIRE = 'node_modules/metro-runtime/src/modules/asyncRequire.js'
   const SETUP_ENV = 'node_modules/@react-native-community/cli/setup_env.sh'
   writeTree(app, {
@@ -5125,14 +5127,17 @@ test('buildBundle --metro carries the files the Metro plugin auto-includes, each
   const options = { cwd: app, entries: ['index.js'], metro: true, platforms: ['ios'] }
 
   const bundle = await buildBundle(options)
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', ASYNC_REQUIRE, SETUP_ENV].toSorted())
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'lazy.js', ASYNC_REQUIRE, SETUP_ENV].toSorted())
   // asyncRequire is Metro's code (no format), the app's; setup_env.sh, tagged by the shared classifier,
   // the bundler's, as the plugin's run is, and executable, as the CLI runs it. No edge to either.
   t.assert.equal(bundle.formats.get(ASYNC_REQUIRE), undefined)
   t.assert.equal(bundle.formats.get(SETUP_ENV), 'shell')
-  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': [SETUP_ENV], 'bundle:metro': ['index.js', ASYNC_REQUIRE] })
+  t.assert.deepStrictEqual(bundle.reason.bundle, [SETUP_ENV])
+  t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), ['index.js', 'lazy.js', ASYNC_REQUIRE].toSorted())
   t.assert.deepStrictEqual([...bundle.executable], [SETUP_ENV])
-  t.assert.equal(bundle.imports.get('*')?.get('index.js'), undefined)
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './lazy.js': 'lazy.js' })
+  // With no `import()`, Metro adds no asyncRequire.
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['lazy.js'] })).sources.keys()].toSorted(), ['lazy.js', SETUP_ENV])
 
   // One that isn't installed is passed over; so is one resolving outside the project root. (A project
   // of its own: Node caches what a path resolved to.)
@@ -5146,7 +5151,7 @@ test('buildBundle --metro carries the files the Metro plugin auto-includes, each
   // found through Metro, which depends on it.
   const nested = join(tmp, 'nested')
   mkdirSync(nested)
-  jsProject(nested, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  jsProject(nested, lazy, { name: 'app', version: '0.0.0' })
   const NESTED = 'node_modules/metro/node_modules/metro-runtime/src/modules/asyncRequire.js'
   writeTree(nested, {
     'node_modules/metro/package.json': { name: 'metro', version: '0.83.0' },
@@ -5154,8 +5159,8 @@ test('buildBundle --metro carries the files the Metro plugin auto-includes, each
     [NESTED]: 'module.exports = () => {}\n',
   })
   const viaMetro = await buildBundle({ ...options, cwd: nested })
-  t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), ['index.js', NESTED])
-  t.assert.deepStrictEqual({ ...viaMetro.reason }, { 'bundle:metro': ['index.js', NESTED] })
+  t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), ['index.js', 'lazy.js', NESTED].toSorted())
+  t.assert.deepStrictEqual(viaMetro.reason['bundle:metro'].toSorted(), ['index.js', 'lazy.js', NESTED].toSorted())
 }))
 
 test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input, with no edge', withTmp(async (t, tmp) => {
