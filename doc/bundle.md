@@ -230,9 +230,10 @@ attributed to both.
 
 The code it carries has no format, as the Metro plugin records it: Metro
 transforms each file from source, so how Node would load it (`module` or
-`commonjs`) doesn't apply. A `.json` file is `json`, which its name alone gives
-it, Metro and Node reading it alike, so one the build's own Node process loads
-too (a config requiring it) is recorded the same on both sides. Assets keep
+`commonjs`) doesn't apply. A file whose name alone gives its format keeps it:
+`.json` is `json`, `.mjs` `module`, `.cjs` `commonjs` (and `.mts`, `.cts`), each
+whatever it holds or its package declares, so one the build's own Node process
+loads too (a config requiring it) is recorded the same on both sides. Assets keep
 their `resource` formats and native build inputs theirs. Such a bundle is for
 Metro: `stasis run --bundle=load` refuses to run its code under Node.
 

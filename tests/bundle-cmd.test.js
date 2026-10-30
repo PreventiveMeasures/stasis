@@ -4798,22 +4798,23 @@ test('buildBundle --metro refuses an import of a file both graphs reach that Met
   await t.assert.rejects(() => buildBundle(metro), /rn-only from shared\.js resolves under Metro, for the app, and not under Node/u)
 }))
 
-test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but json for JSON', withTmp(async (t, tmp) => {
+test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but the one its name gives it', withTmp(async (t, tmp) => {
   // Metro transforms each file from source, whatever Node would load it as: a typeless .js with
-  // import/export, a .ts, a .jsx or an .mjs alike. A .json is json, which its name alone gives it, and
-  // an asset keeps the format its bytes are stored in.
+  // import/export, a .ts or a .jsx alike. A .json, .mjs or .cjs keeps the format its name alone gives
+  // it, as Node loads it too, and an asset keeps the format its bytes are stored in.
   jsProject(tmp, {
-    'index.js': "import './comp.jsx'\nimport './mod.ts'\nimport './util.mjs'\nimport './data.json'\nimport logo from './logo.png'\nexport default logo\n",
+    'index.js': "import './comp.jsx'\nimport './mod.ts'\nimport './util.mjs'\nimport './lib.cjs'\nimport './data.json'\nimport logo from './logo.png'\nexport default logo\n",
     'comp.jsx': 'export default () => <div />\n',
     'mod.ts': 'export const n: number = 1\n',
     'util.mjs': 'export default 3\n',
+    'lib.cjs': 'module.exports = 4\n',
     'data.json': '{}',
   }, { name: 'app', version: '0.0.0' })
   writeAssets(tmp)
   const options = { cwd: tmp, entries: ['index.js'], resources: ['png'] }
   const bundle = await buildBundle({ ...options, metro: true, platforms: ['ios', 'android'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'data.json', 'index.js', 'logo.png', 'mod.ts', 'util.mjs'])
-  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), { 'data.json': 'json', 'logo.png': 'resource:base64' })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['comp.jsx', 'data.json', 'index.js', 'lib.cjs', 'logo.png', 'mod.ts', 'util.mjs'])
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), { 'data.json': 'json', 'lib.cjs': 'commonjs', 'logo.png': 'resource:base64', 'util.mjs': 'module' })
   // --mainFields records each as Node loads it.
   const fields = await buildBundle({ ...options, mainFields: ['main'] })
   t.assert.equal(fields.formats.get('index.js'), 'module')

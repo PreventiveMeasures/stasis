@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -1353,9 +1353,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         reached.add(abs)
         if (info.resource) resourceRels.add(rel)
         // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
-        // it from source, and Node's module/commonjs isn't what it runs. A .json one stays `json`,
-        // which its name alone gives it, as Node loads it too.
-        formatsByRel.set(rel, metro && !info.resource && info.format !== 'json' ? undefined : info.format)
+        // it from source, and Node's module/commonjs isn't what it runs. But the one its name alone
+        // gives it (.json, .mjs, .cjs: nodeExtFormat), as Node loads it too.
+        formatsByRel.set(rel, metro && !info.resource ? nodeExtFormat(abs) : info.format)
         for (const e of info.edges) {
           if (e.builtin || e.dynamic) continue
           let target

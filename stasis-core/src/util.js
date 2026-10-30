@@ -17,6 +17,9 @@ const NODE_EXT_FORMATS = new Map([
 ])
 const JS_UNRESOLVED_EXTS = new Set(['js', 'ts', 'jsx', 'tsx'])
 export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESOLVED_EXTS])
+// The format the name of the file `path` alone gives it, as Node loads it: .json, .mjs, .cjs, .mts and
+// .cts are each one format whatever the file holds or its package declares. -> undefined for any other
+export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(pathExt(path))
 
 export function pathExt(filePath) {
   const m = /\.([^./\\]+)$/.exec(filePath)
