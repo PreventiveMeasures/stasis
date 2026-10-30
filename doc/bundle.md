@@ -237,9 +237,15 @@ loads too (a config requiring it) is recorded the same on both sides. Assets kee
 their `resource` formats and native build inputs theirs. Such a bundle is for
 Metro: `stasis run --bundle=load` refuses to run its code under Node.
 
-A resource the app imports that is no asset of Metro's (its extension not in
-Metro's default `assetExts`: `png`, `jpg`, `svg`, `ttf` and the like) is no
-module of Metro's, which can't resolve it: a Babel plugin consumes it before
+Metro's assets are the extensions in its `assetExts`: its defaults (`png`,
+`jpg`, `svg`, `ttf` and the like) and those the project's `metro.config.js`
+adds to them, read off its source, never run: each string it lists under
+`assetExts` (`assetExts: [...defaultConfig.resolver.assetExts, 'riv']`,
+`config.resolver.assetExts.push('riv')`). One the config filters out
+(`assetExts.filter((ext) => ext !== 'svg')`) is still taken as an asset.
+
+A resource the app imports that is no asset of Metro's is no module of Metro's,
+which can't resolve it: a Babel plugin consumes it before
 Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
 `require('./messages.po')` and inlines it. So it's carried as the input of the
 build's transform: attributed to `bundle:metro`, as the app's files are, with
@@ -287,8 +293,7 @@ from Node's and esbuild's:
   in Metro, without falling back to its root `index`.
 - A map entry sending a relative path to a package name is taken as a path in
   the package, as Metro takes it, and so resolves nowhere.
-- An asset (an extension in Metro's default `assetExts`: `png`, `jpg`, `svg`,
-  `ttf`, ...) resolves to itself or one of its scale variants (`@1x` to `@4x`),
+- An asset (an extension in Metro's `assetExts`, as above) resolves to itself or one of its scale variants (`@1x` to `@4x`),
   the lowest path among those that exist, so `./logo.png` reaches
   `logo@3x.png` where only that exists, as does an `exports` or `imports`
   target naming one (`"./logo": "./logo.png"`). A path naming a scale variant itself

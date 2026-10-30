@@ -9,7 +9,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
-import { createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
+import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
@@ -964,7 +964,8 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 
 // The config files a React Native app's build loads from its project root, though nothing the app
 // imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
-const METRO_CONFIG_FILES = ['metro.config.js', 'react-native.config.js']
+const METRO_CONFIG_FILE = 'metro.config.js'
+const METRO_CONFIG_FILES = [METRO_CONFIG_FILE, 'react-native.config.js']
 const BABEL_CONFIG_FILE = 'babel.config.js'
 // What else a React Native app's build runs in Node, which neither the app nor the configs import:
 // the CLI that runs Metro and Metro itself, and what they load by a name or path given as a string.
@@ -1006,7 +1007,8 @@ const BUNDLER_CONDITIONS = ['module']
 // it adds to the bundler base (`import`/`require` + `default`, never Node's `node`; see
 // resolveConditions): --metro asserts the RN conditions (+ browser on web), Metro's own set;
 // --mainFields asserts esbuild's and webpack's `module` (BUNDLER_CONDITIONS) and the user's --conditions.
-export function fieldResolverFor(platform, { mainFields, metro = false, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
+// Under --metro, `assetExts` are the extensions Metro takes as assets (its defaults where not given).
+export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
@@ -1017,6 +1019,7 @@ export function fieldResolverFor(platform, { mainFields, metro = false, conditio
     conditions: resolveConditions('commonjs', extras),
     // Opt into Metro's package-entry browser-field quirks only on the --metro path.
     metro,
+    assetExts,
     // --typescript: tsc's mapping, inside the field resolver (the scanner's own fallback
     // only backs the built-in resolver). Unreachable under --metro-resolver
     // (classifyEntries rejects the combination -- metro-resolver can't substitute).
@@ -1204,6 +1207,8 @@ const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel))
 // The lists a Babel config names its plugins and presets in, by the name of the key, variable or object
 // holding one, and what Babel takes each of them as.
 const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
+// And the list of extensions a Metro config gives Metro to take as assets (`resolver.assetExts`).
+const METRO_ASSET_LISTS = new Map([['assetExts', 'asset']])
 // The array methods making a list of the one they're called on: `concat` (with its arguments'),
 // `filter`, `flat`, `slice`.
 const LIST_METHODS = new Set(['concat', 'filter', 'flat', 'slice'])
@@ -1245,14 +1250,12 @@ function babelPathCall(node, file, host) {
   return null
 }
 
-// The plugins and presets the module `file` names, read off its source, never run: each in a list of them
-// (an array under a `plugins` or `presets` key at any depth, a variable or property so named or assigned,
-// one pushed onto either), through spreads, variables, branches and the array methods making a list of
-// another (LIST_METHODS); named by a string (or the first of a `[name, options]` pair), standardized as
-// Babel requires it, or by a path the module computes (babelPathCall), as is. With `anyString`, also any
-// string naming one by its form (BABEL_MODULE_STRING) wherever it is, as written. -> the names
-function babelNamedModules(file, host, { anyString = false } = {}) {
-  const program = parseModule(file, host)
+// What the lists of `lists` (the name of the key, variable or object holding one -> what each entry is
+// taken as) in the AST `program` hold, read off its source, never run: each list (an array under such a
+// key at any depth, a variable or property so named or assigned, one pushed onto either), through
+// spreads, variables, branches and the array methods making a list of another (LIST_METHODS); each
+// entry (or the first of a `[name, options]` pair) passed to `entry(type, node)`.
+function readLists(program, lists, entry) {
   // Each variable's initializers, by its name.
   const inits = new Map()
   walkAst(program, (node) => {
@@ -1260,12 +1263,10 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     if (!inits.has(node.id.name)) inits.set(node.id.name, [])
     inits.get(node.id.name).push(node.init)
   })
-  const named = new Set()
   const seen = new Map()
-  // Read `node` for the `type`s (plugin or preset) it names: `depth` levels of arrays in it lists (1 a
-  // list, 2 one `.flat()` flattens), and an array below them an entry's `[name, options]` pair. A spread
-  // joins its elements to the array spreading it; a variable is its initializers; a branch (`a ? b : c`,
-  // `a && b`) either side.
+  // Read `node` for the `type`s it lists: `depth` levels of arrays in it lists (1 a list, 2 one `.flat()`
+  // flattens), and an array below them an entry's `[name, options]` pair. A spread joins its elements to
+  // the array spreading it; a variable is its initializers; a branch (`a ? b : c`, `a && b`) either side.
   const read = (node, type, depth) => {
     if (!node || depth > MAX_LIST_DEPTH) return
     const key = `${type}${depth}`
@@ -1290,30 +1291,61 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
       read(node.callee.object, type, Math.min(depth + levels, MAX_LIST_DEPTH))
       if (method === 'concat') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? depth + 1 : depth)
     } else {
-      const name = literalSpec(node)
-      const path = name ? null : babelPathCall(node, file, host)
-      if (name) named.add(standardizeBabelName(type, name))
-      else if (path) named.add(path)
+      entry(type, node)
     }
   }
   const listName = (node) => (node.type === 'Identifier' ? node.name : node.type === 'MemberExpression' && !node.computed ? node.property.name : undefined)
   walkAst(program, (node) => {
-    const string = anyString ? literalSpec(node) : null
-    if (string && BABEL_MODULE_STRING.test(string)) named.add(string.replace(/^module:/u, ''))
     // A list: under a key, held in a variable or assigned to a property, so named.
     const [name, value] = node.type === 'Property' && !node.computed ? [node.key.name ?? node.key.value, node.value]
       : node.type === 'VariableDeclarator' ? [listName(node.id), node.init]
       : node.type === 'AssignmentExpression' ? [listName(node.left), node.right]
       : []
-    if (BABEL_LISTS.has(name)) read(value, BABEL_LISTS.get(name), 1)
+    if (lists.has(name)) read(value, lists.get(name), 1)
     // Or added to one: `push` and `unshift` each argument an entry, `concat` as it concatenates.
     const method = memberCall(node)
-    const type = method && BABEL_LISTS.get(listName(node.callee.object))
+    const type = method && lists.get(listName(node.callee.object))
     if (!type) return
     if (method === 'concat') read(node, type, 1)
     else if (method === 'push' || method === 'unshift') for (const arg of node.arguments) read(arg.argument ?? arg, type, arg.type === 'SpreadElement' ? 1 : 0)
   })
+}
+
+// The plugins and presets the module `file` names in the lists of them (readLists): by a string,
+// standardized as Babel requires it, or by a path the module computes (babelPathCall), as is. With
+// `anyString`, also any string naming one by its form (BABEL_MODULE_STRING) wherever it is, as
+// written. -> the names
+function babelNamedModules(file, host, { anyString = false } = {}) {
+  const program = parseModule(file, host)
+  const named = new Set()
+  readLists(program, BABEL_LISTS, (type, node) => {
+    const name = literalSpec(node)
+    const path = name ? null : babelPathCall(node, file, host)
+    if (name) named.add(standardizeBabelName(type, name))
+    else if (path) named.add(path)
+  })
+  if (anyString) {
+    walkAst(program, (node) => {
+      const string = literalSpec(node)
+      if (string && BABEL_MODULE_STRING.test(string)) named.add(string.replace(/^module:/u, ''))
+    })
+  }
   return named
+}
+
+// The extensions Metro takes as assets (`resolver.assetExts`), as the project's Metro config gives them:
+// Metro's defaults, and each string its metro.config.js lists among them, read off its source, never
+// run (readLists: `assetExts: [...defaultConfig.resolver.assetExts, 'riv']`,
+// `config.resolver.assetExts.push('riv')`). One it filters out is still taken as one.
+function metroAssetExts(baseDir, host) {
+  const exts = new Set(METRO_ASSET_EXTS)
+  const config = join(baseDir, METRO_CONFIG_FILE)
+  if (!host.stat(config)?.isFile()) return exts
+  readLists(parseModule(config, host), METRO_ASSET_LISTS, (_, node) => {
+    const ext = literalSpec(node)
+    if (ext) exts.add(ext)
+  })
+  return exts
 }
 
 // How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
@@ -1446,12 +1478,15 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
-  // --metro: the resources the app imports that are no asset of Metro's (its default `assetExts`,
-  // which React Native's Metro config keeps) are no module of Metro's, which can't resolve one: one
-  // reaches the build only as a transform's input, read and inlined by a Babel plugin
+  // --metro: the extensions Metro takes as assets, its defaults and those the project's Metro config
+  // adds (metroAssetExts: `assetExts: [...defaultConfig.resolver.assetExts, 'riv']`), which it resolves
+  // by its asset rule, scale variants and all.
+  const assetExts = metro ? metroAssetExts(baseDir, host) : METRO_ASSET_EXTS
+  // The resources the app imports that are no asset of Metro's are no module of Metro's, which can't
+  // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
   // (`metro`, no edge): no edge to one, and no asset registry for one.
-  const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
+  const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs, assetExts)
   // Scan from `roots` with `options`, keeping what lies within the root (one the entries link eagerly
   // is refused, see withinRoot), its issues reported under `label`. -> { scanner, leftOut }
   const scanWithin = (roots, options, label) => {
@@ -1461,18 +1496,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
-    const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
+    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
     // --metro --metro-resolver delegates to the project's own metro-resolver for byte-for-byte Metro
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives
     // default/require|import/platform conditions itself, so it takes only the extra `react-native`
     // condition (browser comes from its per-platform map, keyed on `web`).
     const resolver = metroResolver
-      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts: SOURCE_EXTS, mainFields, conditionNames: ['react-native'], host })
+      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts: SOURCE_EXTS, mainFields, conditionNames: ['react-native'], assetExts, host })
       : field.resolver
     // Without --typescript, the field resolver --typescript would build names the file a miss would
     // land on: a hint in the unresolved report, never an edge (see Scan#typescriptCandidate).
-    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript: true, typescriptPaths, host }).resolver
+    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript: true, typescriptPaths, host }).resolver
     // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases

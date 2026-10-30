@@ -61,7 +61,7 @@ function getPackageForModule(absModulePath) {
 // `sourceExts` are the extensions Metro probes (kept to what a source bundle can carry, so the
 // resolver never lands on a file the bundle would reject). `mainFields` drives the browser-field
 // spec; `conditionNames` are the extra `exports`/`imports` conditions on top of the ones Metro
-// derives itself (default + require|import + platform).
+// derives itself (default + require|import + platform); `assetExts` the extensions it takes as assets.
 export function createMetroResolver({
   projectDir,
   platform,
@@ -70,6 +70,7 @@ export function createMetroResolver({
   conditionNames = ['react-native'],
   conditionsByPlatform = { web: ['browser'] },
   enablePackageExports = true,
+  assetExts = METRO_ASSET_EXTS,
   host = diskHost,
 } = {}) {
   // It loads the project's metro-resolver, which reads the disk: never off it.
@@ -90,8 +91,9 @@ export function createMetroResolver({
   // A React Native app has no Node builtins by default; Metro only prefers native suffixes off web.
   const base = {
     allowHaste: false,
-    // Metro's default asset extensions, resolved as Metro's DependencyGraph resolves them.
-    assetExts: METRO_ASSET_EXTS,
+    // The asset extensions (Metro's defaults, else the project's), resolved as Metro's DependencyGraph
+    // resolves them.
+    assetExts,
     customResolverOptions: {},
     disableHierarchicalLookup: false,
     doesFileExist: (p) => resolvableType(p) === 'f',
