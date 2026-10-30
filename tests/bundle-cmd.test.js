@@ -4445,7 +4445,7 @@ cliTest('CLI: bundle --metro --babel resolves through the Babel config\'s aliase
 test('buildBundle --metro carries the project\'s Metro and React Native configs, and with --babel(-aliases) its Babel config', withTmp(async (t, tmp) => {
   // The Metro plugin's run loads them (Metro its config, the RN CLI its own, Metro's transformer the
   // Babel one), though nothing the app imports reaches them: --metro carries them too, as Node loads
-  // them, attributed to its consumer.
+  // them, attributed to `bundle`, as the bundler's, not to `bundle:metro` with the source it bundles.
   jsProject(tmp, {
     'index.js': 'export default 1\n',
     'metro.config.js': 'module.exports = {}\n',
@@ -4465,7 +4465,7 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   // A typeless package's .js is what Node detects from its syntax.
   t.assert.equal(bundle.formats.get('react-native.config.js'), 'module')
   t.assert.equal(bundle.formats.get('index.js'), undefined, 'the app code Metro builds keeps no format')
-  t.assert.deepStrictEqual(bundle.reason['bundle:metro'].toSorted(), [...configs, 'index.js'].toSorted())
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': configs, 'bundle:metro': ['index.js'] })
 
   const aliased = await buildBundle({ ...metro, babelAliases: 'aliases.json' })
   t.assert.deepStrictEqual([...aliased.sources.keys()].toSorted(), [...configs, 'babel.config.js', 'index.js'].toSorted())
@@ -4479,6 +4479,86 @@ test('buildBundle --metro carries the project\'s Metro and React Native configs,
   // Not without --metro.
   const plain = await buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'] })
   t.assert.deepStrictEqual([...plain.sources.keys()], ['index.js'])
+}))
+
+test('buildBundle --metro traces its configs as Node runs them, with all they import, as the bundler\'s', withTmp(async (t, tmp) => {
+  // Node runs each config (Metro's loader, the RN CLI's, Babel's) and what it imports, as the Metro
+  // plugin's run captures it: --metro bundles each as a Node entry, Node's resolution, formats and edges.
+  const write = (rel, content) => {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  jsProject(tmp, {
+    'index.js': "import shared from './shared.js'\nexport default shared\n",
+    'shared.js': "module.exports = require('dual')\n",
+    'metro.config.js': "const { getDefaultConfig } = require('@react-native/metro-config')\nmodule.exports = { ...getDefaultConfig(__dirname), shared: require('./shared.js') }\n",
+    'react-native.config.js': "import project from './rn/project.js'\nexport default { project }\n",
+    'babel.config.js': "module.exports = require('./babel/base.json')\n",
+    'aliases.json': '{}',
+  }, { name: 'app', version: '0.0.0' })
+  write('rn/project.js', 'export default {}\n')
+  write('babel/base.json', { presets: [] })
+  // A package Metro resolves through `react-native`, Node through `node`.
+  write('node_modules/dual/package.json', { name: 'dual', version: '1.0.0', exports: { 'react-native': './rn.js', 'node': './node.js', 'default': './rn.js' } })
+  write('node_modules/dual/node.js', "module.exports = 'node'\n")
+  write('node_modules/dual/rn.js', "module.exports = 'rn'\n")
+  // The Metro config's package, with an ios/ dir: Node runs it, Metro bundles none of it, so no native walk.
+  write('node_modules/@react-native/metro-config/package.json', { name: '@react-native/metro-config', version: '0.80.0', main: 'dist/index.js' })
+  write('node_modules/@react-native/metro-config/dist/index.js', "const path = require('node:path')\nexports.getDefaultConfig = (dir) => ({ projectRoot: path.resolve(dir) })\n")
+  write('node_modules/@react-native/metro-config/ios/Tool.m', '// native\n')
+
+  const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], babelAliases: 'aliases.json' })
+  const bundler = [
+    'babel.config.js', 'babel/base.json', 'metro.config.js', 'node_modules/@react-native/metro-config/dist/index.js',
+    'node_modules/dual/node.js', 'react-native.config.js', 'rn/project.js', 'shared.js',
+  ]
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...bundler, 'index.js', 'node_modules/dual/rn.js'].toSorted())
+  // What the configs reach is the bundler's; a file the app imports too is both.
+  const reason = Object.fromEntries(Object.entries(bundle.reason).map(([consumer, files]) => [consumer, files.toSorted()]))
+  t.assert.deepStrictEqual(reason, { 'bundle': bundler, 'bundle:metro': ['index.js', 'node_modules/dual/rn.js', 'shared.js'] })
+  // Each file the configs reach in the format Node loads it in, one the app imports too as well.
+  t.assert.deepStrictEqual(Object.fromEntries(bundler.map((rel) => [rel, bundle.formats.get(rel)])), {
+    'babel.config.js': 'commonjs',
+    'babel/base.json': 'json',
+    'metro.config.js': 'commonjs',
+    'node_modules/@react-native/metro-config/dist/index.js': 'commonjs',
+    'node_modules/dual/node.js': 'commonjs',
+    'react-native.config.js': 'module',
+    'rn/project.js': 'module',
+    'shared.js': 'commonjs',
+  })
+  t.assert.equal(bundle.formats.get('node_modules/dual/rn.js'), undefined, 'what only Metro bundles has none')
+  // Node's edges under '*' where every context resolves them alike; Metro's `dual` from shared.js
+  // there too, and Node's other one under the conditions that resolve it.
+  const all = bundle.imports.get('*')
+  t.assert.deepStrictEqual(Object.fromEntries(all.get('metro.config.js')), { '@react-native/metro-config': 'node_modules/@react-native/metro-config/dist/index.js', './shared.js': 'shared.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(all.get('react-native.config.js')), { './rn/project.js': 'rn/project.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(all.get('babel.config.js')), { './babel/base.json': 'babel/base.json' })
+  t.assert.deepStrictEqual(Object.fromEntries(all.get('shared.js')), { dual: 'node_modules/dual/rn.js' })
+  const keyed = [...bundle.imports].filter(([key]) => key !== '*')
+  t.assert.deepStrictEqual(keyed.map(([key, byParent]) => [key, Object.fromEntries(byParent.get('shared.js'))]), [['require, node, node-addons, module-sync', { dual: 'node_modules/dual/node.js' }]])
+  t.assert.ok(![...bundle.sources.keys()].some((rel) => rel.endsWith('.m')), 'no native walk of a package only a config runs')
+}))
+
+test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
+  // No miss is recorded, so Metro's edge would serve Node, which the config catches the miss of,
+  // the package's React Native file. A miss in a file the configs alone reach is only warned of.
+  jsProject(tmp, {
+    'index.js': "import shared from './shared.js'\nexport default shared\n",
+    'shared.js': "let rn = null\ntry { rn = require('rn-only') } catch {}\nmodule.exports = rn\n",
+    'metro.config.js': "try { require('rn-only') } catch {}\nmodule.exports = {}\n",
+  }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, 'node_modules', 'rn-only'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'rn-only', 'package.json'), JSON.stringify({ name: 'rn-only', version: '1.0.0', exports: { 'react-native': './rn.js' } }))
+  writeFileSync(join(tmp, 'node_modules', 'rn-only', 'rn.js'), "module.exports = 'rn'\n")
+  const metro = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] }
+
+  const bundle = await buildBundle(metro)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'metro.config.js', 'node_modules/rn-only/rn.js', 'shared.js'])
+  t.assert.ok(!bundle.imports.get('*').has('metro.config.js'), 'the config\'s miss is none of the edges')
+
+  writeFileSync(join(tmp, 'metro.config.js'), "require('./shared.js')\nmodule.exports = {}\n")
+  await t.assert.rejects(() => buildBundle(metro), /rn-only from shared\.js resolves under Metro, for the app, and not under Node/u)
 }))
 
 test('buildBundle --metro records no format for the code Metro builds, as the Metro plugin does, but json for JSON', withTmp(async (t, tmp) => {

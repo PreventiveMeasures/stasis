@@ -59,7 +59,8 @@ GitHub is asked with `GITHUB_TOKEN` where it is set. Each flagged advisory is
 one row: severity, ecosystem (when not all npm), package, installed and
 vulnerable versions, title and id, plus a `reason` column where the artifacts
 record provenance: which bundle consumers (`run`, `metro`, `esbuild`, ...,
-`bundle` for `stasis bundle`, `bundle:metro` for `stasis bundle --metro`)
+`bundle` for `stasis bundle`, `bundle:metro` for the source `stasis bundle --metro`
+bundles, whose configs are `bundle`'s)
 recorded the package, and with `--why`, how.
 
 ## Import chains (`--why`)

@@ -224,6 +224,9 @@ doesn't combine with `--conditions` or `--mainFields`.
 Its files are attributed to the `bundle:metro` consumer in the bundle's
 `reason` map, where every other `stasis bundle` build names `bundle`, so
 `stasis audit --reason=bundle:metro` keeps to what the Metro build carries.
+What only the project's configs reach (below) is the bundler's, not the
+source Metro bundles, and is attributed to `bundle`; a file both reach is
+attributed to both.
 
 The code it carries has no format, as the Metro plugin records it: Metro
 transforms each file from source, so how Node would load it (`module` or
@@ -298,12 +301,23 @@ there is the project's own source.
 Reaching a package only for an asset (through `--resources`) doesn't count: it
 contributes nothing unless the app's `package.json` lists it.
 
-It carries the project's Metro and React Native configs too, which the Metro
+It bundles the project's Metro and React Native configs too, which the Metro
 plugin's run loads though nothing the app imports reaches them: the
 `metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
-`--babel-aliases`, it carries the `babel.config.js` there as well. Each is
-carried as Node loads it (`commonjs` or `module` by the package's `type`), not
-run, and what it imports isn't followed.
+`--babel-aliases`, it bundles the `babel.config.js` there as well. Node runs
+each, not Metro, so each is bundled as `stasis bundle` bundles a Node entry,
+parsed, not run: with everything it imports, resolved as Node resolves it
+(`@react-native/metro-config` and what it requires, say), each file in the
+format Node loads it in (`commonjs` or `module` by its package's `type` or
+syntax, `json`), a file the app imports too included. Their edges are keyed as
+a Node build keys them: under `*` where every context resolves one alike, else
+under the conditions that resolve it, as also where the app's build resolves
+the same import of a file both reach to another file. One Node misses there
+where Metro resolves it is refused: no miss is recorded, so Metro's edge would
+serve Node its file in place of the miss. A package only they reach
+isn't a native dependency of the app, and its native build inputs aren't
+carried. What a config names as data, not an import (a Babel preset's name,
+say), isn't followed.
 
 A disabled import (a `browser`/`react-native` map entry set to `false`)
 resolves, as Metro resolves it, to Metro's own empty module: the project's

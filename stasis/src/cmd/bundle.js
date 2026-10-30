@@ -7,7 +7,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { Scan, getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
+import { getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -268,11 +268,11 @@ function assertSelfContained(lang, noun, entries, sources, missing) {
 // (packageLookup by default, which walks past a malformed one). `classifyDep(path)` optionally
 // places a file directly (non-node_modules ecosystems like Soldeer/github); null defers. `format` tags
 // every file; `formats` (Map<path,format>) overrides it per file. `resolutions` values are
-// a flat target string or a Map<platform,target>; both round-trip untouched. `consumer` is
-// codeBundle's.
+// a flat target string or a Map<platform,target>; both round-trip untouched. `keyedResolutions`,
+// `consumer` and `consumerFiles` are codeBundle's.
 function assembleCodeBundle({
-  baseDir, entries, sources, resolutions, workspaceName, workspaceVersion, format, formats, conditionKey, classifyDep, host,
-  packageOf = packageLookup(baseDir, { host }), consumer,
+  baseDir, entries, sources, resolutions, keyedResolutions, workspaceName, workspaceVersion, format, formats, conditionKey, classifyDep, host,
+  packageOf = packageLookup(baseDir, { host }), consumer, consumerFiles,
 }) {
   const modules = new Map()
   // `identity`'s name, version, ecosystem, repo and vendored (moduleInfo takes those alone); a later
@@ -302,14 +302,15 @@ function assembleCodeBundle({
     }
   }
 
-  return codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer })
+  return codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions, format, formats, conditionKey, host, consumer, consumerFiles })
 }
 
 // A full-scope code Bundle of `sources`, bucketed as `modules`: `format` tags every file, `formats`
 // (Map<path,format>) overrides it per file (a file neither tags has none), and the `resolutions` edges
-// are keyed under `conditionKey`. Every file is attributed to `consumer` in the `reason` map: `bundle`,
-// or `bundle:metro` for --metro.
-function codeBundle({ baseDir, entries, sources, modules, resolutions, format, formats, conditionKey, host, consumer = 'bundle' }) {
+// are keyed under `conditionKey`, beside the `keyedResolutions` (conditions key -> parent -> specifier
+// -> target) under keys of their own. The `consumerFiles` (every file, by default) are attributed to
+// `consumer` in the `reason` map: `bundle`, or `bundle:metro` for --metro.
+function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions = new Map(), format, formats, conditionKey, host, consumer = 'bundle', consumerFiles }) {
   const formatsMap = new Map()
   for (const path of sources.keys()) {
     const fileFormat = formats?.get(path) ?? format
@@ -318,7 +319,7 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, format, f
 
   const importsForKey = new Map()
   for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
-  const imports = new Map([[conditionKey, importsForKey]])
+  const imports = new Map([[conditionKey, importsForKey], ...keyedResolutions])
 
   // Executable bits, straight off disk (a synthetic source with no file there is simply not
   // executable). Shell bundles lean on this most: `stasis extract` puts the +x back on the scripts.
@@ -332,7 +333,7 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, format, f
     formats: formatsMap,
     imports,
     executable,
-  }).withReason(consumer)
+  }).withReason(consumer, consumerFiles)
 }
 
 // Files never carried, whatever reads them: `.env` files, and Hardhat's config, which is code
@@ -1290,6 +1291,51 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // below, the edge would serve that platform the other's file in its place.
   refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(fileURLToPath(e.parentURL)))?.has(e.spec)), baseDir)
 
+  // --metro: and the project's configs a React Native build loads, though nothing the app imports
+  // reaches them: Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel
+  // config Metro's transformer runs. Node loads each, not Metro, so each is traced as a Node entry is
+  // (buildJsBundle): with all it imports, resolved as Node resolves it, each file in the format Node
+  // loads it in, which one the app's build reaches too keeps (Metro needs none).
+  // parentRel -> specifier -> Map<conditions key, targetRel>, merged into the bundle's edges below.
+  const configEdges = new Map()
+  // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
+  const configMissed = new Map()
+  // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
+  // attributed to `bundle`, not to `bundle:metro` with the app's source Metro bundles.
+  const configReached = new Set()
+  const configOnly = new Set()
+  if (metro) {
+    const configs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)).filter((abs) => host.stat(abs)?.isFile())
+    if (configs.length > 0) {
+      const { scanner, outside, leftOut } = withinRoot(scan(configs, { resources: resourceSet, host }), (url) => relWithin(fileURLToPath(url)) !== null)
+      for (const url of outside) toRel(fileURLToPath(url))
+      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: 'configs', root: ' at .' })
+      for (const [url, info] of scanner.files) {
+        const abs = fileURLToPath(url)
+        const rel = toRel(abs)
+        configReached.add(rel)
+        if (!reached.has(abs)) configOnly.add(rel)
+        reached.add(abs)
+        if (info.resource) resourceRels.add(rel)
+        formatsByRel.set(rel, info.format)
+      }
+      for (const u of [...scanner.unresolved, ...leftOut]) {
+        if (u.spec !== undefined) configMissed.set(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`, u)
+      }
+      for (const [key, byParent] of scanner.imports) {
+        for (const [parentURL, specs] of byParent) {
+          const parent = toRel(fileURLToPath(parentURL))
+          if (!configEdges.has(parent)) configEdges.set(parent, new Map())
+          const bySpec = configEdges.get(parent)
+          for (const [spec, childURL] of specs) {
+            if (!bySpec.has(spec)) bySpec.set(spec, new Map())
+            bySpec.get(spec).set(key, toRel(fileURLToPath(childURL)))
+          }
+        }
+      }
+    }
+  }
+
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is
   // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.
   const sources = new Map()
@@ -1341,11 +1387,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (metro) {
     const pkgDirs = new Map() // package dir -> its package's name
     // Follow the CODE/module graph only: a package reached solely for an asset (--resources) is
-    // not a linked native dependency, so it must not drag in its ios/android surface.
+    // not a linked native dependency, so it must not drag in its ios/android surface. Nor is one
+    // only the configs reach, which Node runs at build time, as the Metro plugin's graph holds none.
     const isCode = (rel) => !resourceRels.has(rel)
     for (const abs of reached) {
       const rel = toRel(abs)
-      const nm = isCode(rel) && splitNodeModulesPath(rel)
+      const nm = isCode(rel) && !configOnly.has(rel) && splitNodeModulesPath(rel)
       if (nm) pkgDirs.set(nm.dir, nm.name)
     }
     // A package linked into node_modules from out of it (a workspace package) is reached by its real
@@ -1458,22 +1505,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         }
       }
     }
-
-    // And the project's configs the Metro plugin's run loads, which nothing the app imports reaches:
-    // Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel config Metro's
-    // transformer runs. Each file itself, in the format Node loads it in (its package's `type`, else
-    // the one Node detects from its syntax, as Scan#parseFile has it), not what it imports.
-    const configs = [...METRO_CONFIG_FILES, ...(babel || aliasesFile !== undefined ? [BABEL_CONFIG_FILE] : [])]
-    const configScan = new Scan({ host })
-    for (const rel of configs) {
-      const abs = join(baseDir, rel)
-      if (sources.has(rel) || !host.stat(abs)?.isFile()) continue
-      assertRealPathWithinBase(realBase, baseDir, rel, host)
-      const buf = host.readFile(abs)
-      if (!isUtf8(buf)) throw new Error(`config is not valid UTF-8: ${rel}`)
-      const parsed = configScan.parseFile(abs)
-      put(rel, buf.toString('utf8'), parsed.format ?? parsed.declared ?? 'commonjs', buf)
-    }
   }
 
   // --package-json (or the config's packageJSON): fold each bundled module's package.json into
@@ -1486,20 +1517,23 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (withManifests) {
     const found = new Map()
     const exists = (rel) => found.get(rel) ?? found.set(rel, packageJSONStat(host, join(baseDir, rel))?.isFile() ?? false).get(rel)
-    const manifests = new Set()
+    const manifests = new Map() // manifest -> the reached files it serves
     for (const abs of reached) {
       const rel = toRel(abs)
       const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
       if (pkgDir === undefined) continue
-      manifests.add(moduleFileKey(pkgDir, 'package.json'))
-      const nearest = scopeManifestOf(rel, pkgDir, exists)
-      if (nearest !== undefined) manifests.add(nearest)
+      for (const manifest of [moduleFileKey(pkgDir, 'package.json'), scopeManifestOf(rel, pkgDir, exists)]) {
+        if (manifest !== undefined) manifests.set(manifest, [...manifests.get(manifest) ?? [], rel])
+      }
     }
-    for (const rel of manifests) {
+    for (const [rel, of] of manifests) {
       if (sources.has(rel)) continue
       const buf = readModuleManifest({ baseDir, realBase, rel, host })
       if (!buf) continue
       put(rel, buf.toString('utf8'), 'json', buf)
+      // Attributed as the files it serves are, as State#includePackageJson attributes one.
+      if (of.some((file) => configReached.has(file))) configReached.add(rel)
+      if (of.every((file) => configOnly.has(file))) configOnly.add(rel)
     }
   }
 
@@ -1517,13 +1551,46 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     resolutions.set(parent, specMap)
   }
+  // A config's import Node misses or leaves out in a context, from a file the app's build reaches
+  // too, where Metro resolves it: no miss is recorded, so the app's edge under '*' would serve that
+  // context Metro's file in its place -- refused, as refuseSplit refuses a split.
+  for (const [key, { parentURL, spec }] of configMissed) {
+    if (!resolutions.get(key.slice(0, key.indexOf('\0')))?.has(spec)) continue
+    throw new Error(
+      `${spec} from ${displayPath(parentURL, baseDir)} resolves under Metro, for the app, and not under Node, for the ` +
+      "project's configs: a bundle can't keep Node's miss without serving Node Metro's file in its place"
+    )
+  }
+  // The configs' edges, keyed as buildJsBundle keys Node's: under '*' where every context resolves
+  // one alike, else under each context's conditions, as also where the app's build resolves the
+  // same import of a file both reach to another file.
+  const keyedResolutions = new Map()
+  for (const [parent, bySpec] of configEdges) {
+    for (const [spec, byKey] of bySpec) {
+      const targets = new Set(byKey.values())
+      const target = targets.size === 1 && !configMissed.has(`${parent}\0${spec}`) ? [...targets][0] : undefined
+      const metroTarget = resolutions.get(parent)?.get(spec)
+      if (target !== undefined && (metroTarget === undefined || metroTarget === target)) {
+        if (!resolutions.has(parent)) resolutions.set(parent, new Map())
+        resolutions.get(parent).set(spec, target)
+        continue
+      }
+      for (const [key, child] of byKey) {
+        if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
+        const byParent = keyedResolutions.get(key)
+        if (!byParent.has(parent)) byParent.set(parent, new Map())
+        byParent.get(parent).set(spec, child)
+      }
+    }
+  }
 
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
-  const bundle = assembleCodeBundle({
+  const assembled = assembleCodeBundle({
     baseDir,
     entries: normalized,
     sources,
     resolutions,
+    keyedResolutions,
     formats: formatsByRel,
     workspaceName: rootPkg.name ?? 'workspace',
     workspaceVersion: rootPkg.version ?? '0.0.0',
@@ -1531,7 +1598,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     host,
     packageOf,
     consumer: metro ? 'bundle:metro' : 'bundle',
+    consumerFiles: [...sources.keys()].filter((rel) => !configOnly.has(rel)),
   })
+  // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
+  const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
   const lockModules = new Map()

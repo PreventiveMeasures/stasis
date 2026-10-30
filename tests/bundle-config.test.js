@@ -215,15 +215,16 @@ test('bundleCommand carries an entry\'s Metro, React Native and Babel configs wh
   })
   const metro = { entries: ['index.js'], metro: true, platforms: ['ios'] }
   await bundleCommand({ cwd: tmp, output: 'a.br', lockfile: 'a.lock.json', builds: [metro, { entries: ['cli.js'] }] })
+  // The configs under `bundle`: they're the bundler's, not the source Metro bundles.
   t.assert.deepStrictEqual(readBundle(join(tmp, 'a.br')).reason, {
-    'bundle': ['b.js', 'cli.js'],
-    'bundle:metro': ['a.ios.js', 'index.js', 'metro.config.js', 'react-native.config.js'],
+    'bundle': ['b.js', 'cli.js', 'metro.config.js', 'react-native.config.js'],
+    'bundle:metro': ['a.ios.js', 'index.js'],
   })
   const lock = Lockfile.parse(readFileSync(join(tmp, 'a.lock.json'), 'utf8'))
   t.assert.ok(Object.hasOwn(lock.modules.get('.').files, 'metro.config.js'), 'the lockfile attests a config too')
   // The Babel config with --babel-aliases (or --babel); a Node build alone carries none of them.
   await bundleCommand({ cwd: tmp, output: 'b.br', builds: [{ ...metro, babelAliases: 'aliases.json' }, { entries: ['cli.js'] }] })
-  t.assert.ok(readBundle(join(tmp, 'b.br')).reason['bundle:metro'].includes('babel.config.js'))
+  t.assert.ok(readBundle(join(tmp, 'b.br')).reason.bundle.includes('babel.config.js'))
   await bundleCommand({ cwd: tmp, output: 'c.br', builds: [{ entries: ['cli.js'] }] })
   t.assert.deepStrictEqual([...readBundle(join(tmp, 'c.br')).sources.keys()].toSorted(), ['b.js', 'cli.js'])
 }))
