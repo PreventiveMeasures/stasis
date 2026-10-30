@@ -910,12 +910,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   const byParent = new Map()
   for (const [key, parents] of scanner.imports) {
     for (const [parentURL, specs] of parents) {
-      if (!byParent.has(parentURL)) byParent.set(parentURL, new Map())
-      const bySpec = byParent.get(parentURL)
-      for (const [spec, childURL] of specs) {
-        if (!bySpec.has(spec)) bySpec.set(spec, new Map())
-        bySpec.get(spec).set(key, childURL)
-      }
+      for (const [spec, childURL] of specs) mapAt(mapAt(byParent, parentURL), spec).set(key, childURL)
     }
   }
   for (const [parentURL, bySpec] of byParent) {
@@ -1142,6 +1137,9 @@ function requireFrom(dir, spec, host) {
   }
 }
 
+// The value under `key` in the map `map`, `make()` stored there first where there's none.
+const mapAt = (map, key, make = () => new Map()) => map.get(key) ?? map.set(key, make()).get(key)
+
 // The AST of the module `file`, read through `host` (`source` where read already).
 const parseModule = (file, host, source = host.readFile(file).toString('utf8')) => getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program
 
@@ -1262,9 +1260,7 @@ function readLists(program, lists, entry) {
   // Each variable's initializers, by its name.
   const inits = new Map()
   walkAst(program, (node) => {
-    if (node.type !== 'VariableDeclarator' || node.id.type !== 'Identifier' || !node.init) return
-    if (!inits.has(node.id.name)) inits.set(node.id.name, [])
-    inits.get(node.id.name).push(node.init)
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) mapAt(inits, node.id.name, () => []).push(node.init)
   })
   const seen = new Map()
   // Read `node` for the `type`s it lists: `depth` levels of arrays in it lists (1 a list, 2 one `.flat()`
@@ -1541,10 +1537,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           else continue // unresolved (already warned/thrown by reportScanIssues)
           // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
           if (e.child && isTransformInput(fileURLToPath(e.child), scanner.files.get(e.child))) continue
-          if (!edges.has(rel)) edges.set(rel, new Map())
-          const bySpec = edges.get(rel)
-          if (!bySpec.has(e.spec)) bySpec.set(e.spec, new Map())
-          bySpec.get(e.spec).set(platformKey, target)
+          mapAt(mapAt(edges, rel), e.spec).set(platformKey, target)
         }
       }
       return scanner
@@ -1586,12 +1579,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // conditions key -> parentRel -> specifier -> targetRel, beside the bundle's '*' edges.
   const keyedResolutions = new Map()
   // The edges from `parent` (rel) keyed `key`: specifier -> targetRel.
-  const keyedFrom = (key, parent) => {
-    if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
-    const keyed = keyedResolutions.get(key)
-    if (!keyed.has(parent)) keyed.set(parent, new Map())
-    return keyed.get(parent)
-  }
+  const keyedFrom = (key, parent) => mapAt(mapAt(keyedResolutions, key), parent)
   // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
   const configMissed = new Map()
   // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
@@ -1904,7 +1892,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
       if (pkgDir === undefined) continue
       for (const manifest of [moduleFileKey(pkgDir, 'package.json'), scopeManifestOf(rel, pkgDir, exists)]) {
-        if (manifest !== undefined) manifests.set(manifest, [...manifests.get(manifest) ?? [], rel])
+        if (manifest !== undefined) mapAt(manifests, manifest, () => []).push(rel)
       }
     }
     for (const [rel, of] of manifests) {
@@ -1924,11 +1912,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const specMap = new Map()
     for (const [spec, byPlatform] of bySpec) {
       const distinct = new Set(byPlatform.values())
-      if (distinct.size === 1) {
-        specMap.set(spec, [...distinct][0])
-      } else {
-        specMap.set(spec, new Map([...byPlatform].toSorted((a, b) => (a[0] < b[0] ? -1 : 1))))
-      }
+      specMap.set(spec, distinct.size === 1 ? [...distinct][0] : new Map([...byPlatform].toSorted((a, b) => (a[0] < b[0] ? -1 : 1))))
     }
     resolutions.set(parent, specMap)
   }
