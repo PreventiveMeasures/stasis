@@ -347,7 +347,7 @@ in does not. Not with `github-bundle`.
 The Metro plugin keys its edges the same way: `withStasis()` runs Metro's
 transformer through stasis's, which records each import as written, before any
 Babel plugin rewrites it. An import only Babel or Metro adds (a `@babel/runtime`
-helper, `react/jsx-runtime`, Metro's `asyncRequire`) is written nowhere in the
+helper, `react/jsx-runtime`, Metro's `asyncRequire`, an asset's registry) is written nowhere in the
 source, so the plugin records no edge for it, as the static build doesn't. It
 still carries the file, as it carries every module of Metro's graph.
 
@@ -362,7 +362,14 @@ what it imports in turn:
   the files `@react-native/js-polyfills`' `index.js` lists, which is read but
   never run;
 - for JSX (`--jsx`, or a `.jsx` or `.tsx` file), the JSX runtime Babel
-  imports, `react/jsx-runtime`.
+  imports, `react/jsx-runtime`;
+- for an asset (a file `--resources` carries, `require('./logo.png')`), the
+  asset registry the module Metro builds of it requires
+  (`module.exports = require(registry).registerAsset({...})`):
+  `react-native/Libraries/Image/AssetRegistry`, the `assetRegistryPath` of
+  React Native's Metro config, resolved from the asset's directory, with no
+  alias of Babel's, since Metro builds that module past Babel. A project's
+  own `assetRegistryPath` isn't read, its Metro config being code.
 
 `--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the
 project instead, running nothing (the project's Babel config is still carried,
