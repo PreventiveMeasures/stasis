@@ -1741,6 +1741,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // A resource carries bytes, not source: UTF-8 verbatim or base64 when binary, tagged with the
   // byte-derived format (here and in the --metro native capture below).
   const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
+  // Code carries its source, UTF-8 (`what` it is, refused where it isn't).
+  const putCode = (rel, buf, format, what = 'JS bundle source') => {
+    if (!isUtf8(buf)) throw new Error(`${what} is not valid UTF-8: ${rel}`)
+    put(rel, buf.toString('utf8'), format, buf)
+  }
   const realBase = host.realpath(baseDir)
   // Metro's empty module is carried as the file it is, a code file of Metro's (no format).
   if (usesEmpty && metroEmpty !== null) reached.add(metroEmpty)
@@ -1752,13 +1757,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // fail closed.
     assertRealPathWithinBase(realBase, baseDir, rel, host)
     const buf = host.readFile(abs)
-    if (resourceRels.has(rel)) {
-      putResource(rel, buf)
-    } else {
-      if (!isUtf8(buf)) throw new Error(`JS bundle source is not valid UTF-8: ${rel}`)
-      // Its format is the scan's.
-      put(rel, buf.toString('utf8'), formatsByRel.get(rel), buf)
-    }
+    // A code file's format is the scan's.
+    if (resourceRels.has(rel)) putResource(rel, buf)
+    else putCode(rel, buf, formatsByRel.get(rel))
   }
   if (usesEmpty && metroEmpty === null) {
     // Refuse to shadow a real reached file sitting at the reserved empty-module path.
@@ -1849,13 +1850,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // And the app's packages React Native links whether JS imports them or not (`react-native config`'s
     // list, read as data), by their real path, but one above the root, which the plugin passes over too.
     for (const dir of linkedNativePackages(baseDir, host)) {
-      let rel
-      try {
-        rel = toRel(host.realpath(dir))
-      } catch {
-        continue
-      }
-      if (!pkgDirs.has(rel)) pkgDirs.set(rel, readPackageJson(baseDir, `${rel}/package.json`, { host })?.name)
+      const rel = relWithin(host.realpath(dir))
+      if (rel !== null && !pkgDirs.has(rel)) pkgDirs.set(rel, readPackageJson(baseDir, `${rel}/package.json`, { host })?.name)
     }
     // Each one's native build inputs, walked whole (nativeInputs, shared with the plugin), read only
     // once its real path is held to the root.
@@ -1874,26 +1870,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const isRnCore = name === 'react-native'
       if (!isRnCore && !looksNative(pkgAbs, nativeFs)) continue
       for (const { file, source, action, format } of nativeInputs(pkgAbs, nativeFs, { resources: resourceSet, skip: (abs) => sources.has(toRel(abs)) })) {
-        const rel = toRel(file)
-        if (action === 'code') {
-          if (!isUtf8(source)) throw new Error(`native source is not valid UTF-8: ${rel}`)
-          put(rel, source.toString('utf8'), format, source)
-        } else {
-          putResource(rel, source)
-        }
+        if (action === 'code') putCode(toRel(file), source, format, 'native source')
+        else putResource(toRel(file), source)
       }
       // RN core's `.js` build scripts the classify loop skips (Metro-owned by extension, but never in
       // the graph): force-include as code so the podspec/Ruby that invokes them at pod-install resolves.
       if (isRnCore) {
         for (const file of RN_CORE_INCLUDE_FILES) {
           const abs = join(pkgAbs, file)
-          if (host.stat(abs) === null) continue
-          const rel = toRel(abs)
-          if (sources.has(rel)) continue
-          assertRealPathWithinBase(realBase, baseDir, rel, host)
-          const buf = host.readFile(abs)
-          if (!isUtf8(buf)) throw new Error(`native source is not valid UTF-8: ${rel}`)
-          put(rel, buf.toString('utf8'), packageType(abs, host) === 'module' ? 'module' : 'commonjs', buf)
+          if (host.stat(abs) === null || sources.has(toRel(abs))) continue
+          putCode(toRel(abs), nativeFs.readFile(abs), packageType(abs, host) === 'module' ? 'module' : 'commonjs', 'native source')
         }
       }
     }

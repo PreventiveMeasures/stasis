@@ -240,16 +240,12 @@ export function createAliases(alias, cwd) {
     for (const [regExp, substitute] of matchers) {
       const groups = regExp.exec(specifier)
       if (groups === null) continue
-      return rewrite(file, specifier, substitute(groups), cwd)
+      // None where the mapping is empty.
+      const mapped = substitute(groups)
+      if (!mapped) return null
+      const rewritten = isRelativePath(mapped) ? toLocalPath(relative(dirname(file), resolve(cwd, mapped)).replace(/\\/gu, '/')) : mapped
+      return rewritten === specifier ? null : rewritten
     }
     return null
   }
-}
-
-// `mapped`, the alias `specifier` from `file` maps to, as the plugin writes it: none where empty, a
-// relative one (`./`, `../`) a path from `cwd` written relative to `file`, any other as it is.
-function rewrite(file, specifier, mapped, cwd) {
-  if (!mapped) return null
-  const rewritten = isRelativePath(mapped) ? toLocalPath(relative(dirname(file), resolve(cwd, mapped)).replace(/\\/gu, '/')) : mapped
-  return rewritten === specifier ? null : rewritten
 }
