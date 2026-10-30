@@ -1229,13 +1229,14 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     inits.get(node.id.name).push(node.init)
   })
   const named = new Set()
-  const seenLists = new Set()
-  const seenEntries = new Set()
+  // The nodes read as a list, and as an entry, of each type: one array can be both plugins and presets.
+  const seenLists = new Map([...BABEL_LISTS.values()].map((type) => [type, new Set()]))
+  const seenEntries = new Map([...BABEL_LISTS.values()].map((type) => [type, new Set()]))
   // `node` as a list of `type`s (one that isn't an array, an entry of it, as `concat` takes it), or an
   // entry of one: a name, a computed path or a `[name, options]` pair.
   const list = (node, type) => {
-    if (!node || seenLists.has(node)) return
-    seenLists.add(node)
+    if (!node || seenLists.get(type).has(node)) return
+    seenLists.get(type).add(node)
     if (node.type === 'ArrayExpression') {
       for (const element of node.elements) {
         if (element?.type === 'SpreadElement') list(element.argument, type)
@@ -1254,8 +1255,8 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     }
   }
   const entry = (node, type) => {
-    if (!node || seenEntries.has(node)) return
-    seenEntries.add(node)
+    if (!node || seenEntries.get(type).has(node)) return
+    seenEntries.get(type).add(node)
     if (node.type === 'ArrayExpression') return entry(node.elements[0], type)
     if (node.type === 'Identifier') {
       for (const init of inits.get(node.name) ?? []) entry(init, type)
