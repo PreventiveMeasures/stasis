@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
-import { looksNative, nativeInputs } from './metro-native.js'
+import { AUTO_INCLUDES, looksNative, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
@@ -35,16 +35,6 @@ function entrySet(graph) {
   if (Array.isArray(ep)) return new Set(ep)
   return new Set()
 }
-
-// Files a React Native build requires that Metro's module graph never carries; attested (tagged by
-// the shared classifier, see #captureAutoIncludes) when they resolve from the project, each under the
-// consumer that uses it: Metro bundles asyncRequire.js into the app (for an `import()`); the React
-// Native CLI runs setup_env.sh (`execFileSync`) as every command of it starts, `react-native config`
-// the plugin runs included, which is the run's toolchain, none of it the app's.
-const AUTO_INCLUDES = [
-  { specifier: 'metro-runtime/src/modules/asyncRequire.js', reason: 'metro' },
-  { specifier: '@react-native-community/cli/setup_env.sh', reason: 'run' },
-]
 
 // Metro's own transform plugins, as its transform worker names them for its cache key: the file
 // `metro-transform-plugins` resolves to from the project, else through metro and its transform
@@ -294,8 +284,9 @@ export class StasisMetro {
     this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason })
   }
 
-  // Attest the AUTO_INCLUDES list. Per entry, skip: unresolvable, already-seen, or resolving
-  // outside the project root (keys are root-relative). Attested entries ride the normal addFile path.
+  // Attest the AUTO_INCLUDES list (./metro-native.js, shared with `stasis bundle --metro`). Per entry,
+  // skip: unresolvable, already-seen, or resolving outside the project root (keys are root-relative).
+  // Attested entries ride the normal addFile path.
   #captureAutoIncludes() {
     for (const { specifier, reason } of AUTO_INCLUDES) {
       let modPath

@@ -13,12 +13,12 @@ import { createFieldResolver, isMetroAssetFile, resolveConditions } from '../res
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
-import { linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
+import { AUTO_INCLUDES, linkedNativePackages, linkedPackages, looksNative, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, metroAssetFiles, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, RN_CORE_INCLUDE_FILES, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, metroAssetFiles, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -1126,6 +1126,16 @@ function packageDirFrom(dir, name, host, via = []) {
   return from
 }
 
+// What a require() of `spec` from the directory `dir` resolves to, as Node resolves it. -> absolute
+// path, or undefined where none does
+function requireFrom(dir, spec, host) {
+  try {
+    return host.resolve(join(dir, 'package.json'), spec, NODE_REQUIRE_CONDITIONS)
+  } catch {
+    return undefined
+  }
+}
+
 // The AST of the module `file`, read through `host`.
 const parseModule = (file, host) => getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' }).program
 
@@ -1326,11 +1336,13 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // paths of code files) or `assets` (of the assets reached) it is added to: under
 // --babel or --babel-aliases, the Babel helpers (every @babel/runtime/helpers/*.js of each
 // @babel/runtime a file finds, which ones Babel adds hanging on the syntax the file uses), Metro's
-// module system and asyncRequire (metro-runtime), and React Native's polyfills (the files
-// @react-native/js-polyfills lists); with JSX (`jsx`, else a .jsx/.tsx file), the JSX runtime Babel
-// imports for it; for an asset, the asset registry (ASSET_REGISTRY) the module Metro builds of it,
-// `require(registry).registerAsset({...})`, requires, which Metro builds past Babel, so no alias of
-// Babel's applies to it (platformResolver). -> absolute paths
+// module system (metro-runtime), and React Native's polyfills (the files @react-native/js-polyfills
+// lists); in any build, the Metro code the Metro plugin carries for every one (AUTO_INCLUDES'
+// `metro` ones: asyncRequire), from the project, else through Metro; with JSX (`jsx`, else a
+// .jsx/.tsx file), the JSX runtime Babel imports for it; for an asset, the asset registry
+// (ASSET_REGISTRY) the module Metro builds of it, `require(registry).registerAsset({...})`, requires,
+// which Metro builds past Babel, so no alias of Babel's applies to it (platformResolver). -> absolute
+// paths
 function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolver, platformResolver = resolver, conditions: conds, host }) {
   const inserted = new Set()
   // One file of each directory: a specifier resolves alike from every file of one.
@@ -1349,13 +1361,20 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
       for (const ent of host.readdir(dir)) if (ent.isFile() && ent.name.endsWith('.js')) inserted.add(join(dir, ent.name))
     }
     const metroRuntime = packageDirFrom(baseDir, 'metro-runtime', host) ?? packageDirFrom(baseDir, 'metro-runtime', host, ['metro'])
-    for (const rel of ['src/polyfills/require.js', 'src/modules/asyncRequire.js']) {
-      if (metroRuntime !== undefined && host.stat(join(metroRuntime, rel))?.isFile()) inserted.add(join(metroRuntime, rel))
-    }
+    const moduleSystem = metroRuntime === undefined ? undefined : join(metroRuntime, 'src/polyfills/require.js')
+    if (moduleSystem !== undefined && host.stat(moduleSystem)?.isFile()) inserted.add(moduleSystem)
     const polyfills = packageDirFrom(baseDir, '@react-native/js-polyfills', host) ?? packageDirFrom(baseDir, '@react-native/js-polyfills', host, ['react-native'])
     if (polyfills !== undefined && host.stat(join(polyfills, 'index.js'))?.isFile()) {
       for (const [, file] of requireResolutions(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
+  }
+  // From the project, else through Metro, which depends on metro-runtime (an install that nests it,
+  // or a pnpm one, links it only beside Metro).
+  const metroDir = packageDirFrom(baseDir, 'metro', host)
+  for (const { specifier, reason } of AUTO_INCLUDES) {
+    if (reason !== 'metro') continue
+    const file = requireFrom(baseDir, specifier, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, specifier, host))
+    if (file !== undefined) inserted.add(file)
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
   // .jsx/.tsx one.
@@ -1532,13 +1551,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const configOnly = new Set()
   if (metro) {
     const configs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)).filter((abs) => host.stat(abs)?.isFile())
-    const requireFrom = (dir, spec) => {
-      try {
-        return host.resolve(join(dir, 'package.json'), spec, NODE_REQUIRE_CONDITIONS)
-      } catch {
-        return undefined
-      }
-    }
     // A METRO_TOOLCHAIN entry's file. -> absolute path, or undefined
     const toolchainFile = ({ name, file, via }) => {
       for (let i = 0; i <= via.length; i++) {
@@ -1549,7 +1561,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           continue
         }
         const from = chain.length === 0 ? baseDir : packageDirFrom(baseDir, chain.at(-1), host, chain.slice(0, -1))
-        const found = from === undefined ? undefined : requireFrom(from, name)
+        const found = from === undefined ? undefined : requireFrom(from, name, host)
         if (found !== undefined) return found
       }
       return undefined
@@ -1621,7 +1633,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const resolveNamed = (name, from) => {
         const pathLike = name.startsWith('.') || isAbsolute(name) || name.startsWith('node_modules/')
         for (const dir of [baseDir, dirname(from)]) {
-          const file = requireFrom(dir, pathLike ? resolve(dir, name) : name)
+          const file = requireFrom(dir, pathLike ? resolve(dir, name) : name, host)
           if (file !== undefined) return file
         }
         return undefined
@@ -1663,6 +1675,21 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         if (!keyed.has(parent)) keyed.set(parent, new Map())
         if (!keyed.get(parent).has(spec)) keyed.get(parent).set(spec, toRel(target))
       }
+    }
+    // And the files of the toolchain the Metro plugin carries for every build, which nothing here
+    // reaches (AUTO_INCLUDES but its `metro` ones, Metro's code, carried with the app's above):
+    // setup_env.sh, which React Native's CLI runs as each command of it starts. As the plugin resolves
+    // and tags each: from the project, by the shared classifier, a resource where it names no format.
+    for (const { specifier, reason } of AUTO_INCLUDES) {
+      const file = reason === 'metro' ? undefined : requireFrom(baseDir, specifier, host)
+      if (file === undefined || reached.has(file) || relWithin(file) === null) continue
+      const rel = toRel(file)
+      const format = classifyFormat(file, { content: host.readFile(file) })
+      reached.add(file)
+      configReached.add(rel)
+      configOnly.add(rel)
+      if (format === undefined) resourceRels.add(rel)
+      else formatsByRel.set(rel, format ?? undefined)
     }
   }
 

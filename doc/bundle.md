@@ -335,7 +335,11 @@ plugin's run loads though nothing the app imports reaches them: the
 `--babel-aliases`, it bundles the `babel.config.js` there as well. And what
 else the build runs in Node, which neither the app nor the configs import, each
 loaded by a name or path given as a string: React Native's CLI
-(`react-native/cli.js`), which an app runs Metro through; the React Native
+(`react-native/cli.js`), which an app runs Metro through, and the script it
+runs as each command of it starts (`@react-native-community/cli/setup_env.sh`,
+which the Metro plugin carries for every build, under `run`; resolved as a
+`require()` from the project resolves it, carried as a `shell` script, its
+executable bit kept, never traced); the React Native
 config of each of the app's packages (`react-native.config.js`, of each
 package `react-native config` reads), which that CLI requires as it loads its
 own; Metro itself, as React Native's CLI plugin finds it
@@ -454,10 +458,15 @@ what it imports in turn:
 - under `--babel` or `--babel-aliases`, Babel's helpers: every
   `@babel/runtime/helpers/*.js` of each `@babel/runtime` a bundled file
   finds, since which ones Babel adds depends on the syntax each file uses;
-- also under either, Metro's module system and `asyncRequire`
-  (`metro-runtime`), and the polyfills React Native's Metro config prepends:
-  the files `@react-native/js-polyfills`' `index.js` lists, which is read but
-  never run;
+- also under either, Metro's module system (`metro-runtime`), and the
+  polyfills React Native's Metro config prepends: the files
+  `@react-native/js-polyfills`' `index.js` lists, which is read but never run;
+- in any build, Metro's `asyncRequire`
+  (`metro-runtime/src/modules/asyncRequire.js`), which the Metro plugin
+  carries for every build, resolved as a `require()` from the project
+  resolves it, else from Metro's package, which depends on `metro-runtime`
+  (an install that nests it, or a pnpm one, links it only there); one outside
+  the project root is passed over;
 - for JSX (`--jsx`, or a `.jsx` or `.tsx` file), the JSX runtime Babel
   imports, `react/jsx-runtime`;
 - for an asset (a file `--resources` carries, `require('./logo.png')`), the

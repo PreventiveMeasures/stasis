@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -4989,7 +4989,9 @@ const writeMetroAddedPackages = (tmp) => {
 
 const METRO_ADDED = {
   helpers: ['node_modules/@babel/runtime/helpers/interopRequireDefault.js', 'node_modules/@babel/runtime/helpers/toPropertyKey.js', 'node_modules/@babel/runtime/helpers/typeof.js'],
-  runtime: ['node_modules/metro-runtime/src/modules/asyncRequire.js', 'node_modules/metro-runtime/src/polyfills/require.js'],
+  runtime: ['node_modules/metro-runtime/src/polyfills/require.js'],
+  // In any --metro build, as the Metro plugin carries it in every one (AUTO_INCLUDES).
+  asyncRequire: ['node_modules/metro-runtime/src/modules/asyncRequire.js'],
   polyfills: ['node_modules/@react-native/js-polyfills/console.js', 'node_modules/@react-native/js-polyfills/error-guard.js'],
   jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
 }
@@ -5064,12 +5066,64 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   t.assert.equal(importTarget(bundle, 'node_modules/@babel/runtime/helpers/toPropertyKey.js', './typeof.js'), 'node_modules/@babel/runtime/helpers/typeof.js')
   // Metro's code: no format.
   t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), undefined)
-  // Plain --metro adds none of it; a .tsx file, JSX itself, takes the JSX runtime without --jsx.
+  // Plain --metro adds none of it but asyncRequire; a .tsx file, JSX itself, takes the JSX runtime
+  // without --jsx.
   writeFileSync(join(tmp, 'plain.js'), 'export default 1\n')
-  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()], ['plain.js'])
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()].toSorted(), [...METRO_ADDED.asyncRequire, 'plain.js'])
   writeFileSync(join(tmp, 'view.tsx'), 'export const View = () => <div />\n')
   const tsx = await buildBundle({ ...options, entries: ['view.tsx'] })
-  t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())
+  t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.asyncRequire, ...METRO_ADDED.jsx, 'view.tsx'].toSorted())
+}))
+
+test('buildBundle --metro carries the files the Metro plugin auto-includes, each under the consumer the plugin\'s maps to', withTmp(async (t, tmp) => {
+  // Under the project at app/: asyncRequire, which Metro bundles, and setup_env.sh, which React Native's
+  // CLI runs as each command of it starts. Each as a require() from the project resolves it.
+  const app = join(tmp, 'app')
+  mkdirSync(app)
+  jsProject(app, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  const ASYNC_REQUIRE = 'node_modules/metro-runtime/src/modules/asyncRequire.js'
+  const SETUP_ENV = 'node_modules/@react-native-community/cli/setup_env.sh'
+  writeTree(app, {
+    'node_modules/metro-runtime/package.json': { name: 'metro-runtime', version: '0.83.0' },
+    [ASYNC_REQUIRE]: 'module.exports = () => {}\n',
+    'node_modules/@react-native-community/cli/package.json': { name: '@react-native-community/cli', version: '20.0.0' },
+    [SETUP_ENV]: '#!/bin/bash\nexport NODE_BINARY=node\n',
+  })
+  chmodSync(join(app, SETUP_ENV), 0o755)
+  const options = { cwd: app, entries: ['index.js'], metro: true, platforms: ['ios'] }
+
+  const bundle = await buildBundle(options)
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', ASYNC_REQUIRE, SETUP_ENV].toSorted())
+  // asyncRequire is Metro's code (no format), the app's; setup_env.sh, tagged by the shared classifier,
+  // the bundler's, as the plugin's run is, and executable, as the CLI runs it. No edge to either.
+  t.assert.equal(bundle.formats.get(ASYNC_REQUIRE), undefined)
+  t.assert.equal(bundle.formats.get(SETUP_ENV), 'shell')
+  t.assert.deepStrictEqual({ ...bundle.reason }, { 'bundle': [SETUP_ENV], 'bundle:metro': ['index.js', ASYNC_REQUIRE] })
+  t.assert.deepStrictEqual([...bundle.executable], [SETUP_ENV])
+  t.assert.equal(bundle.imports.get('*')?.get('index.js'), undefined)
+
+  // One that isn't installed is passed over; so is one resolving outside the project root. (A project
+  // of its own: Node caches what a path resolved to.)
+  const other = join(tmp, 'other', 'app')
+  mkdirSync(other, { recursive: true })
+  jsProject(other, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  cpSync(join(app, 'node_modules', '@react-native-community'), join(tmp, 'other', 'node_modules', '@react-native-community'), { recursive: true })
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, cwd: other })).sources.keys()], ['index.js'])
+
+  // Where metro-runtime lies only beside Metro (nested under it, as a pnpm install links it), it is
+  // found through Metro, which depends on it.
+  const nested = join(tmp, 'nested')
+  mkdirSync(nested)
+  jsProject(nested, { 'index.js': 'export default 1\n' }, { name: 'app', version: '0.0.0' })
+  const NESTED = 'node_modules/metro/node_modules/metro-runtime/src/modules/asyncRequire.js'
+  writeTree(nested, {
+    'node_modules/metro/package.json': { name: 'metro', version: '0.83.0' },
+    'node_modules/metro/node_modules/metro-runtime/package.json': { name: 'metro-runtime', version: '0.83.0' },
+    [NESTED]: 'module.exports = () => {}\n',
+  })
+  const viaMetro = await buildBundle({ ...options, cwd: nested })
+  t.assert.deepStrictEqual([...viaMetro.sources.keys()].toSorted(), ['index.js', NESTED])
+  t.assert.deepStrictEqual({ ...viaMetro.reason }, { 'bundle:metro': ['index.js', NESTED] })
 }))
 
 test('buildBundle --metro carries a resource no asset of Metro\'s as a transform\'s input, with no edge', withTmp(async (t, tmp) => {
