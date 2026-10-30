@@ -20,29 +20,24 @@ export const AUTO_INCLUDES = [
   { specifier: '@react-native-community/cli/setup_env.sh', reason: 'run' },
 ]
 
+// The entries of the directory `dir`, none where it's missing or no directory.
+function listing(dir, fs) {
+  try {
+    return fs.readdir(dir)
+  } catch {
+    return []
+  }
+}
+
 // True if the package at `root` ships native code: an ios/ or android/ dir, or a podspec under it.
 export function looksNative(root, fs) {
-  if (fs.stat(join(root, 'ios')) !== null || fs.stat(join(root, 'android')) !== null) return true
-  return hasPodspec(root, fs)
+  return fs.stat(join(root, 'ios')) !== null || fs.stat(join(root, 'android')) !== null || hasPodspec(root, fs)
 }
 
 // True if any *.podspec exists under `dir`, pruning the same subtrees the native walk skips.
 function hasPodspec(dir, fs) {
-  let entries
-  try {
-    entries = fs.readdir(dir)
-  } catch {
-    return false
-  }
-  for (const ent of entries) {
-    if (ent.isSymbolicLink()) continue
-    if (ent.isFile()) {
-      if (isPodspec(ent.name)) return true
-    } else if (ent.isDirectory() && !isSkippedNativeWalkDir(ent.name)) {
-      if (hasPodspec(join(dir, ent.name), fs)) return true
-    }
-  }
-  return false
+  return listing(dir, fs).some((ent) => !ent.isSymbolicLink() &&
+    (ent.isFile() ? isPodspec(ent.name) : ent.isDirectory() && !isSkippedNativeWalkDir(ent.name) && hasPodspec(join(dir, ent.name), fs)))
 }
 
 // The JS and TS files the native build reads from a package's codegen sources (codegenSources).
@@ -61,13 +56,7 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
   yield* walk(root, true)
   for (const dir of codegenSources(root, fs)) yield* sources(dir)
   function* sources(dir) {
-    let entries
-    try {
-      entries = fs.readdir(dir)
-    } catch {
-      return
-    }
-    for (const ent of entries) {
+    for (const ent of listing(dir, fs)) {
       if (ent.isSymbolicLink() || ent.name.startsWith('.') || ent.name === 'node_modules') continue
       const file = join(dir, ent.name)
       if (ent.isDirectory()) yield* sources(file)
@@ -75,13 +64,7 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
     }
   }
   function* walk(dir, atRoot) {
-    let entries
-    try {
-      entries = fs.readdir(dir)
-    } catch {
-      return // dir missing / not a directory -- nothing to walk
-    }
-    for (const ent of entries) {
+    for (const ent of listing(dir, fs)) {
       if (ent.isSymbolicLink()) continue
       const file = join(dir, ent.name)
       if (ent.isDirectory()) {
@@ -122,13 +105,7 @@ function packageDir(root, rel, fs) {
   let dir = root
   for (const name of relative(root, join(root, rel)).split(sep)) {
     if (name === '') continue
-    let entries
-    try {
-      entries = fs.readdir(dir)
-    } catch {
-      return null
-    }
-    if (!entries.some((ent) => ent.name === name && ent.isDirectory())) return null
+    if (!listing(dir, fs).some((ent) => ent.name === name && ent.isDirectory())) return null
     dir = join(dir, name)
   }
   return dir
