@@ -992,8 +992,9 @@ const BABEL_TOOLCHAIN = [{ name: '@react-native/metro-babel-transformer', via: [
 // The transformers stasis's Metro plugin (src/metro.js) points Metro at by path, beside it, which
 // Metro's workers run when a config wraps its own in withStasis().
 const STASIS_METRO_TRANSFORMERS = ['metro-transformer.js', 'metro-babel-transformer.js']
-// The conditions a require() resolves with in Node.
+// The conditions a require() resolves with in Node, and the key its edges take (the scan's).
 const NODE_REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'module-sync'])
+const REQUIRE_KEY = [...NODE_REQUIRE_CONDITIONS].join(', ')
 // What esbuild and webpack 5 both assert on every platform besides `import`/`require` and
 // `default`, and so `--mainFields` too: `module`, the bundler-only condition a package's ESM build
 // sits under, from an import and a require alike. (esbuild drops it when given conditions of its
@@ -1147,17 +1148,23 @@ function memberCall(node, object) {
   return node.callee.property.name
 }
 
-// The files the module `file` names as `require.resolve('./x')`, read off its source, never run:
-// @react-native/js-polyfills' index.js lists so the polyfills React Native's Metro config prepends
-// (`getPolyfills`). -> absolute paths, those that are files
-function requireResolvedFiles(file, host) {
-  const files = []
-  walkAst(parseModule(file, host), (node) => {
+// What the module `file` names by `require.resolve('x')`, read off its source, never run, each where
+// Node resolves it (babelPathCall: from the module, or the `paths` it gives): the polyfills
+// @react-native/js-polyfills' index.js lists for React Native's Metro config to prepend
+// (`getPolyfills`), the Babel plugins a plugin runs Babel with itself. A specifier resolved more than
+// once (in other `paths` too) is each of its resolutions.
+// -> [specifier, absolute path][] of those that resolve, in source order
+function requireResolutions(file, host) {
+  const resolved = []
+  const source = host.readFile(file).toString('utf8')
+  // Parsed only where both words occur, however the call spaces them (`require\n  .resolve(`).
+  if (!source.includes('require') || !source.includes('resolve')) return resolved
+  walkAst(getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program, (node) => {
     const spec = memberCall(node, 'require') === 'resolve' ? literalSpec(node.arguments[0]) : null
-    const path = spec?.startsWith('.') ? join(dirname(file), spec) : undefined
-    if (path !== undefined && host.stat(path)?.isFile()) files.push(path)
+    const path = spec === null ? null : babelPathCall(node, file, host)
+    if (path !== null) resolved.push([spec, path])
   })
-  return files
+  return resolved
 }
 
 // The name Babel requires a plugin or preset its config names by (@babel/core's standardizeName):
@@ -1347,7 +1354,7 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
     }
     const polyfills = packageDirFrom(baseDir, '@react-native/js-polyfills', host) ?? packageDirFrom(baseDir, '@react-native/js-polyfills', host, ['react-native'])
     if (polyfills !== undefined && host.stat(join(polyfills, 'index.js'))?.isFile()) {
-      for (const file of requireResolvedFiles(join(polyfills, 'index.js'), host)) inserted.add(file)
+      for (const [, file] of requireResolutions(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
@@ -1601,11 +1608,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // module the config reaches names them, in `plugins` and `presets` where it is the project's own or a
     // Babel config's by its name (isBabelConfigModule), and anywhere, by their form, where it is a Babel
     // config's. Each resolved as @babel/core resolves it, from the config's directory, else from the
-    // module naming it, a path from either; and what each reaches, in turn.
+    // module naming it, a path from either; and what each reaches, in turn. And what any module it
+    // reaches (a plugin's own too) names by `require.resolve('x')`, which Babel loads: a plugin running
+    // Babel with plugins of its own (react-native-reanimated's, `require.resolve('@babel/plugin-…')`),
+    // with the edge Node's resolution makes, under the conditions it resolves with.
     const babelConfig = pathToFileURL(join(baseDir, BABEL_CONFIG_FILE)).toString()
     if (traced?.files.has(babelConfig)) {
       const files = new Map(traced.files)
       const visited = new Set()
+      // The `require.resolve` edges of the modules read: [parentRel, specifier, target].
+      const resolvedEdges = []
       const resolveNamed = (name, from) => {
         const pathLike = name.startsWith('.') || isAbsolute(name) || name.startsWith('node_modules/')
         for (const dir of [baseDir, dirname(from)]) {
@@ -1624,8 +1636,14 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           for (const e of info.edges) if (e.child) frontier.push(e.child)
           const file = fileURLToPath(url)
           const rel = toRel(file)
+          if (info.resource || !JS_EXTS.has(extname(file))) continue
+          for (const [spec, target] of requireResolutions(file, host)) {
+            if (!JS_EXTS.has(extname(target)) || relWithin(target) === null) continue
+            named.add(target)
+            resolvedEdges.push([rel, spec, target])
+          }
           const configModule = isBabelConfigModule(rel)
-          if (info.resource || info.format === 'json' || !(configModule || !splitNodeModulesPath(rel))) continue
+          if (!configModule && splitNodeModulesPath(rel)) continue
           for (const name of babelNamedModules(file, host, { anyString: configModule })) {
             const found = resolveNamed(name, file)
             if (found !== undefined && JS_EXTS.has(extname(found)) && relWithin(found) !== null) named.add(found)
@@ -1634,6 +1652,16 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const fresh = [...named].filter((file) => !files.has(pathToFileURL(file).toString()))
         if (fresh.length > 0) for (const [url, info] of traceNode(fresh).files) files.set(url, info)
         frontier = [...named].map((file) => pathToFileURL(file).toString())
+      }
+      if (resolvedEdges.length > 0 && !keyedResolutions.has(REQUIRE_KEY)) keyedResolutions.set(REQUIRE_KEY, new Map())
+      const keyed = keyedResolutions.get(REQUIRE_KEY)
+      // A specifier keeps one edge, the first recorded, as a run records a resolution only where no edge
+      // is: one the module also require()s keeps that edge, Node's loader's, and one resolved again in
+      // other `paths` its first. Every copy they find (`require.resolve('x', { paths })` another than
+      // `require('x')`) is still traced.
+      for (const [parent, spec, target] of resolvedEdges) {
+        if (!keyed.has(parent)) keyed.set(parent, new Map())
+        if (!keyed.get(parent).has(spec)) keyed.get(parent).set(spec, toRel(target))
       }
     }
   }
