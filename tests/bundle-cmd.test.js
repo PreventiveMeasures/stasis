@@ -4744,7 +4744,17 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'src/index.js': 'module.exports = 1\n',
     ...pkgFiles('node_modules/@org/motion', '@org/motion', 'src/index.js', 'module.exports = 1\n'),
     'node_modules/@org/motion/plugin/index.js': "module.exports = require('./build/plugin.js')\n",
-    'node_modules/@org/motion/plugin/build/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    // The plugin runs Babel with transforms of its own, by `require.resolve`, as react-native-reanimated's
+    // does; one not installed, which it probes, resolves nowhere.
+    'node_modules/@org/motion/plugin/build/plugin.js': [
+      "const transforms = [require.resolve('@org/inner-transform'), [require.resolve('@org/inner-preset'), { loose: true }]]",
+      "const optional = (() => { try { return require.resolve('@org/not-installed') } catch { return null } })()",
+      'module.exports = () => ({ visitor: {} })',
+      '',
+    ].join('\n'),
+    ...pkgFiles('node_modules/@org/inner-transform', '@org/inner-transform', 'index.js', "module.exports = require('./helper.js')\n"),
+    'node_modules/@org/inner-transform/helper.js': 'module.exports = {}\n',
+    ...pkgFiles('node_modules/@org/inner-preset', '@org/inner-preset', 'lib/index.js', 'module.exports = () => ({})\n'),
     ...pkgFiles('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
     ...pkgFiles('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
@@ -4788,6 +4798,9 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'node_modules/@org/babel-plugin-both/index.js',
     'node_modules/@org/babel-preset-both/index.js',
     'node_modules/@org/first/plugin.js',
+    'node_modules/@org/inner-preset/lib/index.js',
+    'node_modules/@org/inner-transform/helper.js',
+    'node_modules/@org/inner-transform/index.js',
     'node_modules/@org/motion/plugin/build/plugin.js',
     'node_modules/@org/motion/plugin/index.js',
     'node_modules/@org/preset-native/index.js',
@@ -4807,6 +4820,11 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
   t.assert.ok(!bundle.sources.has('node_modules/@org/preset-inner/index.js'))
   t.assert.ok(!bundle.sources.has('node_modules/@org/preset-vendored/index.js'))
   t.assert.ok(!bundle.sources.has('node_modules/@org/aliased/index.js'))
+  // With the edges Node's resolution makes, as a run records them.
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('require, node, node-addons, module-sync').get('node_modules/@org/motion/plugin/build/plugin.js')), {
+    '@org/inner-preset': 'node_modules/@org/inner-preset/lib/index.js',
+    '@org/inner-transform': 'node_modules/@org/inner-transform/index.js',
+  })
   t.assert.ok(!bundle.sources.has('src/index.js'))
 }))
 

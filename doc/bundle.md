@@ -365,6 +365,13 @@ names, which `@babel/core` requires by name, read off the source of the modules
   `path.join(__dirname, ...)`), or what `require.resolve('x')` resolves to from
   the module, as Node resolves it, as is. A path computed for anything else (a
   module-resolver `alias` or `root`) names no plugin;
+- in any module `babel.config.js` reaches, a plugin's own included, what it
+  names by `require.resolve('x')`, which Babel loads: a plugin running Babel
+  with plugins of its own, as react-native-reanimated's does
+  (`require.resolve('@babel/plugin-transform-template-literals')`), resolved
+  as Node resolves it (with the `paths` it gives), with the edge Node's
+  resolution makes, under the conditions it resolves with; one resolving
+  nowhere (an optional package it probes) names nothing;
 - and in a Babel config's module, by its name (`babel` and `config` in its
   file's name, as `babel.config.js` and `create-babel-config.js`, or its
   package's, as `@org/babel-config`), any string that names a plugin or preset
