@@ -4528,15 +4528,16 @@ test('buildBundle --metro traces its configs as Node runs them, with all they im
     'shared.js': 'commonjs',
   })
   t.assert.equal(bundle.formats.get('node_modules/dual/rn.js'), undefined, 'what only Metro bundles has none')
-  // Node's edges under '*' where every context resolves them alike; Metro's `dual` from shared.js
-  // there too, and Node's other one under the conditions that resolve it.
-  const all = bundle.imports.get('*')
-  t.assert.deepStrictEqual(Object.fromEntries(all.get('metro.config.js')), { '@react-native/metro-config': 'node_modules/@react-native/metro-config/dist/index.js', './shared.js': 'shared.js' })
-  t.assert.deepStrictEqual(Object.fromEntries(all.get('react-native.config.js')), { './rn/project.js': 'rn/project.js' })
-  t.assert.deepStrictEqual(Object.fromEntries(all.get('babel.config.js')), { './babel/base.json': 'babel/base.json' })
-  t.assert.deepStrictEqual(Object.fromEntries(all.get('shared.js')), { dual: 'node_modules/dual/rn.js' })
-  const keyed = [...bundle.imports].filter(([key]) => key !== '*')
-  t.assert.deepStrictEqual(keyed.map(([key, byParent]) => [key, Object.fromEntries(byParent.get('shared.js'))]), [['require, node, node-addons, module-sync', { dual: 'node_modules/dual/node.js' }]])
+  // Node's edges under the conditions Node resolves each with, as the Metro plugin's run records them:
+  // a require()'s, an import's. Metro's `dual` from shared.js under '*', apart from Node's.
+  const required = bundle.imports.get('require, node, node-addons, module-sync')
+  const imported = bundle.imports.get('node, import, module-sync, node-addons')
+  t.assert.deepStrictEqual(Object.fromEntries(required.get('metro.config.js')), { '@react-native/metro-config': 'node_modules/@react-native/metro-config/dist/index.js', './shared.js': 'shared.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(imported.get('react-native.config.js')), { './rn/project.js': 'rn/project.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(required.get('babel.config.js')), { './babel/base.json': 'babel/base.json' })
+  t.assert.deepStrictEqual(Object.fromEntries(required.get('shared.js')), { dual: 'node_modules/dual/node.js' })
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('shared.js')), { dual: 'node_modules/dual/rn.js' })
+  t.assert.deepStrictEqual([...bundle.imports.get('*').keys()].toSorted(), ['index.js', 'shared.js'], 'none of Node\'s under \'*\'')
   t.assert.ok(![...bundle.sources.keys()].some((rel) => rel.endsWith('.m')), 'no native walk of a package only a config runs')
 }))
 
@@ -4562,9 +4563,9 @@ test('buildBundle --metro keeps Node\'s edges of a file the configs and the app 
   const edges = { './array.js': 'node_modules/esm-utils/lib/array.js', './b.js': 'node_modules/esm-utils/lib/b.js' }
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get(index)), edges, 'Metro\'s')
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('node, import, module-sync, node-addons').get(index)), edges, 'Node\'s')
-  // A file the configs alone reach keys Node's under '*', as a Node build does.
-  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('metro.config.js')), { 'esm-utils': index })
-  t.assert.ok(![...bundle.imports].some(([key, byParent]) => key !== '*' && byParent.has('metro.config.js')))
+  // A file the configs alone reach keys Node's so too, as the run records them.
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('require, node, node-addons, module-sync').get('metro.config.js')), { 'esm-utils': index })
+  t.assert.ok(!bundle.imports.get('*').has('metro.config.js'))
 }))
 
 test('buildBundle --metro refuses an import of a file both graphs reach that Metro resolves and Node misses', withTmp(async (t, tmp) => {
