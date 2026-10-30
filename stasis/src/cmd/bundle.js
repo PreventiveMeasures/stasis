@@ -1573,20 +1573,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       "project's configs: a bundle can't keep Node's miss without serving Node Metro's file in its place"
     )
   }
-  // The configs' edges: in a file only they reach, keyed as buildJsBundle keys Node's, under '*'
-  // where every context resolves one alike, else under each context's conditions. In a file the
-  // app's build reaches too, always under Node's conditions, apart from Metro's edges under '*', as
-  // the Metro plugin's run records the two, though they agree: folded into Metro's, Node's would be
-  // none of the edges the run records.
+  // The configs' edges, each under the conditions Node resolves it with, as the Metro plugin's run
+  // records them (Node's loader keys every edge so), apart from Metro's under '*' in a file both
+  // reach, though they agree: under '*', they'd be none of the edges the run records.
   const keyedResolutions = new Map()
   for (const [parent, bySpec] of configEdges) {
     for (const [spec, byKey] of bySpec) {
-      const targets = new Set(byKey.values())
-      if (configOnly.has(parent) && targets.size === 1 && !configMissed.has(`${parent}\0${spec}`)) {
-        if (!resolutions.has(parent)) resolutions.set(parent, new Map())
-        resolutions.get(parent).set(spec, [...targets][0])
-        continue
-      }
       for (const [key, child] of byKey) {
         if (!keyedResolutions.has(key)) keyedResolutions.set(key, new Map())
         const byParent = keyedResolutions.get(key)
