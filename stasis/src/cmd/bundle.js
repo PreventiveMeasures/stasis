@@ -9,7 +9,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
-import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
+import { createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
@@ -959,15 +959,6 @@ function innermostRootOf(baseDir, files, root, host) {
 // Foo.jsx/Foo.tsx, as it does under Metro. Like Metro's default, this doesn't track a project's
 // own sourceExts.
 const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
-// Metro's default `assetExts` (metro-config's, which React Native's Metro config keeps): a file Metro
-// bundles as an asset module. A resource of any other extension is no module of Metro's, which can't
-// resolve it: one the app imports reaches the build only as a transform's input, read and inlined by
-// a Babel plugin (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin
-// sees it (`run`, no edge).
-const METRO_ASSET_EXTS = new Set([
-  'bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm',
-  'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip',
-])
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 
@@ -1327,10 +1318,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
-  // --metro: the resources the app imports that are no asset of Metro's (METRO_ASSET_EXTS), a
-  // transform's inputs (rel): no edge to one, and each the bundler's, attributed to `bundle`.
+  // --metro: the resources the app imports that are no asset of Metro's (its default `assetExts`,
+  // which React Native's Metro config keeps) are no module of Metro's, which can't resolve one: one
+  // reaches the build only as a transform's input, read and inlined by a Babel plugin
+  // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin sees it
+  // (`run`, no edge). Those (rel): no edge to one, and each the bundler's, attributed to `bundle`.
   const transformInputs = new Set()
-  const isTransformInput = (abs, info) => metro && info?.resource === true && !METRO_ASSET_EXTS.has(extname(abs).slice(1).toLowerCase())
+  const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
