@@ -5082,6 +5082,19 @@ test('buildBundle --metro carries each asset\'s other scales and platform files,
   t.assert.ok(['img/logo@2x.png', 'img/logo@3x.png'].every((f) => ios.reason['bundle:metro'].includes(f)))
   const android = await buildBundle({ ...options, platforms: ['android'] })
   t.assert.deepStrictEqual([...android.sources.keys()].filter((f) => f.startsWith('img/')).toSorted(), [...scales, 'img/icon.android.png', 'img/icon.png', 'img/icon@3x.android.png'].toSorted())
+
+  // A scale linked in is carried by the name Metro reads it by, with its target's bytes; one linked
+  // from outside the project is passed over.
+  mkdirSync(join(tmp, 'shared'))
+  writeFileSync(join(tmp, 'shared', 'mid.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]))
+  symlinkSync(join('..', 'shared', 'mid.png'), join(tmp, 'img', 'logo@0.75x.png'))
+  const outside = mkdtempSync(join(tmpdir(), 'stasis-outside-'))
+  t.after(() => rmSync(outside, { recursive: true, force: true }))
+  writeFileSync(join(outside, 'big.png'), png)
+  symlinkSync(join(outside, 'big.png'), join(tmp, 'img', 'logo@5x.png'))
+  const linked = await buildBundle({ ...options, platforms: ['ios'] })
+  t.assert.deepStrictEqual([...linked.sources.keys()].filter((f) => f.endsWith('.png')).toSorted(), [...scales, 'img/icon.png', 'img/logo@0.75x.png'].toSorted())
+  t.assert.deepStrictEqual(Buffer.from(linked.sources.get('img/logo@0.75x.png'), 'base64'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]))
 }))
 
 test('buildBundle --metro keeps .stasis/empty-module.js where metro-runtime\'s is missing or not empty, as --mainFields does', withTmp(async (t, tmp) => {

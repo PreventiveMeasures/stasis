@@ -551,11 +551,11 @@ export class StasisMetro {
     }
   }
 
-  // The files of the asset module `module` Metro builds, but `modPath` itself, which it records as
-  // every module: as Metro reads them to build it (its `scales` and `hash`) and copies them out with
-  // it, its other scales (`logo@2x.png`, `logo@3x.png`; metroAssetFiles, Metro's own rule for
-  // `platform`), by real path, as `stasis bundle --metro` carries them. No import names one, so no
-  // edge. One whose real path is outside the project root is passed over. -> as #consumedResources
+  // The files of the asset module `module` Metro builds: as Metro reads them to build it (its
+  // `scales` and `hash`) and copies them out with it, it and its other scales (`logo@2x.png`,
+  // `logo@3x.png`; metroAssetFiles, Metro's own rule for `platform`). No import names one, so no
+  // edge. One whose real path is outside the project root (linked out of it) is passed over.
+  // -> as #consumedResources
   * #assetFiles(module, modPath, platform) {
     if (module.output?.[0]?.type !== 'js/module/asset') return
     for (const read of metroAssetFiles(modPath, platform, this.#assetDirHost())) {
@@ -613,27 +613,28 @@ export class StasisMetro {
     }
   }
 
-  // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them.
+  // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:
+  // by the name Metro reads it by, with the bytes it reads there (one linked in, its target's), so a
+  // load holds that name to them.
   #captureAssetFiles(module, modPath, platform) {
-    for (const { file } of this.#assetFiles(module, modPath, platform)) {
-      if (this.#seen.has(file)) continue
-      const kind = classifyExtension(file, this.#resources)
+    for (const { read } of this.#assetFiles(module, modPath, platform)) {
+      if (this.#seen.has(read)) continue
+      const kind = classifyExtension(read, this.#resources)
       if (kind === 'unknown') continue // as the module itself, which the graph capture refused
-      this.#seen.add(file)
-      const format = kind === 'code' ? nodeExtFormat(file) : undefined
+      this.#seen.add(read)
+      const format = kind === 'code' ? nodeExtFormat(read) : undefined
       // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
-      this.#recordCapture(file, realReadFileSync(file), { format, resource: kind === 'resource', inferFormat: false })
+      this.#recordCapture(read, realReadFileSync(read), { format, resource: kind === 'resource', inferFormat: false })
     }
   }
 
   // Load: Metro's asset transformer reads each of its files from disk (fs.promises), the module itself
   // too, past the stasis transformer, which serves the module's `data` that it never reads. Each Metro
-  // reads (#assetDirHost) by the name it reads it by, in scope (#assertOnDisk's), must be in the bundle
-  // and its bytes there those it reads, symlinks followed (one redirected out of the project or to
-  // another file reads other bytes) -- unless --fs=async serves it by that name. The bundle's file for
-  // a name is that name's, else (one captured through a symlink) its real path's within the project;
-  // getFile throws on one it carries neither (a scale added since the capture). Gone from disk, one is
-  // served or #assertAssetMembers refuses it.
+  // reads (#assetDirHost), by the name it reads it by (as the capture records it), in scope
+  // (#assertOnDisk's), must be in the bundle under that name (getFile throws on one it doesn't carry:
+  // a scale added since the capture) and its bytes there those it reads, symlinks followed (one
+  // redirected out of the project or to another file reads other bytes) -- unless --fs=async serves
+  // it by that name. Gone from disk, one is served or #assertAssetMembers refuses it.
   #assertAssetFiles(module, modPath, platform) {
     if (module.output?.[0]?.type !== 'js/module/asset') return
     const state = this.#state
@@ -642,7 +643,7 @@ export class StasisMetro {
       const url = pathToFileURL(read).toString()
       if (!state.config.full && !state.inNodeModules(url)) continue
       if (state.config.fs === 'async' && state.getFsFileFamily(url) !== undefined) continue
-      const { source } = state.getFile(state.hasFsFileContent(url) ? url : pathToFileURL(diskHost.realpath(read)).toString())
+      const { source } = state.getFile(url)
       this.#assertBytes(read, source, `a file of the asset '${modPath}' Metro builds`)
     }
   }

@@ -298,7 +298,9 @@ from Node's and esbuild's:
   reads them all to build its module (its `scales` and `hash`) and copies them
   out: in its directory, each of its name and type at any scale (`logo.png`,
   `logo@2x.png`, `logo@3x.png`), those for the platform (`logo.ios.png`,
-  `logo@3x.ios.png`) where it has any, else the generic ones.
+  `logo@3x.ios.png`) where it has any, else the generic ones; each by the name
+  Metro reads it by (one linked in, with its target's bytes; one linked from
+  outside the project passed over).
 
 It also carries the native build inputs of the packages the app links, as the
 Metro plugin does:

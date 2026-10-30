@@ -354,6 +354,42 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(unlisted.stderr, /not attested in bundle: .*logo@4x\.png/)
   }))
 
+  test('an asset scale linked in is carried by the name Metro reads it by, and held to its bytes under load', withTmp(async (t, tmp) => {
+    // `logo@2x.png -> ../../shared/hires.png`: Metro reads the scale by its name, its target's bytes,
+    // and so the capture records it; a load retargeting the link reads other bytes, refused.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    mkdirSync(join(tmp, 'src', 'img'))
+    mkdirSync(join(tmp, 'shared'))
+    writeFileSync(join(tmp, 'src', 'img', 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0]))
+    writeFileSync(join(tmp, 'shared', 'hires.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]))
+    const scale2x = join(tmp, 'src', 'img', 'logo@2x.png')
+    symlinkSync(join('..', '..', 'shared', 'hires.png'), scale2x)
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./img/logo.png', 'src/img/logo.png']] },
+        { path: 'src/hello.js', deps: [] },
+        { path: 'src/img/logo.png', deps: [], asset: true },
+      ],
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    const opts = (lock, bundle) => ({ lock, bundle, bundleFile: bundlePath, scope: 'full', resources: ['png'] })
+    const cap = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('add', 'add')), graph })
+    t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    t.assert.ok(Object.hasOwn(bundle.sources['.'].files, 'src/img/logo@2x.png'))
+    t.assert.ok(!Object.hasOwn(bundle.sources['.'].files, 'shared/hires.png'))
+
+    const load = () => run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load')), graph })
+    const same = await load()
+    t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
+    rmSync(scale2x)
+    symlinkSync('logo.png', scale2x)
+    const retargeted = await load()
+    t.assert.notEqual(retargeted.status, 0)
+    t.assert.match(retargeted.stderr, /'.*logo@2x\.png', a file of the asset '.*logo\.png' Metro builds, differs on disk from the bundle/)
+  }))
+
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))

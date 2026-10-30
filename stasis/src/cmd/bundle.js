@@ -1390,9 +1390,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
       // And each asset's files Metro reads to build its module (`scales`, `hash`) and copies out with
-      // it, its other scales (`logo@2x.png`, `logo@3x.png`), by real path: no import names one, so
-      // no edge, carried as the asset is.
-      const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).map((file) => host.realpath(file))
+      // it, its other scales (`logo@2x.png`, `logo@3x.png`), by the name Metro reads it by (one linked
+      // in, its target's bytes; one linked from outside the root passed over, as the Metro plugin
+      // passes it over): no import names one, so no edge, carried as the asset is.
+      const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).filter((file) => relWithin(host.realpath(file)) !== null)
       const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
       if (added.length > 0) absorb(added)
