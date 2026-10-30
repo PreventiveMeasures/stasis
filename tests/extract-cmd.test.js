@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -673,7 +673,7 @@ test('extract --lock=add merges each bundle into one lockfile, as the halves of 
 
   const r = runCli(['extract', '--lock=add', '-o', outDir, codePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  t.assert.match(r.stderr, /\[stasis\] Extracted 1 file\(s\) to .*, added to stasis\.lock\.json/)
+  t.assert.match(r.stderr, /\[stasis\] Extracted 1 file\(s\) \(1 already in place\) to .*, added to stasis\.lock\.json/)
 }))
 
 test('extract --lock=add refuses to change anything the lockfile records, before writing anything', withTmp((t, tmp) => {
@@ -725,6 +725,90 @@ test('extract --lock=add upgrades a stat record to the content the bundle carrie
       )
       t.assert.ok(!existsSync(join(outDir, 'src')), 'nothing may be written for a refused bundle')
     }
+  }
+}))
+
+// --- what is already on disk ---
+
+test('extract never overwrites a file with other bytes, in any lock mode, writing nothing', withTmp((t, tmp) => {
+  const bundlePath = join(tmp, 'app.code.br')
+  writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n', 'src/b.js': 'new\n' }))
+  for (const lock of [undefined, 'add', 'replace', 'ignore']) {
+    const outDir = join(tmp, `out-${lock}`)
+    mkdirSync(join(outDir, 'src'), { recursive: true })
+    writeFileSync(join(outDir, 'src', 'b.js'), 'old\n')
+    t.assert.throws(
+      () => extractCommand({ bundleFile: bundlePath, output: outDir, lock }),
+      /extract: src\/b\.js exists with other content, which extract never overwrites/,
+    )
+    t.assert.equal(readFileSync(join(outDir, 'src', 'b.js'), 'utf8'), 'old\n')
+    t.assert.ok(!existsSync(join(outDir, 'src', 'a.js')) && !existsSync(join(outDir, 'stasis.lock.json')), 'nothing may be written')
+  }
+}))
+
+test('extract leaves a file already holding its bytes in place, a symlink to one included', withTmp((t, tmp) => {
+  const bundlePath = join(tmp, 'app.code.br')
+  writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n', 'src/b.js': 'b\n', 'src/c.js': 'c\n' }))
+  const outDir = join(tmp, 'out')
+  mkdirSync(join(outDir, 'src'), { recursive: true })
+  writeFileSync(join(outDir, 'src', 'a.js'), 'a\n')
+  const past = new Date('2001-01-01T00:00:00Z')
+  utimesSync(join(outDir, 'src', 'a.js'), past, past)
+  if (process.platform !== 'win32') {
+    writeFileSync(join(tmp, 'b.js'), 'b\n')
+    symlinkSync(join(tmp, 'b.js'), join(outDir, 'src', 'b.js'))
+  }
+  const { files, inPlace } = extractCommand({ bundleFile: bundlePath, output: outDir })
+  t.assert.deepStrictEqual({ files, inPlace }, { files: 3, inPlace: process.platform === 'win32' ? 1 : 2 })
+  // Not rewritten, so not even touched.
+  t.assert.equal(statSync(join(outDir, 'src', 'a.js')).mtime.getTime(), past.getTime())
+  if (process.platform !== 'win32') t.assert.ok(lstatSync(join(outDir, 'src', 'b.js')).isSymbolicLink())
+  t.assert.equal(readFileSync(join(outDir, 'src', 'c.js'), 'utf8'), 'c\n')
+}))
+
+test('extract refuses a directory, a dangling symlink or a file in the way, writing nothing', withTmp((t, tmp) => {
+  const bundlePath = join(tmp, 'app.code.br')
+  writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n', 'src/lib/b.js': 'b\n' }))
+  const cases = [
+    ['a directory at a file', (out) => mkdirSync(join(out, 'src', 'lib', 'b.js'), { recursive: true }), /extract: src\/lib\/b\.js exists and is not a file/],
+    ['a file at a directory', (out) => { mkdirSync(join(out, 'src'), { recursive: true }); writeFileSync(join(out, 'src', 'lib'), 'x\n') }, /extract: src\/lib is in the way of src\/lib\/b\.js: not a directory/],
+    ['a file at the output dir', (out) => { mkdirSync(dirname(out), { recursive: true }); writeFileSync(out, 'x\n') }, /extract: output dir .* is not a directory/],
+  ]
+  if (process.platform !== 'win32') {
+    cases.push(['a dangling symlink at a file', (out) => { mkdirSync(join(out, 'src'), { recursive: true }); symlinkSync(join(tmp, 'nowhere.js'), join(out, 'src', 'a.js')) }, /extract: src\/a\.js is a dangling symlink/])
+    cases.push(['a dangling symlink at a directory', (out) => { mkdirSync(join(out, 'src'), { recursive: true }); symlinkSync(join(tmp, 'nowhere'), join(out, 'src', 'lib')) }, /extract: src\/lib is in the way of src\/lib\/b\.js: not a directory/])
+  }
+  for (const [what, setUp, refusal] of cases) {
+    const outDir = join(tmp, what.replaceAll(' ', '-'), 'out')
+    setUp(outDir)
+    t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir }), refusal, what)
+    t.assert.ok(!existsSync(join(tmp, 'nowhere.js')) && !existsSync(join(tmp, 'nowhere')), `${what}: nothing written through a link`)
+    if (statSync(outDir).isDirectory()) t.assert.ok(!existsSync(join(outDir, 'src', 'a.js')) || lstatSync(join(outDir, 'src', 'a.js')).isSymbolicLink(), `${what}: nothing written`)
+  }
+}))
+
+test('extract never writes over the bundle it reads, under its own name or another', withTmp((t, tmp) => {
+  const json = appBundle({ 'src/a.js': 'a\n' })
+  const links = [['its own path', null], ['a hard link', linkSync]]
+  if (process.platform !== 'win32') links.push(['a symlink', symlinkSync])
+  for (const [how, link] of links) {
+    const outDir = join(tmp, how.replaceAll(' ', '-'))
+    mkdirSync(join(outDir, 'src'), { recursive: true })
+    const bundlePath = link === null ? join(outDir, 'src', 'a.js') : join(tmp, `${how.replaceAll(' ', '-')}.br`)
+    writeRawBundle(bundlePath, json)
+    if (link !== null) link(bundlePath, join(outDir, 'src', 'a.js'))
+    const bytes = readFileSync(bundlePath)
+    t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'ignore' }), /extract: src\/a\.js is the bundle being extracted/, how)
+    t.assert.ok(readFileSync(bundlePath).equals(bytes), `${how}: the bundle is left as it was`)
+
+    // Nor as the lockfile a mode writes.
+    rmSync(join(outDir, 'src', 'a.js'))
+    if (link === null) writeRawBundle(join(outDir, 'stasis.lock.json'), json)
+    else link(bundlePath, join(outDir, 'stasis.lock.json'))
+    const lockBundle = link === null ? join(outDir, 'stasis.lock.json') : bundlePath
+    t.assert.throws(() => extractCommand({ bundleFile: lockBundle, output: outDir, lock: 'replace' }), /extract: stasis\.lock\.json is the bundle being extracted/, how)
+    t.assert.ok(readFileSync(lockBundle).equals(bytes), `${how}: the bundle is left as it was`)
+    t.assert.ok(!existsSync(join(outDir, 'src', 'a.js')), `${how}: nothing written`)
   }
 }))
 
@@ -805,7 +889,7 @@ test('CLI: extract --lock reports the verification, and refuses an unknown mode'
 
   const r = runCli(['extract', '--lock=frozen', '-o', outDir, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  t.assert.match(r.stderr, /\[stasis\] Extracted 1 file\(s\) to .*, verified against stasis\.lock\.json/)
+  t.assert.match(r.stderr, /\[stasis\] Extracted 1 file\(s\) \(1 already in place\) to .*, verified against stasis\.lock\.json/)
 
   const bad = runCli(['extract', '--lock=load', '-o', outDir, bundlePath])
   t.assert.equal(bad.status, 1)

@@ -709,12 +709,12 @@ test('extract of a bundle with nothing executable chmods nothing', posixOnly, wi
   t.assert.ok(!isExec(join(out, 'main.sh')))
 }))
 
-// Extract is authoritative over the modes of the files it writes, so re-extracting over an older
-// tree brings it back in line with the artifact instead of leaving whatever was there.
+// Extract is authoritative over the modes of the files it extracts, so re-extracting over an earlier
+// extraction of the same bytes brings it back in line with the artifact instead of leaving whatever was there.
 test('extract into a non-empty directory clears a stale execute bit', posixOnly, withTmp('exec-extract-stale')((t, tmp) => {
   const out = join(tmp, 'out')
   mkdirSync(out)
-  writeFileSync(join(out, 'lib.sh'), 'stale\n')
+  writeFileSync(join(out, 'lib.sh'), '#!/bin/sh\n')
   chmodSync(join(out, 'lib.sh'), 0o755) // an earlier extract, when the bundle still marked it executable
 
   const bundlePath = join(tmp, 'b.br')
@@ -737,7 +737,8 @@ test('extract into a non-empty directory clears a stale execute bit', posixOnly,
 test('extract leaves the read/write bits of a restricted pre-existing file alone', posixOnly, withTmp('exec-nowiden')((t, tmp) => {
   const out = join(tmp, 'out')
   mkdirSync(out)
-  writeFileSync(join(out, 'secret.json'), '{"old":1}')
+  // The bytes the bundle carries: extract never overwrites a file with other ones.
+  writeFileSync(join(out, 'secret.json'), '{"new":1}')
   chmodSync(join(out, 'secret.json'), 0o600) // owner-only, e.g. it holds a token
 
   const bundlePath = join(tmp, 'b.br')
@@ -751,8 +752,8 @@ test('extract leaves the read/write bits of a restricted pre-existing file alone
     imports: {},
   })))
   extractCommand({ cwd: tmp, bundleFile: bundlePath, output: out })
-  t.assert.equal(readFileSync(join(out, 'secret.json'), 'utf8'), '{"new":1}', 'content is replaced')
-  t.assert.equal(perms(join(out, 'secret.json')), 0o600, 'but the mode is not widened')
+  t.assert.equal(readFileSync(join(out, 'secret.json'), 'utf8'), '{"new":1}')
+  t.assert.equal(perms(join(out, 'secret.json')), 0o600, 'the mode is not widened')
 }))
 
 // A v0 bundle attests nothing about modes, so there is no list to honour and clearing execute bits
@@ -760,7 +761,7 @@ test('extract leaves the read/write bits of a restricted pre-existing file alone
 test('extract leaves modes untouched for a legacy v0 bundle', posixOnly, withTmp('exec-v0-modes')((t, tmp) => {
   const out = join(tmp, 'out')
   mkdirSync(out)
-  writeFileSync(join(out, 'run.sh'), 'old\n')
+  writeFileSync(join(out, 'run.sh'), '#!/bin/sh\n')
   chmodSync(join(out, 'run.sh'), 0o755)
 
   const bundlePath = join(tmp, 'v0.br')
@@ -771,15 +772,14 @@ test('extract leaves modes untouched for a legacy v0 bundle', posixOnly, withTmp
   t.assert.equal(perms(join(out, 'run.sh')), 0o755)
 }))
 
-// The write deliberately follows a symlink inside outDir (a pnpm node_modules), but granting +x to
-// a link's target would let an untrusted bundle make a file OUTSIDE the tree runnable, which an
-// overwrite alone cannot do.
+// A symlink inside outDir (a pnpm node_modules) to a file holding the bundle's bytes is left in place, but
+// granting +x to a link's target would let an untrusted bundle make a file OUTSIDE the tree runnable.
 test('extract never chmods through a symlink', posixOnly, withTmp('exec-symlink')((t, tmp) => {
   const out = join(tmp, 'out')
   mkdirSync(out)
   mkdirSync(join(tmp, 'elsewhere'))
   const victim = join(tmp, 'elsewhere', 'cron.sh')
-  writeFileSync(victim, 'benign data\n')
+  writeFileSync(victim, '#!/bin/sh\nid\n')
   chmodSync(victim, 0o644)
   symlinkSync(victim, join(out, 'hook.sh'))
 

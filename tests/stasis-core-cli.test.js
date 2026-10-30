@@ -253,7 +253,7 @@ test('extract asserts the lockfile already in the output dir unless --lock=repla
   t.assert.equal(run(['extract', '--lock=add', '-o', outDir, bundlePath]).status, 0)
   const verified = run(['extract', '-o', outDir, bundlePath])
   t.assert.equal(verified.status, 0, `stderr: ${verified.stderr}`)
-  t.assert.match(verified.stderr, /\[stasis-core\] Extracted 1 file\(s\) to .*, verified against stasis\.lock\.json/)
+  t.assert.match(verified.stderr, /\[stasis-core\] Extracted 1 file\(s\) \(1 already in place\) to .*, verified against stasis\.lock\.json/)
 
   writeRawBundle(bundlePath, bundle('export const x = 2\n'))
   const refused = run(['extract', '-o', outDir, bundlePath])
@@ -262,6 +262,13 @@ test('extract asserts the lockfile already in the output dir unless --lock=repla
   t.assert.match(run(['extract', '--lock=none', '-o', outDir, bundlePath]).stderr, /unexpected .*stasis\.lock\.json with --lock=none/)
   t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 1\n')
 
+  // replace takes the lockfile, but no mode overwrites a file with other bytes: the old tree must go first.
+  const lockText = readFileSync(join(outDir, 'stasis.lock.json'), 'utf8')
+  const overwrite = run(['extract', '--lock=replace', '-o', outDir, bundlePath])
+  t.assert.notEqual(overwrite.status, 0)
+  t.assert.match(overwrite.stderr, /extract: src\/entry\.js exists with other content, which extract never overwrites/)
+  t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), lockText)
+  rmSync(join(outDir, 'src'), { recursive: true })
   const replaced = run(['extract', '--lock=replace', '-o', outDir, bundlePath])
   t.assert.equal(replaced.status, 0, `stderr: ${replaced.stderr}`)
   t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 2\n')

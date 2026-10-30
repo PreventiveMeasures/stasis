@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -94,6 +94,27 @@ function addToLockfile(lockAbs, derived) {
   return merged
 }
 
+// A file's device and inode (as bigints: a number can round a large Windows file id), undefined when there's none.
+function fileId(path) {
+  const stats = statSync(path, { throwIfNoEntry: false, bigint: true })
+  return stats && `${stats.dev}:${stats.ino}`
+}
+
+// Whether the bytes for `file` are already at `abs`, so it is left as it is; throws for anything else there. Extract
+// never overwrites a file with other bytes, nor the bundle it reads, under its own name or another (a symlink, a hard link).
+function alreadyInPlace(abs, file, content, bundleId) {
+  const stats = statSync(abs, { throwIfNoEntry: false, bigint: true })
+  if (stats === undefined) {
+    // A dangling symlink: the write would create its target, wherever that is.
+    if (lstatSync(abs, { throwIfNoEntry: false }) !== undefined) throw new Error(`extract: ${file} is a dangling symlink`)
+    return false
+  }
+  if (`${stats.dev}:${stats.ino}` === bundleId) throw new Error(`extract: ${file} is the bundle being extracted`)
+  if (!stats.isFile()) throw new Error(`extract: ${file} exists and is not a file`)
+  if (!readFileSync(abs).equals(Buffer.from(content))) throw new Error(`extract: ${file} exists with other content, which extract never overwrites`)
+  return true
+}
+
 export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: lockMode, logLabel = 'stasis-core' } = {}) {
   if (!bundleFile) throw new Error('extract: a bundle file is required')
   if (lockMode !== undefined && !LOCK_MODES.has(lockMode)) {
@@ -116,6 +137,11 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const outDir = resolve(cwd, output ?? '.')
   const outPrefix = outDir === sep ? outDir : `${outDir}${sep}`
   const lockAbs = join(outDir, FILE_LOCK)
+  // A file (or a dangling symlink) there holds neither a lockfile nor room for the bundle's paths.
+  const outStats = statSync(outDir, { throwIfNoEntry: false })
+  if (outStats === undefined ? lstatSync(outDir, { throwIfNoEntry: false }) !== undefined : !outStats.isDirectory()) {
+    throw new Error(`extract: output dir ${outDir} is not a directory`)
+  }
   // lstat, not existsSync: a dangling symlink there is a lockfile too, so the default fails closed on it.
   const lockPresent = lstatSync(lockAbs, { throwIfNoEntry: false }) !== undefined
   // Unset: assert the lockfile already in the output dir, else write none.
@@ -159,7 +185,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
       if (exec) executables += 1
-      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec])
+      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec, file])
     }
   }
   // A planned file must not also be a parent directory of another, else the writes throw halfway through.
@@ -176,8 +202,29 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   if (frozen) assertLockfileMatches(lockAbs, derived)
   const lockText = derived === null || frozen ? null : (merging ? addToLockfile(lockAbs, derived) : derived).serialize()
 
+  // What is already on disk, checked whole before the first write too: each directory a write needs must be one (or
+  // missing), and each target missing or already holding its bytes. The lockfile, which --lock governs, is no
+  // exception to the bundle being off limits.
+  const bundleId = fileId(bundleAbs)
+  if (lockText !== null && fileId(lockAbs) === bundleId) throw new Error(`extract: ${FILE_LOCK} is the bundle being extracted`)
+  const checkedDirs = new Set()
+  const inPlace = new Set()
+  for (const [abs, content, , file] of writes) {
+    // Top-down, so a stat never runs into a file higher up (ENOTDIR); the first missing one ends the walk.
+    const dirs = []
+    for (let d = dirname(abs); d.length > outDir.length; d = dirname(d)) dirs.push(d)
+    for (const d of dirs.toReversed()) {
+      if (checkedDirs.has(d)) continue
+      const stats = statSync(d, { throwIfNoEntry: false })
+      if (stats === undefined && lstatSync(d, { throwIfNoEntry: false }) === undefined) break
+      if (!stats?.isDirectory()) throw new Error(`extract: ${relative(outDir, d) || '.'} is in the way of ${file}: not a directory`)
+      checkedDirs.add(d)
+    }
+    if (alreadyInPlace(abs, file, content, bundleId)) inPlace.add(abs)
+  }
+
   // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600 target)
-  // and setuid/setgid/sticky are cleared. Applied to every written file; skipped for v0, which attests no modes.
+  // and setuid/setgid/sticky are cleared. Applied to every extracted file, one already in place too; skipped for v0, which attests no modes.
   const withModes = withLockfile && canObserveExecuteBits()
   let chmodFailures = 0
   const applyMode = (abs, exec) => {
@@ -204,14 +251,19 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   }
 
   for (const [abs, content, exec] of writes) {
-    mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, content)
+    if (!inPlace.has(abs)) {
+      mkdirSync(dirname(abs), { recursive: true })
+      // Exclusive: a file that appeared since the check, or a second path a case-insensitive disk folds onto an
+      // earlier one, fails the write rather than being overwritten.
+      writeFileSync(abs, content, { flag: 'wx' })
+    }
     if (withModes) applyMode(abs, exec)
   }
   mkdirSync(outDir, { recursive: true }) // for an empty bundle, where no write created it
   if (lockText !== null) writeFileSync(lockAbs, lockText)
 
-  const execNote = executables > 0 ? ` (${executables} executable)` : ''
+  const notes = [executables > 0 && `${executables} executable`, inPlace.size > 0 && `${inPlace.size} already in place`].filter(Boolean)
+  const execNote = notes.length > 0 ? ` (${notes.join(', ')})` : ''
   const andLock = lockText !== null && !merging ? ` and ${FILE_LOCK}` : ''
   const lockNote = frozen ? `, verified against ${FILE_LOCK}` : merging ? `, added to ${FILE_LOCK}` : ''
   console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${andLock} to ${outDir}${lockNote}`)
@@ -221,5 +273,5 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   if (!withLockfile && writesLock) {
     console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${FILE_LOCK} can not be restored and was not written`)
   }
-  return { dir: outDir, files: writes.length, executable: executables, lock }
+  return { dir: outDir, files: writes.length, executable: executables, inPlace: inPlace.size, lock }
 }
