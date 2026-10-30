@@ -1254,11 +1254,24 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
       list(node.left, type)
       list(node.right, type)
     } else if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed && LIST_METHODS.has(node.callee.property.name)) {
-      // A list made of another: `base.concat(more)` of both, `[a, b].filter(Boolean)` or `.flat()` of its own.
-      list(node.callee.object, type)
-      if (node.callee.property.name === 'concat') for (const arg of node.arguments) list(arg.type === 'SpreadElement' ? arg.argument : arg, type)
+      // A list made of another: `base.concat(more)` of both, `[a, b].filter(Boolean)` of its own, and
+      // `[[a, b], c].flat()` of its own flattened, each array in it a list.
+      const method = node.callee.property.name
+      if (method === 'flat') flat(node.callee.object, type)
+      else list(node.callee.object, type)
+      if (method === 'concat') for (const arg of node.arguments) list(arg.type === 'SpreadElement' ? arg.argument : arg, type)
     } else {
       entry(node, type)
+    }
+  }
+  // `node` as a list `.flat()` flattens: each array in it a list of its own.
+  const flat = (node, type) => {
+    if (node?.type === 'Identifier') {
+      for (const init of inits.get(node.name) ?? []) flat(init, type)
+    } else if (node?.type === 'ArrayExpression') {
+      for (const element of node.elements) list(element?.type === 'SpreadElement' ? element.argument : element, type)
+    } else {
+      list(node, type)
     }
   }
   const entry = (node, type) => {
