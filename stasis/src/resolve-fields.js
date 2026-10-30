@@ -184,7 +184,7 @@ export const METRO_ASSET_EXTS = new Set(['bmp', 'gif', 'jpg', 'jpeg', 'png', 'ps
 const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4']
 
 // Metro's isAssetFile: any of the file name's dot-suffixes (`png`, or `tar.gz` and `gz`) an asset extension.
-function isMetroAssetFile(path) {
+export function isMetroAssetFile(path) {
   const name = basename(path)
   for (let i = name.length - 1; i >= 0; i--) {
     if (name[i] === '.' && METRO_ASSET_EXTS.has(name.slice(i + 1))) return true

@@ -9,7 +9,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
-import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
+import { createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
@@ -1318,6 +1318,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
+  // --metro: the resources the app imports that are no asset of Metro's (its default `assetExts`,
+  // which React Native's Metro config keeps) are no module of Metro's, which can't resolve one: one
+  // reaches the build only as a transform's input, read and inlined by a Babel plugin
+  // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
+  // (`metro`, no edge). Those (rel): no edge to one, and no asset registry for one.
+  const transformInputs = new Set()
+  const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs)
   for (const platform of platforms) {
     const field = fieldResolverFor(platform, { mainFields, metro, conditions: scanConditions, typescript, typescriptPaths, host })
     const { extras } = field
@@ -1352,6 +1359,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         const rel = toRel(abs)
         reached.add(abs)
         if (info.resource) resourceRels.add(rel)
+        if (isTransformInput(abs, info)) transformInputs.add(rel)
         // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
         // it from source, and Node's module/commonjs isn't what it runs. But the one its name alone
         // gives it (.json, .mjs, .cjs: nodeExtFormat), as Node loads it too.
@@ -1362,6 +1370,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (e.empty) { usesEmpty = true; target = emptyTarget }
           else if (e.child) target = toRel(fileURLToPath(e.child))
           else continue // unresolved (already warned/thrown by reportScanIssues)
+          // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
+          if (e.child && isTransformInput(fileURLToPath(e.child), scanner.files.get(e.child))) continue
           if (!edges.has(rel)) edges.set(rel, new Map())
           const bySpec = edges.get(rel)
           if (!bySpec.has(e.spec)) bySpec.set(e.spec, new Map())
@@ -1376,7 +1386,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // passes one over.
     if (metro) {
       const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => fileURLToPath(url))
-      const assets = [...scanner.files].filter(([, info]) => info.resource).map(([url]) => fileURLToPath(url))
+      const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(fileURLToPath(url), info)).map(([url]) => fileURLToPath(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
       const added = [...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host })]

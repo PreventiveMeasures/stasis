@@ -9,12 +9,15 @@ import { createRequire } from 'node:module'
 // rewrite. This adds one plugin that records every specifier in its `pre` -- Babel runs every
 // plugin's `pre` before any plugin's visitor, so nothing has rewritten one yet -- and reads each
 // again once Babel is done, before Metro's own passes replace them in the AST, but one importing
-// types alone that Babel erased. The real transformer runs as it would; its output is untouched.
+// types alone that Babel erased. One a plugin consumed, gone from Babel's output with nothing left
+// naming its module (`require('./messages.po')`, which @exodus/i18n's plugin-inline-po reads and
+// inlines), it keeps apart. The real transformer runs as it would; its output is untouched.
 
 const require = createRequire(import.meta.url)
 
 // One per worker transform, run by ./metro-transformer.js: `babelTransformerPath` is the project's
-// (absolute), and `asWritten` maps each specifier Babel left to the ones written there.
+// (absolute), `asWritten` maps each specifier Babel left to the ones written there, and `consumed`
+// holds each one a plugin consumed, as Babel last left it.
 export const transformContext = new AsyncLocalStorage()
 
 // The nodes Metro's collectDependencies takes a specifier from: these declarations, and the calls
@@ -59,11 +62,26 @@ function typesOnly(node) {
   return specifiers.length > 0 && specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))
 }
 
+// The dependency nodes in Babel's output, and the specifiers they hold as constants.
+function dependenciesLeft(t, ast) {
+  const nodes = new Set()
+  const specifiers = new Set()
+  t.traverseFast(ast, (node) => {
+    if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
+    nodes.add(node)
+    const specifier = specifierOf(node)
+    if (specifier !== undefined) specifiers.add(specifier)
+  })
+  return { nodes, specifiers }
+}
+
 function asWrittenPlugin({ types: t }) {
   return {
     name: 'stasis-as-written',
     pre(file) {
-      const { slots } = transformContext.getStore()
+      const context = transformContext.getStore()
+      context.types = t
+      const { slots } = context
       let evaluate = false
       t.traverseFast(file.ast, (node) => {
         if (node.type === 'CallExpression' ? !isDependencyCall(node.callee) : !DECLARATIONS.has(node.type)) return
@@ -106,15 +124,21 @@ export function transform(args) {
   // declaration of types alone Babel erased. One a plugin replaced keeps it too: lowered to a require
   // (the commonjs transform), or split in two (`export * as ns from` into an import and an export,
   // the export-namespace-from transform), it names the same module, its specifier as rewritten
-  // before (module-resolver rewrites every one as the program enters).
+  // before (module-resolver rewrites every one as the program enters). One gone from the output,
+  // with no node there naming its module, a plugin consumed in its stead.
   const collect = (result) => {
+    const left = result?.ast && context.types ? dependenciesLeft(context.types, result.ast) : null
     for (const { node, written, types } of slots) {
       if (types && !kept.has(node)) continue
       // One evaluated through its scope stays as written: no plugin rewrites what isn't a literal.
-      const left = specifierOf(node) ?? (node.type === 'CallExpression' ? written : undefined)
-      if (left === undefined) continue
-      if (!context.asWritten.has(left)) context.asWritten.set(left, new Set())
-      context.asWritten.get(left).add(written)
+      const specifier = specifierOf(node) ?? (node.type === 'CallExpression' ? written : undefined)
+      if (specifier === undefined) continue
+      if (left !== null && !left.nodes.has(node) && !left.specifiers.has(specifier)) {
+        context.consumed.add(specifier)
+        continue
+      }
+      if (!context.asWritten.has(specifier)) context.asWritten.set(specifier, new Set())
+      context.asWritten.get(specifier).add(written)
     }
     return result
   }

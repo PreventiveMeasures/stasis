@@ -429,6 +429,69 @@ module.exports = { parserOpts: { plugins: ['flow'] }, plugins: [keepTypeImports]
   t.assert.deepStrictEqual(out.dependencies, [{ name: './src/a', data: { key: './src/a' } }])
 }))
 
+test('an import a Babel plugin consumed rides on the output, apart from Metro\'s dependencies', withTmp((t, tmp) => {
+  // A plugin reads `require('./locales/de/messages.po')` and inlines it, as @exodus/i18n's
+  // plugin-inline-po does: Metro has no dependency, and the output carries the import as consumed.
+  // One a plugin splits into others (`import { a } from './src/all'` into `./src/all/a`, as
+  // babel-plugin-lodash does) is consumed too; one a preset lowers to a require is not.
+  writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'consumed', version: '0.0.0' }))
+  writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
+  writeFileSync(join(tmp, 'babel.config.js'), `const { readFileSync } = require('node:fs')
+const { dirname, resolve } = require('node:path')
+const inlinePo = ({ types: t }) => ({
+  visitor: {
+    CallExpression(path, state) {
+      const [arg] = path.node.arguments
+      if (!path.get('callee').isIdentifier({ name: 'require' }) || !t.isStringLiteral(arg) || !arg.value.endsWith('.po')) return
+      path.replaceWith(t.stringLiteral(readFileSync(resolve(dirname(state.filename), arg.value), 'utf8')))
+    },
+  },
+})
+const split = ({ types: t }) => ({
+  visitor: {
+    ImportDeclaration(path) {
+      if (path.node.source.value !== './src/all') return
+      path.replaceWithMultiple(path.node.specifiers.map((specifier) =>
+        t.importDeclaration([t.importDefaultSpecifier(t.cloneNode(specifier.local))], t.stringLiteral('./src/all/' + specifier.imported.name))))
+    },
+  },
+})
+const lower = ({ types: t }) => ({
+  visitor: {
+    Program: {
+      exit(path) {
+        for (const statement of path.get('body')) {
+          if (!statement.isImportDeclaration()) continue
+          statement.replaceWith(t.expressionStatement(t.callExpression(t.identifier('require'), [t.cloneNode(statement.node.source)])))
+        }
+      },
+    },
+  },
+})
+module.exports = { plugins: [inlinePo, split], presets: [() => ({ plugins: [lower] })] }
+`)
+  writeFileSync(join(tmp, 'index.js'), "import abc from './src/abc'\nimport { a } from './src/all'\nconst de = require('./locales/de/messages.po')\nexport default [abc, a, de]\n")
+  mkdirSync(join(tmp, 'src', 'all'), { recursive: true })
+  writeFileSync(join(tmp, 'src', 'abc.js'), 'export default 1\n')
+  writeFileSync(join(tmp, 'src', 'all', 'a.js'), 'export default 2\n')
+  mkdirSync(join(tmp, 'locales', 'de'), { recursive: true })
+  writeFileSync(join(tmp, 'locales', 'de', 'messages.po'), 'msgid "Hello"\nmsgstr "Hallo"\n')
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+  const r = transform(['index.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver) } })
+  t.assert.equal(r.status, 0, `transform stderr: ${r.stderr}`)
+  const [out] = JSON.parse(r.stdout)
+  t.assert.deepStrictEqual(out.dependencies, [
+    { name: './src/abc', data: { key: './src/abc' } },
+    { name: './src/all/a', data: { key: './src/all/a' }, stasisInserted: true },
+  ])
+  t.assert.deepStrictEqual(out.output, [{ type: 'js/module', data: { stasisConsumed: ['./src/all', './locales/de/messages.po'] } }])
+
+  // A file whose every import stays leaves the output as the worker returned it.
+  const kept = transform(['src/abc.js'], { cwd: tmp, env: { STASIS_TEST_TRANSFORMER_CONFIG: JSON.stringify(handedOver) } })
+  t.assert.equal(kept.status, 0, `transform stderr: ${kept.stderr}`)
+  t.assert.deepStrictEqual(JSON.parse(kept.stdout)[0].output, [{ type: 'js/module', data: {} }])
+}))
+
 test('a project transformer that is this one itself, wired by hand as well, gives way to Metro\'s default', withTmp((t, tmp) => {
   // withStasis() hands over the project's transformerPath, which a project that wired
   // @exodus/stasis/metro-transformer by hand points at this transformer: running it as its own

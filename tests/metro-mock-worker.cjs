@@ -7,7 +7,7 @@
 // collectDependencies does, which takes a `require()` argument that evaluates to a string with
 // confidence (a template, a concatenation), not only a literal. Returns `{ config, dependencies,
 // output }`, so a test can see the config it was handed (and so which Babel transformer ran) and how
-// each dependency came out.
+// each dependency came out; `output` is the one JS entry the worker returns, with no code.
 const { traverse, types: t } = require('@babel/core')
 
 exports.transform = async (config, projectRoot, filename, data, options) => {
@@ -32,7 +32,7 @@ exports.transform = async (config, projectRoot, filename, data, options) => {
       if (evaluated.confident && typeof evaluated.value === 'string') path.node.arguments[0] = register(evaluated.value)
     },
   })
-  return { config, dependencies, output: [] }
+  return { config, dependencies, output: [{ type: 'js/module', data: {} }] }
 }
 
 exports.getCacheKey = () => 'mock-worker-cache-key'

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { isUtf8 } from 'node:buffer'
+import { Buffer, isUtf8 } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
@@ -11,7 +11,7 @@ import { looksNative, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -155,6 +155,8 @@ function metroDefaultSerializer() {
 // transformerPath -- out of stasis's hands (see withStasis).
 export class StasisMetro {
   #seen = new Set()
+  // The project root's real path, once a consumed resource needs it (#consumedResources).
+  #realRoot
   #state
   #resources
 
@@ -425,6 +427,7 @@ export class StasisMetro {
       if (modPath === undefined) continue
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
+      this.#assertConsumed(module, modPath)
     }
   }
 
@@ -480,6 +483,75 @@ export class StasisMetro {
       // byte-derived format).
       const format = kind === 'code' ? nodeExtFormat(modPath) : undefined
       this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
+      this.#captureConsumed(module, modPath)
+    }
+  }
+
+  // The resources a Babel plugin consumed in transforming `module`, read and inlined in their imports'
+  // stead (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the stasis transformer
+  // carries them (`stasisConsumed`): no module of Metro's, so no edge, but the build's input all the
+  // same. One named by path, as such a plugin reads it, from the module's dir, by its real path, as
+  // Metro names its modules. One naming code (an import a plugin split into others, as
+  // babel-plugin-lodash does), no file, or one whose real path is outside the project root (a
+  // symlink out of it too) is passed over; one the resources don't carry is refused. -> each as
+  // { file: its real path, read: the path the plugin reads it by }
+  * #consumedResources(module, modPath) {
+    for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
+      if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
+      const lexical = resolve(dirname(modPath), specifier)
+      if (diskHost.stat(lexical)?.isFile() !== true) continue
+      let file
+      try {
+        file = diskHost.realpath(lexical)
+      } catch {
+        continue
+      }
+      this.#realRoot ??= diskHost.realpath(this.#state.root)
+      if (!isPathWithin(this.#realRoot, file)) continue
+      try {
+        this.#state.relative(file)
+      } catch {
+        continue
+      }
+      const kind = classifyExtension(file, this.#resources)
+      if (kind === 'code') continue
+      if (kind === 'unknown') {
+        throw new Error(
+          `StasisMetro: unsupported extension for '${file}', which a Babel plugin inlines into '${modPath}' -- ` +
+          `add its extension or filename to the plugin's resources option or stop importing it`
+        )
+      }
+      yield { file, read: lexical }
+    }
+  }
+
+  // Capture: each, attributed to `metro`, as `stasis bundle --metro` records them under `bundle:metro`.
+  #captureConsumed(module, modPath) {
+    for (const { file } of this.#consumedResources(module, modPath)) {
+      if (this.#seen.has(file)) continue
+      this.#seen.add(file)
+      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
+      this.#recordCapture(file, realReadFileSync(file), { resource: true, inferFormat: false })
+    }
+  }
+
+  // Load: the Babel plugin reads each from disk, past the stasis transformer, which serves only the
+  // module it transforms. So each in scope (as the transformer's: any under scope=full, else one in
+  // node_modules) must be in the bundle (getFile throws on one it doesn't carry), and its disk bytes
+  // the bundle's -- unless --fs serves the read from the bundle itself, which it does by the path the
+  // plugin reads (not a symlink to the file the bundle carries). Fail closed on drift.
+  #assertConsumed(module, modPath) {
+    for (const { file, read } of this.#consumedResources(module, modPath)) {
+      const url = pathToFileURL(file).toString()
+      if (!this.#state.config.full && !this.#state.inNodeModules(url)) continue
+      const { source } = this.#state.getFile(url)
+      if (this.#state.config.fs && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) continue
+      if (!realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
+        throw new Error(
+          `StasisMetro: '${file}', which a Babel plugin inlines into '${modPath}', differs on disk from the bundle -- ` +
+          'the plugin reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
+        )
+      }
     }
   }
 }
