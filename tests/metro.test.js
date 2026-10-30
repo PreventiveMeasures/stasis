@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { test, describe } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -181,14 +181,22 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
   test('a resource a Babel plugin consumed is carried as Metro\'s, with no edge', withTmp(async (t, tmp) => {
     // `require('./locales/de/messages.po')`, which @exodus/i18n's plugin-inline-po reads and inlines:
     // no dependency of Metro's, but the stasis worker transformer carries it as consumed, so it's
-    // recorded under `metro`, as `stasis bundle --metro` records it. One naming code (an import a
-    // plugin split), no file, or no path is passed over.
+    // recorded under `metro`, as `stasis bundle --metro` records it. One linked to another in the
+    // project is carried by its real path; one naming code (an import a plugin split), no file, no
+    // path, or a file linked in from outside the project is passed over.
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
     mkdirSync(join(tmp, 'src', 'locales', 'de'), { recursive: true })
     writeFileSync(join(tmp, 'src', 'locales', 'de', 'messages.po'), 'msgid "Hello"\nmsgstr "Hallo"\n')
     writeFileSync(join(tmp, 'src', 'all.js'), 'export const a = 1\n')
-    const consumed = ['./locales/de/messages.po', './all.js', './missing.po', '@env']
+    mkdirSync(join(tmp, 'shared'))
+    writeFileSync(join(tmp, 'shared', 'en.po'), 'msgid "Hello"\nmsgstr "Hello"\n')
+    symlinkSync(join('..', 'shared', 'en.po'), join(tmp, 'src', 'en.po'))
+    const outside = mkdtempSync(join(tmpdir(), 'stasis-metro-outside-'))
+    t.after(() => rmSync(outside, { recursive: true, force: true }))
+    writeFileSync(join(outside, 'fr.po'), 'msgid "Hello"\nmsgstr "Bonjour"\n')
+    symlinkSync(join(outside, 'fr.po'), join(tmp, 'src', 'fr.po'))
+    const consumed = ['./locales/de/messages.po', './en.po', './fr.po', './all.js', './missing.po', '@env']
     const graph = {
       modules: [
         { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js']], consumed },
@@ -200,7 +208,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const r = await run('src/entry.js', { cwd: tmp, env, graph })
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
-    t.assert.deepStrictEqual(Object.keys(bundle.sources['.'].files).toSorted(), ['src/entry.js', 'src/hello.js', 'src/locales/de/messages.po'])
+    t.assert.deepStrictEqual(Object.keys(bundle.sources['.'].files).toSorted(), ['shared/en.po', 'src/entry.js', 'src/hello.js', 'src/locales/de/messages.po'])
     t.assert.equal(bundle.formats['src/locales/de/messages.po'], 'resource')
     t.assert.deepStrictEqual(bundle.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js' })
 
@@ -208,6 +216,43 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const refused = await run('src/entry.js', { cwd: tmp, env: withOpts({ lock: 'add', bundle: 'add', bundleFile: bundlePath, scope: 'full' }), graph })
     t.assert.notEqual(refused.status, 0)
     t.assert.match(refused.stderr, /unsupported extension for '.*messages\.po', which a Babel plugin inlines into '.*entry\.js'/)
+  }))
+
+  test('bundle=load refuses a resource a Babel plugin consumed that drifted on disk', withTmp(async (t, tmp) => {
+    // The Babel plugin reads it from disk past the stasis transformer, which serves only the module
+    // it transforms: under load the serializer holds it to the bundle's bytes, unless --fs serves it.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    mkdirSync(join(tmp, 'src', 'locales', 'de'), { recursive: true })
+    const po = join(tmp, 'src', 'locales', 'de', 'messages.po')
+    writeFileSync(po, 'msgid "Hello"\nmsgstr "Hallo"\n')
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js']], consumed: ['./locales/de/messages.po'] },
+        { path: 'src/hello.js', deps: [] },
+      ],
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    const opts = (lock, bundle) => ({ lock, bundle, bundleFile: bundlePath, scope: 'full', resources: ['po'] })
+    const cap = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('add', 'add')), graph })
+    t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    const same = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load')), graph })
+    t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
+
+    writeFileSync(po, 'msgid "Hello"\nmsgstr "Servus"\n')
+    const drifted = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load')), graph })
+    t.assert.notEqual(drifted.status, 0)
+    t.assert.match(drifted.stderr, /'.*messages\.po', which a Babel plugin inlines into '.*entry\.js', differs on disk from the bundle/)
+    const served = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load'), { EXODUS_STASIS_FS: 'sync' }), graph })
+    t.assert.equal(served.status, 0, `stderr: ${served.stderr}`)
+
+    // One the bundle doesn't carry fails closed.
+    const unattested = { modules: [{ ...graph.modules[0], consumed: ['./locales/de/messages.po', './locales/de/extra.po'] }, graph.modules[1]] }
+    writeFileSync(po, 'msgid "Hello"\nmsgstr "Hallo"\n')
+    writeFileSync(join(tmp, 'src', 'locales', 'de', 'extra.po'), 'msgid "Bye"\nmsgstr "Tschüss"\n')
+    const missing = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load')), graph: unattested })
+    t.assert.notEqual(missing.status, 0)
+    t.assert.match(missing.stderr, /not attested in bundle: .*extra\.po/)
   }))
 
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {

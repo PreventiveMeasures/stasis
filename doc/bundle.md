@@ -412,8 +412,12 @@ source, so the plugin records no edge for it, as the static build doesn't. It
 still carries the file, as it carries every module of Metro's graph. An import
 a Babel plugin consumes, gone from Babel's output with nothing there naming its
 module (the `.po` above), is no dependency of Metro's: the plugin records no
-edge for it either, but carries a resource it names by path from the importer,
-under `metro`, as the static build carries it under `bundle:metro`.
+edge for it either, but carries a resource it names by path from the importer
+(by its real path, none outside the project root), under `metro`, as the static
+build carries it under `bundle:metro`. Under `--bundle=load` the Babel plugin
+reads it from disk, so the Metro plugin refuses one the bundle doesn't carry or
+whose bytes on disk differ from the bundle's, unless `--fs` serves it from the
+bundle.
 
 The static build carries those files too, as Metro's code, each scanned for
 what it imports in turn:
