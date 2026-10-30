@@ -69,12 +69,11 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
 // A package name as npm takes one (`name` or `@scope/name`), which a path can't climb out with.
 const PACKAGE_NAME = /^(?:@[^/\\@.][^/\\]*\/)?[^/\\@.][^/\\]*$/u
 
-// The app's packages `react-native config` links, as a native build would, read as data rather than
-// by running the CLI: each name the app's package.json lists under dependencies, peerDependencies or
-// devDependencies (the CLI's list), in the nearest node_modules up from `projectDir` that holds it
-// (as the CLI looks), where it ships native code (looksNative). What a react-native.config.js changes,
-// being code, isn't seen. -> the package dirs, as found
-export function linkedNativePackages(projectDir, fs) {
+// The app's packages `react-native config` reads, read as data rather than by running the CLI: each
+// name the app's package.json lists under dependencies, peerDependencies or devDependencies (the
+// CLI's list), in the nearest node_modules up from `projectDir` that holds it (as the CLI looks). What
+// a react-native.config.js changes, being code, isn't seen. -> the package dirs, as found
+export function linkedPackages(projectDir, fs) {
   let manifest
   try {
     manifest = JSON.parse(fs.readFile(join(projectDir, 'package.json')).toString('utf8'))
@@ -89,11 +88,17 @@ export function linkedNativePackages(projectDir, fs) {
     for (let dir = projectDir; ; dir = dirname(dir)) {
       const found = join(dir, 'node_modules', name)
       if (fs.stat(found)?.isDirectory()) {
-        if (looksNative(found, fs)) dirs.push(found)
+        dirs.push(found)
         break
       }
       if (dirname(dir) === dir) break
     }
   }
   return dirs
+}
+
+// Of those, the ones `react-native config` links, as a native build would: those that ship native
+// code (looksNative). -> the package dirs, as found
+export function linkedNativePackages(projectDir, fs) {
+  return linkedPackages(projectDir, fs).filter((dir) => looksNative(dir, fs))
 }

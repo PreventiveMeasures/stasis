@@ -304,10 +304,18 @@ contributes nothing unless the app's `package.json` lists it.
 It bundles the project's Metro and React Native configs too, which the Metro
 plugin's run loads though nothing the app imports reaches them: the
 `metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
-`--babel-aliases`, it bundles the `babel.config.js` there as well. And the
-toolchain Metro loads by a name it is given as a string, which no import of the
-configs reaches: its transform worker (`metro-transform-worker`, metro-config's
-default `transformerPath`, resolved from `metro`), and with `--babel` or
+`--babel-aliases`, it bundles the `babel.config.js` there as well. And what
+else the build runs in Node, which neither the app nor the configs import, each
+loaded by a name or path given as a string: React Native's CLI
+(`react-native/cli.js`), which an app runs Metro through; the React Native
+config of each of the app's packages (`react-native.config.js`, of each
+package `react-native config` reads), which that CLI requires as it loads its
+own; Metro itself, as React Native's CLI plugin finds it
+(`@react-native/community-cli-plugin`, else as the project does); the child
+process `jest-worker` forks Metro's workers in and `metro-file-map`'s Haste
+worker; the transformers stasis's Metro plugin points Metro at, where a config
+requires it (`withStasis()`); Metro's transform worker (`metro-transform-worker`,
+metro-config's default `transformerPath`); and with `--babel` or
 `--babel-aliases` the Babel transformer React Native's Metro config names
 (`@react-native/metro-babel-transformer`, its `babelTransformerPath`, resolved
 from `@react-native/metro-config`), which runs `@babel/core` and React Native's

@@ -1615,9 +1615,11 @@ process.exit(1)
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
     const bundle = await buildBundle({ cwd: tmp, entries: ['src/entry.js'], metro: true, platforms: ['ios', 'android'] })
+    // What the static build carries as the bundler's (React Native's CLI, cli.js) aside: this run isn't one of it.
+    const bundler = new Set(bundle.reason.bundle)
     for (const dir of ['node_modules/react-native-native-lib', 'node_modules/react-native']) {
       const captured = Object.keys(lock.modules[dir].files).toSorted()
-      t.assert.deepStrictEqual(Object.keys(bundle.modules.get(dir).files).toSorted(), captured, dir)
+      t.assert.deepStrictEqual(Object.keys(bundle.modules.get(dir).files).filter((f) => !bundler.has(`${dir}/${f}`)).toSorted(), captured, dir)
       for (const f of captured) t.assert.equal(bundle.formats.get(`${dir}/${f}`), lock.formats[`${dir}/${f}`], `${dir}/${f}`)
     }
     // Among them, the dep's files outside ios/ and android/.
