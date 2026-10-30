@@ -4857,6 +4857,62 @@ const METRO_ADDED = {
   jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
 }
 
+test('buildBundle --metro records no edge for an import listing types alone, which Babel erases, as the Metro plugin records none', withTmp(async (t, tmp) => {
+  // `import { type A } from` loads its module under Node (`import {} from`), but Babel's Flow and
+  // TypeScript transforms erase it whole, so Metro depends on nothing there.
+  jsProject(tmp, {
+    'index.js': [
+      '// @flow',
+      "import {type A, typeof B} from './types.js'",
+      "import {type C, D} from './mixed.js'",
+      "import {} from './side.js'",
+      "import { /* run it */ } from './init.js'",
+      "import type {E} from './erased.js'",
+      "import view from './view.ts'",
+      'export default [D, view]',
+      '',
+    ].join('\n'),
+    'types.js': '// @flow\nexport type A = number\nexport const B = 1\n',
+    'mixed.js': '// @flow\nexport type C = number\nexport const D = 1\n',
+    'side.js': 'globalThis.side = 1\n',
+    'init.js': 'globalThis.init = 1\n',
+    'erased.js': '// @flow\nexport type E = number\n',
+    'view.ts': "import {type F} from './ts-types.ts'\nexport {type G} from './ts-more.ts'\nconst f: F = 1\nexport default f\n",
+    'ts-types.ts': 'export type F = number\n',
+    'ts-more.ts': 'export type G = number\n',
+  }, { name: 'app', version: '0.0.0' })
+  const metro = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], flow: true })
+  // A statement written with no specifiers stays an edge, a comment in it whatever.
+  t.assert.deepStrictEqual([...metro.sources.keys()].toSorted(), ['index.js', 'init.js', 'mixed.js', 'side.js', 'view.ts'])
+  t.assert.deepStrictEqual(Object.fromEntries(metro.imports.get('*').get('index.js')), { './init.js': 'init.js', './mixed.js': 'mixed.js', './side.js': 'side.js', './view.ts': 'view.ts' })
+  t.assert.equal(metro.imports.get('*').get('view.ts'), undefined)
+
+  // Node keeps each (but `import type`), as `import {} from`.
+  const node = await buildBundle({ cwd: tmp, entries: ['index.js'], mainFields: ['main'], flow: true })
+  t.assert.deepStrictEqual([...node.sources.keys()].toSorted(), ['index.js', 'init.js', 'mixed.js', 'side.js', 'ts-more.ts', 'ts-types.ts', 'types.js', 'view.ts'])
+}))
+
+test('buildBundle --metro --babel keeps an import listing types alone where the project\'s TypeScript transform keeps it (onlyRemoveTypeImports)', withTmp(async (t, tmp) => {
+  // The project's babel.config.js runs Babel's TypeScript transform with `onlyRemoveTypeImports`
+  // (here a stand-in under its name), which keeps `import { type A } from './a.ts'` as
+  // `import {} from './a.ts'`: a dependency Metro has. Only --babel runs the config to see it.
+  jsProject(tmp, {
+    'index.ts': "import {type A} from './a.ts'\nexport const n: A = 1\n",
+    'a.ts': 'export type A = number\n',
+    'aliases.json': '{}',
+    'babel.config.js': "module.exports = { overrides: [{ test: /\\.ts$/, plugins: [[() => ({ name: 'transform-typescript', visitor: {} }), { onlyRemoveTypeImports: true }]] }] }\n",
+  }, { name: 'app', version: '0.0.0' })
+  symlinkSync(join(here, '..', 'node_modules'), join(tmp, 'node_modules'), 'dir')
+  const options = { cwd: tmp, entries: ['index.ts'], metro: true, platforms: ['ios'] }
+  const kept = await buildBundle({ ...options, babel: true })
+  t.assert.equal(kept.imports.get('*').get('index.ts')?.get('./a.ts'), 'a.ts')
+  t.assert.ok(kept.sources.has('a.ts'))
+  // --babel-aliases runs no config: React Native's preset's default, erased.
+  const erased = await buildBundle({ ...options, babelAliases: 'aliases.json' })
+  t.assert.equal(erased.imports.get('*').get('index.ts'), undefined)
+  t.assert.ok(!erased.sources.has('a.ts'))
+}))
+
 test('buildBundle --metro carries what Babel and Metro add to the build, as Metro bundles it, though the source imports none of it', withTmp(async (t, tmp) => {
   jsProject(tmp, { 'index.js': 'export default () => <div />\n', 'aliases.json': '{}' }, { name: 'app', version: '0.0.0' })
   writeMetroAddedPackages(tmp)

@@ -236,6 +236,17 @@ too (a config requiring it) is recorded the same on both sides. Assets keep
 their `resource` formats and native build inputs theirs. Such a bundle is for
 Metro: `stasis run --bundle=load` refuses to run its code under Node.
 
+An import or re-export listing types alone (`import { type A } from`, Flow's
+`import { typeof B } from`, `export { type C } from`) is no edge under
+`--metro`, as Babel's Flow and TypeScript transforms erase it whole and the
+Metro plugin records none; Node keeps one, as `import {} from`, so other builds
+do record it. With `--babel`, a TypeScript file's is an edge where the
+project's Babel config runs the TypeScript transform with
+`onlyRemoveTypeImports`, which keeps it as `import {} from` (React Native's
+preset doesn't; Flow's transform has no such option). One written with no
+specifiers (`import {} from`, a comment in it or not) is an edge either way.
+`import type` and `export type` statements are no edge anywhere.
+
 It takes Metro's own steps, as `metro-resolver` takes them, where they differ
 from Node's and esbuild's:
 

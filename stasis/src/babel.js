@@ -202,6 +202,31 @@ export function createBabelAliases({ projectDir, platform }) {
   }
 }
 
+// --babel for `stasis bundle --metro`: whether Babel keeps a statement listing types alone in `file`
+// (`import { type A } from` as `import {} from`), as its TypeScript transform does under
+// `onlyRemoveTypeImports`, under the project's babel.config.*, loaded as Metro's transformer loads it
+// -- the config is project code, run here. -> (file) => boolean
+export function createBabelTypeImportsKept({ projectDir, platform }) {
+  const configFile = findBabelConfig(projectDir, 'stasis bundle')
+  const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
+  const babel = require(babelPath)
+  const caller = { name: 'metro', bundler: 'metro', platform }
+  const byFile = new Map()
+  return (file) => {
+    if (!byFile.has(file)) {
+      let options
+      try {
+        options = babel.loadOptions({ cwd: projectDir, root: projectDir, configFile, filename: file, caller })
+      } catch (cause) {
+        throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
+      }
+      // No options: the config ignores the file.
+      byFile.set(file, (options?.plugins ?? []).some((plugin) => plugin.key === 'transform-typescript' && plugin.options?.onlyRemoveTypeImports === true))
+    }
+    return byFile.get(file)
+  }
+}
+
 // babel-plugin-module-resolver's path tests, as it writes them.
 const isRelativePath = (path) => /^\.?\.\//u.test(path)
 const toLocalPath = (path) => {
