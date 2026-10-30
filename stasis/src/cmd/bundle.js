@@ -1417,9 +1417,13 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     // And the React Native configs of the app's packages, which React Native's CLI requires as it
     // loads its own (`react-native config`'s packages, read as data).
+    // Each by its real path, as Node loads it (a pnpm install's package linked into node_modules
+    // requires what lies beside it in the store).
     for (const dir of linkedPackages(baseDir, host)) {
       const file = join(dir, 'react-native.config.js')
-      if (host.stat(file)?.isFile() && relWithin(file) !== null) configs.push(file)
+      if (!host.stat(file)?.isFile()) continue
+      const real = host.realpath(file)
+      if (relWithin(real) !== null) configs.push(real)
     }
     // Trace `roots` as Node entries, recording what they reach. -> the scan
     const traceNode = (roots) => {

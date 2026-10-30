@@ -4647,6 +4647,7 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
   // transformers withStasis() points Metro at: each by a name or path, as the bundler's.
   const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const cliPlugin = 'node_modules/react-native/node_modules/@react-native/community-cli-plugin'
+  const someLib = 'node_modules/.pnpm/some-lib@1.0.0/node_modules'
   const files = {
     'package.json': JSON.stringify({ name: 'app', version: '0.0.0', dependencies: { 'react-native': '*', 'some-lib': '*', 'plain-lib': '*' } }),
     'pnpm-workspace.yaml': '',
@@ -4669,8 +4670,10 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
     ...pkg('node_modules/jest-util', 'jest-util', 'build/index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/metro-file-map', 'metro-file-map', 'src/index.js', 'module.exports = {}\n'),
     'node_modules/metro-file-map/src/plugins/haste/worker.js': 'module.exports = {}\n',
-    ...pkg('node_modules/some-lib', 'some-lib', 'index.js', 'module.exports = {}\n'),
-    'node_modules/some-lib/react-native.config.js': 'module.exports = { dependency: {} }\n',
+    // Installed by pnpm: linked into node_modules from the store, beside what it requires.
+    ...pkg(`${someLib}/some-lib`, 'some-lib', 'index.js', 'module.exports = {}\n'),
+    [`${someLib}/some-lib/react-native.config.js`]: "module.exports = { dependency: require('lib-dep') }\n",
+    ...pkg(`${someLib}/lib-dep`, 'lib-dep', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/plain-lib', 'plain-lib', 'index.js', 'module.exports = {}\n'),
     ...pkg('node_modules/@exodus/stasis-plugins', '@exodus/stasis-plugins', 'src/metro.js', 'exports.withStasis = (config) => config\n'),
     'node_modules/@exodus/stasis-plugins/src/metro-transformer.js': 'exports.transform = () => {}\n',
@@ -4680,6 +4683,7 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
     mkdirSync(dirname(join(tmp, rel)), { recursive: true })
     writeFileSync(join(tmp, rel), content)
   }
+  symlinkSync(join(tmp, someLib, 'some-lib'), join(tmp, 'node_modules', 'some-lib'), 'dir')
   const bundle = await buildBundle({ cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'] })
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
     `${cliPlugin}/dist/index.js`,
@@ -4697,7 +4701,9 @@ test('buildBundle --metro traces the CLI an app runs Metro through, Metro, what 
     'node_modules/metro-transform-worker/src/index.js',
     'node_modules/react-native/cli.js',
     'node_modules/react-native/react-native.config.js',
-    'node_modules/some-lib/react-native.config.js',
+    // By its real path, and what it requires beside it in the store.
+    `${someLib}/some-lib/react-native.config.js`,
+    `${someLib}/lib-dep/index.js`,
   ].toSorted())
   t.assert.ok(!bundle.sources.has('node_modules/metro/src/index.js'), 'not the project\'s metro')
   t.assert.equal(bundle.formats.get('node_modules/react-native/cli.js'), 'commonjs')
