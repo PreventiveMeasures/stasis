@@ -40,16 +40,20 @@ function hasPodspec(dir, fs) {
     (ent.isFile() ? isPodspec(ent.name) : ent.isDirectory() && !isSkippedNativeWalkDir(ent.name) && hasPodspec(join(dir, ent.name), fs)))
 }
 
-// The JS and TS files the native build reads from a package's codegen sources (codegenSources).
-const CODEGEN_SOURCE = /\.(?:jsx?|tsx?)$/u
+// The specs React Native's codegen parses in a package's codegen sources (codegenSources), as its own
+// filter takes them (filterJSFile): a JS or TS module named `Native…` or `…NativeComponent` (a platform's
+// `.ios`/`.android` one too), but a type declaration.
+const isCodegenSpec = (name) => /^(?:Native.+|.+NativeComponent)/u.test(name) && /\.(?:jsx?|tsx?)$/u.test(name) && !name.endsWith('.d.ts')
 
 // Each native build input in the package at `root`, walked whole, a native build reading sources
 // from anywhere in it (a podspec compiling `cpp/` beside `ios/`): every file but build output and
 // prebuilt binaries (isSkippedNativeWalkDir, isNativeArtifact), an off-platform top-level dir
 // (isExcludedNativeDir), what the shared classifier skips (the JS and TS Metro's graph owns, docs,
-// secrets) and symlinks (a cycle or escape hazard). And the JS and TS of its codegen sources
-// (codegenSources), as code with no format, as Metro's code has none. A file `skip(file)` holds is
-// passed over unread. `resources` is the allowlist the byte-level rules consult.
+// secrets) and symlinks (a cycle or escape hazard). And the specs of its codegen sources
+// (codegenSources, isCodegenSpec), as code with no format, as Metro's code has none: none of the
+// other JS there (a react-native.config.js, the package's build, where `jsSrcsDir` is its root), which
+// codegen never reads. A file `skip(file)` holds is passed over unread. `resources` is the allowlist
+// the byte-level rules consult.
 // -> yields { file, source, action, format }, `action` 'code' (under the source-language `format`,
 // none for JS and TS) or 'resource'
 export function* nativeInputs(root, fs, { resources = new Set(), skip = () => false } = {}) {
@@ -57,10 +61,11 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
   for (const dir of codegenSources(root, fs)) yield* sources(dir)
   function* sources(dir) {
     for (const ent of listing(dir, fs)) {
-      if (ent.isSymbolicLink() || ent.name.startsWith('.') || ent.name === 'node_modules') continue
+      // None in a dot, node_modules or tests directory, as codegen skips one.
+      if (ent.isSymbolicLink() || ent.name.startsWith('.') || ent.name === 'node_modules' || ent.name.startsWith('__tests')) continue
       const file = join(dir, ent.name)
       if (ent.isDirectory()) yield* sources(file)
-      else if (ent.isFile() && CODEGEN_SOURCE.test(ent.name) && !skip(file)) yield { file, source: fs.readFile(file), action: 'code', format: undefined }
+      else if (ent.isFile() && isCodegenSpec(ent.name) && !skip(file)) yield { file, source: fs.readFile(file), action: 'code', format: undefined }
     }
   }
   function* walk(dir, atRoot) {
@@ -86,8 +91,8 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
 // (`jsSrcsDir`, or each of its `libraries`', as React Native's own names `src`), each reached within it
 // through no symlink, as the walk follows none: React Native's codegen parses the specs there to
 // generate the native code a build compiles (a missing one fails it), and `react-native config` reads
-// each file there for the components it declares (where none is named, the whole package's JS, which a
-// codegen-less package declares none in). -> the absolute dirs
+// them for the components they declare (`codegenNativeComponent`, in a `…NativeComponent` spec).
+// -> the absolute dirs
 function codegenSources(root, fs) {
   let config
   try {

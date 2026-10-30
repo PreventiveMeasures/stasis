@@ -327,15 +327,19 @@ every file but the JS and TypeScript Metro's graph owns, docs, secrets and
 build output (`build`, `.gradle`, `.cxx`, `Pods`, `DerivedData`, nested
 `node_modules`), and it skips prebuilt binaries.
 
-It also carries a package's codegen sources: every `.js`, `.jsx`, `.ts` and
-`.tsx` file under each directory its `package.json` names in `codegenConfig`
-(`jsSrcsDir`, or each of `codegenConfig.libraries`', as React Native names its
-own `src`), except in a dot or `node_modules` directory. React Native's codegen
-(`generate-codegen-artifacts.js`) parses the specs there to generate the native
-code a build compiles, and fails where the directory is missing. `react-native
-config` reads them too, for the components they declare. Metro's graph needn't
-reach them: a package's entry is often its compiled `lib/`. They carry no
-format, as Metro's code has none, and as a `--fs` read of one records none.
+It also carries a package's codegen specs: each `.js`, `.jsx`, `.ts` and `.tsx`
+module named `Native…` or `…NativeComponent` (but a `.d.ts`) under each
+directory its `package.json` names in `codegenConfig` (`jsSrcsDir`, or each of
+`codegenConfig.libraries`', as React Native names its own `src`), except in a
+dot, `node_modules` or `__tests__` directory, as codegen's own filter takes them.
+React Native's codegen (`generate-codegen-artifacts.js`) parses them to generate
+the native code a build compiles, and fails where the directory is missing.
+`react-native config` reads them too, for the components they declare. Metro's
+graph needn't reach them: a package's entry is often its compiled `lib/`. They
+carry no format, as Metro's code has none, and as a `--fs` read of one records
+none. The other JS there isn't carried as a spec: codegen never reads it, and a
+package whose `jsSrcsDir` is its root (`'.'`) has its `react-native.config.js`
+and build there, which a build reads as what they are.
 
 That includes a workspace package linked, under any name, into a
 `node_modules` its importer resolves packages from, carried where it lies
