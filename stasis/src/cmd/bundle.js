@@ -1,13 +1,13 @@
 import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, posix, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { Scan, importsTypescriptByOutputName, scan } from '../scan.js'
+import { Scan, getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -1079,6 +1079,93 @@ function metroEmptyModule(baseDir, host) {
   return isUtf8(buf) && EMPTY_MODULE_SOURCE.test(buf.toString('utf8').trim()) ? real : null
 }
 
+// The directory of package `name`, by its real path, in the nearest node_modules up from `dir` that
+// holds it, as Node looks for one; through each package of `via` first, one that depends on it, for
+// an install (pnpm) that links it only beside that one. -> undefined where none does
+function packageDirFrom(dir, name, host, via = []) {
+  let from = dir
+  for (const step of [...via, name]) {
+    let found
+    for (let d = from; found === undefined; d = dirname(d)) {
+      const candidate = join(d, 'node_modules', step)
+      if (host.stat(join(candidate, 'package.json'))?.isFile()) found = host.realpath(candidate)
+      else if (dirname(d) === d) return undefined
+    }
+    from = found
+  }
+  return from
+}
+
+// The files the module `file` names as `require.resolve('./x')`, read off its source, never run:
+// @react-native/js-polyfills' index.js lists so the polyfills React Native's Metro config prepends
+// (`getPolyfills`). -> absolute paths, those that are files
+function requireResolvedFiles(file, host) {
+  const { program } = getParser().parseSync(file, host.readFile(file).toString('utf8'), { sourceType: 'unambiguous' })
+  const files = []
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child)
+      return
+    }
+    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+    const { callee } = node
+    if (node.type === 'CallExpression' && callee.type === 'MemberExpression' && !callee.computed &&
+      callee.object.type === 'Identifier' && callee.object.name === 'require' && callee.property.name === 'resolve') {
+      const spec = literalSpec(node.arguments[0])
+      const path = spec?.startsWith('.') ? join(dirname(file), spec) : undefined
+      if (path !== undefined && host.stat(path)?.isFile()) files.push(path)
+    }
+    for (const key of Object.keys(node)) if (key !== 'type') visit(node[key])
+  }
+  visit(program)
+  return files
+}
+
+const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
+
+// What Babel and Metro add to a React Native build beyond what its source imports (#99 records no
+// edge to one, as Metro bundles them unasserted), each resolved as `resolver` resolves it, from a file
+// of `files` (absolute paths of code files) it is added to: under --babel or --babel-aliases, the
+// Babel helpers (every @babel/runtime/helpers/*.js of each @babel/runtime a file finds, which ones
+// Babel adds hanging on the syntax the file uses), Metro's module system and asyncRequire
+// (metro-runtime), and React Native's polyfills (the files @react-native/js-polyfills lists); with
+// JSX (`jsx`, else a .jsx/.tsx file), the JSX runtime Babel imports for it. -> absolute paths
+function metroInsertedFiles(files, { baseDir, babelled, jsx, resolver, conditions: conds, host }) {
+  const inserted = new Set()
+  // One file of each directory: a specifier resolves alike from every file of one.
+  const byDir = new Map(files.map((file) => [dirname(file), file]))
+  const resolveFrom = (from, spec) => {
+    const url = resolver(from, spec, conds)?.url
+    return url === undefined ? undefined : fileURLToPath(url)
+  }
+  if (babelled) {
+    const helpersDirs = new Set()
+    for (const from of byDir.values()) {
+      const probe = resolveFrom(from, '@babel/runtime/helpers/interopRequireDefault')
+      if (probe !== undefined) helpersDirs.add(dirname(probe))
+    }
+    for (const dir of helpersDirs) {
+      for (const ent of host.readdir(dir)) if (ent.isFile() && ent.name.endsWith('.js')) inserted.add(join(dir, ent.name))
+    }
+    const metroRuntime = packageDirFrom(baseDir, 'metro-runtime', host) ?? packageDirFrom(baseDir, 'metro-runtime', host, ['metro'])
+    for (const rel of ['src/polyfills/require.js', 'src/modules/asyncRequire.js']) {
+      if (metroRuntime !== undefined && host.stat(join(metroRuntime, rel))?.isFile()) inserted.add(join(metroRuntime, rel))
+    }
+    const polyfills = packageDirFrom(baseDir, '@react-native/js-polyfills', host) ?? packageDirFrom(baseDir, '@react-native/js-polyfills', host, ['react-native'])
+    if (polyfills !== undefined && host.stat(join(polyfills, 'index.js'))?.isFile()) {
+      for (const file of requireResolvedFiles(join(polyfills, 'index.js'), host)) inserted.add(file)
+    }
+  }
+  // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
+  // .jsx/.tsx one.
+  const jsxFiles = jsx ? [...byDir.values()] : [...new Map(files.filter((file) => JSX_FILE_EXTS.has(extname(file))).map((file) => [dirname(file), file])).values()]
+  for (const from of jsxFiles) {
+    const runtime = resolveFrom(from, 'react/jsx-runtime')
+    if (runtime !== undefined) inserted.add(runtime)
+  }
+  return inserted
+}
+
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
@@ -1132,6 +1219,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // --babel-aliases: the same aliasing as --babel's, from a JSON file of the project, for every platform alike.
   const fileAliases = aliasesFile === undefined ? null : createAliases(readAliasesFile(baseDir, aliasesFile, host), baseDir)
+  // --babel or --babel-aliases: a build Metro runs through Babel, which adds its helpers to each file.
+  const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
   for (const platform of platforms) {
@@ -1151,34 +1240,49 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
-    const scanned = scan(absEntries, { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host })
-    // Only what lies within the root is carried; one the entries link eagerly is refused (see withinRoot).
-    const { scanner, outside, leftOut } = withinRoot(scanned, (url) => relWithin(fileURLToPath(url)) !== null)
-    for (const url of outside) toRel(fileURLToPath(url))
-    reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
-    leftOutEdges.push(...leftOut)
-
+    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, host }
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
-    for (const [url, info] of scanner.files) {
-      const abs = fileURLToPath(url)
-      const rel = toRel(abs)
-      reached.add(abs)
-      if (info.resource) resourceRels.add(rel)
-      // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
-      // it from source, and Node's module/commonjs isn't what it runs. A .json one stays `json`,
-      // which its name alone gives it, as Node loads it too.
-      formatsByRel.set(rel, metro && !info.resource && info.format !== 'json' ? undefined : info.format)
-      for (const e of info.edges) {
-        if (e.builtin || e.dynamic) continue
-        let target
-        if (e.empty) { usesEmpty = true; target = emptyTarget }
-        else if (e.child) target = toRel(fileURLToPath(e.child))
-        else continue // unresolved (already warned/thrown by reportScanIssues)
-        if (!edges.has(rel)) edges.set(rel, new Map())
-        const bySpec = edges.get(rel)
-        if (!bySpec.has(e.spec)) bySpec.set(e.spec, new Map())
-        bySpec.get(e.spec).set(platformKey, target)
+    // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
+    const absorb = (roots) => {
+      // Only what lies within the root is carried; one the entries link eagerly is refused (see withinRoot).
+      const { scanner, outside, leftOut } = withinRoot(scan(roots, scanOptions), (url) => relWithin(fileURLToPath(url)) !== null)
+      for (const url of outside) toRel(fileURLToPath(url))
+      reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label: platform ?? 'mainFields', root: ' at .' })
+      leftOutEdges.push(...leftOut)
+      for (const [url, info] of scanner.files) {
+        const abs = fileURLToPath(url)
+        const rel = toRel(abs)
+        reached.add(abs)
+        if (info.resource) resourceRels.add(rel)
+        // Under --metro a code file has no format, as the Metro plugin records it: Metro transforms
+        // it from source, and Node's module/commonjs isn't what it runs. A .json one stays `json`,
+        // which its name alone gives it, as Node loads it too.
+        formatsByRel.set(rel, metro && !info.resource && info.format !== 'json' ? undefined : info.format)
+        for (const e of info.edges) {
+          if (e.builtin || e.dynamic) continue
+          let target
+          if (e.empty) { usesEmpty = true; target = emptyTarget }
+          else if (e.child) target = toRel(fileURLToPath(e.child))
+          else continue // unresolved (already warned/thrown by reportScanIssues)
+          if (!edges.has(rel)) edges.set(rel, new Map())
+          const bySpec = edges.get(rel)
+          if (!bySpec.has(e.spec)) bySpec.set(e.spec, new Map())
+          bySpec.get(e.spec).set(platformKey, target)
+        }
       }
+      return scanner
+    }
+    const scanner = absorb(absEntries)
+    // --metro: and what Babel and Metro add, which the source doesn't import, carried as Metro's code
+    // and scanned for what each imports in turn; one above the root, passed over, as the Metro plugin
+    // passes one over.
+    if (metro) {
+      const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => fileURLToPath(url))
+      // As a require(): Babel's CommonJS transform makes one of each it adds.
+      const required = new Set(['require', 'default', ...extras])
+      const added = [...metroInsertedFiles(code, { baseDir, babelled, jsx, resolver: aliased(resolver), conditions: required, host })]
+        .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
+      if (added.length > 0) absorb(added)
     }
   }
 
