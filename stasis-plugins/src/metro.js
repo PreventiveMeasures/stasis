@@ -267,8 +267,6 @@ export class StasisMetro {
     // skipped by the existsSync guard below), then the app graph.
     if (preModules) this.#captureModules(preModules, entries, platform)
     this.#captureModules(graph.dependencies.values(), entries, platform)
-    // AFTER the graph so #seen already holds graph modules -- an auto-include that landed in the
-    // graph (asyncRequire, when the app uses dynamic import()) is deduped, not re-recorded.
     this.#captureAutoIncludes()
     this.#captureTransformPlugins()
     // AFTER the graph + auto-includes (same dedupe reason): the native pass only adds the native
@@ -288,7 +286,7 @@ export class StasisMetro {
   // skip: unresolvable, already-seen, or resolving outside the project root (keys are root-relative).
   // Attested entries ride the normal addFile path.
   #captureAutoIncludes() {
-    for (const { specifier, reason } of AUTO_INCLUDES) {
+    for (const specifier of AUTO_INCLUDES) {
       let modPath
       try {
         modPath = require.resolve(specifier, { paths: [this.#projectDir] })
@@ -302,9 +300,8 @@ export class StasisMetro {
       // Tag from the ONE shared classifier so an auto-include agrees with any other path meeting
       // the same file (native walk, --fs): setup_env.sh -> 'shell', not a forced 'resource' that
       // would collide at the format noupsert. Unrecognized -> resource (vetted list, so no allowlist).
-      // JS (asyncRequire.js) is code Metro builds, so it takes no format, as the graph's doesn't.
       const format = classifyFormat(modPath, { content: source })
-      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false, reason })
+      this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false, reason: 'run' })
     }
   }
 

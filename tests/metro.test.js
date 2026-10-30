@@ -1217,12 +1217,12 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(r.stderr, /resources entry 'js' is a code extension/)
   }))
 
-  // ----- Auto-included files (asyncRequire.js, setup_env.sh) -----------------------------
+  // ----- Auto-included files (setup_env.sh), and Metro's asyncRequire.js ----------------
 
-  // Models the two well-known packages whose files StasisMetro auto-includes. Every OTHER
-  // test in this suite runs without them, which doubles as coverage for the both-absent
-  // case: an unresolvable auto-include is skipped silently (e.g. the first test's
-  // `lock.modules` deepStrictEqual {}).
+  // Models the package whose file StasisMetro auto-includes, and metro-runtime, whose asyncRequire.js
+  // Metro's graph holds for an `import()`. Every OTHER test in this suite runs without them, which
+  // doubles as coverage for the absent case: an unresolvable auto-include is skipped silently (e.g.
+  // the first test's `lock.modules` deepStrictEqual {}).
   const ASYNC_REQUIRE = 'node_modules/metro-runtime/src/modules/asyncRequire.js'
   const SETUP_ENV = 'node_modules/@react-native-community/cli/setup_env.sh'
   const writeAutoIncludePackages = (tmp, { asyncRequire = true, setupEnv = true } = {}) => {
@@ -1240,7 +1240,7 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     }
   }
 
-  test('auto-includes: asyncRequire.js and setup_env.sh are attested at capture when present', withTmp(async (t, tmp) => {
+  test('auto-includes: setup_env.sh is attested under run when present; asyncRequire.js only as the graph holds it', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
     writeAutoIncludePackages(tmp)
@@ -1256,40 +1256,22 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
 
     const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.ok(lock.modules['node_modules/metro-runtime'].files['src/modules/asyncRequire.js'].startsWith('sha512-'))
     t.assert.ok(lock.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'].startsWith('sha512-'))
-    // asyncRequire is code Metro builds (no format, as the graph's); setup_env.sh is a `.sh` script
-    // tagged 'shell' by the shared classifier (no 'sh' in the resources allowlist needed).
-    t.assert.equal(lock.formats[ASYNC_REQUIRE], undefined)
+    // setup_env.sh is a `.sh` script tagged 'shell' by the shared classifier (no 'sh' in the resources
+    // allowlist needed).
     t.assert.equal(lock.formats[SETUP_ENV], 'shell')
+    // An app with no `import()`: Metro bundles no asyncRequire, so none is carried, installed or not.
+    t.assert.equal(lock.modules['node_modules/metro-runtime'], undefined)
     // The app graph is still captured alongside.
     t.assert.ok(lock.sources['.'].files['src/entry.js'].startsWith('sha512-'))
 
-    // The bundle carries both payloads, formats tagged the same way.
+    // The bundle carries it, tagged the same way, as the run's, which the React Native CLI runs as each
+    // command of it starts.
     const decoded = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
-    t.assert.equal(decoded.modules['node_modules/metro-runtime'].files['src/modules/asyncRequire.js'],
-      readFileSync(join(tmp, ASYNC_REQUIRE), 'utf-8'))
     t.assert.equal(decoded.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'],
       readFileSync(join(tmp, SETUP_ENV), 'utf-8'))
-    t.assert.equal(decoded.formats[ASYNC_REQUIRE], undefined)
     t.assert.equal(decoded.formats[SETUP_ENV], 'shell')
-    // asyncRequire.js is the app's, which Metro bundles; setup_env.sh the run's, which the React
-    // Native CLI runs as each command of it starts.
-    t.assert.ok(decoded.reason.metro.includes(ASYNC_REQUIRE) && !decoded.reason.run?.includes(ASYNC_REQUIRE))
     t.assert.ok(decoded.reason.run.includes(SETUP_ENV) && !decoded.reason.metro.includes(SETUP_ENV))
-  }))
-
-  test('auto-includes: entries are independent -- a missing one is skipped, the present one attested', withTmp(async (t, tmp) => {
-    cpSync(fullFixture, tmp, { recursive: true })
-    rmSync(join(tmp, 'stasis.lock.json'))
-    writeAutoIncludePackages(tmp, { asyncRequire: false })
-
-    const r = await run('src/entry.js', { cwd: tmp, env: { EXODUS_STASIS_LOCK: 'add', EXODUS_STASIS_SCOPE: 'full' } })
-    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-
-    const lock = JSON.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf-8'))
-    t.assert.ok(lock.modules['node_modules/@react-native-community/cli'].files['setup_env.sh'].startsWith('sha512-'))
-    t.assert.equal(lock.modules['node_modules/metro-runtime'], undefined, 'unresolvable auto-include is skipped')
   }))
 
   // Metro's transform plugins, as metro-transform-plugins lays them out in the node_modules `dir`: its
@@ -1360,9 +1342,8 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(r.stderr, /ERR_ASSERTION|sha512-/)
   }))
 
-  test('auto-includes: an auto-include that is also a graph module is captured once, without conflict', withTmp(async (t, tmp) => {
-    // With dynamic import() in the app, Metro puts asyncRequire in the graph itself; the
-    // auto-include pass must dedupe against the graph capture rather than re-record it.
+  test('asyncRequire.js: Metro\'s graph holds it for an import(), and it is captured as the graph\'s', withTmp(async (t, tmp) => {
+    // With dynamic import() in the app, Metro puts asyncRequire in the graph itself.
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))
     writeAutoIncludePackages(tmp)

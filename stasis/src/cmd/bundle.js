@@ -1361,6 +1361,9 @@ const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
 // The asset registry the module Metro builds of an asset requires: React Native's Metro config's
 // `assetRegistryPath` (@react-native/metro-config's), where a project's own isn't read, being code.
 const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
+// Metro's asyncRequire (metro-config's default `asyncRequireModulePath`), which Metro adds to a build
+// with an `import()`, as the Metro plugin's graph then holds it.
+const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 
 // What Babel and Metro add to a React Native build beyond what its source imports (#99 records no
 // edge to one, as Metro bundles them unasserted), each resolved as `resolver` resolves it (Babel's
@@ -1369,13 +1372,12 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // --babel or --babel-aliases, the Babel helpers (every @babel/runtime/helpers/*.js of each
 // @babel/runtime a file finds, which ones Babel adds hanging on the syntax the file uses), Metro's
 // module system (metro-runtime), and React Native's polyfills (the files @react-native/js-polyfills
-// lists); in any build, the Metro code the Metro plugin carries for every one (AUTO_INCLUDES'
-// `metro` ones: asyncRequire), from the project, else through Metro; with JSX (`jsx`, else a
+// lists); with an `import()` (`dynamicImports`), Metro's asyncRequire (ASYNC_REQUIRE); with JSX (`jsx`, else a
 // .jsx/.tsx file), the JSX runtime Babel imports for it; for an asset, the asset registry
 // (ASSET_REGISTRY) the module Metro builds of it, `require(registry).registerAsset({...})`, requires,
 // which Metro builds past Babel, so no alias of Babel's applies to it (platformResolver). -> absolute
 // paths
-function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolver, platformResolver = resolver, conditions: conds, host }) {
+function metroInsertedFiles(files, { assets = [], baseDir, babelled, dynamicImports, jsx, resolver, platformResolver = resolver, conditions: conds, host }) {
   const inserted = new Set()
   // One file of each directory of `list`'s: a specifier resolves alike from every file of one.
   const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
@@ -1400,12 +1402,12 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, jsx, resolv
       for (const [, file] of requireResolutions(join(polyfills, 'index.js'), host)) inserted.add(file)
     }
   }
-  // From the project, else through Metro, which depends on metro-runtime (an install that nests it,
-  // or a pnpm one, links it only beside Metro).
-  const metroDir = packageDirFrom(baseDir, 'metro', host)
-  for (const { specifier, reason } of AUTO_INCLUDES) {
-    if (reason !== 'metro') continue
-    const file = requireFrom(baseDir, specifier, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, specifier, host))
+  // Metro adds asyncRequire as a dependency of a module with an `import()`: from the project, else
+  // through Metro, which depends on metro-runtime (an install that nests it, or a pnpm one, links it
+  // only beside Metro).
+  if (dynamicImports) {
+    const metroDir = packageDirFrom(baseDir, 'metro', host)
+    const file = requireFrom(baseDir, ASYNC_REQUIRE, host) ?? (metroDir === undefined ? undefined : requireFrom(metroDir, ASYNC_REQUIRE, host))
     if (file !== undefined) inserted.add(file)
   }
   // Babel's JSX transform imports the runtime into a file with JSX: under --jsx any one, else a
@@ -1557,7 +1559,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       // in, its target's bytes; one linked from outside the root passed over, as the Metro plugin
       // passes it over): no import names one, so no edge, carried as the asset is.
       const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).filter((file) => relWithin(host.realpath(file)) !== null)
-      const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
+      const dynamicImports = [...scanner.files.values()].some((info) => !info.resource && info.edges.some((e) => e.kind === 'dynamic-import'))
+      const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
       if (added.length > 0) absorb(added)
     }
@@ -1704,11 +1707,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
     }
     // And the files of the toolchain the Metro plugin carries for every build, which nothing here
-    // reaches (AUTO_INCLUDES but its `metro` ones, Metro's code, carried with the app's above):
-    // setup_env.sh, which React Native's CLI runs as each command of it starts. As the plugin resolves
-    // and tags each: from the project, by the shared classifier, a resource where it names no format.
-    for (const { specifier, reason } of AUTO_INCLUDES) {
-      const file = reason === 'metro' ? undefined : requireFrom(baseDir, specifier, host)
+    // reaches (AUTO_INCLUDES): setup_env.sh, which React Native's CLI runs as each command of it starts.
+    // As the plugin resolves and tags each: from the project, by the shared classifier, a resource
+    // where it names no format.
+    for (const specifier of AUTO_INCLUDES) {
+      const file = requireFrom(baseDir, specifier, host)
       if (file === undefined || reached.has(file) || relWithin(file) === null) continue
       const rel = toRel(file)
       const format = classifyFormat(file, { content: host.readFile(file) })
