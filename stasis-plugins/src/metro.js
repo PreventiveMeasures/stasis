@@ -493,7 +493,8 @@ export class StasisMetro {
   // same. One named by path, as such a plugin reads it, from the module's dir, by its real path, as
   // Metro names its modules. One naming code (an import a plugin split into others, as
   // babel-plugin-lodash does), no file, or one whose real path is outside the project root (a
-  // symlink out of it too) is passed over; one the resources don't carry is refused.
+  // symlink out of it too) is passed over; one the resources don't carry is refused. -> each as
+  // { file: its real path, read: the path the plugin reads it by }
   * #consumedResources(module, modPath) {
     for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
       if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
@@ -520,13 +521,13 @@ export class StasisMetro {
           `add its extension or filename to the plugin's resources option or stop importing it`
         )
       }
-      yield file
+      yield { file, read: lexical }
     }
   }
 
   // Capture: each, attributed to `metro`, as `stasis bundle --metro` records them under `bundle:metro`.
   #captureConsumed(module, modPath) {
-    for (const file of this.#consumedResources(module, modPath)) {
+    for (const { file } of this.#consumedResources(module, modPath)) {
       if (this.#seen.has(file)) continue
       this.#seen.add(file)
       // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
@@ -537,13 +538,14 @@ export class StasisMetro {
   // Load: the Babel plugin reads each from disk, past the stasis transformer, which serves only the
   // module it transforms. So each in scope (as the transformer's: any under scope=full, else one in
   // node_modules) must be in the bundle (getFile throws on one it doesn't carry), and its disk bytes
-  // the bundle's -- unless --fs serves the read from the bundle itself. Fail closed on drift.
+  // the bundle's -- unless --fs serves the read from the bundle itself, which it does by the path the
+  // plugin reads (not a symlink to the file the bundle carries). Fail closed on drift.
   #assertConsumed(module, modPath) {
-    for (const file of this.#consumedResources(module, modPath)) {
+    for (const { file, read } of this.#consumedResources(module, modPath)) {
       const url = pathToFileURL(file).toString()
       if (!this.#state.config.full && !this.#state.inNodeModules(url)) continue
       const { source } = this.#state.getFile(url)
-      if (this.#state.config.fs) continue
+      if (this.#state.config.fs && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) continue
       if (!realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
         throw new Error(
           `StasisMetro: '${file}', which a Babel plugin inlines into '${modPath}', differs on disk from the bundle -- ` +

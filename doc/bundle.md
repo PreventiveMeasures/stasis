@@ -417,7 +417,8 @@ edge for it either, but carries a resource it names by path from the importer
 build carries it under `bundle:metro`. Under `--bundle=load` the Babel plugin
 reads it from disk, so the Metro plugin refuses one the bundle doesn't carry or
 whose bytes on disk differ from the bundle's, unless `--fs` serves it from the
-bundle.
+bundle (by the path the plugin reads it by, not a symlink to the file the
+bundle carries).
 
 The static build carries those files too, as Metro's code, each scanned for
 what it imports in turn:

@@ -246,6 +246,17 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     const served = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load'), { EXODUS_STASIS_FS: 'sync' }), graph })
     t.assert.equal(served.status, 0, `stderr: ${served.stderr}`)
 
+    // --fs serves a read by its path, so not one through a symlink to the file the bundle carries.
+    writeFileSync(po, 'msgid "Hello"\nmsgstr "Hallo"\n')
+    symlinkSync(join('locales', 'de', 'messages.po'), join(tmp, 'src', 'alias.po'))
+    const aliased = { modules: [{ ...graph.modules[0], consumed: ['./alias.po'] }, graph.modules[1]] }
+    const aliasCap = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('add', 'replace')), graph: aliased })
+    t.assert.equal(aliasCap.status, 0, `capture stderr: ${aliasCap.stderr}`)
+    writeFileSync(po, 'msgid "Hello"\nmsgstr "Servus"\n')
+    const viaAlias = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load'), { EXODUS_STASIS_FS: 'sync' }), graph: aliased })
+    t.assert.notEqual(viaAlias.status, 0)
+    t.assert.match(viaAlias.stderr, /differs on disk from the bundle/)
+
     // One the bundle doesn't carry fails closed.
     const unattested = { modules: [{ ...graph.modules[0], consumed: ['./locales/de/messages.po', './locales/de/extra.po'] }, graph.modules[1]] }
     writeFileSync(po, 'msgid "Hello"\nmsgstr "Hallo"\n')
