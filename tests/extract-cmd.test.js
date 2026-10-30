@@ -532,21 +532,37 @@ test('CLI: extract accepts the --output= long form', withTmp(async (t, tmp) => {
 // --- --lock ---
 
 // A full-scope v1 bundle of the given files, each a `module` unless `formats` says otherwise.
-const appBundle = (files, { formats = {}, executable } = {}) => ({
+const appBundle = (files, { formats = {}, executable, entries = ['src/a.js'], imports = {} } = {}) => ({
   version: 1,
   config: { scope: 'full' },
-  entries: ['src/a.js'],
+  entries,
   sources: { '.': { name: 'app', version: '1.0.0', files } },
   modules: {},
   formats: { ...Object.fromEntries(Object.keys(files).map((file) => [file, 'module'])), ...formats },
-  imports: {},
+  imports,
   ...(executable && { executable }),
 })
 
-// The lockfile `extract --lock=none` derives from a raw bundle, written into `dir`.
+// The lockfile extract derives from a raw bundle.
+const derivedLockfile = (json) => lockfileFromBundle(Bundle.parse(JSON.stringify(json))).serialize()
 const writeDerivedLockfile = (dir, json) => {
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'stasis.lock.json'), lockfileFromBundle(Bundle.parse(JSON.stringify(json))).serialize())
+  writeFileSync(join(dir, 'stasis.lock.json'), derivedLockfile(json))
+}
+
+// `bundled` must be refused over the lockfile `locked` derives, naming `difference`, with nothing written.
+const assertRefused = (t, tmp, locked, bundled, difference) => {
+  const outDir = join(tmp, 'out')
+  rmSync(outDir, { recursive: true, force: true })
+  writeDerivedLockfile(outDir, locked)
+  const bundlePath = join(tmp, 'app.code.br')
+  writeRawBundle(bundlePath, bundled)
+  t.assert.throws(
+    () => extractCommand({ bundleFile: bundlePath, output: outDir }),
+    (err) => err.message.startsWith(`extract: --lock=frozen: the bundle does not match ${join(outDir, 'stasis.lock.json')}: `) &&
+      err.message.endsWith(`: ${difference}`),
+  )
+  t.assert.ok(!existsSync(join(outDir, 'src')), 'nothing may be written for a refused bundle')
 }
 
 test('extract --lock defaults to none without a lockfile and to frozen over one, which it leaves as is', withTmp((t, tmp) => {
@@ -565,76 +581,48 @@ test('extract --lock defaults to none without a lockfile and to frozen over one,
   t.assert.equal(readFileSync(join(outDir, 'src', 'b.js'), 'utf8'), 'b\n')
 }))
 
-test('extract --lock=frozen refuses a changed file before writing anything', withTmp((t, tmp) => {
-  const outDir = join(tmp, 'out')
-  writeDerivedLockfile(outDir, appBundle({ 'src/a.js': 'a\n', 'src/b.js': 'b\n' }))
-  const bundlePath = join(tmp, 'app.code.br')
+test('extract --lock=frozen refuses a changed, added or missing file before writing anything', withTmp((t, tmp) => {
+  const files = { 'src/a.js': 'a\n', 'src/b.js': 'b\n' }
   // src/a.js passes, so the refusal of src/b.js shows the plan is checked whole before the first write.
-  writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n', 'src/b.js': 'tampered\n' }))
-  t.assert.throws(
-    () => extractCommand({ bundleFile: bundlePath, output: outDir }),
-    /extract: --lock=frozen: src\/b\.js does not match .*stasis\.lock\.json/,
-  )
-  t.assert.ok(!existsSync(join(outDir, 'src')), 'nothing may be written for a refused bundle')
+  assertRefused(t, tmp, appBundle(files), appBundle({ ...files, 'src/b.js': 'tampered\n' }), '["sources"]["."]["files"]["src/b.js"] differs')
+  assertRefused(t, tmp, appBundle(files), appBundle({ ...files, 'src/evil.js': 'evil\n' }), '["sources"]["."]["files"]["src/evil.js"] is only in the bundle')
+  // A bundle carrying part of what the lockfile attests -- one half of a split layout -- is not it either.
+  assertRefused(t, tmp, appBundle(files), appBundle({ 'src/a.js': 'a\n' }), '["sources"]["."]["files"]["src/b.js"] is only in the lockfile')
 }))
 
-test('extract --lock=frozen refuses a file the lockfile does not attest', withTmp((t, tmp) => {
-  const outDir = join(tmp, 'out')
-  writeDerivedLockfile(outDir, appBundle({ 'src/a.js': 'a\n' }))
-  const bundlePath = join(tmp, 'app.code.br')
-  writeRawBundle(bundlePath, appBundle({ 'src/a.js': 'a\n', 'src/evil.js': 'evil\n' }))
-  t.assert.throws(
-    () => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'frozen' }),
-    /extract: --lock=frozen: src\/evil\.js is not attested by /,
-  )
-  t.assert.ok(!existsSync(join(outDir, 'src')), 'nothing may be written for a refused bundle')
-}))
-
-test('extract --lock=frozen refuses an execute bit the lockfile does not attest, either way', withTmp((t, tmp) => {
+test('extract --lock=frozen checks the whole lockfile, not just the bytes it writes', withTmp((t, tmp) => {
   const files = { 'src/a.js': 'a\n', 'bin/run.sh': '#!/bin/sh\n' }
   const formats = { 'bin/run.sh': 'shell' }
-  const plain = appBundle(files, { formats })
-  const executable = appBundle(files, { formats, executable: ['bin/run.sh'] })
-  for (const [locked, bundled] of [[plain, executable], [executable, plain]]) {
-    const outDir = join(tmp, `out-${bundled === executable ? 'gain' : 'lose'}`)
-    writeDerivedLockfile(outDir, locked)
-    const bundlePath = join(tmp, 'app.code.br')
-    writeRawBundle(bundlePath, bundled)
-    t.assert.throws(
-      () => extractCommand({ bundleFile: bundlePath, output: outDir }),
-      /extract: --lock=frozen: bin\/run\.sh's execute bit does not match /,
-    )
-  }
+  const locked = appBundle(files, { formats })
+  // Same bytes throughout: each bundle differs from the lockfile in one attested field alone.
+  assertRefused(t, tmp, locked, appBundle(files, { formats, executable: ['bin/run.sh'] }), '["executable"] is only in the bundle')
+  assertRefused(t, tmp, appBundle(files, { formats, executable: ['bin/run.sh'] }), locked, '["executable"] is only in the lockfile')
+  assertRefused(t, tmp, locked, appBundle(files, { formats: { ...formats, 'src/a.js': 'commonjs' } }), '["formats"]["src/a.js"] differs')
+  assertRefused(t, tmp, locked, appBundle(files, { formats, entries: ['bin/run.sh'] }), '["entries"][0] differs')
+  assertRefused(t, tmp, locked, appBundle(files, { formats, imports: { '*': { 'src/a.js': { './b.js': 'bin/run.sh' } } } }), '["imports"]["*"] is only in the bundle')
+  assertRefused(t, tmp, locked, { ...locked, sources: { '.': { ...locked.sources['.'], version: '2.0.0' } } }, '["sources"]["."]["version"] differs')
 }))
 
-test('extract --lock=frozen takes a bundle carrying part of what the lockfile attests', withTmp((t, tmp) => {
-  // A split layout: the lockfile attests the code and the resources, each bundle carries one half.
+test('extract --lock=replace replaces the lockfile already in the output dir, which --lock=none refuses', withTmp((t, tmp) => {
   const outDir = join(tmp, 'out')
-  writeDerivedLockfile(outDir, appBundle({ 'src/a.js': 'a\n', 'src/msg.txt': 'hi\n' }, { formats: { 'src/msg.txt': 'resource' } }))
-  const lockPath = join(outDir, 'stasis.lock.json')
-  const lockText = readFileSync(lockPath, 'utf8')
-  const codePath = join(tmp, 'code.br')
-  writeRawBundle(codePath, appBundle({ 'src/a.js': 'a\n' }))
-  const resourcesPath = join(tmp, 'resources.br')
-  writeRawBundle(resourcesPath, { ...appBundle({ 'src/msg.txt': 'hi\n' }, { formats: { 'src/msg.txt': 'resource' } }), entries: [] })
-
-  for (const bundleFile of [codePath, resourcesPath]) {
-    t.assert.equal(extractCommand({ bundleFile, output: outDir }).lock, 'frozen')
-  }
-  t.assert.equal(readFileSync(join(outDir, 'src', 'a.js'), 'utf8'), 'a\n')
-  t.assert.equal(readFileSync(join(outDir, 'src', 'msg.txt'), 'utf8'), 'hi\n')
-  t.assert.equal(readFileSync(lockPath, 'utf8'), lockText, 'neither half may narrow the lockfile to itself')
-}))
-
-test('extract --lock=none replaces the lockfile already in the output dir', withTmp((t, tmp) => {
-  const outDir = join(tmp, 'out')
-  writeDerivedLockfile(outDir, appBundle({ 'src/a.js': 'old\n' }))
+  const old = appBundle({ 'src/a.js': 'old\n' })
+  writeDerivedLockfile(outDir, old)
   const json = appBundle({ 'src/a.js': 'new\n' })
   const bundlePath = join(tmp, 'app.code.br')
   writeRawBundle(bundlePath, json)
-  t.assert.equal(extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'none' }).lock, 'none')
+  t.assert.throws(
+    () => extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'none' }),
+    /extract: unexpected .*stasis\.lock\.json with --lock=none/,
+  )
+  t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), derivedLockfile(old))
+  t.assert.ok(!existsSync(join(outDir, 'src')))
+
+  t.assert.equal(extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'replace' }).lock, 'replace')
   t.assert.equal(readFileSync(join(outDir, 'src', 'a.js'), 'utf8'), 'new\n')
-  t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), lockfileFromBundle(Bundle.parse(JSON.stringify(json))).serialize())
+  t.assert.equal(readFileSync(join(outDir, 'stasis.lock.json'), 'utf8'), derivedLockfile(json))
+  // Into a fresh dir, replace derives the lockfile as none does.
+  t.assert.equal(extractCommand({ bundleFile: bundlePath, output: join(tmp, 'fresh'), lock: 'replace' }).files, 1)
+  t.assert.equal(readFileSync(join(tmp, 'fresh', 'stasis.lock.json'), 'utf8'), derivedLockfile(json))
 }))
 
 test('extract --lock=frozen needs a lockfile in the output dir', withTmp((t, tmp) => {
@@ -665,20 +653,21 @@ test('extract --lock=frozen refuses a lockfile that does not parse, a dangling s
   t.assert.ok(!existsSync(join(outDir, 'src')))
 }))
 
-test('extract --lock=frozen refuses a legacy v0 bundle, which --lock=none extracts', withTmp((t, tmp) => {
+test('extract refuses a legacy v0 bundle over a lockfile, which it can neither check nor replace', withTmp((t, tmp) => {
   const outDir = join(tmp, 'out')
   writeDerivedLockfile(outDir, appBundle({ 'src/a.js': 'a\n' }))
   const bundlePath = join(tmp, 'v0.code.br')
   writeRawBundle(bundlePath, { version: 0, config: { scope: 'full' }, sources: { 'src/a.js': 'a\n' }, formats: {}, imports: {} })
-  t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir }), /can not verify a legacy v0 bundle/)
+  for (const [lock, message] of [[undefined, /a legacy v0 bundle can not be checked against /], ['replace', /a legacy v0 bundle can not replace /], ['none', /unexpected .* with --lock=none/]]) {
+    t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir, lock }), message)
+  }
   t.assert.ok(!existsSync(join(outDir, 'src')))
-  t.assert.equal(extractCommand({ bundleFile: bundlePath, output: outDir, lock: 'none' }).files, 1)
 }))
 
-test('extractCommand rejects a lock mode other than frozen or none', withTmp((t, tmp) => {
+test('extractCommand rejects a lock mode other than frozen, replace or none', withTmp((t, tmp) => {
   t.assert.throws(
     () => extractCommand({ bundleFile: join(tmp, 'app.code.br'), output: tmp, lock: 'add' }),
-    /extract: lock must be 'frozen' or 'none' \(got "add"\)/,
+    /extract: lock must be 'frozen', 'replace' or 'none' \(got "add"\)/,
   )
 }))
 
@@ -694,7 +683,7 @@ test('CLI: extract --lock reports the verification, and refuses an unknown mode'
 
   const bad = runCli(['extract', '--lock=add', '-o', outDir, bundlePath])
   t.assert.equal(bad.status, 1)
-  t.assert.match(bad.stderr, /Error: --lock must be 'frozen' or 'none'/)
+  t.assert.match(bad.stderr, /Error: --lock must be 'frozen', 'replace' or 'none'/)
 }))
 
 test('extractCommand rejects a non-canonical base64 resource (tamper layer below the format tag)', withTmp((t, tmp) => {

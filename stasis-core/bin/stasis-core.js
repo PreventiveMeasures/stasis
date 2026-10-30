@@ -21,7 +21,7 @@ assert(basename(jsname) === 'stasis-core' || pathsEqual(jsname, fileURLToPath(im
 const HELP = `Usage:
  stasis-core run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
  stasis-core add path/to/(file|dir) ...
- stasis-core extract [--output=path/to/dir] [--lock=(frozen|none)] path/to/bundle.stasis.code.br
+ stasis-core extract [--output=path/to/dir] [--lock=(frozen|replace|none)] path/to/bundle.stasis.code.br
  stasis-core prune [path/to/project]
  stasis-core --version
 
@@ -143,7 +143,7 @@ if (command === '-v' || command === '--version') {
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
   // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
-  if (values.lock !== undefined && !['frozen', 'none'].includes(values.lock)) fail("Error: --lock must be 'frozen' or 'none'")
+  if (values.lock !== undefined && !['frozen', 'replace', 'none'].includes(values.lock)) fail("Error: --lock must be 'frozen', 'replace' or 'none'")
   const { extractCommand } = await import('../src/extract.js')
   extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: 'stasis-core' })
 } else if (command === undefined) {

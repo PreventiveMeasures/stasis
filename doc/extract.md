@@ -8,14 +8,14 @@ unpacking needs no scanner or loaders, the command also ships on the
 zero-dependency core CLI as `stasis-core extract` (identical flags and behaviour).
 
 ```sh
-stasis extract [--output=path/to/dir] [--lock=(frozen|none)] path/to/bundle.stasis.code.br
-stasis-core extract [--output=path/to/dir] [--lock=(frozen|none)] path/to/bundle.stasis.code.br
+stasis extract [--output=path/to/dir] [--lock=(frozen|replace|none)] path/to/bundle.stasis.code.br
+stasis-core extract [--output=path/to/dir] [--lock=(frozen|replace|none)] path/to/bundle.stasis.code.br
 ```
 
 | Argument | Meaning |
 | --- | --- |
 | `--output` / `-o` | Directory to extract into. Defaults to cwd; intermediate dirs are created as needed. |
-| `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
+| `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen`, `replace` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
 | positional | The brotli-compressed `stasis.code.br` bundle to read. |
 
 ## What it writes
@@ -42,25 +42,28 @@ Existing files at target paths are overwritten.
 
 | Mode | Behavior |
 | - | - |
-| `frozen` | The output dir's `stasis.lock.json` is the attestation: every file `extract` would write must be in it, with the same bytes and the same execute bit. It is checked before the first write and never rewritten. |
-| `none` | No lockfile is checked: the one derived from the bundle is written, replacing any already there. |
+| `frozen` | The output dir's `stasis.lock.json` must be the lockfile the bundle derives, checked before the first write and never rewritten. |
+| `replace` | The lockfile derived from the bundle is written, replacing any already there. |
+| `none` | The lockfile derived from the bundle is written; one already there is an error. |
 
 Unset, `--lock` is `frozen` when the output dir holds a `stasis.lock.json` and
 `none` when it doesn't: extracting into a fresh directory derives a lockfile,
-and re-extracting into a tree that has one only succeeds for a bundle that
+and re-extracting into a tree that has one only succeeds for the bundle that
 lockfile attests. That makes `extract` into a checkout with a committed
 lockfile a verified unpack of a bundle from anywhere, and re-extracting the
-same bundle a no-op. A newer bundle over an older tree is a mismatch:
-`--lock=none` (or deleting the lockfile first) takes it.
+same bundle a no-op. A newer bundle over an older tree is a mismatch, which
+`--lock=replace` takes.
 
-`frozen` checks what reaches disk and nothing more. The bundle's `entries`,
-`imports` and `formats` are not written anywhere (the lockfile stays as it is),
-and a `stasis run --lock=frozen` of the extracted tree checks resolutions and
-formats against the lockfile itself. The lockfile may attest more than the
-bundle carries, such as the other half of a split layout, so a code bundle and
-its `--resources-bundle-file` each extract against the lockfile they were
-recorded with. A `frozen` extract fails without a lockfile in the output dir,
-and for a legacy `version: 0` bundle, whose execute bits are unattested.
+`frozen` checks the whole lockfile, not just the files it writes: the derived
+lockfile must equal the one on disk in every field (`config`, `entries`, each
+package's name, version and file hashes, `imports`, `formats` and
+`executable`), so a bundle carrying more, less or other than the lockfile
+attests is refused, naming the first difference. The two are compared as
+parsed, so the on-disk file's formatting doesn't matter. A `frozen` extract
+fails without a lockfile in the output dir.
+
+A legacy `version: 0` bundle derives no lockfile, so it extracts only into a
+directory without one.
 
 ## The execute bit
 

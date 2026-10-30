@@ -237,7 +237,7 @@ test('extract accepts the --output= long form', withTmp((t, tmp) => {
   t.assert.ok(existsSync(join(outDir, 'stasis.lock.json')))
 }))
 
-test('extract asserts the lockfile already in the output dir unless --lock=none', withTmp((t, tmp) => {
+test('extract asserts the lockfile already in the output dir unless --lock=replace', withTmp((t, tmp) => {
   const bundle = (content) => ({
     version: 1,
     config: { scope: 'full' },
@@ -258,15 +258,16 @@ test('extract asserts the lockfile already in the output dir unless --lock=none'
   writeRawBundle(bundlePath, bundle('export const x = 2\n'))
   const refused = run(['extract', '-o', outDir, bundlePath])
   t.assert.notEqual(refused.status, 0)
-  t.assert.match(refused.stderr, /--lock=frozen: src\/entry\.js does not match /)
+  t.assert.match(refused.stderr, /--lock=frozen: the bundle does not match .*stasis\.lock\.json: \["sources"\]\["\."\]\["files"\]\["src\/entry\.js"\] differs/)
+  t.assert.match(run(['extract', '--lock=none', '-o', outDir, bundlePath]).stderr, /unexpected .*stasis\.lock\.json with --lock=none/)
   t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 1\n')
 
-  const replaced = run(['extract', '--lock=none', '-o', outDir, bundlePath])
+  const replaced = run(['extract', '--lock=replace', '-o', outDir, bundlePath])
   t.assert.equal(replaced.status, 0, `stderr: ${replaced.stderr}`)
   t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 2\n')
   t.assert.equal(run(['extract', '-o', outDir, bundlePath]).status, 0, 'the replaced lockfile attests the new bundle')
 
   const bad = run(['extract', '--lock=ignore', '-o', outDir, bundlePath])
   t.assert.equal(bad.status, 1)
-  t.assert.match(bad.stderr, /Error: --lock must be 'frozen' or 'none'/)
+  t.assert.match(bad.stderr, /Error: --lock must be 'frozen', 'replace' or 'none'/)
 }))
