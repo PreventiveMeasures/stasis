@@ -8,6 +8,7 @@ import { sha512integrity } from './state-util.js'
 import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleInfo } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
+const LOCK_MODES = new Set(['frozen', 'none'])
 
 // Buffer.from silently drops invalid chars, so a tampered `resource:base64` could hash-spoof; require a fixed point.
 function assertCanonicalBase64(content, file) {
@@ -41,8 +42,31 @@ export function lockfileFromBundle(bundle) {
   })
 }
 
-export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLabel = 'stasis-core' } = {}) {
+// lock=frozen: what extract writes -- each file's bytes and execute bit -- must be what the on-disk lockfile
+// attests. Nothing else in the bundle reaches disk, so nothing else is checked: the lockfile stays the
+// attestation, and may attest more than the bundle carries (a split layout's other half).
+function assertAttested(lockAbs, writes) {
+  let lock
+  try {
+    lock = Lockfile.parse(readFileSync(lockAbs, 'utf-8'))
+  } catch (cause) {
+    throw new Error(`extract: not a valid stasis lockfile: ${lockAbs}`, { cause })
+  }
+  const hashes = new Map()
+  for (const [dir, { files }] of lock.modules) {
+    for (const [rel, hash] of Object.entries(files)) hashes.set(moduleFileKey(dir, rel), hash)
+  }
+  for (const [, content, exec, key] of writes) {
+    const hash = hashes.get(key)
+    if (hash === undefined) throw new Error(`extract: --lock=frozen: ${key} is not attested by ${lockAbs}`)
+    if (hash !== sha512integrity(content)) throw new Error(`extract: --lock=frozen: ${key} does not match ${lockAbs}`)
+    if (exec !== lock.executable.has(key)) throw new Error(`extract: --lock=frozen: ${key}'s execute bit does not match ${lockAbs}`)
+  }
+}
+
+export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: lockMode, logLabel = 'stasis-core' } = {}) {
   if (!bundleFile) throw new Error('extract: a bundle file is required')
+  if (lockMode !== undefined && !LOCK_MODES.has(lockMode)) throw new Error(`extract: lock must be 'frozen' or 'none' (got ${JSON.stringify(lockMode)})`)
   const bundleAbs = resolve(cwd, bundleFile)
   if (!existsSync(bundleAbs)) throw new Error(`extract: bundle file not found: ${bundleAbs}`)
 
@@ -60,6 +84,15 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
   const outDir = resolve(cwd, output ?? '.')
   const outPrefix = outDir === sep ? outDir : `${outDir}${sep}`
   const lockAbs = join(outDir, FILE_LOCK)
+  // lstat, not existsSync: a dangling symlink there is a lockfile too, so the default fails closed on it.
+  const lockPresent = lstatSync(lockAbs, { throwIfNoEntry: false }) !== undefined
+  // Unset: assert the lockfile already in the output dir, else derive one.
+  const lock = lockMode ?? (lockPresent ? 'frozen' : 'none')
+  const frozen = lock === 'frozen'
+  if (frozen && !lockPresent) throw new Error(`extract: --lock=frozen needs ${lockAbs}`)
+  if (frozen && !withLockfile) {
+    throw new Error(`extract: --lock=frozen can not verify a legacy v0 bundle against ${lockAbs} (--lock=none extracts it unverified)`)
+  }
 
   // Plan-first: every target is validated inside outDir before any write; walk modules, not the last-wins
   // `sources` getter. Containment is lexical -- symlinks are followed, so untrusted bundles need a fresh dir (doc/extract.md).
@@ -85,13 +118,13 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
       if (relToOut !== file) throw new Error(`extract: non-canonical bundle path: ${file}`)
       if (targets.has(abs)) throw new Error(`extract: duplicate bundle path: ${file}`)
       if (withLockfile && abs === lockAbs) {
-        throw new Error(`extract: bundle contains ${FILE_LOCK}, which would collide with the derived lockfile`)
+        throw new Error(`extract: bundle contains ${FILE_LOCK}, which would collide with the lockfile`)
       }
       targets.add(abs)
       // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
       if (exec) executables += 1
-      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec])
+      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec, key])
     }
   }
   // A planned file must not also be a parent directory of another, else the writes throw halfway through.
@@ -102,7 +135,9 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
       }
     }
   }
-  const lockText = withLockfile ? lockfileFromBundle(bundle).serialize() : null
+  // Frozen leaves the lockfile as it is: verified before the first write, never rewritten.
+  if (frozen) assertAttested(lockAbs, writes)
+  const lockText = withLockfile && !frozen ? lockfileFromBundle(bundle).serialize() : null
 
   // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600 target)
   // and setuid/setgid/sticky are cleared. Applied to every written file; skipped for v0, which attests no modes.
@@ -137,15 +172,16 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, logLab
     if (withModes) applyMode(abs, exec)
   }
   mkdirSync(outDir, { recursive: true }) // for an empty bundle, where no write created it
-  if (withLockfile) writeFileSync(lockAbs, lockText)
+  if (lockText !== null) writeFileSync(lockAbs, lockText)
 
   const execNote = executables > 0 ? ` (${executables} executable)` : ''
-  console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${withLockfile ? ` and ${FILE_LOCK}` : ''} to ${outDir}`)
+  const lockNote = frozen ? `, verified against ${FILE_LOCK}` : ''
+  console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${lockText === null ? '' : ` and ${FILE_LOCK}`} to ${outDir}${lockNote}`)
   if (chmodFailures > 0) {
     console.warn(`[${logLabel}] Warning: could not set file modes on ${chmodFailures} file(s) (the filesystem may not support them); contents were written`)
   }
   if (!withLockfile) {
     console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${FILE_LOCK} can not be restored and was not written`)
   }
-  return { dir: outDir, files: writes.length, executable: executables }
+  return { dir: outDir, files: writes.length, executable: executables, lock }
 }
