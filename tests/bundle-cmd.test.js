@@ -4710,8 +4710,9 @@ test('buildBundle --metro traces what a Babel config\'s modules name as Babel pl
 
 test('buildBundle --metro traces the plugins and presets a Babel config\'s modules name by a path they compute, in the lists Babel takes them from', withTmp(async (t, tmp) => {
   // A plugin named by a path into its package, joined to the module's own directory, or resolved by
-  // require.resolve: written in `plugins`, held in a variable, pushed onto a list so named. A path the
-  // config computes for anything else (a module-resolver alias or root) names no plugin.
+  // require.resolve, from the module calling it: written in `plugins`, held in a variable, pushed onto a
+  // list so named, or in an array concatenated onto one. A path the config computes for anything else
+  // (a module-resolver alias or root) names no plugin.
   const pkg = (dir, name, main, source) => ({ [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main }), [`${dir}/${main}`]: source })
   const files = {
     'package.json': JSON.stringify({ name: 'app', version: '0.0.0' }),
@@ -4721,14 +4722,16 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     'babel.config.js': "module.exports = require('./create-babel-config.js')()\n",
     'create-babel-config.js': [
       "const path = require('path')",
+      "const shared = require('@org/babel-config-shared')",
       "const ticker = path.join(__dirname, 'node_modules', '@org/ticker', 'plugin.js')",
+      "const more = [path.resolve(__dirname, 'node_modules/@org/tail/plugin.js'), 'babel-plugin-two']",
       'module.exports = () => {',
       "  const plugins = [path.resolve(__dirname, 'node_modules/@org/motion/plugin')]",
       '  plugins.push(ticker)',
       '  return {',
-      "    presets: [require.resolve('@org/preset-native')],",
+      "    presets: [require.resolve('@org/preset-native'), ...shared.presets],",
       '    plugins: [',
-      '      ...plugins,',
+      '      ...plugins.concat(more),',
       "      ['module-resolver', { root: [path.resolve(__dirname, 'src')], alias: { lib: path.resolve(__dirname, 'node_modules/@org/aliased') } }],",
       '    ],',
       '  }',
@@ -4742,6 +4745,13 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
     ...pkg('node_modules/@org/ticker', '@org/ticker', 'index.js', 'module.exports = 1\n'),
     'node_modules/@org/ticker/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
     ...pkg('node_modules/@org/preset-native', '@org/preset-native', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/tail', '@org/tail', 'index.js', 'module.exports = 1\n'),
+    'node_modules/@org/tail/plugin.js': 'module.exports = () => ({ visitor: {} })\n',
+    ...pkg('node_modules/babel-plugin-two', 'babel-plugin-two', 'index.js', 'module.exports = {}\n'),
+    // A shared config whose require.resolve finds its own copy of a preset, not the project's.
+    ...pkg('node_modules/@org/babel-config-shared', '@org/babel-config-shared', 'index.js', "exports.presets = [require.resolve('@org/preset-inner')]\n"),
+    ...pkg('node_modules/@org/babel-config-shared/node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
+    ...pkg('node_modules/@org/preset-inner', '@org/preset-inner', 'index.js', 'module.exports = () => ({})\n'),
     ...pkg('node_modules/@org/aliased', '@org/aliased', 'index.js', 'module.exports = 1\n'),
     ...pkg('node_modules/babel-plugin-module-resolver', 'babel-plugin-module-resolver', 'lib/index.js', 'module.exports = {}\n'),
   }
@@ -4753,12 +4763,17 @@ test('buildBundle --metro traces the plugins and presets a Babel config\'s modul
   t.assert.deepStrictEqual([...bundle.reason.bundle].toSorted(), [
     'babel.config.js',
     'create-babel-config.js',
+    'node_modules/@org/babel-config-shared/index.js',
+    'node_modules/@org/babel-config-shared/node_modules/@org/preset-inner/index.js',
     'node_modules/@org/motion/plugin/build/plugin.js',
     'node_modules/@org/motion/plugin/index.js',
     'node_modules/@org/preset-native/index.js',
+    'node_modules/@org/tail/plugin.js',
     'node_modules/@org/ticker/plugin.js',
     'node_modules/babel-plugin-module-resolver/lib/index.js',
+    'node_modules/babel-plugin-two/index.js',
   ])
+  t.assert.ok(!bundle.sources.has('node_modules/@org/preset-inner/index.js'))
   t.assert.ok(!bundle.sources.has('node_modules/@org/aliased/index.js'))
   t.assert.ok(!bundle.sources.has('src/index.js'))
 }))

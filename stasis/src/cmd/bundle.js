@@ -1179,14 +1179,23 @@ const isBabelConfigModule = (rel) => BABEL_CONFIG_NAME.test(posix.basename(rel))
 const BABEL_LISTS = new Map([['plugins', 'plugin'], ['presets', 'preset']])
 // The path a call computes from the module's own directory and strings, as Babel takes a plugin or preset
 // named by path: `path.resolve(__dirname, 'node_modules/@org/x/plugin')`, `path.join(__dirname, 'x')` (a
-// relative one from the project, Babel's cwd), or the name `require.resolve('x')` resolves. -> it, or null
-function babelPathCall(node, file) {
+// relative one from the project, Babel's cwd), or what `require.resolve('x')` resolves to, from the module
+// as Node resolves it. -> it, or null
+function babelPathCall(node, file, host) {
   if (node?.type !== 'CallExpression') return null
   const { callee } = node
   const member = callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier'
   const name = member ? callee.property.name : callee.type === 'Identifier' ? callee.name : undefined
   if (name !== 'resolve' && name !== 'join') return null
-  if (member && callee.object.name === 'require') return name === 'resolve' ? literalSpec(node.arguments[0]) : null
+  if (member && callee.object.name === 'require') {
+    const spec = name === 'resolve' ? literalSpec(node.arguments[0]) : null
+    if (spec === null) return null
+    try {
+      return host.resolve(file, spec, NODE_REQUIRE_CONDITIONS)
+    } catch {
+      return null
+    }
+  }
   const parts = node.arguments.map((arg) => (arg.type === 'Identifier' && arg.name === '__dirname' ? dirname(file) : literalSpec(arg)))
   if (parts.length === 0 || parts.includes(null)) return null
   const path = name === 'resolve' && parts.some((part) => isAbsolute(part)) ? resolve(...parts) : join(...parts)
@@ -1195,8 +1204,8 @@ function babelPathCall(node, file) {
 
 // The plugins and presets the module `file` names, read off its source, never run: each that a list of
 // them holds -- an array under a `plugins` or `presets` key at any depth (`env`, `overrides`), a variable
-// so named, or one pushed onto either (`plugins.push(x)`, `.unshift`, `.concat`), spread in, or held in a
-// variable -- named by a string (or the first of a `[name, options]` pair), standardized as Babel
+// or property so named or assigned (`exports.presets = [...]`), or one pushed onto either
+// (`plugins.push(x)`, `.unshift`, `.concat`), spread in, or held in a variable -- named by a string (or the first of a `[name, options]` pair), standardized as Babel
 // requires it, or by a path the module computes (babelPathCall), as is; and with `anyString`, any
 // string that names one by its form (BABEL_MODULE_STRING) wherever it is
 // (`path.resolve(__dirname, 'node_modules/@org/x-babel/babel/plugin-inline.js')`), as written.
@@ -1222,7 +1231,8 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
   const named = new Set()
   const seenLists = new Set()
   const seenEntries = new Set()
-  // `node` as a list of `type`s, or an entry of one: a name, a computed path or a `[name, options]` pair.
+  // `node` as a list of `type`s (one that isn't an array, an entry of it, as `concat` takes it), or an
+  // entry of one: a name, a computed path or a `[name, options]` pair.
   const list = (node, type) => {
     if (!node || seenLists.has(node)) return
     seenLists.add(node)
@@ -1239,6 +1249,8 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     } else if (node.type === 'LogicalExpression') {
       list(node.left, type)
       list(node.right, type)
+    } else {
+      entry(node, type)
     }
   }
   const entry = (node, type) => {
@@ -1256,7 +1268,7 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     }
     const name = literalSpec(node)
     if (name) named.add(standardizeBabelName(type, name))
-    const path = name ? null : babelPathCall(node, file)
+    const path = name ? null : babelPathCall(node, file, host)
     if (path) named.add(path)
   }
   const listName = (node) => (node.type === 'Identifier' ? node.name : node.type === 'MemberExpression' && !node.computed ? node.property.name : undefined)
@@ -1269,12 +1281,17 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
     } else if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') {
       const type = BABEL_LISTS.get(node.id.name)
       if (type) list(node.init, type)
+    } else if (node.type === 'AssignmentExpression') {
+      const type = BABEL_LISTS.get(listName(node.left))
+      if (type) list(node.right, type)
     } else if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed) {
       const type = BABEL_LISTS.get(listName(node.callee.object))
       const method = node.callee.property.name
       if (!type || !['push', 'unshift', 'concat'].includes(method)) return
+      // `concat` takes each array (inline or held in a variable) as a list, `push` and `unshift` each as an entry.
       for (const arg of node.arguments) {
-        if (arg.type === 'SpreadElement' || (method === 'concat' && arg.type === 'ArrayExpression')) list(arg.argument ?? arg, type)
+        if (arg.type === 'SpreadElement') list(arg.argument, type)
+        else if (method === 'concat') list(arg, type)
         else entry(arg, type)
       }
     }
