@@ -327,6 +327,16 @@ every file but the JS and TypeScript Metro's graph owns, docs, secrets and
 build output (`build`, `.gradle`, `.cxx`, `Pods`, `DerivedData`, nested
 `node_modules`), and it skips prebuilt binaries.
 
+It also carries a package's codegen sources: every `.js`, `.jsx`, `.ts` and
+`.tsx` file under each directory its `package.json` names in `codegenConfig`
+(`jsSrcsDir`, or each of `codegenConfig.libraries`', as React Native names its
+own `src`), except in a dot or `node_modules` directory. React Native's codegen
+(`generate-codegen-artifacts.js`) parses the specs there to generate the native
+code a build compiles, and fails where the directory is missing. `react-native
+config` reads them too, for the components they declare. Metro's graph needn't
+reach them: a package's entry is often its compiled `lib/`. They carry no
+format, as Metro's code has none, and as a `--fs` read of one records none.
+
 That includes a workspace package linked, under any name, into a
 `node_modules` its importer resolves packages from, carried where it lies
 (`packages/<name>/...`) however the import reaches it; one linked nowhere

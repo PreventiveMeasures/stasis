@@ -1422,7 +1422,16 @@ process.exit(1)
     mkdirSync(join(dir, 'sdks', 'hermes-engine', 'utils'), { recursive: true })
     mkdirSync(join(dir, 'scripts'), { recursive: true })
     mkdirSync(join(dir, 'React', 'Base'), { recursive: true })
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'react-native', version: '0.76.0' }))
+    // Its codegen sources named as React Native names its own, in `libraries`: carried, as the codegen
+    // of an app's build reads them.
+    // One under a symlink isn't, as the walk follows none.
+    const libraries = [{ name: 'FBReactNativeSpec', type: 'all', jsSrcsDir: 'src' }, { name: 'LinkedSpec', type: 'all', jsSrcsDir: 'linked/spec' }]
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'react-native', version: '0.76.0', codegenConfig: { libraries } }))
+    mkdirSync(join(dir, 'src', 'private', 'specs'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'private', 'specs', 'NativeCoreThing.js'), "export default TurboModuleRegistry.get('CoreThing')\n")
+    mkdirSync(join(tmp, 'elsewhere', 'spec'), { recursive: true })
+    writeFileSync(join(tmp, 'elsewhere', 'spec', 'NativeLinked.js'), 'export default null\n')
+    symlinkSync(join('..', '..', 'elsewhere'), join(dir, 'linked'))
     writeFileSync(join(dir, 'cli.js'), RN_CLI_JS)
     // react-native core's own podspecs, in the scattered subdirs config never enumerates:
     writeFileSync(join(dir, 'third-party-podspecs', 'DoubleConversion.podspec'), "Pod::Spec.new { |s| s.name = 'DoubleConversion' }\n")
@@ -1471,8 +1480,15 @@ process.exit(1)
     mkdirSync(join(root, 'libs', 'apple', 'Skia.xcframework', 'ios-arm64'), { recursive: true })
     mkdirSync(join(root, 'libs', 'android', 'arm64-v8a'), { recursive: true })
     writeFileSync(join(root, 'package.json'), JSON.stringify({
-      name, version: '1.2.3', codegenConfig: { name: 'RNThingSpec', type: 'modules', jsSrcsDir: 'src' },
+      name, version: '1.2.3', codegenConfig: { name: 'RNThingSpec', type: 'modules', jsSrcsDir: 'src/spec' },
     }))
+    // Its codegen sources (`jsSrcsDir`), which React Native's codegen parses and `react-native config`
+    // reads: carried, any JS or TS in it, but in a dot directory, as both skip one.
+    mkdirSync(join(root, 'src', 'spec', 'nested'), { recursive: true })
+    mkdirSync(join(root, 'src', 'spec', '.cache'), { recursive: true })
+    writeFileSync(join(root, 'src', 'spec', 'NativeThing.ts'), "export default TurboModuleRegistry.getEnforcing<Spec>('Thing')\n")
+    writeFileSync(join(root, 'src', 'spec', 'nested', 'ThingNativeComponent.js'), "export default codegenNativeComponent('Thing')\n")
+    writeFileSync(join(root, 'src', 'spec', '.cache', 'NativeStale.ts'), 'export default null\n')
     writeFileSync(join(root, `${name}.podspec`), `Pod::Spec.new do |s|\n  s.name = "${name}"\nend\n`)
     writeFileSync(join(root, 'Extra.podspec.json'), JSON.stringify({ name: 'Extra', version: '1.0.0' })) // JSON podspec -> json
     writeFileSync(join(root, 'ios', 'RNThing.h'), '#import <React/RCTBridgeModule.h>\n')
@@ -1621,7 +1637,13 @@ process.exit(1)
     for (const f of ['__tests__/Fixture.podspec', '__tests__/RNThingTest.m', '__mocks__/NativeThing.mm', 'jest/setup.podspec']) {
       t.assert.equal(mod.files[f], undefined, `expected test-scaffolding ${f} to be excluded`)
     }
-    // TypeScript source (.ts/.tsx/.d.ts) is never emitted by the native capture (Metro owns the JS graph):
+    // Its codegen sources are, as code with no format, as Metro's code has none.
+    for (const f of ['src/spec/NativeThing.ts', 'src/spec/nested/ThingNativeComponent.js']) {
+      t.assert.ok(mod.files[f]?.startsWith('sha512-'), `codegen source ${f} is attested`)
+      t.assert.equal(lock.formats[`node_modules/react-native-native-lib/${f}`], undefined, f)
+    }
+    t.assert.equal(mod.files['src/spec/.cache/NativeStale.ts'], undefined, 'nor one in a dot directory')
+    // Other TypeScript source (.ts/.tsx/.d.ts) is never emitted by the native capture (Metro owns the JS graph):
     for (const f of ['src/index.ts', 'src/widget.tsx', 'src/types.d.ts']) {
       t.assert.equal(mod.files[f], undefined, `expected TS source ${f} to be excluded from native capture`)
     }
@@ -1840,8 +1862,12 @@ process.exit(1)
       t.assert.deepStrictEqual(Object.keys(bundle.modules.get(dir).files).filter((f) => !bundler.has(`${dir}/${f}`)).toSorted(), captured, dir)
       for (const f of captured) t.assert.equal(bundle.formats.get(`${dir}/${f}`), lock.formats[`${dir}/${f}`], `${dir}/${f}`)
     }
-    // Among them, the dep's files outside ios/ and android/.
+    // Among them, the dep's files outside ios/ and android/, and the codegen sources of each, React
+    // Native's named in `libraries`.
     t.assert.equal(bundle.formats.get('node_modules/react-native-native-lib/fastlane/Fastfile'), 'fastlane')
+    t.assert.ok(lock.modules['node_modules/react-native-native-lib'].files['src/spec/NativeThing.ts'])
+    t.assert.ok(lock.modules['node_modules/react-native'].files['src/private/specs/NativeCoreThing.js'])
+    t.assert.equal(lock.modules['node_modules/react-native'].files['linked/spec/NativeLinked.js'], undefined, 'none through a symlink')
   }))
 
   test('native modules: a native dep whose JS is imported is captured once; its native surface is still added', withTmp(async (t, tmp) => {

@@ -382,12 +382,13 @@ export class StasisMetro {
   }
 
   // Attest the native build inputs of the package at `root` (nativeInputs, shared with `stasis bundle
-  // --metro`), but what is already captured as a graph module or auto-include. Real readers: plugin
-  // bookkeeping, not re-recorded by --fs.
+  // --metro`), but what is already captured as a graph module or auto-include, each in the format it
+  // gives (none for a codegen source, as Metro's code has none, so none is inferred). Real readers:
+  // plugin bookkeeping, not re-recorded by --fs.
   #captureNativeTree(root) {
     for (const { file, source, action, format } of nativeInputs(root, diskHost, { resources: this.#resources, skip: (f) => this.#seen.has(f) })) {
       this.#seen.add(file)
-      this.#recordCapture(file, source, { format, resource: action === 'resource' })
+      this.#recordCapture(file, source, { format, resource: action === 'resource', inferFormat: false })
     }
   }
 
