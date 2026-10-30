@@ -353,7 +353,8 @@ what it imports in turn:
   asset registry the module Metro builds of it requires
   (`module.exports = require(registry).registerAsset({...})`):
   `react-native/Libraries/Image/AssetRegistry`, the `assetRegistryPath` of
-  React Native's Metro config, resolved from the asset's directory. A project's
+  React Native's Metro config, resolved from the asset's directory, with no
+  alias of Babel's, since Metro builds that module past Babel. A project's
   own `assetRegistryPath` isn't read, its Metro config being code.
 
 `--babel-aliases=aliases.json` resolves the same aliases from a JSON file of the

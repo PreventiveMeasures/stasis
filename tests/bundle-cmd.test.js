@@ -4592,6 +4592,15 @@ test('buildBundle --metro carries the asset registry the module Metro builds of 
   // Without an asset, none of it.
   const plain = await buildBundle({ ...options, entries: ['plain.js'] })
   t.assert.deepStrictEqual([...plain.sources.keys()], ['plain.js'])
+
+  // Metro builds the asset's module past Babel, so no alias of Babel's redirects the registry.
+  writeFileSync(join(tmp, 'aliases.json'), JSON.stringify({ 'react-native': 'react-native-web' }))
+  mkdirSync(join(tmp, 'node_modules', 'react-native-web', 'Libraries', 'Image'), { recursive: true })
+  writeFileSync(join(tmp, 'node_modules', 'react-native-web', 'package.json'), JSON.stringify({ name: 'react-native-web', version: '0.21.0' }))
+  writeFileSync(join(tmp, 'node_modules', 'react-native-web', 'Libraries', 'Image', 'AssetRegistry.js'), 'module.exports = {}\n')
+  const aliased = await buildBundle({ ...options, babelAliases: 'aliases.json' })
+  t.assert.ok(aliased.sources.has(registry[1]), 'React Native\'s registry')
+  t.assert.ok(!aliased.sources.has('node_modules/react-native-web/Libraries/Image/AssetRegistry.js'), 'not the alias\'s')
 }))
 
 // --- the empty module under --metro --------------------------------------------------------
