@@ -266,6 +266,52 @@ describe('StasisMetro (spawned, concurrent)', { concurrency: CONCURRENCY }, () =
     t.assert.match(missing.stderr, /not attested in bundle: .*extra\.po/)
   }))
 
+  test('an asset module\'s other scales are carried as Metro\'s, with no edge, and held to the bundle under load', withTmp(async (t, tmp) => {
+    // Metro builds `./img/logo.png` from every scale of it in its directory, for the platform (ios,
+    // the mock graph's) where it has any, else the generic ones (its `scales` and `hash`), reading them
+    // from disk (fs.promises) under load too: so `stasis bundle --metro` carries them, and so does
+    // the capture; under load each, the module itself too, must be the bundle's on disk, unless
+    // --fs=async serves it. Another type, name or platform's is no file of it.
+    cpSync(fullFixture, tmp, { recursive: true })
+    rmSync(join(tmp, 'stasis.lock.json'))
+    mkdirSync(join(tmp, 'src', 'img'))
+    const png = (n) => Buffer.from([0x89, 0x50, 0x4e, 0x47, n])
+    for (const [i, name] of ['logo.png', 'logo@2x.png', 'logo@3x.png', 'logo.svg', 'other.png', 'logo@2x.android.png'].entries()) {
+      writeFileSync(join(tmp, 'src', 'img', name), png(i))
+    }
+    const graph = {
+      modules: [
+        { path: 'src/entry.js', deps: [['./hello.js', 'src/hello.js'], ['./img/logo.png', 'src/img/logo.png']] },
+        { path: 'src/hello.js', deps: [] },
+        { path: 'src/img/logo.png', deps: [], asset: true },
+      ],
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    const opts = (lock, bundle) => ({ lock, bundle, bundleFile: bundlePath, scope: 'full', resources: ['png', 'svg'] })
+    const cap = await run('src/entry.js', { cwd: tmp, env: withOpts(opts('add', 'add')), graph })
+    t.assert.equal(cap.status, 0, `capture stderr: ${cap.stderr}`)
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    t.assert.deepStrictEqual(Object.keys(bundle.sources['.'].files).filter((f) => f.startsWith('src/img/')).toSorted(), ['src/img/logo.png', 'src/img/logo@2x.png', 'src/img/logo@3x.png'])
+    t.assert.equal(bundle.formats['src/img/logo@3x.png'], 'resource:base64')
+    t.assert.deepStrictEqual(bundle.imports['*']['src/entry.js'], { './hello.js': 'src/hello.js', './img/logo.png': 'src/img/logo.png' })
+
+    const load = (extra) => run('src/entry.js', { cwd: tmp, env: withOpts(opts('frozen', 'load'), extra), graph })
+    const same = await load()
+    t.assert.equal(same.status, 0, `stderr: ${same.stderr}`)
+    for (const name of ['logo@3x.png', 'logo.png']) {
+      const file = join(tmp, 'src', 'img', name)
+      const before = readFileSync(file)
+      writeFileSync(file, png(9))
+      const drifted = await load()
+      t.assert.notEqual(drifted.status, 0, name)
+      t.assert.match(drifted.stderr, new RegExp(`'.*${name.replace('.', '\\.')}', a file of the asset '.*logo\\.png' Metro builds, differs on disk from the bundle`))
+      // Metro reads it through fs.promises, which --fs=async serves and --fs=sync doesn't.
+      t.assert.equal((await load({ EXODUS_STASIS_FS: 'async' })).status, 0, name)
+      t.assert.notEqual((await load({ EXODUS_STASIS_FS: 'sync' })).status, 0, name)
+      writeFileSync(file, before)
+    }
+  }))
+
   test('a dependency Babel rewrote is recorded under the specifiers written in the source', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     rmSync(join(tmp, 'stasis.lock.json'))

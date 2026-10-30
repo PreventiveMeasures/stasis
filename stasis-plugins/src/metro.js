@@ -11,7 +11,7 @@ import { looksNative, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
+import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, isPathWithin, metroAssetFiles, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -267,10 +267,11 @@ export class StasisMetro {
 
   #capture(graph, preModules) {
     const entries = entrySet(graph)
+    const platform = graph.transformOptions?.platform ?? null
     // preModules first (Metro's prepended polyfills/runtime; synthetic ones like __prelude__ are
     // skipped by the existsSync guard below), then the app graph.
-    if (preModules) this.#captureModules(preModules, entries)
-    this.#captureModules(graph.dependencies.values(), entries)
+    if (preModules) this.#captureModules(preModules, entries, platform)
+    this.#captureModules(graph.dependencies.values(), entries, platform)
     // AFTER the graph so #seen already holds graph modules -- an auto-include that landed in the
     // graph (asyncRequire, when the app uses dynamic import()) is deduped, not re-recorded.
     this.#captureAutoIncludes()
@@ -428,6 +429,7 @@ export class StasisMetro {
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.assertImport(url, specifier, target, { platform })
       this.#assertConsumed(module, modPath)
+      this.#assertAssetFiles(module, modPath, platform ?? null)
     }
   }
 
@@ -452,7 +454,7 @@ export class StasisMetro {
     return edges
   }
 
-  #captureModules(modules, entries) {
+  #captureModules(modules, entries, platform) {
     for (const module of modules) {
       const modPath = diskPath(module)
       if (modPath === undefined) continue
@@ -484,6 +486,7 @@ export class StasisMetro {
       const format = kind === 'code' ? nodeExtFormat(modPath) : undefined
       this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
       this.#captureConsumed(module, modPath)
+      this.#captureAssetFiles(module, modPath, platform)
     }
   }
 
@@ -535,23 +538,70 @@ export class StasisMetro {
     }
   }
 
-  // Load: the Babel plugin reads each from disk, past the stasis transformer, which serves only the
-  // module it transforms. So each in scope (as the transformer's: any under scope=full, else one in
-  // node_modules) must be in the bundle (getFile throws on one it doesn't carry), and its disk bytes
-  // the bundle's -- unless --fs serves the read from the bundle itself, which it does by the path the
-  // plugin reads (not a symlink to the file the bundle carries). Fail closed on drift.
+  // Load: the Babel plugin reads each from disk, past the stasis transformer (#assertOnDisk).
   #assertConsumed(module, modPath) {
-    for (const { file, read } of this.#consumedResources(module, modPath)) {
-      const url = pathToFileURL(file).toString()
-      if (!this.#state.config.full && !this.#state.inNodeModules(url)) continue
-      const { source } = this.#state.getFile(url)
-      if (this.#state.config.fs && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) continue
-      if (!realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
-        throw new Error(
-          `StasisMetro: '${file}', which a Babel plugin inlines into '${modPath}', differs on disk from the bundle -- ` +
-          'the plugin reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
-        )
+    for (const files of this.#consumedResources(module, modPath)) {
+      this.#assertOnDisk(files, { what: `which a Babel plugin inlines into '${modPath}'`, servedBy: ['sync', 'async'] })
+    }
+  }
+
+  // The files of the asset module `module` Metro builds, but `modPath` itself, which it records as
+  // every module: as Metro reads them to build it (its `scales` and `hash`) and copies them out with
+  // it, its other scales (`logo@2x.png`, `logo@3x.png`; metroAssetFiles, Metro's own rule for
+  // `platform`), by real path, as `stasis bundle --metro` carries them. No import names one, so no
+  // edge. One whose real path is outside the project root is passed over. -> as #consumedResources
+  * #assetFiles(module, modPath, platform) {
+    if (module.output?.[0]?.type !== 'js/module/asset') return
+    for (const read of metroAssetFiles(modPath, platform, diskHost)) {
+      const file = diskHost.realpath(read)
+      this.#realRoot ??= diskHost.realpath(this.#state.root)
+      if (!isPathWithin(this.#realRoot, file)) continue
+      try {
+        this.#state.relative(file)
+      } catch {
+        continue
       }
+      yield { file, read }
+    }
+  }
+
+  // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them.
+  #captureAssetFiles(module, modPath, platform) {
+    for (const { file } of this.#assetFiles(module, modPath, platform)) {
+      if (this.#seen.has(file)) continue
+      const kind = classifyExtension(file, this.#resources)
+      if (kind === 'unknown') continue // as the module itself, which the graph capture refused
+      this.#seen.add(file)
+      const format = kind === 'code' ? nodeExtFormat(file) : undefined
+      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
+      this.#recordCapture(file, realReadFileSync(file), { format, resource: kind === 'resource', inferFormat: false })
+    }
+  }
+
+  // Load: Metro's asset transformer reads each from disk (fs.promises), the module itself too, past
+  // the stasis transformer, which serves the module's `data` that it never reads (#assertOnDisk).
+  #assertAssetFiles(module, modPath, platform) {
+    for (const files of this.#assetFiles(module, modPath, platform)) {
+      this.#assertOnDisk(files, { what: `a file of the asset '${modPath}' Metro builds`, servedBy: ['async'] })
+    }
+  }
+
+  // Load: a file Metro's build reads from disk by `read`, past the stasis transformer, which serves only
+  // the module it transforms. One in scope (as the transformer's: any under scope=full, else one in
+  // node_modules) must be in the bundle (getFile throws on one it doesn't carry), and its disk bytes the
+  // bundle's -- unless --fs, in a mode of `servedBy` (async patches fs.promises too), serves the read
+  // from the bundle itself, which it does by the path read (not a symlink to the file the bundle
+  // carries). Fail closed on drift.
+  #assertOnDisk({ file, read }, { what, servedBy }) {
+    const url = pathToFileURL(file).toString()
+    if (!this.#state.config.full && !this.#state.inNodeModules(url)) return
+    const { source } = this.#state.getFile(url)
+    if (servedBy.includes(this.#state.config.fs) && this.#state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) return
+    if (!realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) {
+      throw new Error(
+        `StasisMetro: '${file}', ${what}, differs on disk from the bundle -- ` +
+        'Metro\'s build reads it from disk under load; restore it, or run with --fs to serve it from the bundle'
+      )
     }
   }
 }

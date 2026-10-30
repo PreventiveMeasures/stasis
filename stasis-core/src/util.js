@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
@@ -360,6 +360,39 @@ export const isExecutableFile = (abs, host) => observeExecutable(abs, host) === 
 // Windows reports no POSIX execute bits, so a capture there records none and must NOT read "no bit" as
 // "the bit was removed" and strip what a POSIX capture attested.
 export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } = {}) => !win32
+
+// A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName): its asset,
+// `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), and its platform where it names
+// `platform` (`a.ios.png`; another's, `a.android.png`, is an asset of its own). -> { asset, platform },
+// or null for a name with no type
+const METRO_PLATFORM_FILE = /^(.+?)(?:\.([^.]+))?\.([^.]+)$/u
+const METRO_ASSET_SCALE = /^(.+?)(?:@[\d.]+x)?$/u
+function parseMetroAssetName(name, platform) {
+  const match = METRO_PLATFORM_FILE.exec(name)
+  if (match === null) return null
+  const [, base, suffix, type] = match
+  const ofPlatform = suffix !== undefined && suffix === platform
+  const root = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)[1]
+  return { asset: `${root}.${type}`, platform: ofPlatform ? platform : null }
+}
+
+// Metro's record of the asset module `path` (its Assets' getAbsoluteAssetRecord): the files it reads
+// to build the module (its `scales` and `hash`) and copies out with it. In `path`'s directory, each of
+// the asset's name and type at any scale (`a.png`, `a@2x.png`, `a@3x.png`): those for `platform`
+// (`a.ios.png`, `a@3x.ios.png`) where it has any, else those for none. -> absolute paths
+export function metroAssetFiles(path, platform = null, host = diskHost) {
+  const own = parseMetroAssetName(basename(path), platform)
+  if (own === null) return []
+  const dir = dirname(path)
+  const byPlatform = new Map()
+  for (const { name } of host.readdir(dir)) {
+    const parsed = parseMetroAssetName(name, platform)
+    if (parsed?.asset !== own.asset || host.stat(join(dir, name))?.isFile() !== true) continue
+    if (!byPlatform.has(parsed.platform)) byPlatform.set(parsed.platform, [])
+    byPlatform.get(parsed.platform).push(join(dir, name))
+  }
+  return (platform === null ? undefined : byPlatform.get(platform)) ?? byPlatform.get(null) ?? []
+}
 
 // Throws on a symlink escaping the bundle root: a crafted `link.sh -> /etc/passwd` must not pull an
 // external file into an attestable bundle. realpath surfaces ENOENT, which loaders treat as "missing".

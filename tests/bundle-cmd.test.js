@@ -5063,6 +5063,27 @@ test('buildBundle --metro resolves an asset to its scale variant where only that
   t.assert.ok(!fields.sources.has('img/logo@3x.png'))
 }))
 
+test('buildBundle --metro carries each asset\'s other scales and platform files, as Metro reads them, with no edge', withTmp(async (t, tmp) => {
+  // Metro builds `require('./img/logo.png')` from every scale of it in its directory (its `scales` and
+  // `hash`) and copies them all out: those for the platform where there are any, else the generic
+  // ones (getAbsoluteAssetRecord). Another type, another name or another platform's is no file of it.
+  jsProject(tmp, { 'index.js': "require('./img/logo.png')\nrequire('./img/icon.png')\n" }, { name: 'app', version: '0.0.0' })
+  mkdirSync(join(tmp, 'img'))
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+  for (const name of ['logo.png', 'logo@2x.png', 'logo@3x.png', 'logo.svg', 'other.png', 'icon.png', 'icon.android.png', 'icon@3x.android.png']) {
+    writeFileSync(join(tmp, 'img', name), png)
+  }
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, resources: ['png', 'svg'] }
+  const scales = ['img/logo.png', 'img/logo@2x.png', 'img/logo@3x.png']
+  const ios = await buildBundle({ ...options, platforms: ['ios'] })
+  t.assert.deepStrictEqual([...ios.sources.keys()].filter((f) => f.startsWith('img/')).toSorted(), [...scales, 'img/icon.png'].toSorted())
+  for (const f of scales) t.assert.equal(ios.formats.get(f), 'resource:base64', f)
+  t.assert.deepStrictEqual(Object.fromEntries(ios.imports.get('*').get('index.js')), { './img/icon.png': 'img/icon.png', './img/logo.png': 'img/logo.png' })
+  t.assert.ok(['img/logo@2x.png', 'img/logo@3x.png'].every((f) => ios.reason['bundle:metro'].includes(f)))
+  const android = await buildBundle({ ...options, platforms: ['android'] })
+  t.assert.deepStrictEqual([...android.sources.keys()].filter((f) => f.startsWith('img/')).toSorted(), [...scales, 'img/icon.android.png', 'img/icon.png', 'img/icon@3x.android.png'].toSorted())
+}))
+
 test('buildBundle --metro keeps .stasis/empty-module.js where metro-runtime\'s is missing or not empty, as --mainFields does', withTmp(async (t, tmp) => {
   const synthetic = ['.stasis/empty-module.js', '.stasis/empty-module.js']
   await Promise.all([undefined, "module.exports = 'not empty'\n", '"use strict";\nexports.x = 1\n'].map(async (source, i) => {

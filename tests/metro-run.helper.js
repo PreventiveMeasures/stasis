@@ -26,7 +26,8 @@
 //   optionally with a third element: the specifiers written in the source (`stasisAsWritten`), or
 //   the fields the stasis worker transformer adds to its data otherwise (`{ stasisInserted: true }`).
 //   A module's `consumed` (optional) lists the imports a Babel plugin consumed, as the stasis worker
-//   transformer carries them on its output (`stasisConsumed`).
+//   transformer carries them on its output (`stasisConsumed`); `asset: true` makes it an asset
+//   module, its output typed as Metro's asset transformer types it (`js/module/asset`).
 //   `preModules` (optional) models Metro's prepended polyfills/runtime.
 // STASIS_TEST_METRO_MODE -- 'hook' (default) | 'customSerializer' | 'withStasis'.
 // STASIS_TEST_METRO_SERIALIZE_TWICE=1 -- serialize twice, modeling a dev-server rebuild
@@ -100,7 +101,7 @@ const buildModule = (mod) => {
     path: modPath,
     dependencies: deps,
     getSource: () => readFileSync(modPath),
-    output: [{ type: 'js/module', data: { code: '/* mock */', lineCount: 1, map: [], ...(mod.consumed && { stasisConsumed: mod.consumed }) } }],
+    output: [{ type: mod.asset ? 'js/module/asset' : 'js/module', data: { code: '/* mock */', lineCount: 1, map: [], ...(mod.consumed && { stasisConsumed: mod.consumed }) } }],
   }
 }
 
