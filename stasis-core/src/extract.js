@@ -5,10 +5,10 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleInfo } from './util.js'
+import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleFileKeys, moduleInfo } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
-const LOCK_MODES = new Set(['frozen', 'replace', 'none'])
+const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
 
 // Buffer.from silently drops invalid chars, so a tampered `resource:base64` could hash-spoof; require a fixed point.
 function assertCanonicalBase64(content, file) {
@@ -58,23 +58,45 @@ function firstDifference(bundle, lock, path = '') {
   return null
 }
 
-// lock=frozen: the lockfile derived from the bundle must be the one in the output dir, every field of it --
-// entries, packages, hashes, imports, formats and execute bits. Compared re-serialized, so formatting is free.
-function assertLockfileMatches(lockAbs, lockText) {
-  let lock
+function readLockfile(lockAbs) {
   try {
-    lock = Lockfile.parse(readFileSync(lockAbs, 'utf-8'))
+    return Lockfile.parse(readFileSync(lockAbs, 'utf-8'))
   } catch (cause) {
     throw new Error(`extract: not a valid stasis lockfile: ${lockAbs}`, { cause })
   }
-  const diff = firstDifference(JSON.parse(lockText), JSON.parse(lock.serialize()))
+}
+
+// lock=frozen: the lockfile derived from the bundle must be the one in the output dir, every field of it --
+// entries, packages, hashes, imports, formats and execute bits. Compared re-serialized, so formatting is free.
+function assertLockfileMatches(lockAbs, derived) {
+  const diff = firstDifference(JSON.parse(derived.serialize()), JSON.parse(readLockfile(lockAbs).serialize()))
   if (diff !== null) throw new Error(`extract: --lock=frozen: the bundle does not match ${lockAbs}: ${diff}`)
+}
+
+// lock=add: the derived lockfile is merged into the one in the output dir, which must agree with it on all
+// both record -- Lockfile.merge refuses any other conflict -- so what is new is recorded and nothing recorded changes.
+function addToLockfile(lockAbs, derived) {
+  const lock = readLockfile(lockAbs)
+  let merged
+  try {
+    merged = lock.merge(derived)
+  } catch (cause) {
+    throw new Error(`extract: --lock=add: the bundle conflicts with ${lockAbs}: ${cause.message}`, { cause })
+  }
+  // merge lets the incoming side's execute bits win, which here would change a recorded one.
+  const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
+  for (const file of moduleFileKeys(derived.modules, { scope: derived.config.scope })) {
+    if (recorded.has(file) && lock.executable.has(file) !== derived.executable.has(file)) {
+      throw new Error(`extract: --lock=add: the bundle conflicts with ${lockAbs}: ${file}'s execute bit differs`)
+    }
+  }
+  return merged
 }
 
 export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: lockMode, logLabel = 'stasis-core' } = {}) {
   if (!bundleFile) throw new Error('extract: a bundle file is required')
   if (lockMode !== undefined && !LOCK_MODES.has(lockMode)) {
-    throw new Error(`extract: lock must be 'frozen', 'replace' or 'none' (got ${JSON.stringify(lockMode)})`)
+    throw new Error(`extract: lock must be one of ${[...LOCK_MODES].join(', ')} (got ${JSON.stringify(lockMode)})`)
   }
   const bundleAbs = resolve(cwd, bundleFile)
   if (!existsSync(bundleAbs)) throw new Error(`extract: bundle file not found: ${bundleAbs}`)
@@ -95,15 +117,18 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const lockAbs = join(outDir, FILE_LOCK)
   // lstat, not existsSync: a dangling symlink there is a lockfile too, so the default fails closed on it.
   const lockPresent = lstatSync(lockAbs, { throwIfNoEntry: false }) !== undefined
-  // Unset: assert the lockfile already in the output dir, else derive one.
+  // Unset: assert the lockfile already in the output dir, else write none.
   const lock = lockMode ?? (lockPresent ? 'frozen' : 'none')
   const frozen = lock === 'frozen'
   if (frozen && !lockPresent) throw new Error(`extract: --lock=frozen needs ${lockAbs}`)
   if (lock === 'none' && lockPresent) {
-    throw new Error(`extract: unexpected ${lockAbs} with --lock=none (--lock=frozen checks the bundle against it, --lock=replace replaces it)`)
+    throw new Error(`extract: unexpected ${lockAbs} with --lock=none (frozen checks the bundle against it, add merges the bundle into it, replace replaces it, ignore leaves it alone)`)
   }
-  // A v0 bundle derives no lockfile, so it can neither be checked against one nor replace it.
-  if (lockPresent && !withLockfile) throw new Error(`extract: a legacy v0 bundle can not ${frozen ? 'be checked against' : 'replace'} ${lockAbs}`)
+  // ignore neither reads nor writes the lockfile; a v0 bundle derives none, so it has nothing to check against one, add or replace one with.
+  if (lockPresent && !withLockfile && lock !== 'ignore') {
+    throw new Error(`extract: a legacy v0 bundle can not ${{ frozen: 'be checked against', add: 'be added to', replace: 'replace' }[lock]} ${lockAbs}`)
+  }
+  const merging = lock === 'add' && lockPresent
 
   // Plan-first: every target is validated inside outDir before any write; walk modules, not the last-wins
   // `sources` getter. Containment is lexical -- symlinks are followed, so untrusted bundles need a fresh dir (doc/extract.md).
@@ -146,9 +171,11 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       }
     }
   }
-  const lockText = withLockfile ? lockfileFromBundle(bundle).serialize() : null
-  // Frozen leaves the lockfile as it is: verified before the first write, never rewritten.
-  if (frozen) assertLockfileMatches(lockAbs, lockText)
+  // Only add and replace write a lockfile, and frozen checks one; each before the first write.
+  const writesLock = lock === 'add' || lock === 'replace'
+  const derived = withLockfile && (frozen || writesLock) ? lockfileFromBundle(bundle) : null
+  if (frozen) assertLockfileMatches(lockAbs, derived)
+  const lockText = derived === null || frozen ? null : (merging ? addToLockfile(lockAbs, derived) : derived).serialize()
 
   // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600 target)
   // and setuid/setgid/sticky are cleared. Applied to every written file; skipped for v0, which attests no modes.
@@ -183,15 +210,16 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
     if (withModes) applyMode(abs, exec)
   }
   mkdirSync(outDir, { recursive: true }) // for an empty bundle, where no write created it
-  if (lockText !== null && !frozen) writeFileSync(lockAbs, lockText)
+  if (lockText !== null) writeFileSync(lockAbs, lockText)
 
   const execNote = executables > 0 ? ` (${executables} executable)` : ''
-  const lockNote = frozen ? `, verified against ${FILE_LOCK}` : ''
-  console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${lockText === null || frozen ? '' : ` and ${FILE_LOCK}`} to ${outDir}${lockNote}`)
+  const andLock = lockText !== null && !merging ? ` and ${FILE_LOCK}` : ''
+  const lockNote = frozen ? `, verified against ${FILE_LOCK}` : merging ? `, added to ${FILE_LOCK}` : ''
+  console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${andLock} to ${outDir}${lockNote}`)
   if (chmodFailures > 0) {
     console.warn(`[${logLabel}] Warning: could not set file modes on ${chmodFailures} file(s) (the filesystem may not support them); contents were written`)
   }
-  if (!withLockfile) {
+  if (!withLockfile && writesLock) {
     console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${FILE_LOCK} can not be restored and was not written`)
   }
   return { dir: outDir, files: writes.length, executable: executables, lock }

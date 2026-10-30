@@ -211,7 +211,7 @@ test('extract unpacks a bundle to disk with a derived lockfile, labelled [stasis
     imports: {},
   })
   const outDir = join(tmp, 'extracted')
-  const r = run(['extract', '-o', outDir, bundlePath])
+  const r = run(['extract', '--lock=add', '-o', outDir, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   // Self-labelled [stasis-core] (like `add`), not the tooling CLI's [stasis].
   t.assert.match(r.stderr, /\[stasis-core\] Extracted 1 file\(s\) and stasis\.lock\.json to /)
@@ -231,7 +231,7 @@ test('extract accepts the --output= long form', withTmp((t, tmp) => {
     imports: {},
   })
   const outDir = join(tmp, 'extracted')
-  const r = run(['extract', `--output=${outDir}`, bundlePath])
+  const r = run(['extract', '--lock=add', `--output=${outDir}`, bundlePath])
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
   t.assert.ok(existsSync(join(outDir, 'src', 'entry.js')))
   t.assert.ok(existsSync(join(outDir, 'stasis.lock.json')))
@@ -250,7 +250,7 @@ test('extract asserts the lockfile already in the output dir unless --lock=repla
   const bundlePath = join(tmp, 'out.code.br')
   writeRawBundle(bundlePath, bundle('export const x = 1\n'))
   const outDir = join(tmp, 'extracted')
-  t.assert.equal(run(['extract', '-o', outDir, bundlePath]).status, 0)
+  t.assert.equal(run(['extract', '--lock=add', '-o', outDir, bundlePath]).status, 0)
   const verified = run(['extract', '-o', outDir, bundlePath])
   t.assert.equal(verified.status, 0, `stderr: ${verified.stderr}`)
   t.assert.match(verified.stderr, /\[stasis-core\] Extracted 1 file\(s\) to .*, verified against stasis\.lock\.json/)
@@ -267,7 +267,7 @@ test('extract asserts the lockfile already in the output dir unless --lock=repla
   t.assert.equal(readFileSync(join(outDir, 'src', 'entry.js'), 'utf8'), 'export const x = 2\n')
   t.assert.equal(run(['extract', '-o', outDir, bundlePath]).status, 0, 'the replaced lockfile attests the new bundle')
 
-  const bad = run(['extract', '--lock=ignore', '-o', outDir, bundlePath])
+  const bad = run(['extract', '--lock=bogus', '-o', outDir, bundlePath])
   t.assert.equal(bad.status, 1)
-  t.assert.match(bad.stderr, /Error: --lock must be 'frozen', 'replace' or 'none'/)
+  t.assert.match(bad.stderr, /Error: invalid --lock value/)
 }))

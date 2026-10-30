@@ -1,32 +1,32 @@
 # `stasis extract`
 
 `stasis extract` unpacks a `stasis.code.br` bundle back onto disk: it writes
-every bundled source to its original project-relative path and drops a matching
-`stasis.lock.json` next to them, or, where one is already there, verifies the
-bundle against it. It is the inverse of `stasis bundle`. Because
+every bundled source to its original project-relative path, verifying the
+bundle against the `stasis.lock.json` already there, or with `--lock=add` drops
+a matching one next to them. It is the inverse of `stasis bundle`. Because
 unpacking needs no scanner or loaders, the command also ships on the
 zero-dependency core CLI as `stasis-core extract` (identical flags and behaviour).
 
 ```sh
-stasis extract [--output=path/to/dir] [--lock=(frozen|replace|none)] path/to/bundle.stasis.code.br
-stasis-core extract [--output=path/to/dir] [--lock=(frozen|replace|none)] path/to/bundle.stasis.code.br
+stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
+stasis-core extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
 ```
 
 | Argument | Meaning |
 | --- | --- |
 | `--output` / `-o` | Directory to extract into. Defaults to cwd; intermediate dirs are created as needed. |
-| `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen`, `replace` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
+| `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen`, `add`, `replace`, `ignore` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
 | positional | The brotli-compressed `stasis.code.br` bundle to read. |
 
 ## What it writes
 
 A `scope = full` bundle writes workspace sources under their relative paths
 (`src/index.js`, …) and dependencies under `node_modules/<pkg>/…`; a
-`scope = node_modules` bundle writes only the `node_modules` tree. Either way a
-`stasis.lock.json` lands in the output directory, unless one is already there
-(see [The lockfile](#the-lockfile---lock)).
+`scope = node_modules` bundle writes only the `node_modules` tree. With
+`--lock=add` or `--lock=replace` a `stasis.lock.json` lands in the output
+directory too (see [The lockfile](#the-lockfile---lock)).
 
-The lockfile is derived from the bundle: each file's recorded UTF-8 bytes are
+That lockfile is derived from the bundle: each file's recorded UTF-8 bytes are
 hashed (sha512) into the same SRI digest `stasis run` would record, and the
 bundle's `entries`, package dirs, `name`/`version`, and `imports` are carried
 across verbatim. The extracted tree validates out of the box — `stasis prune`
@@ -34,7 +34,8 @@ works directly against it; `stasis run --lock=frozen` additionally needs the
 project's `package.json` files, present only if the bundle recorded them.
 
 Legacy `version: 0` bundles record no `name`/`version`, so no lockfile can be
-restored: sources are still extracted, the lockfile is skipped with a warning.
+derived: sources are still extracted, and `add` or `replace` skip the lockfile
+with a warning.
 
 Existing files at target paths are overwritten.
 
@@ -43,13 +44,18 @@ Existing files at target paths are overwritten.
 | Mode | Behavior |
 | - | - |
 | `frozen` | The output dir's `stasis.lock.json` must be the lockfile the bundle derives, checked before the first write and never rewritten. |
+| `add` | The lockfile the bundle derives is merged into the one there, which must agree with it on everything both record: what is new is recorded, nothing recorded changes. Without one there, the derived lockfile is written. |
 | `replace` | The lockfile derived from the bundle is written, replacing any already there. |
-| `none` | The lockfile derived from the bundle is written; one already there is an error. |
+| `ignore` | The lockfile is neither read nor written, whether or not one is there. |
+| `none` | No lockfile: none is read or written, and one already there is an error. |
+
+The modes mean what they do for [`stasis run --lock`](run.md#modes), with the
+bundle in the place of the run.
 
 Unset, `--lock` is `frozen` when the output dir holds a `stasis.lock.json` and
-`none` when it doesn't: extracting into a fresh directory derives a lockfile,
-and re-extracting into a tree that has one only succeeds for the bundle that
-lockfile attests. That makes `extract` into a checkout with a committed
+`none` when it doesn't: extracting into a fresh directory writes the sources
+alone, and re-extracting into a tree that has a lockfile only succeeds for the
+bundle that lockfile attests. That makes `extract` into a checkout with a committed
 lockfile a verified unpack of a bundle from anywhere, and re-extracting the
 same bundle a no-op. A newer bundle over an older tree is a mismatch, which
 `--lock=replace` takes.
@@ -62,8 +68,14 @@ attests is refused, naming the first difference. The two are compared as
 parsed, so the on-disk file's formatting doesn't matter. A `frozen` extract
 fails without a lockfile in the output dir.
 
+`add` is how bundles that each carry part of a tree extract into it, such as a
+split layout's code bundle and its `--resources-bundle-file`: each adds its
+files to one lockfile. A file both record must carry the same hash, format and
+execute bit, a package the same name and version, and an import the same
+target; anything else is refused before the first write.
+
 A legacy `version: 0` bundle derives no lockfile, so it extracts only into a
-directory without one.
+directory without one, or with `--lock=ignore`.
 
 ## The execute bit
 
@@ -87,7 +99,7 @@ Only files `extract` actually wrote are touched, and the derived `stasis.lock.js
 carries the same list. Modes are left entirely alone for a legacy `version: 0` bundle,
 which attests nothing about them, and on Windows, which reports no POSIX execute bits.
 A filesystem that can't store modes (vfat/exFAT/CIFS, some bind mounts) is tolerated per
-file: the bytes still land, the lockfile is still written, and the count of files whose
+file: the bytes still land, any lockfile is still written, and the count of files whose
 mode could not be set is reported.
 
 > [!NOTE]
