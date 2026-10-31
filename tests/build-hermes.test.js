@@ -119,6 +119,45 @@ describe('stasis build --platform=hermes / --babel (spawned, concurrent)', { con
     t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), 'hello, world! 012 xy')
   }))
 
+  test('hermes --flow strips Flow types before the hermes downlevel, which can\'t parse them', withTmp(async (t, tmp) => {
+    // A Flow-typed class: the hermes pre-transform (esbuild) can't parse Flow, so --flow strips it
+    // first; the class and its let/const are then downleveled as any other file's.
+    writeBundle(tmp, {
+      version: 1,
+      config: { scope: 'full' },
+      entries: ['src/entry.js'],
+      sources: {
+        '.': {
+          name: 'x',
+          version: '0.0.0',
+          files: {
+            'src/entry.js':
+              '// @flow\n' +
+              'type Name = string\n' +
+              'class Greeter {\n' +
+              '  name: Name\n' +
+              '  constructor(name: Name) { this.name = name }\n' +
+              '  greet(): string { const mark: string = \'!\'; return `hello, ${this.name}${mark}` }\n' +
+              '}\n' +
+              "console.log(new Greeter('flow').greet())\n",
+          },
+        },
+      },
+      modules: {},
+      formats: { 'src/entry.js': 'module' },
+      imports: { '*': {} },
+    })
+    linkBabel(tmp)
+
+    const noFlow = await runCli(['build', '--platform=hermes', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(noFlow.status, 0, 'the hermes pre-transform cannot parse Flow')
+    const r = await runCli(['build', '--platform=hermes', '--flow', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    const out = readFileSync(join(tmp, 'out.js'), 'utf-8')
+    t.assert.doesNotMatch(out, /\b(?:let|const)\b/)
+    t.assert.equal(runNode(t, join(tmp, 'out.js')).trim(), 'hello, flow!')
+  }))
+
   test('hermes build works from a lockfile fixture', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     linkBabel(tmp)

@@ -8,6 +8,7 @@ import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
+import { FLOW_EXTS, stripFlowTypes } from './flow.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
 // Dynamic specifiers (`require(name)`, `import('./'+x)`) are recorded as unresolved. With
@@ -22,11 +23,6 @@ const RESOLVABLE_EXTS = new Set([...SCRIPT_EXTS, '.json'])
 // generics collide with JSX, so tsc/oxc reserve JSX for .tsx — JSX-in-TS belongs in a .tsx file.
 const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 
-// Flow type syntax lives in the JS (non-TS) family; oxc parses TS natively, and running
-// flow-remove-types over a .ts/.tsx file would corrupt TS-only constructs, so --flow only strips
-// these. .jsx is included (it's JS + JSX, and can carry Flow types like .js); .tsx is not (it's
-// TypeScript). flow-remove-types preserves JSX, so a stripped .jsx re-parses under lang:jsx.
-const FLOW_EXTS = new Set(['.js', '.cjs', '.mjs', '.jsx'])
 const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
 
 // Required lazily so non-JS bundlers don't load the native oxc parser. Its parseSync hands each AST
@@ -41,14 +37,6 @@ export function getParser() {
   return _parser
 }
 
-// flow-remove-types is stasis's own dependency, resolved from stasis itself (never from the project
-// being bundled) and loaded lazily, only under --flow: it strips Flow type syntax down to plain JS
-// before oxc (which parses JS/TS, not Flow) sees it.
-let _flowRemoveTypes
-function getFlowRemoveTypes() {
-  _flowRemoveTypes ??= createRequire(import.meta.url)('flow-remove-types')
-  return _flowRemoveTypes
-}
 
 // classifyFormat is the shared name->format authority (static and runtime bundles must agree); it
 // returns null for the .js/.ts family whose module system comes from package.json `type` (null =
@@ -395,16 +383,13 @@ export class Scan {
     return hit == null ? null : pathToFileURL(hit).toString()
   }
 
-  // Strip Flow type syntax to plain JS via stasis's flow-remove-types (loaded lazily). Only invoked
+  // Strip Flow type syntax to plain JS (flow.js's stripFlowTypes). Only invoked
   // as a parse fallback (see #scanFile), so plain-JS files never reach it. Returns the rewritten
   // source, or null when the transform itself fails on this file -- the caller then keeps oxc's
   // original parse error.
   #stripFlow(src, file) {
-    const flowRemoveTypes = getFlowRemoveTypes()
     try {
-      // `all: true` ignores the @flow/@noflow pragma (RN sources mix both); the transform blanks
-      // types with whitespace, so byte offsets and every import specifier are preserved.
-      return flowRemoveTypes(src, { all: true }).toString()
+      return stripFlowTypes(src)
     } catch (cause) {
       console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`)
       return null

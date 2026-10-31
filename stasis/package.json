@@ -45,6 +45,7 @@
     "src/define.js",
     "src/diff.js",
     "src/esbuild.js",
+    "src/flow.js",
     "src/installed-commits.js",
     "src/json-stream.js",
     "src/loader.js",

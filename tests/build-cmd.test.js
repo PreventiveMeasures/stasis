@@ -494,6 +494,67 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '<p>hi</p>')
   }))
 
+  test('build --flow strips Flow types from a file esbuild can\'t parse, and only from one', withTmp(async (t, tmp) => {
+    // A Flow file (types, a type alias, an import listing types alone) and a plain one whose
+    // `a < b > (c)` a Flow parser reads as a call: --flow strips the one esbuild can't parse and
+    // leaves the other as written, as `stasis bundle --flow` reads them.
+    writeFileSync(join(tmp, 'package.json'), '{ "name": "flow-app", "version": "0.0.0", "private": true, "type": "module" }')
+    // One string logged: Node colours a logged number or boolean under FORCE_COLOR (as CI sets it).
+    writeFileSync(join(tmp, 'index.js'), "import { add } from './math.js'\nimport { tricky } from './plain.js'\nconsole.log(`${add(1, 2)} ${tricky}`)\n")
+    writeFileSync(join(tmp, 'math.js'), [
+      '// @flow',
+      "import { type Unit } from './types.js'",
+      'type Num = number',
+      'export function add(a: Num, b: Num): Num { return a + b }',
+      '',
+    ].join('\n'))
+    writeFileSync(join(tmp, 'types.js'), "console.log('types.js ran')\nexport type Unit = 'px'\n")
+    writeFileSync(join(tmp, 'plain.js'), 'const a = 1, b = 2, c = 0\nexport const tricky = a < b > (c)\n')
+    const bundled = await runCli(['bundle', '--flow', '--output=app.code.br', 'index.js'], { cwd: tmp })
+    t.assert.equal(bundled.status, 0, bundled.stderr)
+
+    // Without --flow: esbuild can't parse the Flow file.
+    const fail = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(fail.status, 0)
+    t.assert.match(fail.stderr, /math\.js/)
+
+    // With --flow: builds and runs. `(1 < 2) > 0` is true, not a call; the import listing types alone
+    // goes whole, as Babel's Flow transform drops it, so types.js doesn't run.
+    const ok = await runCli(['build', '--format=cjs', '--flow', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(ok.status, 0, ok.stderr)
+    t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '3 true')
+  }))
+
+  test('build --flow fails on Flow syntax that is code, which stripping leaves (a component declaration)', withTmp(async (t, tmp) => {
+    // `stasis bundle --flow` refuses such a file, so hand-craft the bundle: --flow must not get past it either.
+    const bundleObj = {
+      version: 1,
+      config: { scope: 'full' },
+      entries: ['src/app.js'],
+      sources: {
+        '.': {
+          name: 'x',
+          version: '0.0.0',
+          files: { 'src/app.js': '// @flow\ncomponent View(label: string) { return label }\nconsole.log(View)\n' },
+        },
+      },
+      modules: {},
+      formats: { 'src/app.js': 'module' },
+      imports: { '*': {} },
+    }
+    writeFileSync(join(tmp, 'app.code.br'), brotliCompressSync(JSON.stringify(bundleObj)))
+    const r = await runCli(['build', '--flow', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /src\/app\.js:2:10: ERROR: Expected ";" but found "View"/)
+    t.assert.ok(!existsSync(join(tmp, 'out.js')))
+  }))
+
+  test('build refuses --flow with --babel, whose config compiles Flow itself', withTmp(async (t, tmp) => {
+    const r = await runCli(['build', '--flow', '--babel', '--output=out.js', 'missing.code.br'], { cwd: tmp })
+    t.assert.notEqual(r.status, 0)
+    t.assert.match(r.stderr, /--flow and --babel don't combine/)
+  }))
+
   test('build rejects a malformed --loader', withTmp(async (t, tmp) => {
     cpSync(fullFixture, tmp, { recursive: true })
     const r = await runCli(['build', '--loader=jsx', '--output=out.js', 'stasis.lock.json'], { cwd: tmp })

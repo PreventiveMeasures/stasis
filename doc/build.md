@@ -7,7 +7,7 @@ own resolution: every import resolves to the edge stasis attested and every
 module's bytes come from the artifact, not disk.
 
 ```sh
-stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
+stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
 ```
 
 - First positional (**required**): the `stasis.code.br` bundle or `stasis.lock.json` lockfile to build from.
@@ -19,6 +19,7 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--format` | esbuild output format `esm`\|`cjs`\|`iife`. Default `esm` (`iife` under `--platform=hermes`). |
 | `--platform` | Target platform `node`\|`browser`\|`neutral` (esbuild's), or `hermes`. Default `node`. See [Hermes](#hermes---platformhermes). |
 | `--babel` | Transform every code file with the project's own `babel.config.*` before bundling. See [`--babel`](#the-projects-babel-config---babel). |
+| `--flow` | Strip Flow types from a `.js`/`.cjs`/`.mjs`/`.jsx` file esbuild can't parse, as `stasis bundle --flow` does. See [Flow](#flow). |
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
 | `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
@@ -246,10 +247,30 @@ dependency reached through one, e.g. a package whose React Native entry is
 
 ### Flow
 
-esbuild doesn't parse Flow, and `stasis build` has no `--flow`: Flow code builds
-through [`--babel`](#the-projects-babel-config---babel), the project's own Babel
-config, as Metro builds it. React Native's preset strips Flow types and compiles
-the Flow syntax that is code, `component` and `hook` declarations and `enum`s.
+esbuild doesn't parse Flow. `--flow` strips Flow type syntax from a
+`.js`/`.cjs`/`.mjs`/`.jsx` file esbuild can't parse, with the same
+`flow-remove-types` that `stasis bundle --flow` uses (stasis's own dependency,
+never the project's), then hands the result to esbuild, or to the
+`--platform=hermes` downlevel:
+
+```sh
+stasis bundle --metro --platforms=ios,android --jsx --flow index.js
+stasis build --platform=hermes --metro=ios --loader=.js:jsx --flow --output=main.js stasis.code.br
+```
+
+- A file esbuild already parses is left as written. Stripping plain JS as Flow can
+  misread it: `a < b > (c)` would become a call.
+- An import listing types alone (`import { type A } from`) is dropped whole, as
+  Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
+- Stripping removes types only. Flow syntax that compiles to code (`component`
+  and `hook` declarations, `enum`s) stays, so such a file fails the build, as it
+  fails `stasis bundle --flow`. React Native 0.81's `View.js` and `VirtualView.js`
+  are two such files.
+
+[`--babel`](#the-projects-babel-config---babel) compiles all of Flow instead:
+React Native's preset strips the types and compiles `component`, `hook` and
+`enum` too, as Metro does. The project's config gets each file's bytes as they
+are, so `--flow` and `--babel` don't combine.
 
 ### Non-code assets (`--resources`)
 
