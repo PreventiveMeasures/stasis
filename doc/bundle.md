@@ -7,9 +7,9 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
+stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -23,6 +23,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | - | - |
 | `--output` / `-o` | Where to write. Default: `stasis.code.br` in the project root, or in the cwd with `--mainFields`/`--metro`, see [Output](#output). `-` streams to stdout. |
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
+| `--deptree` | Lay out the dependencies in memory from the lockfile instead of reading the installed ones, with nothing installed: see [Dependencies from the lockfile](#dependencies-from-the-lockfile---deptree). JS and Solidity. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
@@ -73,6 +74,46 @@ with `--bundle=load`, or replay the conditions. Under `--add`, an existing
 lockfile at that path is merged the same way as the bundle; with none there it
 refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
+
+## Dependencies from the lockfile (`--deptree`)
+
+`--deptree` builds the bundle from the project on disk with nothing installed:
+the dependencies are laid out in memory from the lockfile that installs the
+cwd, as [`stasis github-bundle`](github-bundle.md#dependencies) lays them out
+(pnpm, yarn 1 or npm's `node_modules` for a JS bundle, Soldeer's dependencies
+folder for a Solidity one), and the rest of the project is read from disk
+through them. In a checkout, it is the bundle a fresh install and a plain
+`stasis bundle` give, but that each dependency's `repo` records the commit it
+was published from, as `github-bundle`'s does.
+
+```sh
+git clone https://github.com/owner/name && cd name
+stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
+```
+
+- The lockfile is detected: the one of `pnpm-lock.yaml`, `yarn.lock`,
+  `package-lock.json` and `soldeer.lock` that installs the cwd, as
+  `github-bundle` detects it. With none, or more than one, it refuses; a
+  lockfile of the other kind of bundle (a `soldeer.lock` for JS entries) is
+  refused too.
+- Nothing may be installed: where the tree installs (each of the lockfile's
+  projects' `node_modules`, or Soldeer's `dependencies` folder) the project has
+  to hold nothing, not even a link, or it refuses. Every refusal comes before
+  anything is fetched.
+- Nothing is written but the bundle (and `--lockfile`): nothing is cached.
+  Every tarball and zip is held to the lockfile. An npm package's tarball is
+  read from a cache that holds it already (npm's, or `stasis github-bundle`'s),
+  else fetched from the registry, as is each Soldeer zip; a Soldeer git
+  dependency on GitHub is fetched with `GITHUB_TOKEN` where it is set.
+- The project's `stasis.config.json` is taken as without the flag, its
+  `entries` and `extra`; and as `github-bundle` takes it, its
+  `installDevDependencies` lays out the tree without devDependencies (see
+  [devDependencies](github-bundle.md#devdependencies-installdevdependencies)),
+  as a [`.yarnclean`](github-bundle.md#yarnclean) cleans it. `--deptree` is
+  the bundle's flag, which no entry's options set.
+- `--babel` and `--metro-resolver` are refused: they run the project's code
+  from disk, where nothing is installed for it. `--babel-aliases` takes the
+  same aliases without running anything.
 
 ## Entry options (`stasis.config.json`)
 
@@ -665,7 +706,7 @@ one language. How each is resolved and what the bundle carries is in
 [file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust).
 
 ```sh
-stasis bundle [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
+stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
 stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
 stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
 stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
