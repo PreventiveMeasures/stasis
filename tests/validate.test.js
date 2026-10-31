@@ -278,6 +278,19 @@ test('validateBundle: each npm copy held to where Node resolves it: the name its
   const pnpm = (importer) => lockedBy([{ path: 'pnpm-lock.yaml', text: `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n${importer}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n` }])
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n') }), misplaced('node_modules/helmet'), 'no alias the lockfile has')
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n') }), valid, 'pnpm\'s alias of it')
+
+  // Each copy apart: one unverified as an alias leaves the others checked, in whatever order.
+  const copies = async (modules) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map(modules.map(([dir, text]) => [dir, { name: 'ms', version: '2.1.3', files: { 'index.js': text } }])) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: async () => new Map([['index.js', bytes(MS['index.js'])]]) })
+    return [report.status, report.counts.matched, report.problems.map((problem) => problem.path), report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  t.assert.deepStrictEqual(await copies([['node_modules/helmet', MS['index.js']], ['node_modules/ms', 'changed\n']]),
+    ['invalid', 0, ['node_modules/ms/index.js'], [['invalid', null, null]]], 'another copy differing')
+  t.assert.deepStrictEqual(await copies([['node_modules/helmet', MS['index.js']], ['node_modules/.pnpm/ms@2.0.0/node_modules/ms', MS['index.js']]]),
+    ['invalid', 0, [], [['invalid', 'misplaced', 'node_modules/.pnpm/ms@2.0.0/node_modules/ms']]], 'another copy misplaced, after it')
+  t.assert.deepStrictEqual(await copies([['node_modules/helmet', MS['index.js']], ['node_modules/ms', MS['index.js']]]),
+    ['incomplete', 1, [], [['unverified', 'alias-unverified', 'node_modules/helmet']]], 'another copy as it should be')
 })
 
 // npm's lockfile of an app installing ms@2.0.0, tool's ms@2.1.3 and an alias of it (helmet), at its

@@ -571,17 +571,18 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     }
     if (!pkg.name || !pkg.version) return unverified('unnamed')
     if (!FETCHED.has(pkg.ecosystem)) return unverified('unsupported')
-    // Each copy where Node resolves it by its path: a crate by its Cargo.toml alone, wherever it is.
-    if (pkg.ecosystem === 'npm') {
-      for (const dir of new Set(pkg.files.map((file) => file.dir))) {
-        const where = placed(pkg, dir, locked)
-        if (where === false) {
-          counts.misplaced++
-          return unverified('misplaced', 'invalid', { at: dir })
-        }
-        if (where === undefined) return unverified('alias-unverified', 'unverified', { at: dir })
-      }
+    // Each copy where Node resolves it by its path (a crate by its Cargo.toml alone, wherever it is):
+    // the version failing where any is installed where another is; those installed under another
+    // name no lockfile read tells of left unverified, the others checked all the same.
+    const dirs = [...new Set(pkg.files.map((file) => file.dir))]
+    const places = new Map(pkg.ecosystem === 'npm' ? dirs.map((dir) => [dir, placed(pkg, dir, locked)]) : [])
+    const misplaced = dirs.find((dir) => places.get(dir) === false)
+    if (misplaced !== undefined) {
+      counts.misplaced++
+      return unverified('misplaced', 'invalid', { at: misplaced })
     }
+    const aliased = dirs.filter((dir) => places.has(dir) && places.get(dir) === undefined)
+    if (aliased.length === dirs.length) return unverified('alias-unverified', 'unverified', { at: aliased[0] })
     const lock = locked?.lock?.(pkg.ecosystem, pkg.name, pkg.version)
     if (lock === null) return fails('not-locked')
     if (lock?.from === 'git') return unverified('git')
@@ -616,6 +617,10 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     let asPatched = 0
     let notVerified = 0
     for (const copy of Map.groupBy(pkg.files, (file) => file.dir).values()) {
+      if (aliased.includes(copy[0].dir)) {
+        notVerified += copy.length
+        continue
+      }
       const bytes = new Map(copy.map((file) => [file, file.bytes()]))
       const missing = (candidate) => copy.filter((file) => !matches(file, bytes.get(file), candidate))
       let [held] = candidates
@@ -638,7 +643,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     if (status === 'valid') counts.validPackages++
     if (status !== 'valid' || patch) {
       tellPackage(status, {
-        ...(status === 'unverified' && { reason: 'patch-unverified' }),
+        ...(status === 'unverified' && (aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : { reason: 'patch-unverified' })),
         ...(patch && { patch: { ...patch, ...(patched && status === 'valid' && { applied: asPatched > 0 }) } }),
         ...(lock?.from === 'local' && { directory: lock.directories[0] }),
       })

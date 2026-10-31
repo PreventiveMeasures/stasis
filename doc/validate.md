@@ -185,9 +185,10 @@ has it:
   the bundle's directory is one of its workspaces, else its own directory.
 
 A copy installed where its path or its lockfile names another fails
-(`misplaced`), its files counted unverified. One installed under another name
-with no lockfile to tell of an alias (`--no-lockfile`, or none showing one) is
-unverified (`alias-unverified`). A crate is found by its `Cargo.toml`, not its
+(`misplaced`), its files counted unverified, wherever its other copies are. A
+copy installed under another name with no lockfile to tell of an alias
+(`--no-lockfile`, or none showing one) is unverified (`alias-unverified`), that
+copy alone: the version's other copies are checked all the same. A crate is found by its `Cargo.toml`, not its
 directory, so its place is not checked.
 
 ## Patched dependencies
