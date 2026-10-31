@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import { createReadStream, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
@@ -318,6 +319,36 @@ test('readBundle rejects as soon as it is aborted, even while onFile is still ru
   }
   t.assert.equal(settled, false, 'rejected without waiting for onFile')
   t.assert.equal(received, controller.signal)
+})
+
+test('readBundle settles while its source waits for more, on an abort or a failure, and destroys the source', async (t) => {
+  const buf = compressed(minimal({ 'a.js': 'A' }))
+  const cases = [
+    ['an abort, the whole stream sent', buf, 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['an abort, part of it sent', buf.subarray(0, 5), 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['onFile failing', buf, 'disk full', () => {}, () => {
+      throw new Error('disk full')
+    }],
+  ]
+  for (const [label, sent, expected, start, onFile] of cases) {
+    const source = new Readable({ read() {} }) // never ends
+    source.push(sent)
+    const controller = new AbortController()
+    const read = readBundle(source, { signal: controller.signal, onFile })
+    start(controller)
+    let timer
+    try {
+      const pending = new Promise((resolve) => {
+        timer = setTimeout(resolve, 2000, 'still pending')
+      })
+      const error = (e) => (e.name === 'AbortError' ? e.name : e.message)
+      t.assert.equal(await Promise.race([read.then(() => 'resolved', error), pending]), expected, label)
+      t.assert.equal(source.destroyed, true, label)
+    } finally {
+      clearTimeout(timer)
+      source.destroy()
+    }
+  }
 })
 
 test('readBundle refuses bytes after the brotli stream, as parseBundleBytes does, however they arrive', withTmp(async (t, tmp) => {

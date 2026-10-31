@@ -49,11 +49,20 @@ export async function readBundle(source, { onFile, signal } = {}) {
   const decompress = createBrotliDecompress({ chunkSize: 1024 * 1024, readableHighWaterMark: 4 * 1024 * 1024 })
   // The decoder ends its output at the end of the brotli stream and consumes nothing after it, so
   // the bytes it was given and the bytes it consumed (its bytesWritten) differ by exactly those.
+  // Counting them here takes `input` out of pipeline's hands, so this destroys a stream on pipeline's
+  // signal, raised on any failure or abort, as pipeline would: one waiting for a chunk holds it open.
   let given = 0
-  async function* counted() {
-    for await (const chunk of input) {
-      given += Buffer.byteLength(chunk)
-      yield chunk
+  async function* counted({ signal: stop }) {
+    const destroy = () => input.destroy?.()
+    stop.addEventListener('abort', destroy, { once: true })
+    if (stop.aborted) destroy()
+    try {
+      for await (const chunk of input) {
+        given += Buffer.byteLength(chunk)
+        yield chunk
+      }
+    } finally {
+      stop.removeEventListener('abort', destroy)
     }
   }
   let drained = false
