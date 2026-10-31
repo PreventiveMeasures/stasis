@@ -2,7 +2,7 @@ import { after, before, describe, test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, readFileSync } from 'node:fs'
-import { link, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,6 +12,7 @@ import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { Vfs, buildVfsBundle, loadNodeModules, setCacheDir } from '../stasis/src/vfs-bundle.js'
+import { hardlinkCopy } from './hardlink-copy.helper.js'
 
 // @exodus/stasis/vfs-bundle builds from a lockfile alone: @preventive/deptree fetches the tarballs
 // into a cache, verifies them and lays them out in memory as the package manager would, which is
@@ -127,19 +128,6 @@ const withTmp = (fn) => async (t) => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
-}
-
-// Hardlinked clone of the installed fixture (see popular-npm-modules.test.js for why).
-const hardlinkCopy = async (src, dst) => {
-  await mkdir(dst, { recursive: true })
-  const entries = await readdir(src, { withFileTypes: true })
-  await Promise.all(entries.map(async (entry) => {
-    const s = join(src, entry.name)
-    const d = join(dst, entry.name)
-    if (entry.isDirectory()) await hardlinkCopy(s, d)
-    else if (entry.isSymbolicLink()) await symlink(await readlink(s), d)
-    else await link(s, d)
-  }))
 }
 
 const decode = (buf) => brotliDecompressSync(buf).toString('utf-8')
