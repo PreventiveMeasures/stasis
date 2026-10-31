@@ -1312,3 +1312,44 @@ test("stasis github-bundle gives npm ~/.audit/config.json's npmToken while it bu
   process.env.NPM_TOKEN = 'npm-env'
   t.assert.deepStrictEqual(await seen(), { during: [[undefined, '', 'npm-env']], after: [undefined, '', 'npm-env'] }, "the environment's first")
 })
+
+test("stasis github-bundle gives npm the token ~/.npmrc gives npm's registry, where neither the environment nor ~/.audit/config.json gives one", async (t) => {
+  const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
+  const saved = NPM_TOKEN_VARS.map((name) => [name, process.env[name]])
+  for (const name of NPM_TOKEN_VARS) delete process.env[name]
+  t.after(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  })
+  t.mock.method(console, 'warn', () => {})
+  const token = `npm_${'a1B'.repeat(12)}`
+  const npmrc = `registry=https://registry.npmjs.org/\n//npm.pkg.github.com/:_authToken=npm_${'z9Y'.repeat(12)}\n//registry.npmjs.org/:_authToken=${token}\n`
+  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '' }
+  // The npm token variables as the build sees them in `home`, and as they are after it.
+  const seen = async (home) => {
+    const client = fakeClient(files)
+    const during = []
+    const { getRepoTarball } = client
+    client.getRepoTarball = async (...args) => {
+      during.push(NPM_TOKEN_VARS.map((name) => process.env[name]))
+      return getRepoTarball(...args)
+    }
+    await githubBundleCommand({ cwd: home, home, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' })
+    return { during, after: NPM_TOKEN_VARS.map((name) => process.env[name]) }
+  }
+  const home = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  await writeFile(join(home, '.npmrc'), npmrc)
+  t.assert.deepStrictEqual(await seen(home), { during: [[undefined, token, undefined]], after: [undefined, undefined, undefined] })
+  const audited = await auditHome(t, { npmToken: 'npm-audit' })
+  await writeFile(join(audited, '.npmrc'), npmrc)
+  t.assert.deepStrictEqual(await seen(audited), { during: [[undefined, 'npm-audit', undefined]], after: [undefined, undefined, undefined] }, "~/.audit/config.json's first")
+  const other = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
+  t.after(() => rm(other, { recursive: true, force: true }))
+  await writeFile(join(other, '.npmrc'), `//npm.pkg.github.com/:_authToken=${token}\n//registry.npmjs.org/:_authToken=\${NPM_TOKEN}\n`)
+  t.assert.deepStrictEqual(await seen(other), { during: [[undefined, undefined, undefined]], after: [undefined, undefined, undefined] }, "none but npm's registry's, as a token")
+  process.env.NPM_TOKEN = 'npm-env'
+  t.assert.deepStrictEqual(await seen(home), { during: [[undefined, undefined, 'npm-env']], after: [undefined, undefined, 'npm-env'] }, "the environment's first")
+})
