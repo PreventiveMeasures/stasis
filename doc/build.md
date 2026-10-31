@@ -120,9 +120,13 @@ bytes, and the build refuses to overwrite a file the artifact carries.
 
 ```sh
 stasis bundle --metro --platforms=ios,android --jsx --resources=png,ttf index.js
-stasis build --platform=hermes --metro=ios --loader=.js:jsx --assets-dest=ios/build --output=ios/build/main.jsbundle stasis.code.br
-stasis build --platform=hermes --metro=android --loader=.js:jsx --assets-dest=android/app/src/main/res --output=android/app/src/main/assets/index.android.bundle stasis.code.br
+stasis build --platform=hermes --metro=ios --loader=.js:jsx --assets-dest=ios/build --output=ios/build/main.js stasis.code.br
+stasis build --platform=hermes --metro=android --loader=.js:jsx --assets-dest=android/app/src/main/res --output=android/app/src/main/assets/index.android.js stasis.code.br
 ```
+
+`--output` names a file only when it ends in `.js`/`.cjs`/`.mjs` (`main.jsbundle`
+would be a directory), so compile the `.js` into the bundle the app loads with
+hermesc, e.g. `hermesc -emit-binary -out ios/build/main.jsbundle ios/build/main.js`.
 
 A `--loader` naming an asset's extension takes precedence over the asset
 module. A project's own Metro `assetRegistryPath`, `transformer.publicPath`
