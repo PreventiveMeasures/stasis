@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, isTypeDeclaration, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -268,26 +268,24 @@ export class Scan {
     return this
   }
 
-  // With a `memo` (vfs-bundle/lazy.js's roundMemo, of a lazy tree read in rounds): a file a scan
-  // before kept is taken as it read it, what it found and queued and the warnings it gave alike. One
-  // scanned here is kept where reading it touched no package not unpacked yet (`memo.touches()`
-  // counts each such read, through a host that caches nothing such a read reads), so read what the
-  // full tree holds: the next scan reads only the files that did, and those it reaches.
+  // With a `memo` (url -> what a scan read of it, kept across the rounds a lazy tree is read in,
+  // vfs-bundle/lazy.js): a file a scan before kept is taken as it read it, what it found and queued
+  // and the warnings it gave alike. One scanned here is kept where reading it touched no package not
+  // unpacked yet (`host.touches()` counts each such read, through a host that caches nothing such a
+  // read reads), so read what the full tree holds: the next scan reads only the files that did, and
+  // those it reaches.
   #scanKept(url, queue) {
-    const kept = this.memo.files.get(url)
+    const kept = this.memo.get(url)
     if (kept !== undefined) {
       this.files.set(url, kept.file)
-      for (const [key, specMap] of kept.imports) {
-        if (!this.imports.has(key)) this.imports.set(key, new Map())
-        this.imports.get(key).set(url, specMap)
-      }
+      for (const [key, specMap] of kept.imports) nestedMap(this.imports, key).set(url, specMap)
       this.unresolved.push(...kept.unresolved)
       this.parseErrors.push(...kept.parseErrors)
       queue.push(...kept.queued)
       for (const args of kept.warnings) console.warn(...args)
       return
     }
-    const touches = this.memo.touches()
+    const touches = this.host.touches()
     const at = { unresolved: this.unresolved.length, parseErrors: this.parseErrors.length, queue: queue.length }
     // The scan of a file is synchronous: what console.warn is given meanwhile is the file's.
     const warnings = []
@@ -301,8 +299,8 @@ export class Scan {
     } finally {
       console.warn = warn
     }
-    if (this.memo.touches() !== touches) return
-    this.memo.files.set(url, {
+    if (this.host.touches() !== touches) return
+    this.memo.set(url, {
       file: this.files.get(url),
       imports: [...this.imports].filter(([, byParent]) => byParent.has(url)).map(([key, byParent]) => [key, byParent.get(url)]),
       unresolved: this.unresolved.slice(at.unresolved),
@@ -524,8 +522,7 @@ export class Scan {
     const specMaps = new Map() // condition key -> specifier -> child URL
     const addChild = (s, key, childURL, childPath) => {
       edges.push({ ...s, child: childURL })
-      if (!specMaps.has(key)) specMaps.set(key, new Map())
-      specMaps.get(key).set(s.spec, childURL)
+      nestedMap(specMaps, key).set(s.spec, childURL)
       if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
     // Records the file --typescript would land the miss on too (typescriptURL), resolved as the miss was.
@@ -578,10 +575,7 @@ export class Scan {
       addChild(s, key, pathToFileURL(childPath).toString(), childPath)
     }
 
-    for (const [key, specMap] of specMaps) {
-      if (!this.imports.has(key)) this.imports.set(key, new Map())
-      this.imports.get(key).set(url, specMap)
-    }
+    for (const [key, specMap] of specMaps) nestedMap(this.imports, key).set(url, specMap)
     this.files.set(url, parseError ? { format, edges, parseError } : { format, edges })
   }
 

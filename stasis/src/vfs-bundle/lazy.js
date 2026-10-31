@@ -6,8 +6,8 @@ import { posix } from 'node:path'
 // cannot wait for a tarball: it runs in rounds. A round that reads under a package not yet unpacked
 // is void, whatever it built, and those packages are unpacked for the next; the first round that
 // reads none read nothing but what the full tree holds there, and is the build. What a round's scan
-// reads of a file is kept for the rounds after it where reading it read no such package
-// (roundMemo), so each file is scanned once, but those that read what was not unpacked yet.
+// reads of a file is kept for the rounds after it where reading it read no such package (Scan's
+// `memo`), so each file is scanned once, but those that read what was not unpacked yet.
 
 // The tree's Vfs as tree.js's vfsHost reads it (lstat, readlink, readFile and readdir). A read under
 // the directory of a package of `roots` not in `unpacked`, or a listing of that directory itself,
@@ -47,26 +47,6 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
       touch(path, true)
       return vfs.readdir(path)
     },
-  }
-}
-
-// What one build keeps across the rounds: for each scan it makes, by a label naming its options, what
-// it read of each file (Scan's `memo`), kept where reading it touched no package not unpacked yet,
-// as the host counts in `reads.touches`, caching nothing such a read reads: what it read then is what
-// the full tree holds. `round(reads)` is the round it reads in; `voided()` whether that round has
-// asked for a package already, which makes the rest of the build moot.
-export function roundMemo() {
-  const scans = new Map()
-  let reads
-  return {
-    round(given) {
-      reads = given
-    },
-    scan(label) {
-      if (!scans.has(label)) scans.set(label, new Map())
-      return { files: scans.get(label), touches: () => reads.touches }
-    },
-    voided: () => reads.asked.size > 0,
   }
 }
 

@@ -46,14 +46,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   // `async` adds their callback + fs.promises counterparts on top.
   if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
   if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
-  let brotliQuality
-  if (values['brotli-quality'] !== undefined) {
-    try {
-      brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-    } catch (cause) {
-      fail(`Error: ${cause.message}`)
-    }
-  }
+  const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
   // --import: extra preload module(s) passed through to the spawned node. Node resolves each
   // against the project cwd; they ride AFTER stasis's own loader import.
   const imports = values.import ?? []
@@ -76,11 +69,22 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   }
 }
 
-// Sets the environment variable `name` to `value`, refusing one the environment already sets otherwise.
+// The `--brotli-quality` given as `value`, a usage error where it's no quality. -> it, or undefined
+export function brotliQualityOption(value, fail) {
+  if (value === undefined) return undefined
+  try {
+    return parseBrotliQuality('--brotli-quality', value)
+  } catch (cause) {
+    return fail(`Error: ${cause.message}`)
+  }
+}
+
+// Sets the environment variable `name` to `value` (a string), refusing one the environment already
+// sets otherwise.
 export function setEnv(name, value) {
   const env = process.env[name]
   if (env && env !== value) throw new Error(`env conflict: ${name}="${env}", effective: "${value}"`)
-  process.env[name] = value === undefined ? '' : value
+  process.env[name] = value
 }
 
 // Announces `run` on stderr as `label` (the CLI's name), with the caller's own `extra` config after

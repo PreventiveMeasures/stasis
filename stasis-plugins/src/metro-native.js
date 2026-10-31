@@ -1,6 +1,7 @@
 import { isUtf8 } from 'node:buffer'
 import { basename, dirname, join, relative, sep } from 'node:path'
 
+import { readJson } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, nameFormat, pathExt } from '@exodus/stasis-core/util'
 
@@ -18,7 +19,7 @@ import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDo
 export const AUTO_INCLUDES = ['@react-native-community/cli/setup_env.sh']
 
 // The entries of the directory `dir`, none where it's missing or no directory.
-function listing(dir, fs) {
+export function listing(dir, fs) {
   try {
     return fs.readdir(dir)
   } catch {
@@ -172,12 +173,7 @@ export function* nativeInputs(root, fs, { resources = new Set(), skip = () => fa
 // them for the components they declare (`codegenNativeComponent`, in a `…NativeComponent` spec).
 // -> the absolute dirs
 function codegenSources(root, fs) {
-  let config
-  try {
-    config = JSON.parse(fs.readFile(join(root, 'package.json')).toString('utf8')).codegenConfig
-  } catch {
-    return []
-  }
+  const config = readJson(join(root, 'package.json'), fs)?.codegenConfig
   const named = [config?.jsSrcsDir, ...(Array.isArray(config?.libraries) ? config.libraries.map((library) => library?.jsSrcsDir) : [])]
   return named.filter((dir) => typeof dir === 'string' && dir !== '').map((dir) => packageDir(root, dir, fs)).filter((dir) => dir !== null)
 }
@@ -202,12 +198,7 @@ const PACKAGE_NAME = /^(?:@[^/\\@.][^/\\]*\/)?[^/\\@.][^/\\]*$/u
 // CLI's list), in the nearest node_modules up from `projectDir` that holds it (as the CLI looks). What
 // a react-native.config.js changes, being code, isn't seen. -> the package dirs, as found
 export function linkedPackages(projectDir, fs) {
-  let manifest
-  try {
-    manifest = JSON.parse(fs.readFile(join(projectDir, 'package.json')).toString('utf8'))
-  } catch {
-    return []
-  }
+  const manifest = readJson(join(projectDir, 'package.json'), fs)
   const listed = (field) => (manifest?.[field] && typeof manifest[field] === 'object' ? Object.keys(manifest[field]) : [])
   const names = new Set([...listed('dependencies'), ...listed('peerDependencies'), ...listed('devDependencies')])
   const dirs = []

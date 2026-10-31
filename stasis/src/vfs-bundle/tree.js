@@ -425,12 +425,7 @@ const PACKAGE_NAME = /^(?:@[^/@.][^/]*\/)?[^/@.][^/]*$/u
 // them (dependencies, optionalDependencies and peerDependencies) and Node finds them from `dir` in
 // `vfs`: what the build reads next, where it reads that package, but none it is held to.
 function dependenciesOf(vfs, dir, roots) {
-  let manifest
-  try {
-    manifest = JSON.parse(packageJSONText(vfs.readFile(`${dir}/package.json`)))
-  } catch {
-    return []
-  }
+  const manifest = readJson(`${dir}/package.json`, vfs)
   if (!isPlainObject(manifest)) return []
   const names = new Set(['dependencies', 'optionalDependencies', 'peerDependencies'].flatMap((field) => (isPlainObject(manifest[field]) ? Object.keys(manifest[field]) : [])))
   const found = []
@@ -595,7 +590,18 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   // `p` from `/`, as spelled: realpath resolves its `..` after the link before it.
   const abs = (p) => (p.startsWith('/') ? p : `/${p}`)
   const normal = (p) => resolve('/', p)
-  const memo = () => (cache ? new Map() : { get() {}, set() {} })
+  // A cache of what `read()` gives for a key, as for a tree that holds still (none without `cache`),
+  // kept only where reading it touched nothing the tree doesn't hold yet: that is read again.
+  const memo = () => {
+    const kept = new Map()
+    return (key, read) => {
+      if (kept.has(key)) return kept.get(key)
+      const before = touches()
+      const value = read()
+      if (cache && touches() === before) kept.set(key, value)
+      return value
+    }
+  }
 
   // `p` is a real path but for its last name; null when it exists and isn't a link.
   const readlink = (p) => {
@@ -607,7 +613,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     return node.type === 'symlink' ? vfs.readlink(inVfs(p)) : null
   }
 
-  const realCache = memo()
+  const realCache = cache ? new Map() : { get() {}, set() {} }
   const realpath = (p, hops = 0) => {
     if (p === '/') return '/'
     const hit = realCache.get(p)
@@ -624,16 +630,15 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       if (name === '.' || name === '..') {
         if (statOf(parentReal)?.isDirectory() !== true) throw new VfsError('ENOTDIR', p)
         result = name === '.' ? parentReal : dirname(parentReal)
-        if (touches() === before) realCache.set(p, result)
-        return result
-      }
-      const candidate = join(parentReal, name)
-      const link = readlink(candidate)
-      if (link === null) {
-        result = candidate
       } else {
-        if (hops >= 40) throw new VfsError('ELOOP', p)
-        result = realpath(link.startsWith('/') ? link : `${dirname(candidate)}/${link}`, hops + 1)
+        const candidate = join(parentReal, name)
+        const link = readlink(candidate)
+        if (link === null) {
+          result = candidate
+        } else {
+          if (hops >= 40) throw new VfsError('ELOOP', p)
+          result = realpath(link.startsWith('/') ? link : `${dirname(candidate)}/${link}`, hops + 1)
+        }
       }
     } catch (err) {
       if (hops === 0 && (err.code === 'ENOENT' || err.code === 'ELOOP') && touches() === before) realCache.set(p, err)
@@ -650,34 +655,25 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   }
 
   // Node's findPackageJSON refuses a manifest that is no JSON object.
-  const manifestErrors = memo()
+  const manifestError = memo()
   const checkManifest = (path) => {
-    let error = manifestErrors.get(path)
-    if (error === undefined) {
-      const before = touches()
-      error = null
+    const error = manifestError(path, () => {
       try {
-        const data = JSON.parse(packageJSONText(host.readFile(path)))
-        if (!isPlainObject(data)) error = invalidPackageConfig(path)
+        return isPlainObject(JSON.parse(packageJSONText(host.readFile(path)))) ? null : invalidPackageConfig(path)
       } catch (cause) {
-        error = invalidPackageConfig(path, cause)
+        return invalidPackageConfig(path, cause)
       }
-      if (touches() === before) manifestErrors.set(path, error)
-    }
+    })
     if (error !== null) throw error
   }
 
   const statCache = memo()
   const statOf = (real) => {
     if (zoneOf(real) === OUTSIDE) return disk.stat(real)
-    let stats = statCache.get(real)
-    if (stats === undefined) {
-      const before = touches()
+    return statCache(real, () => {
       const node = lstatOrNull(vfs, inVfs(real))
-      stats = node !== null && node.type !== 'symlink' ? statsFor(node) : null
-      if (touches() === before) statCache.set(real, stats)
-    }
-    return stats
+      return node !== null && node.type !== 'symlink' ? statsFor(node) : null
+    })
   }
   // The entries of the directory at `real`, `p` as the caller spelled it, sorted by name.
   const listingOf = (real, p) => {
@@ -722,14 +718,8 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     },
     readdir(p) {
       const real = realpath(abs(p))
-      let listing = listings.get(real)
-      if (listing === undefined) {
-        const before = touches()
-        listing = listingOf(real, p)
-        if (touches() === before) listings.set(real, listing)
-      }
       // A copy, the caller's to sort or add to.
-      return [...listing]
+      return [...listings(real, () => listingOf(real, p))]
     },
     readlink(p) {
       if (namesDir(p)) {

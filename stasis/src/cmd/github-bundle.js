@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { readJson } from '@exodus/stasis-core/bundle-util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { bundledSummary, writeBundle, writeFile } from './output.js'
@@ -39,12 +39,8 @@ const asToken = (value) => (typeof value === 'string' && /^[!-~]+$/u.test(value.
 // each where the file has it as a token. The file is another tool's, read for compatibility: one
 // that is missing, unreadable, not JSON or of another shape gives neither, and nothing is said.
 export function auditTokens(home) {
-  try {
-    const config = JSON.parse(readFileSync(join(home ?? homedir(), '.audit', 'config.json'), 'utf8'))
-    return { token: asToken(config?.token), npmToken: asToken(config?.npmToken) }
-  } catch {
-    return {}
-  }
+  const config = readJson(join(home ?? homedir(), '.audit', 'config.json'))
+  return config === null ? {} : { token: asToken(config.token), npmToken: asToken(config.npmToken) }
 }
 
 // Run `stasis github-bundle`: the bundle of a GitHub repo at a commit, or the one a tag names (the
