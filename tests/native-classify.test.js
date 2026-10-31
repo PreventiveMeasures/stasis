@@ -4,7 +4,8 @@
 
 import { test } from 'node:test'
 
-import { classifyFormat, classifyNativeCapture, isAppleSliceDir, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isDotEnvFile, isExcludedNativeDir, isExcludedNativeFile, isStasisArtifactName, isTypeDeclaration, refineNativeCapture, stripTypeDeclaration } from '@exodus/stasis-core/util'
+import { classifyFormat, isAppleSliceDir, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isStasisArtifactName, isTypeDeclaration, stripTypeDeclaration } from '@exodus/stasis-core/util'
+import { classifyNativeCapture, isExcludedNativeDir, refineNativeCapture } from '@exodus/stasis-plugins/metro-native'
 
 const NOT_WIN = { win32: false }
 const WIN = { win32: true }

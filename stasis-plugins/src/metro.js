@@ -7,11 +7,11 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
-import { AUTO_INCLUDES, looksNative, nativeInputs } from './metro-native.js'
+import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync } from '@exodus/stasis-core/state-util'
-import { RN_CORE_INCLUDE_FILES, classifyExtension, classifyFormat, isPathWithin, metroAssetFiles, nodeExtFormat, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
