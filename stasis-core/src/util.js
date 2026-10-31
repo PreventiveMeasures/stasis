@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
+import { basename, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
@@ -71,9 +71,13 @@ export function parseResourcesOption(label, resources) {
   return out
 }
 
+const CONFIG_FILE_NAME = 'stasis.config.json'
+
 // stasis.config.json's `extra`: paths, directories and glob patterns relative to the project root,
 // taken as `stasis add` takes its arguments, and `!`-prefixed ones excluding what they match
-// (expandExtra). Each must stay within the root.
+// (expandExtra). Each must stay within the root. A config that sets it names itself too, unless
+// an entry names it already or `!stasis.config.json` leaves it out (another exclusion matching it
+// still does, at expansion): the files it adds travel with the config that adds them.
 export function parseExtraOption(label, extra) {
   if (extra === undefined) return []
   if (!Array.isArray(extra)) {
@@ -88,7 +92,9 @@ export function parseExtraOption(label, extra) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }
-  return [...extra]
+  // Compared as expandExtra matches: no `./`, no trailing `/`.
+  const names = (entry) => posix.normalize(entry.startsWith('!') ? entry.slice(1) : entry).replace(/\/+$/u, '') === CONFIG_FILE_NAME
+  return extra.some(names) ? [...extra] : [...extra, CONFIG_FILE_NAME]
 }
 
 // A stasis.config.json key that is true or false, true where it is left out.

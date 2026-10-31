@@ -1056,7 +1056,7 @@ test('bundle `reason`: `extra` naming a file run fs-read after a plugin attached
 
     const reason = JSON.parse(s.sourceData).reason
     t.assert.deepStrictEqual(reason.run, ['app.js', 'entry.js'])
-    t.assert.deepStrictEqual(reason.extra, ['app.js'])
+    t.assert.deepStrictEqual(reason.extra, ['app.js', 'stasis.config.json'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1119,7 +1119,7 @@ test('bundle `reason`: a package.json run only fs-reads AFTER a plugin attaches 
       'node_modules/tool/index.js',
       'node_modules/tool/package.json',
     ])
-    t.assert.deepStrictEqual(reason.extra, ['node_modules/tool/index.js'])
+    t.assert.deepStrictEqual(reason.extra, ['stasis.config.json', 'node_modules/tool/index.js'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

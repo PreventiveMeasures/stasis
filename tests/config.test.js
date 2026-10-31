@@ -116,7 +116,7 @@ test('Config extra: empty by default, set by stasis.config.json alone, and never
   const c = new Config()
   t.assert.deepStrictEqual(c.extra, [])
   c.loadConfig(json({ extra: ['a.js', 'b/', 'c/*.png'] }))
-  t.assert.deepStrictEqual(c.extra, ['a.js', 'b/', 'c/*.png'])
+  t.assert.deepStrictEqual(c.extra, ['a.js', 'b/', 'c/*.png', 'stasis.config.json'])
   t.assert.equal(JSON.parse(c.json).extra, undefined)
   // Config-file only: no option (or env var) sets it.
   t.assert.throws(() => new Config({ extra: ['a.js'] }), /Unknown Config options: extra/)
@@ -128,7 +128,30 @@ test('Config extra: rejects a non-array, a non-string or empty entry, and a path
   }
   const c = new Config()
   c.loadConfig(json({ extra: ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata'] }))
-  t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata'])
+  t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata', 'stasis.config.json'])
+})
+
+test('Config extra: names stasis.config.json itself, unless an entry names it or `!stasis.config.json` leaves it out', (t) => {
+  const extraOf = (extra) => {
+    const c = new Config()
+    c.loadConfig(json({ extra }))
+    return c.extra
+  }
+  // Set at all, even to no entries: the config travels with what it adds.
+  t.assert.deepStrictEqual(extraOf([]), ['stasis.config.json'])
+  // Named already, or excluded, as expandExtra matches it: no `./`, no trailing `/`.
+  for (const extra of [['stasis.config.json', 'a.js'], ['./stasis.config.json'], ['a.js', '!stasis.config.json'], ['!./stasis.config.json/']]) {
+    t.assert.deepStrictEqual(extraOf(extra), extra, JSON.stringify(extra))
+  }
+  // Another file of that name, or an exclusion that only matches it as a glob: still added (a glob
+  // exclusion takes it out again when the entries expand).
+  for (const extra of [['src/stasis.config.json'], ['!*.json'], ['!src/stasis.config.json']]) {
+    t.assert.deepStrictEqual(extraOf(extra), [...extra, 'stasis.config.json'], JSON.stringify(extra))
+  }
+  // No `extra`, no file added.
+  const c = new Config()
+  c.loadConfig(json({ scope: 'full' }))
+  t.assert.deepStrictEqual(c.extra, [])
 })
 
 for (const key of ['installDevDependencies', 'lazyDependencies']) {

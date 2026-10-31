@@ -880,7 +880,8 @@ const iosRepo = {
   'ios/fastlane/Fastfile': 'lane :beta do\nend\n',
   'ios/fastlane/report.xml': '<testsuites/>\n',
 }
-const IOS_SOURCES = ['index.js', 'ios/.xcode.env', 'ios/App.xcodeproj/project.pbxproj', 'ios/App/AppDelegate.swift', 'ios/App/Images.xcassets/icon.png', 'ios/Podfile', 'ios/fastlane/Fastfile', 'scripts/tool.js', 'src/a.js']
+// The config is among them: one that sets `extra` names itself too.
+const IOS_SOURCES = ['index.js', 'ios/.xcode.env', 'ios/App.xcodeproj/project.pbxproj', 'ios/App/AppDelegate.swift', 'ios/App/Images.xcassets/icon.png', 'ios/Podfile', 'ios/fastlane/Fastfile', 'scripts/tool.js', 'src/a.js', 'stasis.config.json']
 
 // `files` written under `dir`, as a checkout of them.
 const checkOut = (dir, files) => Promise.all(Object.entries(files).map(async ([path, text]) => {
@@ -924,14 +925,14 @@ test("buildGitHubBundle adds extra to a build without a State, and once to the b
   // --mainFields: packed as `stasis add` packs them.
   const repo = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'index.js': 'module.exports = 1\n', 'cli.js': '', 'stasis.config.json': json(config), ...assets }
   const fields = await build({ client: fakeClient(repo), entries: ['index.js'], mainFields: ['main'] })
-  t.assert.deepStrictEqual([...fields.bundle.sources.keys()].toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js'])
-  t.assert.deepStrictEqual({ ...fields.bundle.reason }, { bundle: ['index.js'], extra: ['cli.js', 'assets/logo.png', 'assets/icons/a.png'] })
-  t.assert.deepStrictEqual(Object.keys(fields.lockfile.modules.get('.').files).toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js'])
+  t.assert.deepStrictEqual([...fields.bundle.sources.keys()].toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js', 'stasis.config.json'])
+  t.assert.deepStrictEqual({ ...fields.bundle.reason }, { bundle: ['index.js'], extra: ['cli.js', 'stasis.config.json', 'assets/logo.png', 'assets/icons/a.png'] })
+  t.assert.deepStrictEqual(Object.keys(fields.lockfile.modules.get('.').files).toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js', 'stasis.config.json'])
   // Its entries' builds, one with --metro and one without, take them in their union, `extra` the
   // consumer of cli.js too, which a build reaches itself.
   const configured = await build({ client: fakeClient({ ...configuredRepo(), ...assets, 'stasis.config.json': json({ entries: { 'index.js': { metro: true, platforms: ['ios', 'android'] }, './cli.js': {} }, ...config }) }) })
-  t.assert.deepStrictEqual([...configured.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'assets/icons/a.png', 'assets/logo.png', 'b.js', 'cli.js', 'index.js'])
-  t.assert.deepStrictEqual({ ...configured.bundle.reason }, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.android.js', 'a.ios.js', 'index.js'], 'extra': ['cli.js', 'assets/logo.png', 'assets/icons/a.png'] })
+  t.assert.deepStrictEqual([...configured.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'assets/icons/a.png', 'assets/logo.png', 'b.js', 'cli.js', 'index.js', 'stasis.config.json'])
+  t.assert.deepStrictEqual({ ...configured.bundle.reason }, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.android.js', 'a.ios.js', 'index.js'], 'extra': ['cli.js', 'stasis.config.json', 'assets/logo.png', 'assets/icons/a.png'] })
 })
 
 test('buildGitHubBundle refuses the extra files stasis bundle refuses', async (t) => {
@@ -961,10 +962,14 @@ test('buildGitHubBundle needs the optional minimatch for extra, and only for it:
       const { bundle } = await buildGitHubBundle({ github: ${JSON.stringify(GITHUB)}, sha: ${JSON.stringify(SHA)}, packageManager: 'pnpm', client, entries: ['src/a.js'] })
       return [...bundle.sources.keys()]
     }
+    const refusal = (extra) => sources(extra).then(() => null, (error) => error.message)
     const out = {
-      refused: await sources(['*.js']).then(() => null, (error) => error.message),
-      exclusions: await sources(['!tool.js']),
-      none: await sources([]),
+      refused: await refusal(['*.js']),
+      // A config that sets \`extra\` at all names itself, which is globbed too.
+      config: await refusal(['!tool.js']),
+      empty: await refusal([]),
+      exclusions: await sources(['!tool.js', '!stasis.config.json']),
+      none: await sources(undefined),
       disk: [...(await buildBundle({ cwd: process.cwd(), env: {}, entries: ['src/a.js'] })).sources.keys()].toSorted(),
     }
     fs.writeFileSync('out.json', JSON.stringify(out))
@@ -975,10 +980,13 @@ test('buildGitHubBundle needs the optional minimatch for extra, and only for it:
   const [status] = await once(child, 'close')
   t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
   const out = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
-  t.assert.equal(out.refused, "A glob over a Vfs (stasis.config.json's extra) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)")
+  const refusal = "A glob over a Vfs (stasis.config.json's extra) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)"
+  t.assert.equal(out.refused, refusal)
+  t.assert.equal(out.config, refusal, '`!` entries alone, without `!stasis.config.json`, still name the config')
+  t.assert.equal(out.empty, refusal, 'no entries still name the config')
   t.assert.deepStrictEqual(out.exclusions, ['src/a.js'], 'nothing to glob')
-  t.assert.deepStrictEqual(out.none, ['src/a.js'])
-  t.assert.deepStrictEqual(out.disk, ['src/a.js', 'tool.js'], "the disk's globbed by Node's own")
+  t.assert.deepStrictEqual(out.none, ['src/a.js'], 'no extra, no config named')
+  t.assert.deepStrictEqual(out.disk, ['src/a.js', 'stasis.config.json', 'tool.js'], "the disk's globbed by Node's own")
 })
 
 // A pnpm workspace as pnpm writes its lockfile: `packages/app` depends on its sibling `packages/p`
@@ -1098,9 +1106,9 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/main.js', 'packages/p/index.js', 'packages/p/package.json'], 'the tree is read in place, the link by where it leads in the Vfs')
   t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, directory: '', commit: SHA })
-  t.assert.deepStrictEqual(built.defaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js'], "the entries the package.json names, in the directory, and its config's extra")
+  t.assert.deepStrictEqual(built.defaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js', 'stasis.config.json'], "the entries the package.json names, in the directory, and its config's extra")
   t.assert.deepStrictEqual(built.defaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
-  t.assert.deepStrictEqual(built.metroDefaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js'], 'as the field resolver resolves them, from the directory')
+  t.assert.deepStrictEqual(built.metroDefaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js', 'stasis.config.json'], 'as the field resolver resolves them, from the directory')
   t.assert.deepStrictEqual(built.metroDefaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
   for (const entry of otherLanguages) t.assert.match(refused[entry] ?? '', /only JS bundles are built with pnpm$/u, entry)
 })

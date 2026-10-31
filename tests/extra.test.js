@@ -8,10 +8,12 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { sortPaths } from '@exodus/stasis-core/util'
 import { withTmp } from './tmp.helper.js'
 
 // stasis.config.json's `extra`: files attested beside what `stasis run` (when it writes) and
-// `stasis bundle` reach, named as `stasis add` takes its arguments from a shell.
+// `stasis bundle` reach, named as `stasis add` takes its arguments from a shell, and the config
+// itself unless `!stasis.config.json` leaves it out.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const stasisCli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -53,7 +55,7 @@ const seed = (tmp, config = { resources: ['png', 'svg'], extra: EXTRA }) => {
 
 const decode = (path) => Bundle.parse(brotliDecompressSync(readFileSync(path)).toString('utf8'))
 const filesOf = (artifact) => Object.keys(artifact.modules.get('.').files).toSorted()
-const EXTRA_FILES = ['assets/icon.svg', 'assets/logo.png', 'scripts/tool.js']
+const EXTRA_FILES = ['assets/icon.svg', 'assets/logo.png', 'scripts/tool.js', 'stasis.config.json']
 
 // --- stasis run --------------------------------------------------------------
 
@@ -74,7 +76,8 @@ test('run --lock=add --bundle=add attests the extra files beside what the run re
   t.assert.equal(bundle.formats.has('scripts/tool.js'), false)
   // A file the run loaded itself (src/*.js) keeps the run's own record, and is `extra`'s too.
   t.assert.equal(bundle.formats.get('src/util.js'), 'module')
-  t.assert.deepStrictEqual(bundle.reason, { extra: all, run: ['src/entry.js', 'src/util.js'] })
+  // In paths' order: a directory's own files before what's under it.
+  t.assert.deepStrictEqual(bundle.reason, { extra: all.toSorted(sortPaths), run: ['src/entry.js', 'src/util.js'] })
   t.assert.deepStrictEqual([...bundle.entries], ['src/entry.js'], 'extra files are no entries')
 
   // The bundle runs on its own, and a frozen replay of both passes.
@@ -134,7 +137,7 @@ test('run never sweeps the bundle it writes into extra, so it is repeatable', wi
     const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, r.stderr)
   }
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'code.br'))), ['dist/helper.js', 'src/entry.js', 'src/util.js'])
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'code.br'))), ['dist/helper.js', 'src/entry.js', 'src/util.js', 'stasis.config.json'])
 }))
 
 test('run never takes the artifacts it writes into extra, even matched by a glob', withTmp(async (t, tmp) => {
@@ -154,7 +157,7 @@ test('run takes a stasis artifact it does not write when extra names it', withTm
   writeFileSync(join(tmp, 'vendor.stasis.code.br'), PNG)
   const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'vendor.stasis.code.br'])
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.config.json', 'vendor.stasis.code.br'])
 }))
 
 test('run never takes the lockfile into a bundle, even one it only tolerates and extra names', withTmp(async (t, tmp) => {
@@ -189,7 +192,7 @@ test('extra never takes a file it writes under another name, a symlink or hard l
     seed(tmp, { ...config, resources: ['br'], extra: ['alias.br', 'hard.br', 'links/'] })
     const r = runCli(stasisCli, args, tmp)
     t.assert.equal(r.status, 0, `${name}: ${r.stderr}`)
-    t.assert.deepStrictEqual(filesOf(decode(join(tmp, out))), ['links/helper.js', 'src/entry.js', 'src/util.js'], name)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, out))), ['links/helper.js', 'src/entry.js', 'src/util.js', 'stasis.config.json'], name)
     rmSync(join(tmp, 'links'), { recursive: true })
   }
 }))
@@ -218,22 +221,45 @@ test('bundle adds the extra files beside what the scan reached, into its lockfil
   // As `stasis run` records them.
   t.assert.equal(bundle.formats.get('assets/logo.png'), 'resource:base64')
   t.assert.equal(bundle.formats.has('scripts/tool.js'), false)
-  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all })
+  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all.toSorted(sortPaths) })
 
   const load = runCli(stasisCli, ['run', '--lock=frozen', '--bundle=load', 'src/entry.js'], tmp)
   t.assert.equal(load.status, 0, load.stderr)
 }))
 
 test('a file extra names that the build reached itself is the `extra` consumer\'s too', withTmp(async (t, tmp) => {
-  // Nothing but already-reached files named: no file is added, every one is attributed to both.
+  // Nothing but already-reached files named (the config left out): no file is added, every one is
+  // attributed to both.
   for (const [args, own] of [[['run', '--bundle=add'], 'run'], [['bundle'], 'bundle'], [['bundle', '--mainFields=main'], 'bundle']]) {
-    seed(tmp, { extra: ['src/*.js'] })
+    seed(tmp, { extra: ['src/*.js', '!stasis.config.json'] })
     const r = runCli(stasisCli, [...args, 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, `${args}: ${r.stderr}`)
     const bundle = decode(join(tmp, 'stasis.code.br'))
     t.assert.deepStrictEqual(filesOf(bundle), ['src/entry.js', 'src/util.js'], `${args}`)
     t.assert.deepStrictEqual(bundle.reason, { [own]: ['src/entry.js', 'src/util.js'], extra: ['src/entry.js', 'src/util.js'] }, `${args}`)
     rmSync(join(tmp, 'stasis.code.br'))
+  }
+}))
+
+test('extra names stasis.config.json itself, unless an exclusion leaves it out', withTmp(async (t, tmp) => {
+  for (const args of [['run', '--bundle=add'], ['bundle'], ['bundle', '--mainFields=main']]) {
+    // Set at all, even to no entries: the bundle carries the config that adds its files, as written.
+    seed(tmp, { extra: [] })
+    const r = runCli(stasisCli, [...args, 'src/entry.js'], tmp)
+    t.assert.equal(r.status, 0, `${args}: ${r.stderr}`)
+    const bundle = decode(join(tmp, 'stasis.code.br'))
+    t.assert.deepStrictEqual(filesOf(bundle), ['src/entry.js', 'src/util.js', 'stasis.config.json'], `${args}`)
+    t.assert.deepStrictEqual(bundle.reason.extra, ['stasis.config.json'], `${args}`)
+    t.assert.equal(bundle.sources.get('stasis.config.json'), readFileSync(join(tmp, 'stasis.config.json'), 'utf8'), `${args}`)
+    rmSync(join(tmp, 'stasis.code.br'))
+    // `!stasis.config.json` leaves it out, as any exclusion matching it does.
+    for (const exclusion of ['!stasis.config.json', '!./stasis.config.json', '!*.json']) {
+      seed(tmp, { extra: ['scripts/tool.js', exclusion] })
+      const excluded = runCli(stasisCli, [...args, 'src/entry.js'], tmp)
+      t.assert.equal(excluded.status, 0, `${args} ${exclusion}: ${excluded.stderr}`)
+      t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['scripts/tool.js', 'src/entry.js', 'src/util.js'], `${args} ${exclusion}`)
+      rmSync(join(tmp, 'stasis.code.br'))
+    }
   }
 }))
 
@@ -253,7 +279,7 @@ test('bundle never takes its own --output or --lockfile into extra, swept or mat
       const r = runCli(stasisCli, ['bundle', ...mainFields, '--output=dist/app.br', '--lockfile=dist/lock.json', 'src/entry.js'], tmp)
       t.assert.equal(r.status, 0, `${extra} ${mainFields}: ${r.stderr}`)
     }
-    const files = ['dist/helper.js', 'src/entry.js', 'src/util.js']
+    const files = ['dist/helper.js', 'src/entry.js', 'src/util.js', 'stasis.config.json']
     t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'dist', 'app.br'))), files, `${extra} ${mainFields}`)
     t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'dist', 'lock.json'), 'utf8'))), files, `${extra} ${mainFields}`)
   }
@@ -267,7 +293,7 @@ test('bundle never takes its default output into extra, matched by a glob', with
       const r = runCli(stasisCli, ['bundle', ...mainFields, 'src/entry.js'], tmp)
       t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
     }
-    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'top.br'], `${mainFields}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.config.json', 'top.br'], `${mainFields}`)
     rmSync(join(tmp, 'stasis.code.br'))
   }
 }))
@@ -278,7 +304,7 @@ test('bundle takes a default-named bundle it does not write when extra names it'
     writeFileSync(join(tmp, 'stasis.code.br'), PNG)
     const r = runCli(stasisCli, ['bundle', ...mainFields, '--output=other.br', 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
-    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'other.br'))), ['src/entry.js', 'src/util.js', 'stasis.code.br'], `${mainFields}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'other.br'))), ['src/entry.js', 'src/util.js', 'stasis.code.br', 'stasis.config.json'], `${mainFields}`)
   }
 }))
 
@@ -287,7 +313,7 @@ test('bundle validates extra against --resources where given, else the config\'s
     seed(tmp, { extra: ['assets/'] })
     const r = runCli(stasisCli, ['bundle', ...mainFields, '--resources=png,svg', 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
-    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'assets/logo.png', 'src/entry.js', 'src/util.js'], `${mainFields}`)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'assets/logo.png', 'src/entry.js', 'src/util.js', 'stasis.config.json'], `${mainFields}`)
 
     // A flag narrower than the config's list is the one that holds.
     seed(tmp, { resources: ['png', 'svg'], extra: ['assets/'] })
@@ -308,7 +334,7 @@ test('bundle --mainFields adds extra as `stasis add` adds files, into its lockfi
   t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), all)
   // `add`'s format: the package's `type`.
   t.assert.equal(bundle.formats.get('scripts/tool.js'), 'module')
-  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all })
+  t.assert.deepStrictEqual(bundle.reason, { bundle: ['src/entry.js', 'src/util.js'], extra: all.toSorted(sortPaths) })
 
   const load = runCli(stasisCli, ['run', '--lock=frozen', '--bundle=load', 'src/entry.js'], tmp)
   t.assert.equal(load.status, 0, load.stderr)
@@ -322,7 +348,7 @@ test('bundle of a Bash entry takes extra into its own workspace bucket', withTmp
   const r = runCli(stasisCli, ['bundle', 'run.sh'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
   const bundle = decode(join(tmp, 'stasis.code.br'))
-  const files = ['assets/icon.svg', 'assets/logo.png', 'run.sh', 'scripts/tool.js', 'src/entry.js', 'src/util.js']
+  const files = ['assets/icon.svg', 'assets/logo.png', 'run.sh', 'scripts/tool.js', 'src/entry.js', 'src/util.js', 'stasis.config.json']
   t.assert.deepStrictEqual(filesOf(bundle), files)
   t.assert.equal(bundle.modules.get('.').name, 'bash-bundle')
 }))
@@ -359,7 +385,7 @@ test('extra `!` entries take out what they match, a directory with everything un
   seedIos(tmp, IOS_EXTRA)
   const r = runCli(stasisCli, ['run', '--lock=add', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
-  const files = [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted()
+  const files = [...IOS_FILES, 'src/entry.js', 'src/util.js', 'stasis.config.json'].toSorted()
   t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files)
   t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files)
 }))
@@ -369,7 +395,7 @@ test('extra `!` entries take out named and matched paths too, in any order', wit
   seed(tmp, { resources: ['png', 'svg'], extra: ['!assets/logo.png', 'assets/*', 'scripts/tool.js', '!./scripts/tool.js', '!assets/README.md', '!assets/examples/'] })
   const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'src/entry.js', 'src/util.js'])
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['assets/icon.svg', 'src/entry.js', 'src/util.js', 'stasis.config.json'])
 }))
 
 test('a directory extra excludes is never walked, by a sweep or a pattern\'s expansion', withTmp(async (t, tmp) => {
@@ -379,7 +405,7 @@ test('a directory extra excludes is never walked, by a sweep or a pattern\'s exp
     writeFileSync(join(tmp, 'ios/Pods/odd\\name.m'), '')
     const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, `${ios}: ${r.stderr}`)
-    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted(), ios)
+    t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), [...IOS_FILES, 'src/entry.js', 'src/util.js', 'stasis.config.json'].toSorted(), ios)
     rmSync(join(tmp, 'stasis.code.br'))
   }
 }))
@@ -391,7 +417,7 @@ test('extra `!` entries take out what a sweep finds below the directory swept, b
   write('ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata', '<Workspace/>\n')
   write('ios/fastlane/Fastfile', 'lane :beta do\nend\n')
   write('ios/fastlane/report.xml', '<testsuites/>\n')
-  const files = [...IOS_FILES, 'ios/fastlane/Fastfile', 'src/entry.js', 'src/util.js'].toSorted()
+  const files = [...IOS_FILES, 'ios/fastlane/Fastfile', 'src/entry.js', 'src/util.js', 'stasis.config.json'].toSorted()
   const run = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(run.status, 0, run.stderr)
   t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files)
@@ -410,7 +436,7 @@ test('a walk never refuses a name it passes by, only one it keeps', withTmp(asyn
   writeFileSync(join(tmp, 'static', 'odd\\name.txt'), '')
   const r = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'static/a.wav'])
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), ['src/entry.js', 'src/util.js', 'stasis.config.json', 'static/a.wav'])
 }))
 
 test('bundle takes extra `!` entries as run does', withTmp(async (t, tmp) => {
@@ -418,7 +444,7 @@ test('bundle takes extra `!` entries as run does', withTmp(async (t, tmp) => {
     seedIos(tmp, IOS_EXTRA)
     const r = runCli(stasisCli, ['bundle', ...mainFields, '--lockfile=stasis.lock.json', 'src/entry.js'], tmp)
     t.assert.equal(r.status, 0, `${mainFields}: ${r.stderr}`)
-    const files = [...IOS_FILES, 'src/entry.js', 'src/util.js'].toSorted()
+    const files = [...IOS_FILES, 'src/entry.js', 'src/util.js', 'stasis.config.json'].toSorted()
     t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files, `${mainFields}`)
     t.assert.deepStrictEqual(filesOf(Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))), files, `${mainFields}`)
   }

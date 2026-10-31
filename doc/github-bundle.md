@@ -265,8 +265,9 @@ The tree is globbed as Node globs the disk, by Node's own `fs.globSync` and
 matching never folds case: git's names differ by case alone.
 
 `minimatch` is an optional dependency of `@exodus/stasis`. Where it isn't
-installed, a `stasis.config.json` whose `extra` names anything is refused; one
-of `!` entries alone globs nothing. `stasis bundle` and `stasis run` glob the
+installed, a `stasis.config.json` whose `extra` names anything is refused, and
+one that sets it names itself (see [`extra`](file-formats.md#stasisconfigjson));
+one of `!` entries alone, `!stasis.config.json` among them, globs nothing. `stasis bundle` and `stasis run` glob the
 disk with Node's own, without it.
 
 ## Roots and paths
