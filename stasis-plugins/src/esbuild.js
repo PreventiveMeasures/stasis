@@ -71,6 +71,8 @@ export class StasisEsbuild {
   #resources
   #loaders
   #transform
+  #resource
+  #platform
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
   #probes = new Map()  // [kind, resolveDir, specifier] -> Promise<disabled path | null>
@@ -79,7 +81,7 @@ export class StasisEsbuild {
   // the second is refused in onStart.
   #captureBuildCount = 0
 
-  constructor(options = {}, { loaders, transform } = {}) {
+  constructor(options = {}, { loaders, transform, resource, platform } = {}) {
     // A caller that owns a State (e.g. `stasis build`) can pass it directly; a foreign-copy State
     // fails closed via the instanceof miss.
     const state = options instanceof State
@@ -95,6 +97,12 @@ export class StasisEsbuild {
     // (source, { path, loader }) => { contents, loader } | undefined, may be async. Never
     // runs at capture -- capture attests the file's raw bytes.
     this.#transform = transform
+    // Load-mode-only module builder for a resource no loader override names (e.g. `stasis build
+    // --metro`'s asset module): (source, { path }) => { contents, loader } | undefined, may be async.
+    this.#resource = resource
+    // Load mode: the platform whose target a --metro per-platform edge resolves to (none fails
+    // closed on one, as plain bundle=load does).
+    this.#platform = platform
   }
 
   // esbuild loader for a served file: configured override, else derived from extension
@@ -225,7 +233,7 @@ export class StasisEsbuild {
         // `browser` field disables it (an edge to the empty module) or a package by that name serves it.
         // No attested edge (a built-in, or another external): esbuild's, which externalizes it as
         // without us (built-ins under platform:'node'). File BYTES still fail closed at onLoad.
-        const attested = attestedImport(this.#state, parentURL, specifier, { importAttributes: attrs })
+        const attested = attestedImport(this.#state, parentURL, specifier, { importAttributes: attrs, platform: this.#platform })
         if (attested === undefined) return undefined
         ;({ url } = attested)
       }
@@ -296,11 +304,15 @@ export class StasisEsbuild {
         // one a CSS @import, `composes` or url() accepts, so one empty module serves JS and CSS importers.
         if (kind === 'empty') return { contents: source, loader: 'empty' }
         if (kind === 'resource') {
-          // Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
-          // per-extension loader only on its own load path), so replay the configured loader from
-          // initialOptions.loader. No configured loader fails symmetrically with a capture build.
-          const loader = initialOptions.loader?.[extname(path)]
-          return loader ? { contents: source, loader } : { contents: source }
+          // A loader override for its extension (`stasis build --loader=.png:dataurl`) wins; else the
+          // resource hook's module, where it builds one.
+          const override = this.#loaders.get(extname(path))
+          if (override) return { contents: source, loader: override }
+          const built = await this.#resource?.(source, { path })
+          if (built) return built
+          // Else the loader esbuild's own load path takes (the build's `loader` option, else its default
+          // for the extension), so a resource none loads fails as at capture, not parsed as js.
+          return { contents: source, loader: 'default' }
         }
         const loader = this.#loaderFor(path)
         // A transform that declines (undefined) serves the attested bytes unchanged.

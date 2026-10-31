@@ -7,7 +7,7 @@ own resolution: every import resolves to the edge stasis attested and every
 module's bytes come from the artifact, not disk.
 
 ```sh
-stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
+stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
 ```
 
 - First positional (**required**): the `stasis.code.br` bundle or `stasis.lock.json` lockfile to build from.
@@ -22,12 +22,16 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
 | `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
-| `--loader=.EXT:NAME` (repeatable) | esbuild [loader](https://esbuild.github.io/api/#loader) override for an extension, e.g. `--loader=.js:jsx`. See [JSX in `.js`/`.ts`](#jsx-in-jsts). |
+| `--loader=.EXT:NAME` (repeatable) | esbuild [loader](https://esbuild.github.io/api/#loader) override for an extension, e.g. `--loader=.js:jsx`, `--loader=.png:dataurl`. See [JSX in `.js`/`.ts`](#jsx-in-jsts). |
+| `--metro=PLATFORM` | Build a `--metro` bundle for one platform as Metro builds it: its per-platform edges, and each asset as Metro's asset module. See [Metro](#metro---metroplatform). |
+| `--assets-dest=DIR` | With `--metro`: copy the assets' files to `DIR` as `react-native bundle --assets-dest` does. |
 
 `--format`/`--platform`/`--minify`/`--sourcemap`/`--define` only steer esbuild's
 output; the import graph is fixed by the artifact. `--platform=hermes` and
 `--babel` additionally transform each file's *content* on its way into the
-bundle — the graph they follow is still exactly the recorded one.
+bundle — the graph they follow is still exactly the recorded one. `--metro`
+picks one platform's targets of the recorded per-platform edges, and gives each
+asset the one edge Metro adds to it: to the asset registry the artifact carries.
 
 ## Externals
 
@@ -69,6 +73,68 @@ in), never from stasis's own dependencies — add the deps to the project:
 ```sh
 npm i -D @babel/core @babel/plugin-transform-block-scoping @babel/plugin-transform-classes
 ```
+
+## Metro (`--metro=PLATFORM`)
+
+A [`stasis bundle --metro --platforms=ios,android`](bundle.md#metro---metro) bundle
+is for every platform it names at once; Metro builds one platform at a time.
+`--metro=PLATFORM` builds the bundle for `PLATFORM` the way Metro does:
+
+- **Per-platform edges.** An import that resolves differently per platform
+  (`./where` to `where.ios.js` or `where.android.js`) takes `PLATFORM`'s
+  target. If an edge records no target for `PLATFORM`, the build fails: the
+  bundle wasn't made for it. Without `--metro`, such an edge fails the build.
+- **Assets.** Each asset an import reaches (`require('./img/logo.png')`, a
+  resource carried with `--resources`) becomes the module Metro builds of it:
+
+  ```js
+  module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({
+    __packager_asset: true, httpServerLocation: '/assets/img', width: 20, height: 10,
+    scales: [1, 2, 3], hash: '…', name: 'logo', type: 'png' })
+  ```
+
+  so `require()` returns the asset's registry id, as `<Image source>` expects.
+  The descriptor comes from every file of the asset that the bundle carries
+  in its directory, the same files Metro reads for `PLATFORM`: each scale
+  (`logo@2x.png`, `logo@3x.png`), and `PLATFORM`'s own files (`logo.ios.png`)
+  where it has any. `scales` lists them in order, `hash` is the md5 of their
+  bytes, and `width`/`height` are the first file's dimensions divided by its
+  scale (images only). `httpServerLocation` is the asset's directory, relative
+  to the artifact's root, under `/assets`. This matches Metro 0.83's
+  `getAssetData`, image-size parsing included, and is computed from the bytes
+  the artifact carries.
+- **The asset registry.** `react-native/Libraries/Image/AssetRegistry` (React
+  Native's `assetRegistryPath`) resolves to the copy the bundle carries.
+  `stasis bundle --metro` carries one for each asset but records no edge to
+  it, because Metro adds it after the source. The build takes the nearest
+  `node_modules/react-native` above the asset, otherwise the only copy the
+  bundle carries (pnpm's). It fails if the bundle carries none (bundle from a
+  project with `react-native` installed).
+
+`--assets-dest=DIR` copies each asset's files out the way `react-native bundle
+--assets-dest` does for `PLATFORM`: `android` uses Android's `res/` layout
+(`drawable-mdpi/img_logo.png` … `drawable-xxhdpi/`, `raw/` for non-drawable
+types, plus `raw/keep.xml`). Any other platform uses iOS's layout
+(`assets/img/logo@2x.png`, scales 1x–3x only). The copies use the artifact's
+bytes, and the build refuses to overwrite a file the artifact carries.
+
+```sh
+stasis bundle --metro --platforms=ios,android --jsx --resources=png,ttf index.js
+stasis build --platform=hermes --metro=ios --loader=.js:jsx --assets-dest=ios/build --output=ios/build/main.js stasis.code.br
+stasis build --platform=hermes --metro=android --loader=.js:jsx --assets-dest=android/app/src/main/res --output=android/app/src/main/assets/index.android.js stasis.code.br
+```
+
+`--output` names a file only when it ends in `.js`/`.cjs`/`.mjs` (`main.jsbundle`
+would be a directory), so compile the `.js` into the bundle the app loads with
+hermesc, e.g. `hermesc -emit-binary -out ios/build/main.jsbundle ios/build/main.js`.
+
+A `--loader` naming an asset's extension takes precedence over the asset
+module. A project's own Metro `assetRegistryPath`, `transformer.publicPath`
+and `transformer.assetPlugins` are not applied, because they live in its Metro
+config, which is code. iOS asset catalogs (`--asset-catalog-dest`) are not
+written. A bundle records no list of the platforms it was made for, so an
+asset or edge that has no per-platform variant can't reveal that a bundle
+made only for `ios` is being built for `android`.
 
 ## The project's Babel config (`--babel`)
 
@@ -198,10 +264,12 @@ rejected (they're always tracked as code). Only files *reached through the impor
 graph* are carried — an allowlisted extension that nothing imports adds nothing.
 `--resources` is JS-only and pairs with plain, `--mainFields`, and `--metro` alike.
 
-A resource is carried, not built: `stasis build` (esbuild) still needs a matching
-`--loader` (e.g. `--loader=.png:dataurl`) to emit one, so an entry that imports an
-asset without a configured loader fails at build time — the bundle/lockfile carries
-the bytes for attestation and for Metro regardless.
+A resource is carried, not built: `stasis build` (esbuild) needs either a matching
+`--loader` (e.g. `--loader=.png:dataurl`) to emit one, or
+[`--metro=PLATFORM`](#metro---metroplatform) to build it as Metro's asset module.
+An entry that imports an asset with neither fails at build time with esbuild's
+*No loader is configured for ".png" files*. The bundle or lockfile carries the
+bytes for attestation and for Metro regardless.
 
 ## Known limitation: CommonJS default-import interop
 

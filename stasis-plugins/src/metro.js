@@ -3,23 +3,20 @@ import { Buffer, isUtf8 } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join, posix, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState, unsupportedExtension } from './plugins.js'
-import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
+import { AUTO_INCLUDES, FILE_STAT, RN_CORE_INCLUDE_FILES, bundleDirHost, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
 import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
-import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
 // The companion worker transformer withStasis() wires as Metro's `transformerPath`.
 const TRANSFORMER = fileURLToPath(new URL('./metro-transformer.js', import.meta.url))
-
-// What a file's stat answers to metroAssetFiles, for a file a listing names but the disk lacks.
-const FILE_STAT = { isFile: () => true }
 
 // A graph module's absolute path (graph modules and preModules both carry it), or undefined for a
 // synthetic/virtual one (require.context's ?ctx=, __prelude__), with no on-disk bytes to hash.
@@ -150,7 +147,7 @@ export class StasisMetro {
   #seen = new Set()
   // The project root's real path, once a consumed resource needs it (#consumedResources).
   #realRoot
-  // Under load, the bundle's files by directory (rel), as its entries, once an asset needs them (#bundleDirHost).
+  // Under load, the bundle's files as a directory listing, once an asset needs them (#bundleDirHost).
   #bundleDirs
   #state
   #resources
@@ -544,10 +541,8 @@ export class StasisMetro {
   // The files the bundle carries, as a directory listing of them (`metroAssetFiles`' host): an asset's
   // files as captured.
   #bundleDirHost() {
-    const state = this.#state
-    this.#bundleDirs ??= new Map([...Map.groupBy([...state.sources.keys(), ...state.resources.keys()], (rel) => posix.dirname(rel))]
-      .map(([dir, rels]) => [dir, rels.map((rel) => ({ name: posix.basename(rel) }))]))
-    return { readdir: (dir) => this.#bundleDirs.get(toPosix(state.relative(dir))) ?? [], stat: () => FILE_STAT }
+    this.#bundleDirs ??= bundleDirHost(this.#state)
+    return this.#bundleDirs
   }
 
   // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:
