@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -11,6 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildPurl, collectComponents, generateSbom, sbom, toCyclonedx, toSpdx } from '../stasis/src/sbom.js'
 import { sbomCommand } from '../stasis/src/cmd/sbom.js'
+import { withTmp } from './tmp.helper.js'
 import pkg from '../stasis/package.json' with { type: 'json' }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -443,15 +444,6 @@ test('importing @exodus/stasis/sbom does not pull in brotli (node:zlib)', (t) =>
 })
 
 // ── sbomCommand (CLI glue, reads/writes files) ───────────────────────────────
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-sbom-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const writeLockFile = (dir, obj = LOCK, name = 'stasis.lock.json') => {
   const p = join(dir, name)

@@ -1,20 +1,11 @@
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync } from 'node:zlib'
 
 import { collectWhy } from '../stasis/src/why.js'
 import { collectReasons } from '../stasis/src/audit.js'
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-why-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
+import { withTmp } from './tmp.helper.js'
 
 // Build a bundle from a compact spec:
 //   deps:   ['a', 'b', ...]         node_modules packages (version 1.0.0)

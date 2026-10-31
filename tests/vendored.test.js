@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
@@ -9,19 +8,11 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { groupModules } from '@exodus/stasis-core/util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 // Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json of its
 // own, which names it rather than next. They are next's files, and a bundle lists the vendored packages
 // among them it carries a file of: `vendored`, on next's record, metadata its lockfile holds too, unattested.
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-vendored-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const write = (file, text) => {
   mkdirSync(dirname(file), { recursive: true })

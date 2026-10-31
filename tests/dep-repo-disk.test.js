@@ -1,11 +1,11 @@
 import { test } from 'node:test'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { buildPhpBundle, buildSolidityBundle } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 // `stasis bundle` from disk records a dependency's commit where something there names it, beside the
 // GitHub repository it is from, at that repository's root: a Foundry lib/ submodule's checkout (its
@@ -17,15 +17,6 @@ const solidityFixture = join(here, 'fixtures', 'solidity-bundle', 'with-deps-eco
 const phpFixture = join(here, 'fixtures', 'php-bundle', 'composer-lock')
 const COMMIT = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-dep-repo-disk-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const write = (file, text) => {
   mkdirSync(dirname(file), { recursive: true })

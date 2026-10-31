@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
@@ -9,6 +8,7 @@ import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { withTmp } from './tmp.helper.js'
 
 // stasis.config.json's `extra`: files attested beside what `stasis run` (when it writes) and
 // `stasis bundle` reach, named as `stasis add` takes its arguments from a shell.
@@ -23,15 +23,6 @@ const runCli = (cli, args, cwd) => {
   const r = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf-8', env: cleanEnv, cwd })
   r.stderr = stripVTControlCharacters(r.stderr)
   return r
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-extra-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff])

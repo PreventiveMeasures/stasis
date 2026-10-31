@@ -11,6 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { addCommand } from '@exodus/stasis-core/add'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const stasisCli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -26,15 +27,6 @@ const runCli = (cli, args, opts = {}) => {
   r.stdout = stripVTControlCharacters(r.stdout)
   r.stderr = stripVTControlCharacters(r.stderr)
   return r
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-add-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 const CONFIG = { bundleFile: 'dist/code.br', resourcesBundleFile: 'dist/res.br', resources: ['svg', 'png'] }

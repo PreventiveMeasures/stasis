@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 // The zero-dependency `stasis-core` CLI exposes `run`, `prune`, `add` (which packs explicitly
 // listed files into the project's bundles -- no scanner/loaders), and `extract` (which unpacks a
@@ -33,15 +33,6 @@ const run = (args, opts = {}) => {
   r.stdout = stripVTControlCharacters(r.stdout)
   r.stderr = stripVTControlCharacters(r.stderr)
   return r
-}
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-core-cli-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 test('--help prints usage and exits 0', (t) => {

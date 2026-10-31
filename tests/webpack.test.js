@@ -11,12 +11,12 @@
 import { test, describe } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const helper = join(here, 'webpack-run.helper.js')
@@ -57,15 +57,6 @@ const run = async (entry, { cwd, env = {} }) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-webpack-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
   }
 }
 

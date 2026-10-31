@@ -12,6 +12,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { createMetroResolver } from '../stasis/src/metro-resolver.js'
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -36,15 +37,6 @@ const metroResolverAvailable = (() => {
   }
 })()
 const ifMetro = { skip: metroResolverAvailable ? false : 'metro-resolver not installed' }
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-metro-resolver-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const runCli = (args, opts = {}) => {
   const r = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf-8', ...opts })

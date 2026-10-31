@@ -19,32 +19,9 @@ import {
   resolvePhpDir,
   resolvePhpImport,
 } from '../stasis/src/loaders/php.js'
+import { captureWarnings, captureWarningsAsync } from './warnings.helper.js'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'php-bundle')
-
-const captureWarnings = (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    const result = fn()
-    return { result, warnings }
-  } finally {
-    console.warn = original
-  }
-}
-
-const captureWarningsAsync = async (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    const result = await fn()
-    return { result, warnings }
-  } finally {
-    console.warn = original
-  }
-}
 
 test('extractPhpImports normalises a __DIR__-relative require to a ./ specifier', (t) => {
   t.assert.deepStrictEqual(extractPhpImports("require_once __DIR__ . '/B.php';"), ['./B.php'])

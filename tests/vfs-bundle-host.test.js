@@ -1,22 +1,13 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { Vfs, createVfsHost, loadNodeModules } from '../stasis/src/vfs-bundle.js'
 import { createNodeResolver } from '../stasis/src/resolve-node.js'
 import { loadTsconfigPaths } from '../stasis/src/resolve-typescript.js'
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-vfs-bundle-host-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
+import { withTmp } from './tmp.helper.js'
 
 const write = (vfs, files) => {
   for (const [path, text] of Object.entries(files)) {

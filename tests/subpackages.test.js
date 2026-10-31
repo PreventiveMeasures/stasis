@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
@@ -9,20 +8,12 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
 import { collectComponents } from '../stasis/src/sbom.js'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 // @hookform/resolvers's subpath entry points each have a package.json of their own (as microbundle lays
 // them out), named in the package's namespace for their directory (`@hookform/resolvers/zod` at zod/)
 // with a placeholder version (1.0.0). They are the package's: its files, under its identity, and a bundle
 // lists those reached as `subpackages` on its record, metadata a lockfile never holds.
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-subpackages-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const write = (file, text) => {
   mkdirSync(dirname(file), { recursive: true })

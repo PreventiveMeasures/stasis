@@ -1,24 +1,15 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 // `stasis bundle` from disk records each git dependency at the commit the record its package manager
 // left in node_modules names: npm's hidden lockfile, pnpm's copy of its lockfile, yarn 1's yarn.lock
 // as .yarn-integrity vouches for it. Each project here is laid out by hand as the package manager
 // lays one out, through a State and through the field resolver.
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-installed-commits-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value))
 const SHA = { dep: 'a'.repeat(40), fork: 'b'.repeat(40), tar: 'c'.repeat(40), lab: 'd'.repeat(40), sub: 'e'.repeat(64), moved: 'f'.repeat(40) }

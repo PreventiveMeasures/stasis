@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -9,6 +8,7 @@ import { addCommand } from '@exodus/stasis-core/add'
 import { lockfileFromBundle } from '@exodus/stasis-core/extract'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 const PKG = { npm: { name: 'pkg', version: '0.0.1' } }
 const base = (pkg, repo) => new Bundle({ config: { scope: 'node_modules' }, package: pkg, repo })
@@ -16,14 +16,6 @@ const withPackageJSON = (pkg) => JSON.stringify({ ...JSON.parse(base().serialize
 // `package` and its ecosystem blocks are null-prototype: copy both levels to compare with plain literals.
 const plainPackage = (pkg) => Object.fromEntries(Object.entries(pkg).map(([ecosystem, block]) => [ecosystem, { ...block }]))
 
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-package-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 const readBundle = (file) => Bundle.parse(brotliDecompressSync(readFileSync(file)).toString('utf8'))
 const writeBundle = (file, bundle) => writeFileSync(file, brotliCompressSync(bundle.serialize()))
 

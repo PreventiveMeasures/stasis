@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cli-run-mixed')
@@ -20,15 +20,6 @@ const {
 
 const run = (args, opts = {}) =>
   spawnSync(process.execPath, [cli, ...args], { encoding: 'utf-8', env: cleanEnv, ...opts })
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-mixed-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const expectedOut = 'hello from esm, esm\nhello from cjs, cjs\n'
 

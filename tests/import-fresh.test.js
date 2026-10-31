@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 // End-to-end regression for the node:59666 fix, using the REAL import-fresh@3.3.1
 // package (vendored under the fixture's node_modules, with its resolve-from /
@@ -28,15 +29,6 @@ const {
 
 const run = (args, opts = {}) =>
   spawnSync(process.execPath, [cli, ...args], { encoding: 'utf-8', env: cleanEnv, ...opts })
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-import-fresh-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 // Can THIS Node resolve a bundle-served module's require from a bundle with node_modules
 // removed? import-fresh reaches its target via resolve-from + parent-module (callsites /

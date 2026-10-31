@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cli-run-effects')
@@ -25,17 +25,6 @@ const run = (args, opts = {}) => {
   r.stdout = stripVTControlCharacters(r.stdout)
   r.stderr = stripVTControlCharacters(r.stderr)
   return r
-}
-
-// Async-aware: the cli.test.js withTmp drops `await` and would wipe the dir
-// before an async body resolves.
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-mock-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 test('run --mock denies fs/child_process/network side-effects (fail closed) while capturing the import graph', withTmp((t, tmp) => {

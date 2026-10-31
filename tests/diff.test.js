@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliCompressSync } from 'node:zlib'
@@ -12,6 +11,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { diffArtifacts, formatDiffStat, hasDifferences, normalizeArtifact } from '../stasis/src/diff.js'
 import { diffCommand } from '../stasis/src/cmd/diff.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -412,15 +412,6 @@ test('formatDiffStat surfaces a scope-mismatch note', (t) => {
 })
 
 // ── diffCommand (CLI glue, reads files) ──────────────────────────────────────
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-diff-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const writeLock = (dir, obj, name) => {
   const p = join(dir, name)
