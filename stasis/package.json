@@ -20,6 +20,7 @@
     "./prune": "./src/prune.js",
     "./sbom": "./src/sbom.js",
     "./audit-corrections": "./src/audit-corrections.js",
+    "./validate": "./src/validate.js",
     "./vfs-bundle": "./src/vfs-bundle.js",
     "./logo.svg": "./logo.svg"
   },
@@ -68,6 +69,7 @@
     "src/resolve-typescript.js",
     "src/rollup.js",
     "src/sbom.js",
+    "src/validate.js",
     "src/scan.js",
     "src/vfs-bundle.js",
     "src/vfs-bundle/entries.js",

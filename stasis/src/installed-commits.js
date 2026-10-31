@@ -30,7 +30,7 @@ const githubTarball = (url) => {
 }
 
 // githubCommit of a git or tarball resolution @preventive/lockfile reads.
-const resolutionCommit = (resolution) => {
+export const resolutionCommit = (resolution) => {
   if (resolution?.type === 'git') return githubCommit(resolution.repo, resolution.commit)
   return resolution?.type === 'tarball' ? githubTarball(resolution.tarball ?? '') : undefined
 }
