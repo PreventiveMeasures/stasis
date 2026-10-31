@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -7,10 +8,13 @@ import { join, posix } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { compress } from '@preventive/archive/compression.js'
+import { pack } from '@preventive/archive/tar.js'
 import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost } from '../stasis/src/vfs-bundle.js'
 import { generatePrismaClients, withPrismaClients } from '../stasis/src/vfs-bundle/prisma.js'
 import { fakeClient, json } from './vfs-bundle-github.helper.js'
+import { captureWarningsAsync } from './warnings.helper.js'
 
 /* eslint-disable no-await-in-loop -- each case waits on its own build, in order, its warnings read after it */
 
@@ -254,3 +258,62 @@ test('github-bundle --generate=prisma bundles the clients of the repo it fetches
   t.assert.ok(bundle.sources.has(`${CLIENT}/internal/class.ts`))
   t.assert.deepStrictEqual({ ...bundle.repo }, { github: 'ExodusOSS/example', directory: '', commit: 'a'.repeat(40) })
 })
+
+// `prisma` and `@prisma/client` as published, 7.9.0, in a cache store of the test's, which records
+// the tarballs it is asked for; and a project depending on them, as `packageManager` locks it.
+const PUBLISHED = await Promise.all([
+  ['prisma', {}, {}],
+  ['@prisma/client', Object.fromEntries(Object.entries(workspace()).filter(([path]) => path.startsWith('vendor/client/runtime/')).map(([path, body]) => [path.slice('vendor/client/'.length), body])), { exports: { './runtime/client': './runtime/client.js', './runtime/*': './runtime/*' } }],
+].map(async ([name, files, manifest]) => {
+  const all = { 'package.json': json({ name, version: '7.9.0', ...manifest }), ...files }
+  const tarball = await compress(pack(Object.entries(all).map(([path, body]) => ({ name: `package/${path}`, data: new TextEncoder().encode(body), mode: 0o644 }))), 'gzip')
+  const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`
+  const resolved = `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-7.9.0.tgz`
+  return { name, tarball, integrity, resolved, document: { name, version: '7.9.0', dist: { tarball: resolved, integrity } } }
+}))
+const registry = () => {
+  const asked = []
+  const kept = new Map(PUBLISHED.flatMap(({ name, tarball, document }) => [[`npm/tarballs ${name}@7.9.0`, tarball], [`npm/versions ${name}@7.9.0`, document]]))
+  return { asked, read: async (type, key) => { if (type === 'npm/tarballs') asked.push(key); return kept.get(`${type} ${key}`) }, write: async () => {} }
+}
+const PUBLISHED_LOCKS = {
+  pnpm: ['pnpm-lock.yaml', [
+    "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '',
+    'importers:', '', '  .:', '    dependencies:', "      '@prisma/client':", '        specifier: 7.9.0', '        version: 7.9.0', '    devDependencies:', '      prisma:', '        specifier: 7.9.0', '        version: 7.9.0', '',
+    'packages:', '', ...PUBLISHED.flatMap(({ name, integrity }) => [`  '${name}@7.9.0':`, `    resolution: {integrity: ${integrity}}`, '']),
+    'snapshots:', '', ...PUBLISHED.flatMap(({ name }) => [`  '${name}@7.9.0': {}`, '']),
+  ].join('\n')],
+  npm: ['package-lock.json', `${JSON.stringify({
+    name: 'p', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+      '': { name: 'p', version: '1.0.0', dependencies: { '@prisma/client': '7.9.0' }, devDependencies: { prisma: '7.9.0' } },
+      ...Object.fromEntries(PUBLISHED.map(({ name, integrity, resolved }) => [`node_modules/${name}`, { version: '7.9.0', resolved, integrity, ...name === 'prisma' ? { dev: true } : {} }])),
+    },
+  }, null, 2)}\n`],
+}
+const publishedProject = (packageManager) => project({
+  'package.json': json({ name: 'p', version: '1.0.0', type: 'module', dependencies: { '@prisma/client': '7.9.0' }, devDependencies: { prisma: '7.9.0' } }),
+  [PUBLISHED_LOCKS[packageManager][0]]: PUBLISHED_LOCKS[packageManager][1],
+  // A generator stasis doesn't generate for, which says so once.
+  'prisma/schema.prisma': `${schema()}\ngenerator js {\n  provider = "prisma-client-js"\n}\n`,
+  'src/index.ts': "export { PrismaClient } from './generated/prisma/client.ts'\n",
+})
+
+for (const packageManager of ['pnpm', 'npm']) {
+  test(`${packageManager}: --generate=prisma with --lazy bundles the client of the prisma it fetches, as the full tree does`, async (t) => {
+    const of = async (lazy) => {
+      const cache = registry()
+      const { result, warnings: said } = await captureWarningsAsync(() => buildVfsBundle({ vfs: publishedProject(packageManager), packageManager, entries: ['src/index.ts'], generate: ['prisma'], cache, lazy }))
+      return { ...result, said, asked: cache.asked.toSorted() }
+    }
+    const full = await of(false)
+    const lazy = await of(true)
+    t.assert.ok(lazy.bundle.sources.has('src/generated/prisma/internal/class.ts'))
+    t.assert.match(text(lazy.bundle, 'src/generated/prisma/internal/class.ts'), /"clientVersion": "7\.9\.0",/u)
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.equal(lazy.lockfile.serialize(), full.lockfile.serialize())
+    // Not the round that read no prisma yet.
+    t.assert.deepStrictEqual(lazy.said, ["[stasis] prisma: not generating /prisma/schema.prisma's generator js: stasis generates the \"prisma-client\" provider's alone"])
+    t.assert.deepStrictEqual(lazy.said, full.said)
+    t.assert.deepStrictEqual(lazy.asked, ['@prisma/client@7.9.0', 'prisma@7.9.0'])
+  })
+}

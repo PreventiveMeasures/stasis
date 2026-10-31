@@ -2286,18 +2286,23 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
   const tree = await debugTimed(lazy ? 'Laid out the tree' : 'Installed the tree', () => loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy, installDevDependencies, refuseInstalled }))
-  // What follows reads the tree through the hosts `hostOf` makes, of the project's host: once, or
-  // for a lazy tree, in rounds, each reading into its `reads`, each build keeping what its scans read
-  // across them in a memo of its own.
+  const { inRounds } = await import('../vfs-bundle/lazy.js')
+  // The project the builds read: with the Prisma Clients `generate` writes, generated once before
+  // any build, for a lazy tree in rounds of their own (they read the tree's `prisma`), so that each
+  // of the build's rounds reads the same project, as what its scans keep across them takes it to.
+  let outside = project
+  if (generate.includes('prisma')) {
+    const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
+    const generating = (reads) => generatePrismaClients({ host: treeHost(tree, project, reads), root: tree.root, projects: tree.projects })
+    const outputs = await debugTimed('Generated the Prisma Clients', () => (tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)))
+    if (outputs.length > 0) outside = vfsHost(withPrismaClients(vfs, outputs))
+  }
+  // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
+  // each reading into its `reads`, each build keeping what its scans read across them in a memo of
+  // its own.
   const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
   const attempt = async (reads) => {
-    const hostOf = (outside) => treeHost(tree, outside, reads)
-    let host = hostOf(project)
-    if (generate.includes('prisma')) {
-      const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
-      const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
-      if (outputs.length > 0) host = hostOf(vfsHost(withPrismaClients(vfs, outputs)))
-    }
+    const host = treeHost(tree, outside, reads)
     const args = { cwd, host, env }
     const builts = []
     // A build of a round that asked for a package already is void, whatever it threw: the builds
@@ -2329,7 +2334,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const since = counts()
   const built = tree.unpack === undefined
     ? await debugTimed('Built', () => attempt(), () => builtSince(since))
-    : await import('../vfs-bundle/lazy.js').then(({ inRounds }) => inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack]))
+    : await inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack])
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
