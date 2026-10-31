@@ -630,12 +630,18 @@ function sha512Of(integrity) {
   return found.size === 1 ? [...found][0] : undefined
 }
 
+// A text without the byte order mark it starts with, as npm, pnpm and yarn read their manifests and
+// lockfiles, and Stasis its manifests (packageJSONText).
+const withoutBom = (text) => (text.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text)
+
 // What the lockfile `name` (its file name) of `text` locks: its ecosystem; each version by name and
 // version, an entry for each time it locks it, `{ from: 'registry', integrity }` (an npm version's
 // sha512, a crate's sha256), `{ from: 'git' }` (a git repository, or a git host's tarball) or
 // `{ from: 'elsewhere' }` (another tarball, a directory, a package another bundles); and, of pnpm's,
 // the patch it locks each version with, null for none (`hashes`), and each patch's file (`paths`).
-function readLockfile(name, text) {
+function readLockfile(name, read) {
+  // cargo reads Cargo.lock as it is.
+  const text = name === 'Cargo.lock' ? read : withoutBom(read)
   const entries = new Map()
   const add = (pkg, version, entry) => entries.set(`${pkg}@${version}`, [...(entries.get(`${pkg}@${version}`) ?? []), entry])
   if (name === 'pnpm-lock.yaml') {
@@ -750,7 +756,7 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
   // Each directory's package.json, undefined for none, null for one unreadable: read where npm's
   // packages are to be locked, a few small files, as both npm and yarn look above for a workspace root.
   const jsons = ecosystems.has('npm')
-    ? await Promise.all(dirs.map((_, index) => (listed[index].includes('package.json') ? Promise.resolve(read(at(index, 'package.json'))).then((text) => JSON.parse(text)).catch(() => null) : undefined)))
+    ? await Promise.all(dirs.map((_, index) => (listed[index].includes('package.json') ? Promise.resolve(read(at(index, 'package.json'))).then((text) => JSON.parse(withoutBom(text))).catch(() => null) : undefined)))
     : []
   // The directory at `below`, from the one at `above`.
   const from = (above, below) => (dirs[above] ? dirs[below].slice(dirs[above].length + 1) : dirs[below])

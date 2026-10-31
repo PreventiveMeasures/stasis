@@ -403,6 +403,8 @@ test('repositoryLockfiles: as each package manager finds its root, pnpm\'s (its 
   // npm's workspace root's, whatever package-lock.json is nearer; else the nearest beside a package.json.
   files = { 'web/app/package.json': named('app'), 'web/app/package-lock.json': null, 'package.json': named('root', { workspaces: ['web/*'] }), 'package-lock.json': null }
   t.assert.deepStrictEqual(await find('npm'), ['package-lock.json'], 'the workspace root\'s, not the member\'s')
+  files['package.json'] = `\uFEFF${named('root', { workspaces: ['web/*'] })}`
+  t.assert.deepStrictEqual(await find('npm'), ['package-lock.json'], 'a manifest starting with a byte order mark read, as npm reads it')
   files['package.json'] = named('root', { workspaces: ['web/*', '!web/app'] })
   t.assert.deepStrictEqual(await find('npm'), ['web/app/package-lock.json'], 'a workspace negated, its own')
   // npm-shrinkwrap.json before package-lock.json, at the root the package's is: not another project's above.
@@ -500,6 +502,7 @@ test('lockedBy: npm\'s, yarn\'s and Cargo\'s lockfiles, a registry\'s or a mirro
     'node_modules/ms': { version: '2.1.3', resolved: 'https://registry.npmjs.org/ms/-/ms-2.1.3.tgz', integrity: `${SRI} sha1-${'A'.repeat(27)}=` },
   } }, null, 2)}\n`
   const ofNpm = lockedBy([{ path: 'web/package-lock.json', text: npm }])
+  t.assert.deepStrictEqual(lockedBy([{ path: 'package-lock.json', text: `\uFEFF${npm}` }]).lock('npm', 'ms', '2.1.3'), { from: 'registry', integrity: SRI }, 'one starting with a byte order mark read')
   t.assert.deepStrictEqual(['ms@2.1.3', 'mirrored@1.0.0', 'elsewhere@1.0.0', 'left@1.0.0'].map((pkg) => ofNpm.lock('npm', ...pkg.split('@'))),
     [{ from: 'registry', integrity: SRI }, { from: 'registry', integrity: SRI }, { from: 'elsewhere' }, { from: 'git' }], 'its sha512 alone, of two')
   t.assert.equal(ofNpm.of('ms', '2.1.3'), undefined, 'no patch npm locks')
