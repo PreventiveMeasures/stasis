@@ -90,7 +90,10 @@ export const fakeClient = (files, { tags = {} } = {}) => {
       const names = Object.keys(files).filter((f) => f.startsWith(prefix)).map((f) => f.slice(prefix.length))
       // As upstream refuses a path that is no directory in git (a symlink, or under one).
       if (names.length === 0) throw new Error(`listRepoDir: ${repo}@${sha} has no directory at ${directory}`)
-      return names.map((name) => (name.includes('/') ? { path: name.split('/')[0], type: 'tree', sha: `tree:${prefix}${name.split('/')[0]}` } : { path: name, type: 'blob' }))
+      // With the modes git gives a directory, a file and a symlink.
+      return names.map((name) => (name.includes('/')
+        ? { path: name.split('/')[0], mode: '040000', type: 'tree', sha: `tree:${prefix}${name.split('/')[0]}` }
+        : { path: name, mode: files[`${prefix}${name}`]?.symlink === undefined ? '100644' : '120000', type: 'blob' }))
     },
     async getRepoTreeId({ repo, sha, directory }) {
       calls.push(['getRepoTreeId', repo, sha, directory])

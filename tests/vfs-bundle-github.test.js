@@ -647,7 +647,48 @@ test('buildGitHubBundle roots a JS bundle at the innermost package around the di
   t.assert.deepStrictEqual({ ...sol.bundle.repo }, { github: GITHUB, directory: 'src/sub', commit: SHA }, 'not foundry.toml\'s directory above it')
 })
 
-const detect = (options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
+test('buildGitHubBundle builds a path to a file as an entry of the nearest project above it, and a path to a directory as the directory', async (t) => {
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': lockfile('.', 'packages/p'),
+    'scripts/x.js': 'module.exports = 0\n',
+    'packages/p/package.json': json({ name: 'p', version: '1.0.0', main: 'src/a.js' }),
+    'packages/p/src/a.js': "module.exports = require('./b.js')\n",
+    'packages/p/src/b.js': 'module.exports = 1\n',
+    'packages/p/src/c.js': 'module.exports = 2\n',
+  }
+  // The same bundle and lockfile as `directory` and the entries give, and that directory.
+  const same = async (options, expected, directory, message) => {
+    const built = await build({ client: fakeClient(files), ...options })
+    const given = await build({ client: fakeClient(files), ...expected })
+    t.assert.deepStrictEqual([built.directory, built.bundle.serialize(), built.lockfile.serialize()], [directory, given.bundle.serialize(), given.lockfile.serialize()], message)
+    return built
+  }
+  const built = await same({ path: 'packages/p/src/a.js' }, { directory: 'packages/p', entries: ['src/a.js'] }, 'packages/p', 'the package.json nearest it')
+  t.assert.deepStrictEqual([...built.bundle.entries], ['src/a.js'])
+  await same({ path: 'packages/p/src/a.js', entries: ['src/c.js'] }, { directory: 'packages/p', entries: ['src/a.js', 'src/c.js'] }, 'packages/p', 'ahead of the entries, which are from there')
+  await same({ path: 'scripts/x.js' }, { entries: ['scripts/x.js'] }, undefined, "the root's")
+  await same({ path: 'packages/p' }, { directory: 'packages/p' }, 'packages/p', 'a directory, its entries the suggested ones')
+  await same({ path: 'packages/p/src', entries: ['a.js'] }, { directory: 'packages/p/src', entries: ['a.js'] }, 'packages/p/src', 'a directory with no package.json')
+  // As suggestedEntries suggests: the file.
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(files), packageManager: 'pnpm', path: 'packages/p/src/c.js' }), ['src/c.js'])
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(files), packageManager: 'pnpm', path: 'packages/p' }), ['src/a.js'])
+  // A symlink is no file: here a directory, as `directory` takes it.
+  const linked = { ...appWithLockfile(), pkg: { symlink: 'apps/p' } }
+  const link = await build({ client: fakeClient(linked), path: 'pkg', entries: ['src/a.js'] })
+  t.assert.equal(link.directory, 'pkg')
+  t.assert.equal(link.bundle.serialize(), (await build({ client: fakeClient(linked), directory: 'pkg', entries: ['src/a.js'] })).bundle.serialize())
+  // A .sol file's is the foundry.toml or soldeer.toml nearest it, never a package.json nearer.
+  const sol = { 'package.json': json({ name: 'root', version: '1.0.0', private: true }), ...Object.fromEntries(Object.entries(SOLDEER).map(([name, text]) => [`contracts/${name}`, text])), 'contracts/src/package.json': '{}\n', 'contracts/src/A.sol': 'pragma solidity ^0.8.0;\nimport "./B.sol";\n', 'contracts/src/B.sol': 'pragma solidity ^0.8.0;\n' }
+  const contracts = await build({ client: fakeClient(sol), packageManager: 'soldeer', path: 'contracts/src/A.sol' })
+  t.assert.equal(contracts.directory, 'contracts')
+  t.assert.equal(contracts.bundle.serialize(), (await build({ client: fakeClient(sol), packageManager: 'soldeer', directory: 'contracts', entries: ['src/A.sol'] })).bundle.serialize())
+  // Its kind is checked as the entries' are, once it is known to be one.
+  await t.assert.rejects(build({ client: fakeClient(sol), path: 'contracts/src/A.sol' }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm/u)
+})
+
+const detect =(options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
 
 test('buildGitHubBundle takes the one package manager whose lockfile installs the directory, told by the listings', async (t) => {
   const root = fakeClient({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'yarn.lock': YARN_LOCK, 'src/a.js': '' })
@@ -729,6 +770,8 @@ test('buildGitHubBundle checks its arguments before anything is fetched', async 
   await t.assert.rejects(build({ client, github: 'not a repo', entries: ['a.js'] }), /invalid github: "not a repo"/u)
   await t.assert.rejects(build({ client, directory: 'a b', entries: ['a.js'] }), /invalid directory: "a b"/u)
   await t.assert.rejects(build({ client, directory: '../up', entries: ['a.js'] }), /invalid directory: "\.\.\/up"/u)
+  await t.assert.rejects(build({ client, path: '../up/a.js' }), /invalid path: "\.\.\/up\/a\.js"/u)
+  await t.assert.rejects(build({ client, directory: 'a', path: 'a/b.js' }), /^Error: buildGitHubBundle: directory and path both name the directory: give one$/u)
   await t.assert.rejects(build({ client, github: undefined, entries: ['a.js'] }), /github is required/u)
   await t.assert.rejects(build({ client, tag: 'v1.0.0', entries: ['a.js'] }), /^Error: buildGitHubBundle: sha and tag both name the commit: give one$/u)
   await t.assert.rejects(build({ client, sha: undefined, tag: '', entries: ['a.js'] }), /^TypeError: buildGitHubBundle: tag must be a non-empty string$/u)
@@ -755,6 +798,7 @@ test("buildGitHubBundle reports the root listing's failure rather than taking it
   client.listRepoDir = async (options) => (options.directory === undefined ? Promise.reject(new Error('GitHub: rate limited')) : listRepoDir(options))
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client, directory: 'apps/p', entries: ['a.js'] }), /^Error: GitHub: rate limited$/u)
   await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client, entries: ['apps/p/a.js'] }), /^Error: GitHub: rate limited$/u)
+  await t.assert.rejects(buildGitHubBundle({ github: GITHUB, sha: SHA, client, path: 'apps/p/a.js' }), /^Error: GitHub: rate limited$/u)
   t.assert.ok(!methods(client).includes('getRepoTarball'), 'nothing is downloaded')
 })
 
@@ -1156,9 +1200,9 @@ test('stasis github-bundle writes the bundle of a directory too deep to name in 
   t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
 })
 
-// `stasis github-bundle ...args`: its exit status and its stderr, run with `nodeArgs`.
-async function githubBundleCli(args, nodeArgs = []) {
-  const child = spawn(process.execPath, [...nodeArgs, join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', ...args])
+// `stasis github-bundle ...args`: its exit status and its stderr, run with `nodeArgs`, in `cwd`, with `env`.
+async function githubBundleCli(args, { nodeArgs = [], cwd, env } = {}) {
+  const child = spawn(process.execPath, [...nodeArgs, join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', ...args], { cwd, env })
   const stderr = []
   child.stderr.on('data', (chunk) => stderr.push(chunk))
   const [status] = await once(child, 'close')
@@ -1187,41 +1231,56 @@ test('stasis github-bundle requires the repo, as owner/name[/path] or --github, 
   t.assert.deepStrictEqual(results, cases.map(([, error]) => ({ status: 1, error })))
 })
 
-// A preload under which the GitHub client `stasis github-bundle` fetches with says each call made of
-// it on stderr, as `call <method> <options as JSON>`, and answers none.
+// A preload under which `stasis github-bundle` fetches from fakeClient's repo of the files that
+// STASIS_TEST_REPO holds, as JSON, in place of GitHub.
 const js = (source) => `data:text/javascript,${encodeURIComponent(source)}`
-const RECORDING_CLIENT = js(`export const createClient = () => new Proxy({}, {
-  get: (_, method) => (method === 'then' ? undefined : async (options) => {
-    process.stderr.write(\`call \${method} \${JSON.stringify(options)}\\n\`)
-    throw new Error('offline')
-  }),
-})`)
-const RECORDING_HOOKS = js(`export const resolve = (specifier, context, next) =>
+const FAKE_CLIENT = js(`import { fakeClient } from ${JSON.stringify(pathToFileURL(join(here, 'vfs-bundle-github.helper.js')).href)}
+export const createClient = () => fakeClient(JSON.parse(process.env.STASIS_TEST_REPO))`)
+const FAKE_HOOKS = js(`export const resolve = (specifier, context, next) =>
   specifier === '@preventive/upstream/github.js' && context.parentURL?.endsWith('/stasis/src/cmd/github-bundle.js')
-    ? { url: ${JSON.stringify(RECORDING_CLIENT)}, shortCircuit: true }
+    ? { url: ${JSON.stringify(FAKE_CLIENT)}, shortCircuit: true }
     : next(specifier, context)`)
-const RECORDING = js(`import { register } from 'node:module'; register(${JSON.stringify(RECORDING_HOOKS)})`)
+const FAKE_REPO = js(`import { register } from 'node:module'; register(${JSON.stringify(FAKE_HOOKS)})`)
 
-test('stasis github-bundle owner/name/path fetches what --github=owner/name --directory=path does', async (t) => {
-  const calls = async (args) => {
-    const { status, stderr } = await githubBundleCli(args, [`--import=${RECORDING}`])
-    t.assert.equal(status, 1)
-    return stderr.split('\n').filter((line) => line.startsWith('call ')).map((line) => JSON.parse(line.split(' ').slice(2).join(' ')))
+test('stasis github-bundle owner/name/path bundles as --github=owner/name --directory does, a file in it the entry', async (t) => {
+  const files = {
+    'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+    'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+    'pnpm-lock.yaml': lockfile('.', 'packages/api'),
+    'scripts/x.js': 'module.exports = 0\n',
+    'packages/api/package.json': json({ name: 'api', version: '1.0.0' }),
+    'packages/api/src/a.js': "module.exports = require('./b.js')\n",
+    'packages/api/src/b.js': 'module.exports = 1\n',
   }
-  const [directory, bare, after, root, bareRoot, slash] = await Promise.all([
-    [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'a.js'],
-    [`${GITHUB}/packages/api`, `--sha=${SHA}`, 'a.js'],
-    [`--sha=${SHA}`, `${GITHUB}/packages/api`, 'a.js'],
-    [`--github=${GITHUB}`, `--sha=${SHA}`, 'a.js'],
-    [GITHUB, `--sha=${SHA}`, 'a.js'],
-    [`${GITHUB}/`, `--sha=${SHA}`, 'a.js'],
-  ].map(calls))
-  t.assert.ok(directory.some((options) => options.repo === GITHUB && options.directory === 'packages/api'), JSON.stringify(directory))
-  t.assert.deepStrictEqual(bare, directory)
-  t.assert.deepStrictEqual(after, directory, 'after the options')
-  t.assert.ok(root.length > 0 && root.every((options) => options.repo === GITHUB && options.directory === undefined), JSON.stringify(root))
-  t.assert.deepStrictEqual(bareRoot, root)
-  t.assert.deepStrictEqual(slash, root, 'with a / after it')
+  // The bundle written, its name, and what is said of it.
+  const run = async (args) => {
+    const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-cli-'))
+    t.after(() => rm(tmp, { recursive: true, force: true }))
+    const out = join(tmp, 'out')
+    await mkdir(out)
+    const { status, stderr } = await githubBundleCli(args, { nodeArgs: [`--import=${FAKE_REPO}`], cwd: out, env: { ...process.env, STASIS_TEST_REPO: JSON.stringify(files), XDG_CACHE_HOME: join(tmp, 'cache') } })
+    t.assert.equal(status, 0, stderr)
+    const names = await readdir(out)
+    return { names, bytes: await readFile(join(out, names[0])), said: stderr.trim().split('\n').at(-1) }
+  }
+  const [given, file, after, directory, root, rootFile, rootSlash] = await Promise.all([
+    [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'src/a.js'],
+    [`${GITHUB}/packages/api/src/a.js`, `--sha=${SHA}`],
+    [`--sha=${SHA}`, `${GITHUB}/packages/api/src/a.js`],
+    [`${GITHUB}/packages/api`, `--sha=${SHA}`, 'src/a.js'],
+    [`--github=${GITHUB}`, `--sha=${SHA}`, 'scripts/x.js'],
+    [`${GITHUB}/scripts/x.js`, `--sha=${SHA}`],
+    [`${GITHUB}/`, `--sha=${SHA}`, 'scripts/x.js'],
+  ].map(run))
+  t.assert.deepStrictEqual(given.names, ['ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br'])
+  t.assert.deepStrictEqual([...Bundle.parse(brotliDecompressSync(given.bytes).toString('utf8')).sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.match(given.said, new RegExp(`from ${GITHUB}@${SHA}/packages/api to ExodusOSS-example\\.packages-api\\.aaaaaaa\\.stasis\\.code\\.br$`, 'u'))
+  t.assert.deepStrictEqual(file, given, 'a file, from the nearest package.json above it')
+  t.assert.deepStrictEqual(after, given, 'after the options')
+  t.assert.deepStrictEqual(directory, given, 'a directory')
+  t.assert.deepStrictEqual(root.names, ['ExodusOSS-example.aaaaaaa.stasis.code.br'])
+  t.assert.deepStrictEqual(rootFile, root, "a file, from the root's package.json")
+  t.assert.deepStrictEqual(rootSlash, root, 'the root, with a / after it')
 })
 
 // A home whose ~/.audit/config.json is `config`, removed after the test.

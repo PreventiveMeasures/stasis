@@ -159,17 +159,19 @@ if (command === '-v' || command === '--version') {
   }
   const parse = (args) => parseLeadingOptions(args, options, { valueFlags: valueFlagsOf(options), onError: fail })
   // The repo as `owner/name[/path]`, for --github=owner/name [--directory=path]: the first argument
-  // that is no option, where no --github comes before it, with options on either side of it.
+  // that is no option, where no --github comes before it, with options on either side of it. The
+  // path is a directory, or a file: an entry of the nearest project above it (buildGitHubBundle's).
   const rest = [...argv]
   const bare = parse(rest).github === undefined && rest.length > 0 ? argv.splice(argv.length - rest.length, 1)[0] : undefined
   const values = parse(argv)
-  let { github, directory } = values
+  let { github } = values
+  let path
   if (bare !== undefined) {
-    if (github !== undefined || directory !== undefined) fail('Error: github-bundle takes owner/name[/path] or --github=owner/name [--directory=path], not both')
-    const [owner, name, ...path] = bare.split('/')
+    if (github !== undefined || values.directory !== undefined) fail('Error: github-bundle takes owner/name[/path] or --github=owner/name [--directory=path], not both')
+    const [owner, name, ...segments] = bare.split('/')
     if (name === undefined) fail(`Error: github-bundle: '${bare}' is not owner/name[/path], the repo to bundle`)
     github = `${owner}/${name}`
-    directory = path.join('/') || undefined
+    path = segments.join('/') || undefined
   }
   if (github === undefined) fail('Error: github-bundle requires the repo to bundle: owner/name[/path], or --github=owner/name')
   if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
@@ -193,7 +195,8 @@ if (command === '-v' || command === '--version') {
     github,
     sha: values.sha,
     tag: values.tag,
-    directory,
+    directory: values.directory,
+    path,
     packageManager: values['package-manager'],
     packageManagerVersion: values['package-manager-version'],
     lazy: Boolean(values.lazy),
