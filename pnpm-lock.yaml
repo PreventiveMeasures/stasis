@@ -86,8 +86,8 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: ^1.0.1
-        version: 1.0.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
+        specifier: ^1.0.2
+        version: 1.0.2(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/lockfile':
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
@@ -747,8 +747,8 @@ packages:
       oxfmt:
         optional: true
 
-  '@preventive/deptree@1.0.1':
-    resolution: {integrity: sha512-3SWzO2ioly7L/kNzQzm396vTZcbdl/lBb+8zymm/V6o1/Io+XAgrIxSSanlmIPumwJuNlGJQIFj4Ld9XeQMQKQ==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.1.tgz}
+  '@preventive/deptree@1.0.2':
+    resolution: {integrity: sha512-ti7koX2dQEC+DkwDtJOpzpNep908lZpqh3vBERNQMgvthAx/iLycFZNXgE5cp8lfLHHIdiNnPz0I+StEU7W7Zg==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.0.2.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
 
@@ -3262,7 +3262,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.0.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
+  '@preventive/deptree@1.0.2(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)

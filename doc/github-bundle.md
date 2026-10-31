@@ -7,7 +7,7 @@ in memory from its lockfile alone. No package script runs, and nothing of the
 repository executes.
 
 ```sh
-stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -17,6 +17,7 @@ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=
 | `--directory=path` | A directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
+| `--lazy` | With pnpm or npm: fetch and unpack only the packages the build reads. See [Lazy](#lazy---lazy). |
 | `--generate=prisma` | Generate each project's Prisma Client first. See [Prisma](#prisma---generateprisma). |
 | `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
@@ -83,6 +84,32 @@ one is unresolved, as any missing file's. Matching takes the optional
 `minimatch`: where it isn't installed, a `.yarnclean` holding a pattern is
 refused before any package is fetched. A `--directory` with a `.yarnclean`
 above it is fetched with the whole repo, never alone.
+
+### Lazy (`--lazy`)
+
+With `--lazy`, pnpm's and npm's trees are laid out from the lockfile alone with
+nothing fetched, not even a version document, each package's directory empty.
+A package is fetched and unpacked once the build reads anything in it: resolving
+an import into it, which reads its `package.json`, is enough. A package only
+declared is never fetched. The bundle and lockfile are the ones the full tree
+gives, byte for byte, its warnings said once.
+
+```sh
+stasis github-bundle --github=owner/name --lazy src/index.js
+```
+
+The build reads synchronously, so it runs in rounds: a round that reads in a
+package not yet unpacked is set aside, those packages are unpacked, and the
+build runs again, until a round reads none it has not unpacked.
+
+Each package unpacked is held to the lockfile, and checked as without
+`--lazy`, so a broken tarball the build reaches is refused as before. One it
+never reaches is never fetched, so never refused: such a lockfile builds with
+`--lazy`, and is refused without it. yarn 1 and Soldeer lay out their trees by
+what the packages hold, and refuse `--lazy`, before anything is fetched; so
+does a [`.yarnclean`](#yarnclean) that keeps paths with `!`, as what it keeps
+of one package turns on what the others hold. `--lazy` is a flag of the
+command alone: `stasis.config.json` does not set it.
 
 ## Entries
 
@@ -193,6 +220,8 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
 - `buildGitHubBundle` and `buildVfsBundle` add the files
   `stasis.config.json`'s `extra` names, as the command does (see
   [Extra files](#extra-files)).
+- `buildGitHubBundle` and `buildVfsBundle` take `lazy: true`, as the command
+  takes [`--lazy`](#lazy---lazy); their `stats` then count what is unpacked.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`.
   `buildVfsBundle` takes a project's `stasis.config.json` entries as the

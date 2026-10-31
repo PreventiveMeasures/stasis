@@ -9,7 +9,7 @@ import { configuredBuilds } from '../cmd/bundle-options.js'
 import { foundrySourceDir } from '../loaders/foundry.js'
 import { resolveConditions } from '../resolve-fields.js'
 import { resolveTypescriptFallback, typescriptExportsTarget } from '../resolve-typescript.js'
-import { checkKind, checkVersion, packageManagerOf, vfsHost } from './tree.js'
+import { checkKind, checkLazy, checkVersion, packageManagerOf, vfsHost } from './tree.js'
 
 const JS = /\.(?:[cm]?[jt]s|[jt]sx)$/u
 // Node's own conditions for require() and for import, which the build's are added to; with
@@ -144,10 +144,13 @@ export function defaultEntries(name, host, dir, kind, options) {
 // decides them: for the package manager given, else for any; over the entries given, else over one
 // of the kind the default ones are. But for what one of them needs of another, which the options of
 // an entry stasis.config.json names may set (`partial`), left to the build, which knows whether it
-// names it. -> the PACKAGE_MANAGERS entry of the one given
+// names it; and `lazy`, which the package manager given has to take. -> the PACKAGE_MANAGERS entry of
+// the one given
 export function checkAhead(name, packageManager, options) {
   checkVersion(name, { packageManager, ...options })
+  if (options.lazy !== undefined && typeof options.lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)
   const pm = packageManager === undefined ? undefined : packageManagerOf(name, packageManager)
+  if (options.lazy && pm !== undefined) checkLazy(name, packageManager)
   const refusal = (entries) => {
     try {
       checkKind(name, checkVfsOptions(name, { ...options, entries, cwd: '/', host: EMPTY, fetched: false, partial: true }), packageManager === undefined ? undefined : [packageManager])

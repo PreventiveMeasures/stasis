@@ -1,0 +1,236 @@
+import { test } from 'node:test'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { once } from 'node:events'
+import { dirname, join, posix } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { compress } from '@preventive/archive/compression.js'
+import { pack } from '@preventive/archive/tar.js'
+
+import { Vfs, buildGitHubBundle, buildVfsBundle } from '../stasis/src/vfs-bundle.js'
+import { inRounds, lazyView } from '../stasis/src/vfs-bundle/lazy.js'
+import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
+
+// @exodus/stasis/vfs-bundle with `lazy`: the tree laid out from the lockfile alone, each package
+// fetched and unpacked once the build reads it. The packages are kept in a cache store of the
+// test's, which answers for each, so nothing is fetched, and what the store is asked tells what the
+// build fetched. `used` requires `deep`; `unused` and `broken` are dependencies nothing requires,
+// and `broken`'s tarball is not the lockfile's.
+
+const here = dirname(fileURLToPath(import.meta.url))
+const encoder = new TextEncoder()
+const COMMIT = 'c'.repeat(40)
+
+// A package as published: its tarball, as npm packs one, with `files` and its package.json, and
+// the registry's document of it, with `about` in it.
+async function published(name, files, { manifest = {}, about = {} } = {}) {
+  const all = { 'package.json': json({ name, version: '1.0.0', main: 'index.js', ...manifest }), ...files }
+  const tarball = await compress(pack(Object.entries(all).map(([path, text]) => ({ name: `package/${path}`, data: encoder.encode(text), mode: 0o644 }))), 'gzip')
+  const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`
+  return { name, tarball, integrity, document: { name, version: '1.0.0', dist: { tarball: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`, integrity }, ...about } }
+}
+
+const PACKAGES = await Promise.all([
+  published('used', { 'index.js': "module.exports = require('deep')\n", 'README.md': 'used\n' }, { manifest: { dependencies: { deep: '1.0.0' }, repository: 'github:o/used' }, about: { gitHead: COMMIT } }),
+  published('deep', { 'index.js': 'module.exports = 1\n' }),
+  published('unused', { 'index.js': 'module.exports = 2\n' }),
+  published('broken', { 'index.js': 'module.exports = 3\n' }),
+])
+const BY_NAME = Object.fromEntries(PACKAGES.map((pkg) => [pkg.name, pkg]))
+const DEPENDENCIES = { used: { deep: '1.0.0' } }
+// What the lockfile holds broken to, which its tarball is not.
+const LOCKED = { ...Object.fromEntries(PACKAGES.map(({ name, integrity }) => [name, integrity])), broken: BY_NAME.unused.integrity }
+
+// A store holding every package's tarball and document, which records what it is asked.
+function store() {
+  const calls = []
+  const kept = new Map(PACKAGES.flatMap(({ name, tarball, document }) => [[`npm/tarballs ${name}@1.0.0`, tarball], [`npm/versions ${name}@1.0.0`, document]]))
+  return {
+    calls,
+    async read(type, key) {
+      calls.push(`${type} ${key}`)
+      return kept.get(`${type} ${key}`)
+    },
+    async write() {},
+  }
+}
+// The packages whose tarball the store was asked for.
+const tarballs = ({ calls }) => calls.filter((call) => call.startsWith('npm/tarballs ')).map((call) => call.slice('npm/tarballs '.length, -'@1.0.0'.length)).toSorted()
+
+// The project, depending on each of `names`, as pnpm and npm lock it.
+const ROOT = ['used', 'unused', 'broken']
+const pnpmLock = (names = ROOT) => {
+  const all = [...new Set(names.flatMap((name) => [name, ...Object.keys(DEPENDENCIES[name] ?? {})]))].toSorted()
+  return [
+    "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '',
+    'importers:', '', '  .:', '    dependencies:', ...names.flatMap((name) => [`      ${name}:`, '        specifier: 1.0.0', '        version: 1.0.0']), '',
+    'packages:', '', ...all.flatMap((name) => [`  ${name}@1.0.0:`, `    resolution: {integrity: ${LOCKED[name]}}`, '']),
+    'snapshots:', '', ...all.flatMap((name) => (DEPENDENCIES[name] ? [`  ${name}@1.0.0:`, '    dependencies:', ...Object.entries(DEPENDENCIES[name]).map(([dep, v]) => `      ${dep}: ${v}`), ''] : [`  ${name}@1.0.0: {}`, ''])),
+  ].join('\n')
+}
+const npmLock = (names = ROOT) => {
+  const all = [...new Set(names.flatMap((name) => [name, ...Object.keys(DEPENDENCIES[name] ?? {})]))].toSorted()
+  const packages = { '': { name: 'p', version: '1.0.0', dependencies: Object.fromEntries(names.map((name) => [name, '1.0.0'])) } }
+  for (const name of all) packages[`node_modules/${name}`] = { version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`, integrity: LOCKED[name], ...DEPENDENCIES[name] ? { dependencies: DEPENDENCIES[name] } : {} }
+  return `${JSON.stringify({ name: 'p', version: '1.0.0', lockfileVersion: 3, requires: true, packages }, null, 2)}\n`
+}
+const LOCKFILES = { pnpm: ['pnpm-lock.yaml', pnpmLock], npm: ['package-lock.json', npmLock] }
+
+const projectFiles = (packageManager, { names = ROOT, entry = "require('used')\n", files = {} } = {}) => {
+  const [lockfileName, lockOf] = LOCKFILES[packageManager]
+  return { 'package.json': json({ name: 'p', version: '1.0.0', dependencies: Object.fromEntries(names.map((name) => [name, '1.0.0'])) }), [lockfileName]: lockOf(names), 'src/a.js': entry, ...files }
+}
+const vfsOf = (files) => {
+  const vfs = new Vfs()
+  for (const [path, text] of Object.entries(files)) {
+    vfs.mkdir(posix.dirname(`/${path}`), { recursive: true })
+    vfs.writeFile(`/${path}`, text)
+  }
+  return vfs
+}
+const build = (packageManager, options = {}, files = {}) => buildVfsBundle({ vfs: vfsOf(projectFiles(packageManager, files)), packageManager, entries: ['src/a.js'], scope: 'full', ...options })
+
+for (const packageManager of ['pnpm', 'npm']) {
+  test(`${packageManager}: lazily, the bundle and lockfile of the full tree, of the packages the build reads alone`, async (t) => {
+    // The full tree of the packages but broken, which the full tree refuses.
+    const names = ['used', 'unused']
+    const full = await build(packageManager, { cache: store() }, { names })
+    const cache = store()
+    const lazy = await build(packageManager, { cache, lazy: true }, { names })
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.equal(lazy.lockfile.serialize(), full.lockfile.serialize())
+    t.assert.equal(lazy.root, full.root)
+    t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'], 'unused is never fetched')
+    t.assert.equal(lazy.stats.tarballs, 2)
+    t.assert.equal(full.stats.tarballs, 3)
+    const dir = [...lazy.bundle.modules.keys()].find((path) => path.endsWith('/used'))
+    t.assert.deepStrictEqual({ ...lazy.bundle.modules.get(dir).repo }, { github: 'o/used', commit: COMMIT }, 'at the commit its document names, which it is fetched with')
+  })
+
+  test(`${packageManager}: lazily, a tarball the build never reads is never fetched, nor refused; one it reads is refused as without lazy`, async (t) => {
+    await t.assert.rejects(build(packageManager, { cache: store() }), /integrity|is not sha512-/u, 'the full tree is refused for broken')
+    const cache = store()
+    const { bundle } = await build(packageManager, { cache, lazy: true })
+    t.assert.ok(bundle.sources.has('src/a.js'))
+    t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'])
+    const entry = "require('broken')\n"
+    const refused = await build(packageManager, { cache: store() }, { entry }).then(() => t.assert.fail('refused'), (error) => error)
+    await t.assert.rejects(build(packageManager, { cache: store(), lazy: true }, { entry }), { message: refused.message })
+  })
+
+  test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
+    const entry = "require('used')\nrequire('missing')\n"
+    const warned = async (options) => {
+      const warn = t.mock.method(console, 'warn', () => {})
+      try {
+        await build(packageManager, { cache: store(), ...options }, { names: ['used'], entry })
+        return warn.mock.calls.map((call) => call.arguments.join(' '))
+      } finally {
+        warn.mock.restore()
+      }
+    }
+    const full = await warned({})
+    t.assert.equal(full.filter((line) => line.includes('missing')).length, 1)
+    t.assert.deepStrictEqual(await warned({ lazy: true }), full)
+    t.assert.notEqual(console.warn.name, 'warnHeld', 'console.warn is left as it was')
+  })
+
+  test(`${packageManager}: lazily, a .yarnclean of patterns cleans each package as it is unpacked, as the full tree's`, async (t) => {
+    const files = { names: ['used'], entry: "require('used')\n", files: { '.yarnclean': '*.md\n' } }
+    const lazy = await build(packageManager, { cache: store(), lazy: true }, files)
+    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store() }, files)).bundle.serialize())
+    // One that keeps paths with `!` is refused before anything is fetched.
+    const cache = store()
+    await t.assert.rejects(build(packageManager, { cache, lazy: true }, { ...files, files: { '.yarnclean': '*.md\n!used/README.md\n' } }), /^Error: a \.yarnclean in \/ or above it keeps paths with `!`, which lazy does not take/u)
+    t.assert.deepStrictEqual(cache.calls, [])
+  })
+}
+
+test('lazy is refused for yarn 1 and Soldeer, and taken only as a boolean, before anything is fetched', async (t) => {
+  const yarn = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'yarn.lock': '# yarn lockfile v1\n\n\n', 'src/a.js': '' }
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(yarn), packageManager: 'yarn1', entries: ['src/a.js'], lazy: true }), /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; yarn1's is not$/u)
+  const soldeer = { 'foundry.toml': '[profile.default]\n', 'soldeer.lock': '', 'src/A.sol': 'pragma solidity ^0.8.0;\n' }
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(soldeer), packageManager: 'soldeer', entries: ['src/A.sol'], lazy: true }), /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; soldeer's is not$/u)
+  await t.assert.rejects(build('pnpm', { lazy: 'yes' }), /^TypeError: buildVfsBundle: lazy must be a boolean$/u)
+  // Of a GitHub repo, before its tree is fetched.
+  const client = fakeClient(yarn)
+  await t.assert.rejects(buildGitHubBundle({ github: 'o/n', client, packageManager: 'yarn1', entries: ['src/a.js'], lazy: true }), /^Error: buildGitHubBundle: lazy is taken with pnpm and npm alone/u)
+  await t.assert.rejects(buildGitHubBundle({ github: 'o/n', client, packageManager: 'pnpm', entries: ['src/a.js'], lazy: 1 }), /^TypeError: buildGitHubBundle: lazy must be a boolean$/u)
+  t.assert.deepStrictEqual(client.calls, [])
+})
+
+test('buildGitHubBundle lazily: the repo as fetched, its dependencies as the build reads them', async (t) => {
+  const cache = store()
+  const files = projectFiles('pnpm', { names: ['used', 'unused'] })
+  const lazy = await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache, lazy: true })
+  const full = await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache: store() })
+  t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+  t.assert.deepStrictEqual({ ...lazy.bundle.repo }, { github: 'o/n', directory: '', commit: HEAD })
+  t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'])
+})
+
+test('stasis github-bundle takes --lazy, and refuses it for yarn 1 before anything is fetched', async (t) => {
+  const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', '--github=o/n', '--package-manager=yarn1', '--lazy', 'a.js'])
+  const stderr = []
+  child.stderr.on('data', (chunk) => stderr.push(chunk))
+  const [status] = await once(child, 'close')
+  t.assert.equal(status, 1)
+  t.assert.match(Buffer.concat(stderr).toString('utf8'), /buildGitHubBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; yarn1's is not/u)
+})
+
+test('lazyView asks for a package read under before it is unpacked, but not for its directory or those above it', (t) => {
+  const vfs = new Vfs()
+  for (const dir of ['/node_modules/a', '/node_modules/a/node_modules/b', '/node_modules/@s/c']) vfs.mkdir(dir, { recursive: true })
+  vfs.writeFile('/node_modules/a/index.js', '')
+  vfs.symlink('a', '/node_modules/link')
+  const roots = new Set(['/node_modules/a', '/node_modules/a/node_modules/b', '/node_modules/@s/c'])
+  const unpacked = new Set()
+  const asked = new Set()
+  const view = lazyView(vfs, { roots, unpacked, asked })
+  view.lstat('/node_modules/a')
+  view.lstat('/node_modules/@s')
+  view.readdir('/node_modules')
+  view.readlink('/node_modules/link')
+  view.lstat('/node_modules/a/node_modules')
+  view.lstat('/node_modules/a/node_modules/b')
+  t.assert.deepStrictEqual([...asked], [], 'the layout alone')
+  t.assert.throws(() => view.lstat('/node_modules/a/node_modules/b/package.json'), { code: 'ENOENT' })
+  t.assert.deepStrictEqual([...asked], ['/node_modules/a/node_modules/b'], 'the innermost package')
+  view.readdir('/node_modules/@s/c')
+  view.readFile('/node_modules/a/index.js')
+  t.assert.deepStrictEqual([...asked], ['/node_modules/a/node_modules/b', '/node_modules/@s/c', '/node_modules/a'], 'a listing of a package itself, and a file of it')
+  asked.clear()
+  unpacked.add('/node_modules/a')
+  view.readFile('/node_modules/a/index.js')
+  t.assert.deepStrictEqual([...asked], [], 'once unpacked, nothing')
+})
+
+test('inRounds: a round that asks is void, warnings and all; the first that asks nothing is the build', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const unpacked = []
+  let round = 0
+  const result = await inRounds(async (asked) => {
+    round++
+    console.warn(`round ${round}`)
+    if (round < 3) asked.add(`/p${round}`)
+    if (round === 1) throw new Error('void, so never thrown')
+    return round
+  }, async (asked) => {
+    unpacked.push([...asked])
+  })
+  t.assert.equal(result, 3)
+  t.assert.deepStrictEqual(unpacked, [['/p1'], ['/p2']])
+  t.assert.deepStrictEqual(warn.mock.calls.map((call) => call.arguments[0]), ['round 3'])
+  await t.assert.rejects(inRounds(async () => {
+    throw new Error('the build fails')
+  }, () => t.assert.fail('nothing asked')), /^Error: the build fails$/u)
+  // A warning given beside a round, not within it, is said as it is.
+  const beside = inRounds(async () => {
+    await new Promise((resolve) => setImmediate(resolve))
+    return 0
+  }, () => {})
+  console.warn('beside')
+  await beside
+  t.assert.ok(warn.mock.calls.some((call) => call.arguments[0] === 'beside'))
+})

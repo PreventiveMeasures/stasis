@@ -2200,15 +2200,20 @@ export function checkVfsOptions(name, options) {
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
 // dependency is recorded at the commit the tree installs it from, where deptree names one
 // (pinCommits). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
-// JS bundle built through a State, the State's root, which is at or above it.
+// JS bundle built through a State, the State's root, which is at or above it. With `lazy`, for pnpm
+// and npm, the tree is laid out with nothing fetched, and each package is fetched and unpacked once
+// the build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
+// the bundle the full tree gives, its warnings said once, with `stats` counting what is unpacked. A
+// tarball the build never reaches is never fetched, nor held to the lockfile, nor refused.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
-export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, ...options } = {}) {
-  const { checkCache, checkKind, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy = false, ...options } = {}) {
+  const { checkCache, checkKind, checkLazy, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkVfs('buildVfsBundle', vfs)
   checkTarget('buildVfsBundle', { os, cpu, libc })
   checkCache('buildVfsBundle', cache)
+  if (typeof lazy !== 'boolean') throw new TypeError('buildVfsBundle: lazy must be a boolean')
   // Checked as the Bundle checks it, before anything is fetched.
   if (repo !== undefined) repo = new Bundle({ repo }).repo
   const project = vfsHost(vfs)
@@ -2216,6 +2221,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   cwd = project.realpath(posix.resolve('/', cwd))
   packageManager = packageManagerFor('buildVfsBundle', project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf('buildVfsBundle', packageManager)
+  if (lazy) checkLazy('buildVfsBundle', packageManager)
   // The entries stasis.config.json's `entries` names, every one where none are given, each built
   // with its options there, which the options given agree with (configuredBuilds); else built with
   // the options given. Each build is checked with the options it is built with.
@@ -2236,34 +2242,44 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache })
-  let { host } = tree
-  if (generate.includes('prisma')) {
-    const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
-    const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
-    if (outputs.length > 0) host = treeHost(tree, vfsHost(withPrismaClients(vfs, outputs)))
+  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy })
+  // What follows reads the tree through the hosts `hostOf` makes, of the project's host: once, or
+  // for a lazy tree, as many times as it takes.
+  const attempt = async (hostOf) => {
+    let host = hostOf(project)
+    if (generate.includes('prisma')) {
+      const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
+      const outputs = await generatePrismaClients({ host, root: tree.root, projects: tree.projects })
+      if (outputs.length > 0) host = hostOf(vfsHost(withPrismaClients(vfs, outputs)))
+    }
+    const args = { cwd, host, env: {} }
+    const builts = []
+    for (const build of builds) {
+      // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+      const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra })
+      // Rooted at cwd, where `stasis bundle` detects its repo.
+      if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
+      builts.push(built)
+    }
+    // Merged as bundleCommand merges its builds: rooted where every one of them is.
+    const { root } = builts[0]
+    const other = builts.findIndex((built) => built.root !== root)
+    if (other !== -1) {
+      throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
+    }
+    const union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+    // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
+    // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
+    // took it. Nothing is written into the Vfs, so none of its files is an output kept out.
+    return { root, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { resources: bundleExtra ? undefined : options.resources, host, name: 'buildVfsBundle' }) : union }
   }
-  const args = { cwd, host, env: {} }
-  const builts = []
-  for (const build of builds) {
-    // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-    const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra })
-    // Rooted at cwd, where `stasis bundle` detects its repo.
-    if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
-    builts.push(built)
+  let built
+  if (tree.unpack === undefined) built = await attempt((host) => treeHost(tree, host))
+  else {
+    const { inRounds } = await import('../vfs-bundle/lazy.js')
+    built = await inRounds((asked) => attempt((host) => treeHost(tree, host, asked)), tree.unpack)
   }
-  // Merged as bundleCommand merges its builds: rooted where every one of them is.
-  const { root } = builts[0]
-  const other = builts.findIndex((built) => built.root !== root)
-  if (other !== -1) {
-    throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
-  }
-  let union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
-  // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
-  // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
-  // took it. Nothing is written into the Vfs, so none of its files is an output kept out.
-  if (bundleExtra || !builts[0].stateBuilt) union = withExtra(union, root, { resources: bundleExtra ? undefined : options.resources, host, name: 'buildVfsBundle' })
-  const { bundle, lockfile } = union
+  const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
   return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
