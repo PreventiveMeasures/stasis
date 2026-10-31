@@ -226,6 +226,25 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.equal(walks.mock.callCount(), 3 + 4)
   })
 
+  // A round reads used and unused, and unused's tarball comes late: deep, which used depends on, is
+  // fetched as soon as used is unpacked, not once unused is too.
+  test(`${packageManager}: lazily, what a package read depends on is fetched once it is unpacked, not once every package of its round is`, async (t) => {
+    const cache = store()
+    const read = cache.read
+    const events = []
+    cache.read = async (type, key) => {
+      if (type === 'npm/tarballs') events.push(`fetch ${key}`)
+      if (key === 'unused@1.0.0' && type === 'npm/tarballs') await new Promise((resolve) => setTimeout(resolve, 100))
+      const got = await read(type, key)
+      if (type === 'npm/tarballs') events.push(`fetched ${key}`)
+      return got
+    }
+    const files = { names: ['used', 'unused'], entry: "require('used')\nrequire('unused')\n" }
+    const lazy = await build(packageManager, { cache, lazy: true }, files)
+    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store() }, files)).bundle.serialize())
+    t.assert.ok(events.indexOf('fetch deep@1.0.0') !== -1 && events.indexOf('fetch deep@1.0.0') < events.indexOf('fetched unused@1.0.0'), events.join(', '))
+  })
+
   // A round reads top, which is unpacked with used, which it depends on; the next reads used, and
   // asks for deep, which used depends on, and which was not unpacked with top: the last is the build.
   test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but not what that depends on`, async (t) => {

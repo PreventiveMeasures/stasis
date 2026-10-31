@@ -489,13 +489,24 @@ function lazyTree({ vfs, installed, unpack }, cleanAll) {
   return {
     lazy: { roots, unpacked },
     async unpack(asked, read = asked) {
-      // Each asked for, the first refusal thrown once every one is done, as deptree throws one.
-      const done = await Promise.allSettled([...asked].map(unpackOne))
+      // Each asked for, and once one read is unpacked, what it depends on, then and there rather
+      // than once every one asked for is: so the fetches of both share the time, not one waiting
+      // on the last of the other. The first refusal of one asked for is thrown once every one is
+      // done, as deptree throws one.
+      const seen = new Set(asked)
+      const ahead = []
+      const done = await Promise.allSettled([...asked].map(async (dir) => {
+        await unpackOne(dir)
+        if (!read.has(dir)) return
+        for (const dependency of dependenciesOf(vfs, dir, roots)) {
+          if (seen.has(dependency) || unpacked.has(dependency) || refused.has(dependency)) continue
+          seen.add(dependency)
+          ahead.push(unpackOne(dependency).catch(() => refused.add(dependency)))
+        }
+      }))
+      await Promise.all(ahead)
       const failed = done.find(({ status }) => status === 'rejected')
       if (failed !== undefined) throw failed.reason
-      const ahead = new Set([...asked].filter((dir) => read.has(dir)).flatMap((dir) => dependenciesOf(vfs, dir, roots)).filter((dir) => !unpacked.has(dir) && !refused.has(dir)))
-      const results = await Promise.allSettled([...ahead].map(unpackOne))
-      for (const [i, dir] of [...ahead].entries()) if (results[i].status === 'rejected') refused.add(dir)
       cleanAll()
     },
   }
