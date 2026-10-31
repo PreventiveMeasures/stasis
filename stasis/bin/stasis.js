@@ -31,7 +31,7 @@ const HELP = `Usage:
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
- stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] path/to/bundle
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
@@ -317,6 +317,13 @@ if (command === '-v' || command === '--version') {
   printAuditReport(report)
   process.exitCode = report.rows.length === 0 ? 0 : 1
 } else if (command === 'validate') {
+  // Exits 0 where the bundle is valid, 1 where it is invalid, 2 where a file it was to check went
+  // unverified (unless --allow-unverified), and 3 where it refused the bundle, or failed.
+  const refuse = (message) => {
+    console.error(message)
+    process.exit(3)
+  }
+  const misused = (message) => refuse(`${message}\nRun 'stasis --help' for usage.`)
   const values = parseLeadingOptions(argv, {
     github: { type: 'string' },
     sha: { type: 'string' },
@@ -324,18 +331,19 @@ if (command === '-v' || command === '--version') {
     'only-deps': { type: 'boolean' },
     lockfile: { type: 'string', multiple: true },
     'no-lockfile': { type: 'boolean' },
+    'allow-unverified': { type: 'boolean' },
   }, {
     valueFlags: ['--github', '--sha', '--directory', '--lockfile'],
-    onError: fail,
+    onError: misused,
   })
-  if (argv.length !== 1) fail('Error: stasis validate takes one bundle')
-  if (values.lockfile !== undefined && values['no-lockfile']) fail('Error: --lockfile and --no-lockfile: give one')
+  if (argv.length !== 1) misused('Error: stasis validate takes one bundle')
+  if (values.lockfile !== undefined && values['no-lockfile']) misused('Error: --lockfile and --no-lockfile: give one')
   // The repository is read with GITHUB_TOKEN where it is set; its trees and the packages fetched are
   // cached where `stasis audit` caches, each held to its id or integrity as it is read.
   const { createClient } = await import('@preventive/upstream/github.js')
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
-  const { ValidateError, validate, printValidationReport } = await import('../src/validate.js')
+  const { ValidateError, exitCodeOf, validate, printValidationReport } = await import('../src/validate.js')
   let report
   try {
     // Its dependencies alone only with --only-deps, and held to no lockfile only with --no-lockfile: a
@@ -349,13 +357,11 @@ if (command === '-v' || command === '--version') {
       lockfile: values['no-lockfile'] ? false : values.lockfile?.map((path) => resolve(path)) ?? true,
     })
   } catch (cause) {
-    if (!(cause instanceof ValidateError)) throw cause
-    fail(`Error: ${cause.message}`)
+    if (cause instanceof ValidateError) misused(`Error: ${cause.message}`)
+    refuse(`Error: ${cause.message}`)
   }
   printValidationReport(report)
-  // Exit 1 where a file differs or is unexpected, so it composes in CI; files left unverified are
-  // told, not failed.
-  process.exitCode = report.status === 'invalid' ? 1 : 0
+  process.exitCode = exitCodeOf(report, { allowUnverified: values['allow-unverified'] })
 } else if (command === 'sbom') {
   const options = {
     format: { type: 'string' },
