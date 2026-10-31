@@ -57,7 +57,7 @@ const utf8 = new TextEncoder()
 const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // A failure to read or apply a patch, by its `code` (patch-unreadable, patch-unsupported,
-// patch-does-not-apply).
+// patch-does-not-apply, and patch-mismatch for one read not of the hash its lockfile names it by).
 export class PatchError extends Error {
   constructor(code) {
     super(code)
@@ -444,6 +444,8 @@ async function patchOf(plan, pkg, files, locked) {
       } else if (lock.path) {
         patch = { hash: lock.hash, path: lock.path, from: locked.from ?? 'repository' }
         text = await locked.read(lock.hash, lock.path)
+        // Held to the hash the lockfile names it by, as the bundle's are found by it.
+        if (!isPatchOf(text, lock.hash)) throw new PatchError('patch-mismatch')
       } else return { patch: { hash: lock.hash, error: 'patch-not-found' }, patched: null }
     } else if (lock === undefined) {
       const named = held.byName.get(pnpmPatchName(pkg.name, pkg.version))

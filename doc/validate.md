@@ -112,7 +112,8 @@ lines either side, its lines the same but for the space they end in, a byte
 order mark the file starts with kept). The patch is the one the
 `pnpm-lock.yaml` locks the version with, read of the bundle where it holds a
 file of that hash (pnpm 11 names a patch by its hash alone), else beside the
-lockfile: of the repository, or of the disk for one given. With no
+lockfile: of the repository, or of the disk for one given, and held to that
+hash (`patch-mismatch` where it isn't). With no
 `pnpm-lock.yaml` read (`--no-lockfile`, or npm's or yarn's), it is the patch
 the bundle holds named for the version, pnpm's way (`patches/name@version.patch`).
 

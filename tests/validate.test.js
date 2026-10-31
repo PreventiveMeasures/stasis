@@ -126,7 +126,7 @@ test('validateBundle: own code held to the repository, each dependency to its pa
   t.assert.deepStrictEqual((await validateBundle(validationPlan(parsed()), own(asBytes), { fetch: upstream(), now: () => 1 })).problems, report.problems)
 })
 
-test('validateBundle: a version its lockfile patches is held to that patch, of the bundle\'s file of its hash, else read of the repository; one it does not, as published', async (t) => {
+test('validateBundle: a version its lockfile patches is held to that patch, of the bundle\'s file of its hash, else read of the repository and held to its hash; one it does not, as published', async (t) => {
   const plan = validationPlan(parsed({ 'node_modules/left': undefined }))
   plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
   const read = []
@@ -135,10 +135,17 @@ test('validateBundle: a version its lockfile patches is held to that patch, of t
   t.assert.deepStrictEqual(await packagesOf({ hash: sha256(MS_PATCH), path: 'patches/elsewhere.patch' }), [{ ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid',
     patch: { hash: sha256(MS_PATCH), path: 'patches/ms@2.1.3.patch', from: 'bundle', applied: true } }], 'the bundle\'s file of its hash')
   t.assert.deepStrictEqual(read, [])
-  const hash = sha256('another patch')
-  t.assert.deepStrictEqual((await packagesOf({ hash, path: 'web/patches/other.patch' }))[0].patch, { hash, path: 'web/patches/other.patch', from: 'repository', applied: true })
-  t.assert.deepStrictEqual(read, [[hash, 'web/patches/other.patch']])
-  t.assert.deepStrictEqual((await packagesOf({ hash }))[0], { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid', patch: { hash, error: 'patch-not-found' } },
+  // Read of the repository where the bundle holds no file of its hash, and held to that hash.
+  const apart = { ...plan, patches: new Map() }
+  const fromRepository = async (lock) => (await validateBundle(apart, own(), { fetch: upstream(), locked: locked(lock) })).packages[0]
+  const hash = sha256(MS_PATCH)
+  t.assert.deepStrictEqual((await fromRepository({ hash, path: 'web/patches/ms.patch' })).patch, { hash, path: 'web/patches/ms.patch', from: 'repository', applied: true })
+  t.assert.deepStrictEqual(read, [[hash, 'web/patches/ms.patch']])
+  const other = '0'.repeat(64)
+  t.assert.deepStrictEqual(await fromRepository({ hash: other, path: 'web/patches/ms.patch' }), { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid',
+    patch: { hash: other, path: 'web/patches/ms.patch', from: 'repository', error: 'patch-mismatch' } }, 'one not of the hash it locks refused, its files held to those published')
+  const missing = sha256('another patch')
+  t.assert.deepStrictEqual((await packagesOf({ hash: missing }))[0], { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid', patch: { hash: missing, error: 'patch-not-found' } },
     'pnpm 11\'s, named by its hash alone, of no file the bundle holds')
   const unpatched = await validateBundle(plan, own(), { fetch: upstream(), locked: locked(null) })
   t.assert.deepStrictEqual(unpatched.problems.filter((problem) => problem.of !== 'own'), [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }],
