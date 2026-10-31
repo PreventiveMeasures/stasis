@@ -963,11 +963,24 @@ test('validateRepository: own code held to a listing of the commit\'s tree, its 
   t.assert.deepStrictEqual([forked.status, forked.own, forked.lockfiles, asked], ['incomplete', { checked: false, reason: 'commit-not-in-history' }, null, []])
   await t.assert.rejects(validateRepository(plan, fork, { listTree, fetch: upstream() }), { name: 'ValidateError', code: 'commit-not-in-history' })
 
-  // An own file at a path no tree has, not asked for: unexpected.
+  // An own file at a path no tree has, not asked for: unexpected, the tree cut short or not.
   const odd = { ...plan, own: [...plan.own, { path: '../x.js', dir: '.', rel: '../x.js', format: 'commonjs', bytes: () => bytes('x\n') }] }
   asked.length = 0
   const outside = await validateRepository(odd, where, { listTree, fetch: upstream() })
   t.assert.deepStrictEqual([outside.status, outside.problems.map((problem) => [problem.path, problem.kind]), asked], ['invalid', [['../x.js', 'unexpected']], [['web/src/main.js', 'web/package.json']]])
+  const cutOutside = await validateRepository(odd, where, { listTree: async (paths) => ({ ...await listTree(paths), cut: true }), fetch: upstream() })
+  t.assert.deepStrictEqual([cutOutside.status, cutOutside.problems.map((problem) => [problem.path, problem.kind, problem.reason ?? null])], ['invalid', [['../x.js', 'unexpected', null]]])
+
+  // Own code or the repository's lockfile with no repository or commit to read it of: refused, or, `strict` false, told.
+  asked.length = 0
+  for (const [at, code] of [[{ repository, directory: 'web' }, 'no-commit'], [{ commit, directory: 'web' }, 'no-repository']]) {
+    await t.assert.rejects(validateRepository(plan, at, { listTree, fetch: upstream() }), { name: 'ValidateError', code })
+    await t.assert.rejects(validateRepository(plan, at, { own: false, fetch: upstream() }), { name: 'ValidateError', code }, 'its lockfile read there')
+    const told = await validateRepository(plan, at, { listTree, strict: false, fetch: upstream() })
+    t.assert.deepStrictEqual([told.status, told.own, told.lockfiles], ['incomplete', { checked: false, reason: code }, null])
+  }
+  t.assert.deepStrictEqual(asked, [], 'nothing listed')
+  t.assert.equal((await validateRepository(plan, { directory: 'web' }, { own: false, lockfile: false, fetch: upstream() })).own.reason, 'skipped', 'neither read')
 })
 
 test('validate: own code, a lockfile or the patches the bundle holds read of a commit in the repository\'s own history alone, a fork\'s refused', withTmp(async (t, tmp) => {

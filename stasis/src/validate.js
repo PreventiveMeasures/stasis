@@ -515,6 +515,9 @@ async function patchOf(held, pkg, files, locked, verdicts) {
   }
 }
 
+// A path git can have in a tree, which upstream lists: no part empty, `.`, `..` or `.git`.
+const inTree = (path) => path.length <= 4096 && path.isWellFormed() && !/\p{Cc}/u.test(path) && path.split('/').every((part) => !['', '.', '..', '.git'].includes(part.toLowerCase()))
+
 // `items` each run through `run`, `parallel` at a time.
 async function eachOf(items, parallel, run) {
   let next = 0
@@ -685,7 +688,8 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
         found.set(file.path, kind)
       }
       if (entry === undefined || entry.submodule) {
-        const reason = entry?.submodule || inSubmodule(path) ? 'submodule' : read.cut ? 'tree-cut' : undefined
+        // One at a path no tree can have is no file left unlisted.
+        const reason = entry?.submodule || inSubmodule(path) ? 'submodule' : read.cut && inTree(path) ? 'tree-cut' : undefined
         verdict(reason === 'tree-cut' ? 'unverified' : 'unexpected', reason)
       } else if (entry.symlink !== undefined) verdict('differs', 'symlink')
       else {
@@ -1081,9 +1085,6 @@ export async function historyOf(repository, commit, { maxCompared = MAX_COMPARED
 // The ecosystems of the versions fetched, which a lockfile is to lock.
 const fetchedEcosystems = (plan) => new Set(plan.packages.filter((pkg) => FETCHED.has(pkg.ecosystem) && pkg.name && pkg.version).map((pkg) => pkg.ecosystem))
 
-// A path git can have in a tree, which upstream lists: no part empty, `.`, `..` or `.git`.
-const inTree = (path) => path.length <= 4096 && path.isWellFormed() && !/\p{Cc}/u.test(path) && path.split('/').every((part) => !['', '.', '..', '.git'].includes(part.toLowerCase()))
-
 // git's entries of a listing (upstream's listRepoDir's or listRepoTree's) as validateBundle takes
 // them, by their paths under `dir`: a file by its blob's id.
 function listedEntries(listed, dir = '') {
@@ -1106,7 +1107,8 @@ function listedEntries(listed, dir = '') {
 // none of the repository's own history, or no lockfile to hold the dependencies to, is refused
 // (ValidateError); `strict` false, told instead: the dependencies alone validated, own code unverified
 // for the error's code (`own.reason`: commit-not-in-history, history-unread), or held to their
-// registry alone for it (`lockfileError`).
+// registry alone for it (`lockfileError`). So is one with no repository or commit (`no-repository`,
+// `no-commit`) where own code or the repository's lockfile is to be read.
 export async function validateRepository(plan, { repository = null, commit, directory = '' }, { own = true, lockfile = true, listTree, strict = true, fetch, deadline } = {}) {
   const ecosystems = fetchedEcosystems(plan)
   const github = repository?.name()
@@ -1116,9 +1118,14 @@ export async function validateRepository(plan, { repository = null, commit, dire
     return error.code
   }
   // Read at a commit of its own history alone: GitHub serves a commit of any fork of it through its name too.
-  const readsCommit = own || (lockfile === true && ecosystems.size > 0) || (plan.patches.size > 0 && commit !== undefined)
+  const readsRepository = own || (lockfile === true && ecosystems.size > 0)
+  const readsCommit = readsRepository || (plan.patches.size > 0 && commit !== undefined)
   let ref
   try {
+    if (readsRepository && (repository === null || commit === undefined)) {
+      const [code, what] = repository === null ? ['no-repository', 'repository to read it of'] : ['no-commit', 'commit to read it at']
+      throw new ValidateError(code, `no ${what}: ${own ? 'its own code' : 'its lockfile'} is read of the repository`)
+    }
     ref = repository && readsCommit && commit !== undefined ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
       throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
