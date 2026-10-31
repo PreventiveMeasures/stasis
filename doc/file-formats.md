@@ -294,7 +294,9 @@ files it adds, and `installDevDependencies`' the packages a build can reach.
 ## `stasis.code.br`
 
 Brotli-compressed JSON, written when `bundle = add | replace`, read when
-`bundle = add | load | frozen`. `bundle = frozen` is self-attesting (no lockfile
+`bundle = add | load | frozen`. The file is one brotli stream and nothing after
+it: every reader refuses bytes after the stream's end, which zlib's decoder
+would otherwise ignore. `bundle = frozen` is self-attesting (no lockfile
 needed): the bundle loads read-only and each file/resolution/format observed from
 disk is verified against it — so an unrecorded file, a byte/format mismatch, or a
 resolution redirected to a different recorded file is fatal.
@@ -629,7 +631,7 @@ commands themselves still use the one-shot path.
 ```js
 import { readBundle } from '@exodus/stasis/bundle-reader'
 
-// The same Bundle as Bundle.parse(brotliDecompressSync(bytes).toString('utf8')).
+// The same Bundle the built-in readers give.
 const bundle = await readBundle('app.stasis.code.br')
 
 // Or take each file as it streams, and keep only the metadata (a contents-free Bundle).
@@ -640,8 +642,8 @@ const meta = await readBundle('app.stasis.code.br', {
 
 - `source` is a path or file `URL` object, the compressed bytes (any
   `ArrayBuffer` or view), or an (async) iterable of compressed chunks, such as a
-  `Readable`. Bytes after the end of the brotli stream are ignored, as
-  `brotliDecompressSync` ignores them.
+  `Readable`. Bytes after the end of the brotli stream are refused, as the
+  built-in readers refuse them, however the chunks split them.
 - `signal` aborts the read at once, including any `onFile` calls still queued.
   `onFile` gets it as `{ signal }`, so it can stop its own work.
 - Without `onFile`, it accepts exactly what `Bundle.parse` accepts and builds the

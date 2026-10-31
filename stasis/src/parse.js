@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
-import { brotliDecompressSync } from 'node:zlib'
 
+import { brotliDecompressStrict } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 
@@ -24,9 +24,10 @@ export function parseFileWithKind(file) {
   }
   let text
   try {
-    text = brotliDecompressSync(buf).toString('utf8')
+    text = brotliDecompressStrict(buf).toString('utf8')
   } catch (cause) {
-    throw new Error(`Failed to read ${file} as a stasis bundle (not brotli)`, { cause })
+    const why = cause.code === 'ERR_TRAILING_JUNK_AFTER_STREAM_END' ? 'bytes after its brotli stream' : 'not brotli'
+    throw new Error(`Failed to read ${file} as a stasis bundle (${why})`, { cause })
   }
   try {
     return { kind: 'bundle', artifact: Bundle.parse(text) }

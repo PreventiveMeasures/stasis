@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 
-import { DEFAULT_BROTLI_QUALITY, brotliOptions } from '@exodus/stasis-core/brotli'
+import { DEFAULT_BROTLI_QUALITY, brotliDecompressStrict, brotliOptions } from '@exodus/stasis-core/brotli'
 
 // Save/restore EXODUS_STASIS_BROTLI_QUALITY across tests so env-driven tests don't leak.
 const withEnv = (value, fn) => (t) => {
@@ -76,3 +76,20 @@ test('any quality still produces a valid .br that round-trips', withEnv(undefine
     t.assert.equal(brotliDecompressSync(data).toString('utf-8'), text, `quality ${quality} round-trips`)
   }
 }))
+
+test('brotliDecompressStrict decompresses one brotli stream and refuses any bytes after it', (t) => {
+  const text = JSON.stringify({ files: Array.from({ length: 64 }, (_, i) => `src/module-${i}.js`) })
+  const stream = brotliCompressSync(text)
+  t.assert.equal(brotliDecompressStrict(stream).toString('utf-8'), text)
+  t.assert.equal(brotliDecompressStrict(new Uint8Array(stream)).toString('utf-8'), text, 'a plain Uint8Array')
+  t.assert.equal(brotliDecompressStrict(brotliCompressSync('')).length, 0, 'an empty stream')
+  // brotliDecompressSync ignores all of these; a zero byte is no padding to brotli either.
+  for (const [what, tail] of [['a zero byte', Buffer.of(0)], ['junk', Buffer.from('junk')], ['the stream again', stream]]) {
+    const bytes = Buffer.concat([stream, tail])
+    t.assert.equal(brotliDecompressSync(bytes).toString('utf-8'), text, `${what}: zlib ignores it`)
+    t.assert.throws(() => brotliDecompressStrict(bytes), { name: 'TypeError', code: 'ERR_TRAILING_JUNK_AFTER_STREAM_END' }, what)
+  }
+  // What zlib refuses, it still refuses.
+  t.assert.throws(() => brotliDecompressStrict(stream.subarray(0, -1)), { code: 'Z_BUF_ERROR' }, 'truncated')
+  t.assert.throws(() => brotliDecompressStrict(Buffer.from('not brotli')), 'not brotli')
+})

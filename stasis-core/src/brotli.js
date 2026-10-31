@@ -20,6 +20,21 @@ export function brotliOptions(quality) {
   return { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: quality ?? DEFAULT_BROTLI_QUALITY } }
 }
 
-// A bundle file's bytes, of a serialized bundle's text (brotliOptions' `quality`), and the Bundle of those bytes.
+// zlib's brotli decoder stops at the end of the stream and ignores whatever follows it, where
+// DecompressionStream refuses bytes after a gzip or deflate stream; this is Node's error for those.
+export const trailingJunkError = () => Object.assign(
+  new TypeError('Trailing junk found after the end of the compressed stream'),
+  { code: 'ERR_TRAILING_JUNK_AFTER_STREAM_END' })
+
+// brotliDecompressSync(bytes), refusing bytes after the end of the brotli stream: the engine's
+// bytesWritten counts the input it consumed, which stops where the stream does.
+export function brotliDecompressStrict(bytes) {
+  const { buffer, engine } = brotliDecompressSync(bytes, { info: true })
+  if (engine.bytesWritten !== Buffer.byteLength(bytes)) throw trailingJunkError()
+  return buffer
+}
+
+// A bundle file's bytes, of a serialized bundle's text (brotliOptions' `quality`), and the Bundle of
+// those bytes, which are one brotli stream and nothing after it.
 export const compressBundleText = (text, quality) => brotliCompressSync(text, brotliOptions(quality))
-export const parseBundleBytes = (bytes) => Bundle.parse(brotliDecompressSync(bytes).toString('utf8'))
+export const parseBundleBytes = (bytes) => Bundle.parse(brotliDecompressStrict(bytes).toString('utf8'))
