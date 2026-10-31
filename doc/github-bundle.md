@@ -53,6 +53,37 @@ fetched from, at its root, and the lockfile's `rev` (see
 [file formats](file-formats.md)). Like everything in `repo`, it is the
 publisher's word, held to no repository.
 
+### `.yarnclean`
+
+A `.yarnclean` in the directory bundled, or in any directory above it in the
+repo, cleans the `node_modules` laid out as
+[`yarn autoclean`](https://classic.yarnpkg.com/en/docs/cli/autoclean) cleans
+Yarn's (which `yarn install` does where the lockfile's directory holds one),
+whatever the package manager:
+
+```
+# tests and docs
+test
+__tests__
+docs
+*.md
+!lodash/README.md
+```
+
+Each line is a pattern of paths to remove, a directory with everything below
+it, and one starting `!` of paths to keep, a directory holding one staying with
+that alone; one starting `#` is a comment. A path matches by its name, or by
+its path from the `node_modules` holding its package (`lodash/README.md`, as
+Yarn's hoisted layout has it, for pnpm's `.pnpm` store too), whatever its case,
+dotfiles included, as Yarn 1.22 matches them. The package manager's own entries
+there (`.bin`, `.pnpm`, `.modules.yaml`) never match.
+
+A file cleaned is missing to the build, as after `yarn autoclean`: an import of
+one is unresolved, as any missing file's. Matching takes the optional
+`minimatch`: where it isn't installed, a `.yarnclean` holding a pattern is
+refused before any package is fetched. A `--directory` with a `.yarnclean`
+above it is fetched with the whole repo, never alone.
+
 ## Entries
 
 The entries are paths in `--directory`, or in the repo. Without any, they are
@@ -149,7 +180,9 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   commit or the one a tag names; `buildVfsBundle(options)` from a project held
   in a `Vfs` (exported too), which is only read. `loadNodeModules(options)` lays
   out a project's `node_modules` alone, with deptree's `installed`, each package
-  by its `path` with the `commit` its version document names.
+  by its `path` with the `commit` its version document names. All three clean
+  `node_modules` by each [`.yarnclean`](#yarnclean) in `cwd` and the directories
+  above it in the `Vfs`.
 - Those three take `cache`: where npm packages' tarballs and version documents
   are kept, as `@preventive/upstream`'s `CacheOptions` take it. Left out, in
   `setCacheDir`'s cache; a store of the caller's, `{ read(type, key),

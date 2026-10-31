@@ -9,6 +9,7 @@ import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle } from '../cmd/bundle.js'
 import { KINDS, checkAhead, defaultEntries } from './entries.js'
 import { checkCache, checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { YARNCLEAN } from './yarnclean.js'
 
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
@@ -116,7 +117,7 @@ async function listedPackageManager(list, { directory, where }) {
 }
 
 // The files of `directory` alone, when it holds the lockfile, is installed from itself and stands
-// alone; else null.
+// alone, nor does a .yarnclean above it clean the node_modules it installs; else null.
 async function subtreeEntries(client, list, { github, directory, packageManager, where }) {
   const names = async (path) => (await list(path)).map((entry) => entry.path)
   let listing
@@ -129,6 +130,7 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   const above = ancestorsOf(directory)
   // Installed from a root above it (a workspace's), it is built from there.
   if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), () => Promise.all(above.map(names))))) return null
+  if (packageManagerOf('buildGitHubBundle', packageManager).kind === 'js' && (await Promise.all(above.map(names))).some((dir) => dir.includes(YARNCLEAN))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
   const tree = (await list(above[0])).find((entry) => entry.path === posix.basename(directory) && entry.type === 'tree')?.sha
   const files = tree === undefined ? null : await treeFiles(client, { github, tree, directory, where })

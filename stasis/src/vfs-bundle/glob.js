@@ -16,9 +16,10 @@ const MINIMATCH_MAJOR = '10'
 const OPTIONS = { nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true, optimizationLevel: 2, platform: 'linux', nocaseMagicOnly: true }
 
 let minimatch
-function lazyMinimatch() {
+// minimatch, or a refusal naming `what` needs it where it isn't installed.
+export function loadMinimatch(what) {
   if (minimatch) return minimatch
-  const needs = `A glob over a Vfs (stasis.config.json's extra) needs the optional '${MINIMATCH}' ${MINIMATCH_MAJOR} dependency`
+  const needs = `${what} needs the optional '${MINIMATCH}' ${MINIMATCH_MAJOR} dependency`
   let version
   try {
     version = require(`${MINIMATCH}/package.json`).version
@@ -30,6 +31,8 @@ function lazyMinimatch() {
   minimatch = require(MINIMATCH)
   return minimatch
 }
+
+const lazyMinimatch = () => loadMinimatch("A glob over a Vfs (stasis.config.json's extra)")
 
 // Throws where globbing a Vfs can't load minimatch, before anything else is done.
 export const checkGlob = () => void lazyMinimatch()

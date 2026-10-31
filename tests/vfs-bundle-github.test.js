@@ -15,7 +15,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
-import { HEAD, fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
+import { HEAD, HIDE_MINIMATCH, fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
 
 // @exodus/stasis/vfs-bundle's buildGitHubBundle over a fake @preventive/upstream/github.js client
 // serving a repo held in memory: nothing is fetched, and every lockfile here locks no registry package.
@@ -785,6 +785,10 @@ test('buildGitHubBundle falls back to the whole repo when the subtree does not s
     t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js', 'src/b.js'], what)
     t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'apps/p', commit: SHA }, what)
   }))
+  // A .yarnclean above it cleans the node_modules it installs: the subtree isn't fetched.
+  const cleaned = fakeClient(appWithLockfile({ '.yarnclean': '*.md\n' }))
+  t.assert.deepStrictEqual([...(await build({ client: cleaned, directory: 'apps/p', entries: ['src/a.js'] })).bundle.sources.keys()], ['src/a.js', 'src/b.js'])
+  t.assert.deepStrictEqual(methods(cleaned), ['listRepoDir', 'listRepoDir', 'listRepoDir', 'getRepoTarball'])
   // A tsconfig path within the subtree keeps it alone.
   const client = fakeClient(appWithLockfile({ 'apps/p/tsconfig.json': json({ extends: './tsconfig.base.json', include: ['./src'] }) }))
   await build({ client, directory: 'apps/p', entries: ['src/a.js'] })
@@ -879,15 +883,6 @@ test('buildGitHubBundle refuses the extra files stasis bundle refuses', async (t
   }
   await Promise.all(Object.entries(refused).map(([message, extra]) => t.assert.rejects(build({ client: fakeClient(repo(extra)), entries: ['src/a.js'] }), new RegExp(`^(Type)?Error: ${RegExp.escape(message)}$`, 'u'), message)))
 })
-
-// Hides the optional minimatch from what the process loads, as where it isn't installed.
-const HIDE_MINIMATCH = [
-  "import { registerHooks } from 'node:module'",
-  'registerHooks({ resolve(specifier, context, next) {',
-  "  if (/^minimatch(\\/|$)/u.test(specifier)) throw Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'MODULE_NOT_FOUND' })",
-  '  return next(specifier, context)',
-  '} })',
-].join('\n')
 
 test('buildGitHubBundle needs the optional minimatch for extra, and only for it: stasis bundle globs the disk without it', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-minimatch-'))
