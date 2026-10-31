@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isExecutableFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nodeExtFormat, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -241,7 +241,8 @@ function readFileWithinBase(baseDir, realBase, rel, within) {
 function executableSources(baseDir, sources, host) {
   const executable = new Set()
   for (const path of sources.keys()) {
-    if (isExecutableFile(join(baseDir, path), host)) executable.add(path)
+    // A fresh set: a file that can't be looked at is just not marked.
+    if (observeExecutable(join(baseDir, path), host) === true) executable.add(path)
   }
   return executable
 }
@@ -399,7 +400,7 @@ function solidityManifests(baseDir, sources, configFiles, { classifyDep, package
 
 // An entry `stasis bundle` takes for a directory: one that is, or an extensionless path that
 // doesn't exist (a project without `script/` still bundles with `src test script`).
-export const isDirEntry = (abs, host = diskHost) => isDir(abs, host) || (extname(abs) === '' && host.stat(abs) === null)
+const isDirEntry = (abs, host = diskHost) => isDir(abs, host) || (extname(abs) === '' && host.stat(abs) === null)
 
 // Whether `entry` (resolved against `cwd`) is a Solidity bundle's: a .sol file or a directory entry.
 export const isSolidityEntry = (entry, cwd = process.cwd(), host = diskHost) => entry.endsWith('.sol') || isDirEntry(resolve(cwd, entry), host)

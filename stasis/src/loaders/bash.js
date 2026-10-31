@@ -7,11 +7,11 @@
 import { isUtf8 } from 'node:buffer'
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, extname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import { assertRealPathWithinBase } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
-import { applyToDir, assertWithinBase } from './paths.js'
+import { applyToDir } from './paths.js'
 
 // The capture class excludes backtick/`(`/`)` so a ref inside a command
 // substitution (`` `source x.sh` ``, `$(bash x.sh)`) doesn't swallow the closing delimiter.
@@ -162,29 +162,4 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
 
   await processWave(entries)
   return sources
-}
-
-// High-level entry: reads the scripts named in a `.sh.txt` listing (relative to
-// it). Unlike loadRust, the listing is authoritative — bash sourcing is too
-// dynamic to walk — so exactly the listed files are read, resolutions computed among them.
-export async function loadBash(shTxtFile) {
-  const baseDir = dirname(resolve(shTxtFile))
-  const listing = await readFile(shTxtFile, 'utf8')
-  const lines = listing.split('\n').map((l) => l.trim()).filter(Boolean)
-    .map((l) => l.replace(/^\.\//u, ''))
-  if (lines.length === 0) throw new Error(`Empty bash listing: ${shTxtFile}`)
-
-  if (!lines.every((line) => ['', '.sh', '.bash'].includes(extname(line)))) {
-    throw new Error(`Bash listing must only contain .sh/.bash files: ${shTxtFile}`)
-  }
-  for (const line of lines) assertWithinBase(baseDir, line, 'Entry path')
-
-  const realBase = realpathSync(baseDir)
-  const reads = await Promise.all(
-    lines.map(async (relPath) => {
-      assertRealPathWithinBase(realBase, baseDir, relPath)
-      return [relPath, await readScript(baseDir, relPath)]
-    }),
-  )
-  return buildBashTree(new Map(reads))
 }

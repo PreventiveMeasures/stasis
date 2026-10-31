@@ -10,7 +10,6 @@ import {
   crateRoots,
   getModuleDir,
   lexRust,
-  loadRust,
   parseUseTree,
   resolveExplicitModPath,
   resolveModDecl,
@@ -1776,39 +1775,6 @@ test('buildRustTree without baseDir still resolves vendored crates among the loa
   const sources = await collectRustFilesFromDisk(join(fixtures, 'with-vendored-crate'), ['src/main.rs'])
   const { resolutions } = buildRustTree(sources)
   t.assert.equal(resolutions.get('src/main.rs').get('use cool_lib'), 'vendor/cool-lib/src/lib.rs')
-})
-
-// --- listing ---
-
-test('loadRust reads a .rs.txt listing and walks the crate', async (t) => {
-  const tree = await loadRust(join(fixtures, 'listing/list.rs.txt'))
-  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['src/foo.rs', 'src/main.rs'])
-  t.assert.equal(tree.resolutions.get('src/main.rs').get('mod foo'), 'src/foo.rs')
-})
-
-test('loadRust rejects an empty listing', async (t) => {
-  await t.assert.rejects(() => loadRust(join(fixtures, 'listing-empty/list.rs.txt')), /Empty Rust listing/)
-})
-
-test('loadRust rejects a listing with non-.rs lines', async (t) => {
-  await t.assert.rejects(
-    () => loadRust(join(fixtures, 'listing-nonrust/list.rs.txt')),
-    /must only contain \.rs files/,
-  )
-})
-
-test('loadRust rejects an entry path that escapes the listing dir', async (t) => {
-  await t.assert.rejects(
-    () => loadRust(join(fixtures, 'listing-escape/list.rs.txt')),
-    /Entry path escapes baseDir/,
-  )
-})
-
-test('loadRust rejects an absolute entry path in the listing', async (t) => {
-  await t.assert.rejects(
-    () => loadRust(join(fixtures, 'listing-absolute/list.rs.txt')),
-    /Entry path must not be absolute/,
-  )
 })
 
 // --- fifth review: two platform files with the same import, namespaces, cfg precision, order ---

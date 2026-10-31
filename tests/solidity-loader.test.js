@@ -11,14 +11,10 @@ import {
   discoverSolidityConfig,
   expandSolidityEntries,
   extractSolImports,
-  loadSolidity,
-  parseRemappings,
-  parseRemappingsFromToml,
-  readRemappingsFile,
   resolveSolImport,
 } from '../stasis/src/loaders/solidity.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { findRemappingsWithContext, foundryProject, foundryTomlRemappings } from '../stasis/src/loaders/foundry.js'
+import { findRemappingsWithContext, foundryProject, foundryTomlRemappings, parseRemappingLines } from '../stasis/src/loaders/foundry.js'
 import { readGitmodules, solidityOwnership } from '../stasis/src/loaders/solidity-ownership.js'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'solidity-bundle')
@@ -76,42 +72,35 @@ test('extractSolImports finds remapped imports', (t) => {
   t.assert.deepStrictEqual(extractSolImports(src), ['@openzeppelin/contracts/utils/Math.sol'])
 })
 
-test('parseRemappings handles one-per-line entries and refuses an invalid line, naming it', (t) => {
-  const out = parseRemappings('@a/=lib/a/\n  @b/=lib/b/\r\n\n')
-  t.assert.deepStrictEqual(out, [
-    { context: null, prefix: '@a/', target: 'lib/a/' },
-    { context: null, prefix: '@b/', target: 'lib/b/' },
+test('a remappings.txt is one remapping per line; an invalid line is refused, naming it', (t) => {
+  const parse = (text) => parseRemappingLines(text, { emptyPath: true })
+  t.assert.deepStrictEqual(parse('@a/=lib/a/\n  @b/=lib/b/\r\n\n'), [
+    { context: null, name: '@a/', path: 'lib/a/' },
+    { context: null, name: '@b/', path: 'lib/b/' },
   ])
-  t.assert.throws(() => parseRemappings('@a/=lib/a/\ngarbage line\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
+  t.assert.throws(() => parse('@a/=lib/a/\ngarbage line\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
   // Lines are trimmed as Rust trims them: a byte-order mark isn't whitespace, and stays.
-  t.assert.deepStrictEqual(parseRemappings('\uFEFFx/=a/\n'), [{ context: null, prefix: '\uFEFFx/', target: 'a/' }])
-  t.assert.throws(() => parseRemappings('\n=empty-prefix\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
-})
-
-test('parseRemappings reads a `context:` before the prefix', (t) => {
-  t.assert.deepStrictEqual(parseRemappings('lib/a/:ds-test/=lib/a/lib/ds-test/src/\n:@b/=lib/b/\n'), [
-    { context: 'lib/a/', prefix: 'ds-test/', target: 'lib/a/lib/ds-test/src/' },
-    { context: null, prefix: '@b/', target: 'lib/b/' },
+  t.assert.deepStrictEqual(parse('\uFEFFx/=a/\n'), [{ context: null, name: '\uFEFFx/', path: 'a/' }])
+  t.assert.throws(() => parse('\n=empty-prefix\n'), { message: 'remappings:2: invalid remapping, expected [context:]prefix=target' })
+  // A `context:` may come before the prefix.
+  t.assert.deepStrictEqual(parse('lib/a/:ds-test/=lib/a/lib/ds-test/src/\n:@b/=lib/b/\n'), [
+    { context: 'lib/a/', name: 'ds-test/', path: 'lib/a/lib/ds-test/src/' },
+    { context: null, name: '@b/', path: 'lib/b/' },
   ])
 })
 
-test('parseRemappingsFromToml extracts entries from a remappings array', (t) => {
-  const toml = readFileSync(join(fixtures, 'with-foundry-toml/foundry.toml'), 'utf8')
-  t.assert.deepStrictEqual(parseRemappingsFromToml(toml), [
-    { context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' },
+test('foundry.toml remappings come from [profile.default], overlaid by the selected profile', (t) => {
+  const fixture = readFileSync(join(fixtures, 'with-foundry-toml/foundry.toml'), 'utf8')
+  t.assert.deepStrictEqual(foundryTomlRemappings(fixture), [
+    { context: null, name: '@openzeppelin/', path: 'lib/openzeppelin-contracts/' },
   ])
-})
-
-test('parseRemappingsFromToml reads [profile.default], not the first `remappings` in the file', (t) => {
+  // Not the first `remappings` in the file.
   const toml = '[profile.ci]\nremappings = ["@x/=lib/ci/"]\n\n[profile.default]\nremappings = [\n  # comment\n  "@x/=lib/default/", # trailing\n]\n'
-  t.assert.deepStrictEqual(parseRemappingsFromToml(toml, { env: {} }), [{ context: null, prefix: '@x/', target: 'lib/default/' }])
-  // FOUNDRY_PROFILE overlays the selected profile's keys on the default's.
-  t.assert.deepStrictEqual(parseRemappingsFromToml(toml, { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/ci/' }])
-  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.default]\nremappings = ["@x/=lib/d/"]\n[profile.ci]\nsrc = "s"\n', { env: { FOUNDRY_PROFILE: 'ci' } }), [{ context: null, prefix: '@x/', target: 'lib/d/' }])
-})
-
-test('parseRemappingsFromToml returns [] when no remappings key present', (t) => {
-  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.default]\nsrc = "src"\n'), [])
+  t.assert.deepStrictEqual(foundryTomlRemappings(toml), [{ context: null, name: '@x/', path: 'lib/default/' }])
+  // The selected profile's keys overlay the default's.
+  t.assert.deepStrictEqual(foundryTomlRemappings(toml, 'ci'), [{ context: null, name: '@x/', path: 'lib/ci/' }])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[profile.default]\nremappings = ["@x/=lib/d/"]\n[profile.ci]\nsrc = "s"\n', 'ci'), [{ context: null, name: '@x/', path: 'lib/d/' }])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[profile.default]\nsrc = "src"\n'), [])
 })
 
 test('resolveSolImport resolves relative imports against the source file', (t) => {
@@ -238,7 +227,7 @@ test('collectSolidityFilesFromDisk walks imports starting from entries', async (
 
 test('collectSolidityFilesFromDisk follows remappings', async (t) => {
   const baseDir = join(fixtures, 'with-remappings-txt')
-  const remappings = await readRemappingsFile(join(baseDir, 'remappings.txt'))
+  const { remappings } = discoverSolidityConfig(baseDir)
   const sources = await collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], remappings)
   t.assert.deepStrictEqual(
     [...sources.keys()].toSorted(),
@@ -280,7 +269,7 @@ test('collectSolidityFilesFromDisk warns and skips when a resolved file is missi
   // A.sol imports @oz/X.sol; the remapping resolves to lib/oz/X.sol but
   // that file doesn't exist. The walk must warn and continue, not crash.
   const baseDir = join(fixtures, 'missing-on-disk')
-  const remappings = await readRemappingsFile(join(baseDir, 'remappings.txt'))
+  const { remappings } = discoverSolidityConfig(baseDir)
   const { result: sources, warnings } = await captureWarningsAsync(() =>
     collectSolidityFilesFromDisk(baseDir, ['src/A.sol'], remappings),
   )
@@ -315,58 +304,6 @@ test('buildSolidityTree warns and produces an empty resolution for a missing imp
   const { result: tree, warnings } = captureWarnings(() => buildSolidityTree(sources, { remappings: [] }))
   t.assert.equal(tree.resolutions.get('src/A.sol').size, 0)
   t.assert.ok(warnings.some((w) => w.includes('Missing import') && w.includes('@missing/Nope.sol')))
-})
-
-test('readRemappingsFile reads a remappings.txt', async (t) => {
-  const r = await readRemappingsFile(join(fixtures, 'with-remappings-txt/remappings.txt'))
-  t.assert.deepStrictEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
-})
-
-test('readRemappingsFile reads a foundry.toml', async (t) => {
-  const r = await readRemappingsFile(join(fixtures, 'with-foundry-toml/foundry.toml'), { env: {} })
-  t.assert.deepStrictEqual(r, [{ context: null, prefix: '@openzeppelin/', target: 'lib/openzeppelin-contracts/' }])
-})
-
-test('loadSolidity reads a .sol.txt listing with a remappings.txt header', async (t) => {
-  const tree = await loadSolidity(join(fixtures, 'listing-txt/list.sol.txt'))
-  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
-  // mapping file itself must NOT appear in sources
-  t.assert.ok(!tree.sources.has('remappings.txt'))
-  t.assert.equal(tree.resolutions.get('src/A.sol').get('@oz/X.sol'), 'lib/oz/X.sol')
-})
-
-test('loadSolidity reads a .sol.txt listing with a foundry.toml header', async (t) => {
-  const tree = await loadSolidity(join(fixtures, 'listing-toml/list.sol.txt'))
-  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib/oz/X.sol', 'src/A.sol'])
-  t.assert.ok(!tree.sources.has('foundry.toml'))
-})
-
-test('loadSolidity rejects an empty listing', async (t) => {
-  await t.assert.rejects(
-    () => loadSolidity(join(fixtures, 'listing-empty/list.sol.txt')),
-    /Empty Solidity listing/,
-  )
-})
-
-test('loadSolidity rejects a listing with non-.sol lines', async (t) => {
-  await t.assert.rejects(
-    () => loadSolidity(join(fixtures, 'listing-nonsol/list.sol.txt')),
-    /must only contain \.sol files/,
-  )
-})
-
-test('loadSolidity rejects an entry path that escapes the listing dir', async (t) => {
-  await t.assert.rejects(
-    () => loadSolidity(join(fixtures, 'listing-escape/list.sol.txt')),
-    /Entry path escapes baseDir/,
-  )
-})
-
-test('loadSolidity rejects an absolute entry path in the listing', async (t) => {
-  await t.assert.rejects(
-    () => loadSolidity(join(fixtures, 'listing-absolute/list.sol.txt')),
-    /Entry path must not be absolute/,
-  )
 })
 
 // --- Import scan ------------------------------------------------------------------------------
@@ -616,8 +553,8 @@ test('foundry.toml profiles: legacy [<name>] tables, case-insensitive names, quo
   // `[default]` is still read (forge warns), and `[profile.<name>]` wins key by key.
   t.assert.deepStrictEqual(foundryTomlRemappings('[default]\nremappings = ["@legacy/=lib/legacy/"]\n').map((r) => r.name), ['@legacy/'])
   t.assert.deepStrictEqual(foundryTomlRemappings('[default]\nremappings = ["@old/=a/"]\n[profile.default]\nremappings = ["@new/=b/"]\n').map((r) => r.name), ['@new/'])
-  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile.CI]\nremappings = ["@ci/=lib/ci/"]\n', { env: { FOUNDRY_PROFILE: 'ci' } }).map((r) => r.prefix), ['@ci/'])
-  t.assert.deepStrictEqual(parseRemappingsFromToml('[profile."ci.fast"]\nremappings = ["@f/=lib/\\u0066/"]\n', { env: { FOUNDRY_PROFILE: 'ci.fast' } }), [{ context: null, prefix: '@f/', target: 'lib/f/' }])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[profile.CI]\nremappings = ["@ci/=lib/ci/"]\n', 'ci').map((r) => r.name), ['@ci/'])
+  t.assert.deepStrictEqual(foundryTomlRemappings('[profile."ci.fast"]\nremappings = ["@f/=lib/\\u0066/"]\n', 'ci.fast'), [{ context: null, name: '@f/', path: 'lib/f/' }])
   // Standalone sections are not profiles; a top-level `remappings` is a mapping file's fallback.
   t.assert.deepStrictEqual(foundryTomlRemappings('[fmt]\nremappings = ["@x/=x/"]\n'), [])
   t.assert.deepStrictEqual(foundryTomlRemappings('remappings = ["@top/=lib/top/"]\n').map((r) => r.name), ['@top/'])
@@ -840,7 +777,7 @@ test('readGitmodules refuses a .gitmodules git refuses, rather than read past wh
 }))
 
 test('a remappings.txt taken as written (solc) may map a prefix to nothing', (t) => {
-  const remappings = parseRemappings('x/=\nctx:y/=\n')
+  const remappings = parseRemappingLines('x/=\nctx:y/=\n', { emptyPath: true }).map(({ context, name, path }) => ({ context, prefix: name, target: path }))
   t.assert.deepStrictEqual(remappings, [{ context: null, prefix: 'x/', target: '' }, { context: 'ctx', prefix: 'y/', target: '' }])
   t.assert.equal(resolveSolImport('x/A.sol', 'src/B.sol', { remappings }), 'A.sol')
 })

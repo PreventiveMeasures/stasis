@@ -1,2 +1,0 @@
-src/A.sol
-not-a-sol.txt

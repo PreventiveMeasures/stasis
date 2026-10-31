@@ -1,18 +1,4 @@
-// Path checks shared by the source-language loaders.
-
-import { isAbsolute, relative, resolve } from 'node:path'
-
-import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
-
-// Reject absolute and `..`-escaping paths in a `.<lang>.txt` listing so a malicious or sloppy
-// listing can't read files outside the listing's own directory.
-export function assertWithinBase(baseDir, candidate, label) {
-  if (isAbsolute(candidate)) throw new Error(`${label} must not be absolute: ${candidate}`)
-  const rel = toPosix(relative(baseDir, resolve(baseDir, candidate)))
-  if (relativeEscapes(rel)) {
-    throw new Error(`${label} escapes baseDir: ${candidate}`)
-  }
-}
+// Path arithmetic shared by the source-language loaders.
 
 // Apply `segments` on `fromFile`'s directory, resolving '.'/'..'. Returns a baseDir-relative POSIX
 // path ('' for baseDir itself), or null when traversal escapes the root.
