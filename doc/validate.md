@@ -77,9 +77,9 @@ and `incomplete` where nothing failed but some files weren't checked.
 ## Lockfiles
 
 The lockfile is the repository's at the commit, the one that installs the
-bundle's directory, found as [`github-bundle`](github-bundle.md) finds each
-package manager's root. For npm packages it is the one package manager's that
-installs it:
+bundle's directory, found by the very rules [`github-bundle`](github-bundle.md)
+builds by (each package manager's root), of the directories at and above it.
+For npm packages it is the one package manager's that installs it:
 
 - **pnpm**: the workspace root's `pnpm-lock.yaml` (the nearest directory at or
   above it holding `pnpm-workspace.yaml`), whatever lockfile is nearer; without
@@ -91,9 +91,11 @@ installs it:
 - **yarn 1**: the workspace root's `yarn.lock`, where the package is the root
   or one of its workspaces; else the nearest.
 
-For crates it is the nearest `Cargo.lock`. Lockfiles of two package managers
-installing it, a `bun.lock`, or none is refused: give one with `--lockfile`.
-One that can't be read (yarn 2's, say) is refused too.
+For crates it is the `Cargo.lock` beside the workspace root's `Cargo.toml` (the
+nearest at or above it with a `[workspace]`), else beside the directory's own,
+as cargo finds it: one further up is another project's. Lockfiles of two
+package managers installing it, a `bun.lock`, or none is refused: give one with
+`--lockfile`. One that can't be read (yarn 2's, say) is refused too.
 
 Each npm version or crate the bundle holds must be one its lockfile locks:
 
@@ -102,8 +104,8 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
   version (`its registry's tarball is not the one the lockfile locks`), as does
   a version the lockfile locks with two. One locked with no sha512 (a yarn
   entry with a sha1 alone) is left unverified.
-- **From git** (a `type: git` resolution, a git host's tarball, a `git+`
-  source) alone: left unverified, as npm may build one as it installs it, and
+- **From git** (a `type: git` resolution, a git host's tarball, GitHub's
+  tarball of a commit, a `git+` source) alone: left unverified, as npm may build one as it installs it, and
   the registry's release of its name and version is another package. A
   module's recorded commit is no sign of one, as a registry package's
   `gitHead` is recorded too.
@@ -147,7 +149,7 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
-| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(hash, path)` its text. `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
+| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read; or a promise of either, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts. |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |

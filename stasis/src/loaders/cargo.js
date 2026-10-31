@@ -165,19 +165,19 @@ const satisfies = (version, req) => {
 // The Cargo.lock governing `baseDir`: beside the workspace root's Cargo.toml -- the nearest manifest
 // at or above `baseDir` with a `[workspace]` table, as cargo finds it -- else beside `baseDir`'s
 // own. A lock further up belongs to some other project: passing `--locked` for it would make
-// cargo refuse to create the one it needs.
-export function findCargoLock(baseDir) {
+// cargo refuse to create the one it needs. Read of `host`, the disk's unless given.
+export function findCargoLock(baseDir, host = diskHost) {
   let root = baseDir
   for (const dir of ancestors(baseDir)) {
     const file = join(dir, 'Cargo.toml')
-    const text = readText(diskHost, file)
+    const text = readText(host, file)
     if (text !== null && 'workspace' in readToml(text, file)) {
       root = dir
       break
     }
   }
   const candidate = join(root, 'Cargo.lock')
-  return existsSync(candidate) ? candidate : null
+  return isFile(candidate, host) ? candidate : null
 }
 
 // --- cfg predicates ---------------------------------------------------------------------
