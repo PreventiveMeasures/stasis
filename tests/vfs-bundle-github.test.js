@@ -13,7 +13,8 @@ import { pack } from '@preventive/archive/tar.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
-import { auditTokens, githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
+import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
+import { auditTokens } from '../stasis/src/cmd/tokens.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { HEAD, HIDE_MINIMATCH, fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
 
@@ -1313,7 +1314,7 @@ test("stasis github-bundle gives npm ~/.audit/config.json's npmToken while it bu
   t.assert.deepStrictEqual(await seen(), { during: [[undefined, '', 'npm-env']], after: [undefined, '', 'npm-env'] }, "the environment's first")
 })
 
-test("stasis github-bundle gives npm the token ~/.npmrc gives npm's registry, where neither the environment nor ~/.audit/config.json gives one", async (t) => {
+test("stasis github-bundle gives npm, as a fallback where the environment gives none, ~/.audit/config.json's npmToken, else the token ~/.npmrc gives npm's registry, as bundle --deptree does", async (t) => {
   const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
   const saved = NPM_TOKEN_VARS.map((name) => [name, process.env[name]])
   for (const name of NPM_TOKEN_VARS) delete process.env[name]
@@ -1350,6 +1351,12 @@ test("stasis github-bundle gives npm the token ~/.npmrc gives npm's registry, wh
   t.after(() => rm(other, { recursive: true, force: true }))
   await writeFile(join(other, '.npmrc'), `//npm.pkg.github.com/:_authToken=${token}\n//registry.npmjs.org/:_authToken=\${NPM_TOKEN}\n`)
   t.assert.deepStrictEqual(await seen(other), { during: [[undefined, undefined, undefined]], after: [undefined, undefined, undefined] }, "none but npm's registry's, as a token")
+  const notUtf8 = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
+  t.after(() => rm(notUtf8, { recursive: true, force: true }))
+  await writeFile(join(notUtf8, '.npmrc'), Buffer.concat([Buffer.from([0xff]), Buffer.from(`\n//registry.npmjs.org/:_authToken=${token}\n`)]))
+  const client = fakeClient(files)
+  await t.assert.rejects(githubBundleCommand({ cwd: notUtf8, home: notUtf8, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' }), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
+  t.assert.deepStrictEqual(client.calls, [], 'an ~/.npmrc that is not valid UTF-8 is refused before anything is fetched')
   process.env.NPM_TOKEN = 'npm-env'
   t.assert.deepStrictEqual(await seen(home), { during: [[undefined, undefined, 'npm-env']], after: [undefined, undefined, 'npm-env'] }, "the environment's first")
 })

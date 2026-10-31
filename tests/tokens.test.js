@@ -3,18 +3,26 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { NPM_TOKEN_VARS, npmrcToken, withNpmToken } from '../stasis/src/cmd/npm-token.js'
+import { NPM_TOKEN_VARS, npmrcToken, withNpmToken } from '../stasis/src/cmd/tokens.js'
 
 const TOKEN = `npm_${'aB3'.repeat(12)}`
 const OTHER = `npm_${'Zy9'.repeat(12)}`
 
-// A home of its own, removed after the test, whose ~/.npmrc is `npmrc` where given.
-async function npmrcHome(t, npmrc) {
-  const home = await mkdtemp(join(tmpdir(), 'stasis-npm-token-'))
+// A home of its own, removed after the test, whose ~/.npmrc is `npmrc`, and ~/.audit/config.json
+// `audit`, each where given.
+async function npmrcHome(t, npmrc, audit) {
+  const home = await mkdtemp(join(tmpdir(), 'stasis-tokens-'))
   t.after(() => rm(home, { recursive: true, force: true }))
   if (npmrc !== undefined) await writeFile(join(home, '.npmrc'), npmrc)
+  if (audit !== undefined) {
+    await mkdir(join(home, '.audit'))
+    await writeFile(join(home, '.audit', 'config.json'), JSON.stringify(audit))
+  }
   return home
 }
+
+// An .npmrc giving npm's registry TOKEN after a line that is not valid UTF-8.
+const NOT_UTF8 = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from(`\n//registry.npmjs.org/:_authToken=${TOKEN}\n`)])
 
 // process.env without any of NPM_TOKEN_VARS for the test, as it was after it.
 function withoutNpmTokenVars(t) {
@@ -69,10 +77,19 @@ test('npmrcToken gives none, and says nothing, of an .npmrc that is missing or u
   t.assert.equal(npmrcToken(join(home, 'nowhere')), undefined, 'no home')
 })
 
-test('withNpmToken gives the npm client the token process.env gives it none of: .audit\'s, else ~/.npmrc\'s', async (t) => {
+test('npmrcToken refuses an .npmrc that is not valid UTF-8', async (t) => {
+  const home = await npmrcHome(t, NOT_UTF8)
+  t.assert.throws(() => npmrcToken(home), { message: `${join(home, '.npmrc')} is not valid UTF-8` })
+  t.assert.equal(npmrcToken(await npmrcHome(t, `# café ✓\n//registry.npmjs.org/:_authToken=${TOKEN}\n`)), TOKEN, 'UTF-8 beyond ASCII')
+})
+
+test('withNpmToken gives the npm client, as a fallback where process.env gives it none, .audit\'s token, else ~/.npmrc\'s', async (t) => {
   withoutNpmTokenVars(t)
   const home = await npmrcHome(t, `//registry.npmjs.org/:_authToken=${TOKEN}\n`)
+  const audited = await npmrcHome(t, `//registry.npmjs.org/:_authToken=${TOKEN}\n`, { npmToken: 'npm-audit-home' })
   const empty = await npmrcHome(t)
+  const notUtf8 = await npmrcHome(t, NOT_UTF8)
+  const notUtf8Audited = await npmrcHome(t, NOT_UTF8, { npmToken: 'npm-audit-home' })
   // The npm token variables as `fn` sees them, what it gives, and the variables after.
   const seen = async (options) => {
     let during
@@ -83,8 +100,14 @@ test('withNpmToken gives the npm client the token process.env gives it none of: 
     return { given, during, after: NPM_TOKEN_VARS.map((name) => process.env[name]) }
   }
   t.assert.deepStrictEqual(await seen({ home }), { given: 'given', during: [undefined, TOKEN, undefined], after: [undefined, undefined, undefined] })
-  t.assert.deepStrictEqual(await seen({ home, audit: 'npm-audit' }), { given: 'given', during: [undefined, 'npm-audit', undefined], after: [undefined, undefined, undefined] }, ".audit's first")
+  t.assert.deepStrictEqual(await seen({ home: audited }), { given: 'given', during: [undefined, 'npm-audit-home', undefined], after: [undefined, undefined, undefined] }, ".audit's first")
+  t.assert.deepStrictEqual(await seen({ home: audited, audit: { npmToken: 'npm-audit' } }), { given: 'given', during: [undefined, 'npm-audit', undefined], after: [undefined, undefined, undefined] }, '.audit as read already')
+  t.assert.deepStrictEqual(await seen({ home, audit: {} }), { given: 'given', during: [undefined, TOKEN, undefined], after: [undefined, undefined, undefined] }, '.audit read already, without one')
   t.assert.deepStrictEqual(await seen({ home: empty }), { given: 'given', during: [undefined, undefined, undefined], after: [undefined, undefined, undefined] }, 'none without either')
+  let ran = false
+  await t.assert.rejects(withNpmToken({ home: notUtf8 }, () => (ran = true)), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
+  t.assert.equal(ran, false, 'nothing runs where ~/.npmrc is refused')
+  t.assert.equal((await seen({ home: notUtf8Audited })).during[1], 'npm-audit-home', '~/.npmrc not read where .audit gives one')
   const failing = withNpmToken({ home }, async () => {
     t.assert.equal(process.env.STASIS_NPM_TOKEN, TOKEN)
     throw new Error('fails')
@@ -95,5 +118,6 @@ test('withNpmToken gives the npm client the token process.env gives it none of: 
   process.env.STASIS_NPM_TOKEN = ''
   t.assert.deepStrictEqual(await seen({ home }), { given: 'given', during: [undefined, TOKEN, undefined], after: [undefined, '', undefined] }, 'set but empty')
   process.env.NPM_TOKEN = 'npm-env'
-  t.assert.deepStrictEqual(await seen({ home, audit: 'npm-audit' }), { given: 'given', during: [undefined, '', 'npm-env'], after: [undefined, '', 'npm-env'] }, "the environment's first")
+  t.assert.deepStrictEqual(await seen({ home: audited }), { given: 'given', during: [undefined, '', 'npm-env'], after: [undefined, '', 'npm-env'] }, "the environment's first")
+  t.assert.deepStrictEqual((await seen({ home: notUtf8 })).during, [undefined, '', 'npm-env'], '~/.npmrc not read where the environment gives one')
 })

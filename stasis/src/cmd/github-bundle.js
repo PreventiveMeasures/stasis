@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
-import { readJson } from '@exodus/stasis-core/bundle-util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed } from './bundle.js'
-import { withNpmToken } from './npm-token.js'
+import { auditTokens, withNpmToken } from './tokens.js'
 import { bundledSummary, unpackedSummary, writeBundle, writeFile } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
@@ -29,30 +27,18 @@ export function githubBundleFile({ github, directory, commit }) {
   return `${repo}.${dir}${tail}`
 }
 
-// A token as @preventive/upstream takes one, printable ASCII and no space, around which whitespace
-// is dropped; anything else is none, so that it never reaches an error message.
-const asToken = (value) => (typeof value === 'string' && /^[!-~]+$/u.test(value.trim()) ? value.trim() : undefined)
-
-// The GitHub `token` and `npmToken` of `<home>/.audit/config.json` (the user's home by default),
-// each where the file has it as a token. The file is another tool's, read for compatibility: one
-// that is missing, unreadable, not JSON or of another shape gives neither, and nothing is said.
-export function auditTokens(home) {
-  const config = readJson(join(home ?? homedir(), '.audit', 'config.json'))
-  return config === null ? {} : { token: asToken(config.token), npmToken: asToken(config.npmToken) }
-}
-
 // Run `stasis github-bundle`: the bundle of a GitHub repo at a commit, or the one a tag names (the
 // default branch's head without either), as buildGitHubBundle builds it from `options`, written
 // brotli-compressed to `output` (githubBundleFile's name for it by default, `-` for stdout), and a
 // JS bundle's lockfile to `lockfile` where given; then it says how many packages it unpacked, and
 // what it bundled.
 // The tree is fetched with GITHUB_TOKEN from `env` where it is set, else with auditTokens(home)'s
-// `token`; nothing else of `env` is read. Where process.env gives the npm client no token, it is
-// given auditTokens(home)'s `npmToken`, else the one `<home>/.npmrc` gives npm's registry, while the
-// bundle is built (npm-token.js's withNpmToken).
+// `token` (tokens.js); nothing else of `env` is read. Where process.env gives the npm client no
+// token, it is given auditTokens(home)'s `npmToken`, else the one `<home>/.npmrc` gives npm's
+// registry, while the bundle is built (tokens.js's withNpmToken).
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, brotliQuality, client, ...options } = {}) {
   const audit = auditTokens(home)
-  const built = await withNpmToken({ home, audit: audit.npmToken }, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: env.GITHUB_TOKEN || audit.token || null }) }))
+  const built = await withNpmToken({ home, audit }, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: env.GITHUB_TOKEN || audit.token || null }) }))
   const dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory: options.directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
   if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())
   const from = `${options.github}@${built.bundle.repo.commit}${options.directory ? `/${options.directory}` : ''}`

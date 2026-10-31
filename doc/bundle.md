@@ -107,10 +107,11 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
   dependency on GitHub is fetched with `GITHUB_TOKEN` where it is set.
 - A private (scoped) npm package is fetched with the first of
   `PREVENTIVE_MEASURES_NPM_TOKEN`, `STASIS_NPM_TOKEN` and `NPM_TOKEN` that is
-  set, else with the token `~/.npmrc` gives npm's own registry on a line that
-  is exactly `//registry.npmjs.org/:_authToken=npm_…` (the last, where there
-  are several). Another registry's token, or one written any other way
-  (`${NPM_TOKEN}`, quoted, with spaces), is not read.
+  set. Where none is, it falls back to the token `~/.npmrc` gives npm's own
+  registry on a line that is exactly `//registry.npmjs.org/:_authToken=npm_…`
+  (the last, where there are several). Another registry's token, or one
+  written any other way (`${NPM_TOKEN}`, quoted, with spaces), is not read; an
+  `~/.npmrc` that is not valid UTF-8 is refused.
 - The project's `stasis.config.json` is taken as without the flag, its
   `entries` and `extra`; and as `github-bundle` takes it, its
   `installDevDependencies` lays out the tree without devDependencies (see
