@@ -499,7 +499,8 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     // `a < b > (c)` a Flow parser reads as a call: --flow strips the one esbuild can't parse and
     // leaves the other as written, as `stasis bundle --flow` reads them.
     writeFileSync(join(tmp, 'package.json'), '{ "name": "flow-app", "version": "0.0.0", "private": true, "type": "module" }')
-    writeFileSync(join(tmp, 'index.js'), "import { add } from './math.js'\nimport { tricky } from './plain.js'\nconsole.log(add(1, 2), tricky)\n")
+    // One string logged: Node colours a logged number or boolean under FORCE_COLOR (as CI sets it).
+    writeFileSync(join(tmp, 'index.js'), "import { add } from './math.js'\nimport { tricky } from './plain.js'\nconsole.log(`${add(1, 2)} ${tricky}`)\n")
     writeFileSync(join(tmp, 'math.js'), [
       '// @flow',
       "import { type Unit } from './types.js'",
