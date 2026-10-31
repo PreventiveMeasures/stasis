@@ -329,6 +329,21 @@ test('validateBundle: an npm copy held to the version npm\'s lockfile installs a
   t.assert.deepStrictEqual(await told('node_modules/ms', lockedBy([{ path: 'package-lock.json', text: workspace, from: 'repository', root: 'web' }])), misplaced('node_modules/ms'))
   t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', lockedBy([{ path: '/tmp/package-lock.json', text: workspace, from: 'local', root: 'web' }])), valid, 'on disk, its importer named for the bundle\'s directory')
   t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', lockedBy([{ path: '/tmp/package-lock.json', text: npmLock(''), from: 'local', root: 'web' }])), valid, 'on disk with no such importer: of its own directory')
+
+  // A location npm links to a directory of the project: held to that directory's files, no version there.
+  const linked = `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+    '': { name: 'app', version: '1.0.0', dependencies: { lib: 'file:lib' } },
+    lib: { version: '2.0.0' },
+    'node_modules/lib': { resolved: 'lib', link: true },
+  } }, null, 2)}\n`
+  const tree = async (dir) => (dir === 'lib' ? new Map([['index.js', bytes('lib\n')]]) : new Map())
+  const local = async (name) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([['node_modules/lib', { name, version: '2.0.0', files: { 'index.js': 'lib\n' } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: upstream(), locked: lockedBy([{ path: 'package-lock.json', text: linked, from: 'repository', tree }]) })
+    return [report.status, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  t.assert.deepStrictEqual(await local('lib'), valid, 'its directory\'s files')
+  t.assert.deepStrictEqual(await local('other'), ['invalid', [['invalid', 'misplaced', 'node_modules/lib']]], 'another name there, which the lockfile has no alias of')
 })
 
 test('validateBundle: a patch the bundle holds is taken as the repository has it alone: refused where it differs, its files as patched unverified where that is not told', async (t) => {

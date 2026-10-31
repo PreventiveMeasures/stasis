@@ -182,7 +182,9 @@ has it:
 - **npm's lockfile** installs it there: the version `package-lock.json` (or
   `npm-shrinkwrap.json`) locks at its location, the bundle's directory's path
   from the lockfile's added in front. One given on disk takes that path where
-  the bundle's directory is one of its workspaces, else its own directory.
+  the bundle's directory is one of its workspaces, else its own directory. A
+  location npm links to a directory of the project (a `file:` one) has no
+  version there: it is held to that directory's files (above).
 
 A copy installed where its path or its lockfile names another fails
 (`misplaced`), its files counted unverified, wherever its other copies are. A

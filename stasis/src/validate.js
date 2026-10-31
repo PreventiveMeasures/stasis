@@ -807,14 +807,17 @@ function readLockfile(name, read) {
     return { entries }
   }
   let packages
-  // npm's, by each location it installs a version at, from its directory: `<name>@<version>`.
+  // npm's, by each location it installs a version at, from its directory: `<name>@<version>`; and
+  // the locations it links to a directory, held to that directory (`locals`) in place of a version.
   let locations
+  let links
   let importers
   if (name === 'yarn.lock') packages = new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages))
   else {
     const lockfile = parseNpmLockfile(text, { checkVersions: false })
     locations = new Map(Object.entries(lockfile.packages).filter(([, pkg]) => pkg.version !== undefined).map(([location, pkg]) => [location, `${pkg.name}@${pkg.version}`]))
     importers = new Set(Object.keys(lockfile.importers))
+    links = new Set(Object.keys(lockfile.links))
     // npm links a directory it installs, by its location, to the directory: the package there.
     for (const [location, target] of Object.entries(lockfile.links)) {
       if (Object.hasOwn(lockfile.importers, target)) local(location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length), target)
@@ -832,7 +835,7 @@ function readLockfile(name, read) {
     if (dir !== undefined) local(pkg, dir)
     else if (version !== undefined) add(pkg, version, lockedFrom(fromGit(resolution), resolution?.type === 'tarball' && registryTarball(resolution.tarball, pkg, version), sha512Of(resolution?.integrity)))
   }
-  return { entries, locals, aliases, ...(locations && { locations, importers }) }
+  return { entries, locals, aliases, ...(locations && { locations, links, importers }) }
 }
 
 // What `lockfiles` lock, as validateBundle takes it (`locked`), one of each ecosystem: each `{ path,
@@ -904,10 +907,11 @@ export function lockedBy(lockfiles) {
       return null
     },
     // The version an npm lockfile installs at the bundle's `dir` (`<name>@<version>`), null for none,
-    // undefined where its lockfile locks no location (pnpm's, yarn's).
+    // undefined where its lockfile locks no location (pnpm's, yarn's) or links it to a directory.
     installed(dir) {
       if (npm?.locations === undefined) return undefined
-      return npm.locations.get(npm.root ? `${npm.root}/${dir}` : dir) ?? null
+      const location = npm.root ? `${npm.root}/${dir}` : dir
+      return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
     // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`; undefined for none read.
     aliased: (as, named) => npm?.aliases.has(`${as}\0${named}`),
