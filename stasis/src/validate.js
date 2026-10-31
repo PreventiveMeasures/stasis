@@ -41,6 +41,7 @@ import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
 import { parseFileWithKind } from './parse.js'
+import { matchesGlob } from './vfs-bundle/glob.js'
 
 // The files told failing, and the packages told, past which they are counted.
 export const MAX_TOLD = 500
@@ -712,13 +713,31 @@ export function lockedBy(lockfiles) {
   }
 }
 
+// The globs a package.json declares its workspaces by, as npm and yarn 1 read them: a sequence, or
+// yarn's `{ packages }` of one; none where it declares none.
+function workspaceGlobs(json) {
+  const declared = json?.workspaces
+  const globs = Array.isArray(declared?.packages) ? declared.packages : declared
+  return Array.isArray(globs) ? globs.filter((glob) => typeof glob === 'string') : []
+}
+
+// Whether `globs` take the directory `rel` (from theirs) for a workspace: one does, and no negated one.
+function takes(globs, rel) {
+  const clean = (glob) => glob.replace(/^(?:\.\/)+/u, '').replace(/\/+$/u, '')
+  const negated = globs.filter((glob) => glob.startsWith('!')).map((glob) => clean(glob.slice(1)))
+  return globs.some((glob) => !glob.startsWith('!') && matchesGlob(rel, clean(glob))) && !negated.some((glob) => matchesGlob(rel, glob))
+}
+
 // The lockfiles that install `directory` of a repository, for the packages of `ecosystems`, as
-// lockedBy takes them (but `from` and `read`): an npm package's the nearest of pnpm's (the
-// workspace root's, the nearest directory at or above it holding pnpm-workspace.yaml, whatever
-// pnpm-lock.yaml is nearer, else the nearest, as vfs-bundle's tree finds the root), npm's
-// (npm-shrinkwrap.json, else package-lock.json) and yarn 1's (yarn.lock); a crate's the nearest
-// Cargo.lock. Refused (ValidateError) where none is, or two are as near. `read(path)` reads a file of
-// the repository, `list(dir)` the names of the files a directory has.
+// lockedBy takes them (but `from` and `read`), as vfs-bundle's tree finds each package manager's
+// root: an npm package's of the one package manager that installs it, of pnpm (the workspace
+// root's, the nearest directory at or above it holding pnpm-workspace.yaml, whatever pnpm-lock.yaml
+// is nearer, else the nearest), npm (the root whose package.json's workspaces take the package it is
+// in, whatever lockfile is nearer, else the nearest package-lock.json beside a package.json; its
+// npm-shrinkwrap.json before it) and yarn 1 (the workspace root, else the nearest yarn.lock); a
+// crate's the nearest Cargo.lock. Refused (ValidateError) where none is, or more than one package
+// manager's is. `read(path)` reads a file of the repository, `list(dir)` the names of the files a
+// directory has.
 export async function repositoryLockfiles({ directory = '', ecosystems, list, read }) {
   const dirs = []
   for (let dir = directory; ; dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '') {
@@ -727,33 +746,66 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
   }
   const listed = await Promise.all(dirs.map(list))
   const nearest = (name) => listed.findIndex((names) => names.includes(name))
+  const at = (index, name) => (dirs[index] ? `${dirs[index]}/${name}` : name)
+  // Each directory's package.json, undefined for none, null for one unreadable: read where npm's
+  // packages are to be locked, a few small files, as both npm and yarn look above for a workspace root.
+  const jsons = ecosystems.has('npm')
+    ? await Promise.all(dirs.map((_, index) => (listed[index].includes('package.json') ? Promise.resolve(read(at(index, 'package.json'))).then((text) => JSON.parse(text)).catch(() => null) : undefined)))
+    : []
+  // The directory at `below`, from the one at `above`.
+  const from = (above, below) => (dirs[above] ? dirs[below].slice(dirs[above].length + 1) : dirs[below])
+  // A package.json naming a package, or unreadable: one with no name is a `type` marker.
+  const holdsPackage = (json) => json === null || json?.name !== undefined
+
+  // npm's root, as npmRoot finds it: the first directory above the package's whose workspaces take it.
+  const npmRoot = () => {
+    for (let index = 0; index < dirs.length; index++) {
+      if (jsons[index] === undefined) continue
+      const root = jsons.findIndex((json, above) => above > index && takes(workspaceGlobs(json), from(above, index)))
+      if (root !== -1) return root
+      if (holdsPackage(jsons[index])) break
+    }
+    return listed.findIndex((names) => names.includes('package.json') && (names.includes('package-lock.json') || names.includes('npm-shrinkwrap.json')))
+  }
+  // yarn 1's, as yarn1Root finds it: the nearest root declaring workspaces, where the package (the
+  // nearest directory below it with a package.json that is a workspace of it or names a package) is
+  // it or one of them; else the nearest yarn.lock.
+  const yarnRoot = () => {
+    const root = jsons.findIndex((json) => Boolean(Array.isArray(json?.workspaces) ? json.workspaces : json?.workspaces?.packages))
+    if (root !== -1) {
+      const globs = workspaceGlobs(jsons[root])
+      const first = jsons.slice(0, root).findIndex((json, index) => json !== undefined && (takes(globs, from(root, index)) || holdsPackage(json)))
+      if (first === -1 || takes(globs, from(root, first))) return root
+    }
+    return nearest('yarn.lock')
+  }
+
   const where = directory || 'the repository\'s root'
   const chosen = []
   if (ecosystems.has('npm')) {
-    const root = nearest('pnpm-workspace.yaml')
-    const pnpm = root === -1 ? nearest('pnpm-lock.yaml') : listed[root].includes('pnpm-lock.yaml') ? root : -1
-    const npm = nearest('npm-shrinkwrap.json') === -1 ? ['package-lock.json', nearest('package-lock.json')] : ['npm-shrinkwrap.json', nearest('npm-shrinkwrap.json')]
-    const found = [['pnpm-lock.yaml', pnpm], npm, ['yarn.lock', nearest('yarn.lock')]].filter(([, at]) => at !== -1)
-    const at = Math.min(...found.map(([, index]) => index))
-    const nearer = found.filter(([, index]) => index === at)
+    const workspace = nearest('pnpm-workspace.yaml')
+    const pnpm = workspace === -1 ? nearest('pnpm-lock.yaml') : workspace
+    const npm = npmRoot()
+    const yarn = yarnRoot()
+    // Each package manager's lockfile at its root, where it holds one.
+    const found = [[pnpm, 'pnpm-lock.yaml'], [npm, 'npm-shrinkwrap.json'], [npm, 'package-lock.json'], [yarn, 'yarn.lock']]
+      .filter(([index, name]) => index !== -1 && listed[index].includes(name))
+      .filter(([index, name], _, all) => name !== 'package-lock.json' || !all.some((other) => other[0] === index && other[1] === 'npm-shrinkwrap.json'))
     if (found.length === 0) {
       const bun = ['bun.lock', 'bun.lockb'].find((name) => nearest(name) !== -1)
       throw bun === undefined
         ? new ValidateError('no-lockfile', `no lockfile at or above ${where} locks its npm packages (pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock): give --lockfile=path, or --no-lockfile to hold them to their registry alone`)
         : new ValidateError('lockfile-unsupported', `${bun}, which validate doesn't read, locks its npm packages: give --lockfile=path, or --no-lockfile to hold them to their registry alone`)
     }
-    if (nearer.length > 1) throw new ValidateError('lockfile-ambiguous', `${nearer.map(([name]) => name).join(' and ')} both lock ${where}'s npm packages: give --lockfile=path`)
-    chosen.push([dirs[at], nearer[0][0]])
+    if (found.length > 1) throw new ValidateError('lockfile-ambiguous', `more than one lockfile installs ${where}: ${found.map(([index, name]) => at(index, name)).join(', ')}; give --lockfile=path`)
+    chosen.push(at(...found[0]))
   }
   if (ecosystems.has('cargo')) {
-    const at = nearest('Cargo.lock')
-    if (at === -1) throw new ValidateError('no-lockfile', `no Cargo.lock at or above ${where} locks its crates: give --lockfile=path, or --no-lockfile to hold them to crates.io alone`)
-    chosen.push([dirs[at], 'Cargo.lock'])
+    const index = nearest('Cargo.lock')
+    if (index === -1) throw new ValidateError('no-lockfile', `no Cargo.lock at or above ${where} locks its crates: give --lockfile=path, or --no-lockfile to hold them to crates.io alone`)
+    chosen.push(at(index, 'Cargo.lock'))
   }
-  return Promise.all(chosen.map(async ([dir, name]) => {
-    const path = dir ? `${dir}/${name}` : name
-    return { path, text: await read(path) }
-  }))
+  return Promise.all(chosen.map(async (path) => ({ path, text: await read(path) })))
 }
 
 // A bundle file validated (validateBundle): its own code against the repository its `repo` names (or

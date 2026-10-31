@@ -77,13 +77,23 @@ and `incomplete` where nothing failed but some files weren't checked.
 ## Lockfiles
 
 The lockfile is the repository's at the commit, the one that installs the
-bundle's directory: for npm packages, the nearest at or above it of
-`pnpm-lock.yaml` (the workspace root's, the nearest directory holding
-`pnpm-workspace.yaml`, whatever lockfile is nearer; else the nearest), npm's
-(`npm-shrinkwrap.json`, else `package-lock.json`) and yarn 1's `yarn.lock`; for
-crates, the nearest `Cargo.lock`. Two as near, a `bun.lock`, or none is refused:
-give one with `--lockfile`. One that can't be read (yarn 2's, say) is refused
-too.
+bundle's directory, found as [`github-bundle`](github-bundle.md) finds each
+package manager's root. For npm packages it is the one package manager's that
+installs it:
+
+- **pnpm**: the workspace root's `pnpm-lock.yaml` (the nearest directory at or
+  above it holding `pnpm-workspace.yaml`), whatever lockfile is nearer; without
+  a workspace, the nearest.
+- **npm**: the `package-lock.json` (or `npm-shrinkwrap.json`, which npm takes
+  before it in the same directory) of the root whose `package.json`'s
+  `workspaces` take the package, whatever lockfile is nearer; else the nearest
+  beside a `package.json`.
+- **yarn 1**: the workspace root's `yarn.lock`, where the package is the root
+  or one of its workspaces; else the nearest.
+
+For crates it is the nearest `Cargo.lock`. Lockfiles of two package managers
+installing it, a `bun.lock`, or none is refused: give one with `--lockfile`.
+One that can't be read (yarn 2's, say) is refused too.
 
 Each npm version or crate the bundle holds must be one its lockfile locks:
 

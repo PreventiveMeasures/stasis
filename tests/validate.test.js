@@ -386,21 +386,42 @@ test('validate: the repository its bundle names, at its commit and directory, re
   t.assert.match(lines.err.join('\n'), /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web\nDependencies held to pnpm-lock\.yaml$/u)
 }))
 
-test('repositoryLockfiles: an npm package\'s the nearest of pnpm\'s (the workspace root\'s, where pnpm-workspace.yaml is, whatever is nearer), npm\'s and yarn\'s; a crate\'s the nearest Cargo.lock; refused where none is, or two are as near', async (t) => {
-  const listings = { 'web/app': ['pnpm-lock.yaml', 'package.json'], web: ['package.json'], '': ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'Cargo.lock'] }
-  const find = (...ecosystems) => repositoryLockfiles({ directory: 'web/app', ecosystems: new Set(ecosystems), list: async (dir) => listings[dir], read: async (path) => `text of ${path}` })
-  t.assert.deepStrictEqual(await find('npm', 'cargo'), [{ path: 'pnpm-lock.yaml', text: 'text of pnpm-lock.yaml' }, { path: 'Cargo.lock', text: 'text of Cargo.lock' }], 'the root\'s, not web/app\'s')
-  listings[''] = ['package.json', 'yarn.lock']
-  t.assert.deepStrictEqual((await find('npm')).map((one) => one.path), ['web/app/pnpm-lock.yaml'], 'no workspace: the nearest')
-  listings['web/app'] = ['package.json']
-  listings.web = ['package-lock.json']
-  t.assert.deepStrictEqual((await find('npm')).map((one) => one.path), ['web/package-lock.json'], 'npm\'s, nearer than yarn\'s')
-  listings.web = ['package-lock.json', 'yarn.lock']
-  await t.assert.rejects(find('npm'), { name: 'ValidateError', code: 'lockfile-ambiguous' })
-  listings.web = []
-  listings[''] = ['bun.lock']
+test('repositoryLockfiles: as each package manager finds its root, pnpm\'s (its workspace\'s), npm\'s and yarn\'s (the root whose workspaces take the package), else the nearest; a crate\'s the nearest Cargo.lock; refused where none is, or two package managers\' are', async (t) => {
+  // The repository's files, `null` for one whose text doesn't matter.
+  let files
+  const list = async (dir) => Object.keys(files).filter((path) => (dir ? path.startsWith(`${dir}/`) : true) && !path.slice(dir ? dir.length + 1 : 0).includes('/')).map((path) => path.split('/').at(-1))
+  const read = async (path) => files[path] ?? `text of ${path}`
+  const find = async (...ecosystems) => (await repositoryLockfiles({ directory: 'web/app', ecosystems: new Set(ecosystems), list, read })).map((one) => one.path)
+  const named = (name, more = {}) => JSON.stringify({ name, ...more })
+
+  files = { 'web/app/package.json': named('app'), 'web/app/pnpm-lock.yaml': null, 'package.json': named('root'), 'pnpm-workspace.yaml': null, 'pnpm-lock.yaml': null, 'Cargo.lock': null }
+  t.assert.deepStrictEqual(await find('npm', 'cargo'), ['pnpm-lock.yaml', 'Cargo.lock'], 'pnpm\'s workspace root\'s, not web/app\'s')
+  t.assert.deepStrictEqual((await repositoryLockfiles({ directory: 'web/app', ecosystems: new Set(['npm']), list, read }))[0].text, 'text of pnpm-lock.yaml')
+  files = { 'web/app/package.json': named('app'), 'web/app/pnpm-lock.yaml': null, 'package.json': named('root') }
+  t.assert.deepStrictEqual(await find('npm'), ['web/app/pnpm-lock.yaml'], 'no workspace: the nearest')
+
+  // npm's workspace root's, whatever package-lock.json is nearer; else the nearest beside a package.json.
+  files = { 'web/app/package.json': named('app'), 'web/app/package-lock.json': null, 'package.json': named('root', { workspaces: ['web/*'] }), 'package-lock.json': null }
+  t.assert.deepStrictEqual(await find('npm'), ['package-lock.json'], 'the workspace root\'s, not the member\'s')
+  files['package.json'] = named('root', { workspaces: ['web/*', '!web/app'] })
+  t.assert.deepStrictEqual(await find('npm'), ['web/app/package-lock.json'], 'a workspace negated, its own')
+  // npm-shrinkwrap.json before package-lock.json, at the root the package's is: not another project's above.
+  files = { 'web/app/package.json': named('app'), 'web/app/package-lock.json': null, 'package.json': named('root'), 'npm-shrinkwrap.json': null }
+  t.assert.deepStrictEqual(await find('npm'), ['web/app/package-lock.json'], 'an unrelated root\'s shrinkwrap passed over')
+  files['web/app/npm-shrinkwrap.json'] = null
+  t.assert.deepStrictEqual(await find('npm'), ['web/app/npm-shrinkwrap.json'])
+
+  // yarn's workspace root's, whatever yarn.lock is nearer.
+  files = { 'web/app/package.json': named('app'), 'web/app/yarn.lock': null, 'package.json': named('root', { workspaces: { packages: ['web/*'] } }), 'yarn.lock': null }
+  t.assert.deepStrictEqual(await find('npm'), ['yarn.lock'])
+  files['package.json'] = named('root', { workspaces: { packages: ['lib/*'] } })
+  t.assert.deepStrictEqual(await find('npm'), ['web/app/yarn.lock'], 'a package none of its workspaces take: the nearest')
+
+  files = { 'web/app/package.json': named('app'), 'web/app/package-lock.json': null, 'web/app/yarn.lock': null }
+  await t.assert.rejects(find('npm'), { name: 'ValidateError', code: 'lockfile-ambiguous', message: /more than one lockfile installs web\/app: web\/app\/package-lock\.json, web\/app\/yarn\.lock/u })
+  files = { 'web/app/package.json': named('app'), 'bun.lock': null }
   await t.assert.rejects(find('npm'), { code: 'lockfile-unsupported' })
-  listings[''] = ['pnpm-workspace.yaml']
+  files = { 'web/app/package.json': named('app'), 'web/app/pnpm-lock.yaml': null, 'pnpm-workspace.yaml': null }
   await t.assert.rejects(find('npm'), { code: 'no-lockfile' }, 'a workspace root with no lockfile')
   await t.assert.rejects(find('cargo'), { code: 'no-lockfile' })
 })
