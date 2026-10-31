@@ -91,6 +91,16 @@ export function parseExtraOption(label, extra) {
   return [...extra]
 }
 
+// stasis.config.json's `installDevDependencies`: whether the trees laid out from the lockfile (`stasis
+// github-bundle`, @exodus/stasis/vfs-bundle) install devDependencies, as a plain install does (true,
+// the default), or leave out what devDependencies alone reach, as `pnpm install --prod`, `npm ci
+// --omit=dev` and `yarn install --production` do (false).
+export function parseInstallDevDependencies(label, value) {
+  if (value === undefined) return true
+  if (typeof value !== 'boolean') throw new TypeError(`${label}: installDevDependencies must be true or false, got ${JSON.stringify(value)}`)
+  return value
+}
+
 export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11
 
 // `${n}` must round-trip to the input, so non-canonical forms ('5.0', '05', ' 5 ') throw.

@@ -120,6 +120,13 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 
+test("buildVfsBundle with soldeer takes stasis.config.json's installDevDependencies, and leaves nothing out: Soldeer has no devDependencies", async (t) => {
+  const values = [true, false]
+  const builts = await Promise.all(values.map((installDevDependencies) => build({ vfs: projectVfs({ 'stasis.config.json': `${JSON.stringify({ installDevDependencies })}\n` }) })))
+  for (const [i, built] of builts.entries()) t.assert.equal(built.bundle.serialize(), oracles.plain, `installDevDependencies: ${values[i]}`)
+  await t.assert.rejects(build({ vfs: projectVfs({ 'stasis.config.json': '{"installDevDependencies":"no"}\n' }) }), /^TypeError: stasis\.config\.json: installDevDependencies must be true or false, got "no"$/u)
+})
+
 test('buildVfsBundle detects Soldeer from soldeer.lock, and refuses to choose beside another lockfile', async (t) => {
   const built = await build({ packageManager: undefined })
   t.assert.equal(built.packageManager, 'soldeer')

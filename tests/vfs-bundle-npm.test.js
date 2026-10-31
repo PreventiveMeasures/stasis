@@ -190,6 +190,32 @@ test('npm: refuses, naming the file, what it cannot reproduce', async (t) => {
   await t.assert.rejects(load({ vfs: project({ ...manifest, 'package-lock.json': lockOf(ROOT), '.npmrc': 'omit=dev\n' }) }), /\.npmrc:1: "omit" is a setting not supported here: it may change what npm installs$/u)
 })
 
+test("npm: leaves out what devDependencies alone reach where stasis.config.json's installDevDependencies is false, as npm ci --omit=dev does", async (t) => {
+  // A devDependency whose tarball would not match the lockfile: refused wherever it is fetched.
+  const bogus = `sha512-${'A'.repeat(86)}==`
+  const root = { ...ROOT, devDependencies: { ms: '2.1.3' } }
+  const files = (config) => ({
+    'package.json': root,
+    'package-lock.json': lockOf(root, { 'node_modules/ms': { version: '2.1.3', resolved: 'https://registry.npmjs.org/ms/-/ms-2.1.3.tgz', integrity: bogus, dev: true, license: 'MIT' } }),
+    'index.js': 'module.exports = 1\n',
+    ...config === undefined ? {} : { 'stasis.config.json': config },
+  })
+  const tree = await load({ vfs: project(files({ installDevDependencies: false })) })
+  t.assert.equal(tree.vfs.isDirectory('/node_modules/ms'), false)
+  t.assert.deepStrictEqual([tree.installed, tree.stats.installed, tree.stats.tarballs], [[], 0, 0])
+  const builts = await Promise.all([false, true].map((lazy) => buildVfsBundle({ vfs: project(files({ installDevDependencies: false })), entries: ['index.js'], lazy })))
+  for (const [lazy, built] of builts.entries()) {
+    t.assert.deepStrictEqual([built.packageManager, [...built.bundle.sources.keys()]], ['npm', ['index.js']])
+    t.assert.deepStrictEqual({ installed: built.stats.installed, tarballs: built.stats.tarballs }, { installed: 0, tarballs: 0 }, `lazy: ${Boolean(lazy)}`)
+  }
+  // Laid out lazily, so that nothing is fetched, a tree with devDependencies installs it.
+  const configs = [undefined, { installDevDependencies: true }]
+  const withDev = await Promise.all(configs.map((config) => buildVfsBundle({ vfs: project(files(config)), entries: ['index.js'], lazy: true })))
+  for (const [i, built] of withDev.entries()) t.assert.equal(built.stats.installed, 1, JSON.stringify(configs[i]))
+  // npm's own setting for it is still refused: it would change what the project's own install does.
+  await t.assert.rejects(load({ vfs: project({ ...files({ installDevDependencies: false }), '.npmrc': 'omit=dev\n' }) }), /\.npmrc:1: "omit" is a setting not supported here/u)
+})
+
 test('npm: builds a JS bundle from the lockfile, detected where it alone installs cwd', async (t) => {
   const files = { 'package.json': ROOT, 'package-lock.json': lockOf(ROOT), 'src/a.js': 'module.exports = 1\n' }
   const { bundle, packageManager } = await buildVfsBundle({ vfs: project(files), entries: ['src/a.js'] })

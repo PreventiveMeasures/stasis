@@ -21,10 +21,12 @@ import { isDir, isFile } from '../resolve-typescript.js'
 // install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 9, 10, 11 or 12,
 // `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, `npm ci --ignore-scripts` with
 // npm 10.9 or 11, or `soldeer install` its dependencies folder with Soldeer 0.12, and the host that
-// reads the project through them. node_modules is then cleaned as `yarn autoclean` would clean it by
-// each .yarnclean in the directory installed or above it (yarnclean.js), whatever installs it. The
-// project is read through a host it is given, and nothing else. pnpm's and npm's trees may be laid
-// out lazily, each package unpacked once asked for (lazy.js).
+// reads the project through them; without devDependencies, as `pnpm install --prod`, `yarn install
+// --production` and `npm ci --omit=dev` lay it out, where the project's stasis.config.json says so.
+// node_modules is then cleaned as `yarn autoclean` would clean it by each .yarnclean in the
+// directory installed or above it (yarnclean.js), whatever installs it. The project is read through
+// a host it is given, and nothing else. pnpm's and npm's trees may be laid out lazily, each package
+// unpacked once asked for (lazy.js).
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 export function nearest(cwd, holds) {
@@ -195,7 +197,8 @@ const npmHost = (npm, given) => {
 // from by itself, by the names in it and in each directory above it (`above()`, as listings); the
 // projects it finds in a view of that directory, for the machine given; the directory it installs
 // in each, and any it hides, as another package manager's; whether it lays out a tree from the
-// lockfile alone, which may then be lazy; and the tree.
+// lockfile alone, which may then be lazy; and the tree, without what devDependencies alone reach
+// where `given.production` (Soldeer has no devDependencies, so it leaves out nothing).
 const PACKAGE_MANAGERS = {
   pnpm: {
     kind: 'js',
@@ -208,7 +211,7 @@ const PACKAGE_MANAGERS = {
     projects: (view, pnpm) => findPnpmProjects({ project: view, host: { pnpm } }),
     installs: 'node_modules',
     lazy: true,
-    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) }, cache: given?.cache, lazy: given?.lazy }),
+    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) }, cache: given?.cache, lazy: given?.lazy, production: given?.production }),
   },
   yarn1: {
     kind: 'js',
@@ -222,7 +225,7 @@ const PACKAGE_MANAGERS = {
     installs: 'node_modules',
     build: (view, yarn, file, given) => {
       const { libc: _, ...host } = target({ ...given, libc: 'unknown' }) // yarn 1 matches no libc
-      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host }, cache: given?.cache }))
+      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host }, cache: given?.cache, production: given?.production }))
     },
   },
   npm: {
@@ -236,7 +239,7 @@ const PACKAGE_MANAGERS = {
     projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
     installs: 'node_modules',
     lazy: true,
-    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given?.cache, lazy: given?.lazy })),
+    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given?.cache, lazy: given?.lazy, production: given?.production })),
   },
   soldeer: {
     kind: 'sol',
@@ -394,8 +397,9 @@ export function checkVfs(name, vfs) {
 // documents are kept, which deptree fetches for pnpm, yarn1 and npm. Each project's node_modules is
 // cleaned by every .yarnclean in cwd and the directories above it (yarnclean.js). With `lazy`, for
 // pnpm and npm (checkLazy), the tree is laid out with nothing fetched, and comes with `unpack` and
-// `lazy` besides (lazyTree).
-async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy = false }) {
+// `lazy` besides (lazyTree). Without `installDevDependencies`, what devDependencies alone reach is
+// left out, as the package manager's production install leaves it out (deptree's `production`).
+async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy = false, installDevDependencies = true }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
@@ -411,7 +415,7 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
-  const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy })
+  const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy, production: !installDevDependencies })
   // Each project's node_modules, cleaned as `yarn autoclean` would clean it, whatever installs it.
   const cleanAll = () => {
     if (clean !== null) for (const dir of projects) clean(built.vfs, posix.join('/', dir, pm.installs))

@@ -42,6 +42,9 @@ with scripts off:
 | `npm` | `npm ci --ignore-scripts` | npm 10.9.3 to 10.9.9, or 11.11.1 to 11.21.0 |
 | `soldeer` | `soldeer install` | Soldeer 0.12 |
 
+With every devDependency, unless the project's `stasis.config.json` says it is
+installed without them: see [devDependencies](#devdependencies-installdevdependencies).
+
 Every tarball and zip is held to the lockfile. Beside each npm package's
 tarball, the registry's version document of it is fetched, held to the same
 integrity, for the commit it was published from (`gitHead`). A Soldeer git
@@ -53,6 +56,38 @@ Each dependency's `repo` records that commit beside the GitHub repository its
 fetched from, at its root, and the lockfile's `rev` (see
 [file formats](file-formats.md)). Like everything in `repo`, it is the
 publisher's word, held to no repository.
+
+### devDependencies (`installDevDependencies`)
+
+Where the `stasis.config.json` in the directory bundled sets
+`installDevDependencies` to `false`, the tree is laid out as the project is
+installed where it ships:
+
+```json
+{ "installDevDependencies": false }
+```
+
+| `--package-manager` | Lays out as |
+| - | - |
+| `pnpm` | `pnpm install --frozen-lockfile --ignore-scripts --prod` |
+| `yarn1` | `yarn install --frozen-lockfile --ignore-scripts --production` |
+| `npm` | `npm ci --ignore-scripts --omit=dev` |
+| `soldeer` | `soldeer install`, as without it: Soldeer has no devDependencies |
+
+A package devDependencies alone reach is left out, and one a dependency
+reaches too is kept: a build that reaches one fails to resolve it, as the
+shipped project would. It applies to the whole lockfile, so every workspace's
+devDependencies are left out, not only the directory's. With pnpm and npm, a
+package left out is never fetched; yarn 1 fetches and checks the root's
+devDependencies all the same, and they still take the places they would be
+hoisted to, as `--production` has yarn do. `true`, the default, installs
+them, as a plain install does.
+
+It is the file's alone. The project's own settings for it (`.npmrc`'s `omit`,
+`production` or `only`, `.yarnrc`'s `--production`) stay refused, as they
+change a developer's install too. Nor is it `process.env.NODE_ENV`, which an
+entry's [`define`](bundle.md#entry-options-stasisconfigjson) sets: the two are
+independent.
 
 ### `.yarnclean`
 
@@ -249,6 +284,10 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
 - `buildGitHubBundle` and `buildVfsBundle` add the files
   `stasis.config.json`'s `extra` names, as the command does (see
   [Extra files](#extra-files)).
+- All three lay out the tree without devDependencies where the
+  `stasis.config.json` in `cwd` (`directory`) sets `installDevDependencies` to
+  `false`, as the command does (see
+  [devDependencies](#devdependencies-installdevdependencies)).
 - `buildGitHubBundle` and `buildVfsBundle` take `lazy: true`, as the command
   takes [`--lazy`](#lazy---lazy); their `stats` then count what is unpacked.
   `stats` are deptree's, and `stats.unpacked` the packages unpacked: each one
