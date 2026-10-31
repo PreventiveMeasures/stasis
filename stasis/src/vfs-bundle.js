@@ -74,7 +74,8 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 // for Soldeer, its .sol entry points by name and layout (solidityEntries). The options are checked
 // as the build checks them, and `os`, the one the build is for, detects the package manager as
 // there. Of the project held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, tag,
-// directory, client }` as buildGitHubBundle takes them, downloaded as it downloads them.
+// directory | path, client }` as buildGitHubBundle takes them, downloaded as it downloads them: of a
+// `path` to a file, that file.
 export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, os, ...repo } = {}) {
   checkTarget('suggestedEntries', { os })
   const resolution = { conditions, mainFields, metro, platforms, jsx, typescript }

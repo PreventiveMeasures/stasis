@@ -12,7 +12,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 
 | Flag | Meaning |
 | - | - |
-| `owner/name[/path]` | The repository, and a directory in it where `/path` is given: `--github=owner/name --directory=path` as one argument, the first that is no option. Not with `--github` or `--directory`. |
+| `owner/name[/path]` | The repository, and where `/path` is given, a directory or a file in it, as one argument, the first that is no option. A directory is `--directory=path`; a file is an entry of the nearest project above it, see [A file's project](#a-files-project). Not with `--github` or `--directory`. |
 | `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
@@ -28,6 +28,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 stasis github-bundle --github=owner/name --sha=0123abc src/index.js
 stasis github-bundle --github=owner/name --tag=v1.2.0 --directory=packages/api --typescript src/index.ts
 stasis github-bundle owner/name/packages/api --tag=v1.2.0 --typescript src/index.ts
+stasis github-bundle owner/name/packages/api/src/index.ts --tag=v1.2.0 --typescript
 stasis github-bundle --github=owner/name --package-manager=soldeer src/Token.sol
 ```
 
@@ -191,7 +192,8 @@ command alone: `stasis.config.json` does not set it.
 
 ## Entries
 
-The entries are paths in `--directory`, or in the repo. Without any, they are
+The entries are paths in `--directory`, or in the repo. Without any (and no
+file given as `owner/name/path`), they are
 those the directory's `stasis.config.json` names in its
 [`entries`](bundle.md#entry-options-stasisconfigjson), where it has `entries`:
 nothing else stands in for them, so an empty one is refused. Else:
@@ -219,6 +221,24 @@ With it:
   refused, whatever the flags: each runs a program (the project's Babel config,
   its `metro-resolver`, `cargo`, `rustc`), and nothing of the repo runs here.
   No flag consents to it, as `stasis bundle`'s do.
+
+### A file's project
+
+A file given as `owner/name/path/to/file` is bundled from the nearest directory
+at or above it holding a `package.json`, or for a `.sol` file a `foundry.toml`
+or `soldeer.toml` (where Soldeer installs from), else from the repo's root. That
+directory is the `--directory`, and the file the first entry, from there; any
+entries given are from there too:
+
+```sh
+# Where packages/api has a package.json and src/ has none: as
+# stasis github-bundle --github=owner/name --directory=packages/api src/index.js src/worker.js
+stasis github-bundle owner/name/packages/api/src/index.js src/worker.js
+```
+
+The directories are told from the commit's tree listings, before the tree is
+fetched. A path that is no file there, a symlink or anything under one, is
+taken as a directory, as `--directory` takes it.
 
 ## Extra files
 
@@ -252,7 +272,7 @@ the root's `node_modules`.
 
 By default the bundle is written to `owner-name.<commit's first 7>.stasis.code.br`,
 or `owner-name.<directory>.<commit's first 7>.stasis.code.br` with
-`--directory`, its `/` made `-`. Each character outside `[A-Za-z0-9._-]` is made
+`--directory` (or the one `owner/name/path` gives), its `/` made `-`. Each character outside `[A-Za-z0-9._-]` is made
 `_`, and a directory too deep to fit the name in 255 characters is cut, with a
 hash of it appended. `--output=-` streams to stdout.
 
@@ -323,8 +343,14 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   takes [`--lazy`](#lazy---lazy); their `stats` then count what is unpacked.
   `stats` are deptree's, and `stats.unpacked` the packages unpacked: each one
   installed, or with `lazy` those unpacked.
+- `buildGitHubBundle` takes `path` in place of `directory`, as the command
+  takes `owner/name/path`: a directory, or a file (see
+  [A file's project](#a-files-project)). It returns the `directory` it bundled
+  beside `buildVfsBundle`'s `bundle`, `lockfile`, `stats`, `packageManager` and
+  `root`.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
-  command would take without any, of a GitHub repo or a `Vfs`.
+  command would take without any, of a GitHub repo or a `Vfs`: of a `path` to
+  a file, that file.
   `buildVfsBundle` takes a project's `stasis.config.json` entries as the
   command does, and every one where it is given none.
 - `setCacheDir(dir)` is where tarballs, zips and trees are cached; the CLI
