@@ -1380,7 +1380,7 @@ const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 // (ASSET_REGISTRY) the module Metro builds of it, `require(registry).registerAsset({...})`, requires,
 // which Metro builds past Babel, so no alias of Babel's applies to it (platformResolver). -> absolute
 // paths
-function metroInsertedFiles(files, { assets = [], baseDir, babelled, dynamicImports, jsx, resolver, platformResolver = resolver, conditions: conds, host }) {
+function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, jsx, resolver, platformResolver, conditions: conds, host }) {
   const inserted = new Set()
   // One file of each directory of `list`'s: a specifier resolves alike from every file of one.
   const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
@@ -1430,7 +1430,7 @@ function metroInsertedFiles(files, { assets = [], baseDir, babelled, dynamicImpo
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
 // are fieldBuildOptions'. Returns { bundle, lockfile }.
-async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro = false, metroResolver = false, babel = false, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo }) {
+async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)

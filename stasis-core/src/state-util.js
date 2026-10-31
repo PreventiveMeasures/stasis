@@ -44,3 +44,8 @@ export function canonicalizePath(p, host = diskHost) {
     return abs
   }
 }
+
+// Whether `url` is in `state`'s scope, as it attests one: anywhere under scope=full, else in
+// node_modules. Over State's public members alone, so a plugin may ask it of a State another
+// stasis-core copy made (State.preload).
+export const inScope = (state, url) => state.config.full || state.inNodeModules(url)

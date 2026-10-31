@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
-import { realReadFileSync } from '@exodus/stasis-core/state-util'
+import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
 import { classifyExtension } from '@exodus/stasis-core/util'
 
 // CJS require anchored here, used only to locate the PROJECT's babel-plugin-module-resolver below.
@@ -95,13 +95,12 @@ export class StasisWebpack {
     const state = this.#state
     const orig = compiler.inputFileSystem
 
-    // True iff `p` is in scope for load mode. state.relative throws outside state.root (treated
-    // as out-of-scope: system files, scratch).
-    const inScope = (p) => {
+    // True iff `p` is served from the bundle under load: within state.root (state.relative throws
+    // outside it: system files, scratch, read from disk) and in scope.
+    const served = (p) => {
       if (typeof p !== 'string') return false
       try { state.relative(p) } catch { return false }
-      if (state.config.full) return true
-      return state.inNodeModules(pathToFileURL(p).toString())
+      return inScope(state, pathToFileURL(p).toString())
     }
 
     // Family = the sidecar's own app-graph bundle first, then its parent (loaders + resolution-path
@@ -121,7 +120,7 @@ export class StasisWebpack {
     // must keep `this` = orig; we override only readFile and stat.
     const wrappedReadFile = (p, options, callback) => {
       if (typeof options === 'function') { callback = options; options = undefined }
-      if (inScope(p)) {
+      if (served(p)) {
         try {
           const src = serveFromBundle(p)
           const buf = Buffer.isBuffer(src) ? src : Buffer.from(src)
@@ -136,7 +135,7 @@ export class StasisWebpack {
       return orig.readFile(p, options, callback)
     }
     const wrappedStat = (p, callback) => {
-      if (inScope(p)) {
+      if (served(p)) {
         // Directories have no bundle content, so serve a synthetic dir Stats from the family's
         // existence record (getFsStat) -- webpack's resolver stat()s intermediate dirs while walking.
         const url = pathToFileURL(p).toString()
@@ -168,7 +167,7 @@ export class StasisWebpack {
         const issuer = data.contextInfo?.issuer
         if (!issuer) return  // entries: already absolute, inputFileSystem covers them
         // Out-of-scope parents were never the bundle's responsibility -- defer to webpack's resolver.
-        if (!inScope(issuer)) return
+        if (!served(issuer)) return
         // Built-ins are never bundled or recorded as edges; skip up front. SECURITY: never consult
         // getImport for a builtin name, so a tampered bundle can't redirect `fs` to an arbitrary file.
         if (isBuiltin(data.request)) return
