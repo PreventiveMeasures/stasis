@@ -46,6 +46,7 @@ import { STORE_HASH, resolutionCommit } from './installed-commits.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
+import { FILE_REASONS, LOCKFILE_ERRORS, OWN_REASONS, noteText } from './validate-notes.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
 
 // The files told failing, and the packages told, past which they are counted.
@@ -1176,34 +1177,11 @@ export async function validate(file, { client, github, sha, directory, own = tru
   return validateBundle(plan, checked, { fetch, locked, deadline })
 }
 
-// Why own code or a package wasn't checked, or a file is as it is, as a report tells it.
-const OWN_UNCHECKED = { skipped: 'skipped (--only-deps): its dependencies alone validated' }
-// A package's reason, unverified (the first) or failing its lockfile (the last three).
-const PACKAGE_REASONS = { local: 'installed from a directory of the repository, which isn\'t read', 'patch-unverified': 'as patched by the bundle\'s patch, which isn\'t verified against the repository', git: 'locked from git, not a registry', 'not-registry': 'locked from elsewhere than its registry', 'no-integrity': 'locked with no sha512 to hold its tarball to', unsupported: 'no upstream package for its ecosystem', unnamed: 'no name or version recorded', 'not-published': 'not published', unreadable: 'its registry refused it', timeout: 'not reached in time', failed: 'could not be fetched',
-  'alias-unverified': 'installed under another name, an alias no lockfile read tells of',
-  misplaced: 'installed where its path or its lockfile names another package or version',
-  'not-locked': 'not locked by the lockfile', 'integrity-mismatch': 'its registry\'s tarball is not the one the lockfile locks', 'integrity-conflict': 'locked with two integrities' }
-// Why a patch wasn't applied, told after `its patch` and its path.
-const PATCH_ERRORS = { 'patch-not-in-repository': 'is the bundle\'s, not the repository\'s', 'patch-not-found': 'is in no file of its hash (the bundle\'s, or the patches directory\'s)', 'patch-mismatch': 'is not of the hash its lockfile locks' }
-const FILE_REASONS = { symlink: 'a symlink in the repository', submodule: 'in a submodule', 'tree-cut': 'the repository\'s tree was too large to list whole' }
-
 // Each status's colour: failing red, unverified yellow, valid green.
 const TONES = { differs: 'red', unexpected: 'red', invalid: 'red', unverified: 'yellow', incomplete: 'yellow', valid: 'green' }
 
 // What a package told is of, as a table names it: an npm one by its name and version alone.
 const packageName = (of) => of.replace(/^npm:/u, '')
-
-// What a report tells of a package beside its status: why it is unverified or fails its lockfile,
-// its patch, or the directory it is held to; '' where nothing more.
-function noteOf(pkg) {
-  const { patch } = pkg
-  if (pkg.reason) return `${PACKAGE_REASONS[pkg.reason] ?? pkg.reason}${pkg.at ? `: ${pkg.at}` : ''}`
-  if (patch?.error) return `its patch${patch.path ? ` ${patch.path}` : ''} ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`
-  // A patch the bundle holds, as checked against the repository.
-  const whose = patch?.from !== 'bundle' ? '' : patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)'
-  if (patch) return `${patch.applied === false ? 'locked patched, bundled as published' : 'patched'}${patch.path ? ` by ${patch.path}${whose}` : ''}`
-  return pkg.directory ? `held to ${pkg.directory} of the repository` : ''
-}
 
 // The report as tables on `out`: the files failing, and own ones unverified, one row for each kind of
 // what they are of (own code, or a package), the worst first; then the packages with something to
@@ -1222,10 +1200,10 @@ export function printValidationReport(report, { out = process.stdout, err = proc
     files: group.map((problem) => `${problem.path}${problem.reason ? ` (${FILE_REASONS[problem.reason] ?? problem.reason})` : ''}`).join('\n'),
   }))
   if (files.length > 0) tables.push(formatTable(files, ['status', 'of', 'files'], { multiline: ['files'], paint: status(paintOut) }) + (report.moreProblems > 0 ? `\n... and ${report.moreProblems} more files` : ''))
-  const told = report.packages.filter((pkg) => (showValid || pkg.status !== 'valid') && noteOf(pkg) !== '')
+  const told = report.packages.filter((pkg) => (showValid || pkg.status !== 'valid') && noteText(pkg) !== '')
   // The ecosystem a column of its own only where one is not npm's.
   const ecosystems = told.some((pkg) => pkg.ecosystem !== 'npm')
-  const packages = told.map((pkg) => ({ status: pkg.status, ...(ecosystems && { ecosystem: pkg.ecosystem }), package: `${pkg.name}@${pkg.version}`, note: noteOf(pkg) }))
+  const packages = told.map((pkg) => ({ status: pkg.status, ...(ecosystems && { ecosystem: pkg.ecosystem }), package: `${pkg.name}@${pkg.version}`, note: noteText(pkg) }))
   if (packages.length > 0) tables.push(formatTable(packages, ['status', ...(ecosystems ? ['ecosystem'] : []), 'package', 'note'], { paint: status(paintOut) }))
   if (tables.length > 0) out.write(`${tables.join('\n\n')}\n`)
 
@@ -1233,9 +1211,10 @@ export function printValidationReport(report, { out = process.stdout, err = proc
   const lines = [
     `${paintErr(['bold', TONES[report.status]], report.status)}: ${counts.matched} of ${counts.files} files as they should be, ${counts.differs} differ, ${counts.unexpected} unexpected, ${counts.unverified} unverified${counts.skipped ? `, ${counts.skipped} skipped` : ''}; ${counts.validPackages} of ${counts.packages} packages as published${counts.lockFailures ? `, ${counts.lockFailures} failing their lockfile` : ''}${counts.misplaced ? `, ${counts.misplaced} installed where another is` : ''}${counts.eol ? `; ${counts.eol} with a checkout's CRLF line endings` : ''}`,
     own.checked ? `Own code held to ${own.repository}${own.movedFrom ? ` (moved from ${own.movedFrom})` : ''} at ${own.commit}${own.ref ? (own.ref.tag ? `, tag ${own.ref.tag}` : ` of ${own.ref.branch}`) : ''}${own.directory ? ` under ${own.directory}` : ''}`
-      : paintErr('yellow', `Own code not verified: ${OWN_UNCHECKED[own.reason] ?? own.reason}${own.patches ? `; the ${own.patches === 1 ? 'patch' : `${own.patches} patches`} the bundle holds checked all the same` : ''}`),
+      : paintErr('yellow', `Own code not verified: ${OWN_REASONS[own.reason] ?? own.reason}${own.patches ? `; the ${own.patches === 1 ? 'patch' : `${own.patches} patches`} the bundle holds checked all the same` : ''}`),
     ...(report.lockfiles?.length > 0 ? [`Dependencies held to ${report.lockfiles.join(', ')}`]
-      : report.lockfiles === null && counts.packages > 0 ? [paintErr('yellow', 'Dependencies held to no lockfile (--no-lockfile): each to its registry\'s integrity alone')] : []),
+      : report.lockfiles === null && counts.packages > 0
+        ? [paintErr('yellow', `Dependencies held to no lockfile (${report.lockfileError ? LOCKFILE_ERRORS[report.lockfileError] ?? report.lockfileError : '--no-lockfile'}): each to its registry's integrity alone`)] : []),
   ]
   err.write(`${lines.join('\n')}\n`)
 }

@@ -22,6 +22,10 @@
     "./audit-corrections": "./src/audit-corrections.js",
     "./validate": "./src/validate.js",
     "./vfs-bundle": "./src/vfs-bundle.js",
+    "./validate-notes": {
+      "types": "./src/validate-notes.d.ts",
+      "default": "./src/validate-notes.js"
+    },
     "./logo.svg": "./logo.svg"
   },
   "files": [
@@ -74,6 +78,8 @@
     "src/sbom.js",
     "src/table.js",
     "src/validate.js",
+    "src/validate-notes.d.ts",
+    "src/validate-notes.js",
     "src/scan.js",
     "src/vfs-bundle.js",
     "src/vfs-bundle/entries.js",

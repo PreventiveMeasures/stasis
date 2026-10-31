@@ -268,3 +268,13 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's (`''`, the default, for the same). |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
+
+`@exodus/stasis/validate-notes` tells a report in words, as
+`printValidationReport` does, and imports nothing, for a browser too (its
+types in `src/validate-notes.d.ts`):
+`OWN_REASONS`, `PACKAGE_REASONS`, `PATCH_ERRORS`, `FILE_REASONS` and
+`LOCKFILE_ERRORS`, the text of each code a report gives (`own.reason`, a
+package's `reason`, its `patch.error`, a problem's `reason`, `lockfileError`);
+`noteOf(pkg)`, a package's note beside its status as parts, text and its paths
+as `{ path }`, for a caller to set the paths apart; and `noteText(pkg)`, the
+note as text.
