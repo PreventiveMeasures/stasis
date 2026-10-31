@@ -35,9 +35,45 @@ It exits:
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
 | 3 | It refused the bundle (no repository or commit, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
-The files failing and the packages failing or not checked go to stdout, a line
-each (and, with `--show-valid`, those valid that are patched); the summary, why own code wasn't checked, and the
-lockfiles the dependencies were held to go to stderr.
+The report goes to stdout as tables, as `stasis audit` prints its own:
+
+- **Files**: those that differ, then those unexpected, then own code's left
+  unverified, each kind of what they are of in one row: own code first, then
+  each package (an npm one by its name and version, another with its
+  ecosystem), its files listed in it, with why where there is a reason (a
+  symlink, a submodule). Past 500, the rest are counted.
+- **Packages**: those with something to tell, the invalid first, then the
+  unverified: why one is unverified or fails its lockfile, its patch, or the
+  directory of the repository it is held to. One failing for its files alone is
+  in the files' table; one valid is listed, with its patch, only with
+  `--show-valid`. The ecosystem has a column where one is not npm's.
+
+The summary (the status, and the files and packages counted), why own code
+wasn't checked, and the lockfiles the dependencies were held to go to stderr.
+The statuses are in colour (failing red, unverified yellow, valid green) where
+the stream takes colours, as `@exodus/test` tells it: CI's log (`CI` set), or
+a terminal that has them; not a pipe or a file.
+
+```text
+┌────────────┬──────────┬───────────────────────────────────────────┐
+│ status     │ of       │ files                                     │
+├────────────┼──────────┼───────────────────────────────────────────┤
+│ differs    │ own code │ src/main.js                               │
+│ differs    │ ms@2.1.3 │ node_modules/ms/index.js                  │
+│            │          │ node_modules/ms/readme.md                 │
+│ unexpected │ own code │ src/link.js (a symlink in the repository) │
+└────────────┴──────────┴───────────────────────────────────────────┘
+
+┌────────────┬────────────┬─────────────────────────────────┐
+│ status     │ package    │ note                            │
+├────────────┼────────────┼─────────────────────────────────┤
+│ invalid    │ gone@1.0.0 │ not locked by the lockfile      │
+│ unverified │ tool@2.0.0 │ locked from git, not a registry │
+└────────────┴────────────┴─────────────────────────────────┘
+invalid: 4 of 10 files as they should be, 3 differ, 1 unexpected, 2 unverified; 1 of 4 packages as published, 1 failing their lockfile
+Own code held to org/repo at 0123456789abcdef0123456789abcdef01234567 under web
+Dependencies held to pnpm-lock.yaml
+```
 
 ```sh
 stasis validate app.stasis.code.br
@@ -181,7 +217,7 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
-| `printValidationReport(report, { out, err, showValid })` | The report as the CLI prints it, the packages valid left out but with `showValid`. |
+| `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts. |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |

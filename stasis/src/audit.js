@@ -3,6 +3,9 @@ import { dependencyEcosystem, moduleFileKey, packageRecords, sameGithub } from '
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
+import { formatTable } from './table.js'
+
+export { formatTable }
 import { parseFile, parseFileWithKind } from './parse.js'
 import { collectWhy, invertReason } from './why.js'
 
@@ -249,46 +252,6 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
     return a.title < b.title ? -1 : 1
   })
   return rows
-}
-
-// Strip line breaks (LF/CR/CRLF, U+2028/U+2029) from advisory titles so they can't break the box layout.
-const cell = (v) => String(v ?? '').replace(/[\r\n\u2028\u2029]+/gu, ' ')
-
-// Split a value into the physical lines a cell occupies. Non-multiline columns
-// collapse every line break to a space via `cell` (one line). A column named in
-// `multiline` (the `--why` reason column) keeps intentional `\n` breaks -- one
-// physical line per entry -- while still flattening stray CR/separators in each.
-const cellLines = (v, multiline) =>
-  multiline ? String(v ?? '').split('\n').map((s) => cell(s)) : [cell(v)]
-
-export function formatTable(rows, columns, { multiline = [] } = {}) {
-  if (rows.length === 0) return ''
-  const ml = new Set(multiline)
-  const linesOf = (obj) => columns.map((c) => cellLines(obj[c], ml.has(c)))
-  const header = columns.map((c) => [c])
-  const body = rows.map((r) => linesOf(r))
-  const widths = columns.map((c, i) =>
-    Math.max(c.length, ...body.map((cells) => Math.max(0, ...cells[i].map((l) => l.length))))
-  )
-  const pad = (s, w) => s.padEnd(w)
-  const line = (l, m, r, fill) => l + widths.map((w) => fill.repeat(w + 2)).join(m) + r
-  // A row spans as many physical lines as its tallest cell; shorter cells pad
-  // out with blanks so the borders stay aligned.
-  const render = (cells) => {
-    const height = Math.max(...cells.map((c) => c.length))
-    const out = []
-    for (let i = 0; i < height; i++) {
-      out.push('│ ' + cells.map((c, j) => pad(c[i] ?? '', widths[j])).join(' │ ') + ' │')
-    }
-    return out.join('\n')
-  }
-  return [
-    line('┌', '┬', '┐', '─'),
-    render(header),
-    line('├', '┼', '┤', '─'),
-    ...body.map(render),
-    line('└', '┴', '┘', '─'),
-  ].join('\n')
 }
 
 // `repoAdvisories` and `github` (a @preventive/upstream/github.js client) go to advisories() as they

@@ -45,6 +45,7 @@ import { createVfs } from '@preventive/vfs'
 import { resolutionCommit } from './installed-commits.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
+import { DIM, formatTable, painter } from './table.js'
 import { lockfileOf, lockfileRoot, vfsHost } from './vfs-bundle/tree.js'
 
 // The files told failing, and the packages told, past which they are counted.
@@ -401,6 +402,13 @@ export function patchedFiles(files, patch) {
 const equal = (a, b) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b)
 const packageKey = ({ ecosystem, name, version }) => `${ecosystem}:${name}@${version}`
 const byText = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
+// Files told by kind, the worst first, then by what they are of, own code first, then by their paths;
+// packages by status, the worst first, then by their keys: as many as MAX_TOLD keep the worst.
+const KINDS = ['differs', 'unexpected', 'unverified']
+const STATUSES = ['invalid', 'unverified', 'valid']
+const byProblem = (a, b) => KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || (a.of === 'own' ? 0 : 1) - (b.of === 'own' ? 0 : 1)
+  || byText((problem) => problem.of)(a, b) || byText((problem) => problem.path)(a, b)
+const byPackage = (a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) || byText(packageKey)(a, b)
 // The name pnpm gives a version's patch file, `@scope__name@1.0.0.patch`.
 const pnpmPatchName = (name, version) => `${name.replace('/', '__')}@${version}.patch`
 
@@ -646,9 +654,9 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
       : { checked: true, repository: read.repository, ...(read.movedFrom && { movedFrom: read.movedFrom }), commit: read.commit, directory: read.directory, ...(read.cut && { cut: true }) },
     lockfiles: locked?.lockfiles ?? null,
     counts,
-    problems: problems.toSorted(byText((problem) => problem.path)).slice(0, MAX_TOLD),
+    problems: problems.toSorted(byProblem).slice(0, MAX_TOLD),
     moreProblems: Math.max(0, problems.length - MAX_TOLD),
-    packages: told.toSorted(byText(packageKey)).slice(0, MAX_TOLD),
+    packages: told.toSorted(byPackage).slice(0, MAX_TOLD),
   }
 }
 
@@ -1042,29 +1050,55 @@ const PACKAGE_REASONS = { local: 'installed from a directory of the repository, 
 const PATCH_ERRORS = { 'patch-not-in-repository': 'is the bundle\'s, not the repository\'s', 'patch-not-found': 'is in no file of its hash (the bundle\'s, or the patches directory\'s)', 'patch-mismatch': 'is not of the hash its lockfile locks' }
 const FILE_REASONS = { symlink: 'a symlink in the repository', submodule: 'in a submodule', 'tree-cut': 'the repository\'s tree was too large to list whole' }
 
-// The report: the files failing and the packages told on stdout, a line each; the summary, and why
-// own code wasn't checked, on stderr.
-// The packages told valid (those patched) left out but with `showValid`.
-export function printValidationReport(report, { out = console.log, err = console.error, showValid = false } = {}) {
-  for (const problem of report.problems) {
-    out(`${problem.kind}\t${problem.path}\t${problem.of}${problem.reason ? ` (${FILE_REASONS[problem.reason] ?? problem.reason})` : ''}`)
-  }
-  if (report.moreProblems > 0) out(`... and ${report.moreProblems} more files`)
-  for (const pkg of report.packages) {
-    if (pkg.status === 'valid' && !showValid) continue
-    const { patch } = pkg
-    // A patch the bundle holds, as checked against the repository.
-    const whose = patch?.from !== 'bundle' ? '' : patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)'
-    const note = pkg.reason ? PACKAGE_REASONS[pkg.reason] ?? pkg.reason
-      : patch?.error ? `its patch${patch.path ? ` ${patch.path}` : ''} ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`
-        : patch ? `${patch.applied === false ? 'locked patched, bundled as published' : 'patched'}${patch.path ? ` by ${patch.path}${whose}` : ''}`
-          : pkg.directory ? `held to ${pkg.directory} of the repository` : ''
-    out(`${pkg.status}\t${pkg.ecosystem}:${pkg.name}@${pkg.version}${note ? `\t${note}` : ''}`)
-  }
+// Each status's colour: failing red, unverified yellow, valid green.
+const TONES = { differs: 'red', unexpected: 'red', invalid: 'red', unverified: 'yellow', incomplete: 'yellow', valid: 'green' }
+
+// What a package told is of, as a table names it: an npm one by its name and version alone.
+const packageName = (of) => of.replace(/^npm:/u, '')
+
+// What a report tells of a package beside its status: why it is unverified or fails its lockfile,
+// its patch, or the directory it is held to; '' where nothing more.
+function noteOf(pkg) {
+  const { patch } = pkg
+  if (pkg.reason) return PACKAGE_REASONS[pkg.reason] ?? pkg.reason
+  if (patch?.error) return `its patch${patch.path ? ` ${patch.path}` : ''} ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`
+  // A patch the bundle holds, as checked against the repository.
+  const whose = patch?.from !== 'bundle' ? '' : patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)'
+  if (patch) return `${patch.applied === false ? 'locked patched, bundled as published' : 'patched'}${patch.path ? ` by ${patch.path}${whose}` : ''}`
+  return pkg.directory ? `held to ${pkg.directory} of the repository` : ''
+}
+
+// The report as tables on `out`: the files failing, and own ones unverified, one row for each kind of
+// what they are of (own code, or a package), the worst first; then the packages with something to
+// tell (why they are unverified or fail, a patch, a directory), those valid only with `showValid`.
+// The summary on `err`: its status and counts, where own code was read or why not, and the lockfiles
+// held to. Their statuses in colour, where each stream takes colours (`colors`, else takesColors).
+export function printValidationReport(report, { out = process.stdout, err = process.stderr, showValid = false, colors } = {}) {
+  const paintOut = painter(out, colors)
+  const paintErr = painter(err, colors)
+  // A row's status in its colour, and own code dimmed beside a package.
+  const status = (paint) => (text, column, row) => paint(column === 'status' ? TONES[row.status] : column === 'of' && row.of === 'own code' ? DIM : null, text)
+  const tables = []
+  const files = [...Map.groupBy(report.problems, (problem) => `${problem.kind}\0${problem.of}`).values()].map((group) => ({
+    status: group[0].kind,
+    of: group[0].of === 'own' ? 'own code' : packageName(group[0].of),
+    files: group.map((problem) => `${problem.path}${problem.reason ? ` (${FILE_REASONS[problem.reason] ?? problem.reason})` : ''}`).join('\n'),
+  }))
+  if (files.length > 0) tables.push(formatTable(files, ['status', 'of', 'files'], { multiline: ['files'], paint: status(paintOut) }) + (report.moreProblems > 0 ? `\n... and ${report.moreProblems} more files` : ''))
+  const told = report.packages.filter((pkg) => (showValid || pkg.status !== 'valid') && noteOf(pkg) !== '')
+  // The ecosystem a column of its own only where one is not npm's.
+  const ecosystems = told.some((pkg) => pkg.ecosystem !== 'npm')
+  const packages = told.map((pkg) => ({ status: pkg.status, ...(ecosystems && { ecosystem: pkg.ecosystem }), package: `${pkg.name}@${pkg.version}`, note: noteOf(pkg) }))
+  if (packages.length > 0) tables.push(formatTable(packages, ['status', ...(ecosystems ? ['ecosystem'] : []), 'package', 'note'], { paint: status(paintOut) }))
+  if (tables.length > 0) out.write(`${tables.join('\n\n')}\n`)
+
   const { counts, own } = report
-  err(`${report.status}: ${counts.matched} of ${counts.files} files as they should be, ${counts.differs} differ, ${counts.unexpected} unexpected, ${counts.unverified} unverified${counts.skipped ? `, ${counts.skipped} skipped` : ''}; ${counts.validPackages} of ${counts.packages} packages as published${counts.lockFailures ? `, ${counts.lockFailures} failing their lockfile` : ''}${counts.eol ? `; ${counts.eol} with a checkout's CRLF line endings` : ''}`)
-  if (own.checked) err(`Own code held to ${own.repository}${own.movedFrom ? ` (moved from ${own.movedFrom})` : ''} at ${own.commit}${own.directory ? ` under ${own.directory}` : ''}`)
-  else err(`Own code not verified: ${OWN_UNCHECKED[own.reason] ?? own.reason}${own.patches ? `; the ${own.patches === 1 ? 'patch' : `${own.patches} patches`} the bundle holds checked all the same` : ''}`)
-  if (report.lockfiles?.length > 0) err(`Dependencies held to ${report.lockfiles.join(', ')}`)
-  else if (report.lockfiles === null && counts.packages > 0) err('Dependencies held to no lockfile (--no-lockfile): each to its registry\'s integrity alone')
+  const lines = [
+    `${paintErr(['bold', TONES[report.status]], report.status)}: ${counts.matched} of ${counts.files} files as they should be, ${counts.differs} differ, ${counts.unexpected} unexpected, ${counts.unverified} unverified${counts.skipped ? `, ${counts.skipped} skipped` : ''}; ${counts.validPackages} of ${counts.packages} packages as published${counts.lockFailures ? `, ${counts.lockFailures} failing their lockfile` : ''}${counts.eol ? `; ${counts.eol} with a checkout's CRLF line endings` : ''}`,
+    own.checked ? `Own code held to ${own.repository}${own.movedFrom ? ` (moved from ${own.movedFrom})` : ''} at ${own.commit}${own.directory ? ` under ${own.directory}` : ''}`
+      : paintErr('yellow', `Own code not verified: ${OWN_UNCHECKED[own.reason] ?? own.reason}${own.patches ? `; the ${own.patches === 1 ? 'patch' : `${own.patches} patches`} the bundle holds checked all the same` : ''}`),
+    ...(report.lockfiles?.length > 0 ? [`Dependencies held to ${report.lockfiles.join(', ')}`]
+      : report.lockfiles === null && counts.packages > 0 ? [paintErr('yellow', 'Dependencies held to no lockfile (--no-lockfile): each to its registry\'s integrity alone')] : []),
+  ]
+  err.write(`${lines.join('\n')}\n`)
 }

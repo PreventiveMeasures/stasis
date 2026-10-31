@@ -70,6 +70,7 @@
     "src/resolve-typescript.js",
     "src/rollup.js",
     "src/sbom.js",
+    "src/table.js",
     "src/validate.js",
     "src/scan.js",
     "src/vfs-bundle.js",
