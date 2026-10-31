@@ -31,9 +31,11 @@ export function createVfsHost(vfs) {
 }
 
 // -> { root, vfs, projects, host, stats, installed, packageManager, packageManagerVersion }, as
-// 'pnpm', 'yarn1' or 'npm' installs node_modules: the directory in the project's Vfs it installs cwd
-// from, which holds the lockfile; the Vfs the tree is laid out into, rooted there; the projects'
-// directories from there; the host reading the project through the tree; deptree's counts, and the
+// 'pnpm', 'yarn1' or 'npm' installs node_modules, then cleaned by each .yarnclean in cwd and above
+// it as `yarn autoclean` cleans Yarn's (vfs-bundle/yarnclean.js): the directory in the project's Vfs
+// it installs cwd from, which holds the lockfile; the Vfs the tree is laid out into, rooted there;
+// the projects' directories from there; the host reading the project through the tree; deptree's
+// counts, and the
 // packages it installs (each by its `path` from there, with the `commit` its version document
 // names, where it names a full one); and the
 // package manager reproduced, at `packageManagerVersion` if given, else the one the root

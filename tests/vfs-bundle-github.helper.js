@@ -107,3 +107,13 @@ export const fakeClient = (files, { tags = {} } = {}) => {
     },
   }
 }
+
+// A module for `node --import` that hides the optional minimatch from what the process loads, as
+// where it isn't installed.
+export const HIDE_MINIMATCH = [
+  "import { registerHooks } from 'node:module'",
+  'registerHooks({ resolve(specifier, context, next) {',
+  "  if (/^minimatch(\\/|$)/u.test(specifier)) throw Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'MODULE_NOT_FOUND' })",
+  '  return next(specifier, context)',
+  '} })',
+].join('\n')

@@ -13,13 +13,16 @@ import { VfsError } from '@preventive/vfs'
 import { createNodeResolver } from '../resolve-node.js'
 import { globSync, matchesGlob } from './glob.js'
 import { settleSoldeer } from './soldeer.js'
+import { yarnclean } from './yarnclean.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
 // A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm
 // install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 9, 10, 11 or 12,
 // `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, `npm ci --ignore-scripts` with
 // npm 10.9 or 11, or `soldeer install` its dependencies folder with Soldeer 0.12, and the host that
-// reads the project through them. The project is read through a host it is given, and nothing else.
+// reads the project through them. node_modules is then cleaned as `yarn autoclean` would clean it by
+// each .yarnclean in the directory installed or above it (yarnclean.js), whatever installs it. The
+// project is read through a host it is given, and nothing else.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 export function nearest(cwd, holds) {
@@ -362,7 +365,8 @@ export function checkVfs(name, vfs) {
 // written through. `client`, a @preventive/upstream/github.js client, is what a Soldeer git
 // dependency is fetched through (deptree's `github`); without one, a lockfile holding one is refused
 // before anything is fetched. `cache` (checkCache) is where npm packages' tarballs and version
-// documents are kept, which deptree fetches for pnpm, yarn1 and npm.
+// documents are kept, which deptree fetches for pnpm, yarn1 and npm. Each project's node_modules is
+// cleaned by every .yarnclean in cwd and the directories above it (yarnclean.js).
 async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
@@ -376,7 +380,11 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
+  // Read before anything is fetched: matching its patterns needs the optional minimatch.
+  const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   const { vfs, stats, installed } = await pm.build(view, version, file, { os, cpu, libc, client, cache })
+  // Each project's node_modules, cleaned as `yarn autoclean` would clean it, whatever installs it.
+  if (clean !== null) for (const dir of projects) clean(vfs, posix.join('/', dir, pm.installs))
   return {
     root: project.realpath(found),
     vfs,
