@@ -116,7 +116,7 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   const built = await build()
   t.assert.equal(built.bundle.serialize(), oracles.plain)
   t.assert.equal(built.lockfile, undefined, 'a Solidity bundle has no lockfile')
-  t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637, links: 0 })
+  t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637, links: 0, unpacked: 1 })
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 

@@ -2207,7 +2207,9 @@ export function checkVfsOptions(name, options) {
 // and npm, the tree is laid out with nothing fetched, and each package is fetched and unpacked once
 // the build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
 // the bundle the full tree gives, its warnings said once, with `stats` counting what is unpacked. A
-// tarball the build never reaches is never fetched, nor held to the lockfile, nor refused.
+// tarball the build never reaches is never fetched, nor held to the lockfile, nor refused. `stats`
+// are deptree's, and `stats.unpacked` the packages unpacked: each one installed, or those a lazy
+// tree unpacked.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
 export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy = false, ...options } = {}) {
   const { checkCache, checkKind, checkLazy, checkTarget, checkVfs, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
@@ -2285,7 +2287,8 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
-  return { bundle, lockfile: lockfile?.(), stats: tree.stats, packageManager, root }
+  const unpacked = tree.lazy?.unpacked.size ?? tree.stats.installed ?? tree.stats.dependencies
+  return { bundle, lockfile: lockfile?.(), stats: { ...tree.stats, unpacked }, packageManager, root }
 }
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
