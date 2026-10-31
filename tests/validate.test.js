@@ -270,6 +270,7 @@ test('validateBundle: each npm copy held to where Node resolves it: the name its
   t.assert.deepStrictEqual(await told('node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg', { name: '@scope/pkg', version: '1.0.0' }), valid)
   t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@file+vendor+ms/node_modules/ms'), valid, 'a version no registry\'s: held to its lockfile alone')
   t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@2.0.0_${'a'.repeat(26)}/node_modules/ms`), valid, 'one pnpm hashed: its version not told')
+  t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@1.0.0-beta.123_${'0a'.repeat(16)}/node_modules/ms`, { version: '1.0.0-beta.1234567890' }), valid, 'one pnpm 10 cut short, its hash hex')
   const misplaced = (at) => ['invalid', [['invalid', 'misplaced', at]]]
   const others = ['node_modules/.pnpm/ms@2.0.0/node_modules/ms', 'node_modules/.pnpm/debug@2.1.3/node_modules/ms', 'node_modules/.pnpm/ms@2.1.3/node_modules/debug']
   t.assert.deepStrictEqual(await Promise.all(others.map((dir) => told(dir))), others.map(misplaced), 'another version or package, with no lockfile read')

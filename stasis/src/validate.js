@@ -42,7 +42,7 @@ import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { createVfs } from '@preventive/vfs'
 
-import { resolutionCommit } from './installed-commits.js'
+import { STORE_HASH, resolutionCommit } from './installed-commits.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -412,7 +412,7 @@ function installedAt(dir) {
   const at = segments.lastIndexOf('node_modules')
   const as = segments.slice(at + 1).join('/')
   const store = at >= 3 && segments[at - 2] === '.pnpm' && segments[at - 3] === 'node_modules' ? segments[at - 1] : undefined
-  if (store === undefined || /_[a-z2-7]{26}$/u.test(store)) return { as }
+  if (store === undefined || STORE_HASH.test(store)) return { as }
   const split = store.indexOf('@', 1)
   if (split < 0) return { as }
   const name = store.slice(0, split)
