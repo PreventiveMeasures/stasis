@@ -17,8 +17,9 @@
 // they end in. The patch is the lockfile's (`locked`), read of the bundle where it holds a file of its
 // hash, else of the repository; with no lockfile read, the one the bundle holds named for the version,
 // pnpm's way (`patches/name@version.patch`). Ecosystems upstream fetches no package of by name and
-// version alone (Composer's, Soldeer's, a crate from git), and versions it fails to fetch, are left
-// unverified.
+// version alone (Composer's, Soldeer's, a crate from git), npm packages installed from git (whose
+// module records the commit, installed-commits.js, as no registry package's does, and which npm may
+// build as it installs them), and versions it fails to fetch, are left unverified.
 //
 // Stasis's empty stub for an import a package disables (EMPTY_MODULE_PATH) is no file of either, and
 // is allowed. A vendored crate's `.cargo-checksum.json`, which `cargo vendor` writes and no crate
@@ -61,7 +62,8 @@ export class PatchError extends Error {
 
 // What a bundle's files are, as validation checks them: its own code, `{ path, dir, rel, bytes() }`
 // each, and each package version's, `{ ecosystem, name, version, files }`, one with no name or
-// version among them; the patches it holds (`patches`, their text by path); and how many files.
+// version among them, an npm package installed from git apart from the registry's, with its `git`
+// (`{ github, commit }`); the patches it holds (`patches`, their text by path); and how many files.
 // Directories and stat records, which are no files, and Stasis's empty stub are left out.
 export function validationPlan(bundle) {
   const formats = bundle.formats ?? new Map()
@@ -84,8 +86,9 @@ export function validationPlan(bundle) {
         continue
       }
       const [name, version] = [info.name ?? '', info.version ?? '']
-      const key = `${ecosystem}\0${name}\0${version}`
-      if (!packages.has(key)) packages.set(key, { ecosystem, name, version, files: [] })
+      const git = ecosystem === 'npm' && info.repo?.commit !== undefined ? { github: info.repo.github, commit: info.repo.commit } : undefined
+      const key = `${ecosystem}\0${name}\0${version}\0${git ? `${git.github}@${git.commit}` : ''}`
+      if (!packages.has(key)) packages.set(key, { ecosystem, name, version, ...(git && { git }), files: [] })
       packages.get(key).files.push(file)
     }
   }
@@ -377,6 +380,8 @@ export function patchedFiles(files, patch) {
 
 const equal = (a, b) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b)
 const packageKey = ({ ecosystem, name, version }) => `${ecosystem}:${name}@${version}`
+// A package told's place in the report: by its key, the registry's before one from git.
+const toldKey = (pkg) => `${packageKey(pkg)}\0${pkg.git ? `${pkg.git.github}@${pkg.git.commit}` : ''}`
 // The name pnpm gives a version's patch file, `@scope__name@1.0.0.patch`.
 const pnpmPatchName = (name, version) => `${name.replace('/', '__')}@${version}.patch`
 
@@ -479,9 +484,10 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     const of = packageKey(pkg)
     const unverified = (reason) => {
       counts.unverified += pkg.files.length
-      told.push({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, files: pkg.files.length, status: 'unverified', reason })
+      told.push({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, ...(pkg.git && { git: pkg.git }), files: pkg.files.length, status: 'unverified', reason })
     }
     if (!pkg.name || !pkg.version) return unverified('unnamed')
+    if (pkg.git) return unverified('git')
     if (!FETCHED.has(pkg.ecosystem)) return unverified('unsupported')
     if (now() > deadline) return unverified('timeout')
     let files
@@ -524,7 +530,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     counts,
     problems: listed.slice(0, MAX_TOLD),
     moreProblems: Math.max(0, listed.length - MAX_TOLD),
-    packages: told.toSorted((a, b) => (packageKey(a) < packageKey(b) ? -1 : 1)).slice(0, MAX_TOLD),
+    packages: told.toSorted((a, b) => (toldKey(a) < toldKey(b) ? -1 : toldKey(a) > toldKey(b) ? 1 : 0)).slice(0, MAX_TOLD),
   }
 }
 
@@ -599,7 +605,7 @@ export async function validate(file, { client, github, sha, directory, own = tru
 
 // Why own code or a package wasn't checked, or a file is as it is, as a report tells it.
 const OWN_UNCHECKED = { skipped: 'skipped (--no-own)', 'no-repository': 'the bundle records no repository; give --github', 'no-commit': 'the bundle records no commit; give --sha' }
-const UNVERIFIED = { unsupported: 'no upstream package for its ecosystem', unnamed: 'no name or version recorded', 'not-published': 'not published', unreadable: 'its registry refused it', timeout: 'not reached in time', failed: 'could not be fetched' }
+const UNVERIFIED = { git: 'installed from git, not a registry', unsupported: 'no upstream package for its ecosystem', unnamed: 'no name or version recorded', 'not-published': 'not published', unreadable: 'its registry refused it', timeout: 'not reached in time', failed: 'could not be fetched' }
 const FILE_REASONS = { symlink: 'a symlink in the repository', submodule: 'in a submodule', 'tree-cut': 'the repository\'s tree was too large to list whole' }
 
 // The report: the files failing and the packages told on stdout, a line each; the summary, and why
@@ -613,7 +619,7 @@ export function printValidationReport(report, { out = console.log, err = console
     const patch = pkg.patch
     const note = pkg.status === 'unverified' ? UNVERIFIED[pkg.reason] ?? pkg.reason
       : patch ? `${patch.error ? `its patch could not be applied (${patch.error})` : patch.applied === false ? 'locked patched, bundled as published' : 'patched'}${patch.path ? ` by ${patch.path}${patch.from === 'bundle' ? ' (the bundle\'s)' : ''}` : ''}` : ''
-    out(`${pkg.status}\t${pkg.ecosystem}:${pkg.name}@${pkg.version}${note ? `\t${note}` : ''}`)
+    out(`${pkg.status}\t${pkg.ecosystem}:${pkg.name}@${pkg.version}${pkg.git ? ` (${pkg.git.github}@${pkg.git.commit})` : ''}${note ? `\t${note}` : ''}`)
   }
   const { counts, own } = report
   err(`${report.status}: ${counts.matched} of ${counts.files} files as they should be, ${counts.differs} differ, ${counts.unexpected} unexpected, ${counts.unverified} unverified; ${counts.validPackages} of ${counts.packages} packages as published${counts.eol ? `; ${counts.eol} with a checkout's CRLF line endings` : ''}`)

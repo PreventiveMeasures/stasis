@@ -53,6 +53,10 @@ Composer packages, Soldeer packages, GitHub repos (Foundry's `lib/`) and crates
 vendored from git, or with no `.cargo-checksum.json`, have no package upstream
 fetches by name and version: their files are left unverified, as are those of a
 version that couldn't be fetched (`not published`, `its registry refused it`).
+So are an npm package's installed from git, whose module records the commit it
+was installed at (no registry package's does): npm may build one as it
+installs it, and the registry's release of its name and version is another
+package, never held to it.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,

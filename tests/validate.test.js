@@ -138,6 +138,20 @@ test('validateBundle: each installed copy of a version held to its files patched
   t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
 })
 
+test('validateBundle: an npm package installed from git, its commit recorded, is held apart from the registry\'s of its name and version, unverified', async (t) => {
+  const fetched = []
+  const fork = { github: 'someone/ms', commit: 'a'.repeat(40) }
+  const plan = validationPlan(parsed({ 'node_modules/tool/node_modules/ms': { name: 'ms', version: '2.1.3', repo: fork, files: { 'index.js': 'forked\n' } } }))
+  plan.own = []
+  plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
+  t.assert.deepStrictEqual(plan.packages.map((pkg) => [pkg.files.map((file) => file.path), pkg.git]), [[['node_modules/ms/index.js', 'node_modules/ms/package.json'], undefined],
+    [['node_modules/tool/node_modules/ms/index.js'], fork]])
+  const report = await validateBundle(plan, own(), { fetch: upstream(PACKAGES, fetched) })
+  t.assert.deepStrictEqual([report.status, report.problems, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.git ?? null])],
+    ['incomplete', [], [['valid', null, null], ['unverified', 'git', fork]]], 'the registry\'s copy valid, the fork never held to it')
+  t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
+})
+
 test('validateBundle: own code unchecked leaves a bundle incomplete, as does a version past the deadline, or a tree cut short', async (t) => {
   const plan = validationPlan(parsed())
   plan.own = plan.own.filter((file) => file.path === 'src/main.js')
