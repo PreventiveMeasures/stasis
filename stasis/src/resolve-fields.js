@@ -141,15 +141,30 @@ function matchRedirect(map, relPath) {
   return undefined
 }
 
+// What readJson gives for each manifest a resolver reads, read once, as for a tree that holds still:
+// but one whose reading read what a lazy tree does not hold yet (`host.touches`), read again. Each
+// resolver reads its own, so a build on the disk reads each manifest as it is then.
+function manifestReader(host) {
+  const touches = host.touches ?? (() => 0)
+  const kept = new Map()
+  return (path) => {
+    if (kept.has(path)) return kept.get(path)
+    const before = touches()
+    const pkg = readJson(path, host)
+    if (touches() === before) kept.set(path, pkg)
+    return pkg
+  }
+}
+
 // The package.json closest to `path` as Metro finds a module's package (getPackageForModule, through
 // metro-file-map's hierarchicalLookup): at the path itself where it is a directory, else above it,
 // none past a `node_modules` segment. A nested package.json (`dist/esm/package.json`, or a subpath
-// directory's own) is one. -> { pkgDir, pkg } or null
-function metroPackageScope(path, host) {
+// directory's own) is one, read by `read`. -> { pkgDir, pkg } or null
+function metroPackageScope(path, host, read = readJson) {
   for (let dir = isDir(path, host) ? path : dirname(path); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
     const pkgPath = join(dir, 'package.json')
     if (isFile(pkgPath, host)) {
-      const pkg = readJson(pkgPath, host)
+      const pkg = read(pkgPath, host)
       if (pkg) return { pkgDir: dir, pkg }
     }
     if (dirname(dir) === dir) break
@@ -162,7 +177,7 @@ function metroPackageScope(path, host) {
 // taken as package-relative, as Metro takes it, even where it names another package.
 // -> the path, redirected where the map says so, or false (an empty module)
 function metroRedirect(path, opts) {
-  const scope = metroPackageScope(path, opts.host)
+  const scope = metroPackageScope(path, opts.host, opts.read)
   if (!scope) return path
   const rel = path === scope.pkgDir ? '' : toPosix(relative(scope.pkgDir, path))
   const r = matchRedirect(mergeRedirectMap(scope.pkg, opts.mainFields), `./${rel}`)
@@ -329,7 +344,7 @@ function resolveSourceFile(base, opts) {
   let scope
   const redirectCandidate = (p) => {
     if (scope === undefined) {
-      const pkg = nearestPackage(base, opts.host)
+      const pkg = nearestPackage(base, opts.host, opts.read)
       scope = pkg ? { pkgDir: pkg.pkgDir, map: mergeRedirectMap(pkg.pkg, opts.mainFields) } : null
     }
     if (!scope || scope.map.size === 0) return p
@@ -398,7 +413,7 @@ function resolveFileOrDir(base, opts) {
   const file = asResolution(resolveSourceFile(base, opts))
   if (file) return file
   if (isDir(base, opts.host)) {
-    const dpkg = readJson(join(base, 'package.json'), opts.host)
+    const dpkg = opts.read(join(base, 'package.json'))
     if (dpkg) {
       const r = resolveEntryThroughMap(mergeRedirectMap(dpkg, opts.mainFields), packageEntry(dpkg, opts.mainFields), opts)
       if (r.empty) return { empty: true }
@@ -440,7 +455,8 @@ export function createFieldResolver({
   metroKeepEntryOnBrowserFalse = METRO_KEEP_ENTRY_ON_BROWSER_FALSE,
   host = diskHost,
 } = {}) {
-  const opts = { platform, preferNative, sourceExts, mainFields, metro, assetExts, typescript, metroKeepEntryOnBrowserFalse, host }
+  const read = manifestReader(host)
+  const opts = { platform, preferNative, sourceExts, mainFields, metro, assetExts, typescript, metroKeepEntryOnBrowserFalse, host, read }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
@@ -462,7 +478,7 @@ export function createFieldResolver({
   // or with one not starting `#`; null where it names none. With no such package or no `imports`
   // in it, Metro fails the specifier, with no file-based fallback.
   const viaMetroImports = (parentFile, specifier, conds) => {
-    const scope = metroPackageScope(parentFile, host)
+    const scope = metroPackageScope(parentFile, host, read)
     const imports = scope?.pkg.imports
     if (imports == null) throw new MetroFailure(`No "imports" for ${specifier} from ${parentFile}`)
     const keys = Object.keys(imports)
@@ -492,7 +508,7 @@ export function createFieldResolver({
     }
     const viaPackage = (spec) => {
       const { name, firstPart, subpath } = parseBare(spec)
-      const own = nearestPackage(parentFile, host)
+      const own = nearestPackage(parentFile, host, read)
       if (own?.pkg.exports != null && own.pkg.name === name) {
         const hit = viaExports(own.pkgDir, own.pkg.exports, subpath)
         if (hit) return hit
@@ -503,7 +519,7 @@ export function createFieldResolver({
         if (isDir(subpath !== '.' || name !== firstPart ? join(nm, firstPart) : nm, host)) {
           const target = metroRedirect(join(nm, spec), opts)
           if (target === false) return { empty: true }
-          const scope = metroPackageScope(target, host)
+          const scope = metroPackageScope(target, host, read)
           const hit = (scope?.pkg.exports != null && viaExports(scope.pkgDir, scope.pkg.exports, target === scope.pkgDir ? '.' : `./${toPosix(relative(scope.pkgDir, target))}`)) || viaPath(target)
           if (hit) return hit
           // A package there whose entry resolves to nothing ends the lookup: Metro throws on it
@@ -517,7 +533,7 @@ export function createFieldResolver({
       return viaPath(isAbsolute(specifier) ? specifier : resolvePath(dirname(parentFile), specifier))
     }
     let spec = specifier
-    const imp = nearestPackage(parentFile, host)
+    const imp = nearestPackage(parentFile, host, read)
     const r = imp ? matchRedirect(mergeRedirectMap(imp.pkg, mainFields), spec) : undefined
     if (r === false) return { empty: true }
     if (typeof r === 'string') {
@@ -545,7 +561,7 @@ export function createFieldResolver({
     const viaPackage = (spec) => {
       const loc = locatePackage(dirname(parentFile), spec, host)
       if (!loc) return null
-      const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
+      const pkg = read(join(loc.pkgDir, 'package.json')) ?? {}
       // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
       if (pkg.exports != null) return viaNode(spec)
       // A bare package import resolves its directory via the same dir algorithm as any other.
@@ -571,7 +587,7 @@ export function createFieldResolver({
     let spec = specifier
     // Redirect via the IMPORTER's browser/react-native map, BEFORE the builtin check on purpose:
     // a map entry can disable or shim a builtin (`{"crypto": false}` / `"crypto-browserify"`).
-    const imp = nearestPackage(parentFile, host)
+    const imp = nearestPackage(parentFile, host, read)
     if (imp) {
       const map = mergeRedirectMap(imp.pkg, mainFields)
       let r
