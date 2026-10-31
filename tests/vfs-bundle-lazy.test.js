@@ -218,6 +218,27 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.deepStrictEqual(tarballs(cache), ['declares', 'deep', 'used'])
   })
 
+  // With EXODUS_STASIS_DEBUG=1, each round is said as it ends: the first parses src/a.js, which reads
+  // used, not unpacked yet, and asks for it, unpacked with deep; the second is the build, which
+  // resolves src/a.js's imports again from its parse, and parses used's and deep's files.
+  test(`${packageManager}: lazily, with EXODUS_STASIS_DEBUG=1, each round is said as it ends`, async (t) => {
+    const before = process.env.EXODUS_STASIS_DEBUG
+    process.env.EXODUS_STASIS_DEBUG = '1'
+    t.after(() => {
+      if (before === undefined) delete process.env.EXODUS_STASIS_DEBUG
+      else process.env.EXODUS_STASIS_DEBUG = before
+    })
+    const written = []
+    t.mock.method(process.stderr, 'write', (text) => written.push(String(text)))
+    await build(packageManager, { cache: store(), lazy: true }, { names: ['used'] })
+    t.mock.restoreAll()
+    t.assert.deepStrictEqual(written.filter((line) => line.startsWith('[stasis] Lazy round')).map((line) => line.replace(/\d+\.\d\d s/gu, 'T s')), [
+      '[stasis] Lazy round 1: built in T s (files 1 parsed, 0 resolved, 0 replayed), asked for 1 package\n',
+      '[stasis] Lazy round 1: unpacked in T s\n',
+      '[stasis] Lazy round 2: built in T s (files 2 parsed, 1 resolved, 0 replayed), the build\n',
+    ])
+  })
+
   test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
     const entry = "require('used')\nrequire('missing')\n"
     const warned = async (options) => {

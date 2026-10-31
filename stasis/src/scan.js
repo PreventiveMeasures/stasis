@@ -195,6 +195,10 @@ function condKey(set) {
   return [...set].join(', ')
 }
 
+// How many files the scans with a `memo` (#scanKept) parsed, resolved again from a parse kept, and
+// took as kept, all told: what a lazy tree's rounds are reported by (EXODUS_STASIS_DEBUG).
+export const scanCounts = { parsed: 0, resolved: 0, replayed: 0 }
+
 export class Scan {
   files = new Map()
   imports = new Map()
@@ -282,6 +286,7 @@ export class Scan {
   // holds: the next scan resolves its imports again, but parses it no more.
   #scanKept(url, queue) {
     const kept = this.memo.get(url)
+    scanCounts[kept?.queued !== undefined ? 'replayed' : kept?.parse === undefined ? 'parsed' : 'resolved'] += 1
     if (kept?.queued !== undefined) {
       this.files.set(url, kept.file)
       for (const [key, specMap] of kept.imports) nestedMap(this.imports, key).set(url, specMap)

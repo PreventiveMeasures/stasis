@@ -152,7 +152,13 @@ those packages are unpacked, and the build runs again, until a round reads none
 it has not unpacked. What a round scans of a file is kept for the rounds after
 it, unless scanning it read in a package not yet unpacked: each file is scanned
 once, but those, whose imports are resolved again in the next round, from the
-parse kept.
+parse kept. With `EXODUS_STASIS_DEBUG=1`, each round is said on stderr as it
+ends, and what it cost:
+
+```text
+[stasis] Lazy round 3: built in 1.01 s (files 492 parsed, 164 resolved, 4221 replayed), asked for 40 packages
+[stasis] Lazy round 3: unpacked in 0.19 s
+```
 
 Each package unpacked is held to the lockfile, and checked as without
 `--lazy`, so a broken tarball the build reaches is refused as before. One it

@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { getParser, importsTypescriptByOutputName, literalSpec, scan } from '../scan.js'
+import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
@@ -1353,6 +1353,21 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // with an `import()`, as the Metro plugin's graph then holds it.
 const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 
+// A get-or-read cache for the rounds a lazy tree's build runs in (vfs-bundle/lazy.js), in its `memo`
+// under `label`: what `read()` gives for a key, kept where reading it through `host` read no package
+// not unpacked yet (`host.touches()`), as a scan keeps what it reads of a file; without a `memo`,
+// read each time.
+function keptAcross(label, host, memo) {
+  const kept = memo ? nestedMap(memo, label) : null
+  return (key, read) => {
+    if (kept?.has(key)) return kept.get(key)
+    const before = kept === null ? 0 : host.touches()
+    const value = read()
+    if (kept !== null && host.touches() === before) kept.set(key, value)
+    return value
+  }
+}
+
 // `fn()` on `host`, its reads probes of what files packages hold, which read none of their code,
 // where the host tells them apart (a lazy tree's, vfs-bundle/tree.js's treeHost).
 const probing = (host, fn) => (host.probing === undefined ? fn() : host.probing(fn))
@@ -1658,6 +1673,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // Babel with plugins of its own (react-native-reanimated's, `require.resolve('@babel/plugin-…')`),
     // with the edge Node's resolution makes, under the conditions it resolves with.
     const babelConfig = pathToFileURL(join(baseDir, BABEL_CONFIG_FILE)).toString()
+    // What each file names, read once across a lazy tree's rounds (keptAcross).
+    const resolutionsOf = keptAcross('require.resolve', host, memo)
+    const namedOf = keptAcross('babel names', host, memo)
     if (traced?.files.has(babelConfig)) {
       const files = new Map(traced.files)
       const visited = new Set()
@@ -1680,7 +1698,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           const file = fileURLToPath(url)
           const rel = toRel(file)
           if (info.resource || !JS_EXTS.has(extname(file))) continue
-          for (const [spec, target] of requireResolutions(file, host)) {
+          for (const [spec, target] of resolutionsOf(file, () => requireResolutions(file, host))) {
             if (!JS_EXTS.has(extname(target)) || relWithin(target) === null) continue
             named.add(target)
             // A specifier keeps one edge, the first recorded, as a run records a resolution only where no
@@ -1693,7 +1711,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           }
           const configModule = isBabelConfigModule(rel)
           if (!configModule && splitNodeModulesPath(rel)) continue
-          for (const name of babelNamedModules(file, host, { anyString: configModule })) {
+          for (const name of namedOf(`${configModule}\0${file}`, () => babelNamedModules(file, host, { anyString: configModule }))) {
             const found = resolveNamed(name, file)
             if (found !== undefined && JS_EXTS.has(extname(found)) && relWithin(found) !== null) named.add(found)
           }
@@ -2265,12 +2283,44 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   }
   const built = tree.unpack === undefined
     ? await attempt()
-    : await import('../vfs-bundle/lazy.js').then(({ inRounds }) => inRounds(attempt, tree.unpack))
+    : await import('../vfs-bundle/lazy.js').then(({ inRounds }) => inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack]))
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
   const unpacked = tree.lazy?.unpacked.size ?? tree.stats.installed ?? tree.stats.dependencies
   return { bundle, lockfile: lockfile?.(), stats: { ...tree.stats, unpacked }, packageManager, root }
+}
+
+// EXODUS_STASIS_DEBUG=1 or true.
+const debugging = () => process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true'
+
+// `attempt` and `unpack` as inRounds takes them, each round said on stderr as it ends: how long it
+// built, the files its scans parsed, resolved again from a parse kept and took as kept, and the
+// packages it asked for and how long unpacking them took. Written, not warned: inRounds holds back
+// what a round set aside warns.
+function reportedRounds(attempt, unpack) {
+  let round = 0
+  let at
+  let since
+  const ms = (start) => `${((performance.now() - start) / 1000).toFixed(2)} s`
+  return [
+    async (reads) => {
+      round++
+      at = performance.now()
+      since = { ...scanCounts }
+      try {
+        return await attempt(reads)
+      } finally {
+        const files = Object.keys(scanCounts).map((key) => `${scanCounts[key] - since[key]} ${key}`).join(', ')
+        process.stderr.write(`[stasis] Lazy round ${round}: built in ${ms(at)} (files ${files}), ${reads.asked.size === 0 ? 'the build' : `asked for ${reads.asked.size} package${reads.asked.size === 1 ? '' : 's'}`}\n`)
+      }
+    },
+    async (asked, read) => {
+      at = performance.now()
+      await unpack(asked, read)
+      process.stderr.write(`[stasis] Lazy round ${round}: unpacked in ${ms(at)}\n`)
+    },
+  ]
 }
 
 // Programmatic equivalent of `stasis bundle`: build and return an in-memory Bundle without
