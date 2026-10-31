@@ -711,7 +711,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     validatedAt: now(),
     status: counts.differs + counts.unexpected + counts.lockFailures + counts.misplaced > 0 ? 'invalid' : counts.unverified > 0 ? 'incomplete' : 'valid',
     own: skipped ? { checked: false, reason: read.reason, ...(patchesChecked > 0 && { patches: patchesChecked }) }
-      : { checked: true, repository: read.repository, ...(read.movedFrom && { movedFrom: read.movedFrom }), commit: read.commit, directory: read.directory, ...(read.cut && { cut: true }) },
+      : { checked: true, repository: read.repository, ...(read.movedFrom && { movedFrom: read.movedFrom }), commit: read.commit, ...(read.ref && { ref: read.ref }), directory: read.directory, ...(read.cut && { cut: true }) },
     lockfiles: locked?.lockfiles ?? null,
     counts,
     problems: problems.toSorted(byProblem).slice(0, MAX_TOLD),
@@ -1031,7 +1031,41 @@ export function followingMoves(client, github) {
       return client[method]({ ...options, repo: name })
     }
   }
-  return { name: () => name, ...Object.fromEntries(['getRepoTreeId', 'getRepoTreeTarball', 'listRepoDir', 'getRepoFile'].map((method) => [method, read(method)])) }
+  const methods = ['getRepoTreeId', 'getRepoTreeTarball', 'listRepoDir', 'getRepoFile', 'getRepoHead', 'listRepoTags', 'listRepoBranches', 'compareCommits']
+  return { name: () => name, ...Object.fromEntries(methods.map((method) => [method, read(method)])) }
+}
+
+// The branches compared at once, where a commit is in neither the default branch's history nor at a
+// tag or a branch's head.
+const BRANCHES_AT_ONCE = 6
+
+// The ref of `repository` (followingMoves's) that has `commit` in its history, the first of: its
+// default branch, a tag at it, a branch at it, another branch; `{ branch }` or `{ tag }`, null for
+// none. GitHub answers for a commit of any fork of a repository through the repository's own name
+// too, its trees and files read there all the same: that one is the repository's own is that a ref
+// of it holds it (as its compare tells, `ahead` of it or `identical`).
+export async function historyOf(repository, commit) {
+  const holds = async (ref) => {
+    try {
+      return ['ahead', 'identical'].includes((await repository.compareCommits({ base: commit, head: ref })).status)
+    } catch (error) {
+      // A commit GitHub has none of, or none in common with the ref.
+      if (error instanceof HttpError && error.status === 404) return false
+      throw error
+    }
+  }
+  const head = await repository.getRepoHead({})
+  if (head.oid === commit || (await holds(head.branch))) return { branch: head.branch }
+  const tag = (await repository.listRepoTags({})).find((entry) => entry.oid === commit)
+  if (tag) return { tag: tag.tag }
+  const branches = (await repository.listRepoBranches({})).filter((entry) => entry.branch !== head.branch)
+  const at = branches.find((entry) => entry.oid === commit)
+  if (at) return { branch: at.branch }
+  let found = null
+  await eachOf(branches, BRANCHES_AT_ONCE, async ({ branch }) => {
+    if (found === null && (await holds(branch))) found ??= { branch }
+  })
+  return found
 }
 
 // A bundle file validated (validateBundle): its own code against the repository its `repo` names (or
@@ -1057,8 +1091,14 @@ export async function validate(file, { client, github, sha, directory, own = tru
     if (where.github === undefined) throw new ValidateError('no-repository', `${file} records no repository to read ${what} of: give --github=owner/name and --sha=commit, ${or}`)
     if (where.commit === undefined) throw new ValidateError('no-commit', `${file} records no commit to read ${what} at: give --sha=commit, ${or}`)
   }
-  // The repository read where it has moved too.
+  // The repository read where it has moved too, at a commit of its own history alone: GitHub serves
+  // a commit of any fork of it through its name too.
   const repository = where.github === undefined ? null : followingMoves(client, where.github)
+  const readsCommit = own || fromRepository || (plan.patches.size > 0 && where.commit !== undefined)
+  const ref = repository && readsCommit && where.commit !== undefined ? await historyOf(repository, where.commit) : undefined
+  if (ref === null) {
+    throw new ValidateError('commit-not-in-history', `${where.commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
+  }
   const reading = own ? repositoryFiles(repository, where) : null
   // Awaited later, its failure then: none meanwhile.
   reading?.catch(() => {})
@@ -1129,7 +1169,7 @@ export async function validate(file, { client, github, sha, directory, own = tru
   // The packages fetched as the repository's tree is read, where it is; own code skipped, the patches
   // the bundle holds checked all the same, where a repository and commit are given or recorded.
   // Where it was read, the name it has now where it has moved.
-  const at = () => ({ repository: repository.name(), ...(repository.name() !== where.github && { movedFrom: where.github }), commit: where.commit, directory: where.directory })
+  const at = () => ({ repository: repository.name(), ...(repository.name() !== where.github && { movedFrom: where.github }), commit: where.commit, ...(ref && { ref }), directory: where.directory })
   const checked = own ? reading.then((entries) => ({ entries, ...at() }))
     : where.github !== undefined && where.commit !== undefined && plan.patches.size > 0 ? patchEntries().then((entries) => ({ reason: 'skipped', entries, ...at() }))
       : { reason: 'skipped' }
@@ -1192,7 +1232,7 @@ export function printValidationReport(report, { out = process.stdout, err = proc
   const { counts, own } = report
   const lines = [
     `${paintErr(['bold', TONES[report.status]], report.status)}: ${counts.matched} of ${counts.files} files as they should be, ${counts.differs} differ, ${counts.unexpected} unexpected, ${counts.unverified} unverified${counts.skipped ? `, ${counts.skipped} skipped` : ''}; ${counts.validPackages} of ${counts.packages} packages as published${counts.lockFailures ? `, ${counts.lockFailures} failing their lockfile` : ''}${counts.misplaced ? `, ${counts.misplaced} installed where another is` : ''}${counts.eol ? `; ${counts.eol} with a checkout's CRLF line endings` : ''}`,
-    own.checked ? `Own code held to ${own.repository}${own.movedFrom ? ` (moved from ${own.movedFrom})` : ''} at ${own.commit}${own.directory ? ` under ${own.directory}` : ''}`
+    own.checked ? `Own code held to ${own.repository}${own.movedFrom ? ` (moved from ${own.movedFrom})` : ''} at ${own.commit}${own.ref ? (own.ref.tag ? `, tag ${own.ref.tag}` : ` of ${own.ref.branch}`) : ''}${own.directory ? ` under ${own.directory}` : ''}`
       : paintErr('yellow', `Own code not verified: ${OWN_UNCHECKED[own.reason] ?? own.reason}${own.patches ? `; the ${own.patches === 1 ? 'patch' : `${own.patches} patches`} the bundle holds checked all the same` : ''}`),
     ...(report.lockfiles?.length > 0 ? [`Dependencies held to ${report.lockfiles.join(', ')}`]
       : report.lockfiles === null && counts.packages > 0 ? [paintErr('yellow', 'Dependencies held to no lockfile (--no-lockfile): each to its registry\'s integrity alone')] : []),

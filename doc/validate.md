@@ -33,7 +33,7 @@ It exits:
 | 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
 | 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile, or a copy is installed where another is. |
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
-| 3 | It refused the bundle (no repository or commit, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
+| 3 | It refused the bundle (no repository or commit, a commit of no branch or tag of the repository, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
 The report goes to stdout as tables, as `stasis audit` prints its own:
 
@@ -71,7 +71,7 @@ a terminal that has them; not a pipe or a file.
 │ unverified │ tool@2.0.0 │ locked from git, not a registry │
 └────────────┴────────────┴─────────────────────────────────┘
 invalid: 4 of 10 files as they should be, 3 differ, 1 unexpected, 2 unverified; 1 of 4 packages as published, 1 failing their lockfile
-Own code held to org/repo at 0123456789abcdef0123456789abcdef01234567 under web
+Own code held to org/repo at 0123456789abcdef0123456789abcdef01234567 of main under web
 Dependencies held to pnpm-lock.yaml
 ```
 
@@ -227,6 +227,18 @@ patch the bundle holds is as the repository has it, and whether the bundle
 holds its files patched or as published. One whose patch couldn't be read or
 applied is held to its files as published.
 
+## The commit
+
+GitHub serves a commit pushed to any fork of a repository through the
+repository's own name too: its tree, its files and its lockfile read there
+all the same. So the commit own code, the lockfile and the patches the bundle
+holds are read at must be in the repository's own history: that of its
+default branch, or a tag or a branch at it, or that of another of its
+branches, as GitHub's compare tells it (the branch `ahead` of the commit, or
+the same). One in none, a fork's say, is refused (exit 3), whether the bundle
+records it or `--sha` gives it. The report names the ref that has it (`of
+main`, `, tag v1.0.0`).
+
 ## Access
 
 GitHub is asked with `GITHUB_TOKEN` where it is set, for a private repository.
@@ -252,6 +264,7 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
+| `historyOf(repository, commit)` | The ref of `repository` (`followingMoves`'s) that has `commit` in its history, `{ branch }` or `{ tag }`, null for none: its default branch, a tag or a branch at it, then its other branches. |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's (`''`, the default, for the same). |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
