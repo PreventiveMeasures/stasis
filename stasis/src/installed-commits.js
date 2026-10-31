@@ -98,7 +98,9 @@ const storeNames = (key) => STORE_NAMES.flatMap(([unsafe, digest]) => {
   if (name.includes('(')) name = name.replace(/\)$/u, '').replace(/\)\(|\(|\)/gu, '_')
   return [name, `_${digest(name)}`]
 })
-const STORE_HASH = /_(?:[\da-f]{32}|[a-z2-7]{26})$/u
+// The hash pnpm ends a store directory's name with where it cuts a long one short: pnpm 10's hex,
+// or the base32 of those before.
+export const STORE_HASH = /_(?:[\da-f]{32}|[a-z2-7]{26})$/u
 
 // pnpm's: lock.yaml in `store`, a node_modules/.pnpm, the lockfile of what pnpm 9 to 12 installed
 // there, by the directory there each snapshot is in. A git dependency's resolution is the repository
