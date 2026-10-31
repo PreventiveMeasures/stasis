@@ -60,20 +60,14 @@ export function yarnclean(host, cwd) {
     // A path a `!` filter matches is kept, and so is every directory holding one.
     const kept = new Set()
     const holdingKept = new Set()
-    for (const { path, loc } of negations.length === 0 ? [] : entries) {
-      if (!negations.some((filter) => matches(filter, loc))) continue
+    const keep = (path) => {
       kept.add(path)
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) holdingKept.add(up)
     }
-    // Any other a filter matches goes, or below a directory one matches, everything below it with
-    // it, but a directory holding a kept path: it stays with that, and what else is below it goes.
-    const matched = new Set()
-    const matchedAbove = (path) => {
-      for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) if (matched.has(up)) return true
-      return false
-    }
-    // A link to a path kept, or to a directory holding one, stays as that does: pnpm links each
-    // package into its store, where Yarn's hoisted layout holds the package itself.
+    for (const { path, loc } of negations.length === 0 ? [] : entries) if (negations.some((filter) => matches(filter, loc))) keep(path)
+    // So is a link to a path kept, or to a directory holding one, as that is, wherever it is: pnpm
+    // links each package (under its scope's directory) into its store, where Yarn's hoisted layout
+    // holds the package itself.
     const leadsToKept = (path) => {
       let real
       try {
@@ -83,12 +77,20 @@ export function yarnclean(host, cwd) {
       }
       return kept.has(real) || holdingKept.has(real)
     }
+    for (const { path, type } of kept.size === 0 ? [] : entries) if (type === 'symlink' && leadsToKept(path)) keep(path)
+    // Any other a filter matches goes, or below a directory one matches, everything below it with
+    // it, but a directory holding a kept path: it stays with that, and what else is below it goes.
+    const matched = new Set()
+    const matchedAbove = (path) => {
+      for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) if (matched.has(up)) return true
+      return false
+    }
     let gone = null
-    for (const { path, type, loc } of entries) {
+    for (const { path, loc } of entries) {
       if ((gone !== null && path.startsWith(gone)) || kept.has(path)) continue
       if (positives.some((filter) => matches(filter, loc))) matched.add(path)
       else if (!matchedAbove(path)) continue
-      if (holdingKept.has(path) || (type === 'symlink' && kept.size > 0 && leadsToKept(path))) continue
+      if (holdingKept.has(path)) continue
       vfs.rm(path, { recursive: true })
       gone = `${path}/`
     }
