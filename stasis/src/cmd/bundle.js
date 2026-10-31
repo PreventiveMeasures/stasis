@@ -736,9 +736,9 @@ function refuseSplit(split, baseDir) {
   }
 }
 
-// Classify scanner unresolved edges + parse errors into fatal (broken/divergent at load)
-// vs tolerated (a catchable runtime miss). Shared so the plain and --mainFields JS paths
-// gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
+// Classify scanner unresolved edges into fatal (broken/divergent at load) vs tolerated (a
+// catchable runtime miss); every parse error is fatal. Shared so the plain and --mainFields JS
+// paths gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
 function analyzeScanner(scanner, { baseDir }) {
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
@@ -746,11 +746,9 @@ function analyzeScanner(scanner, { baseDir }) {
   const fatal = scanner.unresolved
     .filter((u) => fatalUnresolved(u))
     .map((u) => `unresolved ${describeUnresolved(u, show)}`)
-  // Fatal parse: an eagerly-linked module-family file, or any file the parser couldn't process.
-  const fatalParse = (p) => staticReachable.has(p.url) && (p.format?.startsWith('module') === true || !p.recovered)
-  for (const p of scanner.parseErrors) {
-    if (fatalParse(p)) fatal.push(`parse error in ${show(p.url)}: ${p.message}`)
-  }
+  // A file the parser couldn't read cleanly, however it is reached: its edges are unknown (a module
+  // file's are discarded) or partial (those of a script's recovered AST), never a graph to record.
+  for (const p of scanner.parseErrors) fatal.push(`parse error in ${show(p.url)}: ${p.message}`)
   // Edge resolving to a file a source bundle can't carry (.node/.wasm/extensionless): scan
   // records it but never queues the child, so load would die.
   for (const [, byParent] of scanner.imports) {
@@ -763,13 +761,12 @@ function analyzeScanner(scanner, { baseDir }) {
     }
   }
   const tolerated = scanner.unresolved.filter((u) => !fatalUnresolved(u))
-  const toleratedParse = scanner.parseErrors.filter((p) => !fatalParse(p))
-  return { fatal, tolerated, toleratedParse }
+  return { fatal, tolerated }
 }
 
 // Throw on fatal scan issues; warn on tolerated ones. `label` tags the scan pass; `baseDir`
 // relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages.
-function reportScanIssues({ fatal, tolerated, toleratedParse, leftOut = [] }, { label = '', baseDir, root = '' }) {
+function reportScanIssues({ fatal, tolerated, leftOut = [] }, { label = '', baseDir, root = '' }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
   // The first 10 of `items` as indented lines (`line` renders one), then how many more there are.
@@ -783,10 +780,6 @@ function reportScanIssues({ fatal, tolerated, toleratedParse, leftOut = [] }, { 
   if (tolerated.length > 0) {
     const summary = listed(tolerated, (u) => describeUnresolved(u, show))
     console.warn(`[stasis] Bundle has ${tolerated.length} unresolved import(s)${where}; they will fall through at load time:\n${summary}`)
-  }
-  if (toleratedParse.length > 0) {
-    const summary = listed(toleratedParse, (p) => `${show(p.url)}: ${p.message}`)
-    console.warn(`[stasis] Bundle has ${toleratedParse.length} file(s) with parse errors${where}; their recorded imports may be incomplete:\n${summary}`)
   }
   if (leftOut.length > 0) {
     // The file outside the root by its path from the cwd, as the refusal of one linked eagerly names it.

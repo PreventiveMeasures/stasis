@@ -3959,11 +3959,9 @@ cliTest('CLI: bundle (JS) fails closed when a statically-imported module file do
   t.assert.ok(!existsSync(outPath))
 }))
 
-cliTest('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc recovers from (import.meta in CJS)', withTmp(async (t, tmp) => {
-  // oxc reports `import.meta` in CJS as an error but its recovered AST keeps
-  // the require() calls. A recovered CJS parse error is warn-only (see
-  // analyzeScanner's fatalParse): the bundle must include the whole chain and
-  // only warn.
+cliTest('CLI: bundle (JS) fails closed on a CJS file with a parse error oxc recovers from (import.meta in CJS)', withTmp(async (t, tmp) => {
+  // oxc reports `import.meta` in CJS as an error and recovers an AST holding the require() calls --
+  // a partial graph, never one to record: the bundle fails, naming the file.
   jsProject(tmp, {
     'entry.cjs': "require('./guard.cjs')\n",
     'guard.cjs': "const dir = import.meta.dirname\nmodule.exports = require('./extra.cjs')\n",
@@ -3971,12 +3969,25 @@ cliTest('CLI: bundle (JS) salvages edges from a CJS file with a parse error oxc 
   })
   const outPath = join(tmp, 'out.br')
   const r = await runCli(['bundle', `--output=${outPath}`, 'entry.cjs'], { cwd: tmp })
-  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  t.assert.match(r.stderr, /file\(s\) with parse errors; their recorded imports may be incomplete/)
-  t.assert.match(r.stderr, /guard\.cjs/)
-  const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['entry.cjs', 'extra.cjs', 'guard.cjs'],
-    'the require edge inside the parse-error file must be salvaged and walked')
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /JS bundle would be broken at load time/)
+  t.assert.match(r.stderr, /parse error in .*guard\.cjs/)
+  t.assert.ok(!existsSync(outPath))
+}))
+
+cliTest('CLI: bundle (JS) fails closed on a parse error in a file reached only lazily (a require in a getter)', withTmp(async (t, tmp) => {
+  // As react-native/index.js reaches each component through a getter's require(): the file is linked
+  // at no load, but its edges are as unknown as an eager one's, so the bundle fails all the same.
+  jsProject(tmp, {
+    'index.js': "module.exports = { get View() { return require('./View.js') } }\n",
+    'View.js': "import ViewNativeComponent from './ViewNativeComponent.js'\ncomponent View(ref, ...props) { return ViewNativeComponent }\nexport default View\n",
+    'ViewNativeComponent.js': 'export default 1\n',
+  }, { name: 'lazy', version: '0.0.0' })
+  const outPath = join(tmp, 'out.br')
+  const r = await runCli(['bundle', '--flow', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.notEqual(r.status, 0)
+  t.assert.match(r.stderr, /parse error in View\.js/)
+  t.assert.ok(!existsSync(outPath))
 }))
 
 cliTest('CLI: bundle (JS) takes a top-level return in CJS as clean, as Node\'s module wrapper does', withTmp(async (t, tmp) => {
@@ -4109,11 +4120,10 @@ cliTest('CLI: bundle --jsx handles a typeless package (RN convention: no "type")
   t.assert.equal(decoded.formats['index.js'], 'module', 'import/export syntax must resolve to module even with JSX enabled')
 }))
 
-cliTest('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvaged-parse warning)', withTmp(async (t, tmp) => {
-  // JSX in a CJS file is only a *recovered* (tolerated) parse error without --jsx: the CLI warns
-  // and salvages the require() edges but exits 0. With --jsx the file parses cleanly, so the
-  // parse-error warning must disappear entirely while the graph is still walked. (Typeless
-  // package so `require`/`module.exports` keeps the file CommonJS.)
+cliTest('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly, which fails without it', withTmp(async (t, tmp) => {
+  // JSX in a CJS file is a parse error without --jsx, recovered or not: the bundle fails. With --jsx
+  // the file parses cleanly and the graph is walked. (Typeless package so `require`/`module.exports`
+  // keeps the file CommonJS.)
   jsProject(tmp, {
     'index.js': "const { Row } = require('./Row.js')\nmodule.exports = () => <Row>hi</Row>\n",
     'Row.js': "exports.Row = () => null\n",
@@ -4121,8 +4131,8 @@ cliTest('CLI: bundle --jsx parses JSX in a CommonJS .js file cleanly (no salvage
   const outPath = join(tmp, 'out.br')
 
   const noJsx = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.equal(noJsx.status, 0, `CJS JSX is tolerated (recovered) without --jsx; stderr: ${noJsx.stderr}`)
-  t.assert.match(noJsx.stderr, /file\(s\) with parse errors/, 'without --jsx the CJS JSX must warn as a salvaged parse error')
+  t.assert.notEqual(noJsx.status, 0, 'without --jsx the CJS JSX is a parse error, which fails the bundle')
+  t.assert.match(noJsx.stderr, /parse error in index\.js/)
 
   const r = await runCli(['bundle', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
   t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)

@@ -634,6 +634,14 @@ parse and retries, so the import graph resolves; the stored source stays the
 original bytes. It strips with `flow-remove-types`, a dependency of stasis
 resolved from where stasis is installed, never from the project being bundled,
 and combines with `--jsx`, `--conditions`, `--mainFields` and `--metro`.
+Stripping removes types only: Flow syntax that compiles to code, as `component`
+and `hook` declarations and `enum`s do, stays, so a file using it still doesn't
+parse (React Native 0.81's `View.js` and `VirtualView.js`).
+
+A file the scanner can't parse fails the bundle (`JS bundle would be broken at
+load time`), however it is reached, an import inside a function included: its
+import graph is unknown, or only partly known from a recovered parse, so there
+is none to record.
 
 ## Defines (`--define`)
 
