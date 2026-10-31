@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { createBrotliDecompress } from 'node:zlib'
 
+import { trailingJunkError } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { assert } from '@exodus/stasis-core/util'
 
@@ -18,7 +19,7 @@ const untilAborted = (promise, signal) => (signal === undefined ? promise : new 
 // Left in place of each streamed file; fromJSON's contents-free mode requires one per file.
 const STREAMED = Symbol('streamed')
 
-// Bundle.parse(brotliDecompressSync(source)), without holding the decompressed bytes or the JSON text whole.
+// parseBundleBytes(source), without holding the decompressed bytes or the JSON text whole.
 // onFile gets each file in stream order, wherever the bundle puts its files, and before the bundle is
 // validated: what it receives (format included) is provisional until readBundle resolves. See doc/file-formats.md.
 export async function readBundle(source, { onFile, signal } = {}) {
@@ -46,8 +47,26 @@ export async function readBundle(source, { onFile, signal } = {}) {
 
   // Big chunks let zlib's thread pool decompress ahead of the parser; zlib's 16 KiB default runs about 2x slower.
   const decompress = createBrotliDecompress({ chunkSize: 1024 * 1024, readableHighWaterMark: 4 * 1024 * 1024 })
+  // The decoder ends its output at the end of the brotli stream and consumes nothing after it, so
+  // the bytes it was given and the bytes it consumed (its bytesWritten) differ by exactly those.
+  // Counting them here takes `input` out of pipeline's hands, so this destroys a stream on pipeline's
+  // signal, raised on any failure or abort, as pipeline would: one waiting for a chunk holds it open.
+  let given = 0
+  async function* counted({ signal: stop }) {
+    const destroy = () => input.destroy?.()
+    stop.addEventListener('abort', destroy, { once: true })
+    if (stop.aborted) destroy()
+    try {
+      for await (const chunk of input) {
+        given += Buffer.byteLength(chunk)
+        yield chunk
+      }
+    } finally {
+      stop.removeEventListener('abort', destroy)
+    }
+  }
   let drained = false
-  await pipeline(input, decompress, async (chunks) => {
+  await pipeline(counted, decompress, async (chunks) => {
     for await (const chunk of chunks) {
       parser.write(chunk)
       for (const [file, contents, format] of pending.splice(0)) {
@@ -58,9 +77,10 @@ export async function readBundle(source, { onFile, signal } = {}) {
     }
     drained = true
   }, { signal }).catch((error) => {
-    // Once drained, the stream is whole: pipeline reports unread bytes after it as an abort.
-    if (!drained || signal?.aborted) throw error
+    // Output that ends before the input does is a premature close to pipeline: refused just below.
+    if (!drained || signal?.aborted || decompress.bytesWritten === given) throw error
   })
+  if (decompress.bytesWritten !== given) throw trailingJunkError()
 
   const bundle = Bundle.fromJSON(parser.end(), { contents: !onFile })
   if (onFile) {

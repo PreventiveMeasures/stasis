@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import { createReadStream, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
+import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { readBundle } from '@exodus/stasis/bundle-reader'
 import { collectComponents } from '../stasis/src/sbom.js'
@@ -319,18 +321,67 @@ test('readBundle rejects as soon as it is aborted, even while onFile is still ru
   t.assert.equal(received, controller.signal)
 })
 
-test('readBundle ignores bytes after the brotli stream, as brotliDecompressSync does, however they arrive', withTmp(async (t, tmp) => {
-  const tail = new Uint8Array(300_000)
-  for (let i = 0, x = 1; i < tail.length; i += 1) tail[i] = (x = (Math.imul(x, 1_103_515_245) + 12_345) >>> 0) >>> 24
-  const buf = Buffer.concat([compressed(sampleBundle().serialize()), tail])
-  const file = join(tmp, 'trailing.br')
-  writeFileSync(file, buf)
-  const expected = parseWhole(buf).serialize()
-  for (const [label, source] of [['bytes', buf], ['path', file], ['7-byte chunks', chunked(buf, 7)], ['64 KiB chunks', chunked(buf, 65_536)]]) {
+test('readBundle settles while its source waits for more, on an abort or a failure, and destroys the source', async (t) => {
+  const buf = compressed(minimal({ 'a.js': 'A' }))
+  const cases = [
+    ['an abort, the whole stream sent', buf, 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['an abort, part of it sent', buf.subarray(0, 5), 'AbortError', (controller) => setTimeout(() => controller.abort(), 20)],
+    ['onFile failing', buf, 'disk full', () => {}, () => {
+      throw new Error('disk full')
+    }],
+  ]
+  for (const [label, sent, expected, start, onFile] of cases) {
+    const source = new Readable({ read() {} }) // never ends
+    source.push(sent)
+    const controller = new AbortController()
+    const read = readBundle(source, { signal: controller.signal, onFile })
+    start(controller)
+    let timer
+    try {
+      const pending = new Promise((resolve) => {
+        timer = setTimeout(resolve, 2000, 'still pending')
+      })
+      const error = (e) => (e.name === 'AbortError' ? e.name : e.message)
+      t.assert.equal(await Promise.race([read.then(() => 'resolved', error), pending]), expected, label)
+      t.assert.equal(source.destroyed, true, label)
+    } finally {
+      clearTimeout(timer)
+      source.destroy()
+    }
+  }
+})
+
+test('readBundle refuses bytes after the brotli stream, as parseBundleBytes does, however they arrive', withTmp(async (t, tmp) => {
+  const noise = new Uint8Array(300_000)
+  for (let i = 0, x = 1; i < noise.length; i += 1) noise[i] = (x = (Math.imul(x, 1_103_515_245) + 12_345) >>> 0) >>> 24
+  const stream = compressed(sampleBundle().serialize())
+  const expected = parseWhole(stream).serialize()
+  // The exact stream reads, however it arrives, as does one split right at its end.
+  async function* thenEmpty() {
+    yield stream
+    yield new Uint8Array(0)
+  }
+  for (const [label, source] of [['bytes', stream], ['7-byte chunks', chunked(stream, 7)], ['empty chunk after', thenEmpty()]]) {
     t.assert.equal((await readBundle(source)).serialize(), expected, label)
   }
+  const junk = { code: 'ERR_TRAILING_JUNK_AFTER_STREAM_END' }
+  for (const [what, tail] of [['a zero byte', new Uint8Array(1)], ['noise', noise], ['the stream again', stream]]) {
+    const buf = Buffer.concat([stream, tail])
+    t.assert.throws(() => parseBundleBytes(buf), junk, what)
+    const file = join(tmp, 'trailing.br')
+    writeFileSync(file, buf)
+    async function* tailApart() { // the stream ends exactly at a chunk's end, the junk in the next
+      yield stream
+      yield tail
+    }
+    const sources = [['bytes', buf], ['path', file], ['7-byte chunks', chunked(buf, 7)], ['64 KiB chunks', chunked(buf, 65_536)], ['tail apart', tailApart()]]
+    for (const [label, source] of sources) {
+      await t.assert.rejects(readBundle(source), junk, `${what}, ${label}`)
+    }
+    await t.assert.rejects(readBundle(buf, { onFile() {} }), junk, `${what}, with onFile`)
+  }
   // A truncated stream still fails.
-  await t.assert.rejects(readBundle(chunked(buf.subarray(0, 100), 7)))
+  await t.assert.rejects(readBundle(chunked(stream.subarray(0, 100), 7)))
 }))
 
 test('readBundle stops calling onFile once aborted, even for files queued from the same chunk', async (t) => {

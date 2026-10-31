@@ -333,6 +333,17 @@ test('collectPackagesFromFile reports a clean error when the input is missing', 
   t.assert.throws(() => collectPackagesFromFile(file), /File not found:/)
 })
 
+test('collectPackagesFromFile refuses a bundle with bytes after its brotli stream', withTmp((t, tmp) => {
+  const file = join(tmp, 'trailing.br')
+  const stream = brotliCompressSync(JSON.stringify({ version: 1, config: { scope: 'full' }, entries: [], sources: {}, formats: {}, imports: {} }))
+  writeFileSync(file, stream)
+  t.assert.doesNotThrow(() => collectPackagesFromFile(file))
+  for (const tail of [Buffer.of(0), Buffer.from('junk'), stream]) {
+    writeFileSync(file, Buffer.concat([stream, tail]))
+    t.assert.throws(() => collectPackagesFromFile(file), /Failed to read .* as a stasis bundle \(bytes after its brotli stream\)/)
+  }
+}))
+
 test('collectPackagesFromFile wraps brotli-valid but JSON-corrupt bundles', withTmp((t, tmp) => {
   const file = join(tmp, 'corrupt.br')
   writeFileSync(file, brotliCompressSync(Buffer.from('not valid json {')))
