@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -15,7 +15,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
-import { HEAD, fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
+import { HEAD, fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
 
 // @exodus/stasis/vfs-bundle's buildGitHubBundle over a fake @preventive/upstream/github.js client
 // serving a repo held in memory: nothing is fetched, and every lockfile here locks no registry package.
@@ -125,17 +125,6 @@ test("buildGitHubBundle takes the entry points of the directory's package.json, 
   t.assert.deepStrictEqual([...bundle.entries], ['cli.js'])
   t.assert.deepStrictEqual({ ...bundle.repo }, { github: GITHUB, directory: 'packages/p', commit: SHA })
 })
-
-// A Vfs holding `files` as fakeClient serves them.
-const vfsOf = (files) => {
-  const vfs = new Vfs()
-  for (const [path, value] of Object.entries(files)) {
-    vfs.mkdir(posix.dirname(`/${path}`), { recursive: true })
-    if (typeof value === 'string') vfs.writeFile(`/${path}`, value)
-    else if (value !== undefined) vfs.symlink(value.symlink, `/${path}`)
-  }
-  return vfs
-}
 
 test('suggestedEntries suggests the entries buildGitHubBundle takes without any, of a repo or a Vfs', async (t) => {
   const named = ['lib/index.js', 'esm/index.mjs', 'lib/util.js', 'bin/p.js']

@@ -2122,7 +2122,7 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, bab
 // build's `resources` where given, else by the config's. A State-built bundle takes them in its
 // State instead, as `stasis run` does (State#includeExtra). The project is read through `host`,
 // `name`'s.
-function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name = 'bundle' } = {}) {
+function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name = 'bundle' }) {
   const config = readConfigFile(name, cwd, host)
   const patterns = parseExtraOption(CONFIG_FILE, config?.extra)
   if (patterns.length === 0) return built
@@ -2244,16 +2244,13 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (outputs.length > 0) host = treeHost(tree, vfsHost(withPrismaClients(vfs, outputs)))
   }
   const args = { cwd, host, env: {} }
-  // Nothing is written into the Vfs, so none of its files is an output kept out of `extra`.
-  const extraOptions = { host, name: 'buildVfsBundle' }
   const builts = []
   for (const build of builds) {
     // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
     const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra })
     // Rooted at cwd, where `stasis bundle` detects its repo.
     if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
-    // A State-built one took its `extra` in its State.
-    builts.push(bundleExtra || built.stateBuilt ? built : withExtra(built, cwd, { ...extraOptions, resources: build.resources }))
+    builts.push(built)
   }
   // Merged as bundleCommand merges its builds: rooted where every one of them is.
   const { root } = builts[0]
@@ -2262,8 +2259,10 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
   }
   let union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
-  // Once, as bundleCommand adds it, by the allowlist of the stasis.config.json at the root.
-  if (bundleExtra) union = withExtra(union, root, extraOptions)
+  // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
+  // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
+  // took it. Nothing is written into the Vfs, so none of its files is an output kept out.
+  if (bundleExtra || !builts[0].stateBuilt) union = withExtra(union, root, { resources: bundleExtra ? undefined : options.resources, host, name: 'buildVfsBundle' })
   const { bundle, lockfile } = union
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)

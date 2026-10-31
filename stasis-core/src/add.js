@@ -181,16 +181,15 @@ function outputMatcher(baseDir, outputs) {
 }
 
 // `host`'s glob of `pattern` under `cwd` (Node's fs.globSync, the disk's or a Vfs's), its matches
-// relative to it, taking none `exclude` takes (given the path relative to `baseDir`, '/'-joined) and
-// walking into none it takes. A visited name is checked as spelled: one holding `\` is for the
-// caller to refuse where it is kept, not here.
+// relative to it, walking into none `exclude` takes (given the path relative to `baseDir`,
+// '/'-joined), which leaves one out where its `**` meets it alone. A visited name is checked as
+// spelled: one holding `\` is for the caller to refuse where it is kept, not here.
 function globPaths(host, pattern, cwd, baseDir, exclude) {
-  if (exclude === undefined) return host.glob(pattern, { cwd })
   const projectPath = (path) => {
     const rel = relative(baseDir, path)
     return sep === '\\' ? rel.replaceAll('\\', '/') : rel
   }
-  return host.glob(pattern, { cwd, exclude: (path) => exclude(projectPath(path)) })
+  return host.glob(pattern, { cwd, exclude: exclude && ((path) => exclude(projectPath(path))) })
 }
 
 // GLOB + FILTER: expand each directory entry into the files under it (recursive glob), dropping the
@@ -221,9 +220,10 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
     const found = []
     for (const match of globPaths(host, '**/*', dirAbs, baseDir, exclude)) {
       const fileAbs = join(dirAbs, match)
+      const fileRel = relative(baseDir, fileAbs)
       // A dangling symlink stats as undefined -- skipped, not a hard ENOENT out of the walk.
-      const fileStats = statStrict(host, fileAbs, relative(baseDir, fileAbs)) ?? undefined
-      if (fileStats?.isFile()) found.push([toPosix(relative(baseDir, fileAbs)), match, fileStats])
+      const fileStats = statStrict(host, fileAbs, fileRel) ?? undefined
+      if (fileStats?.isFile()) found.push([toPosix(fileRel), match, fileStats])
     }
     // Sorted so the sweep is deterministic regardless of readdir order: artifact bytes are
     // canonicalized by serialize() either way, but multi-file diagnostics keep a stable order.
@@ -277,7 +277,13 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
   // Normalized as the paths they're matched against are: no `./`, no trailing `/`.
   const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => posix.normalize(pattern.slice(1)).replace(/\/+$/u, ''))
-  const exclude = exclusions.length === 0 ? undefined : (rel) => exclusions.some((pattern) => host.matchesGlob(rel, pattern))
+  // Each path once: a walk asks of it, a sweep again, and a named path of every directory above it,
+  // where the disk's path.matchesGlob parses each pattern anew.
+  const excluded = new Map()
+  const exclude = exclusions.length === 0 ? undefined : (rel) => {
+    if (!excluded.has(rel)) excluded.set(rel, exclusions.some((pattern) => host.matchesGlob(rel, pattern)))
+    return excluded.get(rel)
+  }
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
     const matches = globPaths(host, pattern, baseDir, baseDir, exclude)
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)

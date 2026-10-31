@@ -1,5 +1,8 @@
+import { posix } from 'node:path'
+
 import { compress, decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, pack, unpack } from '@preventive/archive/tar.js'
+import { Vfs } from '../stasis/src/vfs-bundle.js'
 
 // A fake @preventive/upstream/github.js client over a repo held in memory, for the buildGitHubBundle
 // tests (vfs-bundle-github.test.js, and the child it spawns to watch the disk): nothing is fetched.
@@ -49,6 +52,17 @@ async function verified(method, tarball, symlinksAbove = 0) {
     throw error
   }
   return bytes
+}
+
+// A Vfs holding `files` as fakeClient serves them.
+export const vfsOf = (files) => {
+  const vfs = new Vfs()
+  for (const [path, value] of Object.entries(files)) {
+    vfs.mkdir(posix.dirname(`/${path}`), { recursive: true })
+    if (typeof value === 'string') vfs.writeFile(`/${path}`, value)
+    else if (value !== undefined) vfs.symlink(value.symlink, `/${path}`)
+  }
+  return vfs
 }
 
 // `tags` maps each tag to the commit it names.
