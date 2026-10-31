@@ -448,6 +448,15 @@ export function parseFormats(json) {
   return formats
 }
 
+// A payload-free `stat:*` record attests a path's kind alone: an artifact that also carries content
+// for its path is malformed, rejected on read and never written, as nothing would hold those bytes
+// (a reader taking the record as content-free skips them, another would serve or write them).
+export function assertPayloadFree(formats, files, what) {
+  for (const [file, format] of formats) {
+    if (isStatFormat(format) && files.has(file)) assert(false, `${what}: '${file}' is a payload-free '${format}' record, yet carries content`)
+  }
+}
+
 // The `formats` an artifact writes: the same rule as on read, so an in-memory construct can't serialize
 // what parse would reject; path-sorted.
 export function serializeFormats(formats) {

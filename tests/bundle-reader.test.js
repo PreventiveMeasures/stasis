@@ -231,6 +231,7 @@ test('readBundle rejects what Bundle.parse rejects, with the same error', async 
     'bad version': { ...minimal({ 'a.js': 'A' }), version: 7 },
     'non-string entry': { ...minimal({ 'a.js': 'A' }), entries: [1] },
     'escaping entry': { ...minimal({ 'a.js': 'A' }), entries: ['../a.js'] },
+    'content for a payload-free stat record': minimal({ 'a.js': 'A' }, { formats: { 'a.js': 'stat:file' } }),
     'duplicate flat key across buckets': minimal({}, {
       sources: {
         '.': { name: 'app', version: '1', files: { 'pkg/a.js': 'one' } },

@@ -153,7 +153,8 @@ test('parse refuses an `executable` entry naming a payload-free stat record', (t
     executable: ['probed.sh'],
     ...extra,
   })
-  t.assert.throws(() => Bundle.parse(raw(1)), /is a payload-free 'stat:file' record, not a file/)
+  // A bundle carrying content for the record is refused for that before its executable list is read.
+  t.assert.throws(() => Bundle.parse(raw(1)), /bundle: 'probed\.sh' is a payload-free 'stat:file' record, yet carries content/)
   t.assert.throws(() => Lockfile.parse(raw(0)), /is a payload-free 'stat:file' record, not a file/)
 })
 
@@ -204,11 +205,12 @@ test('serialize refuses an `executable` entry that is not among the files it emi
 // scope, so an artifact naming a `directory` capture or a payload-free `stat:*` record serialized
 // cleanly and then failed its own parse -- the corrupt-on-next-read failure the check exists to stop.
 test('serialize applies every rule parse does, so an artifact always round-trips', (t) => {
+  // A bundle carrying content for a stat record is refused for that, before its executable list is.
   const cases = [
     ['directory', '["a.js"]', 'sha512-d', /is a directory capture, not a file/u],
-    ['stat:file', '#!/bin/sh\n', 'sha512-s', /is a payload-free 'stat:file' record, not a file/u],
+    ['stat:file', '#!/bin/sh\n', 'sha512-s', /is a payload-free 'stat:file' record, not a file/u, /is a payload-free 'stat:file' record, yet carries content/u],
   ]
-  for (const [format, content, digest, message] of cases) {
+  for (const [format, content, digest, message, bundleMessage = message] of cases) {
     const bundle = new Bundle({
       config: { scope: 'full' },
       entries: new Set(),
@@ -216,7 +218,7 @@ test('serialize applies every rule parse does, so an artifact always round-trips
       formats: new Map([['x', format]]),
       executable: new Set(['x']),
     })
-    t.assert.throws(() => bundle.serialize(), message, `bundle rejects '${format}' at serialize`)
+    t.assert.throws(() => bundle.serialize(), bundleMessage, `bundle rejects '${format}' at serialize`)
 
     const lock = new Lockfile({
       config: { scope: 'full' },

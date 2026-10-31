@@ -225,6 +225,25 @@ test('Bundle.merge lets a real format supersede a payload-free stat:file (either
   t.assert.equal(statOnly.merge(real).formats.get('src/a.js'), 'module', 'real overrides the stat record')
 })
 
+test('Bundle.parse refuses a payload-free stat record of a path it carries content for, and serialize never writes one', (t) => {
+  const files = { 'src/a.js': 'A' }
+  for (const stat of ['stat:file', 'stat:directory']) {
+    const message = `bundle: 'src/a.js' is a payload-free '${stat}' record, yet carries content`
+    const json = { version: Bundle.VERSION, config: { scope: 'full' }, entries: ['src/a.js'], formats: { 'src/a.js': stat }, imports: {},
+      sources: { '.': { name: 'app', version: '1.0.0', files } } }
+    t.assert.throws(() => Bundle.parse(JSON.stringify(json)), { message }, 'its bytes held to no format, refused')
+    const built = jsBundle({ entries: ['src/a.js'], modules: [['.', { name: 'app', version: '1.0.0', files }]], formats: [['src/a.js', stat]] })
+    t.assert.throws(() => built.serialize(), { message })
+    // In a dependency's bucket too.
+    const dependency = { ...json, sources: { '.': { name: 'app', version: '1.0.0', files } }, formats: { 'src/a.js': 'module', 'node_modules/dep/index.js': stat },
+      modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', files: { 'index.js': 'D' } } } }
+    t.assert.throws(() => Bundle.parse(JSON.stringify(dependency)), { message: message.replace('src/a.js', 'node_modules/dep/index.js') })
+  }
+  // A stat record of a path it carries nothing for, as a capture writes one, is as it was.
+  const recorded = jsBundle({ entries: ['src/a.js'], modules: [['.', { name: 'app', version: '1.0.0', files }]], formats: [['src/a.js', 'module'], ['src/probe.dat', 'stat:file'], ['src/zone', 'stat:directory']] })
+  t.assert.deepStrictEqual(Bundle.parse(recorded.serialize()).formats, recorded.formats)
+})
+
 test('Bundle.merge lets a real directory listing supersede a stat:directory (either order)', (t) => {
   const statDir = jsBundle({ formats: [['src/d', 'stat:directory']] })
   const realDir = jsBundle({ formats: [['src/d', 'directory']] })

@@ -1576,7 +1576,11 @@ in its `files`, format keyed at the bucket dir (`.` for the project root).
 **`lstatSync`/`statSync`** record a single-argument call's **kind** only. The real
 call runs first (the program gets the genuine `Stats` and errors); the observed
 type is stored as a **payload-free** `stat:file`/`stat:directory` — no bytes,
-hash, or `files` entry. Only regular files and directories are modelled: a symlink
+hash, or `files` entry. A bundle that carries content for a path its `formats`
+records `stat:*` is invalid: parsing it fails, so `stasis extract`, `stasis
+validate` and `stasis run` refuse it whole, and no bundle is written so (as
+nothing would hold those bytes: `validate` checks no content of a stat record,
+and `extract` would write it). Only regular files and directories are modelled: a symlink
 (under `lstat`), socket, or FIFO records nothing; a `statSync` through an in-root
 symlink records the *target's* kind, keyed at the requested path. A path already
 carried as content, or whose real location escapes the root, records no stat

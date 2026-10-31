@@ -1,6 +1,7 @@
 import {
   assert,
   assertArtifactPath,
+  assertPayloadFree,
   canonicalFileKey,
   duplicateKeyError,
   fileSetToObject,
@@ -249,6 +250,7 @@ export class Bundle {
     // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and the `sources` getter would serve either payload.
     const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
     assertNoLockfile(flatKeys.keys())
+    assertPayloadFree(formats, flatKeys, 'bundle')
     const imports = parseImports(json.imports)
 
     if (!contents) for (const [dir, info] of modules) modules.set(dir, lockModule(dir, info))
@@ -272,7 +274,9 @@ export class Bundle {
 
   serialize() {
     // Never write an artifact that parse would reject.
-    assertNoLockfile(flatFileKeys(this.modules, 'bundle', duplicateKey).keys())
+    const flatKeys = flatFileKeys(this.modules, 'bundle', duplicateKey)
+    assertNoLockfile(flatKeys.keys())
+    assertPayloadFree(this.formats, flatKeys, 'bundle')
     const { modules, sources } = groupModules(this.modules, { skipEmpty: true, what: 'bundle' })
     const full = this.config.scope === 'full'
     const data = { version: VERSION, config: this.config }

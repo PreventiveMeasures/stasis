@@ -486,6 +486,23 @@ test('extractCommand refuses a legacy v0 bundle that contains stasis.lock.json, 
   }
 }))
 
+test('extractCommand refuses a bundle carrying content for a payload-free stat record, writing nothing', withTmp((t, tmp) => {
+  // A stat record carries no bytes, so `stasis validate` holds none to the repository: content for its
+  // path is no file of the bundle's, and is never written (src/main.js would run it).
+  for (const stat of ['stat:file', 'stat:directory']) {
+    const bundlePath = join(tmp, `${stat.replace(':', '-')}.code.br`)
+    writeRawBundle(bundlePath, appBundle({ 'src/a.js': "require('./evil.js')\n", 'src/evil.js': "console.log('evil')\n" }, { formats: { 'src/evil.js': stat } }))
+    for (const lock of [undefined, 'none', 'ignore']) {
+      const outDir = join(tmp, `out-${stat.replace(':', '-')}-${lock}`)
+      t.assert.throws(
+        () => extractCommand({ bundleFile: bundlePath, output: outDir, lock }),
+        (err) => /extract: not a valid stasis bundle: /.test(err.message) && err.cause?.message === `bundle: 'src/evil.js' is a payload-free '${stat}' record, yet carries content`,
+      )
+      t.assert.ok(!existsSync(outDir), 'nothing may be written for a refused bundle')
+    }
+  }
+}))
+
 test('extractCommand reports a clear error for a file that is not a valid stasis bundle', withTmp((t, tmp) => {
   // A v1 bundle missing the required `formats`/`imports` fields trips Bundle.parse
   // with a message-less assert; extract must wrap it with context (which file).
