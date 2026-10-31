@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { diskHost } from '@exodus/stasis-core/host'
+
 import { createFieldResolver, resolveConditions } from '../stasis/src/resolve-fields.js'
 import { scan } from '../stasis/src/scan.js'
 import { loadTsconfigPaths, resolveTypescriptFallback, typescriptSiblings } from '../stasis/src/resolve-typescript.js'
@@ -72,6 +74,46 @@ const mk = ({ mainFields = ['react-native', 'browser', 'main'], extras = [], pla
 
 test('a relative import resolves with extension probing', (t) => {
   t.assert.equal(rel(mk()(entry, './Button')), 'src/Button.js')
+})
+
+// The disk host, counting the reads made through it, each a read of what a lazy tree does not hold
+// yet while `touching`, as a lazy tree's host counts them (`touches`).
+function countingHost() {
+  const counts = { reads: 0, touches: 0, touching: false }
+  const host = new Proxy(diskHost, {
+    get(target, key) {
+      if (key === 'touches') return () => counts.touches
+      const value = target[key]
+      if (typeof value !== 'function') return value
+      return (...args) => {
+        counts.reads++
+        if (counts.touching) counts.touches++
+        return value.apply(target, args)
+      }
+    },
+  })
+  return { host, counts }
+}
+
+test('a resolver resolves a specifier once for each directory and conditions, and keeps in `kept`, for one after it, what read nothing a lazy tree does not hold yet', (t) => {
+  const { host, counts } = countingHost()
+  const resolver = (kept) => createFieldResolver({ conditions: resolveConditions('module'), mainFields: ['main'], host, kept })
+  const kept = new Map()
+  const first = resolver(kept)
+  t.assert.equal(rel(first(entry, './Button')), 'src/Button.js')
+  const reads = counts.reads
+  t.assert.ok(reads > 0)
+  t.assert.equal(rel(first(join(fx, 'src', 'entry-polyfills.js'), './Button')), 'src/Button.js', 'from another file of the directory')
+  t.assert.equal(rel(resolver(kept)(entry, './Button')), 'src/Button.js', 'by a resolver after it')
+  t.assert.equal(counts.reads, reads, 'neither read anything')
+  // One that read what a lazy tree does not hold yet is not kept for another.
+  counts.touching = true
+  const touched = new Map()
+  t.assert.equal(rel(resolver(touched)(entry, './Button')), 'src/Button.js')
+  t.assert.equal(touched.size, 0)
+  const again = counts.reads
+  resolver(touched)(entry, './Button')
+  t.assert.ok(counts.reads > again, 'read again')
 })
 
 test('platform suffixes: name.<platform>.ext beats name.native.ext beats name.ext', (t) => {

@@ -8,6 +8,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Scan, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 import { withTmp } from './tmp.helper.js'
+import { diskHost } from '@exodus/stasis-core/host'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -46,6 +47,22 @@ function flattenImports(imports) {
     }
   }
   return flat
+}
+
+// The disk host, counting the reads of each package.json made through it.
+function manifestCountingHost() {
+  const counts = { manifests: 0 }
+  const host = new Proxy(diskHost, {
+    get(target, key) {
+      const value = target[key]
+      if (key !== 'readFile') return typeof value === 'function' ? value.bind(target) : value
+      return (path, ...rest) => {
+        if (basename(String(path)) === 'package.json') counts.manifests++
+        return value.call(target, path, ...rest)
+      }
+    },
+  })
+  return { host, counts }
 }
 
 function captureRuntimeBundle(fixture, entry, tmp, { full = false } = {}) {
@@ -90,6 +107,21 @@ test('scan resolves bare specifiers through node_modules without executing them'
     child: 'node_modules/fake-cjs-nm/index.js',
   })
 })
+
+test('a scan reads the package.json a file\'s format turns on once, however many files are under it', withTmp((t, dir) => {
+  const manifestsRead = (count) => {
+    const root = join(dir, `p${count}`)
+    mkdirSync(root)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'p', type: 'commonjs' }))
+    writeFileSync(join(root, 'a.js'), Array.from({ length: count }, (_, i) => `require('./b${i}.js')\n`).join(''))
+    for (let i = 0; i < count; i++) writeFileSync(join(root, `b${i}.js`), 'module.exports = 1\n')
+    const { host, counts } = manifestCountingHost()
+    const scanned = new Scan({ host }).walk([join(root, 'a.js')])
+    t.assert.equal(scanned.files.size, count + 1)
+    return counts.manifests
+  }
+  t.assert.equal(manifestsRead(6), manifestsRead(1))
+}))
 
 test('scan does not load the target file (top-level side effects never fire)', (t) => {
   // entry.cjs prints "hello, world\n" if executed; scan should not produce any output.

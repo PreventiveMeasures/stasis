@@ -445,7 +445,9 @@ function resolveFileOrDir(base, opts) {
 // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
 // `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
 // (METRO_KEEP_ENTRY_ON_BROWSER_FALSE) per resolver -- primarily so tests can cover both branches.
-// `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default.
+// `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default. `kept`, a Map
+// kept across a lazy tree's rounds, keeps there each resolution that read nothing the tree does not
+// hold yet (untouchedMemo's `across`), for the rounds after.
 export function createFieldResolver({
   conditions = [],
   mainFields = ['main'],
@@ -458,6 +460,7 @@ export function createFieldResolver({
   typescriptPaths = null,
   metroKeepEntryOnBrowserFalse = METRO_KEEP_ENTRY_ON_BROWSER_FALSE,
   host = diskHost,
+  kept,
 } = {}) {
   const read = manifestReader(host)
   const opts = { platform, preferNative, sourceExts, mainFields, metro, assetExts, typescript, metroKeepEntryOnBrowserFalse, host, read }
@@ -624,8 +627,8 @@ export function createFieldResolver({
   }
   // Each resolution made once for each directory, specifier and conditions: a file's directory is all
   // of it resolving from it reads (its package, the node_modules above it, its tsconfig `paths`).
-  // Kept as the resolver's manifests are (manifestReader).
-  const resolutions = untouchedMemo(host.touches, { retouch: host.retouch })
+  // Kept as the resolver's manifests are (manifestReader), and in `kept` across rounds.
+  const resolutions = untouchedMemo(host.touches, { retouch: host.retouch, across: kept })
   const once = (resolveFn) => (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => resolveFn(parentFile, specifier, callConditions))
   if (!typescript) return once(resolve)
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping

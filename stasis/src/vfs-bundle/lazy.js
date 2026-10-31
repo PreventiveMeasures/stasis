@@ -58,10 +58,13 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
 // lives no longer than one round of a lazy tree, in which the tree holds still, what such a reading
 // gave is kept too, and each time it is taken it touches again (`retouch()`), as reading it again
 // would: what reads it knows it read what the tree does not hold yet, which a round's scan keeps none
-// of (Scan's `memo`), and it is not read again only to fail again.
-export function untouchedMemo(touches = () => 0, { cache = true, retouch } = {}) {
+// of (Scan's `memo`), and it is not read again only to fail again. With `across`, a Map kept across
+// a lazy tree's rounds, what was read with none is kept there, for each round after, as a scan
+// keeps a file it read so.
+export function untouchedMemo(touches = () => 0, { cache = true, retouch, across } = {}) {
   const kept = new Map()
   return (key, read) => {
+    if (across?.has(key)) return across.get(key)
     const hit = kept.get(key)
     if (hit !== undefined) {
       if (hit.touched) retouch()
@@ -70,7 +73,9 @@ export function untouchedMemo(touches = () => 0, { cache = true, retouch } = {})
     const before = touches()
     const value = read()
     const touched = touches() !== before
-    if (cache && (!touched || retouch !== undefined)) kept.set(key, { value, touched })
+    if (!cache) return value
+    if (!touched && across !== undefined) across.set(key, value)
+    else if (!touched || retouch !== undefined) kept.set(key, { value, touched })
     return value
   }
 }

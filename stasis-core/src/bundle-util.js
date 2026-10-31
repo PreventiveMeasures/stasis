@@ -10,15 +10,19 @@ import { assertRealPathWithinBase, hasNodeModulesSegment, relativeEscapes, split
 const utf8 = new TextDecoder()
 export const packageJSONText = (bytes) => utf8.decode(bytes)
 
-export function packageType(file, host = diskHost) {
+// The `type` of the package.json nearest `file`, read through `kept(path, read)`, a cache by that
+// package.json's path where one is given (a scan's, which reads the same one for each file under it).
+export function packageType(file, host = diskHost, kept = (path, read) => read()) {
   const pkg = host.findPackageJSON(file)
   if (!pkg) return null
-  try {
-    const type = JSON.parse(packageJSONText(host.readFile(pkg))).type
-    return type === 'module' || type === 'commonjs' ? type : null
-  } catch {
-    return null
-  }
+  return kept(pkg, () => {
+    try {
+      const type = JSON.parse(packageJSONText(host.readFile(pkg))).type
+      return type === 'module' || type === 'commonjs' ? type : null
+    } catch {
+      return null
+    }
+  })
 }
 
 // Directories where a package keeps copies of OTHER packages, each under a package.json of its own,
