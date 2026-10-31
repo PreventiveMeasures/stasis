@@ -148,18 +148,23 @@ test('validateBundle: each installed copy of a version held to its files patched
   t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
 })
 
-test('validateBundle: an npm package installed from git, its commit recorded, is held apart from the registry\'s of its name and version, unverified', async (t) => {
+test('validateBundle: an npm version its lockfile locks from git alone is left unverified; one recording a commit (a registry package\'s gitHead) held to the registry\'s', async (t) => {
   const fetched = []
-  const fork = { github: 'someone/ms', commit: 'a'.repeat(40) }
-  const plan = validationPlan(parsed({ 'node_modules/tool/node_modules/ms': { name: 'ms', version: '2.1.3', repo: fork, files: { 'index.js': 'forked\n' } } }))
+  const gitHead = { github: 'vercel/ms', commit: 'a'.repeat(40) }
+  const plan = validationPlan(parsed({ 'node_modules/ms': { name: 'ms', version: '2.1.3', repo: gitHead, files: { 'index.js': MS['index.js'] } }, 'node_modules/left': undefined }))
   plan.own = []
-  plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
-  t.assert.deepStrictEqual(plan.packages.map((pkg) => [pkg.files.map((file) => file.path), pkg.git]), [[['node_modules/ms/index.js', 'node_modules/ms/package.json'], undefined],
-    [['node_modules/tool/node_modules/ms/index.js'], fork]])
-  const report = await validateBundle(plan, own(), { fetch: upstream(PACKAGES, fetched) })
-  t.assert.deepStrictEqual([report.status, report.problems, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.git ?? null])],
-    ['incomplete', [], [['valid', null, null], ['unverified', 'git', fork]]], 'the registry\'s copy valid, the fork never held to it')
-  t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
+  plan.packages = plan.packages.filter((pkg) => pkg.name !== 'org/php')
+  const registry = await validateBundle(plan, own(), { fetch: upstream(PACKAGES, fetched) })
+  t.assert.deepStrictEqual(registry.packages.map((pkg) => [pkg.name, pkg.status, pkg.reason ?? null]), [['gone', 'unverified', 'not-published'], ['ms', 'valid', null]],
+    'ms valid (told for the bundle\'s patch it is not patched with), its gitHead no sign of git')
+  t.assert.deepStrictEqual(fetched.toSorted(), ['npm:gone@1.0.0', 'npm:ms@2.1.3'])
+
+  fetched.length = 0
+  const locked = { of: () => undefined, git: (name, version) => name === 'ms' && version === '2.1.3', read: async () => '' }
+  const report = await validateBundle(plan, own(), { fetch: upstream(PACKAGES, fetched), locked })
+  t.assert.deepStrictEqual([report.status, report.problems, report.packages.map((pkg) => [pkg.name, pkg.status, pkg.reason ?? null])],
+    ['incomplete', [], [['gone', 'unverified', 'not-published'], ['ms', 'unverified', 'git']]], 'locked from git: never held to the registry\'s')
+  t.assert.deepStrictEqual(fetched, ['npm:gone@1.0.0'])
 })
 
 test('validateBundle: own code unchecked leaves a bundle incomplete, as does a version past the deadline, or a tree cut short', async (t) => {
@@ -328,6 +333,70 @@ test('lockedPatches: the workspace root\'s pnpm-lock.yaml, where pnpm-workspace.
   await lockedPatches({ directory: 'web/app', list: async (dir) => listings[dir], read: reading })
   t.assert.deepStrictEqual(read, ['web/app/pnpm-lock.yaml'])
   t.assert.equal(await lockedPatches({ directory: 'web', list: async (dir) => (dir === '' ? ['pnpm-workspace.yaml'] : []), read: reading }), null, 'a workspace root with no lockfile')
+})
+
+test('lockedPatches: the versions locked from git alone, by a git resolution or a git host\'s tarball', async (t) => {
+  const at = 'a'.repeat(40)
+  const lock = `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      left:
+        specifier: git+https://github.com/someone/left.git#${at}
+        version: git+https://github.com/someone/left.git#${at}
+      ms:
+        specifier: github:someone/ms#${at}
+        version: https://codeload.github.com/someone/ms/tar.gz/${at}
+      gone:
+        specifier: 1.0.0
+        version: 1.0.0
+      both:
+        specifier: 1.0.0
+        version: 1.0.0
+
+  web:
+    dependencies:
+      both:
+        specifier: git+https://github.com/someone/both.git#${at}
+        version: git+https://github.com/someone/both.git#${at}
+
+packages:
+
+  both@1.0.0:
+    resolution: {integrity: sha512-${'A'.repeat(86)}==}
+
+  both@git+https://github.com/someone/both.git#${at}:
+    resolution: {commit: ${at}, repo: https://github.com/someone/both.git, type: git}
+    version: 1.0.0
+
+  gone@1.0.0:
+    resolution: {integrity: sha512-${'A'.repeat(86)}==}
+
+  left@git+https://github.com/someone/left.git#${at}:
+    resolution: {commit: ${at}, repo: https://github.com/someone/left.git, type: git}
+    version: 1.0.0
+
+  ms@https://codeload.github.com/someone/ms/tar.gz/${at}:
+    resolution: {tarball: https://codeload.github.com/someone/ms/tar.gz/${at}, gitHosted: true}
+    version: 2.1.3
+
+snapshots:
+
+  both@1.0.0: {}
+
+  both@git+https://github.com/someone/both.git#${at}: {}
+
+  gone@1.0.0: {}
+
+  left@git+https://github.com/someone/left.git#${at}: {}
+
+  ms@https://codeload.github.com/someone/ms/tar.gz/${at}: {}
+`
+  const locked = await lockedPatches({ list: async () => ['pnpm-lock.yaml'], read: async () => lock })
+  t.assert.deepStrictEqual(['left@1.0.0', 'ms@2.1.3', 'gone@1.0.0', 'both@1.0.0', 'absent@1.0.0'].map((pkg) => locked.git(...pkg.split('@'))),
+    [true, true, false, false, false], 'one also from the registry, or not locked, held to the registry\'s')
 })
 
 test('stasis validate: own code skipped with --no-own, told unverified, exit 0; a lockfile refused', withTmp((t, tmp) => {

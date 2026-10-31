@@ -38,8 +38,10 @@ stasis validate --no-own app.stasis.code.br
    tree's id. A file whose only difference is a checkout's CRLF line endings
    passes, and is counted. A path the repository has as a symlink differs; one
    it hasn't, or has in a submodule, is unexpected.
-2. **Dependencies** are fetched with upstream, which holds each tarball to its
-   integrity: an npm package from npm's registry, a crate from crates.io. Each
+2. **Dependencies** are fetched with upstream, which holds each tarball to the
+   integrity its registry publishes for it (not the lockfile's): an npm package
+   from npm's registry, by its `dist.integrity`, a crate from crates.io, by its
+   index's checksum. Each
    file the bundle holds of a package must match the file at its path there.
    Files of a package the bundle leaves out are expected: a bundle holds those
    its code reaches alone. Each installed copy of a version is held to it apart,
@@ -54,10 +56,12 @@ Composer packages, Soldeer packages, GitHub repos (Foundry's `lib/`) and crates
 vendored from git, or with no `.cargo-checksum.json`, have no package upstream
 fetches by name and version: their files are left unverified, as are those of a
 version that couldn't be fetched (`not published`, `its registry refused it`).
-So are an npm package's installed from git, whose module records the commit it
-was installed at (no registry package's does): npm may build one as it
+So are an npm version's the lockfile locks from git alone (a `type: git`
+resolution, or a git host's tarball, `gitHosted`): npm may build one as it
 installs it, and the registry's release of its name and version is another
-package, never held to it.
+package, never held to it. A module's recorded commit is no sign of one, as a
+registry package's `gitHead` is recorded too. With no lockfile read, such a
+version is held to the registry's, and likely fails.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
@@ -98,6 +102,6 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
-| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read. `locked.of(name, version)` gives the lockfile's patch (`{ hash, path }`, null for none, undefined where no lockfile tells), `locked.read(hash, path)` its text. |
+| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read. `locked.of(name, version)` gives the lockfile's patch (`{ hash, path }`, null for none, undefined where no lockfile tells), `locked.read(hash, path)` its text, `locked.git(name, version)` whether it is locked from git alone. |
 | `validate(file, { client, github, sha, directory, own })` | What the CLI runs, with an `@preventive/upstream/github.js` client. |
 | `repositoryFiles`, `lockedPatches`, `fetchPackage`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
