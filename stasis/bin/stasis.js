@@ -244,7 +244,6 @@ if (command === '-v' || command === '--version') {
   const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to build: no bundle or lockfile given')
   if (values.metro !== undefined && !/^[^/,]+$/u.test(values.metro)) fail(`Error: --metro takes one platform to build for, e.g. --metro=ios (got '${values.metro}')`)
-  if (values['assets-dest'] !== undefined && values.metro === undefined) fail('Error: --assets-dest needs --metro=PLATFORM (the platform whose layout it copies the assets in)')
   if (values.flow && values.babel) fail('Error: --flow and --babel don\'t combine: the project\'s Babel config compiles Flow itself')
   if (argv.length > 2) fail('Error: build takes a bundle or lockfile and an optional entry point')
   // esbuild output knobs; the import graph itself is fixed by the artifact, not these.
