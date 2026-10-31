@@ -7,14 +7,15 @@ in memory from its lockfile alone. No package script runs, and nothing of the
 repository executes.
 
 ```sh
-stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
 | - | - |
-| `--github=owner/name` (**required**) | The repository. Fetched with `GITHUB_TOKEN` where it is set. |
+| `owner/name[/path]` | The repository, and a directory in it where `/path` is given: `--github=owner/name --directory=path` as one argument, the first that is no option. Not with `--github` or `--directory`. |
+| `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
-| `--directory=path` | A directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
+| `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
 | `--lazy` | With pnpm or npm: fetch and unpack only the packages the build reads. See [Lazy](#lazy---lazy). |
@@ -26,6 +27,7 @@ stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=
 ```sh
 stasis github-bundle --github=owner/name --sha=0123abc src/index.js
 stasis github-bundle --github=owner/name --tag=v1.2.0 --directory=packages/api --typescript src/index.ts
+stasis github-bundle owner/name/packages/api --tag=v1.2.0 --typescript src/index.ts
 stasis github-bundle --github=owner/name --package-manager=soldeer src/Token.sol
 ```
 
