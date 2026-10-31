@@ -237,6 +237,23 @@ test('validateBundle: own code unchecked leaves a bundle incomplete, as does a v
   t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.problems], ['incomplete', true, [{ path: 'src/extra.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
 })
 
+test('validateBundle: own code with a checkout\'s CRLF line endings passes where every line\'s end is one, but for a binary, a shell script or an env file, whose meaning a CR changes', async (t) => {
+  const told = async (path, bundled, repository, format) => {
+    const content = format === 'resource:base64' ? Buffer.from(bundled, 'latin1').toString('base64') : bundled
+    const plan = validationPlan(Bundle.parse(new Bundle({ config: { scope: 'full' }, entries: new Set(), modules: new Map([['.', { name: 'web', version: '1.0.0', files: { [path]: content } }]]),
+      formats: new Map(format ? [[path, format]] : []) }).serialize()))
+    const report = await validateBundle(plan, own({ [`web/${path}`]: { sha: blob(repository) } }), { fetch: upstream() })
+    return [report.status, report.counts.eol, report.problems.map((problem) => problem.kind)]
+  }
+  t.assert.deepStrictEqual(await told('src/a.js', 'a\r\nb\r\n', 'a\nb\n', 'commonjs'), ['valid', 1, []])
+  t.assert.deepStrictEqual(await told('README.md', 'a\r\n\r\nb\r\n', 'a\n\nb\n', 'resource'), ['valid', 1, []])
+  t.assert.deepStrictEqual(await told('src/a.js', 'a\r\nb\n', 'a\nb\n', 'commonjs'), ['invalid', 0, ['differs']], 'a CR before some line ends alone: no checkout\'s')
+  t.assert.deepStrictEqual(await told('src/a.js', 'a\rb\r\n', 'a\rb\n', 'commonjs'), ['valid', 1, []], 'a lone CR the repository has kept')
+  const sensitive = [['run.sh', 'shell'], ['.env', 'env'], ['data.bin', 'resource:base64']]
+  t.assert.deepStrictEqual(await Promise.all(sensitive.map(([path, format]) => told(path, 'x\r\ny\r\n', 'x\ny\n', format))), sensitive.map(() => ['invalid', 0, ['differs']]),
+    'a binary, a shell script or an env file')
+})
+
 test('validateBundle: a package installed from a directory of the repository held to that directory\'s files there, where it is read; else unverified, never fetched', async (t) => {
   const fetched = []
   const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([['node_modules/.pnpm/lib@file+lib/node_modules/lib', { name: 'lib', version: '2.0.0', files: { 'index.js': 'lib\n', 'package.json': '{}\n' } }]]) }).serialize()))

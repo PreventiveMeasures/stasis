@@ -91,7 +91,10 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
    was built in. The directory's tree is read with upstream, as
    [`github-bundle`](github-bundle.md) reads one: its tarball, held to the
    tree's id. A file whose only difference is a checkout's CRLF line endings
-   passes, and is counted. A path the repository has as a symlink differs; one
+   passes, and is counted: every line's end a CRLF, as git converts a text
+   file whole. Not a binary resource (`resource:base64`), which no checkout
+   converts, nor a shell script or an env file, whose commands and values a CR
+   changes. A path the repository has as a symlink differs; one
    it hasn't, or has in a submodule, is unexpected.
 2. **Dependencies** are fetched with upstream: an npm package from npm's
    registry, a crate from crates.io. Each is held to its lockfile (below): a

@@ -8,8 +8,8 @@
 // Own code is the files of modules naming no ecosystem (dependencyEcosystem): the project's and its
 // workspace's packages. The CLI reads the repository's tree with upstream, its tarball held to the
 // tree's id; validateBundle takes any reading of it, as file bytes or as git's blob ids (a listing of
-// the tree, as a server may read it). A file whose only difference is a checkout's CRLFs passes,
-// counted apart (`eol`).
+// the tree, as a server may read it). A text file whose only difference is a checkout's CRLFs, every
+// line's, passes, counted apart (`eol`): not a binary, a shell script or an env file (checkedOutAsLf).
 //
 // A dependency's version is fetched once, and each installed copy of it (its module) held to its
 // files as published, or patched where pnpm patches it (its lockfile's patchedDependencies), as pnpm
@@ -107,7 +107,7 @@ export function validationPlan(bundle) {
       const path = moduleFileKey(dir, rel)
       const format = formats.get(path)
       if (typeof content !== 'string' || format === 'directory' || isStatFormat(format)) continue
-      const file = { path, dir, rel, bytes: () => (format === 'resource:base64' ? Buffer.from(content, 'base64') : utf8.encode(content)) }
+      const file = { path, dir, rel, format, bytes: () => (format === 'resource:base64' ? Buffer.from(content, 'base64') : utf8.encode(content)) }
       if (ecosystem !== undefined) {
         if (!packages.has(key)) packages.set(key, { ecosystem, name: info.name ?? '', version: info.version ?? '', files: [] })
         packages.get(key).files.push(file)
@@ -400,6 +400,16 @@ export function patchedFiles(files, patch) {
 }
 
 const equal = (a, b) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b)
+// Formats a CR before each line's end changes the meaning of: a binary's bytes, which no checkout
+// converts, a shell script's commands and an env file's values, each its last word's own.
+const CR_CHANGES = new Set(['resource:base64', 'shell', 'env'])
+// `bytes`, of a file of `format`, as a checkout with CRLF line endings writes it, as LF text: every
+// line's end a CRLF, as git converts a text file whole. Else undefined.
+function checkedOutAsLf(bytes, format) {
+  if (CR_CHANGES.has(format)) return undefined
+  const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1')
+  return text.includes('\r\n') && !/(?<!\r)\n/u.test(text) ? Buffer.from(text.replaceAll('\r\n', '\n'), 'latin1') : undefined
+}
 const packageKey = ({ ecosystem, name, version }) => `${ecosystem}:${name}@${version}`
 const byText = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
 // Files told by kind, the worst first, then by what they are of, own code first, then by their paths;
@@ -631,13 +641,14 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
       else {
         const bytes = file.bytes()
         const same = (candidate) => (entry.data === undefined ? gitBlobId(candidate) === entry.sha : equal(candidate, entry.data))
-        // As a checkout with CRLF line endings writes it, of the file the repository has with LFs.
-        const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
         if (same(bytes)) verdict('matched')
-        else if (view.includes('\r\n') && same(Buffer.from(view.toString('latin1').replaceAll('\r\n', '\n'), 'latin1'))) {
-          counts.eol++
-          verdict('matched')
-        } else verdict('differs')
+        else {
+          // As a checkout with CRLF line endings writes it, of the file the repository has with LFs.
+          const lf = checkedOutAsLf(bytes, file.format)
+          const crlf = lf !== undefined && same(lf)
+          if (crlf) counts.eol++
+          verdict(crlf ? 'matched' : 'differs')
+        }
       }
     }
   } finally {
