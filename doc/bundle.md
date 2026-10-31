@@ -38,7 +38,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
 | `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. See [Defines](#defines---define). |
 | `--package-json` | Also bundle each bundled module's `package.json`, and the nearest one above each bundled file (an `esm/package.json`), even ones the scan never reached. |
-| `--brotli-quality=0..11` | Compression level, default `9`. |
+| `--brotli-quality=0..11` | Compression level, default `6`. |
 
 ## Output
 

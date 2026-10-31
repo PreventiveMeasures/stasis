@@ -3,8 +3,8 @@ import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } 
 import { Bundle } from './bundle.js'
 import { assert, isBrotliQuality, parseBrotliQuality } from './util.js'
 
-// Default brotli quality; 11 (max) costs far more for a marginal gain over 9.
-export const DEFAULT_BROTLI_QUALITY = 9
+// Default brotli quality; the top levels (10, 11) cost far more time for a marginal size gain.
+export const DEFAULT_BROTLI_QUALITY = 6
 
 export function brotliOptions(quality) {
   if (quality !== undefined) {

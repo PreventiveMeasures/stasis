@@ -19,7 +19,7 @@ const withEnv = (value, fn) => (t) => {
 const QUALITY = zlibConstants.BROTLI_PARAM_QUALITY
 
 test('brotliOptions() with no env and no quality falls back to the stasis default', withEnv(undefined, (t) => {
-  t.assert.equal(DEFAULT_BROTLI_QUALITY, 9)
+  t.assert.equal(DEFAULT_BROTLI_QUALITY, 6)
   t.assert.deepStrictEqual(brotliOptions(), { params: { [QUALITY]: DEFAULT_BROTLI_QUALITY } })
 }))
 

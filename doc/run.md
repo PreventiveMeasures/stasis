@@ -36,7 +36,7 @@ killed it. The effective configuration is printed to stderr first.
 | `--import=module` | A preload module for the node process, after stasis's own loader; repeatable. See [Preloads](#preloads---import). |
 | `--fs=(sync\|async)` | Also capture the files the run reads through `fs` into the bundle: `sync` the sync readers, `async` their callback and `fs.promises` forms too. Needs `--bundle=add\|replace\|load`. See [filesystem captures](file-formats.md#filesystem-captures-stasis-run---fssync----fsasync). |
 | `--resources=ext,ext` | The non-code files a `--fs` capture may carry, by bare extension or extensionless filename (`png,svg,LICENSE`); the `resources` key. |
-| `--brotli-quality=0..11` | Compression of a written bundle, default `9`. |
+| `--brotli-quality=0..11` | Compression of a written bundle, default `6`. |
 
 ```sh
 stasis run --lock=add app.js                      # build just a lockfile
