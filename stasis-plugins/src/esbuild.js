@@ -11,9 +11,6 @@ import { State } from '@exodus/stasis-core/state'
 import { realReadFile } from '@exodus/stasis-core/state-util'
 import { EMPTY_MODULE_PATH, classifyExtension } from '@exodus/stasis-core/util'
 
-// esbuild's own loaders for the extensions a resource may have (its defaults beyond code and json).
-const ESBUILD_DEFAULT_RESOURCE_LOADERS = { __proto__: null, '.txt': 'text', '.css': 'css' }
-
 // The build options esbuild's resolver reads, replayed into the disabled-import probe so it
 // resolves exactly as the build does.
 const RESOLVE_OPTIONS = ['absWorkingDir', 'alias', 'conditions', 'external', 'mainFields', 'nodePaths',
@@ -313,15 +310,9 @@ export class StasisEsbuild {
           if (override) return { contents: source, loader: override }
           const built = await this.#resource?.(source, { path })
           if (built) return built
-          // Plugin-provided contents with no `loader` default to `js` (esbuild applies the build's
-          // per-extension loader only on its own load path), so replay the configured loader from
-          // initialOptions.loader, else esbuild's default for the extension. No loader fails
-          // symmetrically with a capture build, in esbuild's words, not by parsing the bytes as js.
-          const ext = extname(path)
-          const loader = initialOptions.loader?.[ext] ?? ESBUILD_DEFAULT_RESOURCE_LOADERS[ext]
-          if (loader) return { contents: source, loader }
-          const shown = relative(initialOptions.absWorkingDir ?? process.cwd(), path)
-          return { errors: [{ text: `No loader is configured for "${ext}" files: ${shown}` }] }
+          // Else the loader esbuild's own load path takes (the build's `loader` option, else its default
+          // for the extension), so a resource none loads fails as at capture, not parsed as js.
+          return { contents: source, loader: 'default' }
         }
         const loader = this.#loaderFor(path)
         // A transform that declines (undefined) serves the attested bytes unchanged.

@@ -2,17 +2,18 @@
 // per-platform edge's target for PLATFORM, and each asset as the module Metro builds of it
 // (`module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`),
 // its files copied out with --assets-dest as `react-native bundle --assets-dest` copies them.
-import { test, describe } from 'node:test'
+import { after, before, describe, test } from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 
 import {
-  ASSET_REGISTRY, assetRegistryFile, filterPlatformAssetScales, imageDimensions, metroAssetCopies, metroAssetDescriptor, metroAssetModule,
+  ASSET_REGISTRY, assetRegistryResolver, filterPlatformAssetScales, imageDimensions, metroAssetCopies, metroAssetDescriptor, metroAssetModule,
 } from '../stasis/src/metro-assets.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -164,56 +165,58 @@ test('metroAssetDescriptor builds Metro\'s descriptor: scales in order, md5 of t
     `module.exports = require("react-native/Libraries/Image/AssetRegistry").registerAsset(${JSON.stringify(descriptor)});\n`
   )
 
+  // An asset of one file, on iOS.
+  const one = (rel, content = png(1, 1)) => metroAssetDescriptor(rel, { platform: 'ios', files: [rel], read: () => content }).descriptor
   // Only a scale variant: the size over its scale. A platform file names the asset without its suffix.
-  const only = metroAssetDescriptor('img/only@3x.ios.png', { platform: 'ios', files: ['img/only@3x.ios.png'], read: () => png(30, 60) })
-  t.assert.deepStrictEqual([only.descriptor.name, only.descriptor.scales, only.descriptor.width, only.descriptor.height], ['only', [3], 10, 20])
+  const only = one('img/only@3x.ios.png', png(30, 60))
+  t.assert.deepStrictEqual([only.name, only.scales, only.width, only.height], ['only', [3], 10, 20])
   // Another platform's suffix is part of the name.
-  t.assert.equal(metroAssetDescriptor('a.android.png', { platform: 'ios', files: ['a.android.png'], read: () => png(1, 1) }).descriptor.name, 'a.android')
+  t.assert.equal(one('a.android.png').name, 'a.android')
   // Equal scales keep readdir's bytewise name order (`tie.png` before `tie@1x.png`).
   t.assert.deepStrictEqual(
     metroAssetDescriptor('img/tie.png', { platform: 'ios', files: ['img/tie@1x.png', 'img/tie.png', 'img/tie@2x.png'], read: () => png(2, 2) }).files,
     ['img/tie.png', 'img/tie@1x.png', 'img/tie@2x.png']
   )
   // At the root, in node_modules, or outside the project root (Metro joins no `..` path).
-  t.assert.equal(metroAssetDescriptor('logo.png', { platform: 'ios', files: ['logo.png'], read: () => png(1, 1) }).descriptor.httpServerLocation, '/assets')
-  t.assert.equal(metroAssetDescriptor('node_modules/pkg/a.png', { platform: 'ios', files: ['node_modules/pkg/a.png'], read: () => png(1, 1) }).descriptor.httpServerLocation, '/assets/node_modules/pkg')
-  t.assert.equal(metroAssetDescriptor('../shared/a.png', { platform: 'ios', files: ['../shared/a.png'], read: () => png(1, 1) }).descriptor.httpServerLocation, '/assets/../shared')
+  t.assert.equal(one('logo.png').httpServerLocation, '/assets')
+  t.assert.equal(one('node_modules/pkg/a.png').httpServerLocation, '/assets/node_modules/pkg')
+  t.assert.equal(one('../shared/a.png').httpServerLocation, '/assets/../shared')
   // No image: no size.
-  const font = metroAssetDescriptor('fonts/Inter.ttf', { platform: 'ios', files: ['fonts/Inter.ttf'], read: () => Buffer.from('font') }).descriptor
+  const font = one('fonts/Inter.ttf', Buffer.from('font'))
   t.assert.deepStrictEqual([font.width, font.height, JSON.stringify(font).includes('width')], [undefined, undefined, false])
-  t.assert.throws(() => metroAssetDescriptor('e.png', { platform: 'ios', files: ['e.png'], read: () => Buffer.alloc(0) }), /Image asset `e\.png` cannot be an empty file/u)
+  t.assert.throws(() => one('e.png', Buffer.alloc(0)), /Image asset `e\.png` cannot be an empty file/u)
 })
 
-test('assetRegistryFile resolves the registry from the asset, among the files the artifact carries', (t) => {
+test('assetRegistryResolver resolves the registry from the asset, among the files the artifact carries', (t) => {
+  const resolveFrom = (rel, platform, ...carried) => assetRegistryResolver(platform, new Set(carried))(rel)
   const hoisted = 'node_modules/react-native/Libraries/Image/AssetRegistry.js'
-  t.assert.equal(assetRegistryFile('img/logo.png', 'ios', new Set([hoisted])), hoisted)
+  t.assert.equal(resolveFrom('img/logo.png', 'ios', hoisted), hoisted)
   // The nearest node_modules up from the asset wins.
   const nested = 'packages/app/node_modules/react-native/Libraries/Image/AssetRegistry.js'
-  t.assert.equal(assetRegistryFile('packages/app/img/logo.png', 'ios', new Set([hoisted, nested])), nested)
-  t.assert.equal(assetRegistryFile('img/logo.png', 'ios', new Set([hoisted, nested])), hoisted)
+  t.assert.equal(resolveFrom('packages/app/img/logo.png', 'ios', hoisted, nested), nested)
+  t.assert.equal(resolveFrom('img/logo.png', 'ios', hoisted, nested), hoisted)
   // The platform's file, then .native, then the plain one.
   const ios = 'node_modules/react-native/Libraries/Image/AssetRegistry.ios.js'
-  t.assert.equal(assetRegistryFile('img/logo.png', 'ios', new Set([hoisted, ios])), ios)
-  t.assert.equal(assetRegistryFile('img/logo.png', 'android', new Set([hoisted, ios])), hoisted)
+  t.assert.equal(resolveFrom('img/logo.png', 'ios', hoisted, ios), ios)
+  t.assert.equal(resolveFrom('img/logo.png', 'android', hoisted, ios), hoisted)
   // pnpm: the only copy, linked in from node_modules/.pnpm.
   const pnpm = 'node_modules/.pnpm/react-native@0.81.0/node_modules/react-native/Libraries/Image/AssetRegistry.js'
-  t.assert.equal(assetRegistryFile('img/logo.png', 'ios', new Set([pnpm])), pnpm)
-  t.assert.throws(() => assetRegistryFile('img/logo.png', 'ios', new Set(['index.js'])), new RegExp(`requiring ${ASSET_REGISTRY}, which the artifact doesn't carry`, 'u'))
+  t.assert.equal(resolveFrom('img/logo.png', 'ios', pnpm), pnpm)
+  t.assert.throws(() => resolveFrom('img/logo.png', 'ios', 'index.js'), new RegExp(`requiring ${ASSET_REGISTRY}, which the artifact doesn't carry`, 'u'))
   const other = 'node_modules/.pnpm/react-native@0.80.0/node_modules/react-native/Libraries/Image/AssetRegistry.js'
-  t.assert.throws(() => assetRegistryFile('img/logo.png', 'ios', new Set([pnpm, other])), /several .* none of them nearest/u)
+  t.assert.throws(() => resolveFrom('img/logo.png', 'ios', pnpm, other), /several .* none of them nearest/u)
 })
 
 // --- --assets-dest ----------------------------------------------------------------------------
 
 test('metroAssetCopies lays the files out as react-native bundle --assets-dest does', (t) => {
-  const asset = (rel, scales, type = 'png') => {
-    const { descriptor } = metroAssetDescriptor(rel, { platform: 'ios', files: [rel], read: () => (type === 'png' ? png(1, 1) : Buffer.from('x')) })
-    const dir = dirname(rel)
-    const name = descriptor.name
-    return { descriptor: { ...descriptor, scales }, files: scales.map((s) => `${dir}/${name}${s === 1 ? '' : `@${s}x`}.${type}`) }
+  // What metroAssetCopies reads of an asset: its descriptor's location, name, type and scales, and its files.
+  const logo = {
+    descriptor: { httpServerLocation: '/assets/img', name: 'Logo-Big', type: 'png', scales: [1, 2, 3, 4] },
+    files: ['img/Logo-Big.png', 'img/Logo-Big@2x.png', 'img/Logo-Big@3x.png', 'img/Logo-Big@4x.png'],
   }
-  const logo = asset('img/Logo-Big.png', [1, 2, 3, 4])
-  const font = asset('fonts/Inter.ttf', [1], 'ttf')
+  const font = { descriptor: { httpServerLocation: '/assets/fonts', name: 'Inter', type: 'ttf', scales: [1] }, files: ['fonts/Inter.ttf'] }
+  const odd = { descriptor: { httpServerLocation: '/assets/img', name: 'odd', type: 'png', scales: [2.5] }, files: ['img/odd@2.5x.png'] }
   // iOS: by the asset's path under assets/, scales 1x-3x.
   t.assert.deepStrictEqual(metroAssetCopies('ios', [logo, font]), [
     { file: 'img/Logo-Big.png', dest: 'assets/img/Logo-Big.png' },
@@ -230,7 +233,7 @@ test('metroAssetCopies lays the files out as react-native bundle --assets-dest d
     { file: 'fonts/Inter.ttf', dest: 'raw/fonts_inter.ttf' },
     { dest: 'raw/keep.xml', contents: '<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@drawable/img_logobig,@raw/fonts_inter" />\n' },
   ])
-  t.assert.throws(() => metroAssetCopies('android', [asset('img/odd.png', [2.5])]), /Don't know which android drawable suffix/u)
+  t.assert.throws(() => metroAssetCopies('android', [odd]), /Don't know which android drawable suffix/u)
   // iOS keeps 1x-3x, else the next scale above, else the largest; other platforms keep all.
   t.assert.deepStrictEqual(filterPlatformAssetScales('ios', [0.75, 1, 4]), [1])
   t.assert.deepStrictEqual(filterPlatformAssetScales('ios', [0.5, 4, 5]), [4])
@@ -306,15 +309,23 @@ const linkBabel = (dir) => {
 const CONCURRENCY = 4 // matches CI runner cores
 
 describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENCY }, () => {
-  test('--metro=ios builds each asset as Metro\'s module and copies its files as iOS lays them out', withTmp(async (t, tmp) => {
-    const files = rnProject(tmp)
-    const bundled = await bundleRn(tmp)
-    t.assert.equal(bundled.status, 0, bundled.stderr)
+  // One app, bundled once, for the tests that build it unchanged: each writes outputs of its own.
+  let app
+  let files
+  before(async () => {
+    app = mkdtempSync(join(tmpdir(), 'stasis-test-'))
+    files = rnProject(app)
+    linkBabel(app)
+    const bundled = await bundleRn(app)
+    if (bundled.status !== 0) throw new Error(bundled.stderr)
+  })
+  after(() => rmSync(app, { recursive: true, force: true }))
 
-    const r = await runCli(['build', '--format=cjs', '--loader=.js:jsx', '--metro=ios', '--assets-dest=dist', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+  test('--metro=ios builds each asset as Metro\'s module and copies its files as iOS lays them out', async (t) => {
+    const r = await runCli(['build', '--format=cjs', '--loader=.js:jsx', '--metro=ios', '--assets-dest=dist', '--output=ios.cjs', 'app.code.br'], { cwd: app })
     t.assert.equal(r.status, 0, r.stderr)
     t.assert.match(r.stderr, /Copied 3 assets \(5 files\) for ios to dist/u)
-    const out = JSON.parse(runNode(t, join(tmp, 'out.cjs')))
+    const out = JSON.parse(runNode(t, join(app, 'ios.cjs')))
     // Each require() is the asset's registry id; the registry holds Metro's descriptor of it.
     t.assert.equal(out.where, 'ios')
     t.assert.deepStrictEqual([out.logo, out.icon, out.font].toSorted(), [1, 2, 3])
@@ -333,64 +344,51 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     t.assert.deepStrictEqual([byName.icon.width, byName.icon.hash], [8, md5(files['img/icon.png'])])
     t.assert.deepStrictEqual(byName.Inter, { __packager_asset: true, httpServerLocation: '/assets/fonts', scales: [1], hash: md5(files['fonts/Inter.ttf']), name: 'Inter', type: 'ttf' })
 
-    t.assert.deepStrictEqual(listFiles(join(tmp, 'dist')), [
+    t.assert.deepStrictEqual(listFiles(join(app, 'dist')), [
       'assets/fonts/Inter.ttf', 'assets/img/icon.png', 'assets/img/logo.png', 'assets/img/logo@2x.png', 'assets/img/logo@3x.png',
     ])
-    t.assert.deepStrictEqual(readFileSync(join(tmp, 'dist', 'assets', 'img', 'logo@3x.png')), files['img/logo@3x.png'])
-  }))
+    t.assert.deepStrictEqual(readFileSync(join(app, 'dist', 'assets', 'img', 'logo@3x.png')), files['img/logo@3x.png'])
+  })
 
-  test('--metro=android takes Android\'s edges and asset files and copies them into res/ folders', withTmp(async (t, tmp) => {
-    const files = rnProject(tmp)
-    const bundled = await bundleRn(tmp)
-    t.assert.equal(bundled.status, 0, bundled.stderr)
-
-    const r = await runCli(['build', '--format=cjs', '--loader=.js:jsx', '--metro=android', '--assets-dest=res', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+  test('--metro=android takes Android\'s edges and asset files and copies them into res/ folders', async (t) => {
+    const r = await runCli(['build', '--format=cjs', '--loader=.js:jsx', '--metro=android', '--assets-dest=res', '--output=android.cjs', 'app.code.br'], { cwd: app })
     t.assert.equal(r.status, 0, r.stderr)
-    const out = JSON.parse(runNode(t, join(tmp, 'out.cjs')))
+    const out = JSON.parse(runNode(t, join(app, 'android.cjs')))
     t.assert.equal(out.where, 'android')
     const icon = out.assets.find((asset) => asset.name === 'icon')
     t.assert.deepStrictEqual([icon.width, icon.hash], [9, md5(files['img/icon.android.png'])], 'the icon\'s Android file')
-    t.assert.deepStrictEqual(listFiles(join(tmp, 'res')), [
+    t.assert.deepStrictEqual(listFiles(join(app, 'res')), [
       'drawable-mdpi/img_icon.png', 'drawable-mdpi/img_logo.png', 'drawable-xhdpi/img_logo.png', 'drawable-xxhdpi/img_logo.png', 'raw/fonts_inter.ttf', 'raw/keep.xml',
     ])
-    t.assert.deepStrictEqual(readFileSync(join(tmp, 'res', 'drawable-mdpi', 'img_icon.png')), files['img/icon.android.png'])
+    t.assert.deepStrictEqual(readFileSync(join(app, 'res', 'drawable-mdpi', 'img_icon.png')), files['img/icon.android.png'])
     t.assert.equal(
-      readFileSync(join(tmp, 'res', 'raw', 'keep.xml'), 'utf8'),
+      readFileSync(join(app, 'res', 'raw', 'keep.xml'), 'utf8'),
       '<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@raw/fonts_inter,@drawable/img_icon,@drawable/img_logo" />\n'
     )
-  }))
+  })
 
-  test('--platform=hermes --metro builds a Hermes bundle whose asset modules need no downleveling', withTmp(async (t, tmp) => {
-    rnProject(tmp)
-    linkBabel(tmp)
-    const bundled = await bundleRn(tmp)
-    t.assert.equal(bundled.status, 0, bundled.stderr)
-
-    const r = await runCli(['build', '--platform=hermes', '--loader=.js:jsx', '--metro=ios', '--output=out.js', 'app.code.br'], { cwd: tmp })
+  test('--platform=hermes --metro builds a Hermes bundle whose asset modules need no downleveling', async (t) => {
+    const r = await runCli(['build', '--platform=hermes', '--loader=.js:jsx', '--metro=ios', '--output=hermes.js', 'app.code.br'], { cwd: app })
     t.assert.equal(r.status, 0, r.stderr)
     t.assert.match(r.stderr, /Built 3 assets for ios; pass --assets-dest to copy their files out/u)
-    const code = readFileSync(join(tmp, 'out.js'), 'utf8')
+    const code = readFileSync(join(app, 'hermes.js'), 'utf8')
     t.assert.match(code, /registerAsset\(\{ "__packager_asset": true, "httpServerLocation": "\/assets\/img"/u)
     t.assert.doesNotMatch(code, /\b(?:let|const|class)\s/u)
-    t.assert.equal(JSON.parse(runNode(t, join(tmp, 'out.js'))).where, 'ios')
-  }))
+    t.assert.equal(JSON.parse(runNode(t, join(app, 'hermes.js'))).where, 'ios')
+  })
 
-  test('a --metro bundle without --metro: a platform-specific edge and an asset fail with what builds them', withTmp(async (t, tmp) => {
-    rnProject(tmp)
-    const bundled = await bundleRn(tmp)
-    t.assert.equal(bundled.status, 0, bundled.stderr)
-
-    const split = await runCli(['build', '--loader=.js:jsx', '--output=out.js', 'app.code.br'], { cwd: tmp })
+  test('a --metro bundle without --metro: a platform-specific edge and an asset fail with what builds them', async (t) => {
+    const split = await runCli(['build', '--loader=.js:jsx', '--output=split.js', 'app.code.br'], { cwd: app })
     t.assert.notEqual(split.status, 0)
     t.assert.match(split.stderr, /Resolution of '\.\/lib\/where' from index\.js is platform-specific/u)
     t.assert.match(split.stderr, /pass --metro=PLATFORM \(e\.g\. --metro=ios\)/u)
 
     // A platform the bundle wasn't made for.
-    const web = await runCli(['build', '--loader=.js:jsx', '--metro=web', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    const web = await runCli(['build', '--loader=.js:jsx', '--metro=web', '--output=web.js', 'app.code.br'], { cwd: app })
     t.assert.notEqual(web.status, 0)
     t.assert.match(web.stderr, /records no 'web' target \(only android, ios\)/u)
-    t.assert.ok(!existsSync(join(tmp, 'out.js')))
-  }))
+    t.assert.ok(!existsSync(join(app, 'split.js')) && !existsSync(join(app, 'web.js')))
+  })
 
   test('an asset builds with --loader, as esbuild loads it, and without one fails in esbuild\'s words', withTmp(async (t, tmp) => {
     rnProject(tmp, { index: "import logo from './img/logo.png'\nconsole.log(logo)\n" })
@@ -434,15 +432,12 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     t.assert.deepStrictEqual(readFileSync(join(tmp, 'res', 'drawable-mdpi', 'img_logo.png')), png(1, 1))
   }))
 
-  test('--assets-dest needs --metro, and --metro one platform', withTmp(async (t, tmp) => {
-    rnProject(tmp)
-    const bundled = await bundleRn(tmp)
-    t.assert.equal(bundled.status, 0, bundled.stderr)
-    const noMetro = await runCli(['build', '--assets-dest=dist', '--output=out.js', 'app.code.br'], { cwd: tmp })
+  test('--assets-dest needs --metro, and --metro one platform, checked before the artifact is read', async (t) => {
+    const noMetro = await runCli(['build', '--assets-dest=dist', '--output=out.js', 'missing.code.br'], { cwd: tmpdir() })
     t.assert.notEqual(noMetro.status, 0)
     t.assert.match(noMetro.stderr, /--assets-dest needs --metro=PLATFORM/u)
-    const two = await runCli(['build', '--metro=ios,android', '--output=out.js', 'app.code.br'], { cwd: tmp })
+    const two = await runCli(['build', '--metro=ios,android', '--output=out.js', 'missing.code.br'], { cwd: tmpdir() })
     t.assert.notEqual(two.status, 0)
     t.assert.match(two.stderr, /--metro takes one platform to build for/u)
-  }))
+  })
 })

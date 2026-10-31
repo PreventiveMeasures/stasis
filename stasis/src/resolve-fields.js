@@ -189,7 +189,9 @@ function parseBare(spec) {
   return { name: parts.slice(0, n).join('/'), firstPart: parts[0], subpath: parts.length > n ? `./${parts.slice(n).join('/')}` : '.' }
 }
 
-// Metro's default assetExts and assetResolutions (metro-config's defaults).
+// Metro's default sourceExts, in the order its resolver probes them, and its default assetExts and
+// assetResolutions (metro-config's defaults).
+export const METRO_SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
 export const METRO_ASSET_EXTS = new Set(['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', 'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip'])
 const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4']
 
@@ -453,7 +455,7 @@ export function createFieldResolver({
   mainFields = ['main'],
   platform = null,
   preferNative = false,
-  sourceExts = ['js', 'jsx', 'json', 'ts', 'tsx'],
+  sourceExts = METRO_SOURCE_EXTS,
   metro = false,
   assetExts = METRO_ASSET_EXTS,
   typescript = false,

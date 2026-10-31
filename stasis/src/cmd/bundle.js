@@ -8,7 +8,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
 import { parseDefine } from '../define.js'
-import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
+import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
@@ -940,7 +940,7 @@ function innermostRootOf(baseDir, files, root, host) {
 // resolves a file the bundle would reject; an extensionless `import './Foo'` can land on
 // Foo.jsx/Foo.tsx, as it does under Metro. Like Metro's default, this doesn't track a project's
 // own sourceExts.
-const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
+const SOURCE_EXTS = METRO_SOURCE_EXTS
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 

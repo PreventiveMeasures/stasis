@@ -1,9 +1,9 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, join, posix, relative, sep } from 'node:path'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, nameFormat, pathExt } from '@exodus/stasis-core/util'
+import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, nameFormat, pathExt, toPosix } from '@exodus/stasis-core/util'
 
 // The native build inputs of a React Native app's packages, shared by the Metro plugin's capture and
 // `stasis bundle --metro` so the two carry the same files. Both read through `fs`:
@@ -76,18 +76,32 @@ export function refineNativeCapture(classified, name, content, resources = new S
 }
 
 // A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName): its asset,
-// `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), and its platform where it names
-// `platform` (`a.ios.png`; another's, `a.android.png`, is an asset of its own). -> { asset, platform },
-// or null for a name with no type
+// `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), its scale (`resolution`, 1 where it
+// names none), and its platform where it names `platform` (`a.ios.png`; another's, `a.android.png`,
+// is an asset of its own). -> { asset, name, type, resolution, platform }, or null for a name with no type
 const METRO_PLATFORM_FILE = /^(.+?)(?:\.([^.]+))?\.([^.]+)$/u
-const METRO_ASSET_SCALE = /^(.+?)(?:@[\d.]+x)?$/u
-function parseMetroAssetName(name, platform) {
+const METRO_ASSET_SCALE = /^(.+?)(?:@([\d.]+)x)?$/u
+export function parseMetroAssetName(name, platform) {
   const match = METRO_PLATFORM_FILE.exec(name)
   if (match === null) return null
   const [, base, suffix, type] = match
   const ofPlatform = suffix !== undefined && suffix === platform
-  const root = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)[1]
-  return { asset: `${root}.${type}`, platform: ofPlatform ? platform : null }
+  const [, root, scale] = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)
+  const resolution = Number.parseFloat(scale)
+  return { asset: `${root}.${type}`, name: root, type, resolution: Number.isNaN(resolution) ? 1 : resolution, platform: ofPlatform ? platform : null }
+}
+
+// What a file's stat answers to metroAssetFiles, for a file a listing names but the disk lacks.
+export const FILE_STAT = { isFile: () => true }
+
+// The files `state` (a loaded State) carries, as a directory listing of them (metroAssetFiles' host):
+// an asset's files as captured.
+export function bundleDirHost(state) {
+  const dirs = Map.groupBy([...state.sources.keys(), ...state.resources.keys()], (rel) => posix.dirname(rel))
+  return {
+    readdir: (dir) => (dirs.get(toPosix(state.relative(dir)) || '.') ?? []).map((rel) => ({ name: posix.basename(rel) })),
+    stat: () => FILE_STAT,
+  }
 }
 
 // Metro's record of the asset module `path` (its Assets' getAbsoluteAssetRecord): the files it reads

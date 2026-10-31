@@ -22,35 +22,20 @@
 import { createHash } from 'node:crypto'
 import { join, posix } from 'node:path'
 
+import { parseMetroAssetName } from '@exodus/stasis-plugins/metro-native'
+import { METRO_SOURCE_EXTS } from './resolve-fields.js'
+
 // The asset registry the module Metro builds of an asset requires: React Native's Metro config's
 // `assetRegistryPath` (@react-native/metro-config's), where a project's own isn't read, being code.
 // `stasis bundle --metro` carries the file it resolves to for each asset.
 export const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 const PUBLIC_PATH = '/assets'
-// Metro's default sourceExts, in the order its resolver probes them.
-const SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
-
-// AssetPaths.parse of the file name `name`, for `platform`: the asset's name, type and scale (the
-// `@2x` of `logo@2x.png`, else 1), a `.ios` suffix taken as the platform's only for `platform`
-// (another's, `logo.android.png` on iOS, is part of the name). -> null for a name with no type
-const PLATFORM_FILE = /^(.+?)(\.([^.]+))?\.([^.]+)$/u
-const ASSET_BASE_NAME = /(.+?)(@([\d.]+)x)?$/u
-function parseAssetName(name, platform) {
-  const match = PLATFORM_FILE.exec(name)
-  if (match === null) return null
-  const [, base, , suffix, type] = match
-  const baseName = suffix === undefined || suffix === platform ? base : `${base}.${suffix}`
-  const [, root, , scale] = ASSET_BASE_NAME.exec(baseName)
-  const resolution = scale === undefined ? Number.NaN : Number.parseFloat(scale)
-  return { name: root, type, resolution: Number.isNaN(resolution) ? 1 : resolution }
-}
 
 // --- image dimensions: Metro's getImageDimensions (src/lib/imageSize.js) ------------------------
 //
 // The parser for the asset's type, else the first of the others that reads the bytes; an image none
 // reads, or whose dimensions aren't positive and finite, is an invalid asset.
 
-const IMAGE_TYPES = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'psd', 'svg', 'tiff', 'ktx'])
 const MAX_SVG_HEADER_LENGTH = 64 * 1024
 const KTX1_IDENTIFIER = Buffer.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x31, 0x31, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a])
 const KTX2_IDENTIFIER = Buffer.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -257,8 +242,9 @@ function parseWebp(content) {
   return null
 }
 
+// Its keys are Metro's image types (isAssetTypeAnImage); its parsers, in order, its fallbacks.
 const IMAGE_PARSERS = { bmp: parseBmp, gif: parseGif, jpeg: parseJpeg, jpg: parseJpeg, ktx: parseKtx, png: parsePng, psd: parsePsd, svg: parseSvg, tiff: parseTiff, webp: parseWebp }
-const FALLBACK_PARSERS = [parseBmp, parseGif, parseJpeg, parseKtx, parsePng, parsePsd, parseSvg, parseTiff, parseWebp]
+const FALLBACK_PARSERS = [...new Set(Object.values(IMAGE_PARSERS))]
 
 const tryParse = (parser, content) => {
   try {
@@ -271,10 +257,10 @@ const tryParse = (parser, content) => {
 // The image `content` of an asset of `type` (`file` naming it in errors) is: its width and height.
 export function imageDimensions(type, content, file) {
   const parser = IMAGE_PARSERS[type]
-  let dimensions = tryParse(parser, content)
-  for (const fallback of FALLBACK_PARSERS) {
+  let dimensions = null
+  for (const candidate of [parser, ...FALLBACK_PARSERS.filter((fallback) => fallback !== parser)]) {
+    dimensions = tryParse(candidate, content)
     if (dimensions !== null) break
-    if (fallback !== parser) dimensions = tryParse(fallback, content)
   }
   if (dimensions === null || !Number.isFinite(dimensions.width) || !Number.isFinite(dimensions.height) || dimensions.width <= 0 || dimensions.height <= 0) {
     throw new Error(`Invalid ${type} image asset: ${file}`)
@@ -291,18 +277,17 @@ export function imageDimensions(type, content, file) {
 // fs.promises.readdir lists them (libuv sorts the names bytewise), each inserted after those of a
 // scale it doesn't exceed. -> { descriptor, files }, `files` in scale order
 export function metroAssetDescriptor(rel, { platform, files, read }) {
-  const own = parseAssetName(posix.basename(rel), platform)
+  const own = parseMetroAssetName(posix.basename(rel), platform)
   if (own === null || files.length === 0) throw new Error(`Asset not found: ${rel} for platform: ${platform}`)
   const byScale = files
-    .map((file) => ({ file, resolution: parseAssetName(posix.basename(file), platform).resolution }))
-    .toSorted((a, b) => Buffer.compare(Buffer.from(posix.basename(a.file)), Buffer.from(posix.basename(b.file))))
-    .toSorted((a, b) => a.resolution - b.resolution)
+    .map((file) => ({ file, name: Buffer.from(posix.basename(file)), resolution: parseMetroAssetName(posix.basename(file), platform).resolution }))
+    .toSorted((a, b) => a.resolution - b.resolution || Buffer.compare(a.name, b.name))
   const contents = byScale.map(({ file }) => read(file))
   const hasher = createHash('md5')
   for (const content of contents) hasher.update(content)
   const scales = byScale.map(({ resolution }) => resolution)
   let dimensions = null
-  if (IMAGE_TYPES.has(own.type)) {
+  if (Object.hasOwn(IMAGE_PARSERS, own.type)) {
     if (contents[0].length === 0) throw new Error(`Image asset \`${byScale[0].file}\` cannot be an empty file.`)
     dimensions = imageDimensions(own.type, contents[0], byScale[0].file)
   }
@@ -322,21 +307,21 @@ export function metroAssetDescriptor(rel, { platform, files, read }) {
   return { descriptor, files: byScale.map(({ file }) => file) }
 }
 
-// The module Metro builds of an asset of `descriptor`, requiring `registry`. Plain ES5: Metro builds
-// it past Babel, and it needs no downleveling for Hermes.
-export const metroAssetModule = (descriptor, registry = ASSET_REGISTRY) =>
-  `module.exports = require(${JSON.stringify(registry)}).registerAsset(${JSON.stringify(descriptor)});\n`
+// The module Metro builds of an asset of `descriptor`. Plain ES5: Metro builds it past Babel, and it
+// needs no downleveling for Hermes.
+export const metroAssetModule = (descriptor) =>
+  `module.exports = require(${JSON.stringify(ASSET_REGISTRY)}).registerAsset(${JSON.stringify(descriptor)});\n`
 
-// The file Metro resolves `ASSET_REGISTRY` to from the asset `rel` for `platform`, among `carried`
-// (the code files the artifact carries, paths from the project root): the nearest
-// node_modules/react-native up from the asset's directory carrying one, else the only copy of
-// react-native carrying one (pnpm's, linked in from node_modules/.pnpm), each probed as Metro probes
-// a file: each of its sourceExts, the platform's file, then the .native one, then the plain one.
-// -> its path, or throws where it carries none, or several none of them nearest
-const REGISTRY_FILE = /^((?:.*\/)?node_modules\/react-native)\/Libraries\/Image\/AssetRegistry(?:\.[^./]+)?\.[^./]+$/u
-export function assetRegistryFile(rel, platform, carried) {
+// The resolver of `ASSET_REGISTRY` from an asset for `platform`, as Metro resolves it, among `carried`
+// (the code files the artifact carries: a Map or Set keyed by their paths from the project root): the
+// copy of react-native in the nearest node_modules up from the asset's directory, else the only copy
+// (pnpm's, linked in from node_modules/.pnpm); in it, the file Metro probes first -- each of its
+// sourceExts, the platform's file, then the .native one, then the plain one. The copies are found once.
+// -> (rel) => its path, throwing where the artifact carries none, or several none of them nearest
+const REGISTRY_ROOT = /^((?:.*\/)?node_modules\/react-native)\/Libraries\/Image\/AssetRegistry\./u
+export function assetRegistryResolver(platform, carried) {
   const pick = (root) => {
-    for (const ext of SOURCE_EXTS) {
+    for (const ext of METRO_SOURCE_EXTS) {
       for (const suffix of [`.${platform}`, '.native', '']) {
         const file = `${root}/Libraries/Image/AssetRegistry${suffix}.${ext}`
         if (carried.has(file)) return file
@@ -344,23 +329,25 @@ export function assetRegistryFile(rel, platform, carried) {
     }
     return undefined
   }
-  for (let dir = posix.dirname(rel); ; dir = posix.dirname(dir)) {
-    if (posix.basename(dir) !== 'node_modules') {
-      const found = pick(posix.join(dir, 'node_modules', 'react-native'))
-      if (found !== undefined) return found
+  const roots = new Set([...carried.keys()].map((file) => REGISTRY_ROOT.exec(file)?.[1]).filter((root) => root !== undefined && pick(root) !== undefined))
+  const nearest = (rel) => {
+    for (let dir = posix.dirname(rel); ; dir = posix.dirname(dir)) {
+      const root = posix.join(dir, 'node_modules', 'react-native')
+      if (posix.basename(dir) !== 'node_modules' && roots.has(root)) return root
+      if (dir === '.' || dir === '/' || dir.startsWith('..')) return undefined
     }
-    if (dir === '.' || dir === '/' || dir.startsWith('..')) break
   }
-  const roots = new Set([...carried].map((file) => REGISTRY_FILE.exec(file)?.[1]).filter((root) => root !== undefined))
-  const found = roots.size === 1 ? pick([...roots][0]) : undefined
-  if (found !== undefined) return found
-  if (roots.size === 0) {
-    throw new Error(
-      `stasis build: --metro builds '${rel}' into a module requiring ${ASSET_REGISTRY}, which the artifact doesn't carry; ` +
-      'bundle it with `stasis bundle --metro --resources=...` from a project with react-native installed'
-    )
+  return (rel) => {
+    const root = roots.size === 1 ? [...roots][0] : nearest(rel)
+    if (root !== undefined) return pick(root)
+    if (roots.size === 0) {
+      throw new Error(
+        `stasis build: --metro builds '${rel}' into a module requiring ${ASSET_REGISTRY}, which the artifact doesn't carry; ` +
+        'bundle it with `stasis bundle --metro --resources=...` from a project with react-native installed'
+      )
+    }
+    throw new Error(`stasis build: --metro found several ${ASSET_REGISTRY} for '${rel}', none of them nearest: ${[...roots].join(', ')}`)
   }
-  throw new Error(`stasis build: --metro found several ${ASSET_REGISTRY} for '${rel}', none of them nearest: ${[...roots].join(', ')}`)
 }
 
 // --- --assets-dest: @react-native/community-cli-plugin's saveAssets -----------------------------

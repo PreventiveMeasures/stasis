@@ -1362,15 +1362,11 @@ export class State {
     // builds for one (`stasis build --metro=ios`), which the edge must record. Plain bundle=load has
     // no platform context to pick one, so fail closed rather than feed a Map where a path is expected.
     if (typeof file !== 'string') {
-      if (platform === undefined) {
-        throw Object.assign(
-          new Error(`Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`),
-          { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
-      }
       if (!file.has(platform)) {
-        throw Object.assign(
-          new Error(`Resolution of '${specifier}' from ${parent} is platform-specific and records no '${platform}' target (only ${[...file.keys()].join(', ')}): the bundle wasn't made for '${platform}'`),
-          { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
+        const message = platform === undefined
+          ? `Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`
+          : `Resolution of '${specifier}' from ${parent} is platform-specific and records no '${platform}' target (only ${[...file.keys()].join(', ')}): the bundle wasn't made for '${platform}'`
+        throw Object.assign(new Error(message), { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
       }
       file = file.get(platform)
     }

@@ -1,16 +1,17 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
+import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
+import { toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
-import { metroAssetFiles } from '@exodus/stasis-plugins/metro-native'
+import { bundleDirHost, metroAssetFiles } from '@exodus/stasis-plugins/metro-native'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
-import { ASSET_REGISTRY, assetRegistryFile, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
+import { ASSET_REGISTRY, assetRegistryResolver, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
 
@@ -180,42 +181,29 @@ function loadStateForBundle(root, bundle) {
   return state
 }
 
-const DIRECTORY_FORMATS = new Set(['directory', 'stat:directory'])
-const FILE_STAT = { isFile: () => true }
+// A file's bytes as the State serves them: a Buffer for a base64 resource, else a string.
+const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
 
 // The bytes the artifact carries for `file` (a path from the State's root), verified by getFile.
-function readCarried(state, file) {
-  const { source } = state.getFile(pathToFileURL(resolve(state.root, file)).toString())
-  return Buffer.isBuffer(source) ? source : Buffer.from(source)
-}
+const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
 // --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches -- in a
 // --metro bundle, a Metro asset, as it records an import edge to no other -- served as the module
 // Metro builds of it for `platform` (metro-assets.js), from the files of the asset the artifact carries
 // in its directory. The module's require of the asset registry resolves to the file the artifact
-// carries for it (assetRegistryFile), an edge added to the State's graph: the bundle records none, as
-// Metro adds it past the source. `built` collects each asset's { descriptor, files } for --assets-dest.
+// carries for it, an edge added to the State's graph: the bundle records none, as Metro adds it past
+// the source. `built` collects each asset's { descriptor, files } for --assets-dest.
 function metroAssetResource(state, platform, built) {
-  const toRel = (abs) => relative(state.root, abs).split(sep).join('/') || '.'
-  const carried = new Set(state.sources.keys())
-  const listed = [...state.sources.keys(), ...state.resources.keys()].filter((file) => !DIRECTORY_FORMATS.has(state.formats.get(file)))
-  const byDir = Map.groupBy(listed, (file) => posix.dirname(file))
-  const host = {
-    readdir: (dir) => (byDir.get(toRel(dir)) ?? []).map((file) => ({ name: posix.basename(file) })),
-    stat: () => FILE_STAT,
-  }
-  const read = (file) => readCarried(state, file)
-  // A copy of the '*' bucket takes the registry edges: the State shares the parsed artifact's maps.
-  const edges = new Map(state.imports.get('*') ?? [])
-  state.imports = new Map(state.imports).set('*', edges)
+  const host = bundleDirHost(state)
+  const registryFor = assetRegistryResolver(platform, state.sources)
   return (source, { path }) => {
-    const rel = toRel(path)
-    const files = metroAssetFiles(path, platform, host).map(toRel)
-    const { descriptor, files: byScale } = metroAssetDescriptor(rel, { platform, files, read })
-    const registry = assetRegistryFile(rel, platform, carried)
-    edges.set(rel, new Map([...(edges.get(rel) ?? []), [ASSET_REGISTRY, registry]]))
-    built.set(rel, { descriptor, files: byScale })
-    return { contents: metroAssetModule(descriptor), loader: 'js' }
+    const rel = toPosix(state.relative(path))
+    const files = metroAssetFiles(path, platform, host).map((file) => toPosix(state.relative(file)))
+    // The asset's own bytes are those the plugin serves it by.
+    const asset = metroAssetDescriptor(rel, { platform, files, read: (file) => (file === rel ? asBytes(source) : readCarried(state, file)) })
+    state.addImport(pathToFileURL(path).href, ASSET_REGISTRY, pathToFileURL(resolve(state.root, registryFor(rel))).href)
+    built.set(rel, asset)
+    return { contents: metroAssetModule(asset.descriptor), loader: 'js' }
   }
 }
 
@@ -322,7 +310,7 @@ export async function buildCommand({
           `or with --metro=PLATFORM as the asset module Metro builds of it\n`
         )
       }
-      if (metro === undefined && err.errors.some((e) => /is platform-specific/u.test(e.text))) {
+      if (metro === undefined && err.errors.some((e) => e.detail?.code === 'ERR_STASIS_PLATFORM_SPECIFIC')) {
         process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM (e.g. --metro=ios)\n')
       }
       throw new Error(`stasis build failed: esbuild reported ${err.errors.length} error(s)`, { cause: err })
@@ -330,16 +318,16 @@ export async function buildCommand({
     throw err
   }
 
-  // What --assets-dest copies of the assets built, as `react-native bundle --assets-dest` copies them
-  // for the platform, from the bytes the artifact carries; in a stable order (esbuild loads in parallel).
-  const assetsAbs = assetsDest === undefined ? undefined : resolve(cwd, assetsDest)
-  const assetCopies = assetsAbs === undefined
+  // --assets-dest's copies of the assets built, as `react-native bundle --assets-dest` lays them out for
+  // the platform, from the bytes the artifact carries, in a stable order (esbuild loads in parallel).
+  const assetFiles = assetsDest === undefined
     ? []
-    : metroAssetCopies(metro, [...builtAssets].toSorted(([a], [b]) => (a < b ? -1 : 1)).map(([, asset]) => asset))
-        .map((copy) => ({ ...copy, dest: resolve(assetsAbs, copy.dest) }))
+    : metroAssetCopies(metro, [...builtAssets.keys()].toSorted().map((rel) => builtAssets.get(rel)))
+        .map(({ dest, file, contents }) => ({ path: resolve(cwd, assetsDest, dest), contents: contents ?? readCarried(state, file) }))
+  const writes = [...result.outputFiles, ...assetFiles]
 
-  // Refuse to clobber an attested source, checked against esbuild's actual output paths before any write.
-  for (const path of [...result.outputFiles.map((file) => file.path), ...assetCopies.map((copy) => copy.dest)]) {
+  // Refuse to clobber an attested source, checked against the actual output paths before any write.
+  for (const { path } of writes) {
     if (attested.has(path)) {
       throw new Error(
         `stasis build: refusing to write '${relative(cwd, path)}' -- it is a source the artifact records; ` +
@@ -353,12 +341,11 @@ export async function buildCommand({
     for (const line of formatted) process.stderr.write(line)
   }
 
-  for (const file of result.outputFiles) writeFile(file.path, file.contents)
+  for (const { path, contents } of writes) writeFile(path, contents)
 
   console.warn(`[stasis] Built ${selectedEntry} from ${kind} ${artifact} to ${output}`)
-  if (assetsAbs !== undefined) {
-    for (const { dest, file, contents } of assetCopies) writeFile(dest, contents ?? readCarried(state, file))
-    console.warn(`[stasis] Copied ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} (${assetCopies.length} file${assetCopies.length === 1 ? '' : 's'}) for ${metro} to ${assetsDest}`)
+  if (assetsDest !== undefined) {
+    console.warn(`[stasis] Copied ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} (${assetFiles.length} file${assetFiles.length === 1 ? '' : 's'}) for ${metro} to ${assetsDest}`)
   } else if (builtAssets.size > 0) {
     console.warn(`[stasis] Built ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} for ${metro}; pass --assets-dest to copy their files out`)
   }
