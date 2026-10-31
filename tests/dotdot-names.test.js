@@ -10,7 +10,6 @@ import { dirname, join } from 'node:path'
 import { buildBundle } from '@exodus/stasis/cmd/bundle'
 import { Vfs, suggestedEntries } from '@exodus/stasis/vfs-bundle'
 
-import { assertWithinBase } from '../stasis/src/loaders/paths.js'
 import { extractPhpImports, resolvePhpDir, resolvePhpImport } from '../stasis/src/loaders/php.js'
 import { withinRealDir } from '../stasis/src/loaders/rust.js'
 import { scan } from '../stasis/src/scan.js'
@@ -29,12 +28,6 @@ const withProject = (files, fn) => async (t) => {
 }
 
 const PKG = JSON.stringify({ name: 'proj', version: '1.0.0' })
-
-test('assertWithinBase (loaders/paths.js) keeps a `..`-prefixed name and rejects a `..` segment', withProject({ '..cache/x.sh': '' }, (t, dir) => {
-  assertWithinBase(dir, '..cache/x.sh', 'Entry path')
-  t.assert.throws(() => assertWithinBase(dir, '../x.sh', 'Entry path'), /Entry path escapes baseDir/)
-  t.assert.throws(() => assertWithinBase(dir, '/x.sh', 'Entry path'), /Entry path must not be absolute/)
-}))
 
 test('withinRealDir (loaders/rust.js) accepts a `..`-prefixed subdirectory of the package', withProject({ 'vendor/..crate/lib.rs': '', 'other/x.rs': '' }, (t, dir) => {
   t.assert.equal(withinRealDir(dir, 'vendor/..crate/lib.rs', 'vendor'), true)

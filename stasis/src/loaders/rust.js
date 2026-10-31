@@ -11,12 +11,11 @@
 import { isUtf8 } from 'node:buffer'
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, extname, join, posix, relative, resolve } from 'node:path'
+import { join, posix, relative } from 'node:path'
 
 import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { TARGET_CFG_KEYS, TARGET_UNIT, VENDOR_DIR, cached, cfgName, createCargoContext, evalCfg, evalCfgKey, isTestTargetPath, normName, normalizeCfg, normalizeRel } from './cargo.js'
-import { assertWithinBase } from './paths.js'
 import { matchClose, splitTopLevel } from './toml.js'
 
 // Leads of the expression-position paths anchored on the module tree rather than on a name.
@@ -3327,22 +3326,4 @@ export async function collectRustBundle(baseDir, entries, { cargo, buildScripts 
     return complete()
   }
   return { sources, formats, tree: await complete() }
-}
-
-// High-level entry: reads a `.rs.txt` listing of crate roots (relative to the listing), then
-// walks `mod` declarations and in-tree crate references from there.
-export async function loadRust(rsTxtFile) {
-  const baseDir = dirname(resolve(rsTxtFile))
-  const listing = await readFile(rsTxtFile, 'utf8')
-  const lines = listing.split('\n').map((l) => l.trim()).filter(Boolean)
-    .map((l) => l.replace(/^\.\//u, ''))
-  if (lines.length === 0) throw new Error(`Empty Rust listing: ${rsTxtFile}`)
-
-  if (!lines.every((line) => extname(line) === '.rs')) {
-    throw new Error(`Rust listing must only contain .rs files: ${rsTxtFile}`)
-  }
-  for (const line of lines) assertWithinBase(baseDir, line, 'Entry path')
-
-  const { tree, formats } = await collectRustBundle(baseDir, lines, { cargo: createCargoContext(baseDir, { entries: lines }) })
-  return { ...tree, formats }
 }

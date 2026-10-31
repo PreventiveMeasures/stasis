@@ -6,7 +6,6 @@ import {
   buildBashTree,
   collectBashFilesFromDisk,
   extractBashCalls,
-  loadBash,
   resolveBashCall,
 } from '../stasis/src/loaders/bash.js'
 
@@ -198,35 +197,4 @@ test('buildBashTree drops self-references without reporting them missing', (t) =
   const tree = buildBashTree(new Map([['main.sh', 'source ./main.sh\n']]))
   t.assert.equal(tree.resolutions.get('main.sh').size, 0)
   t.assert.deepStrictEqual(tree.missing, [])
-})
-
-test('loadBash reads a .sh.txt listing and resolves among the listed files', async (t) => {
-  const tree = await loadBash(join(fixtures, 'listing/list.sh.txt'))
-  t.assert.deepStrictEqual([...tree.sources.keys()].toSorted(), ['lib.sh', 'main.sh'])
-  t.assert.equal(tree.resolutions.get('main.sh').get('./lib.sh'), 'lib.sh')
-})
-
-test('loadBash rejects an empty listing', async (t) => {
-  await t.assert.rejects(() => loadBash(join(fixtures, 'listing-empty/list.sh.txt')), /Empty bash listing/)
-})
-
-test('loadBash rejects a listing with non-.sh/.bash lines', async (t) => {
-  await t.assert.rejects(
-    () => loadBash(join(fixtures, 'listing-nonbash/list.sh.txt')),
-    /must only contain \.sh\/\.bash files/,
-  )
-})
-
-test('loadBash rejects an entry path that escapes the listing dir', async (t) => {
-  await t.assert.rejects(
-    () => loadBash(join(fixtures, 'listing-escape/list.sh.txt')),
-    /Entry path escapes baseDir/,
-  )
-})
-
-test('loadBash rejects an absolute entry path in the listing', async (t) => {
-  await t.assert.rejects(
-    () => loadBash(join(fixtures, 'listing-absolute/list.sh.txt')),
-    /Entry path must not be absolute/,
-  )
 })

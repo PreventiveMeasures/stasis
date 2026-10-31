@@ -1,4 +1,0 @@
-[profile.default]
-remappings = [
-  "@oz/=lib/oz/",
-]

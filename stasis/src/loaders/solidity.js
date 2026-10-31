@@ -9,8 +9,7 @@
 // is read through a link a dependency planted out of itself (solidityOwnership). The project is read
 // through a `host` (@exodus/stasis-core/host), the disk's by default.
 
-import { readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { isAbsolute, join, posix, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
@@ -21,14 +20,12 @@ import {
   foundryLibs,
   foundryProfile,
   foundryProject,
-  foundryTomlRemappings,
   parseRemappingLines,
   readFoundryTomlRemappings,
   shownFrom,
   toSolcRemapping,
 } from './foundry.js'
 import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
-import { assertWithinBase } from './paths.js'
 
 // --- Import scan ------------------------------------------------------------------------------
 
@@ -135,18 +132,6 @@ export function extractSolImports(content) {
 // Loader-side shape: `{ context, prefix, target }` (context null = global).
 const toLoaderRemapping = ({ context, name, path }) => ({ context, prefix: name, target: path })
 
-// remappings.txt text -> remappings as written, one `[context:]prefix=target` per line (lines
-// trimmed, blank ones skipped; an empty target is solc's, valid). A line that isn't one throws.
-export function parseRemappings(content) {
-  return parseRemappingLines(content, { emptyPath: true }).map(toLoaderRemapping)
-}
-
-// foundry.toml text -> the `remappings` of `[profile.default]`, overlaid by the selected profile's
-// (FOUNDRY_PROFILE in `env`) when it sets them.
-export function parseRemappingsFromToml(tomlContent, { env = process.env } = {}) {
-  return foundryTomlRemappings(tomlContent, foundryProfile(env)).map(toLoaderRemapping)
-}
-
 // Read a mapping file -> its remappings as listed (no discovery around it) and the files read. A
 // foundry.toml (its selected profile, with its `extends` base) is forge's, and so is a
 // remappings.txt when `forge` says forge reads it: slash-terminated the way forge reads them.
@@ -162,12 +147,6 @@ function readMapping(mappingFile, { env, forge, host, show = (f) => f }) {
   if (text === null) throw new Error(`${name}: no such file`)
   const listed = parseRemappingLines(text, { label: name, emptyPath: !forge })
   return { remappings: listed.map(forge ? toSolcRemapping : toLoaderRemapping), files: [mappingFile] }
-}
-
-// Read a foundry.toml/remappings.txt mapping file -> its remappings (see readMapping; `forge`
-// defaults to a remappings.txt applying as written). The file itself is not added to sources.
-export function readRemappingsFile(mappingFile, { env = process.env, forge = false, host = diskHost } = {}) {
-  return readMapping(mappingFile, { env, forge, host }).remappings
 }
 
 // --- Resolution ---------------------------------------------------------------------------------
@@ -456,30 +435,4 @@ export function expandSolidityEntries(baseDir, entries, host = diskHost) {
     throw new Error(`No .sol files under ${entries.map((e) => shown(e === '' ? '.' : e)).join(', ')} (a directory entry stands for the Solidity sources under it)`)
   }
   return [...out]
-}
-
-// High-level entry: a `.sol.txt` listing whose optional first line is a `*.toml`/`remappings.txt`
-// mapping file (resolved relative to the listing); the remaining lines are `*.sol` files. Without
-// a mapping line, the remappings are discovered as for `stasis bundle` (discoverSolidityConfig).
-export async function loadSolidity(solTxtFile, { env = process.env } = {}) {
-  const baseDir = dirname(resolve(solTxtFile))
-  const listing = decodeUtf8(await readFile(solTxtFile), solTxtFile)
-  const lines = listing.split('\n').map((l) => l.trim()).filter(Boolean)
-  if (lines.length === 0) throw new Error(`Empty Solidity listing: ${solTxtFile}`)
-
-  let mappingFile
-  if (lines[0].endsWith('.toml') || lines[0].endsWith('remappings.txt')) {
-    mappingFile = lines.shift()
-    assertWithinBase(baseDir, mappingFile, 'Mapping path')
-  }
-
-  if (!lines.every((line) => line.endsWith('.sol'))) {
-    throw new Error(`Solidity listing must only contain .sol files: ${solTxtFile}`)
-  }
-
-  const entries = lines.map((l) => l.replace(/^\.\//u, ''))
-  for (const e of entries) assertWithinBase(baseDir, e, 'Entry path')
-  const { remappings, libs, ownership } = discoverSolidityConfig(baseDir, { mappingFile, env })
-  const sources = collectSolidityFilesFromDisk(baseDir, entries, remappings, { libs, ownership })
-  return buildSolidityTree(sources, { remappings, baseDir, libs, ownership })
 }

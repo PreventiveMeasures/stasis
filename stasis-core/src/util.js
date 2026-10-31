@@ -303,9 +303,6 @@ export function observeExecutable(abs, host = diskHost) {
   return stats === null ? undefined : isExecutableMode(stats)
 }
 
-// Boolean view for callers with nothing to refute (recording a fresh set from scratch).
-export const isExecutableFile = (abs, host) => observeExecutable(abs, host) === true
-
 // Windows reports no POSIX execute bits, so a capture there records none and must NOT read "no bit" as
 // "the bit was removed" and strip what a POSIX capture attested.
 export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } = {}) => !win32
