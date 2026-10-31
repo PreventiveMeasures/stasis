@@ -7,6 +7,7 @@ import { classifyExtension, classifyFormat, isTypeDeclaration, nestedMap, relati
 import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
+import { untouchedMemo } from './vfs-bundle/lazy.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
 // Dynamic specifiers (`require(name)`, `import('./'+x)`) are recorded as unresolved. With
@@ -47,10 +48,10 @@ function getFlowRemoveTypes() {
 // classifyFormat is the shared name->format authority (static and runtime bundles must agree); it
 // returns null for the .js/.ts family whose module system comes from package.json `type` (null =
 // detect from syntax, signaled up as null).
-function formatForFile(file, host) {
+function formatForFile(file, host, kept) {
   const format = classifyFormat(file)
   if (format != null) return format
-  const type = packageType(file, host)
+  const type = packageType(file, host, kept)
   if (type === null) return null
   return `${type}${extname(file) === '.ts' ? '-typescript' : ''}`
 }
@@ -244,7 +245,12 @@ export class Scan {
     this.keepsTypeImports = keepsTypeImports
     this.host = host
     this.memo = memo
+    this.#types = untouchedMemo(host.touches, { retouch: host.retouch })
   }
+
+  // The `type` of each package.json the files scanned are under, read once (formatForFile's), as
+  // a host's own reads are kept (vfs-bundle/lazy.js's untouchedMemo).
+  #types
 
   // A reached file whose extension/filename is in the --resources allowlist: carried as an opaque
   // resource (bytes only, no parse, no edges), not rejected as "a source bundle can't carry".
@@ -287,7 +293,8 @@ export class Scan {
   // unpacked yet (`host.touches()` counts each such read, through a host that caches nothing such a
   // read reads), so read what the full tree holds: the next scan reads only the files that did, and
   // those it reaches. Of one that did, its parse is kept alone, which is the file's whatever the tree
-  // holds: the next scan resolves its imports again, but parses it no more.
+  // holds, or of that, what it imports (#scanFile): the next scan resolves its imports again, but
+  // parses it no more.
   #scanKept(url, queue) {
     const kept = this.memo.get(url)
     scanCounts[kept?.queued !== undefined ? 'replayed' : kept?.parse === undefined ? 'parsed' : 'resolved'] += 1
@@ -406,7 +413,7 @@ export class Scan {
   parseFile(file) {
     const ext = extname(file)
     // declared === null: typeless package; Node decides .js/.ts by syntax, resolved after parse.
-    const declared = formatForFile(file, this.host)
+    const declared = formatForFile(file, this.host, this.#types)
     const src = this.host.readFile(file).toString('utf8')
 
     // Resolve the parser outside the try: a missing oxc-parser is an env error, not this
@@ -533,7 +540,14 @@ export class Scan {
     }
 
     const typesErased = () => result.strippedSource !== null || !this.keepsTypeImports?.(file)
-    const specs = collectSpecifiers(parsed.program, this.defines, this.babel ? (node) => listsTypesOnly(node, result) && typesErased() : undefined)
+    let { specs } = result
+    if (specs === undefined) {
+      const touches = this.memo === null ? 0 : this.host.touches()
+      specs = collectSpecifiers(parsed.program, this.defines, this.babel ? (node) => listsTypesOnly(node, result) && typesErased() : undefined)
+      // What a scan keeps of a file whose reading touched a package not unpacked yet (#scanKept): of
+      // its parse, what it imports, where finding that touched none, the parse itself let go.
+      if (this.memo !== null && this.host.touches() === touches) this.#parse = { format, errors, specs }
+    }
 
     // The edge KIND picks the resolution context, not the parent's format: createRequire()d
     // require() inside ESM resolves under REQUIRE conditions, literal import() inside CJS under

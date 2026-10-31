@@ -416,6 +416,15 @@ test('untouchedMemo keeps what read nothing a lazy tree does not hold yet; with 
   round('d', read('d', false))
   round('d', read('d', false))
   t.assert.equal(retouch.mock.callCount(), 1, 'what touched nothing touches nothing')
+  // With `across`, what touched nothing is kept there, for a memo after it; what did is not.
+  const across = new Map()
+  const first = untouchedMemo(() => touches, { retouch, across })
+  first('f', read('f', false))
+  first('g', read('g', true))
+  t.assert.deepStrictEqual([...across], [['f', 'f']])
+  const after = t.mock.fn(read('f', false))
+  t.assert.equal(untouchedMemo(() => touches, { retouch, across })('f', after), 'f')
+  t.assert.equal(after.mock.callCount(), 0, 'kept across')
   // Without `cache`, nothing is kept.
   const none = untouchedMemo(() => touches, { cache: false, retouch })
   const each = t.mock.fn(read('e', false))

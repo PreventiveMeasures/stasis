@@ -993,7 +993,7 @@ const BUNDLER_CONDITIONS = ['module']
 // resolveConditions): --metro asserts the RN conditions (+ browser on web), Metro's own set;
 // --mainFields asserts esbuild's and webpack's `module` (BUNDLER_CONDITIONS) and the user's --conditions.
 // Under --metro, `assetExts` are the extensions Metro takes as assets (its defaults where not given).
-export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, conditions = [], typescript = false, typescriptPaths = null, host = diskHost }) {
+export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, conditions = [], typescript = false, typescriptPaths = null, host = diskHost, kept }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
@@ -1011,6 +1011,7 @@ export function fieldResolverFor(platform, { mainFields, metro = false, assetExt
     typescript,
     typescriptPaths,
     host,
+    kept,
   })
   return { extras, mainFields: fields, resolver }
 }
@@ -1511,7 +1512,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
-    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript, typescriptPaths, host })
+    // What each resolves, kept across a lazy tree's rounds where it read nothing not unpacked yet.
+    const keptFor = (label) => (memo ? nestedMap(memo, `${label} ${platform ?? '*'}`) : undefined)
+    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript, typescriptPaths, host, kept: keptFor('resolutions') })
     const { extras } = field
     // --metro --metro-resolver delegates to the project's own metro-resolver for byte-for-byte Metro
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives
@@ -1522,7 +1525,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       : field.resolver
     // Without --typescript, the field resolver --typescript would build names the file a miss would
     // land on: a hint in the unresolved report, never an edge (see Scan#typescriptCandidate).
-    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript: true, typescriptPaths, host }).resolver
+    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript: true, typescriptPaths, host, kept: keptFor('typescript resolutions') }).resolver
     // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases

@@ -543,10 +543,24 @@ const dirent = (name, type) => ({
 // A view over the Vfs's bytes, never a copy.
 const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 
-// What `vfs` holds at `p` itself (the last link not followed), or null.
+// `make()`, an error for a name a lookup does not find, made without a stack: a resolver probes
+// many names for each it finds, and its callers take a miss as none, so the stack is never read,
+// and building it is most of what a miss costs.
+function stackless(make) {
+  const limit = Error.stackTraceLimit
+  Error.stackTraceLimit = 0
+  try {
+    return make()
+  } finally {
+    Error.stackTraceLimit = limit
+  }
+}
+
+// What `vfs` holds at `p` itself (the last link not followed), or null: the Vfs throws for a name
+// it does not hold, which is made without a stack (stackless).
 function lstatOrNull(vfs, p) {
   try {
-    return vfs.lstat(p)
+    return stackless(() => vfs.lstat(p))
   } catch (err) {
     if (NO_ENTRY.has(err?.code)) return null
     throw err
@@ -605,9 +619,9 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   const readlink = (p) => {
     const zone = zoneOf(p)
     if (zone === OUTSIDE) return disk.readlink(p)
-    if (zone === NONE) throw new VfsError('ENOENT', p)
+    if (zone === NONE) throw stackless(() => new VfsError('ENOENT', p))
     const node = lstatOrNull(vfs, inVfs(p))
-    if (node === null) throw new VfsError('ENOENT', p)
+    if (node === null) throw stackless(() => new VfsError('ENOENT', p))
     return node.type === 'symlink' ? vfs.readlink(inVfs(p)) : null
   }
 
