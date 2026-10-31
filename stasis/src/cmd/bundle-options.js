@@ -37,11 +37,13 @@ export const BUNDLE_FLAGS = {
   'cargo-manifests': { type: 'boolean' },
   'brotli-quality': { type: 'string' },
   add: { type: 'boolean' },
+  deptree: { type: 'boolean' },
 }
 
-// The flags saying where and how the bundle is written. Every other one says how its entries are
-// built, which stasis.config.json's `entries` sets per entry instead.
-const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add'])
+// The flags of the bundle as a whole: where and how it is written, and where its dependencies are
+// read from. Every other one says how its entries are built, which stasis.config.json's `entries`
+// sets per entry instead.
+const OUTPUT_FLAGS = new Set(['output', 'lockfile', 'brotli-quality', 'add', 'deptree'])
 // The entry flags taking a list (comma-separated, or repeated), which an entry's options may give as an array.
 const LIST_FLAGS = new Set(['conditions', 'mainFields', 'platforms', 'resources', 'cargo-features'])
 // The entry flags given once per value, which a comma doesn't separate (a define's JSON value may
@@ -207,15 +209,29 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, babelAliases: values['babel-aliases'], platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
 }
 
+// The entry flags that run a program of the project's from disk, which needs what it installs on
+// disk: none that --deptree lays out in memory.
+const DISK_RUN_FLAGS = new Map([
+  ['babel', "the project's Babel config"],
+  ['metro-resolver', "the project's metro-resolver"],
+])
+
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
-function outputOptions(values, { allJs }) {
+function outputOptions(values, { allJs, allSol }) {
   if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
+  // --deptree: the dependencies laid out in memory from the lockfile (pnpm, yarn 1, npm or Soldeer's),
+  // never read from disk, which holds none.
+  const deptree = Boolean(values.deptree)
+  if (deptree && !allJs && !allSol) throw new Error('--deptree is only valid for JS and .sol bundles')
+  for (const [flag, what] of DISK_RUN_FLAGS) {
+    if (deptree && values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${what} from disk, where --deptree installs nothing)`)
+  }
   // --brotli-quality: valid for every entry language (no allJs gate).
   const brotliQuality = values['brotli-quality'] === undefined ? undefined : parseBrotliQuality('--brotli-quality', values['brotli-quality'])
   // --add merges into the existing bundle at --output, so it can't target write-only stdout.
   const add = Boolean(values.add)
   if (add && values.output === '-') throw new Error('--add cannot be combined with --output=-')
-  return { output: values.output, lockfile: values.lockfile, brotliQuality, add }
+  return { output: values.output, lockfile: values.lockfile, brotliQuality, add, deptree }
 }
 
 // An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in

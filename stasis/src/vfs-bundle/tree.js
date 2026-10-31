@@ -322,22 +322,25 @@ export const lockfileRoot = (host, packageManager, cwd, os) => rootOf(host, PACK
 // The package managers that install node_modules.
 export const NODE_MODULES_MANAGERS = PACKAGE_MANAGER_NAMES.filter((name) => PACKAGE_MANAGERS[name].installs === 'node_modules')
 
+// Why the package manager is detected, as a refusal to detect one says: none was given.
+const NOT_GIVEN = 'no packageManager given'
+
 // The one of the package managers `names` that installs `cwd` in the project `host` reads from a
 // directory holding its lockfile, as lockfileRoot finds it for `os`: refused where none or more than
-// one does.
-export function detectPackageManager(name, host, cwd, { names = PACKAGE_MANAGER_NAMES, os } = {}) {
+// one does, saying `why` it is detected.
+export function detectPackageManager(name, host, cwd, { names = PACKAGE_MANAGER_NAMES, os, why = NOT_GIVEN } = {}) {
   const real = host.realpath(cwd)
   const found = names.flatMap((pm) => {
     const root = rootOf(host, PACKAGE_MANAGERS[pm], real, os)
     return root === null ? [] : [[pm, join(root, PACKAGE_MANAGERS[pm].lockfile)]]
   })
   if (found.length === 1) return found[0][0]
-  if (found.length === 0) throw noLockfile(name, real, names)
-  throw new Error(`${name}: no packageManager given, and more than one lockfile installs ${real}: ${found.map(([pm, file]) => `${file} (${pm})`).join(', ')}`)
+  if (found.length === 0) throw noLockfile(name, real, names, why)
+  throw new Error(`${name}: ${why}, and more than one lockfile installs ${real}: ${found.map(([pm, file]) => `${file} (${pm})`).join(', ')}`)
 }
 
-// That none of the lockfiles of `names` installs `place`.
-export const noLockfile = (name, place, names = PACKAGE_MANAGER_NAMES) => new Error(`${name}: no packageManager given, and none of ${names.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')} installs ${place}`)
+// That none of the lockfiles of `names` installs `place`, saying `why` one is looked for.
+export const noLockfile = (name, place, names = PACKAGE_MANAGER_NAMES, why = NOT_GIVEN) => new Error(`${name}: ${why}, and none of ${names.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')} installs ${place}`)
 
 // Whether a directory's listing (listRepoDir's) holds `packageManager`'s lockfile.
 const listsLockfile = (listing, packageManager) => listing.some((entry) => entry.path === PACKAGE_MANAGERS[packageManager].lockfile && entry.type === 'blob')
@@ -352,10 +355,10 @@ export function checkVersion(name, { packageManager, packageManagerVersion }) {
 }
 
 // The package manager of `names` the project `host` reads is built with at `cwd`: `packageManager`
-// if given, else the one detected for `os`.
-export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os }, names = PACKAGE_MANAGER_NAMES) {
+// if given, else the one detected for `os`, a refusal to detect one saying `why` it is detected.
+export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os, why }, names = PACKAGE_MANAGER_NAMES) {
   checkVersion(name, { packageManager, packageManagerVersion })
-  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os })
+  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os, why })
   packageManagerOf(name, packageManager, names)
   return packageManager
 }
@@ -399,7 +402,10 @@ export function checkVfs(name, vfs) {
 // pnpm and npm (checkLazy), the tree is laid out with nothing fetched, and comes with `unpack` and
 // `lazy` besides (lazyTree). Without `installDevDependencies`, what devDependencies alone reach is
 // left out, as the package manager's production install leaves it out (deptree's `production`).
-async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy = false, installDevDependencies = true }) {
+// With `refuseInstalled`, refused before anything is fetched where `project` holds anything at all
+// (a link too) where the tree installs a project's dependencies: its node_modules, or Soldeer's
+// dependencies folder, which the tree would serve in place of what is there.
+async function layOutTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy = false, installDevDependencies = true, refuseInstalled = false }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
@@ -412,6 +418,12 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
+  if (refuseInstalled) {
+    for (const dir of [...projects].toSorted()) {
+      const at = join(found, dir, pm.installs)
+      if (holdsAnything(project, at)) throw new Error(`${at} is there already, and the tree is laid out from ${file} alone, over nothing installed: remove it first`)
+    }
+  }
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
@@ -430,6 +442,17 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
     packageManager,
     packageManagerVersion: version ?? (String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined),
     ...lazy ? lazyTree(built, cleanAll) : {},
+  }
+}
+
+// Whether `host` holds anything at `p` itself, a link (a broken one too) or anything else.
+function holdsAnything(host, p) {
+  try {
+    host.readlink(p)
+    return true
+  } catch (err) {
+    if (NO_ENTRY.has(err?.code)) return false
+    throw err
   }
 }
 

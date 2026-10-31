@@ -120,6 +120,28 @@ test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle 
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
 })
 
+test('stasis bundle --deptree builds, from a checkout without its dependencies folder, the byte-identical bundle, and writes nothing else', async (t) => {
+  // In this process, so the zip comes from the cache seeded above, read and never written
+  // (bundleCommand's --deptree caches nothing).
+  const { bundleCommand } = await import('../stasis/src/cmd/bundle.js')
+  const checkout = await mkdtemp(join(tmpdir(), 'stasis-deptree-soldeer-'))
+  try {
+    await cp(join(fixture, 'project'), checkout, { recursive: true })
+    const zips = () => readdirSync(join(cacheRoot, 'soldeer', 'zips'))
+    const cached = zips()
+    const warn = t.mock.method(console, 'warn', () => {})
+    await bundleCommand({ cwd: checkout, entries: ENTRIES, deptree: true, env: {}, output: 'out.br' })
+    await bundleCommand({ cwd: checkout, entries: ENTRIES, deptree: true, env: {}, output: 'manifests.br', manifests: true })
+    t.assert.equal(brotliDecompressSync(await readFile(join(checkout, 'out.br'))).toString('utf8'), oracles.plain)
+    t.assert.equal(brotliDecompressSync(await readFile(join(checkout, 'manifests.br'))).toString('utf8'), oracles.manifests)
+    t.assert.match(warn.mock.calls[0].arguments[0], /^\[stasis\] Unpacked 1 of 1 packages: 6 files, /u)
+    t.assert.deepStrictEqual(readdirSync(checkout).toSorted(), [...readdirSync(join(fixture, 'project')), 'manifests.br', 'out.br'].toSorted(), 'no dependencies folder is written')
+    t.assert.deepStrictEqual(zips(), cached)
+  } finally {
+    await rm(checkout, { recursive: true, force: true })
+  }
+})
+
 test("buildVfsBundle with soldeer takes stasis.config.json's installDevDependencies, and leaves nothing out: Soldeer has no devDependencies", async (t) => {
   const values = [true, false]
   const builts = await Promise.all(values.map((installDevDependencies) => build({ vfs: projectVfs({ 'stasis.config.json': `${JSON.stringify({ installDevDependencies })}\n` }) })))

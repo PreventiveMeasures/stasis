@@ -370,11 +370,11 @@ than ship it, and reading one is refused as well.
     it. `npm publish` writes `gitHead` into the registry's version document
     alone, but lerna writes it into the published `package.json` too, and npm
     keeps one a `package.json` has, so the two agree.
-  - A build from a lockfile alone (`stasis github-bundle`, `buildVfsBundle`)
-    records an npm package's at the `gitHead` of the registry's version
-    document of it, fetched beside its tarball and held to the lockfile's
-    integrity, over its `package.json`'s, and only beside a `github` its
-    `package.json` names.
+  - A build from a lockfile alone (`stasis github-bundle`, `stasis bundle
+    --deptree`, `buildVfsBundle`) records an npm package's at the `gitHead`
+    of the registry's version document of it, fetched beside its tarball and
+    held to the lockfile's integrity, over its `package.json`'s, and only
+    beside a `github` its `package.json` names.
   - A JS build from disk (`stasis bundle`, `buildBundle`) records a git
     dependency's, read off what the package manager that laid out its
     `node_modules` left there: npm's (7 and later) hidden lockfile,

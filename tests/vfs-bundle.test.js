@@ -226,6 +226,60 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         t.assert.equal(vfs.isDirectory('/node_modules'), false, 'the project\'s Vfs is only read')
       })
 
+      test('stasis bundle --deptree builds the same from a checkout with nothing installed, and writes nothing but the bundle and lockfile', withTmp(async (t, tmp) => {
+        // node:fs is wrapped in a preload, so each write through it is seen. The tarballs come from
+        // the cache the builds here fill, which is stasis's own (XDG_CACHE_HOME), read and never
+        // written: the CLI sets no cache for --deptree.
+        const project = join(tmp, 'project')
+        await Promise.all(Object.entries(oracles[packageManager].files).map(async ([file, text]) => {
+          await mkdir(dirname(join(project, file)), { recursive: true })
+          await writeFile(join(project, file), text)
+        }))
+        const log = join(tmp, 'written.json')
+        const spy = join(tmp, 'spy.mjs')
+        await writeFile(spy, `
+          import fs from 'node:fs'
+          import { syncBuiltinESMExports } from 'node:module'
+          const { O_WRONLY, O_RDWR } = fs.constants
+          const written = []
+          const save = fs.writeFileSync
+          const writes = (flags) => (typeof flags === 'number' ? (flags & (O_WRONLY | O_RDWR)) !== 0 : flags !== undefined && !/^(?:r|rs|sr)$/u.test(flags))
+          const spy = (obj, name, paths = (args) => [args[0]]) => {
+            const real = obj[name]
+            obj[name] = Object.assign(function (...args) {
+              for (const p of paths(args)) if (p !== undefined) written.push(String(p))
+              return real.apply(this, args)
+            }, real)
+          }
+          const both = (args) => [args[0], args[1]]
+          const opened = (args) => (writes(args[1]) ? [args[0]] : [])
+          for (const obj of [fs, fs.promises]) {
+            const sync = obj === fs ? 'Sync' : ''
+            for (const name of ['writeFile', 'appendFile', 'mkdir', 'mkdtemp', 'rm', 'rmdir', 'unlink', 'truncate', 'chmod', 'utimes']) spy(obj, name + sync)
+            for (const name of ['rename', 'copyFile', 'cp', 'symlink', 'link']) spy(obj, name + sync, both)
+            spy(obj, 'open' + sync, opened)
+          }
+          spy(fs, 'createWriteStream')
+          syncBuiltinESMExports()
+          process.on('exit', () => save(${JSON.stringify(log)}, JSON.stringify(written)))
+        `)
+        const r = await run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), XDG_CACHE_HOME: cacheRoot } })
+        t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+        t.assert.match(r.stderr, /^\[stasis\] Unpacked \d+ of \d+ packages: \d+ files, [\d.]+ MiB/mu)
+        t.assert.equal(unpinned(decode(await readFile(join(project, 'out.br')))), oracles[packageManager].bundle)
+        t.assert.equal(await readFile(join(project, 'out.lock.json'), 'utf8'), oracles[packageManager].lockfile)
+        const outputs = new Set([project, join(project, 'out.br'), join(project, 'out.lock.json')])
+        const written = JSON.parse(await readFile(log, 'utf8'))
+        t.assert.ok(written.includes(join(project, 'out.br')), 'the spy sees the bundle written')
+        t.assert.deepStrictEqual(written.filter((p) => !outputs.has(p)), [], 'nothing else is written')
+        t.assert.deepStrictEqual((await readdir(project)).toSorted(), [...new Set([...m.files.map((f) => f.split('/')[0]), 'out.br', 'out.lock.json'])].toSorted())
+        // Over what a real install left there, it builds nothing.
+        const installed = await run(['bundle', '--deptree', '--scope=full', '--output=deptree.br', 'src/entry.js'], { cwd: oracles[packageManager].installedCopy })
+        t.assert.equal(installed.status, 1)
+        t.assert.match(installed.stderr, new RegExp(`^Error: .*/node_modules is there already, and the tree is laid out from .*/${m.lockfile.replaceAll('.', '\\.')} alone, over nothing installed: remove it first$`, 'mu'))
+        t.assert.equal(existsSync(join(oracles[packageManager].installedCopy, 'deptree.br')), false)
+      }))
+
       test('records each dependency at the commit its version document names, in the repository its package.json does', async (t) => {
         const { bundle } = (await fullBuild()).built
         const { installed } = await loadNodeModules({ vfs: projectVfs(packageManager), packageManager })
