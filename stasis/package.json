@@ -41,6 +41,7 @@
     "src/cmd/github-bundle.js",
     "src/cmd/output.js",
     "src/cmd/sbom.js",
+    "src/cmd/tokens.js",
     "src/define.js",
     "src/diff.js",
     "src/esbuild.js",

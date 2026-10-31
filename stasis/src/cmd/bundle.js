@@ -2426,8 +2426,10 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // (layOutTree's `refuseInstalled`), before anything is fetched. The tarballs are fetched (or read
 // from a cache that holds them, held to the lockfile all the same) and nothing is cached: nothing
 // is written but the bundle and the lockfile. A Soldeer git dependency is fetched from GitHub with
-// `env`'s GITHUB_TOKEN where it is set.
-export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds, deptree = false } = {}) {
+// `env`'s GITHUB_TOKEN where it is set. Where process.env gives the npm client no token, it is given
+// `<home>/.audit/config.json`'s `npmToken` (the user's home by default), else the one `<home>/.npmrc`
+// gives npm's registry, while the tree is laid out and the bundle built (tokens.js's withNpmToken).
+export async function bundleCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds, deptree = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   if (builds !== undefined) {
     if (!Array.isArray(builds) || builds.length === 0) throw new TypeError('bundleCommand: builds must be a non-empty array')
@@ -2452,14 +2454,14 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   let union, root
   if (deptree) {
     // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
-    const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
-    const built = await buildFromLockfile('bundleCommand', diskHost, {
+    const [{ createClient }, { detectPackageManager }, { withNpmToken }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js'), import('./tokens.js')])
+    const built = await withNpmToken({ home }, () => buildFromLockfile('bundleCommand', diskHost, {
       cwd: resolve(cwd),
       packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
       lockfile,
       cache: false,
       client: createClient({ token: env.GITHUB_TOKEN || null }),
-    }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true })
+    }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true }))
     console.warn(unpackedSummary(built.stats))
     root = built.root
     union = { bundle: built.bundle, lockfile: () => built.lockfile }

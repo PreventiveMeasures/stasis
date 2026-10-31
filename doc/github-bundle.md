@@ -53,6 +53,14 @@ integrity, for the commit it was published from (`gitHead`). A Soldeer git
 dependency on GitHub is fetched as the repo is. All of it is cached where
 `stasis audit` caches: the user cache directory, see [audit](audit.md#repository-advisories---repo-advisories).
 
+A private (scoped) npm package is fetched with the first of
+`PREVENTIVE_MEASURES_NPM_TOKEN`, `STASIS_NPM_TOKEN` and `NPM_TOKEN` that is
+set. Where none is, it falls back to the token `~/.npmrc` gives npm's own
+registry on a line that is exactly `//registry.npmjs.org/:_authToken=npm_…`
+(the last, where there are several). Another registry's token, or one written
+any other way (`${NPM_TOKEN}`, quoted, with spaces), is not read; an
+`~/.npmrc` that is not valid UTF-8 is refused.
+
 Each dependency's `repo` records that commit beside the GitHub repository its
 `package.json` names, and a Soldeer git dependency's the repository it is
 fetched from, at its root, and the lockfile's `rev` (see
