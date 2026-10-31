@@ -152,12 +152,20 @@ those packages are unpacked, and the build runs again, until a round reads none
 it has not unpacked. What a round scans of a file is kept for the rounds after
 it, unless scanning it read in a package not yet unpacked: each file is scanned
 once, but those, whose imports are resolved again in the next round, from the
-parse kept. With `EXODUS_STASIS_DEBUG=1`, each round is said on stderr as it
-ends, and what it cost:
+parse kept.
+
+With `EXODUS_STASIS_DEBUG=1`, each step is said on stderr as it ends, with
+what it cost: fetching the repo, the tree (installed, or with `--lazy` laid
+out), each build (with `--lazy`, each round, and the packages it asks for and
+how long unpacking them takes), and writing the bundle. A build says the
+files its scans parsed, resolved again from a parse kept and took as kept,
+and under `--metro` how long each stage took: the scan of what the app
+imports, what Metro and Babel add, the configs and toolchain, and carrying the
+files into the bundle.
 
 ```text
-[stasis] Lazy round 3: built in 1.01 s (files 492 parsed, 164 resolved, 4221 replayed), asked for 40 packages
-[stasis] Lazy round 3: unpacked in 0.19 s
+[stasis] Lazy round 3: built in 1.05 s (files 492 parsed, 164 resolved, 4221 replayed; scan 0.20 s, Metro's additions 0.09 s, configs and toolchain 0.76 s), asked for 40 packages: color-name, ee-first, concat-map, balanced-match, regjsgen, …
+[stasis] Lazy round 3: unpacked in 0.17 s
 ```
 
 Each package unpacked is held to the lockfile, and checked as without

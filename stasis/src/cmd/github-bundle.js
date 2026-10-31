@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { readJson } from '@exodus/stasis-core/bundle-util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
+import { debugTimed } from './bundle.js'
 import { bundledSummary, unpackedSummary, writeBundle, writeFile } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
@@ -66,7 +67,7 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
       else process.env.STASIS_NPM_TOKEN = before
     }
   }
-  const dest = writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory: options.directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality)
+  const dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory: options.directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
   if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())
   const from = `${options.github}@${built.bundle.repo.commit}${options.directory ? `/${options.directory}` : ''}`
   console.warn(unpackedSummary(built.stats))
