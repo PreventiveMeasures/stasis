@@ -37,12 +37,15 @@ const withTmp = (fn) => async (t) => {
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff])
 const EXTRA = ['scripts/tool.js', 'assets/', 'src/*.js']
 
+// Writes a file at a path from `tmp`, its directories first.
+const writer = (tmp) => (rel, content) => {
+  mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+  writeFileSync(join(tmp, rel), content)
+}
+
 // An ESM project whose entry imports src/util.js; scripts/tool.js and the assets are never reached.
 const seed = (tmp, config = { resources: ['png', 'svg'], extra: EXTRA }) => {
-  const write = (rel, content) => {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  const write = writer(tmp)
   write('package.json', JSON.stringify({ name: 'app', version: '1.0.0', type: 'module' }))
   write('stasis.config.json', JSON.stringify(config))
   write('src/entry.js', "import { u } from './util.js'\nconsole.log('ok', u)\n")
@@ -339,10 +342,7 @@ test('bundle of a Bash entry takes extra into its own workspace bucket', withTmp
 // state, none of which a sweep of `ios` should take (and none of which validates).
 const seedIos = (tmp, extra) => {
   seed(tmp, { resources: ['png'], extra })
-  const write = (rel, content) => {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  const write = writer(tmp)
   write('ios/Podfile', "platform :ios, '15.0'\n")
   write('ios/.xcode.env', 'export NODE_BINARY=$(command -v node)\n')
   write('ios/App/AppDelegate.swift', 'import UIKit\n')
@@ -396,10 +396,7 @@ test('a directory extra excludes is never walked, by a sweep or a pattern\'s exp
 test('extra `!` entries take out what a sweep finds below the directory swept, by a pattern with braces too', withTmp(async (t, tmp) => {
   // Deeper than ios/ itself, which Node's glob holds its exclude to alone.
   seedIos(tmp, [...IOS_EXTRA, '!ios/*.xcodeproj/project.xcworkspace', '!ios/fastlane/*.{md,xml}'])
-  const write = (rel, content) => {
-    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
-    writeFileSync(join(tmp, rel), content)
-  }
+  const write = writer(tmp)
   write('ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata', '<Workspace/>\n')
   write('ios/fastlane/Fastfile', 'lane :beta do\nend\n')
   write('ios/fastlane/report.xml', '<testsuites/>\n')

@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, matchesGlob as nodeMatchesGlob, posix, relative } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { Vfs, createVfsHost } from '../stasis/src/vfs-bundle.js'
+import { createVfsHost } from '../stasis/src/vfs-bundle.js'
 import { globSync, matchesGlob } from '../stasis/src/vfs-bundle/glob.js'
+import { vfsOf } from './vfs-bundle-github.helper.js'
 
 // vfs-bundle/glob.js: Node's own fs.globSync and path.matchesGlob over a host's tree, here a Vfs
 // holding what a directory on disk holds, globbed as Node globs that.
@@ -33,16 +34,13 @@ const EXCLUSIONS = ['ios/build', 'ios/Pods', 'ios/*.xcodeproj/project.xcworkspac
 function trees(t) {
   const tmp = mkdtempSync(join(tmpdir(), 'stasis-vfs-bundle-glob-'))
   t.after(() => rmSync(tmp, { recursive: true, force: true }))
-  const vfs = new Vfs()
   for (const file of FILES) {
     mkdirSync(dirname(join(tmp, file)), { recursive: true })
     writeFileSync(join(tmp, file), file)
-    vfs.mkdir(posix.dirname(`/${file}`), { recursive: true })
-    vfs.writeFile(`/${file}`, file)
   }
   symlinkSync(LINK[0], join(tmp, LINK[1]))
-  vfs.symlink(LINK[0], `/${LINK[1]}`)
-  return { tmp, host: createVfsHost(vfs) }
+  const files = { ...Object.fromEntries(FILES.map((file) => [file, file])), [LINK[1]]: { symlink: LINK[0] } }
+  return { tmp, host: createVfsHost(vfsOf(files)) }
 }
 
 test('glob.js globs a Vfs as Node globs the same tree on disk', (t) => {
@@ -95,12 +93,7 @@ test('glob.js matches a path as Node does, never folding case', (t) => {
 })
 
 test('glob.js globs case-sensitively, as git holds names', (t) => {
-  const vfs = new Vfs()
-  for (const file of ['/README.md', '/readme.md', '/Src/a.js']) {
-    vfs.mkdir(posix.dirname(file), { recursive: true })
-    vfs.writeFile(file, '')
-  }
-  const host = createVfsHost(vfs)
+  const host = createVfsHost(vfsOf({ 'README.md': '', 'readme.md': '', 'Src/a.js': '' }))
   t.assert.deepStrictEqual(host.glob('readme.*', { cwd: '/' }), ['readme.md'])
   t.assert.deepStrictEqual(host.glob('src/*.js', { cwd: '/' }), [])
   t.assert.deepStrictEqual(host.glob('Src/*.js', { cwd: '/' }), ['Src/a.js'])

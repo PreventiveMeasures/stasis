@@ -566,6 +566,23 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     }
     return stats
   }
+  // The entries of the directory at `real`, `p` as the caller spelled it, sorted by name.
+  const listingOf = (real, p) => {
+    if (zoneOf(real) === TREE) {
+      if (nodeOf(real).type !== 'directory') throw new VfsError('ENOTDIR', p)
+      const dir = inVfs(real)
+      return vfs.readdir(dir).map((name) => dirent(name, vfs.lstat(join(dir, name)).type)).toSorted(byName)
+    }
+    // An outside directory shows the tree's installed paths in place of its own, and nothing that
+    // is none.
+    const out = disk.readdir(real).filter((d) => zoneOf(join(real, d.name)) === OUTSIDE)
+    for (const name of installedIn.get(real) ?? []) {
+      const node = lstatOrNull(vfs, inVfs(join(real, name)))
+      if (node !== null) out.push(dirent(name, node.type))
+    }
+    return out.toSorted(byName)
+  }
+  const listings = memo()
   // A path ending in `/` or `/.` names a directory, which path.resolve drops.
   const namesDir = (p) => p.endsWith('/') || p.endsWith('/.')
   const checkDir = (p, real) => {
@@ -592,19 +609,13 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     },
     readdir(p) {
       const real = realpath(abs(p))
-      if (zoneOf(real) === TREE) {
-        if (nodeOf(real).type !== 'directory') throw new VfsError('ENOTDIR', p)
-        const dir = inVfs(real)
-        return vfs.readdir(dir).map((name) => dirent(name, vfs.lstat(join(dir, name)).type)).toSorted(byName)
+      let listing = listings.get(real)
+      if (listing === undefined) {
+        listing = listingOf(real, p)
+        listings.set(real, listing)
       }
-      // An outside directory shows the tree's installed paths in place of its own, and nothing that
-      // is none.
-      const out = disk.readdir(real).filter((d) => zoneOf(join(real, d.name)) === OUTSIDE)
-      for (const name of installedIn.get(real) ?? []) {
-        const node = lstatOrNull(vfs, inVfs(join(real, name)))
-        if (node !== null) out.push(dirent(name, node.type))
-      }
-      return out.toSorted(byName)
+      // A copy, the caller's to sort or add to.
+      return [...listing]
     },
     readlink(p) {
       if (namesDir(p)) {

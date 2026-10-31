@@ -7,7 +7,7 @@ import { posix } from 'node:path'
 // optional dependency loaded where a pattern is first matched. Unlike Node's, matching never folds
 // case, whatever the OS: the tree is git's, whose names differ by case alone.
 
-const { basename, join, resolve } = posix
+const { join, resolve } = posix
 const require = createRequire(import.meta.url)
 
 const MINIMATCH = 'minimatch'
@@ -36,14 +36,8 @@ export const checkGlob = () => void lazyMinimatch()
 
 const createMatcher = (pattern) => new (lazyMinimatch().Minimatch)(pattern, OPTIONS)
 
-const dirent = (name, type) => ({
-  name,
-  isFile: () => type === 'file',
-  isDirectory: () => type === 'directory',
-  isSymbolicLink: () => type === 'symlink',
-})
-
-// What `host` holds at `path`, its last link not followed, as lstat's Dirent; null where nothing is.
+// What `host` holds at `path`, its last link not followed, as far as the walk asks of lstat's
+// Dirent; null where nothing is.
 function lstatOf(host, path) {
   let link
   try {
@@ -51,10 +45,9 @@ function lstatOf(host, path) {
   } catch {
     return null
   }
-  if (link !== null) return dirent(basename(path), 'symlink')
-  const stats = host.stat(path)
-  if (stats === null) return null
-  return dirent(basename(path), stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : 'other')
+  const directory = link === null ? host.stat(path)?.isDirectory() : false
+  if (directory === undefined) return null
+  return { isDirectory: () => directory, isSymbolicLink: () => link !== null }
 }
 
 class Cache {
@@ -403,8 +396,9 @@ class Glob {
 }
 
 // fs.globSync(pattern, { cwd, exclude }) over `host`, `cwd` an absolute path there: the matches as
-// Node spells them, from `cwd` (or from `/`, of an absolute pattern), leaving out and never walking
-// into a path `exclude` takes, given its absolute path.
+// Node spells them, from `cwd` (or from `/`, of an absolute pattern), never walking into a path
+// `exclude` takes, given its absolute path. As Node's, it leaves out such a path where its `**`
+// meets it alone: one the segment after the `**` matches is still a match.
 export const globSync = (host, pattern, { cwd, exclude } = {}) => new Glob(host, pattern, { cwd, exclude }).globSync()
 
 // As Node's matchGlobPattern keeps them: the most recent 250 patterns' matchers.
