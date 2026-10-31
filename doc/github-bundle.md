@@ -93,8 +93,15 @@ A package is fetched and unpacked once the build reads anything in it: resolving
 an import into it, which reads its `package.json`, is enough. What its
 `package.json` depends on is fetched and unpacked with it, as the build would
 read it next; a package neither read nor depended on by one read is never
-fetched. The bundle and lockfile are the ones the full tree gives, byte for
-byte, its warnings said once.
+fetched, but where deptree needs it to lay one out as the full tree has it. With
+pnpm, a package whose files linking bins would change (a bin pnpm makes
+executable, say) is unpacked once the packages whose bins pnpm reads beside it
+are fetched: those the lockfile says have bins, and some others pnpm reads
+(see deptree's `lazy`). With pnpm's hoisted linker from 10.21 to before 11.25,
+where a patch is configured, a package of more than one copy, one with a
+`node_modules`, is fetched with the tree, as pnpm drops that `node_modules`
+where it builds the package. The bundle and lockfile are the ones the full tree
+gives, byte for byte, its warnings said once.
 
 ```sh
 stasis github-bundle --github=owner/name --lazy src/index.js
