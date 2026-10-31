@@ -1384,14 +1384,15 @@ const probing = (host, fn) => (host.probing === undefined ? fn() : host.probing(
 // (ASSET_REGISTRY) the module Metro builds of it, `require(registry).registerAsset({...})`, requires,
 // which Metro builds past Babel, so no alias of Babel's applies to it (platformResolver). -> absolute
 // paths
-function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, jsx, resolver, platformResolver, conditions: conds, host }) {
+function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, jsx, resolver, platformResolver, conditions: conds, host, kept = (key, read) => read() }) {
   const inserted = new Set()
-  // One file of each directory of `list`'s: a specifier resolves alike from every file of one.
+  // One file of each directory of `list`'s: a specifier resolves alike from every file of one, and
+  // is kept by it (`kept`, keptAcross's).
   const onePerDir = (list) => [...new Map(list.map((file) => [dirname(file), file])).values()]
-  const resolveFrom = (from, spec, by = resolver) => {
+  const resolveFrom = (from, spec, by = resolver) => kept(`${by === resolver ? '' : 'platform\0'}${dirname(from)}\0${spec}`, () => {
     const url = by(from, spec, conds)?.url
     return url === undefined ? undefined : fileURLToPath(url)
-  }
+  })
   if (babelled) {
     const helpersDirs = new Set()
     for (const from of onePerDir(files)) {
@@ -1573,7 +1574,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       // passes it over): no import names one, so no edge, carried as the asset is.
       const scales = assets.flatMap((file) => metroAssetFiles(file, platform, host)).filter((file) => relWithin(host.realpath(file)) !== null)
       const dynamicImports = [...scanner.files.values()].some((info) => !info.resource && info.edges.some((e) => e.kind === 'dynamic-import'))
-      const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
+      const kept = keptAcross(`Metro's additions ${platformKey}`, host, memo)
+      const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host, kept }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
       stageTimes.metro += performance.now() - metroAt
       if (added.length > 0) staged('scan', () => absorb(added))
@@ -2272,13 +2274,24 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     }
     const args = { cwd, host, env: {} }
     const builts = []
+    // A build of a round that asked for a package already is void, whatever it threw: the builds
+    // after it are run all the same, for all else they ask for, and the round is set aside after.
+    let voided
     for (const [i, build] of builds.entries()) {
-      // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-      const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, memo: memos?.[i] })
+      let built
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+        built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, memo: memos?.[i] })
+      } catch (error) {
+        if (reads === undefined || reads.asked.size === 0) throw error
+        voided ??= { error }
+        continue
+      }
       // Rooted at cwd, where `stasis bundle` detects its repo.
       if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
       builts.push(built)
     }
+    if (voided !== undefined) throw voided.error
     // Merged as bundleCommand merges its builds.
     const { root } = builts[0]
     const union = unionOfBuilds('buildVfsBundle', builds, builts, builts.map((built) => built.root))
