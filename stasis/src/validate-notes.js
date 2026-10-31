@@ -5,6 +5,8 @@
 // Why own code wasn't checked, by `own.reason`.
 export const OWN_REASONS = {
   skipped: 'skipped (--only-deps): its dependencies alone validated',
+  'no-repository': 'no repository to read it of',
+  'no-commit': 'no commit to read it at',
   'commit-not-in-history': 'its commit is in the history of no branch or tag of its repository (a fork\'s, say)',
   'history-unread': 'its commit is at no tag or branch head, nor in its default branch\'s history, and not every other branch was compared',
 }
