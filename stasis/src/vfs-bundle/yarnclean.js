@@ -56,7 +56,7 @@ export function yarnclean(host, cwd) {
   const positives = filters.filter((filter) => !filter.negation)
   return (vfs, dir) => {
     if (!vfs.isDirectory(dir)) return
-    const entries = [...vfs.walk(dir)].slice(1).map(({ path }) => ({ path, loc: packagePath(dir, path) })).filter(({ loc }) => loc !== null)
+    const entries = [...vfs.walk(dir)].slice(1).map(({ path, type }) => ({ path, type, loc: packagePath(dir, path) })).filter(({ loc }) => loc !== null)
     // A path a `!` filter matches is kept, and so is every directory holding one.
     const kept = new Set()
     const holdingKept = new Set()
@@ -72,12 +72,23 @@ export function yarnclean(host, cwd) {
       for (let up = posix.dirname(path); up !== dir; up = posix.dirname(up)) if (matched.has(up)) return true
       return false
     }
+    // A link to a path kept, or to a directory holding one, stays as that does: pnpm links each
+    // package into its store, where Yarn's hoisted layout holds the package itself.
+    const leadsToKept = (path) => {
+      let real
+      try {
+        real = vfs.realpath(path)
+      } catch {
+        return false // a link to nothing, or a loop
+      }
+      return kept.has(real) || holdingKept.has(real)
+    }
     let gone = null
-    for (const { path, loc } of entries) {
+    for (const { path, type, loc } of entries) {
       if ((gone !== null && path.startsWith(gone)) || kept.has(path)) continue
       if (positives.some((filter) => matches(filter, loc))) matched.add(path)
       else if (!matchedAbove(path)) continue
-      if (holdingKept.has(path)) continue
+      if (holdingKept.has(path) || (type === 'symlink' && kept.size > 0 && leadsToKept(path))) continue
       vfs.rm(path, { recursive: true })
       gone = `${path}/`
     }

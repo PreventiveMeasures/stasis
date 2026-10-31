@@ -62,6 +62,24 @@ test("a .yarnclean matches a package's files from the node_modules holding it, a
   t.assert.deepStrictEqual(left(vfs, '/node_modules'), ['.modules.yaml', '.pnpm', '.pnpm/node_modules', '.pnpm/node_modules/q', '.pnpm/q@1.0.0', '.pnpm/q@1.0.0/node_modules', '.pnpm/q@1.0.0/node_modules/q', '.pnpm/q@1.0.0/node_modules/q/index.js', 'q'])
 })
 
+test("a link to a package a `!` line keeps a file of stays, as the package does in Yarn's hoisted layout", (t) => {
+  const clean = cleaner({ '.yarnclean': 'q\nr\ns\n!q/index.js\n' })
+  const hoisted = vfsOf({ 'node_modules/q/index.js': '', 'node_modules/q/other.js': '' })
+  clean(hoisted, '/node_modules')
+  t.assert.deepStrictEqual(left(hoisted, '/node_modules'), ['q', 'q/index.js'])
+  const pnpm = vfsOf({
+    'node_modules/.pnpm/q@1.0.0/node_modules/q/index.js': '',
+    'node_modules/.pnpm/q@1.0.0/node_modules/q/other.js': '',
+    'node_modules/.pnpm/node_modules/q': { symlink: '../q@1.0.0/node_modules/q' },
+    'node_modules/q': { symlink: '.pnpm/q@1.0.0/node_modules/q' },
+    'node_modules/r': { symlink: '.pnpm/q@1.0.0/node_modules/q/other.js' },
+    'node_modules/s': { symlink: 'nowhere' },
+  })
+  clean(pnpm, '/node_modules')
+  t.assert.deepStrictEqual(left(pnpm, '/node_modules').filter((path) => !path.startsWith('.pnpm/q@1.0.0')), ['.pnpm', '.pnpm/node_modules', '.pnpm/node_modules/q', 'q'], "q's links stay, not one to a file gone, nor one to nothing")
+  t.assert.deepStrictEqual(left(pnpm, '/node_modules/.pnpm/q@1.0.0/node_modules/q'), ['index.js'])
+})
+
 test('every .yarnclean in the directory installed and above it cleans, and one with no pattern is none', (t) => {
   const clean = cleaner({ '.yarnclean': '*.md\n', 'apps/.yarnclean': '# none\n', 'apps/p/.yarnclean': 'test\r\n', 'other/.yarnclean': '*.js\n' }, '/apps/p')
   const vfs = vfsOf({ 'node_modules/q/index.js': '', 'node_modules/q/README.md': '', 'node_modules/q/test/t.js': '' })
