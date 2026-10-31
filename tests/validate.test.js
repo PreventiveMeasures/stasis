@@ -973,12 +973,12 @@ test('validateRepository: own code held to a listing of the commit\'s tree, its 
 
   // Own code or the repository's lockfile with no repository or commit to read it of: refused, or, `strict` false, told.
   asked.length = 0
-  for (const [at, code] of [[{ repository, directory: 'web' }, 'no-commit'], [{ commit, directory: 'web' }, 'no-repository']]) {
+  await Promise.all([[{ repository, directory: 'web' }, 'no-commit'], [{ commit, directory: 'web' }, 'no-repository']].map(async ([at, code]) => {
     await t.assert.rejects(validateRepository(plan, at, { listTree, fetch: upstream() }), { name: 'ValidateError', code })
     await t.assert.rejects(validateRepository(plan, at, { own: false, fetch: upstream() }), { name: 'ValidateError', code }, 'its lockfile read there')
     const told = await validateRepository(plan, at, { listTree, strict: false, fetch: upstream() })
     t.assert.deepStrictEqual([told.status, told.own, told.lockfiles], ['incomplete', { checked: false, reason: code }, null])
-  }
+  }))
   t.assert.deepStrictEqual(asked, [], 'nothing listed')
   t.assert.equal((await validateRepository(plan, { directory: 'web' }, { own: false, lockfile: false, fetch: upstream() })).own.reason, 'skipped', 'neither read')
 })
