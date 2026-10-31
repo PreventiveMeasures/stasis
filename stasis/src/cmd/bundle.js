@@ -43,6 +43,7 @@ import {
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
 import { DEFAULT_BUNDLE_FILE, bundledSummary, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
+import { withNpmToken } from './tokens.js'
 
 const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 const BASH_EXTS = new Set(['.sh', '.bash'])
@@ -2458,8 +2459,8 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, ho
   let union, root
   if (deptree) {
     // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
-    const [{ createClient }, { detectPackageManager }, { withNpmToken }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js'), import('./tokens.js')])
-    const built = await withNpmToken({ home }, () => buildFromLockfile('bundleCommand', diskHost, {
+    const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
+    const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
       cwd: resolve(cwd),
       packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
       lockfile,
