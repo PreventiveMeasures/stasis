@@ -1064,15 +1064,16 @@ export class State {
   }
 
   // Attest the files stasis.config.json's `extra` names (expandExtra: paths, directories and globs,
-  // as `stasis add` takes them) beside what the run reached, each carried as an fs read is
-  // (#readFileOptions) unless the run captured it itself, whose record stands. The whole set is
-  // validated before a file is added, every offender named at once. `outputs` are the paths written,
-  // never taken in: by default the ones write() writes. `resources` is the allowlist, the config's by default.
+  // as `stasis add` takes them, swept through the State's host) beside what the run reached, each
+  // carried as an fs read is (#readFileOptions) unless the run captured it itself, whose record
+  // stands. The whole set is validated before a file is added, every offender named at once.
+  // `outputs` are the paths written, never taken in: by default the ones write() writes. `resources`
+  // is the allowlist, the config's by default.
   includeExtra({ outputs = this.#writeTargets(), resources = this.config.resources } = {}) {
     if (this.config.extra.length === 0) return
     // Resolved as write() writes them: a relative one from the cwd.
     const written = new Set(outputs.map((file) => toPosix(relative(this.root, resolve(file)))))
-    const { files } = expandExtra(this.root, this.config.extra, written)
+    const { files } = expandExtra(this.root, this.config.extra, written, this.#host)
     const realRoot = this.#host.realpath(this.root)
     const missing = []
     const undeclared = []

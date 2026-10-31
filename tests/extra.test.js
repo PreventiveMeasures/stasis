@@ -393,6 +393,25 @@ test('a directory extra excludes is never walked, by a sweep or a pattern\'s exp
   }
 }))
 
+test('extra `!` entries take out what a sweep finds below the directory swept, by a pattern with braces too', withTmp(async (t, tmp) => {
+  // Deeper than ios/ itself, which Node's glob holds its exclude to alone.
+  seedIos(tmp, [...IOS_EXTRA, '!ios/*.xcodeproj/project.xcworkspace', '!ios/fastlane/*.{md,xml}'])
+  const write = (rel, content) => {
+    mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+    writeFileSync(join(tmp, rel), content)
+  }
+  write('ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata', '<Workspace/>\n')
+  write('ios/fastlane/Fastfile', 'lane :beta do\nend\n')
+  write('ios/fastlane/report.xml', '<testsuites/>\n')
+  const files = [...IOS_FILES, 'ios/fastlane/Fastfile', 'src/entry.js', 'src/util.js'].toSorted()
+  const run = runCli(stasisCli, ['run', '--bundle=add', 'src/entry.js'], tmp)
+  t.assert.equal(run.status, 0, run.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'stasis.code.br'))), files)
+  const bundle = runCli(stasisCli, ['bundle', '--output=out.br', 'src/entry.js'], tmp)
+  t.assert.equal(bundle.status, 0, bundle.stderr)
+  t.assert.deepStrictEqual(filesOf(decode(join(tmp, 'out.br'))), files)
+}))
+
 test('a walk never refuses a name it passes by, only one it keeps', withTmp(async (t, tmp) => {
   // static/odd\name.txt neither matches `static/*.wav` nor is excluded: matching against the
   // exclusions must not trip on it.
