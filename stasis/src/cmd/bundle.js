@@ -1446,13 +1446,25 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // is the root; a file below neither is outside it. (Realpathed only when needed, so a missing cwd
   // is still the scan's missing entry.)
   let realRoot
+  // Each file's path from the root, and the path of each file URL, which the scans and what follows
+  // them take again for each file they reach, and each edge: worked out once a build, or for a lazy
+  // tree once across its rounds, in its `memo` (each is the path's alone).
+  const fromRoot = memo ? nestedMap(memo, 'paths from the root') : new Map()
   const relWithin = (abs) => {
+    if (fromRoot.has(abs)) return fromRoot.get(abs)
     let rel = toPosix(relative(baseDir, abs))
     if (relativeEscapes(rel)) {
       realRoot ??= host.realpath(baseDir)
       rel = toPosix(relative(realRoot, abs))
     }
-    return relativeEscapes(rel) ? null : rel
+    fromRoot.set(abs, relativeEscapes(rel) ? null : rel)
+    return fromRoot.get(abs)
+  }
+  const pathsOf = memo ? nestedMap(memo, 'file paths') : new Map()
+  const pathOf = (url) => {
+    let path = pathsOf.get(url)
+    if (path === undefined) pathsOf.set(url, (path = fileURLToPath(url)))
+    return path
   }
   const toRel = (abs) => {
     const rel = relWithin(abs)
@@ -1506,8 +1518,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // is refused, see withinRoot), its issues reported under `label`, by which a lazy tree's `memo`
   // keeps what each of its scans read. -> { scanner, leftOut }
   const scanWithin = (roots, options, label) => {
-    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(fileURLToPath(url)) !== null)
-    for (const url of outside) toRel(fileURLToPath(url))
+    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
+    for (const url of outside) toRel(pathOf(url))
     if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }
   }
@@ -1540,7 +1552,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const { scanner, leftOut } = scanWithin(roots, scanOptions, platform ?? 'mainFields')
       leftOutEdges.push(...leftOut)
       for (const [url, info] of scanner.files) {
-        const abs = fileURLToPath(url)
+        const abs = pathOf(url)
         const rel = toRel(abs)
         reached.add(abs)
         if (info.resource) resourceRels.add(rel)
@@ -1552,10 +1564,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (e.builtin || e.dynamic) continue
           let target
           if (e.empty) { usesEmpty = true; target = emptyTarget }
-          else if (e.child) target = toRel(fileURLToPath(e.child))
+          else if (e.child) target = toRel(pathOf(e.child))
           else continue // unresolved (already warned/thrown by reportScanIssues)
           // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
-          if (e.child && isTransformInput(fileURLToPath(e.child), scanner.files.get(e.child))) continue
+          if (e.child && isTransformInput(pathOf(e.child), scanner.files.get(e.child))) continue
           nestedMap(nestedMap(edges, rel), e.spec).set(platformKey, target)
         }
       }
@@ -1567,8 +1579,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // passes one over.
     if (metro) {
       const metroAt = performance.now()
-      const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => fileURLToPath(url))
-      const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(fileURLToPath(url), info)).map(([url]) => fileURLToPath(url))
+      const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => pathOf(url))
+      const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(pathOf(url), info)).map(([url]) => pathOf(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
       const required = new Set(['require', 'default', ...extras])
       // And each asset's files Metro reads to build its module (`scales`, `hash`) and copies out with
@@ -1587,7 +1599,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // One platform leaving out an edge another resolves within the root is a split too: collapsed
   // below, the edge would serve that platform the other's file in its place.
-  if (!voided()) refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(fileURLToPath(e.parentURL)))?.has(e.spec)), baseDir)
+  if (!voided()) refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(pathOf(e.parentURL)))?.has(e.spec)), baseDir)
 
   // --metro: and the project's configs a React Native build loads, though nothing the app imports
   // reaches them: Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel
@@ -1645,7 +1657,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const traceNode = (roots) => {
       const { scanner, leftOut } = scanWithin(roots, { resources: resourceSet, host }, 'configs and toolchain')
       for (const [url, info] of scanner.files) {
-        const abs = fileURLToPath(url)
+        const abs = pathOf(url)
         const rel = toRel(abs)
         configReached.add(rel)
         if (!reached.has(abs)) configOnly.add(rel)
@@ -1654,19 +1666,19 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
         formatsByRel.set(rel, info.format)
       }
       for (const u of [...scanner.unresolved, ...leftOut]) {
-        if (u.spec !== undefined) configMissed.set(`${toRel(fileURLToPath(u.parentURL))}\0${u.spec}`, u)
+        if (u.spec !== undefined) configMissed.set(`${toRel(pathOf(u.parentURL))}\0${u.spec}`, u)
       }
       for (const [key, byParent] of scanner.imports) {
         for (const [parentURL, specs] of byParent) {
-          const keyed = keyedFrom(key, toRel(fileURLToPath(parentURL)))
-          for (const [spec, childURL] of specs) keyed.set(spec, toRel(fileURLToPath(childURL)))
+          const keyed = keyedFrom(key, toRel(pathOf(parentURL)))
+          for (const [spec, childURL] of specs) keyed.set(spec, toRel(pathOf(childURL)))
         }
       }
       return scanner
     }
     const traced = configs.length > 0 ? traceNode(configs) : null
     // And the transformers of stasis's Metro plugin beside it, where a config requires it, in turn.
-    const transformers = [...(traced?.files.keys() ?? [])].map((url) => fileURLToPath(url))
+    const transformers = [...(traced?.files.keys() ?? [])].map((url) => pathOf(url))
       .filter((file) => basename(file) === 'metro.js' && basename(dirname(file)) === 'src' &&
         readJson(join(dirname(dirname(file)), 'package.json'), host)?.name === '@exodus/stasis-plugins')
       .flatMap((file) => STASIS_METRO_TRANSFORMERS.map((name) => join(dirname(file), name)))
@@ -1703,7 +1715,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (visited.has(url) || info === undefined) continue
           visited.add(url)
           for (const e of info.edges) if (e.child) frontier.push(e.child)
-          const file = fileURLToPath(url)
+          const file = pathOf(url)
           const rel = toRel(file)
           if (info.resource || !JS_EXTS.has(extname(file))) continue
           for (const [spec, target] of resolutionsOf(file, () => requireResolutions(file, host))) {
