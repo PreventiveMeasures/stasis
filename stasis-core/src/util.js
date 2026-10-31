@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, dirname, isAbsolute, join, normalize, relative, sep } from 'node:path'
+import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
@@ -141,20 +141,10 @@ export function isNativeArtifact(name) {
   return NATIVE_ARTIFACT_EXTS.has(pathExt(name))
 }
 
-// An extensionless non-UTF-8 file is a compiled tool (Hermes' `hermesc`), never source -- skipped.
-function isExtensionlessBinary(name, content) {
-  return pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)
-}
-
 // A binary plist is a real build input, but its bytes can't ride the text-only 'xml' format
 // classifyFormat gives a `.plist`. Callers treat it as NOT code, so it needs `.plist` in `resources`.
 export function isBinaryPlist(name, content) {
   return pathExt(name) === 'plist' && Buffer.isBuffer(content) && !isUtf8(content)
-}
-
-// Discovered by name: RN scatters podspecs in subdirs `react-native config` misses.
-export function isPodspec(name) {
-  return name.endsWith('.podspec') || name.endsWith('.podspec.json')
 }
 
 // Non-JS code formats by extension. Every value must be in KNOWN_FORMATS.
@@ -223,10 +213,6 @@ export function isExcludedNativeFile(name, { win32 = process.platform === 'win32
   return NATIVE_EXCLUDE_EXTS.has(ext) || (!win32 && ext === 'bat')
 }
 
-export function isExcludedNativeDir(name, { win32 = process.platform === 'win32' } = {}) {
-  return !win32 && name === 'windows'
-}
-
 // An Apple prebuilt-slice dir (`ios-arm64`, `tvos-arm64_x86_64-simulator`): compiled output, not source,
 // at ANY depth. The PLATFORM segment is deliberately loose -- the required ARCH segment is the precision.
 const APPLE_ARCH = String.raw`(?:arm64e|arm64_32|arm64|armv7k|armv7s|armv7|x86_64|i386)`
@@ -273,13 +259,6 @@ export function isAutoExcludedDir(name) {
   return AUTO_EXCLUDED_DIRS.has(base) || isAppleSliceDir(base)
 }
 
-// Dirs the NATIVE walks (Metro plugin + the static --metro bundler) skip, on top of the shared set:
-// nested packages (attested separately) and regenerated build output -- none is a build input.
-const NATIVE_BUILD_OUTPUT_DIRS = new Set(['node_modules', 'build', '.gradle', '.cxx', 'Pods', 'DerivedData'])
-export function isSkippedNativeWalkDir(name) {
-  return NATIVE_BUILD_OUTPUT_DIRS.has(name) || isAutoExcludedDir(name) || isNativeArtifact(name)
-}
-
 // Files a sweep drops: type declarations (types only, erased at runtime), the `.env` family (secrets),
 // stasis's own outputs (they'd attest themselves), and everything the native capture excludes as
 // non-build-input noise (docs/legal, editor/lint/CI config, `*.map`/`*.js.flow` sidecars, logs).
@@ -291,7 +270,7 @@ export function isAutoExcludedFile(name) {
 
 // The format a file's name alone gives it, whatever its extension (pathExt) would: a `*.podspec.json`
 // is `json`, a `*.cmake.in` `cmake`. -> it, or undefined
-function nameFormat(name) {
+export function nameFormat(name) {
   const base = basename(name).toLowerCase()
   if (base === 'package.json' || base.endsWith('.podspec.json')) return 'json'
   if (base.endsWith('.cmake.in')) return 'cmake'
@@ -310,32 +289,6 @@ export function classifyFormat(name, { content } = {}) {
   if (ext === '' && isShellShebang(content)) return 'shell'
   return undefined
 }
-
-// The Metro native capture's policy view. Returns { action, format }: 'code' (a native build input),
-// 'skip' (excluded noise, or a JS-family file matched BY EXTENSION -- Metro owns those), else 'resource'.
-export function classifyNativeCapture(name, { win32 = process.platform === 'win32', content } = {}) {
-  // `.env` files carry secrets: an automated capture must never sweep them in.
-  if (isExcludedNativeFile(name, { win32 }) || isDotEnvFile(name)) return { action: 'skip' }
-  // Name-matched code is always a native build input, even when its tag is a Node format the JS
-  // graph would otherwise own.
-  const byName = nameFormat(name)
-  if (byName !== undefined) return { action: 'code', format: byName }
-  if (CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
-  const format = classifyFormat(name, { content })
-  return format === undefined ? { action: 'resource' } : { action: 'code', format }
-}
-
-// The byte-level half of the native classification, refining what classifyNativeCapture derived from the
-// NAME. Both rules only ever demote. A 'resource' carries no format: storage derives base64 from bytes.
-export function refineNativeCapture(classified, name, content, resources = new Set()) {
-  if (isExtensionlessBinary(name, content)) return { action: 'skip' }
-  if (isBinaryPlist(name, content)) return { action: resources.has('plist') ? 'resource' : 'skip' }
-  return classified
-}
-
-// RN core build scripts the native walk would defer to Metro as `.js`, but Metro never sees them (RN's
-// podspecs invoke them at pod-install). Project-relative, so react-native's `exports` can't hide them.
-export const RN_CORE_INCLUDE_FILES = ['sdks/hermes-engine/utils/replace_hermes_version.js']
 
 export const extSetsEqual = (a, b) => a.size === b.size && [...a].every((ext) => b.has(ext))
 
@@ -356,39 +309,6 @@ export const isExecutableFile = (abs, host) => observeExecutable(abs, host) === 
 // Windows reports no POSIX execute bits, so a capture there records none and must NOT read "no bit" as
 // "the bit was removed" and strip what a POSIX capture attested.
 export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } = {}) => !win32
-
-// A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName): its asset,
-// `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), and its platform where it names
-// `platform` (`a.ios.png`; another's, `a.android.png`, is an asset of its own). -> { asset, platform },
-// or null for a name with no type
-const METRO_PLATFORM_FILE = /^(.+?)(?:\.([^.]+))?\.([^.]+)$/u
-const METRO_ASSET_SCALE = /^(.+?)(?:@[\d.]+x)?$/u
-function parseMetroAssetName(name, platform) {
-  const match = METRO_PLATFORM_FILE.exec(name)
-  if (match === null) return null
-  const [, base, suffix, type] = match
-  const ofPlatform = suffix !== undefined && suffix === platform
-  const root = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)[1]
-  return { asset: `${root}.${type}`, platform: ofPlatform ? platform : null }
-}
-
-// Metro's record of the asset module `path` (its Assets' getAbsoluteAssetRecord): the files it reads
-// to build the module (its `scales` and `hash`) and copies out with it. In `path`'s directory, each of
-// the asset's name and type at any scale (`a.png`, `a@2x.png`, `a@3x.png`): those for `platform`
-// (`a.ios.png`, `a@3x.ios.png`) where it has any, else those for none. -> absolute paths
-export function metroAssetFiles(path, platform = null, host = diskHost) {
-  const own = parseMetroAssetName(basename(path), platform)
-  if (own === null) return []
-  const dir = dirname(path)
-  const byPlatform = new Map()
-  for (const { name } of host.readdir(dir)) {
-    const parsed = parseMetroAssetName(name, platform)
-    if (parsed?.asset !== own.asset || host.stat(join(dir, name))?.isFile() !== true) continue
-    if (!byPlatform.has(parsed.platform)) byPlatform.set(parsed.platform, [])
-    byPlatform.get(parsed.platform).push(join(dir, name))
-  }
-  return (platform === null ? undefined : byPlatform.get(platform)) ?? byPlatform.get(null) ?? []
-}
 
 // Throws on a symlink escaping the bundle root: a crafted `link.sh -> /etc/passwd` must not pull an
 // external file into an attestable bundle. realpath surfaces ENOENT, which loaders treat as "missing".

@@ -1,6 +1,8 @@
-import { dirname, join, relative, sep } from 'node:path'
+import { isUtf8 } from 'node:buffer'
+import { basename, dirname, join, relative, sep } from 'node:path'
 
-import { classifyNativeCapture, isExcludedNativeDir, isNativeArtifact, isPodspec, isSkippedNativeWalkDir, refineNativeCapture } from '@exodus/stasis-core/util'
+import { diskHost } from '@exodus/stasis-core/host'
+import { CODE_EXTENSIONS, classifyFormat, isAutoExcludedDir, isBinaryPlist, isDotEnvFile, isExcludedNativeFile, isNativeArtifact, nameFormat, pathExt } from '@exodus/stasis-core/util'
 
 // The native build inputs of a React Native app's packages, shared by the Metro plugin's capture and
 // `stasis bundle --metro` so the two carry the same files. Both read through `fs`:
@@ -22,6 +24,87 @@ function listing(dir, fs) {
   } catch {
     return []
   }
+}
+
+// RN core build scripts the native walk would defer to Metro as `.js`, but Metro never sees them (RN's
+// podspecs invoke them at pod-install). Project-relative, so react-native's `exports` can't hide them.
+export const RN_CORE_INCLUDE_FILES = ['sdks/hermes-engine/utils/replace_hermes_version.js']
+
+// Discovered by name: RN scatters podspecs in subdirs `react-native config` misses.
+function isPodspec(name) {
+  return name.endsWith('.podspec') || name.endsWith('.podspec.json')
+}
+
+// The off-platform top-level dir of a native package, which no build on this host compiles.
+export function isExcludedNativeDir(name, { win32 = process.platform === 'win32' } = {}) {
+  return !win32 && name === 'windows'
+}
+
+// Dirs the NATIVE walks (Metro plugin + the static --metro bundler) skip, on top of the shared set:
+// nested packages (attested separately) and regenerated build output -- none is a build input.
+const NATIVE_BUILD_OUTPUT_DIRS = new Set(['node_modules', 'build', '.gradle', '.cxx', 'Pods', 'DerivedData'])
+function isSkippedNativeWalkDir(name) {
+  return NATIVE_BUILD_OUTPUT_DIRS.has(name) || isAutoExcludedDir(name) || isNativeArtifact(name)
+}
+
+// An extensionless non-UTF-8 file is a compiled tool (Hermes' `hermesc`), never source -- skipped.
+function isExtensionlessBinary(name, content) {
+  return pathExt(name) === '' && Buffer.isBuffer(content) && !isUtf8(content)
+}
+
+// The Metro native capture's policy view. Returns { action, format }: 'code' (a native build input),
+// 'skip' (excluded noise, or a JS-family file matched BY EXTENSION -- Metro owns those), else 'resource'.
+export function classifyNativeCapture(name, { win32 = process.platform === 'win32', content } = {}) {
+  // `.env` files carry secrets: an automated capture must never sweep them in.
+  if (isExcludedNativeFile(name, { win32 }) || isDotEnvFile(name)) return { action: 'skip' }
+  // Name-matched code is always a native build input, even when its tag is a Node format the JS
+  // graph would otherwise own.
+  const byName = nameFormat(name)
+  if (byName !== undefined) return { action: 'code', format: byName }
+  if (CODE_EXTENSIONS.has(pathExt(name))) return { action: 'skip' }
+  const format = classifyFormat(name, { content })
+  return format === undefined ? { action: 'resource' } : { action: 'code', format }
+}
+
+// The byte-level half of the native classification, refining what classifyNativeCapture derived from the
+// NAME. Both rules only ever demote. A 'resource' carries no format: storage derives base64 from bytes.
+export function refineNativeCapture(classified, name, content, resources = new Set()) {
+  if (isExtensionlessBinary(name, content)) return { action: 'skip' }
+  if (isBinaryPlist(name, content)) return { action: resources.has('plist') ? 'resource' : 'skip' }
+  return classified
+}
+
+// A file name as Metro's AssetPaths reads it (parsePlatformFilePath, then parseBaseName): its asset,
+// `${name}.${type}` less any scale (`a@2x.png` is `a.png`'s), and its platform where it names
+// `platform` (`a.ios.png`; another's, `a.android.png`, is an asset of its own). -> { asset, platform },
+// or null for a name with no type
+const METRO_PLATFORM_FILE = /^(.+?)(?:\.([^.]+))?\.([^.]+)$/u
+const METRO_ASSET_SCALE = /^(.+?)(?:@[\d.]+x)?$/u
+function parseMetroAssetName(name, platform) {
+  const match = METRO_PLATFORM_FILE.exec(name)
+  if (match === null) return null
+  const [, base, suffix, type] = match
+  const ofPlatform = suffix !== undefined && suffix === platform
+  const root = METRO_ASSET_SCALE.exec(suffix === undefined || ofPlatform ? base : `${base}.${suffix}`)[1]
+  return { asset: `${root}.${type}`, platform: ofPlatform ? platform : null }
+}
+
+// Metro's record of the asset module `path` (its Assets' getAbsoluteAssetRecord): the files it reads
+// to build the module (its `scales` and `hash`) and copies out with it. In `path`'s directory, each of
+// the asset's name and type at any scale (`a.png`, `a@2x.png`, `a@3x.png`): those for `platform`
+// (`a.ios.png`, `a@3x.ios.png`) where it has any, else those for none. -> absolute paths
+export function metroAssetFiles(path, platform = null, host = diskHost) {
+  const own = parseMetroAssetName(basename(path), platform)
+  if (own === null) return []
+  const dir = dirname(path)
+  const byPlatform = new Map()
+  for (const { name } of host.readdir(dir)) {
+    const parsed = parseMetroAssetName(name, platform)
+    if (parsed?.asset !== own.asset || host.stat(join(dir, name))?.isFile() !== true) continue
+    if (!byPlatform.has(parsed.platform)) byPlatform.set(parsed.platform, [])
+    byPlatform.get(parsed.platform).push(join(dir, name))
+  }
+  return (platform === null ? undefined : byPlatform.get(platform)) ?? byPlatform.get(null) ?? []
 }
 
 // True if the package at `root` ships native code: an ios/ or android/ dir, or a podspec under it.
