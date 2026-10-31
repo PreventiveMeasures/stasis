@@ -540,7 +540,8 @@ export class Scan {
         this.#recordParseError(url, format, parseError, true)
         return
       }
-      // Script (CJS) files: oxc's recovered AST still yields the require()/import() edges — salvage them.
+      // Script (CJS) files: walk on through oxc's recovered AST, so a scan reports the rest of the
+      // graph's errors too; the parse error itself fails a bundle (analyzeScanner).
       this.parseErrors.push({ url, format, message: parseError, recovered: true })
     }
 

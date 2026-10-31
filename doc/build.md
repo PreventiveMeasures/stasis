@@ -222,9 +222,9 @@ stasis build --output=out.js --loader=.js:jsx app.code.br   # parse JSX in .js
 ```
 
 The static `stasis bundle` scanner has the same blind spot for the same reason:
-JSX in a `.js`/`.cjs`/`.mjs` file is an *"Unexpected token"* parse error, which is
-fatal for an ESM file whose static import graph can't be enumerated from the
-partial parse (`JS bundle would be broken at load time`). Pass `--jsx` (its
+JSX in a `.js`/`.cjs`/`.mjs` file is an *"Unexpected token"* parse error, which
+fails the bundle (`JS bundle would be broken at load time`), as every parse error
+does: a file the scanner can't parse has an import graph it can't record. Pass `--jsx` (its
 counterpart to `build`'s `--loader`) so the scanner parses past the JSX to the
 import graph and stores the JSX source verbatim for `stasis build --loader=.js:jsx`
 to transform later:
@@ -243,6 +243,13 @@ dependency reached through one, e.g. a package whose React Native entry is
 `stasis build` to transform), and the `--metro`/`--mainFields` resolver probes
 `.jsx`/`.tsx` for extensionless imports, in Metro's default order (`js`, `jsx`,
 `json`, `ts`, `tsx`).
+
+### Flow
+
+esbuild doesn't parse Flow, and `stasis build` has no `--flow`: Flow code builds
+through [`--babel`](#the-projects-babel-config---babel), the project's own Babel
+config, as Metro builds it. React Native's preset strips Flow types and compiles
+the Flow syntax that is code, `component` and `hook` declarations and `enum`s.
 
 ### Non-code assets (`--resources`)
 
