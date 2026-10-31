@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
-import { Scan, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
+import { Scan, getParser, importsTypescriptByOutputName, scan } from '../stasis/src/scan.js'
 import { loadTsconfigCompilerOptions, loadTsconfigPaths, packageTsconfigPaths } from '../stasis/src/resolve-typescript.js'
 import { withTmp } from './tmp.helper.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -122,6 +122,28 @@ test('a scan reads the package.json a file\'s format turns on once, however many
   }
   t.assert.equal(manifestsRead(6), manifestsRead(1))
 }))
+
+// Raw transfer, where the platform takes it, hands over the AST oxc's JSON does, its module record
+// and errors too: literals whose values JSON can't carry (a BigInt, a RegExp) among them.
+test('the parser\'s ASTs by raw transfer are those by JSON', (t) => {
+  const source = (named) => [
+    `import a, { ${named} } from 'a'`, "export * from 'b'", "export { c } from 'c'", "const d = require('d')",
+    'if (__DEV__) import(`e`)', 'const big = 10n', 'const re = /f+/giu', "const tagged = String.raw`g${1}`",
+    'const jsx = <H i="j" {...k} />', 'label: for (;;) break label', 'class L { #m = 1; static { this.n = 2 } }',
+  ].join('\n')
+  const parsed = (file, text, options) => [getParser().parseSync(file, text, options), getParser().parseSync(file, text, { ...options, experimentalRawTransfer: false })]
+  for (const [file, named, options] of [['a.tsx', 'type T', { sourceType: 'module', lang: 'tsx' }], ['a.js', 'u', { sourceType: 'unambiguous', lang: 'jsx' }]]) {
+    const [raw, json] = parsed(file, source(named), options)
+    t.assert.ok(raw.program.body.length > 10)
+    t.assert.deepStrictEqual(raw.program, json.program)
+    t.assert.deepStrictEqual(raw.module, json.module)
+    t.assert.deepStrictEqual(raw.errors, [])
+  }
+  const [raw, json] = parsed('b.js', "require('a')\nlet = ;\n", { sourceType: 'commonjs' })
+  t.assert.ok(raw.errors.length > 0)
+  t.assert.deepStrictEqual(raw.errors, json.errors)
+  t.assert.deepStrictEqual(raw.program, json.program)
+})
 
 test('scan does not load the target file (top-level side effects never fire)', (t) => {
   // entry.cjs prints "hello, world\n" if executed; scan should not produce any output.

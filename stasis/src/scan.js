@@ -29,10 +29,15 @@ const JSX_EXTS = new Set(['.js', '.cjs', '.mjs'])
 const FLOW_EXTS = new Set(['.js', '.cjs', '.mjs', '.jsx'])
 const TS_EXTS = new Set(['.ts', '.cts', '.mts', '.tsx'])
 
-// Required lazily so non-JS bundlers don't load the native oxc parser.
+// Required lazily so non-JS bundlers don't load the native oxc parser. Its parseSync hands each AST
+// over by raw transfer where the platform takes it (oxc's rawTransferSupported), read from the
+// parser's own buffer, rather than as JSON, which takes longer to parse than the source did.
 let _parser
 export function getParser() {
-  _parser ??= createRequire(import.meta.url)('oxc-parser')
+  if (_parser === undefined) {
+    const oxc = createRequire(import.meta.url)('oxc-parser')
+    _parser = oxc.rawTransferSupported() ? { ...oxc, parseSync: (file, source, options) => oxc.parseSync(file, source, { experimentalRawTransfer: true, ...options }) } : oxc
+  }
   return _parser
 }
 
