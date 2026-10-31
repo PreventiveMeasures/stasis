@@ -778,10 +778,11 @@ export function lockedBy(lockfiles) {
       if (entries === undefined) return undefined
       const locks = entries.get(`${name}@${version}`)
       if (locks === undefined) {
-        // One of the project's directories, by its path from the repository's root.
+        // One of the project's directories, by its path from the repository's root, '' the root.
         const { locals, path } = by.get(ecosystem)
         const dirs = locals?.get(name)
-        return dirs ? { from: 'local', directories: [...dirs].map((dir) => posix.join(posix.dirname(path), dir)) } : null
+        const fromRoot = (dir) => (dir === '.' ? '' : dir)
+        return dirs ? { from: 'local', directories: [...dirs].map((dir) => fromRoot(posix.join(posix.dirname(path), dir))) } : null
       }
       const integrities = new Set(locks.filter((entry) => entry.from === 'registry').map((entry) => entry.integrity))
       if (integrities.size === 0) return { from: locks.every((entry) => entry.from === 'git') ? 'git' : 'elsewhere' }

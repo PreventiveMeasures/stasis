@@ -360,6 +360,8 @@ const repoClient = (files) => {
       const at = (path) => (options.directory ? `${options.directory}/${path}` : path)
       return (await list(options)).map((entry) => (entry.type === 'blob' ? { ...entry, mode: '100644', sha: blob(files[at(entry.path)]) } : entry))
     },
+    // The root's tree too.
+    getRepoTreeId: ((treeId) => (options) => (options.directory === undefined ? 'tree:' : treeId(options)))(client.getRepoTreeId.bind(client)),
   })
 }
 const PNPM_LOCK = `lockfileVersion: '9.0'
@@ -628,6 +630,21 @@ test('validate: a dependency from a directory of the repository held to its file
   t.assert.deepStrictEqual([other.status, other.packages[0].patch.error], ['invalid', 'patch-not-in-repository'])
   const none = await validate(patched, { client: repoClient(files), own: false, lockfile: false, fetch: upstream() })
   t.assert.deepStrictEqual([none.status, none.problems.find((problem) => problem.of === 'own')], ['invalid', { path: 'patches/ms@2.1.3.patch', kind: 'unexpected', of: 'own' }], 'one the repository has none of')
+}))
+
+test('validate: a dependency from the repository\'s root (`file:.`) held to the root\'s files, its directory read as the root', withTmp(async (t, tmp) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      self:\n        specifier: file:.\n        version: 'file:'\n\npackages:\n\n  'self@file:':\n    resolution: {directory: '', type: directory}\n\nsnapshots:\n\n  'self@file:': {}\n`
+  t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: lock }]).lock('npm', 'self', '1.0.0'), { from: 'local', directories: [''] })
+  const files = { 'index.js': 'self\n', 'package.json': '{"name":"self","version":"1.0.0"}\n', 'src/main.js': 'main\n', 'pnpm-lock.yaml': lock }
+  const file = join(tmp, 'root.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/repo', commit }, modules: new Map([
+    ['.', { name: 'self', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/.pnpm/self@file+/node_modules/self', { name: 'self', version: '1.0.0', files: { 'index.js': 'self\n' } }],
+  ]) })
+  const client = repoClient(files)
+  const checked = await validate(file, { client })
+  t.assert.deepStrictEqual([checked.status, checked.problems], ['valid', []], 'of the own code\'s tree')
+  t.assert.deepStrictEqual([(await validate(file, { client, own: false })).status], ['valid'], 'of the root\'s own tree')
 }))
 
 test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-unverified), 3 refused or failed; own code skipped with --only-deps, its dependencies held to a lockfile given or, with --no-lockfile, none', withTmp((t, tmp) => {
