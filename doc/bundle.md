@@ -139,6 +139,9 @@ directory, and its value the flags building it, named as they are without the
 }
 ```
 
+`stasis build` reads an entry's `jsx`, `flow`, `define` and `metro`/`platforms`
+from the config a bundle carries (see [build](build.md#entry-options-stasisconfigjson)).
+
 A boolean flag takes `true` or `false` (its default, as leaving it out is); one
 taking a value, a string as on the command line, and one taking a list
 (`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an

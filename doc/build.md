@@ -27,12 +27,49 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--metro=PLATFORM` | Build a `--metro` bundle for one platform as Metro builds it: its per-platform edges, and each asset as Metro's asset module. See [Metro](#metro---metroplatform). |
 | `--assets-dest=DIR` | With `--metro`: copy the assets' files to `DIR` as `react-native bundle --assets-dest` does. |
 
+Where the artifact carries a `stasis.config.json` naming the entry, its options
+for it set some of these flags too: see [Entry options](#entry-options-stasisconfigjson).
+
 `--format`/`--platform`/`--minify`/`--sourcemap`/`--define` only steer esbuild's
 output; the import graph is fixed by the artifact. `--platform=hermes` and
 `--babel` additionally transform each file's *content* on its way into the
 bundle — the graph they follow is still exactly the recorded one. `--metro`
 picks one platform's targets of the recorded per-platform edges, and gives each
 asset the one edge Metro adds to it: to the asset registry the artifact carries.
+
+## Entry options (`stasis.config.json`)
+
+A bundle carries the project's `stasis.config.json` at its root when the config
+sets [`extra`](file-formats.md#stasisconfigjson) (`"extra": []` adds the config
+alone). If the config's [`entries`](bundle.md#entry-options-stasisconfigjson)
+names the entry being built, `stasis build` reads that entry's options from it.
+It reads them itself, apart from how `stasis bundle` uses them, and takes only
+the ones that say how the code is built:
+
+| Option | Becomes |
+| - | - |
+| `"jsx": true` | `--loader=.js:jsx` |
+| `"flow": true` | `--flow` (not with `--babel`, whose config compiles Flow itself) |
+| `"define": ["K=V", ...]` | `--define=K=V` for each, under the `--define`s given, which take precedence per key |
+| `"metro": true` | `--metro=PLATFORM` for its one `platforms` entry. With several, `--metro` is required, one of them |
+
+```json
+{ "extra": [], "entries": { "index.js": { "metro": true, "platforms": ["ios", "android"], "jsx": true, "flow": true, "define": ["__DEV__=false"] } } }
+```
+
+```sh
+stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # --loader=.js:jsx --flow --define=__DEV__=false from the config
+```
+
+- A flag given always wins: an explicit `--loader=.js:...` takes precedence over
+  `jsx`, and a `--define` over the config's value for its key.
+- An explicit `--metro` must be one of the config's `platforms`, since those are
+  the platforms the bundle was made for.
+- `stasis build` prints the flags it took from the config.
+- The config's other options (`resources`, `conditions`, `babel` and so on) say
+  how the bundle was made and are not read.
+- An entry is named as `stasis bundle` names it: by its path from the config's
+  directory, which is the artifact's root.
 
 ## Externals
 

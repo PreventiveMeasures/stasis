@@ -432,12 +432,74 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     t.assert.deepStrictEqual(readFileSync(join(tmp, 'res', 'drawable-mdpi', 'img_logo.png')), png(1, 1))
   }))
 
-  test('--assets-dest needs --metro, and --metro one platform, checked before the artifact is read', async (t) => {
-    const noMetro = await runCli(['build', '--assets-dest=dist', '--output=out.js', 'missing.code.br'], { cwd: tmpdir() })
+  test('--assets-dest needs --metro, given or the artifact\'s stasis.config.json\'s; --metro takes one platform', async (t) => {
+    // The shared app's bundle carries no stasis.config.json, so nothing sets --metro.
+    const noMetro = await runCli(['build', '--loader=.js:jsx', '--assets-dest=dist', '--output=nometro.js', 'app.code.br'], { cwd: app })
     t.assert.notEqual(noMetro.status, 0)
-    t.assert.match(noMetro.stderr, /--assets-dest needs --metro=PLATFORM/u)
+    t.assert.match(noMetro.stderr, /--assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it/u)
     const two = await runCli(['build', '--metro=ios,android', '--output=out.js', 'missing.code.br'], { cwd: tmpdir() })
     t.assert.notEqual(two.status, 0)
     t.assert.match(two.stderr, /--metro takes one platform to build for/u)
   })
+})
+
+// --- the entry's options in the stasis.config.json the artifact carries ------------------------
+
+// An app whose stasis.config.json bundles index.js with `options` and names itself in `extra`, so
+// the bundle carries it; bundled with no flags, by its entries.
+async function configuredApp(t, dir, options, index) {
+  rnProject(dir, {
+    index: index ?? [
+      "import { where } from './lib/where'",
+      '/** @jsx h */',
+      'const h = (type) => type',
+      "const View = 'View'",
+      "console.log(JSON.stringify({ where, dev: typeof __DEV__ === 'undefined' ? 'unset' : __DEV__, el: <View /> }))",
+      '',
+    ].join('\n'),
+  })
+  writeFileSync(join(dir, 'stasis.config.json'), JSON.stringify({ extra: [], entries: { 'index.js': options } }))
+  const bundled = await runCli(['bundle', '--output=app.code.br'], { cwd: dir })
+  t.assert.equal(bundled.status, 0, bundled.stderr)
+}
+
+describe('stasis build takes the entry\'s options from the artifact\'s stasis.config.json (spawned, concurrent)', { concurrency: CONCURRENCY }, () => {
+  test('jsx, define and metro with one platform become --loader=.js:jsx, --define and --metro, under the flags given', withTmp(async (t, tmp) => {
+    await configuredApp(t, tmp, { metro: true, platforms: ['ios'], jsx: true, define: ['__DEV__=false'] })
+
+    const r = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.match(r.stderr, /index\.js: --loader=\.js:jsx --define=__DEV__=false --metro=ios, as stasis\.config\.json's entries "index\.js" sets/u)
+    t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'out.cjs'))), { where: 'ios', dev: false, el: 'View' })
+
+    // --define takes precedence over the config's.
+    const own = await runCli(['build', '--format=cjs', '--define=__DEV__=true', '--output=own.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(own.status, 0, own.stderr)
+    t.assert.match(own.stderr, /index\.js: --loader=\.js:jsx --metro=ios, as/u)
+    t.assert.equal(JSON.parse(runNode(t, join(tmp, 'own.cjs'))).dev, true)
+  }))
+
+  test('metro with several platforms needs --metro, one of them', withTmp(async (t, tmp) => {
+    await configuredApp(t, tmp, { metro: true, platforms: ['ios', 'android'], jsx: true })
+
+    const none = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(none.status, 0)
+    t.assert.match(none.stderr, /stasis\.config\.json bundles index\.js for ios, android: pass --metro=ios or --metro=android/u)
+
+    const android = await runCli(['build', '--format=cjs', '--metro=android', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(android.status, 0, android.stderr)
+    t.assert.equal(JSON.parse(runNode(t, join(tmp, 'out.cjs'))).where, 'android')
+
+    const web = await runCli(['build', '--format=cjs', '--metro=web', '--output=web.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(web.status, 0)
+    t.assert.match(web.stderr, /--metro=web, but stasis\.config\.json bundles index\.js for ios, android alone: pass --metro=ios or --metro=android/u)
+  }))
+
+  test('flow becomes --flow', withTmp(async (t, tmp) => {
+    await configuredApp(t, tmp, { flow: true }, '// @flow\nconst n: number = 1\nconsole.log(String(n))\n')
+    const r = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.match(r.stderr, /index\.js: --flow, as stasis\.config\.json's entries "index\.js" sets/u)
+    t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '1')
+  }))
 })

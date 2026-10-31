@@ -236,6 +236,59 @@ const chainTransforms = (first, second) => async (source, file) => {
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
 
+const CONFIG_FILE = 'stasis.config.json'
+
+// A list option as the command line takes one, as an array of strings or one string, each split at commas.
+const listOf = (value) => [value].flat().flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean)
+
+// The options of `entry` in the `entries` of the stasis.config.json the artifact carries at its root
+// (`state`'s), read by `stasis build` itself, apart from how `stasis bundle` builds by them: of each
+// entry's options, those that say how its code is built -- `jsx` (as --loader=.js:jsx), `flow`,
+// `define` (its K=V strings, one or an array) and `metro` with its `platforms` (a list, as on the
+// command line); the rest are the bundle's. An entry is named as `stasis bundle` names it, by its path
+// from the config's directory. -> { jsx, flow, define, platforms } (`platforms` only under `metro`),
+// or null where the artifact carries no config, or it names no such entry
+function configEntryOptions(state, entry) {
+  if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
+  let config
+  try {
+    config = JSON.parse(readCarried(state, CONFIG_FILE).toString('utf8'))
+  } catch (cause) {
+    throw new Error(`stasis build: the artifact's ${CONFIG_FILE} is not valid JSON`, { cause })
+  }
+  const entries = config?.entries
+  if (entries === undefined) return null
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  if (!isObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
+  const name = Object.keys(entries).find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry)
+  if (name === undefined) return null
+  const what = `the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(name)}`
+  const options = entries[name]
+  if (!isObject(options)) throw new Error(`stasis build: ${what} must be an object of options`)
+  for (const flag of ['jsx', 'flow', 'metro']) {
+    if (options[flag] !== undefined && typeof options[flag] !== 'boolean') throw new Error(`stasis build: ${what}: ${flag} must be true or false`)
+  }
+  const strings = (flag) => {
+    const value = options[flag] ?? []
+    if (typeof value !== 'string' && !(Array.isArray(value) && value.every((v) => typeof v === 'string'))) {
+      throw new Error(`stasis build: ${what}: ${flag} must be a string or an array of strings`)
+    }
+    return [value].flat()
+  }
+  const define = {}
+  for (const pair of strings('define')) {
+    const eq = pair.indexOf('=')
+    if (eq <= 0) throw new Error(`stasis build: ${what}: define must be KEY=VALUE (got '${pair}')`)
+    define[pair.slice(0, eq)] = pair.slice(eq + 1)
+  }
+  let platforms
+  if (options.metro === true) {
+    platforms = [...new Set(listOf(strings('platforms')))]
+    if (platforms.length === 0) throw new Error(`stasis build: ${what} sets metro but names no platforms`)
+  }
+  return { name, jsx: options.jsx === true, flow: options.flow === true, define, platforms }
+}
+
 // Run `stasis build`: run esbuild over one recorded entry, following the artifact's
 // recorded import graph EXACTLY (not esbuild's resolver). A specifier the artifact records
 // is always followed from the artifact; `external` only steers the specifiers it doesn't.
@@ -262,9 +315,6 @@ export async function buildCommand({
   if (metro !== undefined && (typeof metro !== 'string' || !/^[^/,]+$/u.test(metro))) {
     throw new Error(`stasis build: --metro takes the platform to build for, e.g. --metro=ios (got '${metro}')`)
   }
-  if (assetsDest !== undefined && metro === undefined) {
-    throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
-  }
   if (flow && babel) {
     throw new Error('stasis build: --babel hands the project\'s Babel config each file as it is, Flow included, for it to compile; --flow strips Flow before esbuild without it -- pass one')
   }
@@ -290,6 +340,43 @@ export async function buildCommand({
   const state = loadStateForBundle(root, bundle)
   // Make the entry absolute against the State's root so resolution is independent of process cwd.
   const entryPoint = resolve(state.root, selectedEntry)
+
+  // The entry's options in the stasis.config.json the artifact carries, under the flags given: jsx as
+  // --loader=.js:jsx, flow as --flow (not under --babel, whose config compiles Flow itself), its define
+  // under --define's, and metro as --metro for its one platform; of several, --metro picks one, which
+  // must be one of them.
+  const configured = configEntryOptions(state, selectedEntry)
+  if (configured !== null) {
+    const taken = []
+    if (configured.jsx && loader['.js'] === undefined) {
+      loader = { ...loader, '.js': 'jsx' }
+      taken.push('--loader=.js:jsx')
+    }
+    if (configured.flow && !flow && !babel) {
+      flow = true
+      taken.push('--flow')
+    }
+    for (const [key, value] of Object.entries(configured.define)) {
+      if (Object.hasOwn(define, key)) continue
+      define = { ...define, [key]: value }
+      taken.push(`--define=${key}=${value}`)
+    }
+    const { platforms } = configured
+    if (platforms !== undefined) {
+      const choices = platforms.map((name) => `--metro=${name}`).join(' or ')
+      const what = `${CONFIG_FILE} bundles ${selectedEntry} for ${platforms.join(', ')}`
+      if (metro === undefined && platforms.length > 1) throw new Error(`stasis build: ${what}: pass ${choices}`)
+      if (metro !== undefined && !platforms.includes(metro)) throw new Error(`stasis build: --metro=${metro}, but ${what} alone: pass ${choices}`)
+      if (metro === undefined) {
+        metro = platforms[0]
+        taken.push(`--metro=${metro}`)
+      }
+    }
+    if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
+  }
+  if (assetsDest !== undefined && metro === undefined) {
+    throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
+  }
 
   const esbuild = await importEsbuild()
   // Per-file code rewrites the plugin applies before esbuild parses a served file:
