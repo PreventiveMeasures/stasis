@@ -26,7 +26,7 @@ const HELP = `Usage:
  stasis bundle [--deptree] [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
  stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
- stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
+ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--po] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
@@ -248,6 +248,8 @@ if (command === '-v' || command === '--version') {
     platform: { type: 'string' },
     babel: { type: 'boolean' },
     flow: { type: 'boolean' },
+    // --po builds each gettext .po as @exodus/i18n does, with the project's @exodus/i18n-babel-webpack.
+    po: { type: 'boolean' },
     minify: { type: 'boolean' },
     sourcemap: { type: 'boolean' },
     // Repeatable esbuild passthroughs (--define=K=V, --external=PATTERN, --loader=.ext:name).
@@ -293,6 +295,7 @@ if (command === '-v' || command === '--version') {
     if (colon <= 0 || !entry.startsWith('.')) fail(`Error: --loader must be .EXT:LOADER (got '${entry}')`)
     loader[entry.slice(0, colon)] = entry.slice(colon + 1)
   }
+  if (values.po && loader['.po'] !== undefined) fail(`Error: --po and --loader=.po:${loader['.po']} don't combine: --po builds each .po as @exodus/i18n does`)
   const { buildCommand } = await import('../src/cmd/build.js')
   await buildCommand({
     cwd: process.cwd(),
@@ -303,6 +306,7 @@ if (command === '-v' || command === '--version') {
     platform: values.platform,
     babel: Boolean(values.babel),
     flow: Boolean(values.flow),
+    po: Boolean(values.po),
     minify: values.minify,
     sourcemap: values.sourcemap,
     define,

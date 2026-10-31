@@ -7,7 +7,7 @@ own resolution: every import resolves to the edge stasis attested and every
 module's bytes come from the artifact, not disk.
 
 ```sh
-stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
+stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--po] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
 ```
 
 - First positional (**required**): the `stasis.code.br` bundle or `stasis.lock.json` lockfile to build from.
@@ -20,6 +20,7 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--platform` | Target platform `node`\|`browser`\|`neutral` (esbuild's), or `hermes`. Default `node`. See [Hermes](#hermes---platformhermes). |
 | `--babel` | Transform every code file with the project's own `babel.config.*` before bundling. See [`--babel`](#the-projects-babel-config---babel). |
 | `--flow` | Strip Flow types from a `.js`/`.cjs`/`.mjs`/`.jsx` file esbuild can't parse, as `stasis bundle --flow` does. See [Flow](#flow). |
+| `--po` | Build each gettext `.po` file as @exodus/i18n builds it, with the project's own `@exodus/i18n-babel-webpack`. See [`.po` catalogs](#po-catalogs---po). |
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
 | `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
@@ -36,6 +37,9 @@ output; the import graph is fixed by the artifact. `--platform=hermes` and
 bundle — the graph they follow is still exactly the recorded one. `--metro`
 picks one platform's targets of the recorded per-platform edges, and gives each
 asset the one edge Metro adds to it: to the asset registry the artifact carries.
+`--po` builds each `.po` the build reaches into a module. Where the artifact
+records no import of a `.po` (a `--metro` bundle records none), it follows the
+path the import names to the file the artifact carries.
 
 ## Entry options (`stasis.config.json`)
 
@@ -173,6 +177,78 @@ config, which is code. iOS asset catalogs (`--asset-catalog-dest`) are not
 written. A bundle records no list of the platforms it was made for, so an
 asset or edge that has no per-platform variant can't reveal that a bundle
 made only for `ios` is being built for `android`.
+
+## `.po` catalogs (`--po`)
+
+[@exodus/i18n](https://www.npmjs.com/package/@exodus/i18n) imports each
+translation catalog as a gettext `.po` file (`import de from
+'./locales/de/messages.po'`). Two build steps of
+[`@exodus/i18n-babel-webpack`](https://www.npmjs.com/package/@exodus/i18n-babel-webpack)
+(part of `@exodus/i18n` itself before 5.x) turn it into code:
+
+- Its webpack loader (`webpack-loader`, `webpack5-loader`) makes the `.po` a
+  module of its own.
+- Its Babel plugin `plugin-inline-po`, for a build without webpack (Metro), puts
+  the same catalog in place of each `require('./messages.po')`. It reads the
+  file by its path from the requiring file's directory.
+
+Both run the same `babel/transform.js`. It parses the file with
+[`@exodus/pofile`](https://www.npmjs.com/package/@exodus/pofile) and compiles
+each entry's `msgstr` into ICU tokens, keyed by the id `@exodus/pofile`
+computes from the entry's `msgid` and `msgctxt`:
+
+```js
+module.exports={"Hello {}":[{"type":"text","value":"Hallo "},{"type":"arg","name":"name","position":0}]};
+```
+
+`--po` builds each `.po` the build reaches into that module, from the bytes the
+artifact carries:
+
+- **An import the artifact records** (as `stasis bundle --resources=po` and
+  the esbuild plugin record one) builds as the webpack loader builds it.
+  `import de from` binds the catalog, and so does `require()`.
+- **An import it records no edge for** is read as `plugin-inline-po` reads it:
+  the file at the path a `./` or `../` import names, from the requiring file's
+  directory. A `--metro` bundle records no import of a `.po`, because the Babel
+  plugin inlines it before Metro collects dependencies (see
+  [`stasis bundle --metro`](bundle.md#metro---metro)). The webpack plugin's
+  capture records no edge to a resource either, and a relative import there
+  names the file webpack loads. The build fails if the artifact doesn't carry
+  that file, whether or not it is on disk. The Metro plugin carries a `.po`
+  linked in by a symlink under the link's target, so an import through the
+  link finds nothing at its own path and fails too. An aliased import with no edge (webpack's
+  `~/locales/de.po`, as @exodus/i18n's readme writes one) names no path to
+  read: it stays esbuild's, which can't resolve it. Without `--po`, a relative
+  one fails, naming `--po`.
+
+The module is plain data, so `--platform=hermes` has nothing to downlevel in
+it.
+
+```sh
+stasis bundle --metro --platforms=ios,android --jsx --resources=png,po index.js
+stasis build --platform=hermes --metro=ios --loader=.js:jsx --po --output=main.js stasis.code.br
+```
+
+The transform is **the project's**, resolved from the directory you run
+`stasis build` in, as `--babel` resolves Babel: its own
+`@exodus/i18n-babel-webpack`, else the one its `@exodus/i18n` depends on
+(5.x), else `@exodus/i18n`'s own `babel/transform.js` (4.x). It needs
+`@babel/generator` and `@babel/types`, its peer dependencies. The build names
+the package it used (`Built 2 .po files with @exodus/i18n-babel-webpack@1.1.5`).
+stasis ships no copy of its own because the catalog depends on the version:
+`@exodus/pofile` 3.4 keeps a message's `\n` escape as written where 3.3
+unescapes it, and `@exodus/i18n` 4.x keys an entry by its `msgid` alone,
+without its context. The `@exodus/i18n` client looks an entry up by the id its
+own `@exodus/pofile` computes, so a catalog compiled by another version's rules
+falls back to the source text without an error.
+
+`--po` and `--loader=.po:NAME` don't combine. A `.po` the transform can't parse
+fails the build with the transform's error.
+
+Under `--babel`, a project config that lists `plugin-inline-po` inlines each
+`require('./messages.po')` itself, as Metro's build does, before esbuild sees
+the import. That plugin reads the file from disk, not from the artifact. `--po`
+builds only the `.po` imports the config leaves in place.
 
 ## The project's Babel config (`--babel`)
 
@@ -331,7 +407,8 @@ graph* are carried — an allowlisted extension that nothing imports adds nothin
 
 A resource is carried, not built: `stasis build` (esbuild) needs either a matching
 `--loader` (e.g. `--loader=.png:dataurl`) to emit one, or
-[`--metro=PLATFORM`](#metro---metroplatform) to build it as Metro's asset module.
+[`--metro=PLATFORM`](#metro---metroplatform) to build it as Metro's asset module,
+or, for a `.po`, [`--po`](#po-catalogs---po).
 An entry that imports an asset with neither fails at build time with esbuild's
 *No loader is configured for ".png" files*. The bundle or lockfile carries the
 bytes for attestation and for Metro regardless.

@@ -303,6 +303,8 @@ Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
 build's transform: attributed to `bundle:metro`, as the app's files are, with
 no edge from its importer, and with no asset registry. The Metro plugin records
 it the same way (below). It still needs `--resources` to be carried.
+[`stasis build --po`](build.md#po-catalogs---po) builds a `.po` from the bundle
+as the plugin inlines it.
 
 An import or re-export listing types alone (`import { type A } from`, Flow's
 `import { typeof B } from`, `export { type C } from`) is no edge under
