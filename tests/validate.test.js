@@ -756,6 +756,14 @@ test('validate: a repository renamed or transferred followed, as GitHub redirect
   await t.assert.rejects(followingMoves(same, 'org/repo').getRepoTreeId({ sha: commit }), { name: 'HttpError', status: 301 })
 }))
 
+test('validate: a bundle carrying content for a payload-free stat record is refused as it is read, not validated without that content', withTmp(async (t, tmp) => {
+  const file = join(tmp, 'stat.stasis.code.br')
+  writeFileSync(file, brotliCompressSync(JSON.stringify({ version: 1, config: { scope: 'full' }, entries: ['src/main.js'], formats: { 'src/main.js': 'commonjs', 'src/evil.js': 'stat:file' }, imports: {},
+    sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/main.js': "require('./evil.js')\n", 'src/evil.js': "console.log('evil')\n" } } }, repo: { github: 'org/repo', commit } })))
+  await t.assert.rejects(validate(file, { own: false, lockfile: false, fetch: upstream() }),
+    (error) => error.cause?.message === 'bundle: \'src/evil.js\' is a payload-free \'stat:file\' record, yet carries content')
+}))
+
 test('validate: a dependency from the repository\'s root (`file:.`) held to the root\'s files, its directory read as the root', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      self:\n        specifier: file:.\n        version: 'file:'\n\npackages:\n\n  'self@file:':\n    resolution: {directory: '', type: directory}\n\nsnapshots:\n\n  'self@file:': {}\n`
   t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: lock }]).lock('npm', 'self', '1.0.0'), { from: 'local', directories: [''] })
