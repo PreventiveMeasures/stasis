@@ -49,23 +49,18 @@ function baseConfig({ stasisBaseTransformerPath: _, ...config } = {}) {
 // -> transparent pass-through, so wiring it permanently is safe. A construction failure is cached
 // and rethrown on every call -- never throw-once-then-silently-pass-through. It never writes, so it
 // claims no write path: a capturing worker's own preload State already holds them.
-let stateInited = false
-let loadState = null
-let stateError = null
+let loaded
 function getLoadState() {
-  if (!stateInited) {
+  if (loaded === undefined) {
     try {
       const state = new State(process.cwd(), { claim: false })
-      loadState = state.config.loadBundle ? state : null
-    } catch (err) {
-      stateError = err
-      throw err
-    } finally {
-      stateInited = true
+      loaded = { state: state.config.loadBundle ? state : null }
+    } catch (error) {
+      loaded = { error }
     }
   }
-  if (stateError) throw stateError
-  return loadState
+  if ('error' in loaded) throw loaded.error
+  return loaded.state
 }
 
 // True iff `absolute` is in scope for load mode. state.relative throws outside the project root

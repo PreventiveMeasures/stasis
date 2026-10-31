@@ -13,7 +13,7 @@ import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditi
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
-import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
+import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
@@ -843,8 +843,9 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // stasis.config.json's `extra` names are added as `stasis run` adds them (State#includeExtra), never
 // one of `outputsAt(root)` (the absolute paths the build writes, given the root its paths are
 // relative to), resources by `resources` where given, else by the config's; read through `host`, as
-// Node's glob reads the disk. `memo` is a lazy tree's round's (vfs-bundle/lazy.js roundMemo): the
-// scan keeps what it reads there, and a round that asks for a package stops after it.
+// Node's glob reads the disk. `memo` is what the build's scans keep across the rounds a lazy tree is
+// read in, by each scan's label (vfs-bundle/lazy.js): the scan keeps what it reads there, and a round
+// that read a package not unpacked yet (`host.touches()`) stops after it.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
@@ -863,9 +864,9 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
 
-  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo?.scan('js') ?? null })
+  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
-  if (memo?.voided()) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
+  if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
 
   // Materialise via a non-preload State: addFile bucketizes + records sources/formats,
   // addImport replays the edge map; serialize emits the runtime loader's v1 layout.
@@ -1495,7 +1496,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // is refused, see withinRoot), its issues reported under `label`, by which a lazy tree's `memo`
   // keeps what each of its scans read (vfs-bundle/lazy.js). -> { scanner, leftOut }
   const scanWithin = (roots, options, label) => {
-    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo?.scan(label) ?? null }), (url) => relWithin(fileURLToPath(url)) !== null)
+    const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(fileURLToPath(url)) !== null)
     for (const url of outside) toRel(fileURLToPath(url))
     reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }
@@ -1803,22 +1804,15 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (!splitNodeModulesPath(rel)) links.add(rel)
         } catch { /* a dangling link, or one out of the root, whose files the scan pass refused already */ }
       }
-      const listing = (abs) => {
-        try {
-          return host.readdir(abs)
-        } catch {
-          return []
-        }
-      }
       // As locatePackage: a directory named node_modules holds no node_modules of its own to look in.
       if (basename(dir) !== 'node_modules') {
         const nodeModules = join(dir, 'node_modules')
-        for (const ent of listing(nodeModules)) {
+        for (const ent of listing(nodeModules, host)) {
           const abs = join(nodeModules, ent.name)
           if (ent.name.startsWith('@')) {
             // A scope holds packages, a directory or a link to one (a whole scope linked, where
             // every package in it is reached through the link).
-            for (const scoped of listing(abs)) {
+            for (const scoped of listing(abs, host)) {
               if (ent.isSymbolicLink() || scoped.isSymbolicLink()) link(join(abs, scoped.name))
             }
           } else if (ent.isSymbolicLink()) {
@@ -2249,9 +2243,9 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   // What follows reads the tree through the hosts `hostOf` makes, of the project's host: once, or
   // for a lazy tree, in rounds, each reading into its `reads`, each build keeping what its scans read
   // across them in a memo of its own.
-  const { inRounds, roundMemo } = tree.unpack === undefined ? {} : await import('../vfs-bundle/lazy.js')
-  const memos = roundMemo === undefined ? undefined : builds.map(() => roundMemo())
-  const attempt = async (hostOf, reads) => {
+  const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
+  const attempt = async (reads) => {
+    const hostOf = (outside) => treeHost(tree, outside, reads)
     let host = hostOf(project)
     if (generate.includes('prisma')) {
       const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
@@ -2261,7 +2255,6 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     const args = { cwd, host, env: {} }
     const builts = []
     for (const [i, build] of builds.entries()) {
-      memos?.[i].round(reads)
       // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
       const built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, memo: memos?.[i] })
       // Rooted at cwd, where `stasis bundle` detects its repo.
@@ -2281,8 +2274,8 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     return { root, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { resources: bundleExtra ? undefined : options.resources, host, name: 'buildVfsBundle' }) : union }
   }
   const built = tree.unpack === undefined
-    ? await attempt((host) => treeHost(tree, host))
-    : await inRounds((reads) => attempt((host) => treeHost(tree, host, reads), reads), tree.unpack)
+    ? await attempt()
+    : await import('../vfs-bundle/lazy.js').then(({ inRounds }) => inRounds(attempt, tree.unpack))
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)

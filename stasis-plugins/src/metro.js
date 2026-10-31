@@ -150,7 +150,7 @@ export class StasisMetro {
   #seen = new Set()
   // The project root's real path, once a consumed resource needs it (#consumedResources).
   #realRoot
-  // Under load, the bundle's files (rel) by directory, once an asset needs them (#bundleDirHost).
+  // Under load, the bundle's files by directory (rel), as its entries, once an asset needs them (#bundleDirHost).
   #bundleDirs
   #state
   #resources
@@ -465,12 +465,7 @@ export class StasisMetro {
 
   // Whether `path` lies within the project root, as the State's root-relative keys need.
   #within(path) {
-    try {
-      this.#state.relative(path)
-      return true
-    } catch {
-      return false
-    }
+    return isPathWithin(this.#state.root, path)
   }
 
   // `path`'s real path, where it lies within the project root (not linked out of it), else null.
@@ -557,9 +552,9 @@ export class StasisMetro {
   // files as captured.
   #bundleDirHost() {
     const state = this.#state
-    this.#bundleDirs ??= Map.groupBy([...state.sources.keys(), ...state.resources.keys()], (rel) => posix.dirname(rel))
-    const readdir = (dir) => (this.#bundleDirs.get(toPosix(state.relative(dir))) ?? []).map((rel) => ({ name: posix.basename(rel) }))
-    return { readdir, stat: () => FILE_STAT }
+    this.#bundleDirs ??= new Map([...Map.groupBy([...state.sources.keys(), ...state.resources.keys()], (rel) => posix.dirname(rel))]
+      .map(([dir, rels]) => [dir, rels.map((rel) => ({ name: posix.basename(rel) }))]))
+    return { readdir: (dir) => this.#bundleDirs.get(toPosix(state.relative(dir))) ?? [], stat: () => FILE_STAT }
   }
 
   // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:

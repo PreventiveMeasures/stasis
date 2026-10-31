@@ -5,8 +5,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import assert from 'node:assert/strict'
-import { parseBrotliQuality, parseLeadingOptions } from '@exodus/stasis-core/util'
-import { addCli, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
+import { parseLeadingOptions } from '@exodus/stasis-core/util'
+import { addCli, brotliQualityOption, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
 import pkg from '../package.json' with { type: 'json' }
 
 const argv = [...process.argv]
@@ -163,14 +163,7 @@ if (command === '-v' || command === '--version') {
   if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
-  let brotliQuality
-  if (values['brotli-quality'] !== undefined) {
-    try {
-      brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-    } catch (cause) {
-      fail(`Error: ${cause.message}`)
-    }
-  }
+  const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
   let define
   if (values.define !== undefined) {
     const { parseDefineFlags } = await import('../src/define.js')
