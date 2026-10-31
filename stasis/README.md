@@ -74,6 +74,7 @@ _Lockfiles (npm/pnpm/etc) not mentioned: they are like the "tarball" column, but
 | `stasis prune` | trim `node_modules` to the lockfile, verifying the rest |
 | `stasis audit stasis.lock.json` | report advisories for a lockfile's or bundle's dependencies |
 | `stasis audit --why app.stasis.code.br` | same, with the import chains that pull each flagged package in |
+| `stasis validate app.stasis.code.br` | check a bundle's own code against its repository and its dependencies against their published packages |
 | `stasis sbom --format=spdx stasis.lock.json` | export an SPDX SBOM for a lockfile or bundle |
 | `stasis sbom --format=cyclonedx app.stasis.code.br` | export a CycloneDX SBOM for a lockfile or bundle |
 
@@ -86,6 +87,7 @@ Each command's options are documented in [doc/](https://github.com/PreventiveMea
 [`diff`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/diff.md),
 [`prune`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/prune.md),
 [`audit`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/audit.md),
+[`validate`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/validate.md),
 [`sbom`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/sbom.md).
 `stasis bundle` also bundles Solidity, PHP, Bash and Rust sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust).
 

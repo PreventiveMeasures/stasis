@@ -31,11 +31,12 @@ const HELP = `Usage:
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--no-own] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
 Each command's options: https://github.com/PreventiveMeasures/stasis/blob/main/doc/<command>.md
-(run, bundle, github-bundle, build, extract, diff, prune, audit, sbom; add is in bundle.md)`
+(run, bundle, github-bundle, build, extract, diff, prune, audit, validate, sbom; add is in bundle.md)`
 
 // The help, on stderr. Exits 0 when asked for (--help), 1 when printed for want of a command.
 function usage(asked = false) {
@@ -306,6 +307,29 @@ if (command === '-v' || command === '--version') {
   const report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github })
   printAuditReport(report)
   process.exitCode = report.rows.length === 0 ? 0 : 1
+} else if (command === 'validate') {
+  const values = parseLeadingOptions(argv, { github: { type: 'string' }, sha: { type: 'string' }, directory: { type: 'string' }, 'no-own': { type: 'boolean' } }, {
+    valueFlags: ['--github', '--sha', '--directory'],
+    onError: fail,
+  })
+  if (argv.length !== 1) fail('Error: stasis validate takes one bundle')
+  // The repository is read with GITHUB_TOKEN where it is set; its trees and the packages fetched are
+  // cached where `stasis audit` caches, each held to its id or integrity as it is read.
+  const { createClient } = await import('@preventive/upstream/github.js')
+  const { setCacheDir } = await import('@preventive/upstream/npm.js')
+  setCacheDir(userCacheDir())
+  const { validate, printValidationReport } = await import('../src/validate.js')
+  const report = await validate(resolve(argv[0]), {
+    client: createClient({ token: process.env.GITHUB_TOKEN || null }),
+    github: values.github,
+    sha: values.sha,
+    directory: values.directory,
+    own: !values['no-own'],
+  })
+  printValidationReport(report)
+  // Exit 1 where a file differs or is unexpected, so it composes in CI; files left unverified are
+  // told, not failed.
+  process.exitCode = report.status === 'invalid' ? 1 : 0
 } else if (command === 'sbom') {
   const options = {
     format: { type: 'string' },
