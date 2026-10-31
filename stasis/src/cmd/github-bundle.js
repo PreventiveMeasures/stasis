@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { readJson } from '@exodus/stasis-core/bundle-util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
-import { bundledSummary, writeBundle, writeFile } from './output.js'
+import { bundledSummary, unpackedSummary, writeBundle, writeFile } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
 const NAME_MAX = 255
@@ -46,7 +46,8 @@ export function auditTokens(home) {
 // Run `stasis github-bundle`: the bundle of a GitHub repo at a commit, or the one a tag names (the
 // default branch's head without either), as buildGitHubBundle builds it from `options`, written
 // brotli-compressed to `output` (githubBundleFile's name for it by default, `-` for stdout), and a
-// JS bundle's lockfile to `lockfile` where given.
+// JS bundle's lockfile to `lockfile` where given; then it says how many packages it unpacked, and
+// what it bundled.
 // The tree is fetched with GITHUB_TOKEN from `env` where it is set, else with auditTokens(home)'s
 // `token`; nothing else of `env` is read. Where none of NPM_TOKEN_VARS is set in process.env,
 // auditTokens(home)'s `npmToken` is STASIS_NPM_TOKEN there while the bundle is built, for the npm
@@ -68,5 +69,6 @@ export async function githubBundleCommand({ cwd = process.cwd(), env = process.e
   const dest = writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory: options.directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality)
   if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())
   const from = `${options.github}@${built.bundle.repo.commit}${options.directory ? `/${options.directory}` : ''}`
+  console.warn(unpackedSummary(built.stats))
   console.warn(bundledSummary(built.bundle.sources.size, built.bundle.modules, from, dest))
 }

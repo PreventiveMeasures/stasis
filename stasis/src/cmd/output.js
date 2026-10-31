@@ -32,5 +32,13 @@ export function packagesLabel(modules) {
   return `${packages} package${packages === 1 ? '' : 's'}`
 }
 
+// The summary of what a tree buildVfsBundle built from unpacked, by its `stats`: how many of the
+// packages installed (a Soldeer tree's dependencies), the files and their size, and the tarballs
+// fetched, where deptree counts them.
+export function unpackedSummary({ unpacked, installed, dependencies, files, bytes, tarballs }) {
+  const fetched = typeof tarballs === 'number' ? `, ${tarballs} tarball${tarballs === 1 ? '' : 's'} fetched` : ''
+  return `[stasis] Unpacked ${unpacked} of ${installed ?? dependencies} packages: ${files} files, ${(bytes / 2 ** 20).toFixed(1)} MiB${fetched}`
+}
+
 // The summary of a bundle of `count` files in `modules` written from `from` to `dest`.
 export const bundledSummary = (count, modules, from, dest) => `[stasis] Bundled ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`

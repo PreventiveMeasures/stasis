@@ -190,6 +190,18 @@ or `owner-name.<directory>.<commit's first 7>.stasis.code.br` with
 `_`, and a directory too deep to fit the name in 255 characters is cut, with a
 hash of it appended. `--output=-` streams to stdout.
 
+On stderr it says how many of the packages installed it unpacked, the files
+written and their size, and the tarballs fetched for them (pnpm and npm), then
+what it bundled:
+
+```text
+[stasis] Unpacked 412 of 836 packages: 41210 files, 289.3 MiB, 430 tarballs fetched
+[stasis] Bundled 6591 files in 346 packages from owner/name@0123456789abcdef0123456789abcdef01234567 to owner-name.0123456.stasis.code.br
+```
+
+Without `--lazy` every package installed is unpacked; with it, those the build
+reads, and deptree may fetch a few more than it unpacks (see [Lazy](#lazy---lazy)).
+
 ## Prisma (`--generate=prisma`)
 
 `--generate=prisma` first writes, for each project the lockfile installs with
@@ -234,6 +246,8 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   [Extra files](#extra-files)).
 - `buildGitHubBundle` and `buildVfsBundle` take `lazy: true`, as the command
   takes [`--lazy`](#lazy---lazy); their `stats` then count what is unpacked.
+  `stats` are deptree's, and `stats.unpacked` the packages unpacked: each one
+  installed, or with `lazy` those unpacked.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`.
   `buildVfsBundle` takes a project's `stasis.config.json` entries as the

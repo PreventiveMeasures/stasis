@@ -11,7 +11,10 @@ import { pack } from '@preventive/archive/tar.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle } from '../stasis/src/vfs-bundle.js'
 import { inRounds, lazyView } from '../stasis/src/vfs-bundle/lazy.js'
 import { Scan } from '../stasis/src/scan.js'
+import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
+import { withTmp } from './tmp.helper.js'
+import { captureWarningsAsync } from './warnings.helper.js'
 
 // @exodus/stasis/vfs-bundle with `lazy`: the tree laid out from the lockfile alone, each package
 // fetched and unpacked once the build reads it. The packages are kept in a cache store of the
@@ -111,6 +114,8 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'], 'unused is never fetched')
     t.assert.equal(lazy.stats.tarballs, 2)
     t.assert.equal(full.stats.tarballs, 3)
+    t.assert.equal(lazy.stats.unpacked, 2)
+    t.assert.equal(full.stats.unpacked, 3)
     const dir = [...lazy.bundle.modules.keys()].find((path) => path.endsWith('/used'))
     t.assert.deepStrictEqual({ ...lazy.bundle.modules.get(dir).repo }, { github: 'o/used', commit: COMMIT }, 'at the commit its document names, which it is fetched with')
   })
@@ -228,6 +233,18 @@ test('buildGitHubBundle lazily: the repo as fetched, its dependencies as the bui
   t.assert.deepStrictEqual({ ...lazy.bundle.repo }, { github: 'o/n', directory: '', commit: HEAD })
   t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'])
 })
+
+test('stasis github-bundle says how many packages it unpacked, of those installed, lazily or not', withTmp(async (t, dir) => {
+  const files = projectFiles('pnpm', { names: ['used', 'unused'] })
+  const said = async (lazy) => {
+    const options = { cwd: dir, github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache: store(), lazy, output: 'out.br' }
+    const { warnings } = await captureWarningsAsync(() => githubBundleCommand(options))
+    return warnings.filter((line) => line.startsWith('[stasis] Unpacked'))
+  }
+  const [full] = await said(false)
+  t.assert.match(full, /^\[stasis\] Unpacked 3 of 3 packages: 7 files, 0\.0 MiB, 3 tarballs fetched$/u)
+  t.assert.deepStrictEqual(await said(true), [full.replace('3 of 3 packages: 7 files', '2 of 3 packages: 5 files').replace('3 tarballs', '2 tarballs')])
+}))
 
 test('stasis github-bundle takes --lazy, and refuses it for yarn 1 before anything is fetched', async (t) => {
   const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', '--github=o/n', '--package-manager=yarn1', '--lazy', 'a.js'])
