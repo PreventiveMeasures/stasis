@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { diskHost } from './host.js'
 import { canonicalizePath } from './state-util.js'
-import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseInstallDevDependencies, parseResourcesOption } from './util.js'
+import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 export const DEFAULT_BUNDLE = 'none'
@@ -22,8 +22,8 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only (never from
 // stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
 // stasis.config.json only (no env var or option), `entries` is `stasis bundle`'s and
-// `installDevDependencies` the trees laid out from the lockfile's (`stasis github-bundle`), which a
-// run takes nothing from.
+// `installDevDependencies` and `lazyDependencies` the trees laid out from the lockfile's (`stasis
+// github-bundle`), which a run takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -40,7 +40,7 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', 'installDevDependencies']
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', 'installDevDependencies', 'lazyDependencies']
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
 // explicitly (flags, env, options), never by a file.
 const CONFIG_FILE_LOCK = 'frozen'
@@ -218,6 +218,10 @@ export class Config {
       // A run takes node_modules as installed, but a value github-bundle would refuse is refused here too.
       if (key === 'installDevDependencies') {
         parseInstallDevDependencies('stasis.config.json', config.installDevDependencies)
+        continue
+      }
+      if (key === 'lazyDependencies') {
+        parseLazyDependencies('stasis.config.json', config.lazyDependencies)
         continue
       }
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)

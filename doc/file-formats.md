@@ -36,6 +36,7 @@ it, or take it for another path.
 | `extra` | array of paths and glob patterns | unset | none |
 | `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `installDevDependencies` | boolean | `true` | none |
+| `lazyDependencies` | boolean | `true` | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -155,11 +156,19 @@ It has nothing to do with `process.env.NODE_ENV` or `__DEV__`, which an entry's
 `define` sets. `stasis run` and `stasis bundle` read `node_modules` as it was
 installed, and take nothing from it.
 
+`lazyDependencies: false` has `stasis github-bundle` fetch and unpack every
+package of the tree it lays out from the lockfile before the build, as
+`--no-lazy` does, where it would otherwise fetch only those the build reads (a
+pnpm or npm tree; see [Lazy](github-bundle.md#lazy---no-lazy)). The bundle is
+the same either way, but a broken tarball the build never reaches is refused
+with it.
+
 Unknown keys are rejected. A key set by both file and env var must match.
-`extra`, `entries` and `installDevDependencies` are set in the file alone. Only
+`extra`, `entries`, `installDevDependencies` and `lazyDependencies` are set in the file alone. Only
 `scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, `extra`'s effect is the
-files it adds, and `installDevDependencies`' the packages a build can reach.
+files it adds, `installDevDependencies`' the packages a build can reach, and
+`lazyDependencies`' the packages fetched.
 
 ## `stasis.lock.json`
 

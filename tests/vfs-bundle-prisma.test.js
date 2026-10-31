@@ -299,7 +299,7 @@ const publishedProject = (packageManager) => project({
 })
 
 for (const packageManager of ['pnpm', 'npm']) {
-  test(`${packageManager}: --generate=prisma with --lazy bundles the client of the prisma it fetches, as the full tree does`, async (t) => {
+  test(`${packageManager}: --generate=prisma over a lazy tree bundles the client of the prisma it fetches, as the full tree does`, async (t) => {
     const of = async (lazy) => {
       const cache = registry()
       const { result, warnings: said } = await captureWarningsAsync(() => buildVfsBundle({ vfs: publishedProject(packageManager), packageManager, entries: ['src/index.ts'], generate: ['prisma'], cache, lazy }))

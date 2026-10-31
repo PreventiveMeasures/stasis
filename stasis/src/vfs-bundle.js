@@ -17,9 +17,9 @@ import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackage
 // dependency is GitHub's tarball of its commit, fetched through the `client` buildVfsBundle is given.
 // buildGitHubBundle builds one from a GitHub repo at a commit, or the one a tag names (the default
 // branch's head without either), its tree fetched from GitHub and held to its git tree id, cached
-// there the same way, and its Soldeer git dependencies through the same client. With `lazy`, a pnpm
-// or npm tree is laid out with nothing fetched, and each package fetched once the build reads it
-// (vfs-bundle/lazy.js).
+// there the same way, and its Soldeer git dependencies through the same client. A pnpm or npm tree
+// is lazy unless `lazy` is false or stasis.config.json's `lazyDependencies` is: laid out with nothing
+// fetched, and each package fetched once the build reads it (vfs-bundle/lazy.js).
 
 export { buildVfsBundle } from './cmd/bundle.js'
 export { buildGitHubBundle } from './vfs-bundle/github.js'

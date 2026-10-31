@@ -7,7 +7,7 @@ in memory from its lockfile alone. No package script runs, and nothing of the
 repository executes.
 
 ```sh
-stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
@@ -18,7 +18,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
 | `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
-| `--lazy` | With pnpm or npm: fetch and unpack only the packages the build reads. See [Lazy](#lazy---lazy). |
+| `--no-lazy` | Fetch and unpack every package the tree installs before the build. Without it, a pnpm or npm tree is lazy: only the packages the build reads are fetched and unpacked. See [Lazy](#lazy---no-lazy). |
 | `--generate=prisma` | Generate each project's Prisma Client first. See [Prisma](#prisma---generateprisma). |
 | `--lockfile=path` | Also write a `stasis.lock.json` of a JS bundle, as [`stasis bundle --lockfile`](bundle.md#companion-lockfile---lockfile) does. |
 | `--output` / `-o` | Where to write. Default: a name after the repo and commit, see [Output](#output). `-` streams to stdout. |
@@ -131,9 +131,9 @@ one is unresolved, as any missing file's. Matching takes the optional
 refused before any package is fetched. A `--directory` with a `.yarnclean`
 above it is fetched with the whole repo, never alone.
 
-### Lazy (`--lazy`)
+### Lazy (`--no-lazy`)
 
-With `--lazy`, pnpm's and npm's trees are laid out from the lockfile alone with
+pnpm's and npm's trees are lazy: laid out from the lockfile alone with
 nothing fetched, not even a version document, each package's directory empty.
 A package is fetched and unpacked once the build reads anything in it: resolving
 an import into it, which reads its `package.json`, is enough. What its
@@ -154,7 +154,8 @@ where it builds the package. The bundle and lockfile are the ones the full tree
 gives, byte for byte, its warnings said once.
 
 ```sh
-stasis github-bundle --github=owner/name --lazy src/index.js
+stasis github-bundle --github=owner/name src/index.js            # lazy
+stasis github-bundle --github=owner/name --no-lazy src/index.js  # every package fetched first
 ```
 
 The build reads synchronously, so it runs in rounds: a round that reads in a
@@ -168,8 +169,8 @@ in each round, though one before it is set aside, so a round asks for what
 they all read.
 
 With `EXODUS_STASIS_DEBUG=1`, each step is said on stderr as it ends, with
-what it cost: fetching the repo, the tree (installed, or with `--lazy` laid
-out), generating the Prisma Clients (with [`--generate=prisma`](#prisma---generateprisma)), each build (with `--lazy`, each round, and the packages it asks for and
+what it cost: fetching the repo, the tree (laid out, or where it is not lazy,
+installed), generating the Prisma Clients (with [`--generate=prisma`](#prisma---generateprisma)), each build (of a lazy tree, each round, and the packages it asks for and
 how long unpacking them takes), and writing the bundle. A build says the
 files its scans parsed, resolved again from a parse kept and took as kept,
 and under `--metro` how long each stage took: the scan of what the app
@@ -181,14 +182,22 @@ files into the bundle.
 [stasis] Lazy round 3: unpacked in 0.17 s
 ```
 
-Each package unpacked is held to the lockfile, and checked as without
-`--lazy`, so a broken tarball the build reaches is refused as before. One it
+Each package unpacked is held to the lockfile, and checked as with
+`--no-lazy`, so a broken tarball the build reaches is refused as before. One it
 never reaches is never refused, whether it is fetched or not: such a lockfile
-builds with `--lazy`, and is refused without it. yarn 1 and Soldeer lay out their trees by
-what the packages hold, and refuse `--lazy`, before anything is fetched; so
-does a [`.yarnclean`](#yarnclean) that keeps paths with `!`, as what it keeps
-of one package turns on what the others hold. `--lazy` is a flag of the
-command alone: `stasis.config.json` does not set it.
+builds lazily, and is refused with `--no-lazy`.
+
+With `--no-lazy`, the whole tree is installed first, every package fetched and
+unpacked. yarn 1's and Soldeer's trees always are: they are laid out by what
+the packages hold, so they are never lazy, and nothing is refused for it. So is
+a pnpm or npm tree under a [`.yarnclean`](#yarnclean) that keeps paths with
+`!`, as what it keeps of one package turns on what the others hold; and the
+tree of a directory whose `stasis.config.json` sets `lazyDependencies` to
+`false`:
+
+```json
+{ "lazyDependencies": false }
+```
 
 ## Entries
 
@@ -285,8 +294,9 @@ what it bundled:
 [stasis] Bundled 6591 files in 346 packages from owner/name@0123456789abcdef0123456789abcdef01234567 to owner-name.0123456.stasis.code.br
 ```
 
-Without `--lazy` every package installed is unpacked; with it, those the build
-reads, and deptree may fetch a few more than it unpacks (see [Lazy](#lazy---lazy)).
+A lazy tree unpacks the packages the build reads, and deptree may fetch a few
+more than it unpacks (see [Lazy](#lazy---no-lazy)); any other unpacks every
+package installed.
 
 ## Prisma (`--generate=prisma`)
 
@@ -307,8 +317,8 @@ ships). The client is generated by the optional `@prisma/client-generator-ts`
 `@prisma/prisma7` runs. A project it can't generate for is skipped with a
 warning.
 
-The clients are generated once, before anything is built. With
-[`--lazy`](#lazy---lazy), they are generated in rounds of their own, which
+The clients are generated once, before anything is built. Of a
+[lazy](#lazy---no-lazy) tree, they are generated in rounds of their own, which
 fetch the `prisma` they read, and then the build's rounds read them as any
 other source.
 
@@ -339,10 +349,14 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   `stasis.config.json` in `cwd` (`directory`) sets `installDevDependencies` to
   `false`, as the command does (see
   [devDependencies](#devdependencies-installdevdependencies)).
-- `buildGitHubBundle` and `buildVfsBundle` take `lazy: true`, as the command
-  takes [`--lazy`](#lazy---lazy); their `stats` then count what is unpacked.
-  `stats` are deptree's, and `stats.unpacked` the packages unpacked: each one
-  installed, or with `lazy` those unpacked.
+- `buildGitHubBundle` and `buildVfsBundle` lay out a lazy tree where the
+  command does (see [Lazy](#lazy---no-lazy)). `lazy: false` installs every
+  package, as `--no-lazy` does; `lazy: true` is refused before anything is
+  fetched where the tree can't be lazy (yarn 1, Soldeer, a `.yarnclean` that
+  keeps paths), or `stasis.config.json` sets `lazyDependencies` to `false`.
+  `loadNodeModules` installs every package. `stats` are deptree's, and
+  `stats.unpacked` the packages unpacked: each one installed, or of a lazy
+  tree those unpacked.
 - `buildGitHubBundle` takes `path` in place of `directory`, as the command
   takes `owner/name/path`: a directory, or a file (see
   [A file's project](#a-files-project)). It returns the `directory` it bundled
