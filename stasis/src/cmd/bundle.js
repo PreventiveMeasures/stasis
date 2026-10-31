@@ -11,6 +11,7 @@ import { parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
+import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
@@ -1347,9 +1348,6 @@ function flatDepth(arg) {
 }
 
 const JSX_FILE_EXTS = new Set(['.jsx', '.tsx'])
-// The asset registry the module Metro builds of an asset requires: React Native's Metro config's
-// `assetRegistryPath` (@react-native/metro-config's), where a project's own isn't read, being code.
-const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // Metro's asyncRequire (metro-config's default `asyncRequireModulePath`), which Metro adds to a build
 // with an `import()`, as the Metro plugin's graph then holds it.
 const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'

@@ -59,6 +59,7 @@
     "src/loaders/paths.js",
     "src/lockfile.js",
     "src/metro.js",
+    "src/metro-assets.js",
     "src/metro-resolver.js",
     "src/metro-transformer.js",
     "src/mock.js",

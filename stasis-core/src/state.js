@@ -1337,7 +1337,7 @@ export class State {
     this.#assertAttestedResolution(this.imports, key, parent, specifier, file, { what: 'observed', source: 'bundle', tolerateUnknown, targetPlatform })
   }
 
-  getImport(parentURL, specifier, { conditions = '*', importAttributes } = {}) {
+  getImport(parentURL, specifier, { conditions = '*', importAttributes, platform } = {}) {
     if (conditions !== '*') assert.ok(Array.isArray(conditions))
     assert.ok(parentURL, 'getImport requires a parent') // matches addImport; #canonicalSpecifier needs it
     const parent = this.#canonicalFile(parentURL)
@@ -1358,12 +1358,21 @@ export class State {
       // code, which ERR_ASSERTION escapes.
       throw Object.assign(new Error(`Cannot find module '${specifier}' imported from ${parent}`), { code: 'ERR_MODULE_NOT_FOUND' })
     }
-    // A --metro per-platform edge is a { platform: file } Map; plain bundle=load has no platform
-    // context to pick one, so fail closed rather than feed a Map where a path is expected.
+    // A --metro per-platform edge is a { platform: file } Map: `platform`'s target where the caller
+    // builds for one (`stasis build --metro=ios`), which the edge must record. Plain bundle=load has
+    // no platform context to pick one, so fail closed rather than feed a Map where a path is expected.
     if (typeof file !== 'string') {
-      throw Object.assign(
-        new Error(`Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`),
-        { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
+      if (platform === undefined) {
+        throw Object.assign(
+          new Error(`Resolution of '${specifier}' from ${parent} is platform-specific (a --metro multi-platform bundle, which is Metro's to build); plain node has no platform to pick one by`),
+          { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
+      }
+      if (!file.has(platform)) {
+        throw Object.assign(
+          new Error(`Resolution of '${specifier}' from ${parent} is platform-specific and records no '${platform}' target (only ${[...file.keys()].join(', ')}): the bundle wasn't made for '${platform}'`),
+          { code: 'ERR_STASIS_PLATFORM_SPECIFIC' })
+      }
+      file = file.get(platform)
     }
     return { url: pathToFileURL(resolve(this.root, file)).toString(), format: this.#loaderFormat(file) }
   }

@@ -1,14 +1,16 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
+import { metroAssetFiles } from '@exodus/stasis-plugins/metro-native'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
+import { ASSET_REGISTRY, assetRegistryFile, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
 
@@ -178,6 +180,45 @@ function loadStateForBundle(root, bundle) {
   return state
 }
 
+const DIRECTORY_FORMATS = new Set(['directory', 'stat:directory'])
+const FILE_STAT = { isFile: () => true }
+
+// The bytes the artifact carries for `file` (a path from the State's root), verified by getFile.
+function readCarried(state, file) {
+  const { source } = state.getFile(pathToFileURL(resolve(state.root, file)).toString())
+  return Buffer.isBuffer(source) ? source : Buffer.from(source)
+}
+
+// --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches -- in a
+// --metro bundle, a Metro asset, as it records an import edge to no other -- served as the module
+// Metro builds of it for `platform` (metro-assets.js), from the files of the asset the artifact carries
+// in its directory. The module's require of the asset registry resolves to the file the artifact
+// carries for it (assetRegistryFile), an edge added to the State's graph: the bundle records none, as
+// Metro adds it past the source. `built` collects each asset's { descriptor, files } for --assets-dest.
+function metroAssetResource(state, platform, built) {
+  const toRel = (abs) => relative(state.root, abs).split(sep).join('/') || '.'
+  const carried = new Set(state.sources.keys())
+  const listed = [...state.sources.keys(), ...state.resources.keys()].filter((file) => !DIRECTORY_FORMATS.has(state.formats.get(file)))
+  const byDir = Map.groupBy(listed, (file) => posix.dirname(file))
+  const host = {
+    readdir: (dir) => (byDir.get(toRel(dir)) ?? []).map((file) => ({ name: posix.basename(file) })),
+    stat: () => FILE_STAT,
+  }
+  const read = (file) => readCarried(state, file)
+  // A copy of the '*' bucket takes the registry edges: the State shares the parsed artifact's maps.
+  const edges = new Map(state.imports.get('*') ?? [])
+  state.imports = new Map(state.imports).set('*', edges)
+  return (source, { path }) => {
+    const rel = toRel(path)
+    const files = metroAssetFiles(path, platform, host).map(toRel)
+    const { descriptor, files: byScale } = metroAssetDescriptor(rel, { platform, files, read })
+    const registry = assetRegistryFile(rel, platform, carried)
+    edges.set(rel, new Map([...(edges.get(rel) ?? []), [ASSET_REGISTRY, registry]]))
+    built.set(rel, { descriptor, files: byScale })
+    return { contents: metroAssetModule(descriptor), loader: 'js' }
+  }
+}
+
 // Run `stasis build`: run esbuild over one recorded entry, following the artifact's
 // recorded import graph EXACTLY (not esbuild's resolver). A specifier the artifact records
 // is always followed from the artifact; `external` only steers the specifiers it doesn't.
@@ -194,10 +235,18 @@ export async function buildCommand({
   define = {},
   external = [],
   loader = {},
+  metro,
+  assetsDest,
 } = {}) {
   if (!artifact) throw new Error('stasis build: an artifact (bundle or lockfile) is required')
   if (!output) throw new Error('stasis build: --output is required (a .js/.cjs/.mjs file, or a directory)')
   if (!Array.isArray(external)) throw new Error('stasis build: external must be an array of esbuild patterns')
+  if (metro !== undefined && (typeof metro !== 'string' || !/^[^/,]+$/u.test(metro))) {
+    throw new Error(`stasis build: --metro takes the platform to build for, e.g. --metro=ios (got '${metro}')`)
+  }
+  if (assetsDest !== undefined && metro === undefined) {
+    throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
+  }
   // --platform=hermes is a stasis-level target, not an esbuild platform (esbuild gets
   // 'neutral'): every code file is downleveled to Hermes' dialect before the final bundle,
   // and the bundle itself must avoid ESM -- Hermes has no import/export.
@@ -229,6 +278,9 @@ export async function buildCommand({
   let transform
   if (babel) transform = createBabelConfigTransform({ projectDir: cwd })
   else if (hermes) transform = createHermesTransform({ projectDir: cwd, esbuild })
+  // --metro=PLATFORM: PLATFORM's target of each per-platform edge, and each asset as Metro builds it.
+  const builtAssets = new Map()
+  const resource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
 
   const outAbs = resolve(cwd, output)
   const asFile = /\.[cm]?js$/u.test(output)
@@ -255,24 +307,43 @@ export async function buildCommand({
       ...(asFile ? { outfile: outAbs } : { outdir: outAbs }),
       // Loader overrides go through the plugin: it serves every in-bundle file, so esbuild's
       // own `loader` option never sees them. e.g. { '.js': 'jsx' } to parse JSX in .js files.
-      plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform })],
+      plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, platform: metro })],
     })
   } catch (err) {
     // Under logLevel:'silent' esbuild puts the real errors on err.errors; surface them, then fail.
     if (Array.isArray(err?.errors) && err.errors.length > 0) {
       const formatted = await esbuild.formatMessages(err.errors, { kind: 'error', color: false })
       for (const line of formatted) process.stderr.write(line)
+      // A resource the build reaches with no loader for its extension: what builds one.
+      const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
+      if (unloaded !== undefined) {
+        process.stderr.write(
+          `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME (an esbuild loader: dataurl, file, text, ...), ` +
+          `or with --metro=PLATFORM as the asset module Metro builds of it\n`
+        )
+      }
+      if (metro === undefined && err.errors.some((e) => /is platform-specific/u.test(e.text))) {
+        process.stderr.write('[stasis] A --metro multi-platform bundle builds for one platform at a time: pass --metro=PLATFORM (e.g. --metro=ios)\n')
+      }
       throw new Error(`stasis build failed: esbuild reported ${err.errors.length} error(s)`, { cause: err })
     }
     throw err
   }
 
+  // What --assets-dest copies of the assets built, as `react-native bundle --assets-dest` copies them
+  // for the platform, from the bytes the artifact carries; in a stable order (esbuild loads in parallel).
+  const assetsAbs = assetsDest === undefined ? undefined : resolve(cwd, assetsDest)
+  const assetCopies = assetsAbs === undefined
+    ? []
+    : metroAssetCopies(metro, [...builtAssets].toSorted(([a], [b]) => (a < b ? -1 : 1)).map(([, asset]) => asset))
+        .map((copy) => ({ ...copy, dest: resolve(assetsAbs, copy.dest) }))
+
   // Refuse to clobber an attested source, checked against esbuild's actual output paths before any write.
-  for (const file of result.outputFiles) {
-    if (attested.has(file.path)) {
+  for (const path of [...result.outputFiles.map((file) => file.path), ...assetCopies.map((copy) => copy.dest)]) {
+    if (attested.has(path)) {
       throw new Error(
-        `stasis build: refusing to write '${relative(cwd, file.path)}' -- it is a source the artifact records; ` +
-        `choose an --output path outside the artifact's own files`
+        `stasis build: refusing to write '${relative(cwd, path)}' -- it is a source the artifact records; ` +
+        `choose an --output${assetsDest === undefined ? '' : '/--assets-dest'} path outside the artifact's own files`
       )
     }
   }
@@ -285,5 +356,11 @@ export async function buildCommand({
   for (const file of result.outputFiles) writeFile(file.path, file.contents)
 
   console.warn(`[stasis] Built ${selectedEntry} from ${kind} ${artifact} to ${output}`)
+  if (assetsAbs !== undefined) {
+    for (const { dest, file, contents } of assetCopies) writeFile(dest, contents ?? readCarried(state, file))
+    console.warn(`[stasis] Copied ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} (${assetCopies.length} file${assetCopies.length === 1 ? '' : 's'}) for ${metro} to ${assetsDest}`)
+  } else if (builtAssets.size > 0) {
+    console.warn(`[stasis] Built ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} for ${metro}; pass --assets-dest to copy their files out`)
+  }
   return { entry: selectedEntry, dir: asFile ? undefined : outAbs, outfile: asFile ? outAbs : undefined }
 }
