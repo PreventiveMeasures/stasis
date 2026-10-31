@@ -11,10 +11,10 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
-import { assertRealPathWithinBase, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, fileInBucket, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
-import { applyToDir } from './paths.js'
+import { applyToDir, isDotRelative } from './paths.js'
 import { readUtf8OrNull } from './solidity-ownership.js'
 import { nameErrors } from './toml.js'
 
@@ -178,8 +178,6 @@ function matchDirAnchor(code, pos) {
   return { end: PHP_DIR_ANCHOR_RE.lastIndex, up }
 }
 
-// A `./`/`../` specifier, as PHP tells one (a `.`-led NAME like `..cache/a.php` is a bare one).
-const isDotRelative = (spec) => spec === '.' || spec === '..' || spec.startsWith('./') || spec.startsWith('../')
 
 // Normalise an include path to a specifier. Dir-relative paths get a `./` prefix
 // with the leading separator stripped; empty means the file's own dir (`.`).
@@ -744,7 +742,7 @@ export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVers
   for (const [path, content] of sources) {
     const pkg = findComposerPackage(baseDir, path, installed, fallbackVersion)
     if (pkg) {
-      const rel = pkg.pkgDir === '.' ? path : path.slice(pkg.pkgDir.length + 1)
+      const rel = fileInBucket(pkg.pkgDir, path)
       // Below the root package = an installed Composer dependency, tagged
       // `composer`; the root "." bucket is workspace code and stays ecosystem-less.
       const ecosystem = pkg.pkgDir === '.' ? undefined : 'composer'

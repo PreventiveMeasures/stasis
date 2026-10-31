@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { resolvePluginState } from './plugins.js'
+import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route esbuild's reads through the capture hook.
@@ -223,16 +223,11 @@ export class StasisEsbuild {
         // keys attributed edges under specific conditions the plugin's `*` lookup won't match.
         // The edge is looked up even for a built-in's name: a browser build records `fs` when a
         // `browser` field disables it (an edge to the empty module) or a package by that name serves it.
-        try {
-          ;({ url } = this.#state.getImport(parentURL, specifier, { importAttributes: attrs }))
-        } catch (err) {
-          // No attested edge -- at a successful capture that's a built-in or another EXTERNAL (never
-          // recorded as an edge), so hand it back to esbuild, which externalizes it as without us
-          // (built-ins under platform:'node'). File BYTES still fail closed at onLoad.
-          // A non-MODULE_NOT_FOUND error is a real fault -- rethrow.
-          if (err?.code === 'ERR_MODULE_NOT_FOUND') return undefined
-          throw err
-        }
+        // No attested edge (a built-in, or another external): esbuild's, which externalizes it as
+        // without us (built-ins under platform:'node'). File BYTES still fail closed at onLoad.
+        const attested = attestedImport(this.#state, parentURL, specifier, { importAttributes: attrs })
+        if (attested === undefined) return undefined
+        ;({ url } = attested)
       }
       const format = this.#state.getFormat(url)
       const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
@@ -268,11 +263,7 @@ export class StasisEsbuild {
       if (res.namespace === 'file' && !res.external) {
         kind = classifyExtension(res.path, this.#resources)
         if (kind === 'unknown') {
-          return {
-            errors: [{
-              text: `StasisEsbuild: unsupported extension for '${res.path}' -- add its extension or filename to the plugin's resources option or stop importing it`,
-            }],
-          }
+          return { errors: [{ text: unsupportedExtension('StasisEsbuild', `'${res.path}'`) }] }
         }
         // Record the edge for BOTH code and resource targets (never entries): load mode resolves
         // every specifier through this map, so a resource with no edge would miss at bundle=load and

@@ -17,3 +17,6 @@ export function applyToDir(fromFile, segments) {
   }
   return resolved.join('/')
 }
+
+// A `./`/`../` specifier, first segment `.` or `..` (a `.`-led NAME like `..cache/a.php` is a bare one).
+export const isDotRelative = (spec) => spec === '.' || spec === '..' || spec.startsWith('./') || spec.startsWith('../')

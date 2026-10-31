@@ -107,7 +107,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
 
   // Execute-bit changes, reported for every path either side marks (not just files in shared
   // modules): gaining or losing +x is a real change to the extracted tree, whatever bucket it sits in.
-  const onlyIn = (a, b) => [...a].filter((file) => !b.has(file)).toSorted(sortPaths)
+  const onlyIn = (a, b) => [...a.difference(b)].toSorted(sortPaths)
   const executableAdded = onlyIn(R.executable, L.executable)
   const executableRemoved = onlyIn(L.executable, R.executable)
 
@@ -151,7 +151,7 @@ function resolutionsOf(imports) {
 const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const cmpPair = (a, b) => sortPaths(a.parent, b.parent) || cmpStr(a.specifier, b.specifier)
 const sortedTargets = (set) => [...set].toSorted(sortPaths)
-const sameTargets = (a, b) => a.size === b.size && [...a].every((t) => b.has(t))
+const sameTargets = (a, b) => a.size === b.size && a.isSubsetOf(b)
 
 // Diff resolution graphs at the (parent, specifier) level (conditions folded away — see
 // resolutionsOf). Reports added/removed and changed (resolved on both sides to different targets —

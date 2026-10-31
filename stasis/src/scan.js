@@ -259,8 +259,9 @@ export class Scan {
       this.entries.add(url)
       queue.push(url)
     }
-    while (queue.length > 0) {
-      const url = queue.shift()
+    // FIFO by an index, not shift(): the queue holds every edge's target, and shift() copies a large one.
+    for (let head = 0; head < queue.length; head++) {
+      const url = queue[head]
       if (this.files.has(url)) continue
       if (this.memo === null) this.#scanFile(url, queue)
       else this.#scanKept(url, queue)

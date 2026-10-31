@@ -5,9 +5,9 @@ import { createRequire, isBuiltin } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { resolvePluginState } from './plugins.js'
+import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
-import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
+import { realReadFileSync, servedByBundle } from '@exodus/stasis-core/state-util'
 import { classifyExtension } from '@exodus/stasis-core/util'
 
 // CJS require anchored here, used only to locate the PROJECT's babel-plugin-module-resolver below.
@@ -95,13 +95,8 @@ export class StasisWebpack {
     const state = this.#state
     const orig = compiler.inputFileSystem
 
-    // True iff `p` is served from the bundle under load: within state.root (state.relative throws
-    // outside it: system files, scratch, read from disk) and in scope.
-    const served = (p) => {
-      if (typeof p !== 'string') return false
-      try { state.relative(p) } catch { return false }
-      return inScope(state, pathToFileURL(p).toString())
-    }
+    // True iff `p` is served from the bundle under load (servedByBundle).
+    const served = (p) => typeof p === 'string' && p !== '' && servedByBundle(state, p)
 
     // Family = the sidecar's own app-graph bundle first, then its parent (loaders + resolution-path
     // dirs the ambient preload captured). Both share one lockfile; no parent -> just [state].
@@ -172,16 +167,9 @@ export class StasisWebpack {
         // getImport for a builtin name, so a tampered bundle can't redirect `fs` to an arbitrary file.
         if (isBuiltin(data.request)) return
         const parentURL = pathToFileURL(issuer).toString()
-        let resolved
-        try {
-          resolved = state.getImport(parentURL, data.request)
-        } catch (err) {
-          // No attested edge -- at a successful capture that's an EXTERNAL (never recorded as an
-          // edge), so defer to webpack. File BYTES still fail closed at the inputFileSystem wrapper.
-          // A non-MODULE_NOT_FOUND error is a real fault -- rethrow.
-          if (err?.code === 'ERR_MODULE_NOT_FOUND') return
-          throw err
-        }
+        // No attested edge: defer to webpack. File BYTES still fail closed at the inputFileSystem wrapper.
+        const resolved = attestedImport(state, parentURL, data.request)
+        if (resolved === undefined) return
         // Redirect the resolver to the absolute bundle path; the stat wrapper then reports it exists.
         data.request = fileURLToPath(resolved.url)
       })
@@ -266,10 +254,7 @@ export class StasisWebpack {
 
         const kind = classifyExtension(filePath, this.#resources)
         if (kind === 'unknown') {
-          throw new Error(
-            `StasisWebpack: unsupported extension for '${filePath}' -- ` +
-            `add its extension or filename to the plugin's resources option or stop importing it`
-          )
+          throw new Error(unsupportedExtension('StasisWebpack', `'${filePath}'`))
         }
 
         const url = pathToFileURL(filePath).toString()

@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { constants as osConstants } from 'node:os'
 import { resolve } from 'node:path'
-import { parseBrotliQuality, parseLeadingOptions } from './util.js'
+import { parseBrotliQuality, parseLeadingOptions, valueFlagsOf } from './util.js'
 
 const RUN_OPTIONS = {
   lock: { type: 'string', default: 'none' },
@@ -134,7 +134,7 @@ export async function extractCli(argv, { label, fail }) {
     output: { type: 'string', short: 'o' },
     lock: { type: 'string' },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o', '--lock'], onError: fail })
+  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
   // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).

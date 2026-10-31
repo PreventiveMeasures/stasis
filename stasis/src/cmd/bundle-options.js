@@ -1,15 +1,14 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
-import { directoryEntryError, isSolidityEntry } from './bundle.js'
+import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
 
 const CONFIG_FILE = 'stasis.config.json'
 
-// `stasis bundle`'s flags, as parseArgs takes them, and those taking their value as the next argument.
+// `stasis bundle`'s flags, as parseArgs takes them.
 export const BUNDLE_FLAGS = {
   mapping: { type: 'string' },
   manifests: { type: 'boolean' },
@@ -39,7 +38,6 @@ export const BUNDLE_FLAGS = {
   'brotli-quality': { type: 'string' },
   add: { type: 'boolean' },
 }
-export const BUNDLE_VALUE_FLAGS = ['--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--babel-aliases', '--platforms', '--resources', '--tsconfig', '--define', '--cargo-features', '--cargo-target', '--brotli-quality', '-o']
 
 // The flags saying where and how the bundle is written. Every other one says how its entries are
 // built, which stasis.config.json's `entries` sets per entry instead.
@@ -253,15 +251,7 @@ function entryFlags(what, options) {
 // -> { entry: the name as written, values: its options as flags (entryFlags') }. null where there is
 // none.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
-  const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
-  if (text === null) return null
-  let config
-  try {
-    config = JSON.parse(text)
-  } catch (cause) {
-    throw new Error(`${CONFIG_FILE} is not valid JSON`, { cause })
-  }
-  const entries = config?.entries
+  const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
   if (!isPlainObject(entries)) throw new Error(`${CONFIG_FILE}: entries must be an object of each entry's stasis bundle options`)
   const named = new Map()

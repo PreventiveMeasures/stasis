@@ -2,7 +2,6 @@ import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { brotliDecompressSync } from 'node:zlib'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
@@ -17,9 +16,10 @@ import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPacka
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
-import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
+import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
@@ -216,9 +216,6 @@ function makeRustClassifier(cargo) {
   }
 }
 
-// A file's key inside its bucket: the inverse of moduleFileKey.
-const fileInBucket = (bucketDir, path) => (bucketDir === '.' ? path : path.slice(bucketDir.length + 1))
-
 // A file of the bundle root (`realBase` its real path), its bytes, by project-relative path, or
 // null when it isn't a regular file there (a manifest the context saw may have gone since; a FIFO
 // would hang a read) or, with `within` a directory, doesn't really lie in it (a vendored crate's
@@ -291,16 +288,12 @@ function assembleCodeBundle({
       continue
     }
     const meta = packageOf(path)
-    const inNodeModules = splitNodeModulesPath(path) !== null
-    if (meta) {
-      if (inNodeModules && !hasNodeModulesSegment(meta.pkgDir)) {
-        throw new Error(`No package.json with name+version found for ${path}`)
-      }
-      ensureBucket(meta.pkgDir, meta).files[fileInBucket(meta.pkgDir, path)] = content
-    } else {
-      if (inNodeModules) throw new Error(`No package.json with name+version found for ${path}`)
-      ensureBucket('.', { name: workspaceName, version: workspaceVersion }).files[path] = content
+    // A node_modules file whose nearest package.json is the workspace root (or none at all) is a misconfigured dep -- refuse.
+    if (splitNodeModulesPath(path) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
+      throw new Error(`No package.json with name+version found for ${path}`)
     }
+    const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
+    ensureBucket(dir, identity).files[fileInBucket(dir, path)] = content
   }
 
   return codeBundle({ baseDir, entries, sources, modules, resolutions, keyedResolutions, format, formats, conditionKey, host, consumer, consumerFiles })
@@ -318,9 +311,7 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedReso
     if (fileFormat !== undefined) formatsMap.set(path, fileFormat)
   }
 
-  const importsForKey = new Map()
-  for (const [parent, specMap] of resolutions) importsForKey.set(parent, specMap)
-  const imports = new Map([[conditionKey, importsForKey], ...keyedResolutions])
+  const imports = new Map([[conditionKey, new Map(resolutions)], ...keyedResolutions])
 
   // Executable bits, straight off disk (a synthetic source with no file there is simply not
   // executable). Shell bundles lean on this most: `stasis extract` puts the +x back on the scripts.
@@ -340,16 +331,6 @@ function codeBundle({ baseDir, entries, sources, modules, resolutions, keyedReso
 // Files never carried, whatever reads them: `.env` files, and Hardhat's config, which is code
 // (both however they're cased).
 const neverCarried = (rel) => isDotEnvFile(rel) || posix.basename(rel).toLowerCase().startsWith('hardhat.config.')
-
-// findPackageMetadata (with `options`) once per directory, the only thing its answer depends on.
-function packageLookup(baseDir, options) {
-  const byDir = new Map()
-  return (path) => {
-    const dir = posix.dirname(path)
-    if (!byDir.has(dir)) byDir.set(dir, findPackageMetadata(baseDir, path, options))
-    return byDir.get(dir)
-  }
-}
 
 // The build-description files of a Solidity bundle (--manifests), as Map<path, text>, sorted:
 // `configFiles` (what discoverSolidityConfig read, whatever they're called), each of which must be
@@ -884,7 +865,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // Only what lies within the root is carried (see withinRoot). One the entries link eagerly is
   // refused, named here rather than as the State's bare assertion: a stasis file in a directory below
   // the project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
-  const { scanner, outside, leftOut } = withinRoot(scanned, (url) => !relativeEscapes(relative(state.root, fileURLToPath(url))))
+  const { scanner, outside, leftOut } = withinRoot(scanned, (url) => isPathWithin(state.root, fileURLToPath(url)))
   const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
   const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
   const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy}`
@@ -1036,13 +1017,13 @@ export function fieldResolverFor(platform, { mainFields, metro = false, assetExt
 
 const CONFIG_FILE = 'stasis.config.json'
 
-// The stasis.config.json in `cwd`, parsed; null where there is none.
-function readConfigFile(name, cwd, host = diskHost) {
+// The stasis.config.json in `cwd`, parsed; null where there is none. `name`, if any, prefixes errors.
+export function readConfigFile(name, cwd, host = diskHost) {
   const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
   try {
     return text === null ? null : JSON.parse(text)
   } catch (cause) {
-    throw new Error(`${name}: ${CONFIG_FILE} is not valid JSON`, { cause })
+    throw new Error(`${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`, { cause })
   }
 }
 
@@ -1954,23 +1935,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
-  const lockModules = new Map()
-  for (const [dir, m] of bundle.modules) {
-    const files = Object.create(null)
-    for (const rel of Object.keys(m.files)) files[rel] = integrities.get(moduleFileKey(dir, rel))
-    lockModules.set(dir, moduleInfo({ ...m, files }))
-  }
-  const lockfile = new Lockfile({
-    config: bundle.config,
-    entries: bundle.entries,
-    modules: lockModules,
-    imports: bundle.imports,
-    formats: bundle.formats,
-    // Same file set as the bundle, so the same executable list attests it.
-    executable: bundle.executable,
-  })
-
-  return { bundle, lockfile }
+  return { bundle, lockfile: Lockfile.fromBundle(bundle, (file) => integrities.get(file)) }
 }
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
@@ -2167,6 +2132,16 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   return built
 }
 
+// Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
+// rooted at `roots[i]`: their strict union, rooted where every one of them is.
+function unionOfBuilds(name, builds, builts, roots) {
+  const other = roots.findIndex((root) => root !== roots[0])
+  if (other !== -1) {
+    throw new Error(`${name}: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${roots[0]} and ${roots[other]})`)
+  }
+  return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+}
+
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
 // project's, or an empty tree's with `fetched: false`): no metro-resolver, which reads the disk;
 // `generate` only for JS.
@@ -2267,13 +2242,9 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
       if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
       builts.push(built)
     }
-    // Merged as bundleCommand merges its builds: rooted where every one of them is.
+    // Merged as bundleCommand merges its builds.
     const { root } = builts[0]
-    const other = builts.findIndex((built) => built.root !== root)
-    if (other !== -1) {
-      throw new Error(`buildVfsBundle: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${builts[other].root})`)
-    }
-    const union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+    const union = unionOfBuilds('buildVfsBundle', builds, builts, builts.map((built) => built.root))
     // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
     // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
     // took it. Nothing is written into the Vfs, so none of its files is an output kept out.
@@ -2317,8 +2288,7 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     if (given) throw new TypeError(`bundleCommand: ${given[0]} can't be combined with builds (each build sets its own)`)
   }
   // Each build's options, the defaults above where it leaves one out.
-  const defaults = { manifests, babel, jsx, flow, typescript, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
-  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...defaults, ...build, cwd, env }))
+  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...build, cwd, env }))
   const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
 
   // --add has nothing to merge into on stdout (write-only).
@@ -2341,18 +2311,14 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
   const roots = builts.map((built) => built.root ?? resolve(cwd))
   const root = roots[0]
-  const other = roots.findIndex((r) => r !== root)
-  if (other !== -1) {
-    throw new Error(`bundleCommand: ${plans[0].entries[0]} and ${plans[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${root} and ${roots[other]})`)
-  }
+  // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
+  for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
+  let union = unionOfBuilds('bundleCommand', plans, builts, roots)
   // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
   // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
   // files above it.
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
 
-  // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
-  for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
-  let union = builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
   if (bundleExtra) {
     // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
     // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
@@ -2372,7 +2338,7 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   if (add && existsSync(outAbs)) {
     let existing
     try {
-      existing = Bundle.parse(brotliDecompressSync(readFileSync(outAbs)).toString('utf8'))
+      existing = parseBundleBytes(readFileSync(outAbs))
     } catch (cause) {
       throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
     }

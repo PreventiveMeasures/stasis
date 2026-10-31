@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:pa
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-util'
+import { untouchedMemo } from './vfs-bundle/lazy.js'
 
 // Node's CommonJS resolution (`createRequire(parent).resolve(spec, { conditions })`) over a
 // `host` (@exodus/stasis-core/host), mirroring lib/internal/modules/cjs/loader.js and
@@ -113,14 +114,9 @@ export function createNodeResolver(host) {
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)
     return { exists: true, path: pjsonPath, name: string(data.name), main: string(data.main), exports: map(data.exports), imports: map(data.imports) }
   }
-  const pkgCache = new Map()
+  const packages = untouchedMemo(touches)
   const readPackage = (pjsonPath) => {
-    let pkg = pkgCache.get(pjsonPath)
-    if (pkg === undefined) {
-      const before = touches()
-      pkg = parsePackage(pjsonPath)
-      if (touches() === before) pkgCache.set(pjsonPath, pkg)
-    }
+    const pkg = packages(pjsonPath, () => parsePackage(pjsonPath))
     if (pkg instanceof Error) throw pkg
     return pkg
   }
@@ -408,7 +404,7 @@ export function createNodeResolver(host) {
   }
 
   // Node's Module._pathCache: the tree is immutable for the build.
-  const memo = new Map()
+  const memo = untouchedMemo(touches)
 
   return {
     // `conditions`: `require.resolve`'s own by default. A builtin returns its id, as it does.
@@ -418,13 +414,7 @@ export function createNodeResolver(host) {
       parentFile = resolve(parentFile)
       if (!(conditions instanceof Set)) conditions = new Set(conditions)
       const key = `${dirname(parentFile)}\0${request}\0${[...conditions].join(',')}${builtins ? '' : '\0nobuiltins'}`
-      let hit = memo.get(key)
-      if (hit === undefined) {
-        const before = touches()
-        hit = resolveFilename(parentFile, request, conditions, builtins)
-        if (touches() === before) memo.set(key, hit)
-      }
-      return hit
+      return memo(key, () => resolveFilename(parentFile, request, conditions, builtins))
     },
   }
 }

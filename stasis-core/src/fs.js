@@ -8,7 +8,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { realReadFileSync } from './state-util.js'
+import { realContained, realReadFileSync } from './state-util.js'
 import { isDotEnvFile, isPathWithin, isStasisArtifactName } from './util.js'
 
 const require = createRequire(import.meta.url)
@@ -38,24 +38,6 @@ function toAbsPath(path) {
   if (Buffer.isBuffer(path)) return resolve(path.toString())
   if (path instanceof URL) return path.protocol === 'file:' ? fileURLToPath(path) : null
   return null
-}
-
-let realRootCache
-function realRootOf(root) {
-  if (realRootCache?.root !== root) {
-    let real
-    try { real = realRealpathSync(root) } catch { real = root }
-    realRootCache = { root, real }
-  }
-  return realRootCache.real
-}
-
-// Capture-side containment: the path's REAL location must stay inside root's real path, else an
-// in-tree symlink pointing OUT would pull external content into the signed bundle.
-function realContained(root, abs) {
-  let real
-  try { real = realRealpathSync(abs) } catch { return false }
-  return isPathWithin(realRootOf(root), real)
 }
 
 // At the project root, drop stasis's own artifacts from the RECORDED listing so it doesn't depend on

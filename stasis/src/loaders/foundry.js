@@ -16,7 +16,7 @@
 import { posix, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
-import { toPosix } from '@exodus/stasis-core/util'
+import { nestedMap, toPosix } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 import { projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull } from './solidity-ownership.js'
 import { isTomlTable, readToml } from './toml.js'
@@ -409,8 +409,7 @@ export function findRemappingsWithContext(dir, host = diskHost) {
     const key = `${name}/`
     const owner = dependencyOwner(dir, c.windowStart)
     if (owner !== null) {
-      if (!contextual.has(owner)) contextual.set(owner, new Map())
-      insertPrioritized(contextual.get(owner), key, c.sourceDir)
+      insertPrioritized(nestedMap(contextual, owner), key, c.sourceDir)
     }
     insertPrioritized(global, key, c.sourceDir)
   }
@@ -445,7 +444,7 @@ function parseFoundryToml(text, file = null) {
   const topLevel = new Map()
   const read = (map, name, table) => {
     const profile = name.toLowerCase()
-    const dict = map.get(profile) ?? map.set(profile, new Map()).get(profile)
+    const dict = nestedMap(map, profile)
     for (const [key, value] of Object.entries(table)) {
       const k = snakeCase(key)
       if (k !== 'extends' || map === current) dict.set(k, value) // forge reads `extends` from `[profile.<name>]` only
@@ -467,8 +466,7 @@ function parseFoundryToml(text, file = null) {
 function mergeExtended(base, local, strategy) {
   const out = new Map([...base].map(([p, dict]) => [p, new Map(dict)]))
   for (const [p, dict] of local) {
-    if (!out.has(p)) out.set(p, new Map())
-    const merged = out.get(p)
+    const merged = nestedMap(out, p)
     for (const [k, v] of dict) {
       const prev = merged.get(k)
       merged.set(k, strategy === 'extend-arrays' && Array.isArray(prev) && Array.isArray(v) ? [...prev, ...v] : v)

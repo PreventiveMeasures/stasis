@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { NO_ENTRY, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
+import { NO_ENTRY, invalidPackageConfig, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
@@ -12,7 +12,7 @@ import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.j
 import { VfsError } from '@preventive/vfs'
 import { createNodeResolver } from '../resolve-node.js'
 import { globSync, matchesGlob } from './glob.js'
-import { lazyView } from './lazy.js'
+import { lazyView, untouchedMemo } from './lazy.js'
 import { settleSoldeer } from './soldeer.js'
 import { YARNCLEAN, yarnclean } from './yarnclean.js'
 import { isDir, isFile } from '../resolve-typescript.js'
@@ -548,8 +548,6 @@ const TREE = 'tree'
 const NONE = 'none'
 const OUTSIDE = 'outside'
 
-const invalidPackageConfig = (path, cause) => Object.assign(new Error(`Invalid package config ${path}.`, { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
-
 // A `host` (@exodus/stasis-core/host) over `vfs`. Alone, every path is the Vfs's. With `root`, a
 // real path, and `outside`, a host of the rest, the Vfs's `/` stands for `root`, holding the tree
 // the package manager lays out there: each of the paths it `installs` (from `root`) is served from
@@ -590,18 +588,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   // `p` from `/`, as spelled: realpath resolves its `..` after the link before it.
   const abs = (p) => (p.startsWith('/') ? p : `/${p}`)
   const normal = (p) => resolve('/', p)
-  // A cache of what `read()` gives for a key, as for a tree that holds still (none without `cache`),
-  // kept only where reading it touched nothing the tree doesn't hold yet: that is read again.
-  const memo = () => {
-    const kept = new Map()
-    return (key, read) => {
-      if (kept.has(key)) return kept.get(key)
-      const before = touches()
-      const value = read()
-      if (cache && touches() === before) kept.set(key, value)
-      return value
-    }
-  }
+  const memo = () => untouchedMemo(touches, { cache })
 
   // `p` is a real path but for its last name; null when it exists and isn't a link.
   const readlink = (p) => {

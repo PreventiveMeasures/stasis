@@ -3,23 +3,22 @@ import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
 import { join, resolve, relative, basename, dirname, extname, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Config } from './config.js'
 import { Bundle, mergeRepo } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
-import { canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
-import { brotliOptions } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
-import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
+import { canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
+import { compressBundleText, parseBundleBytes } from './brotli.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, importTargetsEqual, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
 // Destructure off the namespace: captures the real fns at eval time, so writes survive --mock's
 // syncBuiltinESMExports() remock of node:fs.
-const { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } = fs
+const { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
 const FILE_LOCK = 'stasis.lock.json'
@@ -29,10 +28,6 @@ const FILE_CODE = 'stasis.code.br'
 const VERSION = corePackage.version
 
 const CAN_OBSERVE_EXECUTE_BITS = canObserveExecuteBits()
-
-const invalidPackageConfig = (pkgAbsolute, cause) => Object.assign(
-  cause === undefined ? new Error(`Invalid package config ${pkgAbsolute}.`) : new Error(`Invalid package config ${pkgAbsolute}.`, { cause }),
-  { code: 'ERR_INVALID_PACKAGE_CONFIG' })
 
 // A package.json's fields; one that is no JSON object is refused as Node refuses it.
 function readPackageJSON(host, pkgAbsolute) {
@@ -44,7 +39,7 @@ function readPackageJSON(host, pkgAbsolute) {
   } catch (cause) {
     throw invalidPackageConfig(pkgAbsolute, cause)
   }
-  if (json === null || typeof json !== 'object' || Array.isArray(json)) throw invalidPackageConfig(pkgAbsolute)
+  if (!isPlainObject(json)) throw invalidPackageConfig(pkgAbsolute)
   return json
 }
 
@@ -173,11 +168,9 @@ export class State {
   // statically parses files under it to recover edges the resolve hook never observed.
   #preloadRoot = null
 
-  // Per-artifact "last serialized" caches: write() skips brotli + writeFileSync on unchanged text.
+  // Per-artifact "last serialized" caches (the bundles' by path): write() skips brotli + writeFileSync on unchanged text.
   #lastLockData = null
-  #lastUnifiedBundle = null
-  #lastCodeBundle = null
-  #lastResourcesBundle = null
+  #lastBundleText = new Map()
   // Lazy `{ value: detectRepo(this.root, this.#host) }`.
   #detectedRepoCache
   // Half ('code' | 'resources') -> `repo` of the bundle absorbed there for adding to.
@@ -229,7 +222,7 @@ export class State {
         const sourcesPath = this.config.bundleFile
         const sources = this.#readMaybe(sourcesPath)
         if (sources && !this.config.replaceBundle) {
-          const bundle = Bundle.parse(brotliDecompressSync(sources).toString('utf-8'))
+          const bundle = parseBundleBytes(sources)
           // v0 bundle has no per-file formats or import map -- serving one via a sidecar widens trust.
           assert.equal(bundle.version, Bundle.VERSION,
             `stasis sidecar requires a v1 bundle; ${sourcesPath} is v${bundle.version}. ` +
@@ -419,7 +412,7 @@ export class State {
   }
 
   #loadCodeBundle(sources, sourcesPath, lockfileLoaded) {
-    const bundle = Bundle.parse(brotliDecompressSync(sources).toString('utf-8'))
+    const bundle = parseBundleBytes(sources)
     // Bundle.parse accepts v0 for offline tooling; the runtime refuses it -- v0 has no per-file
     // formats or import map, so serving one widens the trust boundary.
     assert.equal(bundle.version, Bundle.VERSION,
@@ -547,7 +540,7 @@ export class State {
   // Load the resources half of a split-bundle layout: ONLY resource-format files, unioned into the
   // bundleFile state.
   #absorbResourcesBundle(resourcesData, { lockfileLoaded, resourcesPath }) {
-    const bundle = Bundle.parse(brotliDecompressSync(resourcesData).toString('utf-8'))
+    const bundle = parseBundleBytes(resourcesData)
     assert.equal(bundle.version, Bundle.VERSION,
       `stasis run requires a v1 resources bundle; ${resourcesPath} is v${bundle.version}. ` +
       `Re-bundle with the current stasis or \`bundle=replace\` against a v0-free starting point to upgrade.`)
@@ -610,12 +603,26 @@ export class State {
       attested = attested.get(targetPlatform)
       assert.ok(attested !== undefined, `${what} resolution ${edge} is not attested for platform '${targetPlatform}' by the ${source}`)
     }
-    // A per-platform edge is a Map<platform, target>: compare structurally (assert.equal is
-    // reference equality).
-    const matches = file instanceof Map && attested instanceof Map
-      ? file.size === attested.size && [...file].every(([platform, target]) => attested.get(platform) === target)
-      : file === attested
-    assert.ok(matches, `${what} resolution ${edge} mismatches the ${source}`)
+    // A per-platform edge is a Map<platform, target>, compared structurally.
+    assert.ok(importTargetsEqual(file, attested), `${what} resolution ${edge} mismatches the ${source}`)
+  }
+
+  // A frozen lockfile's and frozen bundle's checks of a `noun` ('File', or a 'Directory' listing) this
+  // run records, in the zone they attest (node_modules, or all in full scope): each attests it, as
+  // `module`'s `rel` and among the bundle's `bundled` (its sources or resources), and its `format`,
+  // where it has one. This closes the attested set; the bytes are checked by the caller's noupsert.
+  // `type` is usually not hash-attested, so a format flip would recategorize a hash-valid file
+  // (commonjs<->module) with no hash mismatch.
+  #assertFrozenAttests(noun, file, module, rel, bundled, format) {
+    if (this.config.frozen) assert.ok(Object.hasOwn(module.files, rel), `${noun} not attested by the frozen lockfile: ${file}`)
+    if (this.config.frozenBundle) assert.ok(bundled?.has(file), `${noun} not attested by the frozen bundle: ${file}`)
+    if (format == null) return
+    if (this.config.frozen && this.#lockFormats !== null) {
+      this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'observed', source: 'lockfile' })
+    }
+    if (this.config.frozenBundle && this.#bundleFormats !== null) {
+      this.#assertAttestedFormat(this.#bundleFormats, file, format, { what: 'observed', source: 'frozen bundle' })
+    }
   }
 
   // Verify one file's loader format. Callers only pass files that must be attested, so an
@@ -798,10 +805,7 @@ export class State {
       // A package.json in a package vendored into this one (bundle-util's vendor dirs) names that
       // package: the file is this one's, listed as that package's in `vendored`.
       const vendorDir = vendorDirOf(name, nmRel)
-      const vendor = vendorDir === undefined ? undefined : vendoredPackageOf(nmRel, vendorDir, (sub) => {
-        const candidate = resolve(this.root, nmRoot, sub, 'package.json')
-        return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
-      })
+      const vendor = vendorDir === undefined ? undefined : vendoredPackageOf(nmRel, vendorDir, this.#manifestsBelow(nmRoot))
       vendored = vendor?.vendored
       if (closestPkgAbsolute !== pkgAbsolute && !vendor?.below && !isInconsistentPackageJsonException(this.relative(closestPkgAbsolute))) {
         const message = `Inconsistent data between ${this.relative(closestPkgAbsolute)} and ${this.relative(pkgAbsolute)}`
@@ -832,7 +836,6 @@ export class State {
     }
     const pkg = this.relative(pkgAbsolute)
     assert.ok(pkg === 'package.json' || pkg.endsWith('/package.json'))
-    assert.equal(basename(pkg), 'package.json')
     const dir = dirname(pkg)
     if (nmRoot) assert.equal(dir, nmRoot)
     if (!this.modules.has(dir)) {
@@ -854,6 +857,14 @@ export class State {
     return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored, subpackage }
   }
 
+  // The package.json in the directory `sub` of the package at `nmRoot`, parsed, or null where there is none.
+  #manifestsBelow(nmRoot) {
+    return (sub) => {
+      const candidate = resolve(this.root, nmRoot, sub, 'package.json')
+      return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
+    }
+  }
+
   // The subpackage (isSubpackage) of the package `name` at `nmRoot` that its file `nmRel` is in: the nearest
   // package.json above the file with a name, past `{"type":"module"}` markers (namedManifestOf), walked by
   // the file's own path, not the real one findPackageJSON resolves through a symlinked install -> { dir, name,
@@ -861,10 +872,7 @@ export class State {
   // names a subpath.
   #subpackageOf(nmRoot, nmRel, closest, name) {
     if (closest.name !== undefined && !(typeof closest.name === 'string' && closest.name.startsWith(`${name}/`))) return undefined
-    const found = namedManifestOf(nmRel, (sub) => {
-      const candidate = resolve(this.root, nmRoot, sub, 'package.json')
-      return packageJSONStat(this.#host, candidate)?.isFile() ? readPackageJSON(this.#host, candidate) : null
-    })
+    const found = namedManifestOf(nmRel, this.#manifestsBelow(nmRoot))
     if (found === undefined || !isSubpackage(found.pkg.name, name, found.dir)) return undefined
     return { dir: found.dir, name: found.pkg.name, ...(isPackageString(found.pkg.version) ? { version: found.pkg.version } : {}) }
   }
@@ -970,25 +978,7 @@ export class State {
     assert.ok(!relativeEscapes(rel))
 
     const inAttestedZone = hasNodeModulesSegment(dir) || this.config.full
-    if (this.config.frozen && inAttestedZone) {
-      assert.ok(Object.hasOwn(module.files, rel), `File not attested by the frozen lockfile: ${file}`)
-    }
-
-    // Close the attested set (bytes are checked by the noupsert below); node_modules scope
-    // deliberately doesn't attest workspace files.
-    if (this.config.frozenBundle && inAttestedZone) {
-      const attested = asResource ? this.#bundleResources : this.#bundleSources
-      assert.ok(attested?.has(file), `File not attested by the frozen bundle: ${file}`)
-    }
-
-    // `type` is usually not hash-attested, so a flip recategorizes a hash-valid file
-    // (commonjs<->module) with no hash mismatch.
-    if (this.config.frozen && this.#lockFormats !== null && format != null && inAttestedZone) {
-      this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'observed', source: 'lockfile' })
-    }
-    if (this.config.frozenBundle && this.#bundleFormats !== null && format != null && inAttestedZone) {
-      this.#assertAttestedFormat(this.#bundleFormats, file, format, { what: 'observed', source: 'frozen bundle' })
-    }
+    if (inAttestedZone) this.#assertFrozenAttests('File', file, module, rel, asResource ? this.#bundleResources : this.#bundleSources, format)
 
     // Catch a format flip on already-attested bytes here; at write()'s #mergedFormats it would
     // surface only as a bare `Conflict`.
@@ -1131,19 +1121,7 @@ export class State {
     const rel = relative(dir, file)
     assert.ok(!relativeEscapes(rel))
 
-    const inAttestedZone = hasNodeModulesSegment(dir) || this.config.full
-    if (this.config.frozen && inAttestedZone) {
-      assert.ok(Object.hasOwn(module.files, rel), `Directory not attested by the frozen lockfile: ${file}`)
-    }
-    if (this.config.frozenBundle && inAttestedZone) {
-      assert.ok(this.#bundleResources?.has(file), `Directory not attested by the frozen bundle: ${file}`)
-    }
-    if (this.config.frozen && this.#lockFormats !== null && inAttestedZone) {
-      this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'observed', source: 'lockfile' })
-    }
-    if (this.config.frozenBundle && this.#bundleFormats !== null && inAttestedZone) {
-      this.#assertAttestedFormat(this.#bundleFormats, file, format, { what: 'observed', source: 'frozen bundle' })
-    }
+    if (hasNodeModulesSegment(dir) || this.config.full) this.#assertFrozenAttests('Directory', file, module, rel, this.#bundleResources, format)
 
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
@@ -1566,17 +1544,13 @@ export class State {
     const claims = this.#reasonClaims()
 
     const reason = {}
-    let consumers = 0
     // Sort keys and file lists: the JSON must be byte-reproducible regardless of record order, else
     // #emitBundle's compare-and-skip sees spurious diffs.
     for (const who of [...claims.keys()].toSorted()) {
       const files = [...claims.get(who)].filter((file) => inBundle.has(file))
-      if (files.length > 0) {
-        reason[who] = files.toSorted(sortPaths)
-        consumers += 1
-      }
+      if (files.length > 0) reason[who] = files.toSorted(sortPaths)
     }
-    return consumers > 1 ? reason : undefined
+    return Object.keys(reason).length > 1 ? reason : undefined
   }
 
   // The formats a bundle declares: `this.formats`, minus a 'stat:*' the run's unified attestation
@@ -1784,16 +1758,12 @@ export class State {
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
     const lockText = this.config.writeLockfile && !this.#parent ? this.lockData : null
     const sourcesPath = this.config.bundleFile || join(this.root, FILE_CODE)
-    let codeText, resourcesText, unifiedText
-    if (this.config.writeBundle) {
-      if (this.config.resourcesBundleFile) {
-        // hasContent gates each half so an empty one is dropped under bundle=replace.
-        codeText = this.#bundleText(this.sources.size > 0, () => this.codeBundle.serialize())
-        resourcesText = this.#bundleText(this.resources.size > 0, () => this.resourcesBundle.serialize())
-      } else {
-        unifiedText = this.#bundleText(this.sources.size > 0 || this.resources.size > 0, () => this.sourceData)
-      }
-    }
+    // Each bundle written, [path, text]: the code bundle, with the resources too unless they are split
+    // into resourcesBundleFile. hasContent gates each so an empty one is dropped under bundle=replace.
+    const bundles = !this.config.writeBundle ? [] : this.config.resourcesBundleFile
+      ? [[sourcesPath, this.#bundleText(this.sources.size > 0, () => this.codeBundle.serialize())],
+          [this.config.resourcesBundleFile, this.#bundleText(this.resources.size > 0, () => this.resourcesBundle.serialize())]]
+      : [[sourcesPath, this.#bundleText(this.sources.size > 0 || this.resources.size > 0, () => this.sourceData)]]
 
     if (lockText !== null && lockText !== this.#lastLockData) {
       const lockPath = this.config.lockFile || join(this.root, FILE_LOCK)
@@ -1801,14 +1771,7 @@ export class State {
       writeFileSync(lockPath, lockText)
       this.#lastLockData = lockText
     }
-    if (this.config.writeBundle) {
-      if (this.config.resourcesBundleFile) {
-        this.#lastCodeBundle = this.#emitBundle(sourcesPath, codeText, this.#lastCodeBundle)
-        this.#lastResourcesBundle = this.#emitBundle(this.config.resourcesBundleFile, resourcesText, this.#lastResourcesBundle)
-      } else {
-        this.#lastUnifiedBundle = this.#emitBundle(sourcesPath, unifiedText, this.#lastUnifiedBundle)
-      }
-    }
+    for (const [path, text] of bundles) this.#emitBundle(path, text)
   }
 
   // Snapshot of what THIS process observed, for a forked child to hand back to the root. Content is
@@ -1846,22 +1809,13 @@ export class State {
     // malformed/foreign shard -- refuse.
     assert.equal(shard.scope, this.config.scope, `shard scope "${shard.scope}" != root scope "${this.config.scope}"`)
     // An in-root shard KEY may resolve (through a symlink) OUTSIDE the root on THIS disk, so every
-    // replay re-checks real-path containment -- the same boundary fs.js enforces on live --fs reads.
-    let realRoot
-    const realContained = (absolute) => {
-      if (realRoot === undefined) {
-        try { realRoot = realpathSync(this.root) } catch { realRoot = this.root }
-      }
-      let real
-      try { real = realpathSync(absolute) } catch { return false }
-      return isPathWithin(realRoot, real)
-    }
+    // replay re-checks real-path containment (realContained), the boundary fs.js enforces on live --fs reads.
     // Files first, then edges. Merged files are NEVER marked entries -- a child's "entry" is its
     // fork-target main, not a root entry.
     for (const file of shard.files) {
       const absolute = resolve(this.root, file)
       // Skip a key whose on-disk path escapes the root through a symlink.
-      if (!realContained(absolute)) continue
+      if (!realContained(this.root, absolute)) continue
       // ABOVE the already-attested fast path below: a child that re-read a file and found no bit
       // refutes it by OMISSION, so every file the shard RECORDS needs an observation. Re-derived
       // from THIS process's disk, so the shard cannot inject a forged bit.
@@ -1906,7 +1860,7 @@ export class State {
         const kind = stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : null
         // statSync follows links: a symlink pointing OUT must not attest an external kind under an
         // in-root key.
-        if (kind === null || !realContained(absolute)) continue
+        if (kind === null || !realContained(this.root, absolute)) continue
         this.addFsStat(pathToFileURL(absolute).toString(), kind)
       } catch {
         // Gone/dangling, or a kind conflict with the root's capture: skip.
@@ -1934,21 +1888,21 @@ export class State {
     }
   }
 
-  // Emit one bundle artifact, returning its new "last serialized" cache. Empty under bundle=replace
-  // DELETES the file (a replace run is authoritative); unchanged text skips brotli + writeFileSync.
   // What a bundle write leaves at its path: the serialized bundle, or null to drop an empty one under bundle=replace.
   #bundleText(hasContent, serialize) {
     return !hasContent && this.config.replaceBundle ? null : serialize()
   }
 
-  #emitBundle(path, text, lastText) {
+  // Emit one bundle artifact. Null (empty under bundle=replace) DELETES the file (a replace run is
+  // authoritative); text unchanged since this State last wrote it skips brotli + writeFileSync.
+  #emitBundle(path, text) {
     if (text === null) {
       rmSync(path, { force: true })
-    } else if (text !== lastText) {
+    } else if (text !== this.#lastBundleText.get(path)) {
       mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, brotliCompressSync(text, brotliOptions(this.config.brotliQuality)))
+      writeFileSync(path, compressBundleText(text, this.config.brotliQuality))
     }
-    return text
+    this.#lastBundleText.set(path, text)
   }
 
   get parent() {
