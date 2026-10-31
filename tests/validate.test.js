@@ -11,7 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, fetchFailure, fetchPackage, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -119,9 +119,9 @@ test('validateBundle: own code held to the repository, each dependency to its pa
     { ecosystem: 'composer', name: 'org/php', version: '1.0.0', files: 1, status: 'unverified', reason: 'unsupported' },
     { ecosystem: 'npm', name: 'gone', version: '1.0.0', files: 1, status: 'unverified', reason: 'not-published' },
     { ecosystem: 'npm', name: 'left', version: '1.0.0', files: 2, status: 'invalid' },
-    { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', applied: true } },
-  ], 'ms as the patch the bundle holds named for it changes it, with no lockfile read')
-  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, packages: 4, validPackages: 1, lockFailures: 0 })
+    { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } },
+  ], 'ms as the patch the bundle holds named for it changes it, with no lockfile read, the patch as the repository has it')
+  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0 })
   t.assert.equal(report.lockfiles, null, 'held to no lockfile')
   // Own code read as bytes, as a tree's tarball has them, alike.
   const asBytes = Object.fromEntries(Object.entries(LISTED).map(([path, entry]) => [path, entry.sha === blob('main\n') ? { data: bytes('main\n') } : entry]))
@@ -135,7 +135,7 @@ test('validateBundle: a version its lockfile patches is held to that patch, of t
   const locked = (lock) => ({ of: (name, version) => (name === 'ms' && version === '2.1.3' ? lock : undefined), from: 'repository', read: async (path) => (read.push(path), MS_PATCH) })
   const packagesOf = async (lock) => (await validateBundle(plan, own(), { fetch: upstream(), locked: locked(lock) })).packages
   t.assert.deepStrictEqual(await packagesOf({ hash: sha256(MS_PATCH), path: 'patches/elsewhere.patch' }), [{ ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid',
-    patch: { hash: sha256(MS_PATCH), path: 'patches/ms@2.1.3.patch', from: 'bundle', applied: true } }], 'the bundle\'s file of its hash')
+    patch: { hash: sha256(MS_PATCH), path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } }], 'the bundle\'s file of its hash')
   t.assert.deepStrictEqual(read, [])
   // Read of the repository where the bundle holds no file of its hash, and held to that hash.
   const apart = { ...plan, patches: new Map() }
@@ -157,10 +157,10 @@ test('validateBundle: a version its lockfile patches is held to that patch, of t
 test('validateBundle: each installed copy of a version held to its files patched or as published apart, the version fetched once', async (t) => {
   const fetched = []
   const plan = validationPlan(parsed({ 'node_modules/tool/node_modules/ms': { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } } }))
-  plan.own = []
+  plan.own = plan.own.filter((file) => plan.patches.has(file.path))
   plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
   const report = await validateBundle(plan, own(), { fetch: upstream(PACKAGES, fetched) })
-  t.assert.deepStrictEqual([report.status, report.problems, report.packages[0].patch], ['valid', [], { path: 'patches/ms@2.1.3.patch', from: 'bundle', applied: true }])
+  t.assert.deepStrictEqual([report.status, report.problems, report.packages[0].patch], ['valid', [], { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true }])
   t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
 })
 
@@ -185,7 +185,7 @@ test('validateBundle: an npm version its lockfile locks from git alone is left u
 
 test('validateBundle: each version held to its lockfile: fetched with the integrity it locks, failing where upstream refuses the tarball or it locks none; one from elsewhere, or with no sha512, unverified', async (t) => {
   const plan = validationPlan(parsed({ 'node_modules/left': undefined }))
-  plan.own = []
+  plan.own = plan.own.filter((file) => plan.patches.has(file.path))
   const told = async (locks, fetch = upstream()) => {
     const locked = { lockfiles: ['pnpm-lock.yaml'], lock: (ecosystem, name, version) => locks[`${ecosystem}:${name}@${version}`], of: () => undefined }
     const report = await validateBundle(plan, own(), { fetch, locked })
@@ -208,16 +208,64 @@ test('validateBundle: each version held to its lockfile: fetched with the integr
 
 test('validateBundle: own code unchecked leaves a bundle incomplete, as does a version past the deadline, or a tree cut short', async (t) => {
   const plan = validationPlan(parsed())
-  plan.own = plan.own.filter((file) => file.path === 'src/main.js')
+  plan.own = plan.own.filter((file) => file.path === 'src/main.js' || plan.patches.has(file.path))
   plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
   t.assert.equal((await validateBundle(plan, own(), { fetch: upstream() })).status, 'valid')
+  // Unread, own code is unverified, and so are ms's files, which only the bundle's patch, unverified, makes as they should be.
   const unchecked = await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream() })
-  t.assert.deepStrictEqual([unchecked.status, unchecked.own, unchecked.counts.unverified, unchecked.problems], ['incomplete', { checked: false, reason: 'no-repository' }, 1, []])
+  t.assert.deepStrictEqual([unchecked.status, unchecked.own, unchecked.counts.unverified, unchecked.counts.skipped, unchecked.problems, unchecked.packages.map((pkg) => [pkg.status, pkg.reason, pkg.patch.verified])],
+    ['incomplete', { checked: false, reason: 'no-repository' }, 4, 0, [], [['unverified', 'patch-unverified', false]]])
+  // Skipped as asked, own code is no unverified file: the patch checked all the same, where the repository is read.
+  const skipped = await validateBundle(plan, { reason: 'skipped', entries: own().entries, repository: 'org/repo', commit, directory: 'web' }, { fetch: upstream() })
+  t.assert.deepStrictEqual([skipped.status, skipped.own, skipped.counts.skipped, skipped.counts.unverified, skipped.packages[0].patch.verified], ['valid', { checked: false, reason: 'skipped', patches: 1 }, 1, 0, true])
   const late = await validateBundle(plan, own(), { fetch: upstream(), deadline: 0, now: () => 1 })
   t.assert.deepStrictEqual([late.status, late.packages[0].reason], ['incomplete', 'timeout'])
   plan.own = validationPlan(parsed()).own.filter((file) => file.path === 'src/extra.js')
   const cut = await validateBundle(plan, own(LISTED, { cut: true }), { fetch: upstream() })
   t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.problems], ['incomplete', true, [{ path: 'src/extra.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
+})
+
+test('validateBundle: a package installed from a directory of the repository held to that directory\'s files there, where it is read; else unverified, never fetched', async (t) => {
+  const fetched = []
+  const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([['node_modules/.pnpm/lib@file+lib/node_modules/lib', { name: 'lib', version: '2.0.0', files: { 'index.js': 'lib\n', 'package.json': '{}\n' } }]]) }).serialize()))
+  const told = async (tree) => {
+    const locked = { lockfiles: ['pnpm-lock.yaml'], lock: () => ({ from: 'local', directories: ['lib'] }), of: () => undefined, ...(tree && { tree: async (dir) => (dir === 'lib' ? new Map(Object.entries(tree).map(([path, text]) => [path, bytes(text)])) : new Map()) }) }
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: upstream(PACKAGES, fetched), locked })
+    return [report.status, report.problems, report.packages]
+  }
+  t.assert.deepStrictEqual(await told({ 'index.js': 'lib\n', 'package.json': '{}\n', 'other.js': 'not bundled\n' }), ['valid', [], []])
+  t.assert.deepStrictEqual(await told({ 'index.js': 'edited\n' }), ['invalid', [
+    { path: 'node_modules/.pnpm/lib@file+lib/node_modules/lib/index.js', kind: 'differs', of: 'npm:lib@2.0.0' },
+    { path: 'node_modules/.pnpm/lib@file+lib/node_modules/lib/package.json', kind: 'unexpected', of: 'npm:lib@2.0.0' },
+  ], [{ ecosystem: 'npm', name: 'lib', version: '2.0.0', files: 2, status: 'invalid', directory: 'lib' }]])
+  t.assert.deepStrictEqual((await told(null)).slice(0, 1).concat([(await told(null))[2][0].reason]), ['incomplete', 'local'], 'the repository unread')
+  t.assert.deepStrictEqual(fetched, [])
+})
+
+test('validateBundle: a patch the bundle holds is taken as the repository has it alone: refused where it differs, its files as patched unverified where that is not told', async (t) => {
+  const plan = validationPlan(parsed({ 'node_modules/left': undefined }))
+  plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
+  const report = await validateBundle(plan, own({ ...LISTED, 'web/patches/ms@2.1.3.patch': { sha: blob('another patch\n') } }), { fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.packages], ['invalid', [{ ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid',
+    patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', error: 'patch-not-in-repository' } }]], 'its files held to those published')
+  t.assert.deepStrictEqual(report.problems.filter((problem) => problem.path.includes('ms')), [
+    { path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' },
+    { path: 'patches/ms@2.1.3.patch', kind: 'differs', of: 'own' },
+  ])
+  const lines = []
+  printValidationReport(report, { out: (line) => lines.push(line), err: () => {} })
+  t.assert.ok(lines.includes('invalid\tnpm:ms@2.1.3\tits patch patches/ms@2.1.3.patch is the bundle\'s, not the repository\'s'))
+  const verified = []
+  printValidationReport(await validateBundle(plan, own(), { fetch: upstream() }), { out: (line) => verified.push(line), err: () => {} })
+  t.assert.ok(verified.includes('valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch (the bundle\'s, as the repository has it)'))
+  const unread = []
+  printValidationReport(await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream() }), { out: (line) => unread.push(line), err: () => {} })
+  t.assert.ok(unread.includes('unverified\tnpm:ms@2.1.3\tas patched by the bundle\'s patch, which isn\'t verified against the repository'), unread.join('\n'))
+})
+
+test('exitCodeOf: 0 valid, 1 invalid, 2 incomplete, but 0 where unverified files are allowed', (t) => {
+  t.assert.deepStrictEqual(['valid', 'invalid', 'incomplete'].map((status) => exitCodeOf({ status })), [0, 1, 2])
+  t.assert.deepStrictEqual(['valid', 'invalid', 'incomplete'].map((status) => exitCodeOf({ status }, { allowUnverified: true })), [0, 1, 0])
 })
 
 test('parsePatch and patchedFiles apply a patch as patch-package does: a hunk found near where it says, created, deleted and renamed files', (t) => {
@@ -299,12 +347,23 @@ test('tarballFiles and fetchPackage: a package\'s files as upstream fetches its 
 
 // The repository as fakeClient serves it, with what `stasis validate` reads beside its trees: a file at
 // the commit, as upstream's getRepoFile reads one.
-const repoClient = (files) => Object.assign(fakeClient(files), {
-  async getRepoFile({ path }) {
-    if (typeof files[path] !== 'string') throw new Error(`getRepoFile: no file at ${path}`)
-    return files[path]
-  },
-})
+// The fake GitHub client, its files read alone too, its listings with git's blob id of each file.
+const repoClient = (files) => {
+  const client = fakeClient(files)
+  const list = client.listRepoDir.bind(client)
+  return Object.assign(client, {
+    async getRepoFile({ path }) {
+      if (typeof files[path] !== 'string') throw new Error(`getRepoFile: no file at ${path}`)
+      return files[path]
+    },
+    async listRepoDir(options) {
+      const at = (path) => (options.directory ? `${options.directory}/${path}` : path)
+      return (await list(options)).map((entry) => (entry.type === 'blob' ? { ...entry, mode: '100644', sha: blob(files[at(entry.path)]) } : entry))
+    },
+    // The root's tree too.
+    getRepoTreeId: ((treeId) => (options) => (options.directory === undefined ? 'tree:' : treeId(options)))(client.getRepoTreeId.bind(client)),
+  })
+}
 const PNPM_LOCK = `lockfileVersion: '9.0'
 
 settings:
@@ -359,13 +418,13 @@ test('validate: the repository its bundle names, at its commit and directory, re
   const trees = () => client.calls.filter(([method]) => method === 'getRepoTreeTarball').length
   const before = trees()
   const depsAlone = await validate(file, { client, fetch: upstream(), own: false })
-  t.assert.deepStrictEqual([depsAlone.status, depsAlone.own, depsAlone.packages[0].patch.from, trees()], ['incomplete', { checked: false, reason: 'skipped' }, 'repository', before])
+  t.assert.deepStrictEqual([depsAlone.status, depsAlone.own, depsAlone.packages[0].patch.from, trees()], ['valid', { checked: false, reason: 'skipped' }, 'repository', before])
   // A lockfile given, its patch read beside it; held to none, the patch it locks unread.
   writeFileSync(join(tmp, 'pnpm-lock.yaml'), PNPM_LOCK)
   mkdirSync(join(tmp, 'patches'))
   writeFileSync(join(tmp, 'patches', 'ms@2.1.3.patch'), MS_PATCH)
   const given = await validate(file, { fetch: upstream(), own: false, lockfile: [join(tmp, 'pnpm-lock.yaml')] })
-  t.assert.deepStrictEqual([given.status, given.lockfiles, given.packages[0].patch], ['incomplete', [join(tmp, 'pnpm-lock.yaml')],
+  t.assert.deepStrictEqual([given.status, given.lockfiles, given.packages[0].patch], ['valid', [join(tmp, 'pnpm-lock.yaml')],
     { hash: sha256(MS_PATCH), path: join(tmp, 'patches', 'ms@2.1.3.patch'), from: 'local', applied: true }])
   const unlocked = await validate(file, { fetch: upstream(), own: false, lockfile: false })
   t.assert.deepStrictEqual([unlocked.status, unlocked.lockfiles, unlocked.problems], ['invalid', null,
@@ -527,15 +586,77 @@ test('lockedBy: npm\'s, yarn\'s and Cargo\'s lockfiles, a registry\'s or a mirro
   t.assert.throws(() => lockedBy([{ path: 'yarn.lock', text: 'not a lockfile' }]), { code: 'lockfile-unreadable' })
 })
 
-test('stasis validate: own code skipped with --only-deps; a bundle with no repository refused unless asked for its dependencies alone, held to a lockfile given or, with --no-lockfile, none; a lockfile refused', withTmp((t, tmp) => {
+test('lockedBy: a package installed from a directory of the project, by pnpm, npm or yarn, locked by its name to that directory, from the repository\'s root; a tarball\'s left elsewhere', (t) => {
+  const pnpm = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      lib:\n        specifier: file:../lib\n        version: file:lib\n\npackages:\n\n  lib@file:lib:\n    resolution: {directory: lib, type: directory}\n\nsnapshots:\n\n  lib@file:lib: {}\n`
+  t.assert.deepStrictEqual(lockedBy([{ path: 'repo/pnpm-lock.yaml', text: pnpm }]).lock('npm', 'lib', '2.0.0'), { from: 'local', directories: ['repo/lib'] })
+  const npm = `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+    '': { name: 'app', version: '1.0.0', dependencies: { lib: 'file:../lib' } },
+    '../lib': { version: '2.0.0' },
+    'node_modules/lib': { resolved: '../lib', link: true },
+  } }, null, 2)}\n`
+  t.assert.deepStrictEqual(lockedBy([{ path: 'web/package-lock.json', text: npm }]).lock('npm', 'lib', '2.0.0'), { from: 'local', directories: ['lib'] })
+  const yarn = `# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\n"lib@file:./lib":\n  version "2.0.0"\n\n"linked@link:./linked":\n  version "0.0.0"\n`
+  const ofYarn = lockedBy([{ path: 'yarn.lock', text: yarn }])
+  t.assert.deepStrictEqual([ofYarn.lock('npm', 'lib', '2.0.0'), ofYarn.lock('npm', 'linked', '0.0.0'), ofYarn.lock('npm', 'other', '1.0.0')], [{ from: 'local', directories: ['lib'] }, { from: 'local', directories: ['linked'] }, null])
+  const tarball = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      tgz:\n        specifier: file:vendor/tgz-1.0.0.tgz\n        version: file:vendor/tgz-1.0.0.tgz\n\npackages:\n\n  tgz@file:vendor/tgz-1.0.0.tgz:\n    resolution: {integrity: ${SRI}, tarball: file:vendor/tgz-1.0.0.tgz}\n    version: 1.0.0\n\nsnapshots:\n\n  tgz@file:vendor/tgz-1.0.0.tgz: {}\n`
+  t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: tarball }]).lock('npm', 'tgz', '1.0.0'), { from: 'elsewhere' })
+})
+
+test('validate: a dependency from a directory of the repository held to its files there; a patch the bundle holds checked against the repository with its own code skipped', withTmp(async (t, tmp) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      lib:\n        specifier: file:../lib\n        version: file:lib\n\npackages:\n\n  lib@file:lib:\n    resolution: {directory: lib, type: directory}\n\nsnapshots:\n\n  lib@file:lib: {}\n`
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock, 'lib/index.js': 'lib\n', 'lib/package.json': '{"name":"lib","version":"2.0.0"}\n' }
+  const file = join(tmp, 'web.stasis.code.br')
+  const write = (index) => writeBundle(file, { repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/.pnpm/lib@file+lib/node_modules/lib', { name: 'lib', version: '2.0.0', files: { 'index.js': index } }],
+  ]) })
+  write('lib\n')
+  const client = repoClient(files)
+  t.assert.deepStrictEqual([(await validate(file, { client })).status, (await validate(file, { client, own: false })).status], ['valid', 'valid'])
+  write('edited\n')
+  const edited = await validate(file, { client, own: false })
+  t.assert.deepStrictEqual([edited.status, edited.packages], ['invalid', [{ ecosystem: 'npm', name: 'lib', version: '2.0.0', files: 1, status: 'invalid', directory: 'lib' }]])
+
+  // Its own code skipped, the patch the bundle holds checked all the same, by the blob id the repository lists.
+  const patched = join(tmp, 'patched.stasis.code.br')
+  const bundle = { repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n', 'patches/ms@2.1.3.patch': MS_PATCH } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
+  ]) }
+  writeBundle(patched, bundle)
+  const held = await validate(patched, { client: repoClient({ ...files, 'web/patches/ms@2.1.3.patch': MS_PATCH }), own: false, lockfile: false, fetch: upstream() })
+  t.assert.deepStrictEqual([held.status, held.own, held.counts.skipped, held.packages[0].patch], ['valid', { checked: false, reason: 'skipped', patches: 1 }, 1, { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true }])
+  const other = await validate(patched, { client: repoClient({ ...files, 'web/patches/ms@2.1.3.patch': 'another patch\n' }), own: false, lockfile: false, fetch: upstream() })
+  t.assert.deepStrictEqual([other.status, other.packages[0].patch.error], ['invalid', 'patch-not-in-repository'])
+  const none = await validate(patched, { client: repoClient(files), own: false, lockfile: false, fetch: upstream() })
+  t.assert.deepStrictEqual([none.status, none.problems.find((problem) => problem.of === 'own')], ['invalid', { path: 'patches/ms@2.1.3.patch', kind: 'unexpected', of: 'own' }], 'one the repository has none of')
+}))
+
+test('validate: a dependency from the repository\'s root (`file:.`) held to the root\'s files, its directory read as the root', withTmp(async (t, tmp) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      self:\n        specifier: file:.\n        version: 'file:'\n\npackages:\n\n  'self@file:':\n    resolution: {directory: '', type: directory}\n\nsnapshots:\n\n  'self@file:': {}\n`
+  t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: lock }]).lock('npm', 'self', '1.0.0'), { from: 'local', directories: [''] })
+  const files = { 'index.js': 'self\n', 'package.json': '{"name":"self","version":"1.0.0"}\n', 'src/main.js': 'main\n', 'pnpm-lock.yaml': lock }
+  const file = join(tmp, 'root.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/repo', commit }, modules: new Map([
+    ['.', { name: 'self', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/.pnpm/self@file+/node_modules/self', { name: 'self', version: '1.0.0', files: { 'index.js': 'self\n' } }],
+  ]) })
+  const client = repoClient(files)
+  const checked = await validate(file, { client })
+  t.assert.deepStrictEqual([checked.status, checked.problems], ['valid', []], 'of the own code\'s tree')
+  t.assert.deepStrictEqual([(await validate(file, { client, own: false })).status], ['valid'], 'of the root\'s own tree')
+}))
+
+test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-unverified), 3 refused or failed; own code skipped with --only-deps, its dependencies held to a lockfile given or, with --no-lockfile, none', withTmp((t, tmp) => {
   const file = join(tmp, 'own.stasis.code.br')
   writeBundle(file, { modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }]]) })
   const run = (...args) => spawnSync(process.execPath, [cli, 'validate', ...args], { encoding: 'utf8', env: { ...process.env, XDG_CACHE_HOME: tmp } })
   const skipped = run('--only-deps', file)
   t.assert.equal(skipped.status, 0, skipped.stderr)
-  t.assert.match(skipped.stderr, /^incomplete: 0 of 1 files as they should be, 0 differ, 0 unexpected, 1 unverified; 0 of 0 packages as published\nOwn code not verified: skipped \(--only-deps\): its dependencies alone validated\n$/u)
+  t.assert.match(skipped.stderr, /^valid: 0 of 1 files as they should be, 0 differ, 0 unexpected, 0 unverified, 1 skipped; 0 of 0 packages as published\nOwn code not verified: skipped \(--only-deps\): its dependencies alone validated\n$/u,
+    'own code skipped as asked leaves it valid')
   const unnamed = run(file)
-  t.assert.deepStrictEqual([unnamed.status, unnamed.stdout], [1, ''])
+  t.assert.deepStrictEqual([unnamed.status, unnamed.stdout], [3, ''])
   t.assert.match(unnamed.stderr, /^Error: .*own\.stasis\.code\.br records no repository to read its own code of: give --github=owner\/name and --sha=commit, or --only-deps to validate its dependencies alone\nRun 'stasis --help' for usage\.\n$/u)
 
   // With a dependency, its lockfile needed too: one given, which locks none of it, fails it unfetched.
@@ -543,19 +664,35 @@ test('stasis validate: own code skipped with --only-deps; a bundle with no repos
   writeBundle(deps, { modules: new Map([['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\n' } }]]) })
   t.assert.match(run(deps).stderr, /records no repository to read its own code of: give --github=owner\/name and --sha=commit, or, to validate its dependencies alone, --only-deps with --lockfile=path or --no-lockfile\n/u)
   const unlocked = run('--only-deps', deps)
-  t.assert.deepStrictEqual([unlocked.status, unlocked.stdout], [1, ''])
+  t.assert.deepStrictEqual([unlocked.status, unlocked.stdout], [3, ''])
   t.assert.match(unlocked.stderr, /records no repository to read its lockfile of: give --github=owner\/name and --sha=commit, or --lockfile=path, or --no-lockfile to hold its dependencies to their registry alone\n/u)
   const lockfile = join(tmp, 'pnpm-lock.yaml')
   writeFileSync(lockfile, "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n")
   const locked = run('--only-deps', `--lockfile=${lockfile}`, deps)
   t.assert.deepStrictEqual([locked.status, locked.stdout], [1, 'invalid\tnpm:ms@2.1.3\tnot locked by the lockfile\n'], locked.stderr)
   t.assert.match(locked.stderr, /^invalid: 0 of 1 files as they should be, 0 differ, 0 unexpected, 1 unverified; 0 of 1 packages as published, 1 failing their lockfile\nOwn code not verified: skipped \(--only-deps\): its dependencies alone validated\nDependencies held to .*pnpm-lock\.yaml\n$/u)
+
+  // One it locks from git alone, unverified, and so incomplete: 2, but 0 where that is allowed.
+  const git = join(tmp, 'git', 'pnpm-lock.yaml')
+  mkdirSync(join(tmp, 'git'))
+  const at = 'a'.repeat(40)
+  writeFileSync(git, `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ms:\n        specifier: github:vercel/ms#${at}\n        version: https://codeload.github.com/vercel/ms/tar.gz/${at}\n\npackages:\n\n  ms@https://codeload.github.com/vercel/ms/tar.gz/${at}:\n    resolution: {tarball: https://codeload.github.com/vercel/ms/tar.gz/${at}, gitHosted: true}\n    version: 2.1.3\n\nsnapshots:\n\n  ms@https://codeload.github.com/vercel/ms/tar.gz/${at}: {}\n`)
+  const incomplete = run('--only-deps', `--lockfile=${git}`, deps)
+  t.assert.deepStrictEqual([incomplete.status, incomplete.stdout], [2, 'unverified\tnpm:ms@2.1.3\tlocked from git, not a registry\n'], incomplete.stderr)
+  t.assert.equal(run('--only-deps', `--lockfile=${git}`, '--allow-unverified', deps).status, 0)
+
   writeFileSync(join(tmp, 'deps.txt'), '')
-  t.assert.match(run('--only-deps', `--lockfile=${join(tmp, 'deps.txt')}`, deps).stderr, /^Error: .*deps\.txt: not a lockfile validate reads/u)
-  t.assert.match(run('--lockfile=x', '--no-lockfile', deps).stderr, /^Error: --lockfile and --no-lockfile: give one\n/u)
+  const unsupported = run('--only-deps', `--lockfile=${join(tmp, 'deps.txt')}`, deps)
+  t.assert.deepStrictEqual([unsupported.status, /^Error: .*deps\.txt: not a lockfile validate reads/u.test(unsupported.stderr)], [3, true])
+  const both = run('--lockfile=x', '--no-lockfile', deps)
+  t.assert.deepStrictEqual([both.status, both.stderr], [3, 'Error: --lockfile and --no-lockfile: give one\nRun \'stasis --help\' for usage.\n'])
+  t.assert.equal(run('--bogus', deps).status, 3)
 
   const lock = join(tmp, 'stasis.lock.json')
   writeFileSync(lock, JSON.stringify({ version: 0, config: { scope: 'full' }, entries: [], sources: {}, modules: {}, imports: {}, formats: {} }))
   t.assert.match(run(lock).stderr, /^Error: .*stasis\.lock\.json is a lockfile, which holds no file to check; give a bundle\n/u)
-  t.assert.equal(run().status, 1)
+  // Any other failure told as an error alone, no stack: 3.
+  const missing = run('--only-deps', '--no-lockfile', join(tmp, 'missing.stasis.code.br'))
+  t.assert.deepStrictEqual([missing.status, missing.stderr], [3, `Error: File not found: ${join(tmp, 'missing.stasis.code.br')}\n`])
+  t.assert.equal(run().status, 3)
 }))

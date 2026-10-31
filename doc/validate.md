@@ -6,7 +6,7 @@ and each dependency as its published package has it, held to the lockfile that
 installed it, those two covering every file it holds.
 
 ```sh
-stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] path/to/bundle
+stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] path/to/bundle
 ```
 
 | Flag | Meaning |
@@ -14,22 +14,29 @@ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-
 | `--github` | The repository its own code and its lockfile are read of, in place of the one the bundle's `repo` names. |
 | `--sha` | The commit, in place of the bundle's `repo.commit`. |
 | `--directory` | The directory in the repository it was built in, in place of the bundle's `repo.directory`. |
-| `--only-deps` | Check the dependencies alone: own code is left unverified, and the repository's tree is not read. |
+| `--only-deps` | Check the dependencies alone: own code is skipped, and the repository's tree is not read. The patches the bundle holds are checked all the same, where a repository and commit are known (below). |
 | `--lockfile=path` | Hold the dependencies to this lockfile, on disk, in place of the repository's. Give it twice for a bundle with both npm packages and crates. |
 | `--no-lockfile` | Hold the dependencies to no lockfile: each tarball to its registry's integrity alone. |
+| `--allow-unverified` | Exit 0 where the bundle is incomplete: files it was to check went unverified, and nothing failed. |
 
 Both checks are on unless turned off. A bundle that records no repository or
-commit, with none given, is refused (exit 1), since its own code can't be read:
+commit, with none given, is refused (exit 3), since its own code can't be read:
 `--only-deps` validates its dependencies alone. Those still need a lockfile,
 which is read of the repository: give one with `--lockfile`, or opt out with
 `--no-lockfile`. A bundle with no npm package or crate needs none.
 
-Exits 1 when a file differs or is unexpected, or a version fails its lockfile,
-and 0 otherwise, so it composes in CI: files left unverified are told, not
-failed. The files failing and the packages patched, failing or not checked go
-to stdout, a line each; the summary, why own code wasn't checked, and the
-lockfiles the dependencies were held to go to stderr. A refusal (no repository
-or commit, no lockfile, a lockfile it can't read) exits 1 with the error alone.
+It exits:
+
+| Code | |
+| - | - |
+| 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
+| 1 | `invalid`: a file differs or is unexpected, or a version fails its lockfile. |
+| 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
+| 3 | It refused the bundle (no repository or commit, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
+
+The files failing and the packages patched, failing or not checked go to
+stdout, a line each; the summary, why own code wasn't checked, and the
+lockfiles the dependencies were held to go to stderr.
 
 ```sh
 stasis validate app.stasis.code.br
@@ -109,8 +116,12 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
   the registry's release of its name and version is another package. A
   module's recorded commit is no sign of one, as a registry package's
   `gitHead` is recorded too.
-- **From elsewhere** (another tarball, a directory, a path crate, a package
-  another bundles): left unverified.
+- **From a directory of the project** (a `file:` or `link:` one, an npm link):
+  each installed copy's files held to the repository's in that directory at
+  the commit, where the lockfile is the repository's (a GitHub repository and
+  commit known). With a lockfile given on disk, left unverified.
+- **From elsewhere** (another tarball, a `file:` one included, a path crate, a
+  package another bundles): left unverified.
 - **Not at all**: fails (`not locked by the lockfile`).
 
 A version failing its lockfile is not compared, its files counted unverified.
@@ -129,9 +140,18 @@ hash (`patch-mismatch` where it isn't). With no
 `pnpm-lock.yaml` read (`--no-lockfile`, or npm's or yarn's), it is the patch
 the bundle holds named for the version, pnpm's way (`patches/name@version.patch`).
 
-Each patched version is listed, with its patch, where it was read, and whether
-the bundle holds its files patched or as published. One whose patch couldn't be
-read or applied is held to its files as published.
+A patch the bundle holds is own code, and is taken as the repository has it
+alone: checked with own code, or, with `--only-deps`, checked all the same
+(by git's blob id, as the repository's listing has it) where a repository and
+commit are known. One the repository has otherwise, or not at all, is refused
+(`is the bundle's, not the repository's`), the version held to its files as
+published. Where it can't be checked (no repository known), the files only it
+makes as they should be are left unverified.
+
+Each patched version is listed, with its patch, where it was read, whether a
+patch the bundle holds is as the repository has it, and whether the bundle
+holds its files patched or as published. One whose patch couldn't be read or
+applied is held to its files as published.
 
 ## Access
 
@@ -149,8 +169,9 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
-| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read; or a promise of either, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
+| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
+| `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts. |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
