@@ -31,7 +31,7 @@ const HELP = `Usage:
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
- stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] path/to/bundle
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
@@ -336,6 +336,7 @@ if (command === '-v' || command === '--version') {
     lockfile: { type: 'string', multiple: true },
     'no-lockfile': { type: 'boolean' },
     'allow-unverified': { type: 'boolean' },
+    'show-valid': { type: 'boolean' },
   }, {
     valueFlags: ['--github', '--sha', '--directory', '--lockfile'],
     onError: misused,
@@ -364,7 +365,7 @@ if (command === '-v' || command === '--version') {
     if (cause instanceof ValidateError) misused(`Error: ${cause.message}`)
     refuse(`Error: ${cause.message}`)
   }
-  printValidationReport(report)
+  printValidationReport(report, { showValid: values['show-valid'] })
   process.exitCode = exitCodeOf(report, { allowUnverified: values['allow-unverified'] })
 } else if (command === 'sbom') {
   const options = {

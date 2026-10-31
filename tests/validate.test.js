@@ -11,7 +11,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -256,7 +256,7 @@ test('validateBundle: a patch the bundle holds is taken as the repository has it
   printValidationReport(report, { out: (line) => lines.push(line), err: () => {} })
   t.assert.ok(lines.includes('invalid\tnpm:ms@2.1.3\tits patch patches/ms@2.1.3.patch is the bundle\'s, not the repository\'s'))
   const verified = []
-  printValidationReport(await validateBundle(plan, own(), { fetch: upstream() }), { out: (line) => verified.push(line), err: () => {} })
+  printValidationReport(await validateBundle(plan, own(), { fetch: upstream() }), { out: (line) => verified.push(line), err: () => {}, showValid: true })
   t.assert.ok(verified.includes('valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch (the bundle\'s, as the repository has it)'))
   const unread = []
   printValidationReport(await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream() }), { out: (line) => unread.push(line), err: () => {} })
@@ -442,7 +442,10 @@ test('validate: the repository its bundle names, at its commit and directory, re
   await t.assert.rejects(validate(file, { fetch: upstream(), own: false, lockfile: [join(tmp, 'Cargo.lock')] }), { code: 'lockfile-unreadable' })
   const lines = { out: [], err: [] }
   printValidationReport(report, { out: (line) => lines.out.push(line), err: (line) => lines.err.push(line) })
-  t.assert.deepStrictEqual(lines.out, ['valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch'])
+  t.assert.deepStrictEqual(lines.out, [], 'a package valid told on stdout but where asked')
+  const shown = []
+  printValidationReport(report, { out: (line) => shown.push(line), err: () => {}, showValid: true })
+  t.assert.deepStrictEqual(shown, ['valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch'])
   t.assert.match(lines.err.join('\n'), /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web\nDependencies held to pnpm-lock\.yaml$/u)
 }))
 
@@ -632,6 +635,61 @@ test('validate: a dependency from a directory of the repository held to its file
   t.assert.deepStrictEqual([none.status, none.problems.find((problem) => problem.of === 'own')], ['invalid', { path: 'patches/ms@2.1.3.patch', kind: 'unexpected', of: 'own' }], 'one the repository has none of')
 }))
 
+test('validate: a patch pnpm 11 names by its hash alone is the file of that hash in the project\'s patches directory, else the root\'s', withTmp(async (t, tmp) => {
+  const hash = sha256(MS_PATCH)
+  // As pnpm 11 writes it: the patch's hash alone, its file in its settings.
+  const lock = PNPM_LOCK.replace(`  ms@2.1.3:\n    hash: ${hash}\n    path: patches/ms@2.1.3.patch\n`, `  ms@2.1.3: ${hash}\n`)
+  t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: lock }]).of('ms', '2.1.3'), { hash, names: ['ms@2.1.3.patch'] })
+  const file = join(tmp, 'web.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
+  ]) })
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
+  const patchOf = async (more) => {
+    const report = await validate(file, { client: repoClient({ ...files, ...more }), fetch: upstream() })
+    return [report.status, report.packages[0].patch]
+  }
+  const found = (path) => ['valid', { hash, path, from: 'repository', applied: true }]
+  t.assert.deepStrictEqual(await patchOf({ 'web/patches/ms@2.1.3.patch': MS_PATCH }), found('web/patches/ms@2.1.3.patch'), 'the project\'s')
+  t.assert.deepStrictEqual(await patchOf({ 'patches/ms@2.1.3.patch': MS_PATCH }), found('patches/ms@2.1.3.patch'), 'the root\'s')
+  t.assert.deepStrictEqual(await patchOf({ 'web/patches/ms@2.1.3.patch': 'another patch\n', 'patches/ms@2.1.3.patch': MS_PATCH }), found('patches/ms@2.1.3.patch'),
+    'the project\'s not of its hash: the root\'s')
+  t.assert.deepStrictEqual(await patchOf({ 'patches/ms@2.1.3.patch': 'another patch\n' }), ['invalid', { hash, error: 'patch-not-found' }], 'none of its hash')
+}))
+
+test('validate: a repository renamed or transferred followed, as GitHub redirects its API, to the name it has now, asked once by its id', withTmp(async (t, tmp) => {
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': PNPM_LOCK, 'patches/ms@2.1.3.patch': MS_PATCH }
+  const asked = []
+  // GitHub's API for a repository moved: 301, to it by its id.
+  const moved = (client) => Object.assign(Object.create(client), Object.fromEntries(['getRepoTreeId', 'getRepoTreeTarball', 'listRepoDir', 'getRepoFile'].map((method) => [method, async (options) => {
+    asked.push([method, options.repo])
+    if (options.repo === 'org/old') throw new HttpError(301, 'GET https://api.github.com/repos/org/old 301: {"message":"Moved Permanently"}', new Headers({ location: 'https://api.github.com/repositories/7' }))
+    return client[method](options)
+  }])), {
+    async getRepo(options) {
+      asked.push(['getRepo', options.repo, options.followRedirect])
+      return { id: 7, full_name: 'org/repo' }
+    },
+  })
+  const file = join(tmp, 'old.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/old', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
+  ]) })
+  const report = await validate(file, { client: moved(repoClient(files)), fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.own], ['valid', { checked: true, repository: 'org/repo', movedFrom: 'org/old', commit, directory: 'web' }])
+  t.assert.deepStrictEqual(asked.filter(([method]) => method === 'getRepo'), [['getRepo', 'org/old', true]], 'its name asked once')
+  t.assert.ok(asked.every(([method, repo]) => method === 'getRepo' || repo === 'org/repo' || repo === 'org/old'))
+  const lines = []
+  printValidationReport(report, { out: () => {}, err: (line) => lines.push(line) })
+  t.assert.ok(lines.includes(`Own code held to org/repo (moved from org/old) at ${commit} under web`), lines.join('\n'))
+
+  // Another redirect, of no other name: refused as GitHub answered it.
+  const same = Object.assign(Object.create(repoClient(files)), { async getRepoTreeId() { throw new HttpError(301, 'Moved Permanently') }, getRepo: async () => ({ id: 7, full_name: 'org/repo' }) })
+  await t.assert.rejects(followingMoves(same, 'org/repo').getRepoTreeId({ sha: commit }), { name: 'HttpError', status: 301 })
+}))
+
 test('validate: a dependency from the repository\'s root (`file:.`) held to the root\'s files, its directory read as the root', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      self:\n        specifier: file:.\n        version: 'file:'\n\npackages:\n\n  'self@file:':\n    resolution: {directory: '', type: directory}\n\nsnapshots:\n\n  'self@file:': {}\n`
   t.assert.deepStrictEqual(lockedBy([{ path: 'pnpm-lock.yaml', text: lock }]).lock('npm', 'self', '1.0.0'), { from: 'local', directories: [''] })
@@ -653,6 +711,7 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const run = (...args) => spawnSync(process.execPath, [cli, 'validate', ...args], { encoding: 'utf8', env: { ...process.env, XDG_CACHE_HOME: tmp } })
   const skipped = run('--only-deps', file)
   t.assert.equal(skipped.status, 0, skipped.stderr)
+  t.assert.equal(run('--only-deps', '--show-valid', file).status, 0, 'valid packages shown where asked')
   t.assert.match(skipped.stderr, /^valid: 0 of 1 files as they should be, 0 differ, 0 unexpected, 0 unverified, 1 skipped; 0 of 0 packages as published\nOwn code not verified: skipped \(--only-deps\): its dependencies alone validated\n$/u,
     'own code skipped as asked leaves it valid')
   const unnamed = run(file)
