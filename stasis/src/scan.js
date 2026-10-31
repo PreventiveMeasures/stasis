@@ -195,8 +195,8 @@ function condKey(set) {
   return [...set].join(', ')
 }
 
-// How many files the scans with a `memo` (#scanKept) parsed, resolved again from a parse kept, and
-// took as kept, all told: what a lazy tree's rounds are reported by (EXODUS_STASIS_DEBUG).
+// How many files the scans parsed, and with a `memo` (#scanKept) resolved again from a parse kept,
+// and took as kept, all told: what a build is reported by (EXODUS_STASIS_DEBUG).
 export const scanCounts = { parsed: 0, resolved: 0, replayed: 0 }
 
 export class Scan {
@@ -267,8 +267,12 @@ export class Scan {
     for (let head = 0; head < queue.length; head++) {
       const url = queue[head]
       if (this.files.has(url)) continue
-      if (this.memo === null) this.#scanFile(url, queue)
-      else this.#scanKept(url, queue)
+      if (this.memo === null) {
+        scanCounts.parsed++
+        this.#scanFile(url, queue)
+      } else {
+        this.#scanKept(url, queue)
+      }
     }
     return this
   }

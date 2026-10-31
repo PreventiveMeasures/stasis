@@ -6,7 +6,7 @@ import { decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
-import { buildVfsBundle } from '../cmd/bundle.js'
+import { buildVfsBundle, debugTimed } from '../cmd/bundle.js'
 import { KINDS, checkAhead, defaultEntries } from './entries.js'
 import { checkCache, checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
@@ -184,7 +184,7 @@ export async function buildGitHubBundle({ github, sha, tag, directory, client, p
   checkCache('buildGitHubBundle', options.cache)
   // Its own, for a Soldeer git dependency too.
   client ??= createClient({ token: null })
-  const tree = await repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options)
+  const tree = await debugTimed('Fetched the repo', () => repoTree('buildGitHubBundle', { github, sha, tag, directory, client, packageManager }, options))
   let { entries } = options
   if (entries === undefined) {
     // As suggestedEntries suggests them, from the tree at hand.
