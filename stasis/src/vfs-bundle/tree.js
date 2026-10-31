@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { NO_ENTRY, invalidPackageConfig, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
+import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
@@ -355,10 +355,10 @@ export function checkVersion(name, { packageManager, packageManagerVersion }) {
 }
 
 // The package manager of `names` the project `host` reads is built with at `cwd`: `packageManager`
-// if given, else the one detected for `os`, a refusal to detect one saying `why` it is detected.
-export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os, why }, names = PACKAGE_MANAGER_NAMES) {
+// if given, else the one detected for `os`.
+export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os }, names = PACKAGE_MANAGER_NAMES) {
   checkVersion(name, { packageManager, packageManagerVersion })
-  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os, why })
+  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os })
   packageManagerOf(name, packageManager, names)
   return packageManager
 }
@@ -419,9 +419,9 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
   if (other !== null) throw new Error(`${file} does not install ${other}: it is none of the lockfile's projects`)
   if (refuseInstalled) {
-    for (const dir of [...projects].toSorted()) {
+    for (const dir of projects) {
       const at = join(found, dir, pm.installs)
-      if (holdsAnything(project, at)) throw new Error(`${at} is there already, and the tree is laid out from ${file} alone, over nothing installed: remove it first`)
+      if (lexists(at, project)) throw new Error(`${at} is there already, and the tree is laid out from ${file} alone, over nothing installed: remove it first`)
     }
   }
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
@@ -442,17 +442,6 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
     packageManager,
     packageManagerVersion: version ?? (String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined),
     ...lazy ? lazyTree(built, cleanAll) : {},
-  }
-}
-
-// Whether `host` holds anything at `p` itself, a link (a broken one too) or anything else.
-function holdsAnything(host, p) {
-  try {
-    host.readlink(p)
-    return true
-  } catch (err) {
-    if (NO_ENTRY.has(err?.code)) return false
-    throw err
   }
 }
 
@@ -716,14 +705,13 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     if (error !== null) throw error
   }
 
+  // Of `outside` too, whose realpaths and listings are cached here as well.
   const statCache = memo()
-  const statOf = (real) => {
+  const statOf = (real) => statCache(real, () => {
     if (zoneOf(real) === OUTSIDE) return disk.stat(real)
-    return statCache(real, () => {
-      const node = lstatOrNull(vfs, inVfs(real))
-      return node !== null && node.type !== 'symlink' ? statsFor(node) : null
-    })
-  }
+    const node = lstatOrNull(vfs, inVfs(real))
+    return node !== null && node.type !== 'symlink' ? statsFor(node) : null
+  })
   // The entries of the directory at `real`, `p` as the caller spelled it, sorted by name.
   const listingOf = (real, p) => {
     if (zoneOf(real) === TREE) {

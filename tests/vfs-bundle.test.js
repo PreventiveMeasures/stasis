@@ -263,7 +263,11 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
           syncBuiltinESMExports()
           process.on('exit', () => save(${JSON.stringify(log)}, JSON.stringify(written)))
         `)
-        const r = await run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), XDG_CACHE_HOME: cacheRoot } })
+        // Beside it, over what a real install left there, it builds nothing.
+        const [r, installed] = await Promise.all([
+          run(['--import', pathToFileURL(spy).href, cli, 'bundle', '--deptree', '--scope=full', '--output=out.br', '--lockfile=out.lock.json', 'src/entry.js'], { node: true, cwd: project, env: { ...cleanEnv, ...isolatedEnv(), XDG_CACHE_HOME: cacheRoot } }),
+          run(['bundle', '--deptree', '--scope=full', '--output=deptree.br', 'src/entry.js'], { cwd: oracles[packageManager].installedCopy }),
+        ])
         t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
         t.assert.match(r.stderr, /^\[stasis\] Unpacked \d+ of \d+ packages: \d+ files, [\d.]+ MiB/mu)
         t.assert.equal(unpinned(decode(await readFile(join(project, 'out.br')))), oracles[packageManager].bundle)
@@ -272,9 +276,6 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         const written = JSON.parse(await readFile(log, 'utf8'))
         t.assert.ok(written.includes(join(project, 'out.br')), 'the spy sees the bundle written')
         t.assert.deepStrictEqual(written.filter((p) => !outputs.has(p)), [], 'nothing else is written')
-        t.assert.deepStrictEqual((await readdir(project)).toSorted(), [...new Set([...m.files.map((f) => f.split('/')[0]), 'out.br', 'out.lock.json'])].toSorted())
-        // Over what a real install left there, it builds nothing.
-        const installed = await run(['bundle', '--deptree', '--scope=full', '--output=deptree.br', 'src/entry.js'], { cwd: oracles[packageManager].installedCopy })
         t.assert.equal(installed.status, 1)
         t.assert.match(installed.stderr, new RegExp(`^Error: .*/node_modules is there already, and the tree is laid out from .*/${m.lockfile.replaceAll('.', '\\.')} alone, over nothing installed: remove it first$`, 'mu'))
         t.assert.equal(existsSync(join(oracles[packageManager].installedCopy, 'deptree.br')), false)

@@ -8,7 +8,7 @@ import { isAbsolute, join, parse, posix, relative, resolve, sep } from 'node:pat
 
 import { utf8toString } from '@exodus/bytes/utf8.js'
 import { LockfileError, parseGitmodules } from '@preventive/lockfile/foundry.js'
-import { NO_ENTRY, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
+import { NO_ENTRY, lexists, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { hasNodeModulesSegment, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
@@ -69,17 +69,6 @@ function osRealpath(p, host) {
     return { real: realpathIn(host, p), missing: false }
   } catch (err) {
     return { real: null, missing: NO_ENTRY.has(err.code) && !lexists(p, host) }
-  }
-}
-
-// Whether anything is at `p` itself, a link not followed (`host.readlink` throws when nothing is).
-function lexists(p, host) {
-  try {
-    host.readlink(p)
-    return true
-  } catch (err) {
-    if (NO_ENTRY.has(err.code)) return false
-    throw err
   }
 }
 

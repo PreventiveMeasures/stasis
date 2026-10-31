@@ -154,6 +154,18 @@ function hostSubpackageDir(baseDir, pkgDir, dir, manifestName, options) {
 // The error codes that mean nothing is at a path.
 export const NO_ENTRY = new Set(['ENOENT', 'ENOTDIR'])
 
+// Whether anything is at `p` itself, a link not followed, a broken one too (`host.readlink` throws
+// when nothing is).
+export function lexists(p, host) {
+  try {
+    host.readlink(p)
+    return true
+  } catch (err) {
+    if (NO_ENTRY.has(err.code)) return false
+    throw err
+  }
+}
+
 // Why `file` can't be read, where `host.stat` gave null, or null when nothing is there (a missing
 // path, one through a file, a link to nothing). host.stat answers null for any failure, as Node's
 // module lookup does; real stat tells them apart: a link loop, a directory that may not be searched
