@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { State } from '@exodus/stasis-core/state'
+import { inScope } from '@exodus/stasis-core/state-util'
 import { transformContext } from './metro-babel-transformer.js'
 
 // Companion to the StasisMetro serializer, which withStasis() wires as Metro's `transformerPath`
@@ -63,16 +64,15 @@ function getLoadState() {
   return loaded.state
 }
 
-// True iff `absolute` is in scope for load mode. state.relative throws outside the project root
-// (out-of-scope: system files, scratch) -> defer to disk. Mirrors the webpack plugin's inScope.
-function inScope(state, absolute) {
+// True iff `absolute` is served from the bundle under load: within the project root (state.relative
+// throws outside it: system files, scratch, read from disk) and in scope. As the webpack plugin's `served`.
+function served(state, absolute) {
   try {
     state.relative(absolute)
   } catch {
     return false
   }
-  if (state.config.full) return true
-  return state.inNodeModules(pathToFileURL(absolute).toString())
+  return inScope(state, pathToFileURL(absolute).toString())
 }
 
 // The Babel transformer swapped in for the project's, by path as metro-transform-worker requires it.
@@ -112,7 +112,7 @@ export async function transform(config, projectRoot, filename, data, options) {
   if (state) {
     // `filename` is project-relative in Metro's contract; resolve against projectRoot.
     const absolute = resolvePath(projectRoot, filename)
-    if (inScope(state, absolute)) {
+    if (served(state, absolute)) {
       // getFile re-verifies the hash and throws on a file the bundle doesn't carry (fail-closed,
       // no disk fallback). Code sources come back as strings; resources as Buffers.
       const { source } = state.getFile(pathToFileURL(absolute).toString())

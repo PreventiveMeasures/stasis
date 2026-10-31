@@ -10,7 +10,7 @@ import { resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
-import { realReadFile } from '@exodus/stasis-core/state-util'
+import { inScope, realReadFile } from '@exodus/stasis-core/state-util'
 import { classifyExtension } from '@exodus/stasis-core/util'
 
 // Rollup chains resolveId/load hooks first-non-null-wins, so put this plugin FIRST in `plugins`:
@@ -205,7 +205,7 @@ export class StasisRollup {
       // Refuse a resource only when load mode would actually serve it: an out-of-scope workspace
       // resource under node_modules scope comes from disk via the user's asset plugin, exactly
       // like a capture build (the load hook defers it with the same scope gate).
-      if (Bundle.isResourceFormat(format) && (this.#state.config.full || this.#state.inNodeModules(url))) {
+      if (Bundle.isResourceFormat(format) && inScope(this.#state, url)) {
         this.#refuseResourceLoad(path)
       }
       // KNOWN GAP: sibling resolution metadata (moduleSideEffects, syntheticNamedExports, meta)
@@ -253,7 +253,7 @@ export class StasisRollup {
       // a sibling's bare resolve() probe carries isEntry too but never loads, so only genuine
       // roots reach this gate.
       if (this.#state.config.full && ctx.getModuleInfo(id)?.isEntry) this.#state.assertEntry(url)
-      if (!this.#state.config.full && !this.#state.inNodeModules(url)) return null
+      if (!inScope(this.#state, url)) return null
       const { source, format } = this.#state.getFile(url)
       if (Bundle.isResourceFormat(format)) this.#refuseResourceLoad(id)
       // Code is stored as UTF-8 text, exactly what rollup's parser expects.

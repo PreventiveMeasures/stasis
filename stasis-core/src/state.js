@@ -9,7 +9,7 @@ import { Config } from './config.js'
 import { Bundle, mergeRepo } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
-import { canonicalizePath, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
+import { canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert } from './state-util.js'
 import { brotliOptions } from './brotli.js'
 import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
@@ -1089,7 +1089,7 @@ export class State {
       const absolute = resolve(this.root, rel)
       const url = pathToFileURL(absolute).toString()
       // A node_modules scope leaves the project's own files out, as it does the run's.
-      if (!this.config.full && !this.inNodeModules(url)) continue
+      if (!inScope(this, url)) continue
       // The run's record of a file it captured stands, and `extra` is one more consumer of it.
       const file = this.#canonicalFile(url)
       if (this.#filesCapturedThisRun.has(file)) {
@@ -1688,7 +1688,7 @@ export class State {
       // (non-deterministic across installs, like the rest of NATIVE_ARTIFACT_EXTS).
       if (isNativeArtifact(file)) continue
       const url = pathToFileURL(resolve(this.root, file)).toString()
-      if (!this.config.full && !this.inNodeModules(url)) continue
+      if (!inScope(this, url)) continue
       this.addFile(url, { reason: 'run' })
     }
   }
@@ -1704,7 +1704,7 @@ export class State {
         const file = this.#canonicalFileMaybe(resolvedURL)
         if (file === undefined) continue
         const bundled = this.sources.has(file) || this.resources.has(file)
-        if (!bundled && !this.config.full && !this.inNodeModules(resolvedURL)) continue
+        if (!bundled && !inScope(this, resolvedURL)) continue
         const spec = this.#canonicalSpecifier(parentURL, specifier)
         const recorded = this.imports.values().some((byParent) => byParent.get(parent)?.get(spec) !== undefined)
         if (!recorded) this.addImport(parentURL, specifier, resolvedURL, { conditions: this.#requireConditions ?? '*' })
@@ -2024,7 +2024,7 @@ export class State {
           if (typeof file !== 'string' || missing.has(file)) continue
           if (this.hashes.has(file) || this.sources.has(file) || this.resources.has(file)) continue
           const url = pathToFileURL(resolve(this.root, file)).toString()
-          if (!this.config.full && !this.inNodeModules(url)) continue
+          if (!inScope(this, url)) continue
           missing.add(file)
         }
       }

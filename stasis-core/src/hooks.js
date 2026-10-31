@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 
 import { State } from './state.js'
 import { installFsHooks } from './fs.js'
+import { inScope } from './state-util.js'
 import { NATIVE_BUILD_FORMATS, NODE_FORMATS, RESOURCE_FORMATS, SOURCE_LANGUAGE_FORMATS, STAT_FORMATS, erasedTypeScriptFormat, nestedMap } from './util.js'
 
 // Snapshot off the namespace so `--fs` can't redirect stasis's own capture/shard reads.
@@ -368,7 +369,7 @@ function load(url, context, nextLoad) {
 
   if (state?.config.loadBundle) {
     // node_modules scope serves only nm deps; gate on inNodeModules(), not a raw substring (symlinks).
-    if (!state.config.full && !state.inNodeModules(url)) return nextLoad(url, context)
+    if (!inScope(state, url)) return nextLoad(url, context)
     const { source, format } = state.getFile(url)
     // Cross-check format only when the resolve chain set it; the formats map is itself attested
     // against the lockfile at construction. A transforming preload (`stasis run --import tsx`)
@@ -564,7 +565,7 @@ function patchCjsResolution() {
     if (loadMode && typeof request === 'string' && !isBuiltin(request)) {
       if (typeof parent?.filename === 'string') {
         const parentURL = pathToFileURL(parent.filename).toString()
-        if (state.config.full || state.inNodeModules(parentURL)) {
+        if (inScope(state, parentURL)) {
           // Module._resolveFilename resolves for require(), whose target settles a divergent edge.
           const resolved = state.resolveBundled(parentURL, request, { conditions: ['require'] })
           if (resolved !== undefined) {
@@ -578,7 +579,7 @@ function patchCjsResolution() {
         // record) keeps a listing or payload-free stat from hijacking resolution. Node 24.14-24.17
         // re-resolve here every commonjs-sync eval; the no-parent shape survives on >=24.18 too.
         const url = pathToFileURL(request).toString()
-        if ((state.config.full || state.inNodeModules(url)) && state.hasFsFileContent(url)) {
+        if (inScope(state, url) && state.hasFsFileContent(url)) {
           assertInfraMatchesBundle(url)
           return resolvePath(request)
         }

@@ -10,7 +10,7 @@ import { resolvePluginState } from './plugins.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
-import { realReadFileSync } from '@exodus/stasis-core/state-util'
+import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
 import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath, toPosix } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
@@ -581,7 +581,7 @@ export class StasisMetro {
     for (const path of read) {
       if (diskHost.stat(path)?.isFile()) this.#assertOnDisk({ file: path, read: path }, { what, servedBy: ['async'] })
     }
-    if (!this.#state.config.full && !this.#state.inNodeModules(pathToFileURL(modPath).toString())) return
+    if (!inScope(this.#state, pathToFileURL(modPath).toString())) return
     for (const file of metroAssetFiles(modPath, platform, this.#bundleDirHost())) {
       if (read.includes(file)) continue
       throw new Error(`StasisMetro: '${file}', ${what} as the bundle carries it, is gone -- Metro would build the asset without it under load; restore it`)
@@ -597,7 +597,7 @@ export class StasisMetro {
   #assertOnDisk({ file, read }, { what, servedBy }) {
     const state = this.#state
     const url = pathToFileURL(file).toString()
-    if (!state.config.full && !state.inNodeModules(url)) return
+    if (!inScope(state, url)) return
     if (servedBy.includes(state.config.fs) && state.getFsFileFamily(pathToFileURL(read).toString()) !== undefined) return
     const { source } = state.getFile(url)
     if (realReadFileSync(file).equals(Buffer.isBuffer(source) ? source : Buffer.from(source))) return
