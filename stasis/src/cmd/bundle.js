@@ -17,7 +17,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseInstallDevDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1031,6 +1031,10 @@ export function readConfigFile(name, cwd, host = diskHost) {
 // Whether the tree laid out from the lockfile for the project `host` holds at `cwd` installs
 // devDependencies: the `installDevDependencies` of the stasis.config.json there, true without one.
 export const installsDevDependencies = (name, cwd, host) => parseInstallDevDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.installDevDependencies)
+
+// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` may be lazy: the
+// `lazyDependencies` of the stasis.config.json there, true without one.
+const lazesDependencies = (name, cwd, host) => parseLazyDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.lazyDependencies)
 
 // --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
 // `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
@@ -2229,13 +2233,15 @@ export function checkVfsOptions(name, options) {
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
 // dependency is recorded at the commit the tree installs it from, where deptree names one
 // (pinCommits). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
-// JS bundle built through a State, the State's root, which is at or above it. With `lazy`, for pnpm
-// and npm, the tree is laid out with nothing fetched, and each package is fetched and unpacked once
-// the build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
+// JS bundle built through a State, the State's root, which is at or above it. A lazy tree, pnpm's
+// or npm's, is laid out with nothing fetched, and each package is fetched and unpacked once the
+// build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
 // the bundle the full tree gives, its warnings said once, with `stats` counting what is unpacked. A
-// tarball the build never reaches is never fetched, nor held to the lockfile, nor refused. `stats`
-// are deptree's, and `stats.unpacked` the packages unpacked: each one installed, or those a lazy
-// tree unpacked.
+// tarball the build never reaches is never fetched, nor held to the lockfile, nor refused. The tree
+// is lazy where it can be (lazyTaken) and the stasis.config.json in cwd leaves `lazyDependencies`
+// true; `lazy: false` installs every package, and `lazy: true` is refused where the tree cannot be
+// lazy, or `lazyDependencies` is false. `stats` are deptree's, and `stats.unpacked` the packages
+// unpacked: each one installed, or those a lazy tree unpacked.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
 export async function buildVfsBundle(options = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
@@ -2251,13 +2257,13 @@ export async function buildVfsBundle(options = {}) {
 // configuredBuilds makes, and whether their union's `extra` is the bundle's, as bundleCommand adds
 // it; `env`, what the builds read their settings from (none by default); `outputsAt(root)`, the
 // absolute paths written, which `extra` never takes; and `refuseInstalled`, layOutTree's.
-async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy = false, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
+  const { checkCache, checkKind, checkLazy, checkTarget, lazyTaken, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
   checkCache(name, cache)
-  if (typeof lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)
+  if (lazy !== undefined && typeof lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)
   // Checked as the Bundle checks it, before anything is fetched.
   if (repo !== undefined) repo = new Bundle({ repo }).repo
   // A real path, as every file the scan reaches is.
@@ -2277,6 +2283,10 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // rooted above cwd, where it reads the config there).
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
   const installDevDependencies = installsDevDependencies(name, cwd, project)
+  // Lazy where the tree can be, unless stasis.config.json's `lazyDependencies` or `lazy` says not.
+  const lazyDependencies = lazesDependencies(name, cwd, project)
+  if (lazy && !lazyDependencies) throw new Error(`${name}: lazy is given, and ${CONFIG_FILE}'s lazyDependencies is false`)
+  lazy ??= lazyDependencies && lazyTaken(project, packageManager, cwd)
   for (const build of builds) checkKind(name, checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
@@ -2425,10 +2435,10 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // as stasis.config.json's `bundle` gives an entry its own, see bundle-options.js), whose bundles
 // (and lockfiles) are one's: their strict union, rooted where every one of them is.
 // With `deptree`, the dependencies are not read from disk but laid out in memory from the lockfile
-// that installs cwd, as buildVfsBundle lays them out (for JS, pnpm, yarn 1 or npm's; for Solidity,
-// Soldeer's), and the rest of the project read from disk through them: refused where no lockfile
-// of those installs cwd, or more than one does, and where anything is installed already
-// (layOutTree's `refuseInstalled`), before anything is fetched. The tarballs are fetched (or read
+// that installs cwd, as buildVfsBundle lays them out with `lazy: false` (for JS, pnpm, yarn 1 or
+// npm's; for Solidity, Soldeer's), and the rest of the project read from disk through them:
+// refused where no lockfile of those installs cwd, or more than one does, and where anything is
+// installed already (layOutTree's `refuseInstalled`), before anything is fetched. The tarballs are fetched (or read
 // from a cache that holds them, held to the lockfile all the same) and nothing is cached: nothing
 // is written but the bundle and the lockfile. A Soldeer git dependency is fetched from GitHub with
 // `env`'s GITHUB_TOKEN where it is set. Where process.env gives the npm client no token, it is given
@@ -2465,6 +2475,7 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, ho
       packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
       lockfile,
       cache: false,
+      lazy: false,
       client: createClient({ token: env.GITHUB_TOKEN || null }),
     }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true }))
     console.warn(unpackedSummary(built.stats))

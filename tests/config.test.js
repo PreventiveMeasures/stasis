@@ -131,19 +131,21 @@ test('Config extra: rejects a non-array, a non-string or empty entry, and a path
   t.assert.deepStrictEqual(c.extra, ['./a.js', 'b/../c/*.png', '!ios/Pods', '!**/xcuserdata'])
 })
 
-test('Config installDevDependencies: taken by stasis.config.json as a boolean alone, changing nothing a run does, and never serialized', (t) => {
-  for (const installDevDependencies of [true, false]) {
-    const c = new Config()
-    c.loadConfig(json({ scope: 'node_modules', installDevDependencies }))
-    t.assert.equal(c.scope, 'node_modules')
-    t.assert.equal(JSON.parse(c.json).installDevDependencies, undefined)
-  }
-  for (const installDevDependencies of ['false', 0, null, ['dev']]) {
-    t.assert.throws(() => new Config().loadConfig(json({ installDevDependencies })), (err) => err.message === `stasis.config.json: installDevDependencies must be true or false, got ${JSON.stringify(installDevDependencies)}`)
-  }
-  // Config-file only: no option (or env var) sets it.
-  t.assert.throws(() => new Config({ installDevDependencies: false }), /Unknown Config options: installDevDependencies/)
-})
+for (const key of ['installDevDependencies', 'lazyDependencies']) {
+  test(`Config ${key}: taken by stasis.config.json as a boolean alone, changing nothing a run does, and never serialized`, (t) => {
+    for (const value of [true, false]) {
+      const c = new Config()
+      c.loadConfig(json({ scope: 'node_modules', [key]: value }))
+      t.assert.equal(c.scope, 'node_modules')
+      t.assert.equal(JSON.parse(c.json)[key], undefined)
+    }
+    for (const value of ['false', 0, null, ['dev']]) {
+      t.assert.throws(() => new Config().loadConfig(json({ [key]: value })), (err) => err.message === `stasis.config.json: ${key} must be true or false, got ${JSON.stringify(value)}`)
+    }
+    // Config-file only: no option (or env var) sets it.
+    t.assert.throws(() => new Config({ [key]: false }), new RegExp(`Unknown Config options: ${key}`, 'u'))
+  })
+}
 
 test('loadConfig with lock=frozen', (t) => {
   const c = new Config()

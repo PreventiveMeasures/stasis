@@ -16,8 +16,8 @@ import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 import { captureWarningsAsync } from './warnings.helper.js'
 
-// @exodus/stasis/vfs-bundle with `lazy`: the tree laid out from the lockfile alone, each package
-// fetched and unpacked once the build reads it. The packages are kept in a cache store of the
+// @exodus/stasis/vfs-bundle's lazy trees, pnpm's and npm's by default: the tree laid out from the
+// lockfile alone, each package fetched and unpacked once the build reads it. The packages are kept in a cache store of the
 // test's, which answers for each, so nothing is fetched, and what the store is asked tells what the
 // build fetched. `used` requires `deep`; `unused` and `broken` are dependencies nothing requires,
 // and `broken`'s tarball is not the lockfile's. `phantom` requires `deep`, which it does not
@@ -118,7 +118,7 @@ for (const packageManager of ['pnpm', 'npm']) {
   test(`${packageManager}: lazily, the bundle and lockfile of the full tree, of the packages the build reads alone`, async (t) => {
     // The full tree of the packages but broken, which the full tree refuses.
     const names = ['used', 'unused']
-    const full = await build(packageManager, { cache: store() }, { names })
+    const full = await build(packageManager, { cache: store(), lazy: false }, { names })
     const cache = store()
     const lazy = await build(packageManager, { cache, lazy: true }, { names })
     t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
@@ -134,13 +134,13 @@ for (const packageManager of ['pnpm', 'npm']) {
   })
 
   test(`${packageManager}: lazily, a tarball the build never reads is never fetched, nor refused; one it reads is refused as without lazy`, async (t) => {
-    await t.assert.rejects(build(packageManager, { cache: store() }), /integrity|is not sha512-/u, 'the full tree is refused for broken')
+    await t.assert.rejects(build(packageManager, { cache: store(), lazy: false }), /integrity|is not sha512-/u, 'the full tree is refused for broken')
     const cache = store()
     const { bundle } = await build(packageManager, { cache, lazy: true })
     t.assert.ok(bundle.sources.has('src/a.js'))
     t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'])
     const entry = "require('broken')\n"
-    const refused = await build(packageManager, { cache: store() }, { entry }).then(() => t.assert.fail('refused'), (error) => error)
+    const refused = await build(packageManager, { cache: store(), lazy: false }, { entry }).then(() => t.assert.fail('refused'), (error) => error)
     await t.assert.rejects(build(packageManager, { cache: store(), lazy: true }, { entry }), { message: refused.message })
   })
 
@@ -150,7 +150,7 @@ for (const packageManager of ['pnpm', 'npm']) {
   // again in the round after, its imports resolved again, but from the parse kept.
   test(`${packageManager}: lazily, each file is parsed once, though scanned again in the round after one it reads a package not unpacked yet in`, async (t) => {
     const files = { names: ['phantom', 'used'], entry: "require('./b.js')\nrequire('phantom')\n", files: { 'src/b.js': "require('phantom')\n" } }
-    const full = await build(packageManager, { cache: store() }, files)
+    const full = await build(packageManager, { cache: store(), lazy: false }, files)
     const parsed = new Map()
     const parse = Scan.prototype.parseFile
     t.mock.method(Scan.prototype, 'parseFile', function (file) {
@@ -186,7 +186,7 @@ for (const packageManager of ['pnpm', 'npm']) {
     const entries = { 'src/a.js': { metro: true, platforms: ['ios'] }, 'src/cli.js': {} }
     const files = { names: ['top'], entry: 'export default 0\n', files: { 'src/cli.js': "require('top')\n", 'stasis.config.json': json({ entries }) } }
     const configured = (options) => build(packageManager, { entries: undefined, scope: undefined, cache: store(), ...options }, files)
-    const full = await configured({})
+    const full = await configured({ lazy: false })
     const walks = t.mock.method(Scan.prototype, 'walk')
     const lazy = await configured({ lazy: true })
     t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
@@ -215,7 +215,7 @@ for (const packageManager of ['pnpm', 'npm']) {
     const files = { 'metro.config.js': "module.exports = require('mconf')\n", 'babel.config.js': "module.exports = { plugins: ['plug'] }\n", 'aliases.json': '{}\n' }
     const options = { metro: true, platforms: ['ios', 'android'], babelAliases: 'aliases.json' }
     const entry = "import used from 'used'\nexport default used\n"
-    const full = await build(packageManager, { cache: store(), ...options }, { names, entry, files })
+    const full = await build(packageManager, { cache: store(), lazy: false, ...options }, { names, entry, files })
     const cache = store()
     const walks = t.mock.method(Scan.prototype, 'walk')
     const lazy = await build(packageManager, { cache, lazy: true, ...options }, { names, entry, files })
@@ -241,14 +241,14 @@ for (const packageManager of ['pnpm', 'npm']) {
     }
     const files = { names: ['used', 'unused'], entry: "require('used')\nrequire('unused')\n" }
     const lazy = await build(packageManager, { cache, lazy: true }, files)
-    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store() }, files)).bundle.serialize())
+    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store(), lazy: false }, files)).bundle.serialize())
     t.assert.ok(events.indexOf('fetch deep@1.0.0') !== -1 && events.indexOf('fetch deep@1.0.0') < events.indexOf('fetched unused@1.0.0'), events.join(', '))
   })
 
   // A round reads top, which is unpacked with used, which it depends on; the next reads used, and
   // asks for deep, which used depends on, and which was not unpacked with top: the last is the build.
   test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but not what that depends on`, async (t) => {
-    const full = await build(packageManager, { cache: store() }, { names: ['top'], entry: "require('top')\n" })
+    const full = await build(packageManager, { cache: store(), lazy: false }, { names: ['top'], entry: "require('top')\n" })
     const cache = store()
     const walks = t.mock.method(Scan.prototype, 'walk')
     const lazy = await build(packageManager, { cache, lazy: true }, { names: ['top'], entry: "require('top')\n" })
@@ -294,12 +294,13 @@ for (const packageManager of ['pnpm', 'npm']) {
       '[stasis] Lazy round 1: unpacked in T s\n',
       '[stasis] Lazy round 2: built in T s (files 2 parsed, 1 resolved, 0 replayed), the build\n',
     ])
-    t.assert.deepStrictEqual(await said({}), [
+    t.assert.deepStrictEqual(await said({}), await said({ lazy: true }), 'lazy by default')
+    t.assert.deepStrictEqual(await said({ lazy: false }), [
       '[stasis] Installed the tree in T s\n',
       '[stasis] Built in T s (files 3 parsed, 0 resolved, 0 replayed)\n',
     ])
     // Under --metro, each build's stages too.
-    t.assert.match((await said({ metro: true, platforms: ['ios'] })).join(''), /^\[stasis\] Built in T s \(files 3 parsed, 0 resolved, 0 replayed; scan T s, Metro's additions T s, configs and toolchain T s, carrying T s\)$/mu)
+    t.assert.match((await said({ lazy: false, metro: true, platforms: ['ios'] })).join(''), /^\[stasis\] Built in T s \(files 3 parsed, 0 resolved, 0 replayed; scan T s, Metro's additions T s, configs and toolchain T s, carrying T s\)$/mu)
   })
 
   test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
@@ -313,16 +314,39 @@ for (const packageManager of ['pnpm', 'npm']) {
         warn.mock.restore()
       }
     }
-    const full = await warned({})
+    const full = await warned({ lazy: false })
     t.assert.equal(full.filter((line) => line.includes('missing')).length, 1)
     t.assert.deepStrictEqual(await warned({ lazy: true }), full)
+    t.assert.deepStrictEqual(await warned({}), full)
     t.assert.notEqual(console.warn.name, 'warnHeld', 'console.warn is left as it was')
+  })
+
+  test(`${packageManager}: lazy by default, but where lazy or stasis.config.json's lazyDependencies is false, or a .yarnclean keeps paths`, async (t) => {
+    const fetched = async (options, files = {}) => {
+      const cache = store()
+      const { bundle } = await build(packageManager, { cache, ...options }, { names: ['used', 'unused'], files })
+      t.assert.ok([...bundle.modules.keys()].some((dir) => dir.endsWith('/deep')))
+      return tarballs(cache)
+    }
+    const config = (lazyDependencies) => ({ 'stasis.config.json': json({ lazyDependencies }) })
+    t.assert.deepStrictEqual(await fetched({}), ['deep', 'used'])
+    t.assert.deepStrictEqual(await fetched({}, config(true)), ['deep', 'used'])
+    t.assert.deepStrictEqual(await fetched({ lazy: false }), ['deep', 'unused', 'used'])
+    t.assert.deepStrictEqual(await fetched({}, config(false)), ['deep', 'unused', 'used'])
+    // A .yarnclean that keeps paths, which a lazy tree does not take, has the tree installed whole.
+    t.assert.deepStrictEqual(await fetched({}, { '.yarnclean': '*.md\n!used/README.md\n' }), ['deep', 'unused', 'used'])
+    // `lazy` where lazyDependencies is false, and a lazyDependencies that is no boolean, are refused
+    // before anything is fetched.
+    const cache = store()
+    await t.assert.rejects(build(packageManager, { cache, lazy: true }, { names: ['used'], files: config(false) }), /^Error: buildVfsBundle: lazy is given, and stasis\.config\.json's lazyDependencies is false$/u)
+    await t.assert.rejects(build(packageManager, { cache }, { names: ['used'], files: config('no') }), /^TypeError: stasis\.config\.json: lazyDependencies must be true or false, got "no"$/u)
+    t.assert.deepStrictEqual(cache.calls, [])
   })
 
   test(`${packageManager}: lazily, a .yarnclean of patterns cleans each package as it is unpacked, as the full tree's`, async (t) => {
     const files = { names: ['used'], entry: "require('used')\n", files: { '.yarnclean': '*.md\n' } }
     const lazy = await build(packageManager, { cache: store(), lazy: true }, files)
-    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store() }, files)).bundle.serialize())
+    t.assert.equal(lazy.bundle.serialize(), (await build(packageManager, { cache: store(), lazy: false }, files)).bundle.serialize())
     // One that keeps paths with `!` is refused before anything is fetched.
     const cache = store()
     await t.assert.rejects(build(packageManager, { cache, lazy: true }, { ...files, files: { '.yarnclean': '*.md\n!used/README.md\n' } }), /^Error: a \.yarnclean in \/ or above it keeps paths with `!`, which lazy does not take/u)
@@ -330,11 +354,16 @@ for (const packageManager of ['pnpm', 'npm']) {
   })
 }
 
-test('lazy is refused for yarn 1 and Soldeer, and taken only as a boolean, before anything is fetched', async (t) => {
-  const yarn = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'yarn.lock': '# yarn lockfile v1\n\n\n', 'src/a.js': '' }
+test('lazy is refused for yarn 1 and Soldeer, and taken only as a boolean, before anything is fetched; without it, their trees are installed whole', async (t) => {
+  const yarn = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'yarn.lock': '# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\n', 'src/a.js': '' }
   await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(yarn), packageManager: 'yarn1', entries: ['src/a.js'], lazy: true }), /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; yarn1's is not$/u)
   const soldeer = { 'foundry.toml': '[profile.default]\n', 'soldeer.lock': '', 'src/A.sol': 'pragma solidity ^0.8.0;\n' }
   await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(soldeer), packageManager: 'soldeer', entries: ['src/A.sol'], lazy: true }), /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; soldeer's is not$/u)
+  // The default, and lazyDependencies true, are no refusal: the tree is installed, as with lazy false
+  // (vfs-bundle-soldeer.test.js's builds are Soldeer's, by default).
+  const builds = [{}, { 'stasis.config.json': json({ lazyDependencies: true }) }].flatMap((files) => [undefined, false].map((lazy) => buildVfsBundle({ vfs: vfsOf({ ...yarn, ...files }), packageManager: 'yarn1', entries: ['src/a.js'], lazy })))
+  for (const { bundle } of await Promise.all(builds)) t.assert.deepStrictEqual([...bundle.entries], ['src/a.js'])
+  t.assert.deepStrictEqual([...(await buildGitHubBundle({ github: 'o/n', client: fakeClient(yarn), packageManager: 'yarn1', entries: ['src/a.js'] })).bundle.entries], ['src/a.js'])
   await t.assert.rejects(build('pnpm', { lazy: 'yes' }), /^TypeError: buildVfsBundle: lazy must be a boolean$/u)
   // Of a GitHub repo, before its tree is fetched.
   const client = fakeClient(yarn)
@@ -347,10 +376,14 @@ test('buildGitHubBundle lazily: the repo as fetched, its dependencies as the bui
   const cache = store()
   const files = projectFiles('pnpm', { names: ['used', 'unused'] })
   const lazy = await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache, lazy: true })
-  const full = await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache: store() })
+  const full = await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache: store(), lazy: false })
   t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
   t.assert.deepStrictEqual({ ...lazy.bundle.repo }, { github: 'o/n', directory: '', commit: HEAD })
   t.assert.deepStrictEqual(tarballs(cache), ['deep', 'used'])
+  // Lazy by default.
+  const byDefault = store()
+  await buildGitHubBundle({ github: 'o/n', client: fakeClient(files), packageManager: 'pnpm', entries: ['src/a.js'], cache: byDefault })
+  t.assert.deepStrictEqual(tarballs(byDefault), ['deep', 'used'])
 })
 
 test('stasis github-bundle says how many packages it unpacked, of those installed, lazily or not', withTmp(async (t, dir) => {
@@ -362,16 +395,22 @@ test('stasis github-bundle says how many packages it unpacked, of those installe
   }
   const [full] = await said(false)
   t.assert.match(full, /^\[stasis\] Unpacked 3 of 3 packages: 7 files, 0\.0 MiB, 3 tarballs fetched$/u)
-  t.assert.deepStrictEqual(await said(true), [full.replace('3 of 3 packages: 7 files', '2 of 3 packages: 5 files').replace('3 tarballs', '2 tarballs')])
+  const lazy = [full.replace('3 of 3 packages: 7 files', '2 of 3 packages: 5 files').replace('3 tarballs', '2 tarballs')]
+  t.assert.deepStrictEqual(await said(true), lazy)
+  t.assert.deepStrictEqual(await said(undefined), lazy)
 }))
 
-test('stasis github-bundle takes --lazy, and refuses it for yarn 1 before anything is fetched', async (t) => {
-  const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', '--github=o/n', '--package-manager=yarn1', '--lazy', 'a.js'])
-  const stderr = []
-  child.stderr.on('data', (chunk) => stderr.push(chunk))
-  const [status] = await once(child, 'close')
-  t.assert.equal(status, 1)
-  t.assert.match(Buffer.concat(stderr).toString('utf8'), /buildGitHubBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; yarn1's is not/u)
+test('stasis github-bundle takes --no-lazy, and no --lazy, before anything is fetched', async (t) => {
+  const run = async (...args) => {
+    const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', '--github=o/n', ...args, 'a.js'])
+    const stderr = []
+    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    const [status] = await once(child, 'close')
+    return { status, stderr: Buffer.concat(stderr).toString('utf8') }
+  }
+  // Taken, and refused for what follows it: both --sha and --tag.
+  t.assert.deepStrictEqual(await run('--no-lazy', '--sha=0123abc', '--tag=v1'), { status: 1, stderr: "Error: github-bundle takes --sha or --tag, not both\nRun 'stasis --help' for usage.\n" })
+  t.assert.deepStrictEqual(await run('--lazy'), { status: 1, stderr: "Error: Unknown option '--lazy'\nRun 'stasis --help' for usage.\n" })
 })
 
 test('lazyView asks for a package read under before it is unpacked, but not for its directory or those above it; one probed alone is not read', (t) => {

@@ -91,15 +91,24 @@ export function parseExtraOption(label, extra) {
   return [...extra]
 }
 
+// A stasis.config.json key that is true or false, true where it is left out.
+const configFlag = (key) => (label, value) => {
+  if (value === undefined) return true
+  if (typeof value !== 'boolean') throw new TypeError(`${label}: ${key} must be true or false, got ${JSON.stringify(value)}`)
+  return value
+}
+
 // stasis.config.json's `installDevDependencies`: whether the trees laid out from the lockfile (`stasis
 // github-bundle`, @exodus/stasis/vfs-bundle) install devDependencies, as a plain install does (true,
 // the default), or leave out what devDependencies alone reach, as `pnpm install --prod`, `npm ci
 // --omit=dev` and `yarn install --production` do (false).
-export function parseInstallDevDependencies(label, value) {
-  if (value === undefined) return true
-  if (typeof value !== 'boolean') throw new TypeError(`${label}: installDevDependencies must be true or false, got ${JSON.stringify(value)}`)
-  return value
-}
+export const parseInstallDevDependencies = configFlag('installDevDependencies')
+
+// stasis.config.json's `lazyDependencies`: whether the trees `stasis github-bundle` and
+// @exodus/stasis/vfs-bundle's builds lay out from the lockfile are lazy where the package manager
+// lays one out from the lockfile alone (pnpm, npm), each package fetched once the build reads it
+// (true, the default), or have every package fetched before the build (false).
+export const parseLazyDependencies = configFlag('lazyDependencies')
 
 export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11
 

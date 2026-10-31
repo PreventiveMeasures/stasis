@@ -299,6 +299,10 @@ export function checkLazy(name, packageManager) {
   if (!PACKAGE_MANAGERS[packageManager].lazy) throw new Error(`${name}: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; ${packageManager}'s is not`)
 }
 
+// Whether `packageManager`'s tree of the project `project` holds at `cwd` can be lazy, as layOutTree
+// lays it out: pnpm's and npm's, but where a .yarnclean in cwd or above it keeps paths with `!`.
+export const lazyTaken = (project, packageManager, cwd) => PACKAGE_MANAGERS[packageManager].lazy === true && !yarnclean(project, cwd)?.keeps
+
 // The lockfile `packageManager` installs from, e.g. 'pnpm-lock.yaml'.
 export const lockfileOf = (packageManager) => PACKAGE_MANAGERS[packageManager].lockfile
 

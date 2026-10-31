@@ -101,7 +101,8 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
   to hold nothing, not even a link, or it refuses. Every refusal comes before
   anything is fetched.
 - Nothing is written but the bundle (and `--lockfile`): nothing is cached.
-  Every tarball and zip is held to the lockfile. An npm package's tarball is
+  The tree is never [lazy](github-bundle.md#lazy---no-lazy): every package is
+  fetched before the build. Every tarball and zip is held to the lockfile. An npm package's tarball is
   read from a cache that holds it already (npm's, or `stasis github-bundle`'s),
   else fetched from the registry, as is each Soldeer zip; a Soldeer git
   dependency on GitHub is fetched with `GITHUB_TOKEN` where it is set.
