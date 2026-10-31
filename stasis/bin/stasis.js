@@ -373,6 +373,7 @@ if (command === '-v' || command === '--version') {
     if (cause instanceof ValidateError) misused(`Error: ${cause.message}`)
     refuse(`Error: ${cause.message}`)
   }
+  // In colour where each stream takes colours: a terminal's, or CI's log.
   printValidationReport(report, { showValid: values['show-valid'] })
   process.exitCode = exitCodeOf(report, { allowUnverified: values['allow-unverified'] })
 } else if (command === 'sbom') {

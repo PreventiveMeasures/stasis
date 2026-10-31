@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { stripVTControlCharacters, styleText } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
@@ -12,6 +13,7 @@ import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
 import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
@@ -21,6 +23,16 @@ const commit = '7'.repeat(40)
 const sha256 = (text) => createHash('sha256').update(text).digest('hex')
 const blob = (text) => gitBlobId(Buffer.from(text))
 const bytes = (text) => new TextEncoder().encode(text)
+// A table's rows as printed, each its cells: its header's first, a cell's further lines rows of their own.
+const rowsOf = (text) => text.split('\n').filter((line) => line.startsWith('│ ')).map((line) => line.slice(2, -2).split(' │ ').map((cell) => cell.trim()))
+// A report as printed to streams, colourless but where asked: stdout, stderr, and stdout's rows.
+const printed = (report, options) => {
+  const text = { out: '', err: '' }
+  const stream = (key) => ({ write: (chunk) => { text[key] += chunk } })
+  printValidationReport(report, { out: stream('out'), err: stream('err'), colors: false, ...options })
+  return { ...text, rows: rowsOf(text.out) }
+}
+const hasRow = (rows, row) => rows.some((cells) => JSON.stringify(cells) === JSON.stringify(row))
 
 // ms@2.1.3 as published, and its patch, as pnpm writes one.
 const MS = { 'index.js': 'one\ntwo\nthree\n', 'package.json': '{"name":"ms","version":"2.1.3"}\n', 'readme.md': 'left out of the bundle\n' }
@@ -108,17 +120,17 @@ test('validateBundle: own code held to the repository, each dependency to its pa
   t.assert.equal(report.status, 'invalid')
   t.assert.deepStrictEqual(report.own, { checked: true, repository: 'org/repo', commit, directory: 'web' })
   t.assert.deepStrictEqual(report.problems, [
-    { path: 'node_modules/left/index.js', kind: 'differs', of: 'npm:left@1.0.0' },
-    { path: 'node_modules/left/injected.js', kind: 'unexpected', of: 'npm:left@1.0.0' },
     { path: 'src/changed.js', kind: 'differs', of: 'own' },
-    { path: 'src/extra.js', kind: 'unexpected', of: 'own' },
     { path: 'src/link.js', kind: 'differs', of: 'own', reason: 'symlink' },
+    { path: 'node_modules/left/index.js', kind: 'differs', of: 'npm:left@1.0.0' },
+    { path: 'src/extra.js', kind: 'unexpected', of: 'own' },
     { path: 'vendor/sub/x.js', kind: 'unexpected', of: 'own', reason: 'submodule' },
+    { path: 'node_modules/left/injected.js', kind: 'unexpected', of: 'npm:left@1.0.0' },
   ])
   t.assert.deepStrictEqual(report.packages, [
+    { ecosystem: 'npm', name: 'left', version: '1.0.0', files: 2, status: 'invalid' },
     { ecosystem: 'composer', name: 'org/php', version: '1.0.0', files: 1, status: 'unverified', reason: 'unsupported' },
     { ecosystem: 'npm', name: 'gone', version: '1.0.0', files: 1, status: 'unverified', reason: 'not-published' },
-    { ecosystem: 'npm', name: 'left', version: '1.0.0', files: 2, status: 'invalid' },
     { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } },
   ], 'ms as the patch the bundle holds named for it changes it, with no lockfile read, the patch as the repository has it')
   t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0 })
@@ -194,16 +206,16 @@ test('validateBundle: each version held to its lockfile: fetched with the integr
   const integrities = []
   const fetched = []
   t.assert.deepStrictEqual(await told({ 'npm:ms@2.1.3': { from: 'registry', integrity: SRI }, 'npm:gone@1.0.0': null }, upstream(PACKAGES, fetched, integrities)),
-    ['invalid', 1, [['org/php', 'unverified', 'unsupported'], ['gone', 'invalid', 'not-locked'], ['ms', 'valid', null]]], 'gone, which it locks none of, failing')
+    ['invalid', 1, [['gone', 'invalid', 'not-locked'], ['org/php', 'unverified', 'unsupported'], ['ms', 'valid', null]]], 'gone, which it locks none of, failing, told first')
   t.assert.deepStrictEqual([fetched, integrities], [['npm:ms@2.1.3'], [['npm:ms@2.1.3', SRI]]], 'ms fetched with the integrity it locks, gone never')
   // As upstream refuses a tarball that isn't the integrity given.
   const refusing = () => Promise.reject(new AssertionError({ message: `getTarball: integrity mismatch for ms@2.1.3 from https://registry.npmjs.org/ms/-/ms-2.1.3.tgz: expected ${SRI}, got another` }))
   t.assert.deepStrictEqual(await told({ 'npm:ms@2.1.3': { from: 'registry', integrity: SRI }, 'npm:gone@1.0.0': { from: 'registry', integrity: SRI } }, refusing),
-    ['invalid', 2, [['org/php', 'unverified', 'unsupported'], ['gone', 'invalid', 'integrity-mismatch'], ['ms', 'invalid', 'integrity-mismatch']]])
+    ['invalid', 2, [['gone', 'invalid', 'integrity-mismatch'], ['ms', 'invalid', 'integrity-mismatch'], ['org/php', 'unverified', 'unsupported']]])
   t.assert.deepStrictEqual(await told({ 'npm:ms@2.1.3': { from: 'elsewhere' }, 'npm:gone@1.0.0': { from: 'registry', integrity: undefined } }),
     ['incomplete', 0, [['org/php', 'unverified', 'unsupported'], ['gone', 'unverified', 'no-integrity'], ['ms', 'unverified', 'not-registry']]])
-  t.assert.deepStrictEqual((await told({ 'npm:ms@2.1.3': { from: 'registry', conflict: true }, 'npm:gone@1.0.0': { from: 'git' } }))[2].slice(1),
-    [['gone', 'unverified', 'git'], ['ms', 'invalid', 'integrity-conflict']])
+  t.assert.deepStrictEqual((await told({ 'npm:ms@2.1.3': { from: 'registry', conflict: true }, 'npm:gone@1.0.0': { from: 'git' } }))[2],
+    [['ms', 'invalid', 'integrity-conflict'], ['org/php', 'unverified', 'unsupported'], ['gone', 'unverified', 'git']])
 })
 
 test('validateBundle: own code unchecked leaves a bundle incomplete, as does a version past the deadline, or a tree cut short', async (t) => {
@@ -249,18 +261,76 @@ test('validateBundle: a patch the bundle holds is taken as the repository has it
   t.assert.deepStrictEqual([report.status, report.packages], ['invalid', [{ ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid',
     patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', error: 'patch-not-in-repository' } }]], 'its files held to those published')
   t.assert.deepStrictEqual(report.problems.filter((problem) => problem.path.includes('ms')), [
-    { path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' },
     { path: 'patches/ms@2.1.3.patch', kind: 'differs', of: 'own' },
+    { path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' },
   ])
-  const lines = []
-  printValidationReport(report, { out: (line) => lines.push(line), err: () => {} })
-  t.assert.ok(lines.includes('invalid\tnpm:ms@2.1.3\tits patch patches/ms@2.1.3.patch is the bundle\'s, not the repository\'s'))
-  const verified = []
-  printValidationReport(await validateBundle(plan, own(), { fetch: upstream() }), { out: (line) => verified.push(line), err: () => {}, showValid: true })
-  t.assert.ok(verified.includes('valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch (the bundle\'s, as the repository has it)'))
-  const unread = []
-  printValidationReport(await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream() }), { out: (line) => unread.push(line), err: () => {} })
-  t.assert.ok(unread.includes('unverified\tnpm:ms@2.1.3\tas patched by the bundle\'s patch, which isn\'t verified against the repository'), unread.join('\n'))
+  const { rows } = printed(report)
+  t.assert.ok(hasRow(rows, ['invalid', 'ms@2.1.3', 'its patch patches/ms@2.1.3.patch is the bundle\'s, not the repository\'s']), rows.join('\n'))
+  const verified = printed(await validateBundle(plan, own(), { fetch: upstream() }), { showValid: true }).rows
+  t.assert.ok(hasRow(verified, ['valid', 'ms@2.1.3', 'patched by patches/ms@2.1.3.patch (the bundle\'s, as the repository has it)']), verified.join('\n'))
+  const unread = printed(await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream() })).rows
+  t.assert.ok(hasRow(unread, ['unverified', 'ms@2.1.3', 'as patched by the bundle\'s patch, which isn\'t verified against the repository']), unread.join('\n'))
+})
+
+test('printValidationReport: files in a table, a row for each kind of each package\'s (own code first), the worst first; the packages with something to tell in another; statuses in colour where asked', (t) => {
+  const report = {
+    status: 'invalid', own: { checked: true, repository: 'org/repo', commit, directory: 'web' }, lockfiles: ['pnpm-lock.yaml'],
+    counts: { files: 9, own: 4, dependencies: 5, matched: 2, eol: 0, differs: 3, unexpected: 2, unverified: 1, skipped: 0, packages: 5, validPackages: 1, lockFailures: 1 },
+    problems: [
+      { path: 'src/a.js', kind: 'differs', of: 'own' },
+      { path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' },
+      { path: 'node_modules/ms/readme.md', kind: 'differs', of: 'npm:ms@2.1.3' },
+      { path: 'src/link.js', kind: 'unexpected', of: 'own', reason: 'symlink' },
+      { path: 'vendor/serde/x.rs', kind: 'unexpected', of: 'crates:serde@1.0.0' },
+      { path: 'src/far.js', kind: 'unverified', of: 'own', reason: 'tree-cut' },
+    ],
+    moreProblems: 2,
+    packages: [
+      { ecosystem: 'npm', name: 'gone', version: '1.0.0', status: 'invalid', reason: 'not-locked' },
+      { ecosystem: 'npm', name: 'ms', version: '2.1.3', status: 'invalid' },
+      { ecosystem: 'crates', name: 'serde', version: '1.0.0', status: 'invalid' },
+      { ecosystem: 'composer', name: 'org/php', version: '1.0.0', status: 'unverified', reason: 'unsupported' },
+      { ecosystem: 'npm', name: 'p', version: '1.0.0', status: 'valid', patch: { path: 'patches/p.patch', applied: true } },
+    ],
+  }
+  const { out, rows } = printed(report)
+  t.assert.deepStrictEqual(rows, [
+    ['status', 'of', 'files'],
+    ['differs', 'own code', 'src/a.js'],
+    ['differs', 'ms@2.1.3', 'node_modules/ms/index.js'],
+    ['', '', 'node_modules/ms/readme.md'],
+    ['unexpected', 'own code', 'src/link.js (a symlink in the repository)'],
+    ['unexpected', 'crates:serde@1.0.0', 'vendor/serde/x.rs'],
+    ['unverified', 'own code', 'src/far.js (the repository\'s tree was too large to list whole)'],
+    ['status', 'ecosystem', 'package', 'note'],
+    ['invalid', 'npm', 'gone@1.0.0', 'not locked by the lockfile'],
+    ['unverified', 'composer', 'org/php@1.0.0', 'no upstream package for its ecosystem'],
+  ], 'those failing for their files alone, and the valid, but where asked, left out of the packages\'')
+  t.assert.match(out, /┘\n\.\.\. and 2 more files\n\n┌/u)
+  t.assert.deepStrictEqual(printed(report, { showValid: true }).rows.at(-1), ['valid', 'npm', 'p@1.0.0', 'patched by patches/p.patch'])
+
+  const painted = printed(report, { colors: true })
+  const styled = (format, text) => styleText(format, text, { validateStream: false })
+  t.assert.ok(painted.out.includes(`│ ${styled('red', 'differs')}    │ ${styled(DIM, 'own code')}           │ src/a.js `), painted.out)
+  t.assert.ok(painted.out.includes(`│ ${styled('yellow', 'unverified')} │ ${styled(DIM, 'own code')}`), 'unverified in yellow')
+  t.assert.ok(painted.out.includes(`│            │                    │ node_modules/ms/readme.md`), 'a cell\'s further lines unstyled')
+  t.assert.ok(painted.err.startsWith(`${styled(['bold', 'red'], 'invalid')}: 2 of 9 files`), painted.err)
+  t.assert.deepStrictEqual(rowsOf(stripVTControlCharacters(painted.out)), rows, 'its widths those of its text unstyled')
+})
+
+test('takesColors: as @exodus/test tells it, CI\'s logs, or a terminal that has them; not a pipe', (t) => {
+  const { CI } = process.env
+  const told = (ci, stream) => {
+    if (ci) process.env.CI = 'true'
+    else delete process.env.CI
+    return takesColors(stream)
+  }
+  try {
+    t.assert.deepStrictEqual([told(false, {}), told(false, { hasColors: () => false }), told(false, { hasColors: () => true }), told(true, {})], [false, false, true, true])
+  } finally {
+    if (CI === undefined) delete process.env.CI
+    else process.env.CI = CI
+  }
 })
 
 test('exitCodeOf: 0 valid, 1 invalid, 2 incomplete, but 0 where unverified files are allowed', (t) => {
@@ -440,13 +510,10 @@ test('validate: the repository its bundle names, at its commit and directory, re
   writeBundle(noCommit, { repo: { github: 'org/repo' }, modules: bundle.modules })
   await t.assert.rejects(validate(noCommit, { fetch: upstream() }), { code: 'no-commit' })
   await t.assert.rejects(validate(file, { fetch: upstream(), own: false, lockfile: [join(tmp, 'Cargo.lock')] }), { code: 'lockfile-unreadable' })
-  const lines = { out: [], err: [] }
-  printValidationReport(report, { out: (line) => lines.out.push(line), err: (line) => lines.err.push(line) })
-  t.assert.deepStrictEqual(lines.out, [], 'a package valid told on stdout but where asked')
-  const shown = []
-  printValidationReport(report, { out: (line) => shown.push(line), err: () => {}, showValid: true })
-  t.assert.deepStrictEqual(shown, ['valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch'])
-  t.assert.match(lines.err.join('\n'), /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web\nDependencies held to pnpm-lock\.yaml$/u)
+  const lines = printed(report)
+  t.assert.equal(lines.out, '', 'a package valid told on stdout but where asked')
+  t.assert.deepStrictEqual(printed(report, { showValid: true }).rows, [['status', 'package', 'note'], ['valid', 'ms@2.1.3', 'patched by patches/ms@2.1.3.patch']])
+  t.assert.match(lines.err, /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web\nDependencies held to pnpm-lock\.yaml\n$/u)
 }))
 
 test('repositoryLockfiles: as the build finds each package manager\'s root, pnpm\'s (its workspace\'s), npm\'s and yarn\'s (the root whose workspaces take the package), else the nearest; a crate\'s beside its Cargo workspace\'s root; refused where none is, or two package managers\' are', async (t) => {
@@ -681,9 +748,8 @@ test('validate: a repository renamed or transferred followed, as GitHub redirect
   t.assert.deepStrictEqual([report.status, report.own], ['valid', { checked: true, repository: 'org/repo', movedFrom: 'org/old', commit, directory: 'web' }])
   t.assert.deepStrictEqual(asked.filter(([method]) => method === 'getRepo'), [['getRepo', 'org/old', true]], 'its name asked once')
   t.assert.ok(asked.every(([method, repo]) => method === 'getRepo' || repo === 'org/repo' || repo === 'org/old'))
-  const lines = []
-  printValidationReport(report, { out: () => {}, err: (line) => lines.push(line) })
-  t.assert.ok(lines.includes(`Own code held to org/repo (moved from org/old) at ${commit} under web`), lines.join('\n'))
+  const { err } = printed(report)
+  t.assert.ok(err.split('\n').includes(`Own code held to org/repo (moved from org/old) at ${commit} under web`), err)
 
   // Another redirect, of no other name: refused as GitHub answered it.
   const same = Object.assign(Object.create(repoClient(files)), { async getRepoTreeId() { throw new HttpError(301, 'Moved Permanently') }, getRepo: async () => ({ id: 7, full_name: 'org/repo' }) })
@@ -708,7 +774,10 @@ test('validate: a dependency from the repository\'s root (`file:.`) held to the 
 test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-unverified), 3 refused or failed; own code skipped with --only-deps, its dependencies held to a lockfile given or, with --no-lockfile, none', withTmp((t, tmp) => {
   const file = join(tmp, 'own.stasis.code.br')
   writeBundle(file, { modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }]]) })
-  const run = (...args) => spawnSync(process.execPath, [cli, 'validate', ...args], { encoding: 'utf8', env: { ...process.env, XDG_CACHE_HOME: tmp } })
+  // Colourless, as a pipe takes it, out of CI (whether this runs in it or not); in colour in CI.
+  const env = { ...process.env, XDG_CACHE_HOME: tmp }
+  delete env.CI
+  const run = (...args) => spawnSync(process.execPath, [cli, 'validate', ...args], { encoding: 'utf8', env })
   const skipped = run('--only-deps', file)
   t.assert.equal(skipped.status, 0, skipped.stderr)
   t.assert.equal(run('--only-deps', '--show-valid', file).status, 0, 'valid packages shown where asked')
@@ -728,7 +797,10 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const lockfile = join(tmp, 'pnpm-lock.yaml')
   writeFileSync(lockfile, "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n")
   const locked = run('--only-deps', `--lockfile=${lockfile}`, deps)
-  t.assert.deepStrictEqual([locked.status, locked.stdout], [1, 'invalid\tnpm:ms@2.1.3\tnot locked by the lockfile\n'], locked.stderr)
+  t.assert.deepStrictEqual([locked.status, rowsOf(locked.stdout)], [1, [['status', 'package', 'note'], ['invalid', 'ms@2.1.3', 'not locked by the lockfile']]], locked.stderr)
+  t.assert.ok(!`${locked.stdout}${locked.stderr}`.includes('\u001B['), 'no colours where the stream is a pipe')
+  const painted = spawnSync(process.execPath, [cli, 'validate', '--only-deps', `--lockfile=${lockfile}`, deps], { encoding: 'utf8', env: { ...env, CI: 'true' } })
+  t.assert.deepStrictEqual([painted.stdout.includes('\u001B[31minvalid\u001B[39m'), painted.stderr.startsWith('\u001B[1m\u001B[31minvalid\u001B[39m\u001B[22m: ')], [true, true], 'its statuses in colour in CI\'s log')
   t.assert.match(locked.stderr, /^invalid: 0 of 1 files as they should be, 0 differ, 0 unexpected, 1 unverified; 0 of 1 packages as published, 1 failing their lockfile\nOwn code not verified: skipped \(--only-deps\): its dependencies alone validated\nDependencies held to .*pnpm-lock\.yaml\n$/u)
 
   // One it locks from git alone, unverified, and so incomplete: 2, but 0 where that is allowed.
@@ -737,7 +809,7 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const at = 'a'.repeat(40)
   writeFileSync(git, `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ms:\n        specifier: github:vercel/ms#${at}\n        version: https://codeload.github.com/vercel/ms/tar.gz/${at}\n\npackages:\n\n  ms@https://codeload.github.com/vercel/ms/tar.gz/${at}:\n    resolution: {tarball: https://codeload.github.com/vercel/ms/tar.gz/${at}, gitHosted: true}\n    version: 2.1.3\n\nsnapshots:\n\n  ms@https://codeload.github.com/vercel/ms/tar.gz/${at}: {}\n`)
   const incomplete = run('--only-deps', `--lockfile=${git}`, deps)
-  t.assert.deepStrictEqual([incomplete.status, incomplete.stdout], [2, 'unverified\tnpm:ms@2.1.3\tlocked from git, not a registry\n'], incomplete.stderr)
+  t.assert.deepStrictEqual([incomplete.status, rowsOf(incomplete.stdout)], [2, [['status', 'package', 'note'], ['unverified', 'ms@2.1.3', 'locked from git, not a registry']]], incomplete.stderr)
   t.assert.equal(run('--only-deps', `--lockfile=${git}`, '--allow-unverified', deps).status, 0)
 
   writeFileSync(join(tmp, 'deps.txt'), '')
