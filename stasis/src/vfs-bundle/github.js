@@ -177,8 +177,8 @@ async function repoTree(name, { github, sha, tag, directory, client, packageMana
 // one is outside the others; `repo` names that directory and the commit. Nothing is read from disk:
 // the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree id
 // either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
-// `cache` is buildVfsBundle's, for the npm packages the tree installs: the repo's tree is cached
-// where setCacheDir says, whatever it is.
+// `cache` and `lazy` are buildVfsBundle's, for the npm packages the tree installs: the repo's tree is
+// cached where setCacheDir says, whatever it is, and fetched whole.
 export async function buildGitHubBundle({ github, sha, tag, directory, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)

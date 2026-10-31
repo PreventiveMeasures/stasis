@@ -30,6 +30,8 @@ const MANAGERS = {
     installed: join('node_modules', '.pnpm'),
     install: ['pnpm', ['install', '--frozen-lockfile', '--prefer-offline', '--ignore-scripts']],
     stats: { projects: 1, snapshots: 86, installed: 86, skipped: 0, tarballs: 86 },
+    // What a lazy build unpacks: src/entry.js reaches every package.
+    lazy: { tarballs: 86 },
     // An installed lodash, as pnpm lays it out.
     tamper: (vfs) => {
       vfs.mkdir('/node_modules/.pnpm/lodash@4.17.21/node_modules/lodash', { recursive: true })
@@ -61,6 +63,7 @@ const MANAGERS = {
     installed: join('node_modules', '.package-lock.json'),
     install: ['npx', ['--yes', 'npm@11.21.0', 'ci', '--ignore-scripts', '--no-audit', '--no-fund']],
     stats: { packages: 92, installed: 92, skipped: 0, tarballs: 86, links: 0 },
+    lazy: { tarballs: 86 },
     // An installed lodash, as npm lays it out.
     tamper: (vfs) => {
       vfs.mkdir('/node_modules/lodash', { recursive: true })
@@ -285,6 +288,19 @@ describe('buildVfsBundle with each package manager', { concurrency: true }, () =
         }
       }))
 
+      test('lazily, builds the same bundle + lockfile, unpacking the packages it reads alone', async (t) => {
+        const lazily = build(projectVfs(packageManager), { scope: 'full', lazy: true })
+        if (packageManager === 'yarn1') {
+          await t.assert.rejects(lazily, /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone/u)
+          return
+        }
+        const { built } = await fullBuild()
+        const lazy = await lazily
+        t.assert.equal(lazy.bundle.serialize(), built.bundle.serialize())
+        t.assert.equal(lazy.lockfile.serialize(), built.lockfile.serialize())
+        t.assert.deepStrictEqual(pick(lazy.stats, { tarballs: 0 }), m.lazy)
+      })
+
       test('whatever the project holds as installed is ignored: a tampered node_modules does not reach the bundle', async (t) => {
         const vfs = projectVfs(packageManager)
         m.tamper(vfs)
@@ -449,7 +465,7 @@ test('createMetroResolver refuses a host that is not the disk: it reads the disk
 // `constants`, which read nothing.
 test('the host-aware modules import nothing from node:fs to read with', (t) => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const modules = ['stasis/src/scan.js', 'stasis/src/resolve-node.js', 'stasis/src/resolve-fields.js', 'stasis/src/resolve-typescript.js', 'stasis-core/src/bundle-util.js', 'stasis/src/vfs-bundle.js', 'stasis/src/vfs-bundle/github.js', 'stasis/src/vfs-bundle/tree.js', 'stasis/src/vfs-bundle/entries.js', 'stasis/src/cmd/bundle-options.js', 'stasis/src/loaders/foundry.js']
+  const modules = ['stasis/src/scan.js', 'stasis/src/resolve-node.js', 'stasis/src/resolve-fields.js', 'stasis/src/resolve-typescript.js', 'stasis-core/src/bundle-util.js', 'stasis/src/vfs-bundle.js', 'stasis/src/vfs-bundle/github.js', 'stasis/src/vfs-bundle/tree.js', 'stasis/src/vfs-bundle/lazy.js', 'stasis/src/vfs-bundle/entries.js', 'stasis/src/cmd/bundle-options.js', 'stasis/src/loaders/foundry.js']
   const FS = /(['"`])(?:node:)?fs(?:\/promises)?\1/gu
   const CONSTANTS = /\bimport\s*\{\s*constants\s*\}\s*from\s*(['"])(?:node:)?fs\1/gu
   for (const file of modules) {

@@ -41,7 +41,9 @@ function packagePath(dir, path) {
 
 // Of every .yarnclean in `cwd` and the directories above it, read through `host`: a function
 // cleaning the node_modules directory at a path of a Vfs as sortFilter cleans one, or null where
-// none holds a pattern. minimatch is loaded here, where one does: before anything is installed.
+// none holds a pattern; its `keeps`, whether a `!` pattern keeps paths, which turns what is cleaned
+// of one package on what the others hold. minimatch is loaded here, where one does: before anything
+// is installed.
 export function yarnclean(host, cwd) {
   const lines = []
   for (let dir = cwd; ; dir = posix.dirname(dir)) {
@@ -54,7 +56,7 @@ export function yarnclean(host, cwd) {
   const filters = lines.map((line) => filterOf(line, minimatch))
   const negations = filters.filter((filter) => filter.negation)
   const positives = filters.filter((filter) => !filter.negation)
-  return (vfs, dir) => {
+  return Object.assign((vfs, dir) => {
     if (!vfs.isDirectory(dir)) return
     const entries = [...vfs.walk(dir)].slice(1).map(({ path, type }) => ({ path, type, loc: packagePath(dir, path) })).filter(({ loc }) => loc !== null)
     // A path a `!` filter matches is kept, and so is every directory holding one.
@@ -94,5 +96,5 @@ export function yarnclean(host, cwd) {
       vfs.rm(path, { recursive: true })
       gone = `${path}/`
     }
-  }
+  }, { keeps: negations.length > 0 })
 }
