@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
-import { basename, resolve } from 'node:path'
+import { basename } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
-import { constants as osConstants } from 'node:os'
 import assert from 'node:assert/strict'
-import { parseBrotliQuality, parseLeadingOptions } from '../src/util.js'
+import { addCli, extractCli, parseRunOptions, pruneCli, runProgram, setRunEnv } from '../src/cli.js'
 import pkg from '../package.json' with { type: 'json' }
 
 const argv = [...process.argv]
@@ -40,12 +37,6 @@ function fail(message) {
   process.exit(1)
 }
 
-function setEnv(name, value) {
-  const env = process.env[name]
-  if (env && env !== value) throw new Error(`env conflict: ${name}="${env}", effective: "${value}"`)
-  process.env[name] = value === undefined ? '' : value
-}
-
 const command = argv.shift()
 
 if (command === '-v' || command === '--version') {
@@ -54,98 +45,15 @@ if (command === '-v' || command === '--version') {
 } else if (command === '-h' || command === '--help') {
   usage(true)
 } else if (command === 'run') {
-  const options = {
-    lock: { type: 'string', default: 'none' },
-    bundle: { type: 'string', default: 'none' },
-    'bundle-file': { type: 'string' },
-    'resources-bundle-file': { type: 'string' },
-    debug: { type: 'boolean' },
-    dependencies: { type: 'boolean' },
-    'child-process': { type: 'boolean' },
-    import: { type: 'string', multiple: true },
-    fs: { type: 'string' },
-    resources: { type: 'string' },
-    'brotli-quality': { type: 'string' },
-  }
-  const values = parseLeadingOptions(argv, options, {
-    valueFlags: ['--bundle', '--bundle-file', '--resources-bundle-file', '--lock', '--import', '--resources', '--brotli-quality'],
-    onError: fail,
-  })
-  if (argv.length === 0) fail('Nothing to run: no path to file given')
-  if (!['none', 'ignore', 'add', 'replace', 'frozen'].includes(values.lock)) fail('Error: invalid --lock value')
-  const lock = values.lock
-  const scope = values.dependencies ? 'node_modules' : 'full'
-  const bundle = values.bundle
-  const bundleFile = values['bundle-file'] ? resolve(values['bundle-file']) : ''
-  const resourcesBundleFile = values['resources-bundle-file'] ? resolve(values['resources-bundle-file']) : ''
-  const debug = values.debug ? '1' : ''
-  if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) fail('Error: invalid --bundle value')
-  if (bundleFile && bundle === 'none') fail('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
-  if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
-  if (bundle === 'load' && lock !== 'frozen' && lock !== 'none' && lock !== 'ignore') fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
-  if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
-  if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
-  if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
-  const captureFs = values.fs ?? ''
-  const resources = values.resources ?? ''
-  let brotliQuality
-  if (values['brotli-quality'] !== undefined) {
-    try {
-      brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-    } catch (cause) {
-      fail(`Error: ${cause.message}`)
-    }
-  }
-  const childProcess = values['child-process'] ? '1' : ''
-  // --import: extra preload module(s) passed through to the spawned node. Node resolves each
-  // against the project cwd; they ride AFTER stasis's own loader import.
-  const imports = values.import ?? []
-  if (imports.some((s) => s === '')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
-  console.warn('[stasis-core] Running stasis with config:', { lock, scope, bundle, ...(bundleFile && { bundleFile }), ...(resourcesBundleFile && { resourcesBundleFile }), ...(childProcess && { childProcess: true }), ...(imports.length > 0 && { import: imports }), ...(values.fs && { fs: values.fs }), ...(resources && { resources }), ...(brotliQuality !== undefined && { brotliQuality }) })
-  if (debug) console.warn(`[stasis-core] Warning: stasis debug mode active`)
-  setEnv('EXODUS_STASIS_LOCK', lock)
-  setEnv('EXODUS_STASIS_SCOPE', scope)
-  setEnv('EXODUS_STASIS_BUNDLE', bundle)
-  setEnv('EXODUS_STASIS_BUNDLE_FILE', bundleFile)
-  setEnv('EXODUS_STASIS_RESOURCES_BUNDLE_FILE', resourcesBundleFile)
-  setEnv('EXODUS_STASIS_DEBUG', debug)
-  setEnv('EXODUS_STASIS_CHILD_PROCESS', childProcess)
-  setEnv('EXODUS_STASIS_FS', captureFs)
-  setEnv('EXODUS_STASIS_RESOURCES', resources)
-  // Only set when given: an unconditional setEnv('') would reject an ambient EXODUS_STASIS_BROTLI_QUALITY as a conflict.
-  if (brotliQuality !== undefined) setEnv('EXODUS_STASIS_BROTLI_QUALITY', String(brotliQuality))
-  const nodeArgs = ['--import', import.meta.resolve('../src/loader.js')]
-  // Passthrough preloads ride after the loader, so they evaluate under its hooks; their module
-  // graphs pass through uncaptured unless the app graph reaches them -- then they're promoted
-  // into the capture (see src/hooks.js).
-  for (const specifier of imports) nodeArgs.push('--import', specifier)
-  const child = spawn(process.execPath, [...nodeArgs, ...argv], { stdio: 'inherit' })
-  const [code, signal] = await once(child, 'close')
-  // code is null when the child died from a signal; report 128+signo (shell convention) instead of the implicit 0
-  process.exitCode = code ?? 128 + (osConstants.signals[signal] ?? 0)
+  const run = parseRunOptions(argv, { fail })
+  setRunEnv('stasis-core', run)
+  await runProgram(argv, { loader: import.meta.resolve('../src/loader.js'), imports: run.imports })
 } else if (command === 'prune') {
-  if (argv.length > 1) fail('Error: prune takes at most one path argument')
-  const root = argv[0] ? resolve(argv[0]) : process.cwd()
-  const { prune } = await import('../src/prune.js')
-  const { removed, validated, minimized } = prune({ root })
-  console.warn(`[stasis-core] prune: validated ${validated.length} file(s), removed ${removed.length} file(s), minimized ${minimized.length} package.json file(s)`)
+  await pruneCli(argv, { label: 'stasis-core', fail })
 } else if (command === 'add') {
-  if (argv.length === 0) fail('Nothing to add: no file given')
-  if (argv.some((a) => a.startsWith('-'))) fail('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
-  const { addCommand } = await import('../src/add.js')
-  addCommand({ cwd: process.cwd(), entries: argv, logLabel: 'stasis-core' })
+  await addCli(argv, { label: 'stasis-core', fail })
 } else if (command === 'extract') {
-  const options = {
-    output: { type: 'string', short: 'o' },
-    lock: { type: 'string' },
-  }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o', '--lock'], onError: fail })
-  if (argv.length === 0) fail('Nothing to extract: no bundle file given')
-  if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
-  // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
-  if (values.lock !== undefined && !['frozen', 'add', 'replace', 'ignore', 'none'].includes(values.lock)) fail('Error: invalid --lock value')
-  const { extractCommand } = await import('../src/extract.js')
-  extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: 'stasis-core' })
+  await extractCli(argv, { label: 'stasis-core', fail })
 } else if (command === undefined) {
   usage()
 } else {

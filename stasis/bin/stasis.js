@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
-import { homedir, constants as osConstants } from 'node:os'
+import { homedir } from 'node:os'
 import assert from 'node:assert/strict'
 import { parseBrotliQuality, parseLeadingOptions } from '@exodus/stasis-core/util'
+import { addCli, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
 import pkg from '../package.json' with { type: 'json' }
 
 const argv = [...process.argv]
@@ -50,12 +49,6 @@ function fail(message) {
   process.exit(1)
 }
 
-function setEnv(name, value) {
-  const env = process.env[name]
-  if (env && env !== value) throw new Error(`env conflict: ${name}="${env}", effective: "${value}"`)
-  process.env[name] = value === undefined ? '' : value
-}
-
 // The per-user cache directory, as each platform names it (XDG ignores a relative path).
 function userCacheDir() {
   if (isAbsolute(process.env.XDG_CACHE_HOME ?? '')) return join(process.env.XDG_CACHE_HOME, 'stasis')
@@ -72,86 +65,22 @@ if (command === '-v' || command === '--version') {
 } else if (command === '-h' || command === '--help') {
   usage(true)
 } else if (command === 'run') {
-  const options = {
-    lock: { type: 'string', default: 'none' },
-    bundle: { type: 'string', default: 'none' },
-    'bundle-file': { type: 'string' },
-    'resources-bundle-file': { type: 'string' },
-    debug: { type: 'boolean' },
-    dependencies: { type: 'boolean' },
-    'child-process': { type: 'boolean' },
-    'package-json': { type: 'boolean' },
-    mock: { type: 'boolean' },
-    import: { type: 'string', multiple: true },
-    fs: { type: 'string' },
-    resources: { type: 'string' },
-    'brotli-quality': { type: 'string' },
-  }
-  const values = parseLeadingOptions(argv, options, {
-    valueFlags: ['--bundle', '--bundle-file', '--resources-bundle-file', '--lock', '--import', '--resources', '--brotli-quality'],
-    onError: fail,
-  })
-  if (argv.length === 0) fail('Nothing to run: no path to file given')
-  if (!['none', 'ignore', 'add', 'replace', 'frozen'].includes(values.lock)) fail('Error: invalid --lock value')
-  const lock = values.lock
-  const scope = values.dependencies ? 'node_modules' : 'full'
-  const bundle = values.bundle
-  const bundleFile = values['bundle-file'] ? resolve(values['bundle-file']) : ''
-  const resourcesBundleFile = values['resources-bundle-file'] ? resolve(values['resources-bundle-file']) : ''
-  const debug = values.debug ? '1' : ''
-  if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) fail('Error: invalid --bundle value')
-  if (bundleFile && bundle === 'none') fail('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
-  // --resources-bundle-file needs an active bundle mode (unlike --bundle-file, inert under ignore).
-  if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
-  if (bundle === 'load' && lock !== 'frozen' && lock !== 'none' && lock !== 'ignore') fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
-  if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
+  const run = parseRunOptions(argv, { options: { 'package-json': { type: 'boolean' }, mock: { type: 'boolean' } }, fail })
+  const { values, bundle, bundleFile, resourcesBundleFile } = run
   if (values.mock && bundle === 'load') fail('Error: --mock is for capturing imports while building a bundle; not compatible with --bundle=load')
-  // --fs requires a bundle mode (add|replace|load); `sync` patches the sync fs readers,
-  // `async` adds their callback + fs.promises counterparts on top.
-  if (values.fs !== undefined && !['sync', 'async'].includes(values.fs)) fail("Error: --fs must be 'sync' or 'async'")
-  if (values.fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) fail('Error: --fs requires --bundle=(add|replace|load)')
-  const captureFs = values.fs ?? ''
-  // --resources: comma-separated extension/filename allowlist for `--fs` captures.
-  const resources = values.resources ?? ''
-  let brotliQuality
-  if (values['brotli-quality'] !== undefined) {
-    try {
-      brotliQuality = parseBrotliQuality('--brotli-quality', values['brotli-quality'])
-    } catch (cause) {
-      fail(`Error: ${cause.message}`)
-    }
-  }
-  // --import: extra preload module(s) passed through to the spawned node. Node resolves each
-  // against the project cwd; they ride AFTER stasis's own loader import.
-  const imports = values.import ?? []
-  if (imports.some((s) => s === '')) fail('Error: --import requires a module specifier (e.g. --import=./instrument.mjs)')
   // Not a usage error: plain instrumentation/setup preloads still work under the mock; only ones
   // that need the denied surfaces (spawning helper processes, network) die, and they do so loudly.
-  if (values.mock && imports.length > 0) {
+  if (values.mock && run.imports.length > 0) {
     console.warn("[stasis] Warning: --import preloads run under --mock's side-effect denials; a preload that spawns helper processes will fail there")
   }
-  // --child-process: forward forked-child (e.g. Metro worker) capture to the root via per-pid shards.
-  const childProcess = values['child-process'] ? '1' : ''
   // --package-json: auto-include every bundled module's package.json. Only meaningful while WRITING
   // a bundle (add|replace) -- there's nothing to fold the manifests into otherwise.
   if (values['package-json'] && bundle !== 'add' && bundle !== 'replace') {
     fail('Error: --package-json requires --bundle=(add|replace)')
   }
   const packageJSON = values['package-json'] ? '1' : ''
-  console.warn('[stasis] Running stasis with config:', { lock, scope, bundle, ...(bundleFile && { bundleFile }), ...(resourcesBundleFile && { resourcesBundleFile }), ...(childProcess && { childProcess: true }), ...(packageJSON && { packageJSON: true }), ...(values.mock && { mock: true }), ...(imports.length > 0 && { import: imports }), ...(values.fs && { fs: values.fs }), ...(resources && { resources }), ...(brotliQuality !== undefined && { brotliQuality }) })
-  if (debug) console.warn(`[stasis] Warning: stasis debug mode active`)
-  setEnv('EXODUS_STASIS_LOCK', lock)
-  setEnv('EXODUS_STASIS_SCOPE', scope)
-  setEnv('EXODUS_STASIS_BUNDLE', bundle)
-  setEnv('EXODUS_STASIS_BUNDLE_FILE', bundleFile)
-  setEnv('EXODUS_STASIS_RESOURCES_BUNDLE_FILE', resourcesBundleFile)
-  setEnv('EXODUS_STASIS_DEBUG', debug)
-  setEnv('EXODUS_STASIS_CHILD_PROCESS', childProcess)
+  setRunEnv('stasis', run, { ...(packageJSON && { packageJSON: true }), ...(values.mock && { mock: true }) })
   setEnv('EXODUS_STASIS_PACKAGE_JSON', packageJSON)
-  setEnv('EXODUS_STASIS_FS', captureFs)
-  setEnv('EXODUS_STASIS_RESOURCES', resources)
-  // Only set when given; an unconditional setEnv('') would conflict with an ambient value.
-  if (brotliQuality !== undefined) setEnv('EXODUS_STASIS_BROTLI_QUALITY', String(brotliQuality))
   // --mock: capture imports by running user code with side-effects denied (fail-closed).
   // --permission blocks fs writes/child procs/workers/addons/inspector at the kernel level;
   // src/mock.js neutralizes network + timers in JS (no --allow-* for those). Reads stay open
@@ -178,17 +107,10 @@ if (command === '-v' || command === '--version') {
     // import map matches a non-mock run; native addons still can't load (--allow-addons off).
     nodeArgs.push('--conditions=node-addons')
   }
-  // --mock uses stasis's loader-mock entry (composes the mock before installing the hooks).
-  const loaderEntry = values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader'
-  nodeArgs.push('--import', import.meta.resolve(loaderEntry))
-  // Passthrough preloads ride after the loader (and after --mock's denials), so they evaluate
-  // under its hooks; their module graphs pass through uncaptured unless the app graph reaches
-  // them -- then they're promoted into the capture (see core hooks.js).
-  for (const specifier of imports) nodeArgs.push('--import', specifier)
-  const child = spawn(process.execPath, [...nodeArgs, ...argv], { stdio: 'inherit' })
-  const [code, signal] = await once(child, 'close')
-  // code is null when the child died from a signal; report 128+signo (shell convention) instead of the implicit 0
-  process.exitCode = code ?? 128 + (osConstants.signals[signal] ?? 0)
+  // --mock uses stasis's loader-mock entry (composes the mock before installing the hooks), whose
+  // denials the --import preloads then run under.
+  const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')
+  await runProgram(argv, { nodeArgs, loader, imports: run.imports })
 } else if (command === 'bundle') {
   const { BUNDLE_FLAGS, BUNDLE_VALUE_FLAGS, bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
   const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: BUNDLE_VALUE_FLAGS, onError: fail })
@@ -291,13 +213,7 @@ if (command === '-v' || command === '--version') {
     brotliQuality,
   })
 } else if (command === 'add') {
-  // add packs the listed files (no resolver), taking split targets + resource allowlist from
-  // stasis.config.json; it takes no flags.
-  if (argv.length === 0) fail('Nothing to add: no file given')
-  if (argv.some((a) => a.startsWith('-'))) fail('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
-  const { addCommand } = await import('@exodus/stasis-core/add')
-  // Let addCommand's runtime errors propagate as-is; wrapping in fail() would bury the cause.
-  addCommand({ cwd: process.cwd(), entries: argv, logLabel: 'stasis' })
+  await addCli(argv, { label: 'stasis', fail })
 } else if (command === 'build') {
   const options = {
     output: { type: 'string', short: 'o' },
@@ -362,17 +278,7 @@ if (command === '-v' || command === '--version') {
     loader,
   })
 } else if (command === 'extract') {
-  const options = {
-    output: { type: 'string', short: 'o' },
-    lock: { type: 'string' },
-  }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--output', '-o', '--lock'], onError: fail })
-  if (argv.length === 0) fail('Nothing to extract: no bundle file given')
-  if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
-  // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
-  if (values.lock !== undefined && !['frozen', 'add', 'replace', 'ignore', 'none'].includes(values.lock)) fail('Error: invalid --lock value')
-  const { extractCommand } = await import('@exodus/stasis-core/extract')
-  extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: 'stasis' })
+  await extractCli(argv, { label: 'stasis', fail })
 } else if (command === 'diff') {
   const options = {
     stat: { type: 'boolean' },
@@ -389,11 +295,7 @@ if (command === '-v' || command === '--version') {
   // Exit non-zero when the artifacts differ, so it composes in CI.
   process.exitCode = differences ? 1 : 0
 } else if (command === 'prune') {
-  if (argv.length > 1) fail('Error: prune takes at most one path argument')
-  const root = argv[0] ? resolve(argv[0]) : process.cwd()
-  const { prune } = await import('@exodus/stasis-core/prune')
-  const { removed, validated } = prune({ root })
-  console.warn(`[stasis] prune: validated ${validated.length} file(s), removed ${removed.length} file(s)`)
+  await pruneCli(argv, { label: 'stasis', fail })
 } else if (command === 'audit') {
   const values = parseLeadingOptions(argv, { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }, { valueFlags: ['--reason'], onError: fail })
   if (argv.length === 0) fail('Nothing to audit: no path to file given')
