@@ -1557,11 +1557,12 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       }
       return scanner
     }
-    const scanner = absorb(absEntries)
+    const scanner = staged('scan', () => absorb(absEntries))
     // --metro: and what Babel and Metro add, which the source doesn't import, carried as Metro's code
     // and scanned for what each imports in turn; one above the root, passed over, as the Metro plugin
     // passes one over.
     if (metro) {
+      const metroAt = performance.now()
       const code = [...scanner.files].filter(([, info]) => !info.resource).map(([url]) => fileURLToPath(url))
       const assets = [...scanner.files].filter(([url, info]) => info.resource && !isTransformInput(fileURLToPath(url), info)).map(([url]) => fileURLToPath(url))
       // As a require(): Babel's CommonJS transform makes one of each it adds, as Metro writes its own.
@@ -1574,7 +1575,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const dynamicImports = [...scanner.files.values()].some((info) => !info.resource && info.edges.some((e) => e.kind === 'dynamic-import'))
       const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
-      if (added.length > 0) absorb(added)
+      stageTimes.metro += performance.now() - metroAt
+      if (added.length > 0) staged('scan', () => absorb(added))
     }
   }
 
@@ -1602,6 +1604,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // attributed to `bundle`, not to `bundle:metro` with the app's source Metro bundles.
   const configReached = new Set()
   const configOnly = new Set()
+  const configsAt = performance.now()
   if (metro) {
     const configs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)).filter((abs) => host.stat(abs)?.isFile())
     // A METRO_TOOLCHAIN entry's file. -> absolute path, or undefined
@@ -1738,7 +1741,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
   }
 
+  stageTimes.configs += performance.now() - configsAt
   if (voided()) throw new Error('buildResolvedJsBundle: this round reads a package not unpacked yet')
+  const carryingAt = performance.now()
 
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is
   // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.
@@ -1961,6 +1966,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
 
   // The companion lockfile mirrors the bundle, swapping file content for its integrity.
+  stageTimes.carrying += performance.now() - carryingAt
   return { bundle, lockfile: Lockfile.fromBundle(bundle, (file) => integrities.get(file)) }
 }
 
@@ -2251,7 +2257,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy, installDevDependencies })
+  const tree = await debugTimed(lazy ? 'Laid out the tree' : 'Installed the tree', () => loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy, installDevDependencies }))
   // What follows reads the tree through the hosts `hostOf` makes, of the project's host: once, or
   // for a lazy tree, in rounds, each reading into its `reads`, each build keeping what its scans read
   // across them in a memo of its own.
@@ -2281,8 +2287,9 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     // took it. Nothing is written into the Vfs, so none of its files is an output kept out.
     return { root, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { resources: bundleExtra ? undefined : options.resources, host, name: 'buildVfsBundle' }) : union }
   }
+  const since = counts()
   const built = tree.unpack === undefined
-    ? await attempt()
+    ? await debugTimed('Built', () => attempt(), () => builtSince(since))
     : await import('../vfs-bundle/lazy.js').then(({ inRounds }) => inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack]))
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
@@ -2292,34 +2299,63 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
 }
 
 // EXODUS_STASIS_DEBUG=1 or true.
-const debugging = () => process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true'
+export const debugging = () => process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true'
 
-// `attempt` and `unpack` as inRounds takes them, each round said on stderr as it ends: how long it
-// built, the files its scans parsed, resolved again from a parse kept and took as kept, and the
-// packages it asked for and how long unpacking them took. Written, not warned: inRounds holds back
-// what a round set aside warns.
+// The time a --metro build's stages took, all told, in milliseconds: its scans of what the app
+// imports, what Metro and Babel add to it, the configs and toolchain, and carrying the files reached
+// into the bundle. What EXODUS_STASIS_DEBUG says of each build.
+const stageTimes = { scan: 0, metro: 0, configs: 0, carrying: 0 }
+const staged = (stage, fn) => {
+  const at = performance.now()
+  try {
+    return fn()
+  } finally {
+    stageTimes[stage] += performance.now() - at
+  }
+}
+const seconds = (ms) => `${(ms / 1000).toFixed(2)} s`
+
+// `run()`, said on stderr once what it gives settles where EXODUS_STASIS_DEBUG asks for it: `what`, in
+// how long, and what `detail()` adds. Written, not warned: inRounds holds back what a round it sets
+// aside warns. -> what `run()` gives
+export async function debugTimed(what, run, detail = () => '') {
+  if (!debugging()) return run()
+  const at = performance.now()
+  try {
+    return await run()
+  } finally {
+    process.stderr.write(`[stasis] ${what} in ${seconds(performance.now() - at)}${detail()}\n`)
+  }
+}
+
+// scanCounts and stageTimes as they are, for builtSince.
+const counts = () => ({ files: { ...scanCounts }, stages: { ...stageTimes } })
+const STAGES = { scan: 'scan', metro: "Metro's additions", configs: 'configs and toolchain', carrying: 'carrying' }
+
+// What builds did since `since` (counts()'): the files their scans parsed, resolved again from a
+// parse kept and took as kept, and the time of each stage they went through.
+function builtSince(since) {
+  const files = Object.keys(scanCounts).map((key) => `${scanCounts[key] - since.files[key]} ${key}`).join(', ')
+  const times = Object.keys(STAGES).filter((key) => stageTimes[key] > since.stages[key]).map((key) => `${STAGES[key]} ${seconds(stageTimes[key] - since.stages[key])}`)
+  return ` (files ${files}${times.length > 0 ? `; ${times.join(', ')}` : ''})`
+}
+
+// A package's name, as its directory in a tree says it: what follows its last node_modules.
+const packageName = (dir) => dir.slice(dir.lastIndexOf('/node_modules/') + '/node_modules/'.length)
+
+// `attempt` and `unpack` as inRounds takes them, each round said on stderr as it ends (debugTimed):
+// what it built (builtSince), the packages it asked for, the first of them named, and how long
+// unpacking them took.
 function reportedRounds(attempt, unpack) {
   let round = 0
-  let at
-  let since
-  const ms = (start) => `${((performance.now() - start) / 1000).toFixed(2)} s`
   return [
-    async (reads) => {
+    (reads) => {
       round++
-      at = performance.now()
-      since = { ...scanCounts }
-      try {
-        return await attempt(reads)
-      } finally {
-        const files = Object.keys(scanCounts).map((key) => `${scanCounts[key] - since[key]} ${key}`).join(', ')
-        process.stderr.write(`[stasis] Lazy round ${round}: built in ${ms(at)} (files ${files}), ${reads.asked.size === 0 ? 'the build' : `asked for ${reads.asked.size} package${reads.asked.size === 1 ? '' : 's'}`}\n`)
-      }
+      const since = counts()
+      const asked = () => (reads.asked.size === 0 ? ', the build' : `, asked for ${reads.asked.size} package${reads.asked.size === 1 ? '' : 's'}: ${[...reads.asked].slice(0, 5).map(packageName).join(', ')}${reads.asked.size > 5 ? ', …' : ''}`)
+      return debugTimed(`Lazy round ${round}: built`, () => attempt(reads), () => `${builtSince(since)}${asked()}`)
     },
-    async (asked, read) => {
-      at = performance.now()
-      await unpack(asked, read)
-      process.stderr.write(`[stasis] Lazy round ${round}: unpacked in ${ms(at)}\n`)
-    },
+    (asked, read) => debugTimed(`Lazy round ${round}: unpacked`, () => unpack(asked, read)),
   ]
 }
 
