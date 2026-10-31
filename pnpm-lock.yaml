@@ -38,8 +38,8 @@ importers:
         specifier: 1.0.0-rc.116
         version: 1.0.0-rc.116(patch_hash=91700ea042ce1ab37dd135b5344f098bb4c862d12dd9cd2c053bc006aaa5be94)
       '@preventive/archive':
-        specifier: ^1.2.0
-        version: 1.2.0(@noble/hashes@2.4.0)
+        specifier: ^1.2.1
+        version: 1.2.1(@noble/hashes@2.4.0)
       '@prisma/client-generator-ts':
         specifier: 7.10.0
         version: 7.10.0
@@ -83,11 +83,11 @@ importers:
         specifier: 1.0.0-beta.13
         version: link:../stasis-plugins
       '@preventive/archive':
-        specifier: ^1.2.0
-        version: 1.2.0(@noble/hashes@2.4.0)
+        specifier: ^1.2.1
+        version: 1.2.1(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: ^1.3.0
-        version: 1.3.0(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
+        specifier: ^1.3.1
+        version: 1.3.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/lockfile':
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
@@ -95,8 +95,8 @@ importers:
         specifier: ^1.3.0
         version: 1.3.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
-        specifier: 1.0.0-beta.4
-        version: 1.0.0-beta.4
+        specifier: ^1.0.0
+        version: 1.0.0
       '@prisma/client-generator-ts':
         specifier: 7.10.0
         version: 7.10.0
@@ -725,8 +725,8 @@ packages:
     resolution: {integrity: sha512-OqiFvSOF0dBSesELYY2CAMa4YINvlLpvKOz/rv6NeZEqiyttlHgv98Juwv4Ch+GrEV7IZ8jfI2VcEoYUjXXCjw==, tarball: https://registry.npmjs.org/@paralleldrive/cuid2/-/cuid2-3.3.0.tgz}
     hasBin: true
 
-  '@preventive/archive@1.2.0':
-    resolution: {integrity: sha512-5Z0i00SoyxPaoWvFStggTwi+C/yVP2SznPWk3MRY4msyxCjzRXxs3YvoqOkt0IK8dcKkxFu1NpuzP9+Ufh9aow==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.2.0.tgz}
+  '@preventive/archive@1.2.1':
+    resolution: {integrity: sha512-v0I8hCAEjYkjq2TuF7kSa9I7L4oYiGgNFn02BGGcRrh7Gtb2kMYF5XStuTzPj4yWv+pO4/Cr3foVZ1S1oW4i8g==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.2.1.tgz}
     engines: {node: '>=24.14.0'}
 
   '@preventive/compare@1.2.11':
@@ -747,8 +747,8 @@ packages:
       oxfmt:
         optional: true
 
-  '@preventive/deptree@1.3.0':
-    resolution: {integrity: sha512-1Bc25bsjyVn7g3YWt9/EbGt8yg+tSGbEampKjlvZ+WIIShWnuCzzvCRqnVXfLlddJF3bzr7LsGwnDDPLmFCmiQ==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.3.0.tgz}
+  '@preventive/deptree@1.3.1':
+    resolution: {integrity: sha512-Ue1UUiEkyecc8a14Y7brApLgCdizj/0Oflp7MY8K7V+K6I7oR9NbLy2JVsR2/m2GEchw1VdQ+mvDRe1PP+ehfg==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.3.1.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
 
@@ -769,8 +769,8 @@ packages:
       semver:
         optional: true
 
-  '@preventive/vfs@1.0.0-beta.4':
-    resolution: {integrity: sha512-yqx/I33WLZO7+efWJHsE2w8iazwAcIKTUiGYfWfidW09uxRSNUS4tJ9+7e7BhJgC6UsTck1bLbUhKN6a1Rwdqg==, tarball: https://registry.npmjs.org/@preventive/vfs/-/vfs-1.0.0-beta.4.tgz}
+  '@preventive/vfs@1.0.0':
+    resolution: {integrity: sha512-3YqcX2xAd4tlHVqtKEMxtgz+sCLbmU1pzgacJAX+7IQV9WM5KE8B6LlJC+8h0wfzKSwMb1yIZ8ew+azJgZXLdw==, tarball: https://registry.npmjs.org/@preventive/vfs/-/vfs-1.0.0.tgz}
     engines: {node: '>=24.14.0'}
 
   '@prisma/client-common@7.10.0':
@@ -3247,7 +3247,7 @@ snapshots:
       bignumber.js: 9.3.1
       error-causes: 3.0.2
 
-  '@preventive/archive@1.2.0(@noble/hashes@2.4.0)':
+  '@preventive/archive@1.2.1(@noble/hashes@2.4.0)':
     dependencies:
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
     transitivePeerDependencies:
@@ -3262,16 +3262,16 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.3.0(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
+  '@preventive/deptree@1.3.1(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
-      '@preventive/archive': 1.2.0(@noble/hashes@2.4.0)
+      '@preventive/archive': 1.2.1(@noble/hashes@2.4.0)
       '@preventive/compare': 1.2.11(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/diff': 1.1.0
       '@preventive/lockfile': 1.2.0(@noble/hashes@2.4.0)
       '@preventive/upstream': 1.3.0(@noble/hashes@2.4.0)
-      '@preventive/vfs': 1.0.0-beta.4
+      '@preventive/vfs': 1.0.0
     transitivePeerDependencies:
       - '@noble/hashes'
       - css-tree
@@ -3290,11 +3290,11 @@ snapshots:
 
   '@preventive/upstream@1.3.0(@noble/hashes@2.4.0)':
     dependencies:
-      '@preventive/archive': 1.2.0(@noble/hashes@2.4.0)
+      '@preventive/archive': 1.2.1(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/vfs@1.0.0-beta.4': {}
+  '@preventive/vfs@1.0.0': {}
 
   '@prisma/client-common@7.10.0':
     dependencies:
