@@ -281,7 +281,7 @@ export function treeHost(tree, project, reads) {
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
   const installs = [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
   if (tree.lazy === undefined) return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
-  const host = vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides: pm.hides, touches: () => reads.touches })
+  const host = vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides: pm.hides, touches: () => reads.touches, retouch: () => reads.touches++ })
   host.probing = (fn) => {
     reads.probing++
     try {
@@ -567,8 +567,10 @@ const OUTSIDE = 'outside'
 // own resolution, `findPackageJSON` and `resolve`, normalizes its paths first, as Node does). A
 // relative path is from `/`. What it reads is cached, as for a tree that holds still, unless `cache`
 // is false; with `touches`, a count of the reads that read what the tree does not hold yet (a lazy
-// tree's, lazy.js), only what was read with none is cached, so that each of those is read again.
-export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true, touches = () => 0 } = {}) {
+// tree's, lazy.js), only what was read with none is cached, so that each of those is read again; but
+// with `retouch` too, for a host of one round of a lazy tree, those are cached too, and each taken
+// from the cache counts as read again (untouchedMemo's `retouch`).
+export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true, touches = () => 0, retouch } = {}) {
   if (sep !== '/') throw new Error('The Vfs host is POSIX-only')
   const disk = outside ?? null
   const installed = new Set(installs)
@@ -597,7 +599,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   // `p` from `/`, as spelled: realpath resolves its `..` after the link before it.
   const abs = (p) => (p.startsWith('/') ? p : `/${p}`)
   const normal = (p) => resolve('/', p)
-  const memo = () => untouchedMemo(touches, { cache })
+  const memo = () => untouchedMemo(touches, { cache, retouch })
 
   // `p` is a real path but for its last name; null when it exists and isn't a link.
   const readlink = (p) => {
@@ -614,8 +616,9 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     if (p === '/') return '/'
     const hit = realCache.get(p)
     if (hit !== undefined) {
-      if (hit instanceof Error) throw hit
-      return hit
+      if (hit.touched) retouch()
+      if (hit.error !== undefined) throw hit.error
+      return hit.result
     }
     const before = touches()
     let result
@@ -637,10 +640,12 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
         }
       }
     } catch (err) {
-      if (hops === 0 && (err.code === 'ENOENT' || err.code === 'ELOOP') && touches() === before) realCache.set(p, err)
+      const touched = touches() !== before
+      if (hops === 0 && (err.code === 'ENOENT' || err.code === 'ELOOP') && (!touched || retouch !== undefined)) realCache.set(p, { error: err, touched })
       throw err
     }
-    if (touches() === before) realCache.set(p, result)
+    const touched = touches() !== before
+    if (!touched || retouch !== undefined) realCache.set(p, { result, touched })
     return result
   }
 
@@ -758,6 +763,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     },
     // What createNodeResolver caches by, as this host does.
     touches,
+    retouch,
   }
   const resolver = cache ? createNodeResolver(host) : undefined
   return host

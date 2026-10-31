@@ -143,10 +143,11 @@ function matchRedirect(map, relPath) {
 }
 
 // What readJson gives for each manifest a resolver reads, read once, as for a tree that holds still:
-// but one whose reading read what a lazy tree does not hold yet (`host.touches`), read again. Each
-// resolver reads its own, so a build on the disk reads each manifest as it is then.
+// but one whose reading read what a lazy tree does not hold yet (`host.touches`) read again, or with
+// `host.retouch` taken as read again (untouchedMemo's). Each resolver reads its own, so a build on the
+// disk reads each manifest as it is then.
 function manifestReader(host) {
-  const manifests = untouchedMemo(host.touches)
+  const manifests = untouchedMemo(host.touches, { retouch: host.retouch })
   return (path) => manifests(path, () => readJson(path, host))
 }
 
@@ -621,14 +622,19 @@ export function createFieldResolver({
     if (isBuiltin(spec)) return spec.startsWith('node:') ? { builtin: true } : (viaPackage(spec) ?? { builtin: true })
     return viaPackage(spec)
   }
-  if (!typescript) return resolve
+  // Each resolution made once for each directory, specifier and conditions: a file's directory is all
+  // of it resolving from it reads (its package, the node_modules above it, its tsconfig `paths`).
+  // Kept as the resolver's manifests are (manifestReader).
+  const resolutions = untouchedMemo(host.touches, { retouch: host.retouch })
+  const once = (resolveFn) => (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => resolveFn(parentFile, specifier, callConditions))
+  if (!typescript) return once(resolve)
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping
   // the same shot the scanner's fallback gets, via the shared dispatcher. On this path it covers
   // the layers the field resolver delegates to Node -- `exports`-bearing packages and `#` subpath
   // imports, whose targets may name compiled files existing only as TS source -- plus tsconfig
   // `paths` aliases; misses only, so no field/redirect/suffix resolution is ever overridden.
   // (Relative paths re-probe tsc-style too -- redundant after resolveSourceFile, but harmless.)
-  return function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
+  return once(function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
     const resolved = resolve(parentFile, specifier, callConditions)
     if (resolved) return resolved
     // Under --metro an asset is Metro's asset rule's to resolve (resolveSourceFile), as tsc never does.
@@ -639,7 +645,7 @@ export function createFieldResolver({
       host,
     })
     return hit == null ? null : fileResolution(hit, host)
-  }
+  })
 }
 
 // True when `format` is an ESM family (drives the base condition set, mirroring scan).

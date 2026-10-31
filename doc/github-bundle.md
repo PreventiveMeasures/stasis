@@ -152,7 +152,9 @@ those packages are unpacked, and the build runs again, until a round reads none
 it has not unpacked. What a round scans of a file is kept for the rounds after
 it, unless scanning it read in a package not yet unpacked: each file is scanned
 once, but those, whose imports are resolved again in the next round, from the
-parse kept.
+parse kept. Where `stasis.config.json`'s entries make several builds, each runs
+in each round, though one before it is set aside, so a round asks for what
+they all read.
 
 With `EXODUS_STASIS_DEBUG=1`, each step is said on stderr as it ends, with
 what it cost: fetching the repo, the tree (installed, or with `--lazy` laid

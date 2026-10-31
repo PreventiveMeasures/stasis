@@ -54,14 +54,23 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
 
 // A get-or-read cache, `(key, read) => read()`'s value, as for a tree that holds still: but kept only
 // where reading it read nothing a lazy tree does not hold yet (counted by `touches`, a lazy tree's
-// host's), which is read again; and kept nowhere without `cache`.
-export function untouchedMemo(touches = () => 0, { cache = true } = {}) {
+// host's), which is read again; and kept nowhere without `cache`. With `retouch`, for a cache that
+// lives no longer than one round of a lazy tree, in which the tree holds still, what such a reading
+// gave is kept too, and each time it is taken it touches again (`retouch()`), as reading it again
+// would: what reads it knows it read what the tree does not hold yet, which a round's scan keeps none
+// of (Scan's `memo`), and it is not read again only to fail again.
+export function untouchedMemo(touches = () => 0, { cache = true, retouch } = {}) {
   const kept = new Map()
   return (key, read) => {
-    if (kept.has(key)) return kept.get(key)
+    const hit = kept.get(key)
+    if (hit !== undefined) {
+      if (hit.touched) retouch()
+      return hit.value
+    }
     const before = touches()
     const value = read()
-    if (cache && touches() === before) kept.set(key, value)
+    const touched = touches() !== before
+    if (cache && (!touched || retouch !== undefined)) kept.set(key, { value, touched })
     return value
   }
 }

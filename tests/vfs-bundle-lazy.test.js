@@ -9,7 +9,7 @@ import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
 import { Vfs, buildGitHubBundle, buildVfsBundle } from '../stasis/src/vfs-bundle.js'
-import { inRounds, lazyView } from '../stasis/src/vfs-bundle/lazy.js'
+import { inRounds, lazyView, untouchedMemo } from '../stasis/src/vfs-bundle/lazy.js'
 import { Scan } from '../stasis/src/scan.js'
 import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
@@ -163,6 +163,36 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
     t.assert.equal(walks.mock.callCount(), 3)
     t.assert.deepStrictEqual(Object.fromEntries(parsed), { 'a.js': 1, 'b.js': 1, phantom: 1, deep: 1 })
+  })
+
+  // src/a.js and src/b.js both require used: the second is resolved as the first was, from the same
+  // directory, which a round keeps, but it too read a package not unpacked yet, so it is not kept for
+  // the build, which resolves it again; without --metro, and with its field resolver.
+  test(`${packageManager}: lazily, two files of one directory reading a package not unpacked yet are each resolved again in the round after`, async (t) => {
+    const files = { names: ['used'], entry: "require('./b.js')\nrequire('used')\n", files: { 'src/b.js': "require('used')\n" } }
+    for (const options of [{}, { metro: true, platforms: ['ios'] }]) {
+      // eslint-disable-next-line no-await-in-loop -- one build at a time
+      const [full, lazy] = [await build(packageManager, { cache: store(), ...options }, files), await build(packageManager, { cache: store(), lazy: true, ...options }, files)]
+      t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+      t.assert.ok([...lazy.bundle.imports.get('*').get('src/b.js').keys()].includes('used'), 'b.js imports used')
+    }
+  })
+
+  // stasis.config.json's entries build src/a.js with --metro, and src/cli.js without, which requires
+  // top, which requires used. The first round's --metro build, checking top for its files as React
+  // Native's CLI does, reads a package not unpacked yet, so is void: the build after it is run all the
+  // same, reading top, which is unpacked with used; and the next round asks for deep.
+  test(`${packageManager}: lazily, each build of a round is run, though one before it is void`, async (t) => {
+    const entries = { 'src/a.js': { metro: true, platforms: ['ios'] }, 'src/cli.js': {} }
+    const files = { names: ['top'], entry: 'export default 0\n', files: { 'src/cli.js': "require('top')\n", 'stasis.config.json': json({ entries }) } }
+    const configured = (options) => build(packageManager, { entries: undefined, scope: undefined, cache: store(), ...options }, files)
+    const full = await configured({})
+    const walks = t.mock.method(Scan.prototype, 'walk')
+    const lazy = await configured({ lazy: true })
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.deepStrictEqual([...lazy.bundle.entries].toSorted(), ['src/a.js', 'src/cli.js'])
+    const cli = walks.mock.calls.filter((call) => call.arguments[0].some((entry) => entry.endsWith('/src/cli.js')))
+    t.assert.equal(cli.length, 3, 'in each of the three rounds, the first among them')
   })
 
   test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but one deptree refuses is left for the build to read`, async (t) => {
@@ -360,6 +390,38 @@ test('lazyView asks for a package read under before it is unpacked, but not for 
   const probed = { asked: new Set(), read: new Set(), probing: 1, touches: 0 }
   t.assert.throws(() => lazyView(vfs, { roots, unpacked: new Set(), reads: probed }).lstat('/node_modules/@s/c/react-native.config.js'), { code: 'ENOENT' })
   t.assert.deepStrictEqual([[...probed.asked], [...probed.read], probed.touches], [['/node_modules/@s/c'], [], 1], 'probed alone')
+})
+
+test('untouchedMemo keeps what read nothing a lazy tree does not hold yet; with retouch, what did too, touching again as it is taken', (t) => {
+  let touches = 0
+  const read = (key, touching) => () => {
+    if (touching) touches++
+    return key
+  }
+  const plain = untouchedMemo(() => touches)
+  const reads = t.mock.fn(read('a', true))
+  t.assert.equal(plain('a', reads), 'a')
+  t.assert.equal(plain('a', reads), 'a')
+  t.assert.deepStrictEqual([reads.mock.callCount(), touches], [2, 2], 'read again')
+  const still = t.mock.fn(read('b', false))
+  plain('b', still)
+  plain('b', still)
+  t.assert.deepStrictEqual([still.mock.callCount(), touches], [1, 2], 'kept')
+  const retouch = t.mock.fn(() => touches++)
+  const round = untouchedMemo(() => touches, { retouch })
+  const touching = t.mock.fn(read('c', true))
+  t.assert.equal(round('c', touching), 'c')
+  t.assert.equal(round('c', touching), 'c')
+  t.assert.deepStrictEqual([touching.mock.callCount(), retouch.mock.callCount(), touches], [1, 1, 4], 'kept, touching again')
+  round('d', read('d', false))
+  round('d', read('d', false))
+  t.assert.equal(retouch.mock.callCount(), 1, 'what touched nothing touches nothing')
+  // Without `cache`, nothing is kept.
+  const none = untouchedMemo(() => touches, { cache: false, retouch })
+  const each = t.mock.fn(read('e', false))
+  none('e', each)
+  none('e', each)
+  t.assert.equal(each.mock.callCount(), 2)
 })
 
 test('inRounds: a round that asks is void, warnings and all; the first that asks nothing is the build', async (t) => {
