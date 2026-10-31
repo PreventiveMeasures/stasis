@@ -11,9 +11,10 @@ import { posix } from 'node:path'
 
 // The tree's Vfs as tree.js's vfsHost reads it (lstat, readlink, readFile and readdir). A read under
 // the directory of a package of `roots` not in `unpacked`, or a listing of that directory itself,
-// adds it to `reads.asked`, counts in `reads.touches`, and reads what the layout holds there. The
-// directory itself, and those above a package's on the way to it, are as the full tree holds them,
-// so reading them asks for nothing.
+// adds it to `reads.asked`, and to `reads.read` but while `reads.probing` (a check of what files the
+// package holds, which reads none of its code), counts in `reads.touches`, and reads what the layout
+// holds there. The directory itself, and those above a package's on the way to it, are as the full
+// tree holds them, so reading them asks for nothing.
 export function lazyView(vfs, { roots, unpacked, reads }) {
   const above = new Set()
   for (const root of roots) {
@@ -28,6 +29,7 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
     if (owner === null || unpacked.has(owner)) return
     if (!listing && (path === owner || above.has(path))) return
     reads.asked.add(owner)
+    if (reads.probing === 0) reads.read.add(owner)
     reads.touches++
   }
   return {
@@ -72,11 +74,12 @@ async function holding(held, fn) {
 }
 
 // `attempt(reads)`'s result, of the first round whose reads ask for no package (`reads.asked`), its
-// warnings given then; after each round that does, `unpack(reads.asked)`. Each round asks for one
-// package at least that no round before did, so there are no more rounds than packages.
+// warnings given then; after each round that does, `unpack(reads.asked, reads.read)`, `reads.read`
+// those of them it read other than by a probe (lazyView). Each round asks for one package at least
+// that no round before did, so there are no more rounds than packages.
 export async function inRounds(attempt, unpack) {
   for (;;) {
-    const reads = { asked: new Set(), touches: 0 }
+    const reads = { asked: new Set(), read: new Set(), probing: 0, touches: 0 }
     const held = []
     let result
     let failure
@@ -92,6 +95,6 @@ export async function inRounds(attempt, unpack) {
       return result
     }
     // eslint-disable-next-line no-await-in-loop -- what the next round reads
-    await unpack(reads.asked)
+    await unpack(reads.asked, reads.read)
   }
 }

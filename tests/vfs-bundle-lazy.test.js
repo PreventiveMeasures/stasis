@@ -21,8 +21,9 @@ import { captureWarningsAsync } from './warnings.helper.js'
 // test's, which answers for each, so nothing is fetched, and what the store is asked tells what the
 // build fetched. `used` requires `deep`; `unused` and `broken` are dependencies nothing requires,
 // and `broken`'s tarball is not the lockfile's. `phantom` requires `deep`, which it does not
-// declare; `declares` depends on `deep` and `broken`, and requires `deep` alone. `mconf` is what a
-// Metro config requires, and `babel-plugin-plug` the plugin a Babel config names.
+// declare; `declares` depends on `deep` and `broken`, and requires `deep` alone; `top` requires
+// `used`. `mconf` is what a Metro config requires, and `babel-plugin-plug` the plugin a Babel config
+// names.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const encoder = new TextEncoder()
@@ -46,9 +47,10 @@ const PACKAGES = await Promise.all([
   published('declares', { 'index.js': "module.exports = require('deep')\n" }, { manifest: { dependencies: { deep: '1.0.0', broken: '1.0.0' } } }),
   published('mconf', { 'index.js': 'module.exports = {}\n' }),
   published('babel-plugin-plug', { 'index.js': 'module.exports = () => ({})\n' }),
+  published('top', { 'index.js': "module.exports = require('used')\n" }, { manifest: { dependencies: { used: '1.0.0' } } }),
 ])
 const BY_NAME = Object.fromEntries(PACKAGES.map((pkg) => [pkg.name, pkg]))
-const DEPENDENCIES = { used: { deep: '1.0.0' }, declares: { deep: '1.0.0', broken: '1.0.0' } }
+const DEPENDENCIES = { used: { deep: '1.0.0' }, declares: { deep: '1.0.0', broken: '1.0.0' }, top: { used: '1.0.0' } }
 // What the lockfile holds broken to, which its tarball is not.
 const LOCKED = { ...Object.fromEntries(PACKAGES.map(({ name, integrity }) => [name, integrity])), broken: BY_NAME.unused.integrity }
 
@@ -70,8 +72,19 @@ const tarballs = ({ calls }) => calls.filter((call) => call.startsWith('npm/tarb
 
 // The project, depending on each of `names`, as pnpm and npm lock it.
 const ROOT = ['used', 'unused', 'broken']
+// `names` and what they depend on, and so on.
+const closure = (names) => {
+  const all = new Set()
+  const add = (name) => {
+    if (all.has(name)) return
+    all.add(name)
+    for (const dep of Object.keys(DEPENDENCIES[name] ?? {})) add(dep)
+  }
+  for (const name of names) add(name)
+  return [...all].toSorted()
+}
 const pnpmLock = (names = ROOT) => {
-  const all = [...new Set(names.flatMap((name) => [name, ...Object.keys(DEPENDENCIES[name] ?? {})]))].toSorted()
+  const all = closure(names)
   return [
     "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '',
     'importers:', '', '  .:', '    dependencies:', ...names.flatMap((name) => [`      ${name}:`, '        specifier: 1.0.0', '        version: 1.0.0']), '',
@@ -80,7 +93,7 @@ const pnpmLock = (names = ROOT) => {
   ].join('\n')
 }
 const npmLock = (names = ROOT) => {
-  const all = [...new Set(names.flatMap((name) => [name, ...Object.keys(DEPENDENCIES[name] ?? {})]))].toSorted()
+  const all = closure(names)
   const packages = { '': { name: 'p', version: '1.0.0', dependencies: Object.fromEntries(names.map((name) => [name, '1.0.0'])) } }
   for (const name of all) packages[`node_modules/${name}`] = { version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`, integrity: LOCKED[name], ...DEPENDENCIES[name] ? { dependencies: DEPENDENCIES[name] } : {} }
   return `${JSON.stringify({ name: 'p', version: '1.0.0', lockfileVersion: 3, requires: true, packages }, null, 2)}\n`
@@ -132,10 +145,10 @@ for (const packageManager of ['pnpm', 'npm']) {
   })
 
   // A round asks for phantom, the next for deep, which phantom requires and does not declare, and
-  // the last is the build. Each file is scanned again only in the round after the one it read a
-  // package not unpacked yet in, b.js too, though src/a.js resolved its `phantom` first, from the
-  // same directory, which resolves it again.
-  test(`${packageManager}: lazily, each file is scanned once, but in the round after one it reads a package not unpacked yet in`, async (t) => {
+  // the last is the build. Each file is parsed once: one whose scan read a package not unpacked yet
+  // (b.js too, though src/a.js resolved its `phantom` first, from the same directory) is scanned
+  // again in the round after, its imports resolved again, but from the parse kept.
+  test(`${packageManager}: lazily, each file is parsed once, though scanned again in the round after one it reads a package not unpacked yet in`, async (t) => {
     const files = { names: ['phantom', 'used'], entry: "require('./b.js')\nrequire('phantom')\n", files: { 'src/b.js': "require('phantom')\n" } }
     const full = await build(packageManager, { cache: store() }, files)
     const parsed = new Map()
@@ -149,7 +162,7 @@ for (const packageManager of ['pnpm', 'npm']) {
     const lazy = await build(packageManager, { cache: store(), lazy: true }, files)
     t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
     t.assert.equal(walks.mock.callCount(), 3)
-    t.assert.deepStrictEqual(Object.fromEntries(parsed), { 'a.js': 2, 'b.js': 2, phantom: 2, deep: 1 })
+    t.assert.deepStrictEqual(Object.fromEntries(parsed), { 'a.js': 1, 'b.js': 1, phantom: 1, deep: 1 })
   })
 
   test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but one deptree refuses is left for the build to read`, async (t) => {
@@ -181,6 +194,28 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.ok([...lazy.bundle.modules.keys()].some((dir) => dir.endsWith('/babel-plugin-plug')))
     t.assert.deepStrictEqual(tarballs(cache), ['babel-plugin-plug', 'deep', 'mconf', 'used'])
     t.assert.equal(walks.mock.callCount(), 3 + 4)
+  })
+
+  // A round reads top, which is unpacked with used, which it depends on; the next reads used, and
+  // asks for deep, which used depends on, and which was not unpacked with top: the last is the build.
+  test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but not what that depends on`, async (t) => {
+    const full = await build(packageManager, { cache: store() }, { names: ['top'], entry: "require('top')\n" })
+    const cache = store()
+    const walks = t.mock.method(Scan.prototype, 'walk')
+    const lazy = await build(packageManager, { cache, lazy: true }, { names: ['top'], entry: "require('top')\n" })
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.equal(walks.mock.callCount(), 3)
+    t.assert.deepStrictEqual(tarballs(cache), ['deep', 'top', 'used'])
+  })
+
+  // Under --metro, the build checks each dependency of the project for a react-native.config.js and
+  // for native code, as React Native's CLI does: declares, which nothing imports, is unpacked for it,
+  // but not what it depends on, which nothing reads. broken is never fetched, so never refused.
+  test(`${packageManager}: lazily under --metro, a dependency only checked for its files is unpacked alone`, async (t) => {
+    const cache = store()
+    const { bundle } = await build(packageManager, { cache, lazy: true, metro: true, platforms: ['ios', 'android'] }, { names: ['used', 'declares'], entry: "import used from 'used'\nexport default used\n" })
+    t.assert.ok([...bundle.modules.keys()].some((dir) => dir.endsWith('/deep')))
+    t.assert.deepStrictEqual(tarballs(cache), ['declares', 'deep', 'used'])
   })
 
   test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
@@ -255,14 +290,14 @@ test('stasis github-bundle takes --lazy, and refuses it for yarn 1 before anythi
   t.assert.match(Buffer.concat(stderr).toString('utf8'), /buildGitHubBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; yarn1's is not/u)
 })
 
-test('lazyView asks for a package read under before it is unpacked, but not for its directory or those above it', (t) => {
+test('lazyView asks for a package read under before it is unpacked, but not for its directory or those above it; one probed alone is not read', (t) => {
   const vfs = new Vfs()
   for (const dir of ['/node_modules/a', '/node_modules/a/node_modules/b', '/node_modules/@s/c']) vfs.mkdir(dir, { recursive: true })
   vfs.writeFile('/node_modules/a/index.js', '')
   vfs.symlink('a', '/node_modules/link')
   const roots = new Set(['/node_modules/a', '/node_modules/a/node_modules/b', '/node_modules/@s/c'])
   const unpacked = new Set()
-  const reads = { asked: new Set(), touches: 0 }
+  const reads = { asked: new Set(), read: new Set(), probing: 0, touches: 0 }
   const { asked } = reads
   const view = lazyView(vfs, { roots, unpacked, reads })
   view.lstat('/node_modules/a')
@@ -285,6 +320,11 @@ test('lazyView asks for a package read under before it is unpacked, but not for 
   view.readFile('/node_modules/a/index.js')
   t.assert.deepStrictEqual([...asked], [], 'once unpacked, nothing')
   t.assert.equal(reads.touches, 4)
+  t.assert.deepStrictEqual([...reads.read], ['/node_modules/a/node_modules/b', '/node_modules/@s/c', '/node_modules/a'], 'each read')
+  // A read while probing asks for the package, which it does not read.
+  const probed = { asked: new Set(), read: new Set(), probing: 1, touches: 0 }
+  t.assert.throws(() => lazyView(vfs, { roots, unpacked: new Set(), reads: probed }).lstat('/node_modules/@s/c/react-native.config.js'), { code: 'ENOENT' })
+  t.assert.deepStrictEqual([[...probed.asked], [...probed.read], probed.touches], [['/node_modules/@s/c'], [], 1], 'probed alone')
 })
 
 test('inRounds: a round that asks is void, warnings and all; the first that asks nothing is the build', async (t) => {

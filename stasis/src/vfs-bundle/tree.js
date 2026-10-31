@@ -271,14 +271,25 @@ export async function loadTree(options) {
 // serves what the package manager installs, and any file it writes beside it at the root. A lazy
 // tree is read as lazyView reads it, into the round's `reads`, caching nothing it reads of a package
 // not unpacked yet: each such read reaches it, so that what a file's scan reads tells whether it
-// touched one.
+// touched one. Its `probing(fn)` is `fn()`, its reads taken as probes of what files a package holds
+// (lazyView), which read none of its code.
 export function treeHost(tree, project, reads) {
   const pm = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
   const installs = [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
   if (tree.lazy === undefined) return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
-  return vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides: pm.hides, touches: () => reads.touches })
+  const host = vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides: pm.hides, touches: () => reads.touches })
+  host.probing = (fn) => {
+    reads.probing++
+    try {
+      return fn()
+    } finally {
+      reads.probing--
+    }
+  }
+  return host
 }
+
 
 // Refused where `packageManager` lays out no tree from the lockfile alone, which `lazy` would have.
 export function checkLazy(name, packageManager) {
@@ -456,9 +467,11 @@ function dependenciesOf(vfs, dir, roots) {
 // `unpacked`, each unpacked so far. Positive patterns alone clean each path by its own, whatever
 // else the tree holds, so cleaning again cleans each package unpacked as the full tree's is.
 // `installed` takes in what each one's version document says, once it is unpacked. What each
-// package unpacked depends on is unpacked with it, and so on, as the build would ask for it a round
-// later, each round a build: but one deptree refuses is left for the build to ask for, which is
-// then refused, so that one it never reads is never refused, as one never fetched is not.
+// package `read` (inRounds') depends on is unpacked with it, as the build would ask for it a round
+// later, each round a build; but not what one only probed for its files depends on, nor what those
+// depend on in turn, which most builds never read: a package's dependencies are often its tools. One
+// deptree refuses is left for the build to ask for, which is then refused, so that one it never
+// reads is never refused, as one never fetched is not.
 function lazyTree({ vfs, installed, unpack }, cleanAll) {
   const roots = new Set(installed.map(({ path }) => `/${path}`).filter((dir) => vfs.isDirectory(dir)))
   const unpacked = new Set()
@@ -471,22 +484,14 @@ function lazyTree({ vfs, installed, unpack }, cleanAll) {
   }
   return {
     lazy: { roots, unpacked },
-    async unpack(asked) {
+    async unpack(asked, read = asked) {
       // Each asked for, the first refusal thrown once every one is done, as deptree throws one.
       const done = await Promise.allSettled([...asked].map(unpackOne))
       const failed = done.find(({ status }) => status === 'rejected')
       if (failed !== undefined) throw failed.reason
-      let next = [...asked]
-      while (next.length > 0) {
-        const ahead = new Set(next.flatMap((dir) => dependenciesOf(vfs, dir, roots)).filter((dir) => !unpacked.has(dir) && !refused.has(dir)))
-        // eslint-disable-next-line no-await-in-loop -- what each depends on is read once it is unpacked
-        const results = await Promise.allSettled([...ahead].map(unpackOne))
-        next = [...ahead].filter((dir, i) => {
-          if (results[i].status === 'fulfilled') return true
-          refused.add(dir)
-          return false
-        })
-      }
+      const ahead = new Set([...asked].filter((dir) => read.has(dir)).flatMap((dir) => dependenciesOf(vfs, dir, roots)).filter((dir) => !unpacked.has(dir) && !refused.has(dir)))
+      const results = await Promise.allSettled([...ahead].map(unpackOne))
+      for (const [i, dir] of [...ahead].entries()) if (results[i].status === 'rejected') refused.add(dir)
       cleanAll()
     },
   }
