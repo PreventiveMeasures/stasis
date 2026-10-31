@@ -130,8 +130,11 @@ taken as always):
   `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
   the cwd, and packs them as `stasis add` does. Where `entries` builds the
   bundle, they are added once, to its builds' union, packed as `stasis add`
-  does, by `resources` (an entry's own is its graph's alone). `stasis
-  github-bundle` doesn't take `extra`.
+  does, by `resources` (an entry's own is its graph's alone).
+- [`stasis github-bundle`](github-bundle.md#extra-files) adds them as `stasis
+  bundle` does, from the repository's tree, globbed and matched as Node globs
+  and matches the disk, but never folding case. It needs `minimatch`, an
+  optional dependency: without it, an `extra` naming anything is refused.
 
 In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), every
 file `extra` names is the `extra` consumer's, a file the run or build reached

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,6 +12,7 @@ import { pack } from '@preventive/archive/tar.js'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
+import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { HEAD, fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
@@ -814,11 +815,132 @@ test('buildGitHubBundle refuses a symlink out of the repo rather than resolving 
   await t.assert.rejects(build({ client: fakeClient(files), entries: ['src/a.js'] }), /symlink "up\.js" points outside the repo/u)
 })
 
+// An iOS app beside its JS, as stasis.config.json's `extra` takes it: its directory swept, a
+// dotfile there named, and what a build, CocoaPods, Xcode or fastlane leaves there taken out by
+// name, by a pattern, and by one with braces, which a file below the directory swept matches too.
+const iosRepo = {
+  'package.json': json({ name: 'app', version: '1.0.0' }),
+  'pnpm-lock.yaml': lockfile('.'),
+  'stasis.config.json': json({
+    resources: ['png', 'pbxproj', 'xcworkspacedata', 'swift', 'env', 'xml', 'plist', 'o', 'm'],
+    extra: ['ios', 'ios/.xcode.env', '!ios/build', '!ios/Pods', '!ios/*.xcodeproj/project.xcworkspace', '!ios/fastlane/*.{md,xml}', '!**/xcuserdata', 'scripts/*.js'],
+  }),
+  'index.js': "require('./src/a')\n",
+  'src/a.js': 'module.exports = 1\n',
+  'scripts/tool.js': 'module.exports = 2\n',
+  'scripts/notes.txt': 'not matched by scripts/*.js\n',
+  'ios/.xcode.env': 'export NODE_BINARY=node\n',
+  'ios/.local.env': 'swept past: a dotfile\n',
+  'ios/Podfile': "platform :ios, '13.0'\n",
+  'ios/App/AppDelegate.swift': 'import UIKit\n',
+  'ios/App/Images.xcassets/icon.png': 'png\n',
+  'ios/App.xcodeproj/project.pbxproj': '// !$*UTF8*$!\n',
+  'ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata': '<Workspace/>\n',
+  'ios/App.xcodeproj/xcuserdata/me.xcuserdatad/xcschemes/App.plist': '<plist/>\n',
+  'ios/build/App.o': 'o\n',
+  'ios/Pods/Lib/a.m': 'm\n',
+  'ios/fastlane/Fastfile': 'lane :beta do\nend\n',
+  'ios/fastlane/report.xml': '<testsuites/>\n',
+}
+const IOS_SOURCES = ['index.js', 'ios/.xcode.env', 'ios/App.xcodeproj/project.pbxproj', 'ios/App/AppDelegate.swift', 'ios/App/Images.xcassets/icon.png', 'ios/Podfile', 'ios/fastlane/Fastfile', 'scripts/tool.js', 'src/a.js']
+
+// `files` written under `dir`, as a checkout of them.
+const checkOut = (dir, files) => Promise.all(Object.entries(files).map(async ([path, text]) => {
+  await mkdir(dirname(join(dir, path)), { recursive: true })
+  await writeFile(join(dir, path), text)
+}))
+
+test("buildGitHubBundle adds the files stasis.config.json's extra names, as stasis bundle adds them from a checkout", async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-extra-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  await checkOut(tmp, iosRepo)
+  const checkout = await buildBundle({ cwd: tmp, env: {}, entries: ['index.js'] })
+  t.assert.deepStrictEqual([...checkout.sources.keys()].toSorted(), IOS_SOURCES)
+  const { bundle, lockfile: lock } = await build({ client: fakeClient(iosRepo), entries: ['index.js'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), IOS_SOURCES, "a Vfs's globbed as the disk's")
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.formats), Object.fromEntries(checkout.formats))
+  t.assert.deepStrictEqual({ ...bundle.reason }, { ...checkout.reason })
+  t.assert.deepStrictEqual(bundle.reason.extra.toSorted(), IOS_SOURCES.filter((path) => path !== 'index.js' && path !== 'src/a.js'))
+  t.assert.deepStrictEqual(Object.keys(lock.modules.get('.').files).toSorted(), IOS_SOURCES, 'and its lockfile')
+})
+
+test("buildGitHubBundle adds extra to a build without a State, and once to the builds stasis.config.json's entries make", async (t) => {
+  const config = { resources: ['png'], extra: ['assets', '!assets/tmp', 'cli.js'] }
+  const assets = { 'assets/logo.png': 'png\n', 'assets/icons/a.png': 'png\n', 'assets/tmp/x.png': 'png\n' }
+  // --mainFields: packed as `stasis add` packs them.
+  const repo = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'index.js': 'module.exports = 1\n', 'cli.js': '', 'stasis.config.json': json(config), ...assets }
+  const fields = await build({ client: fakeClient(repo), entries: ['index.js'], mainFields: ['main'] })
+  t.assert.deepStrictEqual([...fields.bundle.sources.keys()].toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js'])
+  t.assert.deepStrictEqual({ ...fields.bundle.reason }, { bundle: ['index.js'], extra: ['cli.js', 'assets/logo.png', 'assets/icons/a.png'] })
+  t.assert.deepStrictEqual(Object.keys(fields.lockfile.modules.get('.').files).toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'cli.js', 'index.js'])
+  // Its entries' builds, one with --metro and one without, take them in their union, `extra` the
+  // consumer of cli.js too, which a build reaches itself.
+  const configured = await build({ client: fakeClient({ ...configuredRepo(), ...assets, 'stasis.config.json': json({ entries: { 'index.js': { metro: true, platforms: ['ios', 'android'] }, './cli.js': {} }, ...config }) }) })
+  t.assert.deepStrictEqual([...configured.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'assets/icons/a.png', 'assets/logo.png', 'b.js', 'cli.js', 'index.js'])
+  t.assert.deepStrictEqual({ ...configured.bundle.reason }, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.android.js', 'a.ios.js', 'index.js'], 'extra': ['cli.js', 'assets/logo.png', 'assets/icons/a.png'] })
+})
+
+test('buildGitHubBundle refuses the extra files stasis bundle refuses', async (t) => {
+  const repo = (extra) => ({ 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '', 'notes.txt': 'x\n', 'stasis.config.json': json({ extra }) })
+  const refused = {
+    'extra: 2 files not found: missing.js, docs/*': ['missing.js', 'docs/*'],
+    'extra: notes.txt is neither a recognized source file nor a declared resource; add its extension to "resources" in stasis.config.json': ['*.txt'],
+    "stasis.config.json: extra entry '../up.js' must be a path or pattern within the project root": ['../up.js'],
+    'stasis.config.json: extra must be an array of paths or glob patterns': 'src',
+  }
+  await Promise.all(Object.entries(refused).map(([message, extra]) => t.assert.rejects(build({ client: fakeClient(repo(extra)), entries: ['src/a.js'] }), new RegExp(`^(Type)?Error: ${RegExp.escape(message)}$`, 'u'), message)))
+})
+
+// Hides the optional minimatch from what the process loads, as where it isn't installed.
+const HIDE_MINIMATCH = [
+  "import { registerHooks } from 'node:module'",
+  'registerHooks({ resolve(specifier, context, next) {',
+  "  if (/^minimatch(\\/|$)/u.test(specifier)) throw Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'MODULE_NOT_FOUND' })",
+  '  return next(specifier, context)',
+  '} })',
+].join('\n')
+
+test('buildGitHubBundle needs the optional minimatch for extra, and only for it: stasis bundle globs the disk without it', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-minimatch-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '', 'tool.js': '', 'stasis.config.json': json({ extra: ['*.js'] }) }
+  await checkOut(tmp, files)
+  const script = `
+    import fs from 'node:fs'
+    const { buildGitHubBundle } = await import(${JSON.stringify(pathToFileURL(join(here, '..', 'stasis', 'src', 'vfs-bundle.js')).href)})
+    const { buildBundle } = await import(${JSON.stringify(pathToFileURL(join(here, '..', 'stasis', 'src', 'cmd', 'bundle.js')).href)})
+    const { fakeClient, json } = await import(${JSON.stringify(pathToFileURL(join(here, 'vfs-bundle-github.helper.js')).href)})
+    const files = ${JSON.stringify(files)}
+    const sources = async (extra) => {
+      const client = fakeClient({ ...files, 'stasis.config.json': json({ extra }) })
+      const { bundle } = await buildGitHubBundle({ github: ${JSON.stringify(GITHUB)}, sha: ${JSON.stringify(SHA)}, packageManager: 'pnpm', client, entries: ['src/a.js'] })
+      return [...bundle.sources.keys()]
+    }
+    const out = {
+      refused: await sources(['*.js']).then(() => null, (error) => error.message),
+      exclusions: await sources(['!tool.js']),
+      none: await sources([]),
+      disk: [...(await buildBundle({ cwd: process.cwd(), env: {}, entries: ['src/a.js'] })).sources.keys()].toSorted(),
+    }
+    fs.writeFileSync('out.json', JSON.stringify(out))
+  `
+  const child = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(HIDE_MINIMATCH)}`, '--input-type=module', '-e', script], { cwd: tmp })
+  const stderr = []
+  child.stderr.on('data', (chunk) => stderr.push(chunk))
+  const [status] = await once(child, 'close')
+  t.assert.equal(status, 0, `stderr: ${Buffer.concat(stderr).toString('utf8')}`)
+  const out = JSON.parse(await readFile(join(tmp, 'out.json'), 'utf8'))
+  t.assert.equal(out.refused, "A glob over a Vfs (stasis.config.json's extra) needs the optional 'minimatch' 10 dependency; install it (e.g. `npm i minimatch@10`)")
+  t.assert.deepStrictEqual(out.exclusions, ['src/a.js'], 'nothing to glob')
+  t.assert.deepStrictEqual(out.none, ['src/a.js'])
+  t.assert.deepStrictEqual(out.disk, ['src/a.js', 'tool.js'], "the disk's globbed by Node's own")
+})
+
 // A pnpm workspace as pnpm writes its lockfile: `packages/app` depends on its sibling `packages/p`
 // through a `link:`, which the tree lays out as node_modules/p -> ../../p. The lockfile locks no
 // registry package, so no tarball is fetched or read from a cache. Besides what the builds reach,
-// it holds what `stasis bundle` would read off a checkout: a `.git` pointer, a tsconfig chain, and
-// entries for every other language stasis bundles.
+// it holds what `stasis bundle` would read off a checkout: a `.git` pointer, a tsconfig chain, a
+// stasis.config.json's `extra` to glob, and entries for every other language stasis bundles.
 const workspaceRepo = {
   '.git': 'gitdir: ../elsewhere/.git\n',
   'package.json': json({ name: 'root', version: '1.0.0', private: true }),
@@ -845,6 +967,10 @@ const workspaceRepo = {
   ].join('\n'),
   'tsconfig.base.json': json({ compilerOptions: { baseUrl: '.', paths: { '@lib/*': ['packages/p/*'] } } }),
   'packages/p/package.json': json({ name: 'p', version: '1.0.0', main: 'index.js' }),
+  'packages/p/stasis.config.json': json({ resources: ['png'], extra: ['assets', '!assets/tmp'] }),
+  'packages/p/assets/logo.png': 'png\n',
+  'packages/p/assets/icons/a.png': 'png\n',
+  'packages/p/assets/tmp/x.png': 'png\n',
   'packages/p/index.js': 'export const x = 1\n',
   'packages/p/util.ts': 'export const y: number = 2\n',
   'packages/p/other.js': 'module.exports = 3\n',
@@ -927,9 +1053,9 @@ test('buildGitHubBundle reads nothing from disk: the repo, its tree and every fi
   t.assert.deepStrictEqual(built.typescript.repo, { github: GITHUB, directory: '', commit: SHA })
   t.assert.deepStrictEqual(built.mainFields.sources.toSorted(), ['packages/app/package.json', 'packages/app/src/main.js', 'packages/p/index.js', 'packages/p/package.json'], 'the tree is read in place, the link by where it leads in the Vfs')
   t.assert.deepStrictEqual(built.mainFields.repo, { github: GITHUB, directory: '', commit: SHA })
-  t.assert.deepStrictEqual(built.defaults.sources, ['index.js'], "the entries the package.json names, in the directory")
+  t.assert.deepStrictEqual(built.defaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js'], "the entries the package.json names, in the directory, and its config's extra")
   t.assert.deepStrictEqual(built.defaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
-  t.assert.deepStrictEqual(built.metroDefaults.sources, ['index.js'], 'as the field resolver resolves them, from the directory')
+  t.assert.deepStrictEqual(built.metroDefaults.sources.toSorted(), ['assets/icons/a.png', 'assets/logo.png', 'index.js'], 'as the field resolver resolves them, from the directory')
   t.assert.deepStrictEqual(built.metroDefaults.repo, { github: GITHUB, directory: 'packages/p', commit: SHA })
   for (const entry of otherLanguages) t.assert.match(refused[entry] ?? '', /only JS bundles are built with pnpm$/u, entry)
 })

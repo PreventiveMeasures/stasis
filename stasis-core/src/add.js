@@ -1,18 +1,20 @@
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { basename, dirname, extname, join, matchesGlob, posix, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { brotliOptions } from './brotli.js'
-import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson } from './bundle-util.js'
+import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, statStrict } from './bundle-util.js'
+import { diskHost } from './host.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
-// Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra sweeps `extra` with these
-// at write, which must read the real disk, not be captured as the program's reads.
-const { existsSync, globSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
+// Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
+// these at write (outputMatcher), which must read the real disk, not be captured as the program's
+// reads. It sweeps `extra` through its host, which the disk's snapshots too.
+const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
 
 const CONFIG_FILE = 'stasis.config.json'
 const LOCK_FILE = 'stasis.lock.json'
@@ -20,10 +22,10 @@ const LOCK_FILE = 'stasis.lock.json'
 // A `.js`/`.ts` follows its package `type` (LIMITATION: none falls back to commonjs -- use `.mjs`/`.cjs`
 // or set `type` when the module system matters). Any other name is classifyFormat's call: a format,
 // null for a JS-family file (`.jsx`/`.tsx`: source attested with no loader format, as the runtime
-// records one), undefined when unrecognized.
-function sourceFormat(absFile, content) {
+// records one), undefined when unrecognized. Its package.json is read through `host`.
+function sourceFormat(absFile, content, host) {
   const ext = extname(absFile).toLowerCase()
-  if (ext === '.js' || ext === '.ts') return `${packageType(absFile) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
+  if (ext === '.js' || ext === '.ts') return `${packageType(absFile, host) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
   return classifyFormat(absFile, { content })
 }
 
@@ -63,7 +65,8 @@ function readAddConfig(baseDir) {
 // Assemble a Bundle bucketed per package.json. `add` records NO entries -- its files are attested, not entry points -- so nothing in an add bundle is runnable via `--bundle=load`.
 // `buckets` (dir -> module) are identities to take for a dir over the one found there: those of the
 // bundle the files will merge into, which may name its buckets otherwise (`solidity-bundle`, say).
-function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map() } = {}) {
+// Their package.json files are read through `host`.
+function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map(), host = diskHost } = {}) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
@@ -79,7 +82,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, {
   const metaByDir = new Map()
   const metaFor = (rel) => {
     const dir = dirname(rel)
-    if (!metaByDir.has(dir)) metaByDir.set(dir, findPackageMetadata(baseDir, rel))
+    if (!metaByDir.has(dir)) metaByDir.set(dir, findPackageMetadata(baseDir, rel, { host }))
     return metaByDir.get(dir)
   }
 
@@ -158,7 +161,8 @@ function prepareLockfile(lockPath, lockAdd) {
 // Whether a project-relative path, with its stats (undefined when missing), is one of `outputs`
 // (project-relative): by name, or as the same file under another, a symlink or hard link to it -- its
 // device and inode, which a write rewrites in place. Stats as numbers can round a large inode
-// (Windows file ids), so a match on those is settled exactly (bigint), never taken on its own.
+// (Windows file ids), so a match on those is settled exactly (bigint), never taken on its own. The
+// outputs are the disk's, where a run writes them: a sweep of another host's tree has none.
 function outputMatcher(baseDir, outputs) {
   const exact = new Set()
   const rounded = new Set()
@@ -176,19 +180,17 @@ function outputMatcher(baseDir, outputs) {
   }
 }
 
-// fs.globSync's matches of `pattern` under `cwd`, as paths relative to it, taking none `exclude` takes
-// (given the path relative to `baseDir`, '/'-joined) and walking into none it takes. fs.globSync hands
-// its callback a bare name for a file, so the walk is over Dirents, which know their parent. A visited
-// name is checked as spelled: one holding `\` is for the caller to refuse where it is kept, not here.
-function globPaths(pattern, cwd, baseDir, exclude) {
-  if (exclude === undefined) return globSync(pattern, { cwd })
-  const pathOf = (dirent) => join(dirent.parentPath, dirent.name)
-  const projectPath = (dirent) => {
-    const rel = relative(baseDir, pathOf(dirent))
+// `host`'s glob of `pattern` under `cwd` (Node's fs.globSync, the disk's or a Vfs's), its matches
+// relative to it, taking none `exclude` takes (given the path relative to `baseDir`, '/'-joined) and
+// walking into none it takes. A visited name is checked as spelled: one holding `\` is for the
+// caller to refuse where it is kept, not here.
+function globPaths(host, pattern, cwd, baseDir, exclude) {
+  if (exclude === undefined) return host.glob(pattern, { cwd })
+  const projectPath = (path) => {
+    const rel = relative(baseDir, path)
     return sep === '\\' ? rel.replaceAll('\\', '/') : rel
   }
-  return globSync(pattern, { cwd, withFileTypes: true, exclude: (entry) => exclude(projectPath(entry)) })
-    .map((dirent) => relative(cwd, pathOf(dirent)))
+  return host.glob(pattern, { cwd, exclude: (path) => exclude(projectPath(path)) })
 }
 
 // GLOB + FILTER: expand each directory entry into the files under it (recursive glob), dropping the
@@ -202,8 +204,8 @@ function globPaths(pattern, cwd, baseDir, exclude) {
 // either order. `stats` is the walk's own stat, reused by validation. Gotcha: `**/*` skips dotfiles
 // (.env, .git/...) -- name them explicitly. A project-relative path `exclude` takes is dropped, named
 // or swept, with everything under it: a named path below one too, and a directory it takes is never
-// walked (globPaths).
-function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude } = {}) {
+// walked (globPaths). Paths are read through `host`, stat'ed as real stat answers (statStrict).
+function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, exclude, host = diskHost } = {}) {
   const files = new Map() // rel -> stats
   const excluded = new Set()
   const isOutput = outputMatcher(baseDir, outputs)
@@ -211,21 +213,24 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
     // A walk meets a directory before what's under it, so it checks each path alone; a named one, its directories too.
     if (exclude !== undefined && rel.split('/').some((_, i, segments) => exclude(segments.slice(0, i + 1).join('/')))) continue
     const dirAbs = join(baseDir, rel)
-    const stats = statSync(dirAbs, { throwIfNoEntry: false })
+    const stats = statStrict(host, dirAbs, rel) ?? undefined
     if (stats === undefined || !stats.isDirectory()) {
       if (keepNamedOutputs || !isOutput(rel, stats)) files.set(rel, stats)
       continue
     }
     const found = []
-    for (const match of globPaths('**/*', dirAbs, baseDir, exclude)) {
+    for (const match of globPaths(host, '**/*', dirAbs, baseDir, exclude)) {
       const fileAbs = join(dirAbs, match)
       // A dangling symlink stats as undefined -- skipped, not a hard ENOENT out of the walk.
-      const fileStats = statSync(fileAbs, { throwIfNoEntry: false })
+      const fileStats = statStrict(host, fileAbs, relative(baseDir, fileAbs)) ?? undefined
       if (fileStats?.isFile()) found.push([toPosix(relative(baseDir, fileAbs)), match, fileStats])
     }
     // Sorted so the sweep is deterministic regardless of readdir order: artifact bytes are
     // canonicalized by serialize() either way, but multi-file diagnostics keep a stable order.
     for (const [file, match, fileStats] of found.toSorted(([a], [b]) => sortPaths(a, b))) {
+      // Node's glob holds `exclude` to its `**` alone: a file below the directory swept still
+      // matches the `*` after it (a directory it takes is never walked).
+      if (exclude?.(file)) continue
       if (toPosix(match).split('/').slice(0, -1).some(isAutoExcludedDir)
         || isOutput(file, fileStats) || isAutoExcludedFile(file)) excluded.add(file)
       else files.set(file, fileStats)
@@ -267,15 +272,17 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // takes out every path its pattern matches, in any order of the entries, along with everything under
 // one that is a directory, which is then never walked, whether by a pattern's expansion or a sweep:
 // a pattern whose every match is excluded matches nothing. One matching nothing is no error.
-export function expandExtra(baseDir, patterns, outputs) {
+// `baseDir` is read through `host`, globbed and matched as Node globs and matches the disk
+// (fs.globSync, path.matchesGlob), whichever host's it is.
+export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
   // Normalized as the paths they're matched against are: no `./`, no trailing `/`.
   const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => posix.normalize(pattern.slice(1)).replace(/\/+$/u, ''))
-  const exclude = exclusions.length === 0 ? undefined : (rel) => exclusions.some((pattern) => matchesGlob(rel, pattern))
+  const exclude = exclusions.length === 0 ? undefined : (rel) => exclusions.some((pattern) => host.matchesGlob(rel, pattern))
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
-    const matches = globPaths(pattern, baseDir, baseDir, exclude)
+    const matches = globPaths(host, pattern, baseDir, baseDir, exclude)
     return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
   })
-  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude })
+  return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, host })
 }
 
 // VALIDATE step: classify the WHOLE set -- each file recognized source or a declared resource --
@@ -283,7 +290,8 @@ export function expandExtra(baseDir, patterns, outputs) {
 // step's rel -> stats map (stats undefined = not on disk). Containment is the one rule NOT collected:
 // a symlink escaping the root is a security invariant, so it fails closed on the spot. Bytes are
 // hashed only when there's a lockfile to receive the integrities (`withIntegrity`). `label` prefixes the error.
-function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add' }) {
+// Files are read through `host`.
+function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()
   const integrities = new Map()
@@ -296,11 +304,11 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
       continue
     }
     const executable = isExecutableMode(stats)
-    assertRealPathWithinBase(realBase, baseDir, rel)
+    assertRealPathWithinBase(realBase, baseDir, rel, host)
     const abs = join(baseDir, rel)
-    const buf = readFileSync(abs)
+    const buf = host.readFile(abs)
     if (withIntegrity) integrities.set(rel, sha512integrity(buf))
-    const format = sourceFormat(abs, buf)
+    const format = sourceFormat(abs, buf, host)
     // A binary plist can't be stored as the UTF-8 string its 'xml' format implies, so it is NOT source: it falls through to the resource branch (opaque base64).
     if (format !== undefined && !isBinaryPlist(rel, buf)) {
       // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
@@ -320,17 +328,18 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
 // The files stasis.config.json's `extra` names under `baseDir` (expandExtra), packed as `add` packs
 // them, for `stasis bundle` to merge into `bundle`, one built there without a State (always full
 // scope): those it doesn't carry already (its own record of a file stands), in its buckets where it
-// has them. `outputs` are the project-relative paths the build writes, never swept in.
+// has them. `outputs` are the project-relative paths the build writes, never swept in. The files
+// are read through `host`, the disk by default.
 // -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), and
 // `carried`: the files named that `bundle` carries already, the `extra` consumer's too
-export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set() }) {
-  const named = expandExtra(baseDir, patterns, outputs).files
+export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set(), host = diskHost }) {
+  const named = expandExtra(baseDir, patterns, outputs, host).files
   const carried = [...named.keys()].filter((rel) => bundle.sources.has(rel))
   const files = new Map([...named].filter(([rel]) => !bundle.sources.has(rel)))
   if (files.size === 0) return { bundle: null, lockfile: null, carried }
-  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: realpathSync(baseDir), files, resources, withIntegrity: true, label: 'extra' })
-  const rootPkg = readJson(join(baseDir, 'package.json')) ?? {}
-  const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules })
+  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, withIntegrity: true, label: 'extra', host })
+  const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
+  const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
   return { bundle: extra, lockfile: bundleToLockfile(extra, integrities), carried }
 }
 

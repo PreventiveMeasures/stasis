@@ -11,6 +11,7 @@ import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/
 import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.js'
 import { VfsError } from '@preventive/vfs'
 import { createNodeResolver } from '../resolve-node.js'
+import { globSync, matchesGlob } from './glob.js'
 import { settleSoldeer } from './soldeer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
@@ -623,6 +624,9 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       checkDir(p, real)
       return real
     },
+    // Node's fs.globSync and path.matchesGlob, as the disk host's, over this host (glob.js).
+    glob: (pattern, options) => globSync(host, pattern, options),
+    matchesGlob,
     // As Node's: the nearest package.json above a file's real path, never out of a node_modules dir;
     // one there that can't be read is refused (packageJSONStat).
     findPackageJSON(p) {

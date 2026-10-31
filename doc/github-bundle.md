@@ -84,6 +84,26 @@ With it:
   its `metro-resolver`, `cargo`, `rustc`), and nothing of the repo runs here.
   No flag consents to it, as `stasis bundle`'s do.
 
+## Extra files
+
+The files `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson)
+names are bundled as [`stasis bundle`](bundle.md) bundles them from a checkout,
+globs and `!` entries included, from the commit's tree:
+
+```json
+{ "extra": ["ios", "ios/.xcode.env", "!ios/build", "!ios/Pods", "!ios/*.xcodeproj/project.xcworkspace", "!ios/fastlane/*.{md,xml}"] }
+```
+
+The tree is globbed as Node globs the disk, by Node's own `fs.globSync` and
+`path.matchesGlob` (as Node 24.22.2 and 26.13.0 have them) run over it, on the
+`minimatch` 10 they are built on. Unlike Node's on macOS and Windows, its
+matching never folds case: git's names differ by case alone.
+
+`minimatch` is an optional dependency of `@exodus/stasis`. Where it isn't
+installed, a `stasis.config.json` whose `extra` names anything is refused; one
+of `!` entries alone globs nothing. `stasis bundle` and `stasis run` glob the
+disk with Node's own, without it.
+
 ## Roots and paths
 
 The bundle's paths, and the directory its `repo` names (see
@@ -137,6 +157,9 @@ stasis github-bundle --github=owner/name --generate=prisma packages/api/src/inde
   `setCacheDir`'s cache is still read. Anything else is a `TypeError`, before
   anything is fetched. GitHub's trees and Soldeer's zips are kept in
   `setCacheDir`'s cache whatever it is.
+- `buildGitHubBundle` and `buildVfsBundle` add the files
+  `stasis.config.json`'s `extra` names, as the command does (see
+  [Extra files](#extra-files)).
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`.
   `buildVfsBundle` takes a project's `stasis.config.json` entries as the
