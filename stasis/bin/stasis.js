@@ -26,7 +26,7 @@ const HELP = `Usage:
  stasis bundle [--deptree] [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
  stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
- stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
+ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
@@ -229,6 +229,7 @@ if (command === '-v' || command === '--version') {
     format: { type: 'string' },
     platform: { type: 'string' },
     babel: { type: 'boolean' },
+    flow: { type: 'boolean' },
     minify: { type: 'boolean' },
     sourcemap: { type: 'boolean' },
     // Repeatable esbuild passthroughs (--define=K=V, --external=PATTERN, --loader=.ext:name).
@@ -244,6 +245,7 @@ if (command === '-v' || command === '--version') {
   if (argv.length === 0) fail('Nothing to build: no bundle or lockfile given')
   if (values.metro !== undefined && !/^[^/,]+$/u.test(values.metro)) fail(`Error: --metro takes one platform to build for, e.g. --metro=ios (got '${values.metro}')`)
   if (values['assets-dest'] !== undefined && values.metro === undefined) fail('Error: --assets-dest needs --metro=PLATFORM (the platform whose layout it copies the assets in)')
+  if (values.flow && values.babel) fail('Error: --flow and --babel don\'t combine: the project\'s Babel config compiles Flow itself')
   if (argv.length > 2) fail('Error: build takes a bundle or lockfile and an optional entry point')
   // esbuild output knobs; the import graph itself is fixed by the artifact, not these.
   if (values.format !== undefined && !['esm', 'cjs', 'iife'].includes(values.format)) {
@@ -283,6 +285,7 @@ if (command === '-v' || command === '--version') {
     format: values.format,
     platform: values.platform,
     babel: Boolean(values.babel),
+    flow: Boolean(values.flow),
     minify: values.minify,
     sourcemap: values.sourcemap,
     define,

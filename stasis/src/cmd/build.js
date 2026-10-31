@@ -11,6 +11,7 @@ import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost, metroAssetFiles } from '@exodus/stasis-plugins/metro-native'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
+import { FLOW_EXTS, stripFlowTypes } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
@@ -207,6 +208,34 @@ function metroAssetResource(state, platform, built) {
   }
 }
 
+// --flow's per-file transform (StasisEsbuild's `transform` hook shape), as `stasis bundle --flow` reads
+// a file: a JS-family one esbuild can't parse gets its Flow types stripped (flow.js), an import listing
+// types alone dropped whole, as Babel's Flow transform drops it (a --metro bundle records no edge for
+// it). One that parses is never touched, as stripping plain JS as Flow can misread it (`a < b > (c)`
+// as a call). A file still unparseable fails the build in esbuild: Flow syntax that is code, which
+// stripping leaves, or one flow-remove-types itself can't parse, served as it is.
+function createFlowTransform(esbuild) {
+  return async (source, { path, loader }) => {
+    if (!FLOW_EXTS.has(extname(path))) return undefined
+    try {
+      await esbuild.transform(source, { loader, sourcefile: path, logLevel: 'silent' })
+      return undefined
+    } catch {
+      try {
+        return { contents: stripFlowTypes(source, { removeEmptyImports: true }), loader }
+      } catch {
+        return undefined
+      }
+    }
+  }
+}
+
+// Two transform hooks over a file in turn, the second over what the first made of it.
+const chainTransforms = (first, second) => async (source, file) => {
+  const firstMade = await first(source, file)
+  return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
+}
+
 // Run `stasis build`: run esbuild over one recorded entry, following the artifact's
 // recorded import graph EXACTLY (not esbuild's resolver). A specifier the artifact records
 // is always followed from the artifact; `external` only steers the specifiers it doesn't.
@@ -218,6 +247,7 @@ export async function buildCommand({
   format,
   platform = 'node',
   babel = false,
+  flow = false,
   minify = false,
   sourcemap = false,
   define = {},
@@ -234,6 +264,9 @@ export async function buildCommand({
   }
   if (assetsDest !== undefined && metro === undefined) {
     throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')
+  }
+  if (flow && babel) {
+    throw new Error('stasis build: --babel hands the project\'s Babel config each file as it is, Flow included, for it to compile; --flow strips Flow before esbuild without it -- pass one')
   }
   // --platform=hermes is a stasis-level target, not an esbuild platform (esbuild gets
   // 'neutral'): every code file is downleveled to Hermes' dialect before the final bundle,
@@ -262,10 +295,12 @@ export async function buildCommand({
   // Per-file code rewrites the plugin applies before esbuild parses a served file:
   // --babel runs the project's own babel.config.* over the original source (no esbuild
   // pre-transform), and otherwise --platform=hermes uses the built-in downlevel pipeline.
-  // Both resolve Babel from the project (cwd), never from stasis's own dependencies.
+  // Both resolve Babel from the project (cwd), never from stasis's own dependencies. --flow
+  // strips Flow types first, from what esbuild can't parse.
   let transform
   if (babel) transform = createBabelConfigTransform({ projectDir: cwd })
   else if (hermes) transform = createHermesTransform({ projectDir: cwd, esbuild })
+  if (flow) transform = transform === undefined ? createFlowTransform(esbuild) : chainTransforms(createFlowTransform(esbuild), transform)
   // --metro=PLATFORM: PLATFORM's target of each per-platform edge, and each asset as Metro builds it.
   const builtAssets = new Map()
   const resource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
