@@ -2,15 +2,14 @@ import { before, describe, test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import {
-  link, mkdir, mkdtemp, readdir, readFile, readlink,
-  rm, symlink, unlink, writeFile,
-} from 'node:fs/promises'
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
+
+import { hardlinkCopy } from './hardlink-copy.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -83,26 +82,15 @@ const withTmp = (fn) => async (t) => {
   }
 }
 
-// Hardlinked clone of the fixture: ~40ms vs ~780ms for a real cp of the 13MB
-// node_modules tree. Each cell of the lock x bundle matrix gets its own fresh
-// clone, and over 22 cells the saved I/O dominates the suite's wall time.
+// Hardlinked clone of the fixture (tests/hardlink-copy.helper.js): ~40ms vs
+// ~780ms for a real cp of the 13MB node_modules tree. Each cell of the lock x
+// bundle matrix gets its own fresh clone, and over 22 cells the saved I/O
+// dominates the suite's wall time.
 //
 // Hardlinks share an inode with the fixture, so a naive writeFile to a cloned
 // path would also rewrite the fixture file. Tests that mutate a cloned path
 // MUST go through tamper() (below), which unlinks first so the inode share is
 // broken before the new bytes land.
-const hardlinkCopy = async (src, dst) => {
-  await mkdir(dst, { recursive: true })
-  const entries = await readdir(src, { withFileTypes: true })
-  await Promise.all(entries.map(async (entry) => {
-    const s = join(src, entry.name)
-    const d = join(dst, entry.name)
-    if (entry.isDirectory()) await hardlinkCopy(s, d)
-    else if (entry.isSymbolicLink()) await symlink(await readlink(s), d)
-    else await link(s, d)
-  }))
-}
-
 const freshCopy = async (dir) => {
   await hardlinkCopy(fixture, dir)
   await rm(join(dir, 'stasis.lock.json'), { force: true })
