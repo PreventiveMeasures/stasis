@@ -21,7 +21,8 @@
 // unverified.
 //
 // Stasis's empty stub for an import a package disables (EMPTY_MODULE_PATH) is no file of either, and
-// is allowed.
+// is allowed. A vendored crate's `.cargo-checksum.json`, which `cargo vendor` writes and no crate
+// holds, is held to the crate instead: its package checksum, and each file's it lists.
 import { createHash } from 'node:crypto'
 
 import { EMPTY_MODULE_PATH, dependencyEcosystem, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
@@ -29,6 +30,7 @@ import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
 import { HttpError, getTarball } from '@preventive/upstream/npm.js'
+import { parseCargoChecksum } from '@preventive/lockfile/cargo.js'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 
 import { parseFileWithKind } from './parse.js'
@@ -43,7 +45,9 @@ const FUZZ = 20
 const MAX_TAR_BYTES = 2 ** 30
 
 const utf8 = new TextEncoder()
-const asText = new TextDecoder('utf-8', { fatal: true })
+// A byte order mark kept, as Node's readFileSync keeps it, and patch-package with it: a patch applied
+// changes no byte but those its hunks change.
+const asText = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 // A failure to read or apply a patch, by its `code` (patch-unreadable, patch-unsupported,
 // patch-does-not-apply).
@@ -105,12 +109,31 @@ export async function tarballFiles(tarball) {
 }
 
 // Ecosystems upstream fetches a version of by its name and version alone, and that version's files,
-// by their paths, as `fetchPackage` gives them.
+// by their paths, as `fetchPackage` gives them; a crate's with its sha256 in hex (`checksum`), which
+// a vendored copy's `.cargo-checksum.json` names.
 export const FETCHED = new Set(['npm', 'cargo'])
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 export async function fetchPackage(ecosystem, name, version) {
   const tarball = ecosystem === 'npm' ? await getTarball(name, version) : await getCrate(name, version)
-  return new Map([...await tarballFiles(tarball)].filter(([, data]) => data instanceof Uint8Array))
+  const files = new Map([...await tarballFiles(tarball)].filter(([, data]) => data instanceof Uint8Array))
+  if (ecosystem === 'cargo') files.checksum = sha256(tarball)
+  return files
 }
+
+// Whether a vendored crate's `.cargo-checksum.json` (its `bytes`) is of `crate`, its files as fetched:
+// each file it lists the crate's, by its sha256, and its package checksum the crate's where the
+// fetch tells it.
+function checksumOf(bytes, crate) {
+  let parsed
+  try {
+    parsed = parseCargoChecksum(asText.decode(bytes))
+  } catch {
+    return false
+  }
+  return (crate.checksum === undefined || parsed.checksum === crate.checksum)
+    && Object.entries(parsed.files).every(([path, listed]) => crate.has(path) && sha256(crate.get(path)) === listed)
+}
+const CARGO_CHECKSUM = '.cargo-checksum.json'
 
 // Why a version wasn't checked: none published of it (`not-published`), its registry refusing it
 // (`unreadable`), or another failure (`failed`). A `fetch` of a caller's throws upstream's HttpError,
@@ -472,10 +495,13 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     const candidates = [...(patched ? [patched] : []), files]
     let missed = 0
     let asPatched = 0
+    // A crate's `.cargo-checksum.json` held to the crate, as no crate holds one.
+    const checksum = (file) => pkg.ecosystem === 'cargo' && file.rel === CARGO_CHECKSUM
+    const matches = (file, candidate) => (checksum(file) ? checksumOf(file.bytes(), candidate) : candidate.has(file.rel) && equal(file.bytes(), candidate.get(file.rel)))
     for (const copy of Map.groupBy(pkg.files, (file) => file.dir).values()) {
-      const misses = candidates.map((candidate) => copy.filter((file) => !candidate.has(file.rel) || !equal(file.bytes(), candidate.get(file.rel))))
+      const misses = candidates.map((candidate) => copy.filter((file) => !matches(file, candidate)))
       const best = Math.max(0, misses.findIndex((missing) => missing.length === 0))
-      for (const file of misses[best]) tell({ path: file.path, kind: candidates[best].has(file.rel) ? 'differs' : 'unexpected', of })
+      for (const file of misses[best]) tell({ path: file.path, kind: checksum(file) || candidates[best].has(file.rel) ? 'differs' : 'unexpected', of })
       missed += misses[best].length
       if (misses[best].length === 0 && candidates[best] === patched) asPatched++
     }

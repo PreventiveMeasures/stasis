@@ -42,7 +42,9 @@ stasis validate --no-own app.stasis.code.br
    file the bundle holds of a package must match the file at its path there.
    Files of a package the bundle leaves out are expected: a bundle holds those
    its code reaches alone. Each installed copy of a version is held to it apart,
-   and the version fetched once.
+   and the version fetched once. A vendored crate's `.cargo-checksum.json`,
+   which `cargo vendor` writes and no crate holds, is held to the crate: its
+   package checksum, and the sha256 of each file it lists.
 3. **Coverage**: every file the bundle holds must be one or the other. Stasis's
    own empty stub for an import a package disables (`.stasis/empty-module.js`)
    is allowed.
@@ -62,7 +64,8 @@ failed but some files weren't checked.
 A version pnpm patches as it installs it (its lockfile's `patchedDependencies`)
 is held to its files patched, as pnpm applies the patch (patch-package's
 algorithm, which pnpm bundles: each hunk where its header says, else up to 20
-lines either side, its lines the same but for the space they end in). The patch
+lines either side, its lines the same but for the space they end in, a byte
+order mark the file starts with kept). The patch
 is the one the nearest `pnpm-lock.yaml` at or above the bundle's directory locks
 the version with, read of the bundle where it holds a file of that hash (pnpm 11
 names a patch by its hash alone), else of the repository. With no lockfile read

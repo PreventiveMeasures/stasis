@@ -187,6 +187,30 @@ rename to new.js
   t.assert.throws(() => parsePatch('diff --git a/x b/x\nGIT binary patch\n'), { code: 'patch-unsupported' })
 })
 
+test('patchedFiles keeps a byte order mark a file starts with, changing no byte but those its hunks change', (t) => {
+  const files = new Map([['a.js', bytes('\uFEFFone\ntwo\nthree\n')]])
+  const patch = parsePatch('diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -2,2 +2,2 @@\n-two\n+TWO\n three\n')
+  t.assert.deepStrictEqual([...patchedFiles(files, patch).get('a.js')], [...bytes('\uFEFFone\nTWO\nthree\n')])
+})
+
+test('validateBundle: a vendored crate\'s .cargo-checksum.json, which no crate holds, held to the crate: its package checksum and each file it lists', async (t) => {
+  const lib = 'pub fn x() {}\n'
+  const crate = Object.assign(new Map([['src/lib.rs', bytes(lib)], ['Cargo.toml', bytes('[package]\n')]]), { checksum: 'c'.repeat(64) })
+  const checksumOf = (files, pkg = 'c'.repeat(64)) => JSON.stringify({ files, package: pkg })
+  const of = (text) => validationPlan(Bundle.parse(new Bundle({ modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.rs': 'fn main() {}\n' } }],
+    ['vendor/dep', { ecosystem: 'cargo', name: 'dep', version: '1.0.0', files: { 'src/lib.rs': lib, '.cargo-checksum.json': text } }],
+  ]) }).serialize()))
+  const run = async (text) => (await validateBundle(of(text), { reason: 'skipped' }, { fetch: async () => crate })).problems
+  const listed = { 'src/lib.rs': createHash('sha256').update(lib).digest('hex') }
+  t.assert.deepStrictEqual(await run(checksumOf(listed)), [])
+  t.assert.deepStrictEqual(await run(checksumOf({ 'src/lib.rs': 'd'.repeat(64) })), [{ path: 'vendor/dep/.cargo-checksum.json', kind: 'differs', of: 'cargo:dep@1.0.0' }],
+    'a file it lists not the crate\'s')
+  t.assert.deepStrictEqual(await run(checksumOf(listed, 'e'.repeat(64))), [{ path: 'vendor/dep/.cargo-checksum.json', kind: 'differs', of: 'cargo:dep@1.0.0' }],
+    'another crate\'s')
+  t.assert.deepStrictEqual(await run('not json'), [{ path: 'vendor/dep/.cargo-checksum.json', kind: 'differs', of: 'cargo:dep@1.0.0' }])
+})
+
 test('tarballFiles and fetchPackage: a package\'s files as upstream fetches its tarball, held to its integrity, its top directory left out', async (t) => {
   const tgz = await compress(pack([{ name: 'package/index.js', data: bytes('x') }, { name: 'package/lib/', type: 'directory' }, { name: 'package/lib/a.js', data: bytes('a') }]), 'gzip')
   t.assert.deepStrictEqual([...(await tarballFiles(tgz)).keys()], ['index.js', 'lib/a.js'])
