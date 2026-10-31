@@ -26,7 +26,7 @@
 // holds, is held to the crate instead: its package checksum, and each file's it lists.
 import { createHash } from 'node:crypto'
 
-import { EMPTY_MODULE_PATH, dependencyEcosystem, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -60,6 +60,11 @@ export class PatchError extends Error {
   }
 }
 
+// The ecosystem a module's files are a dependency's of, or undefined for own code: the root's and an
+// npm-tagged module's outside node_modules (a workspace package's) are own code whatever they record,
+// as a bundle built before only dependencies were tagged may record one.
+const moduleEcosystem = (dir, ecosystem) => (dir === '.' || (ecosystem === 'npm' && !hasNodeModulesSegment(dir)) ? undefined : dependencyEcosystem(dir, ecosystem))
+
 // What a bundle's files are, as validation checks them: its own code, `{ path, dir, rel, bytes() }`
 // each, and each package version's, `{ ecosystem, name, version, files }`, one with no name or
 // version among them, an npm package installed from git apart from the registry's, with its `git`
@@ -72,7 +77,7 @@ export function validationPlan(bundle) {
   const packages = new Map()
   let files = 0
   for (const [dir, info] of bundle.modules) {
-    const ecosystem = dependencyEcosystem(dir, info.ecosystem)
+    const ecosystem = moduleEcosystem(dir, info.ecosystem)
     for (const [rel, content] of Object.entries(info.files)) {
       const path = moduleFileKey(dir, rel)
       const format = formats.get(path)
@@ -545,21 +550,23 @@ export async function repositoryFiles(client, { github, commit, directory = '' }
   return entries
 }
 
-// The patches the nearest pnpm-lock.yaml at or above `directory` locks each version with, as
-// `validateBundle` takes them (`locked`), its patch files read of the repository too; null where no
-// directory there has one. `read(path)` reads a file of the repository at the commit, `list(dir)` the
-// names a directory has.
+// The patches the pnpm-lock.yaml pnpm installs `directory` from locks each version with, as
+// `validateBundle` takes them (`locked`), its patch files read of the repository too: the workspace
+// root's, the nearest directory at or above it holding pnpm-workspace.yaml, whatever pnpm-lock.yaml is
+// nearer, else the nearest's, as vfs-bundle's tree finds the root; null where there is none.
+// `read(path)` reads a file of the repository at the commit, `list(dir)` the names a directory has.
 export async function lockedPatches({ directory = '', list, read }) {
   const dirs = []
   for (let dir = directory; ; dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '') {
     dirs.push(dir)
     if (dir === '') break
   }
-  for (const dir of dirs) {
-    // eslint-disable-next-line no-await-in-loop -- the nearest one, in turn
-    if (!(await list(dir)).includes('pnpm-lock.yaml')) continue
+  const listed = await Promise.all(dirs.map(list))
+  const holding = (name) => dirs.find((_, at) => listed[at].includes(name))
+  const root = holding('pnpm-workspace.yaml')
+  const dir = root === undefined ? holding('pnpm-lock.yaml') : root
+  if (dir !== undefined && listed[dirs.indexOf(dir)].includes('pnpm-lock.yaml')) {
     const at = (path) => (dir ? `${dir}/${path}` : path)
-    // eslint-disable-next-line no-await-in-loop -- the nearest one found
     const { lockfile } = parsePnpmLockfile(await read(at('pnpm-lock.yaml')))
     const paths = new Map(Object.values(lockfile?.patchedDependencies ?? {}).map(({ hash, path }) => [hash, path]))
     const by = new Map()

@@ -30,7 +30,8 @@ stasis validate --no-own app.stasis.code.br
 ## What is checked
 
 1. **Own code**, the files of modules naming no ecosystem (the project's own
-   and its workspace's packages, see [file formats](file-formats.md)), must be
+   and its workspace's packages, see [file formats](file-formats.md)); and the
+   root's, and an `npm` one's outside `node_modules`, whatever they record, must be
    the repository's, byte for byte, at its path under the directory the bundle
    was built in. The directory's tree is read with upstream, as
    [`github-bundle`](github-bundle.md) reads one: its tarball, held to the
@@ -70,8 +71,9 @@ is held to its files patched, as pnpm applies the patch (patch-package's
 algorithm, which pnpm bundles: each hunk where its header says, else up to 20
 lines either side, its lines the same but for the space they end in, a byte
 order mark the file starts with kept). The patch
-is the one the nearest `pnpm-lock.yaml` at or above the bundle's directory locks
-the version with, read of the bundle where it holds a file of that hash (pnpm 11
+is the one the `pnpm-lock.yaml` pnpm installs the bundle's directory from locks
+the version with (the workspace root's, the nearest directory at or above it
+holding `pnpm-workspace.yaml`, whatever lockfile is nearer; else the nearest), read of the bundle where it holds a file of that hash (pnpm 11
 names a patch by its hash alone), else of the repository. With no lockfile read
 (`--no-own`, or a bundle naming no repository), it is the patch the bundle holds
 named for the version, pnpm's way (`patches/name@version.patch`).

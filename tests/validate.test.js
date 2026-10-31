@@ -85,6 +85,16 @@ test('validationPlan: own code, each package version\'s files, the patches it ho
   t.assert.deepStrictEqual(filled.own.map((file) => file.path), ['.stasis/empty-module.js'], 'one there that is not empty is own code')
 })
 
+test('validationPlan: the root module, and an npm-tagged one outside node_modules (a workspace package), are own code whatever ecosystem they record', (t) => {
+  const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([
+    ['.', { ecosystem: 'composer', name: 'org/app', version: '1.0.0', files: { 'index.php': '<?php\n' } }],
+    ['packages/lib', { ecosystem: 'npm', name: 'lib', version: '1.0.0', files: { 'index.js': 'lib\n' } }],
+    ['vendor/org/php', { ecosystem: 'composer', name: 'org/php', version: '1.0.0', files: { 'a.php': '<?php\n' } }],
+  ]) }).serialize()))
+  t.assert.deepStrictEqual(plan.own.map((file) => file.path), ['index.php', 'packages/lib/index.js'])
+  t.assert.deepStrictEqual(plan.packages.map((pkg) => `${pkg.ecosystem}:${pkg.name}`), ['composer:org/php'], 'a vendored Composer package a dependency still')
+})
+
 test('validateBundle: own code held to the repository, each dependency to its package, a patched one as patched, the files it leaves out expected', async (t) => {
   const report = await validateBundle(validationPlan(parsed()), own(), { fetch: upstream(), now: () => 1 })
   t.assert.equal(report.status, 'invalid')
@@ -306,6 +316,19 @@ test('validate: the repository its bundle names, at its commit and directory, re
   t.assert.deepStrictEqual(lines.out, ['valid\tnpm:ms@2.1.3\tpatched by patches/ms@2.1.3.patch'])
   t.assert.match(lines.err.join('\n'), /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web$/u)
 }))
+
+test('lockedPatches: the workspace root\'s pnpm-lock.yaml, where pnpm-workspace.yaml is, whatever lockfile is nearer; else the nearest', async (t) => {
+  const listings = { 'web/app': ['pnpm-lock.yaml', 'package.json'], web: ['package.json'], '': ['pnpm-workspace.yaml', 'pnpm-lock.yaml'] }
+  const read = []
+  const reading = async (path) => (read.push(path), PNPM_LOCK)
+  const locked = await lockedPatches({ directory: 'web/app', list: async (dir) => listings[dir], read: reading })
+  t.assert.deepStrictEqual([read, locked.of('ms', '2.1.3')], [['pnpm-lock.yaml'], { hash: sha256(MS_PATCH), path: 'patches/ms@2.1.3.patch' }], 'the root\'s, not web/app\'s')
+  read.length = 0
+  listings[''] = ['package.json'] // no workspace: the nearest
+  await lockedPatches({ directory: 'web/app', list: async (dir) => listings[dir], read: reading })
+  t.assert.deepStrictEqual(read, ['web/app/pnpm-lock.yaml'])
+  t.assert.equal(await lockedPatches({ directory: 'web', list: async (dir) => (dir === '' ? ['pnpm-workspace.yaml'] : []), read: reading }), null, 'a workspace root with no lockfile')
+})
 
 test('stasis validate: own code skipped with --no-own, told unverified, exit 0; a lockfile refused', withTmp((t, tmp) => {
   const file = join(tmp, 'own.stasis.code.br')
