@@ -92,8 +92,8 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/upstream':
-        specifier: ^1.3.0
-        version: 1.3.0(@noble/hashes@2.4.0)
+        specifier: ^1.4.0
+        version: 1.4.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
         specifier: ^1.1.0
         version: 1.1.0
@@ -760,8 +760,8 @@ packages:
     resolution: {integrity: sha512-naLhjcPE6tb4D4g1I2VBQMzHk7/YwXKi6TV8S8m81mCUQ9MTI4WSSMAHlkpkTXtglxoLzWxzXQyVTToNRYYs9A==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.2.0.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/upstream@1.3.0':
-    resolution: {integrity: sha512-AvQB70VO1FHI979hp5aSu4UNViQvk2wOCJbgzczGrPL3HDjJ7Q+RBSARCwKv2D2BQZn0XbLsWZx+uLW7fLjdfQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.3.0.tgz}
+  '@preventive/upstream@1.4.0':
+    resolution: {integrity: sha512-7qKEJ/E6jUn0sN9+MkvfFcacDVBC8b8hV4HEV17Nc2g9LIgOixllmwcLGFEHQTtySa5urBvKGmeqfC6WLmIN0A==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.4.0.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       semver: ^7.5.2
@@ -3270,7 +3270,7 @@ snapshots:
       '@preventive/compare': 1.2.11(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/diff': 1.1.0
       '@preventive/lockfile': 1.2.0(@noble/hashes@2.4.0)
-      '@preventive/upstream': 1.3.0(@noble/hashes@2.4.0)
+      '@preventive/upstream': 1.4.0(@noble/hashes@2.4.0)
       '@preventive/vfs': 1.1.0
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -3288,7 +3288,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/upstream@1.3.0(@noble/hashes@2.4.0)':
+  '@preventive/upstream@1.4.0(@noble/hashes@2.4.0)':
     dependencies:
       '@preventive/archive': 1.2.2(@noble/hashes@2.4.0)
     transitivePeerDependencies:

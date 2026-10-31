@@ -3,8 +3,9 @@ import { AssertionError } from 'node:assert'
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { stripVTControlCharacters, styleText } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
 
@@ -882,6 +883,15 @@ test('validate: a bundle carrying content for a payload-free stat record is refu
   await t.assert.rejects(validate(file, { own: false, lockfile: false, fetch: upstream() }),
     (error) => error.cause?.message === 'bundle: \'src/evil.js\' is a payload-free \'stat:file\' record, yet carries content')
 }))
+
+test('followingMoves: each read it wraps one upstream\'s client has, as the CLI runs it', async (t) => {
+  // As the CLI loads it, of the stasis package.
+  const { createClient } = await import(pathToFileURL(createRequire(join(here, '..', 'stasis', 'package.json')).resolve('@preventive/upstream/github.js')).href)
+  const client = createClient({ token: null })
+  const wrapped = Object.keys(followingMoves(client, 'org/repo')).filter((method) => method !== 'name')
+  t.assert.ok(wrapped.includes('compareCommits') && wrapped.includes('listRepoBranches'))
+  t.assert.deepStrictEqual(wrapped.filter((method) => typeof client[method] !== 'function'), [], 'none the fake client alone has')
+})
 
 test('historyOf: the ref of the repository holding a commit in its history, its default branch first, then a tag or a branch at it, then another branch; none for a fork\'s', async (t) => {
   const fork = 'f'.repeat(40)
