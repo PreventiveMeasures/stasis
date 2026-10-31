@@ -269,14 +269,15 @@ export async function loadTree(options) {
 
 // The host reading `project`, a host of the project's Vfs, through `tree` (layOutTree's): the tree
 // serves what the package manager installs, and any file it writes beside it at the root. A lazy
-// tree is read as lazyView reads it, each package it reads under before it is unpacked added to
-// `asked`.
-export function treeHost(tree, project, asked) {
+// tree is read as lazyView reads it, into the round's `reads`, caching nothing it reads of a package
+// not unpacked yet: each such read reaches it, so that what a file's scan reads tells whether it
+// touched one.
+export function treeHost(tree, project, reads) {
   const pm = PACKAGE_MANAGERS[tree.packageManager]
   const files = tree.vfs.readdir('/').filter((name) => tree.vfs.lstat(`/${name}`).type === 'file')
   const installs = [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
-  const vfs = tree.lazy === undefined ? tree.vfs : lazyView(tree.vfs, { ...tree.lazy, asked })
-  return vfsHost(vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
+  if (tree.lazy === undefined) return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides: pm.hides })
+  return vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides: pm.hides, touches: () => reads.touches })
 }
 
 // Refused where `packageManager` lays out no tree from the lockfile alone, which `lazy` would have.
@@ -417,23 +418,80 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   }
 }
 
+// A package name, as a directory of node_modules holds it: one name, or a scope and one.
+const PACKAGE_NAME = /^(?:@[^/@.][^/]*\/)?[^/@.][^/]*$/u
+
+// The directories among `roots` of what the package at `dir` depends on, as its package.json names
+// them (dependencies, optionalDependencies and peerDependencies) and Node finds them from `dir` in
+// `vfs`: what the build reads next, where it reads that package, but none it is held to.
+function dependenciesOf(vfs, dir, roots) {
+  let manifest
+  try {
+    manifest = JSON.parse(packageJSONText(vfs.readFile(`${dir}/package.json`)))
+  } catch {
+    return []
+  }
+  if (!isPlainObject(manifest)) return []
+  const names = new Set(['dependencies', 'optionalDependencies', 'peerDependencies'].flatMap((field) => (isPlainObject(manifest[field]) ? Object.keys(manifest[field]) : [])))
+  const found = []
+  for (const name of names) {
+    if (!PACKAGE_NAME.test(name)) continue
+    for (let at = dir; ; at = posix.dirname(at)) {
+      if (posix.basename(at) !== 'node_modules') {
+        let real
+        try {
+          real = vfs.realpath(posix.join(at, 'node_modules', name))
+        } catch {
+          real = null
+        }
+        if (real !== null) {
+          if (roots.has(real)) found.push(real)
+          break
+        }
+      }
+      if (at === '/') break
+    }
+  }
+  return found
+}
+
 // A lazy tree's `unpack(dirs)`, of its packages' directories from `/` of its Vfs, as lazyView asks
 // for them, which deptree unpacks, cleaned as the rest is; and its `lazy`, those directories, as
 // lazyView takes them: `roots`, each the layout has (a .yarnclean may take some away), and
 // `unpacked`, each unpacked so far. Positive patterns alone clean each path by its own, whatever
 // else the tree holds, so cleaning again cleans each package unpacked as the full tree's is.
-// `installed` takes in what each one's version document says, once it is unpacked.
+// `installed` takes in what each one's version document says, once it is unpacked. What each
+// package unpacked depends on is unpacked with it, and so on, as the build would ask for it a round
+// later, each round a build: but one deptree refuses is left for the build to ask for, which is
+// then refused, so that one it never reads is never refused, as one never fetched is not.
 function lazyTree({ vfs, installed, unpack }, cleanAll) {
   const roots = new Set(installed.map(({ path }) => `/${path}`).filter((dir) => vfs.isDirectory(dir)))
   const unpacked = new Set()
+  const refused = new Set()
   const at = new Map(installed.map(({ path }, i) => [path, i]))
+  const unpackOne = async (dir) => {
+    const [entry] = await unpack([dir.slice(1)])
+    installed[at.get(entry.path)] = entry
+    unpacked.add(dir)
+  }
   return {
     lazy: { roots, unpacked },
-    async unpack(paths) {
-      const asked = [...paths].map((dir) => dir.slice(1))
-      const entries = await unpack(asked)
-      for (const entry of entries) installed[at.get(entry.path)] = entry
-      for (const path of asked) unpacked.add(`/${path}`)
+    async unpack(asked) {
+      // Each asked for, the first refusal thrown once every one is done, as deptree throws one.
+      const done = await Promise.allSettled([...asked].map(unpackOne))
+      const failed = done.find(({ status }) => status === 'rejected')
+      if (failed !== undefined) throw failed.reason
+      let next = [...asked]
+      while (next.length > 0) {
+        const ahead = new Set(next.flatMap((dir) => dependenciesOf(vfs, dir, roots)).filter((dir) => !unpacked.has(dir) && !refused.has(dir)))
+        // eslint-disable-next-line no-await-in-loop -- what each depends on is read once it is unpacked
+        const results = await Promise.allSettled([...ahead].map(unpackOne))
+        next = [...ahead].filter((dir, i) => {
+          if (results[i].status === 'fulfilled') return true
+          refused.add(dir)
+          return false
+        })
+      }
       cleanAll()
     },
   }
@@ -506,8 +564,9 @@ const invalidPackageConfig = (path, cause) => Object.assign(new Error(`Invalid p
 // the OS reads one: a `..` after a link leads up from where the link leads, never textually (Node's
 // own resolution, `findPackageJSON` and `resolve`, normalizes its paths first, as Node does). A
 // relative path is from `/`. What it reads is cached, as for a tree that holds still, unless `cache`
-// is false.
-export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true } = {}) {
+// is false; with `touches`, a count of the reads that read what the tree does not hold yet (a lazy
+// tree's, lazy.js), only what was read with none is cached, so that each of those is read again.
+export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true, touches = () => 0 } = {}) {
   if (sep !== '/') throw new Error('The Vfs host is POSIX-only')
   const disk = outside ?? null
   const installed = new Set(installs)
@@ -556,6 +615,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       if (hit instanceof Error) throw hit
       return hit
     }
+    const before = touches()
     let result
     try {
       const parentReal = realpath(dirname(p), hops)
@@ -564,7 +624,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       if (name === '.' || name === '..') {
         if (statOf(parentReal)?.isDirectory() !== true) throw new VfsError('ENOTDIR', p)
         result = name === '.' ? parentReal : dirname(parentReal)
-        realCache.set(p, result)
+        if (touches() === before) realCache.set(p, result)
         return result
       }
       const candidate = join(parentReal, name)
@@ -576,10 +636,10 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
         result = realpath(link.startsWith('/') ? link : `${dirname(candidate)}/${link}`, hops + 1)
       }
     } catch (err) {
-      if (hops === 0 && (err.code === 'ENOENT' || err.code === 'ELOOP')) realCache.set(p, err)
+      if (hops === 0 && (err.code === 'ENOENT' || err.code === 'ELOOP') && touches() === before) realCache.set(p, err)
       throw err
     }
-    realCache.set(p, result)
+    if (touches() === before) realCache.set(p, result)
     return result
   }
 
@@ -594,6 +654,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   const checkManifest = (path) => {
     let error = manifestErrors.get(path)
     if (error === undefined) {
+      const before = touches()
       error = null
       try {
         const data = JSON.parse(packageJSONText(host.readFile(path)))
@@ -601,7 +662,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       } catch (cause) {
         error = invalidPackageConfig(path, cause)
       }
-      manifestErrors.set(path, error)
+      if (touches() === before) manifestErrors.set(path, error)
     }
     if (error !== null) throw error
   }
@@ -611,9 +672,10 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     if (zoneOf(real) === OUTSIDE) return disk.stat(real)
     let stats = statCache.get(real)
     if (stats === undefined) {
+      const before = touches()
       const node = lstatOrNull(vfs, inVfs(real))
       stats = node !== null && node.type !== 'symlink' ? statsFor(node) : null
-      statCache.set(real, stats)
+      if (touches() === before) statCache.set(real, stats)
     }
     return stats
   }
@@ -662,8 +724,9 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       const real = realpath(abs(p))
       let listing = listings.get(real)
       if (listing === undefined) {
+        const before = touches()
         listing = listingOf(real, p)
-        listings.set(real, listing)
+        if (touches() === before) listings.set(real, listing)
       }
       // A copy, the caller's to sort or add to.
       return [...listing]
@@ -707,6 +770,8 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
     resolve(parentFile, specifier, conditions) {
       return (resolver ?? createNodeResolver(host)).resolve(normal(parentFile), specifier, conditions)
     },
+    // What createNodeResolver caches by, as this host does.
+    touches,
   }
   const resolver = cache ? createNodeResolver(host) : undefined
   return host

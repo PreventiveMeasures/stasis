@@ -87,7 +87,10 @@ function parsePackageName(specifier, base) {
   return { packageName, packageSubpath: `.${separatorIndex === -1 ? '' : specifier.slice(separatorIndex)}`, isScoped }
 }
 
+// `host.touches`, where it has one, counts the reads it makes of what a tree does not hold yet
+// (vfs-bundle/tree.js's vfsHost of a lazy tree): what is read with none is cached alone.
 export function createNodeResolver(host) {
+  const touches = host.touches ?? (() => 0)
   // package.json reads, memoized per path; a malformed manifest, or one there that can't be read,
   // throws ERR_INVALID_PACKAGE_CONFIG on every access.
   const parsePackage = (pjsonPath) => {
@@ -113,7 +116,11 @@ export function createNodeResolver(host) {
   const pkgCache = new Map()
   const readPackage = (pjsonPath) => {
     let pkg = pkgCache.get(pjsonPath)
-    if (pkg === undefined) pkgCache.set(pjsonPath, pkg = parsePackage(pjsonPath))
+    if (pkg === undefined) {
+      const before = touches()
+      pkg = parsePackage(pjsonPath)
+      if (touches() === before) pkgCache.set(pjsonPath, pkg)
+    }
     if (pkg instanceof Error) throw pkg
     return pkg
   }
@@ -412,7 +419,11 @@ export function createNodeResolver(host) {
       if (!(conditions instanceof Set)) conditions = new Set(conditions)
       const key = `${dirname(parentFile)}\0${request}\0${[...conditions].join(',')}${builtins ? '' : '\0nobuiltins'}`
       let hit = memo.get(key)
-      if (hit === undefined) memo.set(key, hit = resolveFilename(parentFile, request, conditions, builtins))
+      if (hit === undefined) {
+        const before = touches()
+        hit = resolveFilename(parentFile, request, conditions, builtins)
+        if (touches() === before) memo.set(key, hit)
+      }
       return hit
     },
   }

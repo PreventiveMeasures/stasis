@@ -224,7 +224,9 @@ export class Scan {
   // import or re-export listing types alone (`import { type A } from`), so it's no edge either, but
   // in a TypeScript file `keepsTypeImports(file)` holds Babel keeps them for (its transform's
   // `onlyRemoveTypeImports`, as --babel reads the project's config); Flow's erases them always.
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost } = {}) {
+  // `memo`: what scans before this one, with these options, read of each file, and where to keep
+  // what this one reads (see #scanKept).
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.typescriptResolve = typescriptResolve
@@ -237,6 +239,7 @@ export class Scan {
     this.babel = babel
     this.keepsTypeImports = keepsTypeImports
     this.host = host
+    this.memo = memo
   }
 
   // A reached file whose extension/filename is in the --resources allowlist: carried as an opaque
@@ -259,9 +262,54 @@ export class Scan {
     while (queue.length > 0) {
       const url = queue.shift()
       if (this.files.has(url)) continue
-      this.#scanFile(url, queue)
+      if (this.memo === null) this.#scanFile(url, queue)
+      else this.#scanKept(url, queue)
     }
     return this
+  }
+
+  // With a `memo` (vfs-bundle/lazy.js's roundMemo, of a lazy tree read in rounds): a file a scan
+  // before kept is taken as it read it, what it found and queued and the warnings it gave alike. One
+  // scanned here is kept where reading it touched no package not unpacked yet (`memo.touches()`
+  // counts each such read, through a host that caches nothing such a read reads), so read what the
+  // full tree holds: the next scan reads only the files that did, and those it reaches.
+  #scanKept(url, queue) {
+    const kept = this.memo.files.get(url)
+    if (kept !== undefined) {
+      this.files.set(url, kept.file)
+      for (const [key, specMap] of kept.imports) {
+        if (!this.imports.has(key)) this.imports.set(key, new Map())
+        this.imports.get(key).set(url, specMap)
+      }
+      this.unresolved.push(...kept.unresolved)
+      this.parseErrors.push(...kept.parseErrors)
+      queue.push(...kept.queued)
+      for (const args of kept.warnings) console.warn(...args)
+      return
+    }
+    const touches = this.memo.touches()
+    const at = { unresolved: this.unresolved.length, parseErrors: this.parseErrors.length, queue: queue.length }
+    // The scan of a file is synchronous: what console.warn is given meanwhile is the file's.
+    const warnings = []
+    const warn = console.warn
+    console.warn = (...args) => {
+      warnings.push(args)
+      warn.apply(console, args)
+    }
+    try {
+      this.#scanFile(url, queue)
+    } finally {
+      console.warn = warn
+    }
+    if (this.memo.touches() !== touches) return
+    this.memo.files.set(url, {
+      file: this.files.get(url),
+      imports: [...this.imports].filter(([, byParent]) => byParent.has(url)).map(([key, byParent]) => [key, byParent.get(url)]),
+      unresolved: this.unresolved.slice(at.unresolved),
+      parseErrors: this.parseErrors.slice(at.parseErrors),
+      queued: queue.slice(at.queue),
+      warnings,
+    })
   }
 
   // Node's resolver: must match the runtime resolver's condition set (omitting one resolves

@@ -10,13 +10,15 @@ import { pack } from '@preventive/archive/tar.js'
 
 import { Vfs, buildGitHubBundle, buildVfsBundle } from '../stasis/src/vfs-bundle.js'
 import { inRounds, lazyView } from '../stasis/src/vfs-bundle/lazy.js'
+import { Scan } from '../stasis/src/scan.js'
 import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
 
 // @exodus/stasis/vfs-bundle with `lazy`: the tree laid out from the lockfile alone, each package
 // fetched and unpacked once the build reads it. The packages are kept in a cache store of the
 // test's, which answers for each, so nothing is fetched, and what the store is asked tells what the
 // build fetched. `used` requires `deep`; `unused` and `broken` are dependencies nothing requires,
-// and `broken`'s tarball is not the lockfile's.
+// and `broken`'s tarball is not the lockfile's. `phantom` requires `deep`, which it does not
+// declare; `declares` depends on `deep` and `broken`, and requires `deep` alone.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const encoder = new TextEncoder()
@@ -36,9 +38,11 @@ const PACKAGES = await Promise.all([
   published('deep', { 'index.js': 'module.exports = 1\n' }),
   published('unused', { 'index.js': 'module.exports = 2\n' }),
   published('broken', { 'index.js': 'module.exports = 3\n' }),
+  published('phantom', { 'index.js': "module.exports = require('deep')\n" }),
+  published('declares', { 'index.js': "module.exports = require('deep')\n" }, { manifest: { dependencies: { deep: '1.0.0', broken: '1.0.0' } } }),
 ])
 const BY_NAME = Object.fromEntries(PACKAGES.map((pkg) => [pkg.name, pkg]))
-const DEPENDENCIES = { used: { deep: '1.0.0' } }
+const DEPENDENCIES = { used: { deep: '1.0.0' }, declares: { deep: '1.0.0', broken: '1.0.0' } }
 // What the lockfile holds broken to, which its tarball is not.
 const LOCKED = { ...Object.fromEntries(PACKAGES.map(({ name, integrity }) => [name, integrity])), broken: BY_NAME.unused.integrity }
 
@@ -119,6 +123,38 @@ for (const packageManager of ['pnpm', 'npm']) {
     await t.assert.rejects(build(packageManager, { cache: store(), lazy: true }, { entry }), { message: refused.message })
   })
 
+  // A round asks for phantom, the next for deep, which phantom requires and does not declare, and
+  // the last is the build. Each file is scanned again only in the round after the one it read a
+  // package not unpacked yet in, b.js too, though src/a.js resolved its `phantom` first, from the
+  // same directory, which resolves it again.
+  test(`${packageManager}: lazily, each file is scanned once, but in the round after one it reads a package not unpacked yet in`, async (t) => {
+    const files = { names: ['phantom', 'used'], entry: "require('./b.js')\nrequire('phantom')\n", files: { 'src/b.js': "require('phantom')\n" } }
+    const full = await build(packageManager, { cache: store() }, files)
+    const parsed = new Map()
+    const parse = Scan.prototype.parseFile
+    t.mock.method(Scan.prototype, 'parseFile', function (file) {
+      const name = file.endsWith('index.js') ? posix.basename(posix.dirname(file)) : posix.basename(file)
+      parsed.set(name, (parsed.get(name) ?? 0) + 1)
+      return parse.call(this, file)
+    })
+    const walks = t.mock.method(Scan.prototype, 'walk')
+    const lazy = await build(packageManager, { cache: store(), lazy: true }, files)
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.equal(walks.mock.callCount(), 3)
+    t.assert.deepStrictEqual(Object.fromEntries(parsed), { 'a.js': 2, 'b.js': 2, phantom: 2, deep: 1 })
+  })
+
+  test(`${packageManager}: lazily, what a package read depends on is unpacked with it, but one deptree refuses is left for the build to read`, async (t) => {
+    const cache = store()
+    const walks = t.mock.method(Scan.prototype, 'walk')
+    const { bundle } = await build(packageManager, { cache, lazy: true }, { names: ['declares'], entry: "require('declares')\n" })
+    t.assert.equal(walks.mock.callCount(), 2, 'deep unpacked with declares, a round before the build reads it')
+    t.assert.deepStrictEqual(tarballs(cache), ['broken', 'declares', 'deep'])
+    t.assert.ok([...bundle.modules.keys()].some((dir) => dir.endsWith('/deep')))
+    const entry = "require('declares')\nrequire('broken')\n"
+    await t.assert.rejects(build(packageManager, { cache: store(), lazy: true }, { names: ['declares', 'broken'], entry }), /integrity|is not sha512-/u)
+  })
+
   test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
     const entry = "require('used')\nrequire('missing')\n"
     const warned = async (options) => {
@@ -186,8 +222,9 @@ test('lazyView asks for a package read under before it is unpacked, but not for 
   vfs.symlink('a', '/node_modules/link')
   const roots = new Set(['/node_modules/a', '/node_modules/a/node_modules/b', '/node_modules/@s/c'])
   const unpacked = new Set()
-  const asked = new Set()
-  const view = lazyView(vfs, { roots, unpacked, asked })
+  const reads = { asked: new Set(), touches: 0 }
+  const { asked } = reads
+  const view = lazyView(vfs, { roots, unpacked, reads })
   view.lstat('/node_modules/a')
   view.lstat('/node_modules/@s')
   view.readdir('/node_modules')
@@ -200,17 +237,21 @@ test('lazyView asks for a package read under before it is unpacked, but not for 
   view.readdir('/node_modules/@s/c')
   view.readFile('/node_modules/a/index.js')
   t.assert.deepStrictEqual([...asked], ['/node_modules/a/node_modules/b', '/node_modules/@s/c', '/node_modules/a'], 'a listing of a package itself, and a file of it')
+  t.assert.equal(reads.touches, 3, 'each read so')
+  view.readFile('/node_modules/a/index.js')
+  t.assert.equal(reads.touches, 4, 'again, as many times as it is read')
   asked.clear()
   unpacked.add('/node_modules/a')
   view.readFile('/node_modules/a/index.js')
   t.assert.deepStrictEqual([...asked], [], 'once unpacked, nothing')
+  t.assert.equal(reads.touches, 4)
 })
 
 test('inRounds: a round that asks is void, warnings and all; the first that asks nothing is the build', async (t) => {
   const warn = t.mock.method(console, 'warn', () => {})
   const unpacked = []
   let round = 0
-  const result = await inRounds(async (asked) => {
+  const result = await inRounds(async ({ asked }) => {
     round++
     console.warn(`round ${round}`)
     if (round < 3) asked.add(`/p${round}`)

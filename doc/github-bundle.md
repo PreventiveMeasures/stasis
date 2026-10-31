@@ -90,22 +90,27 @@ above it is fetched with the whole repo, never alone.
 With `--lazy`, pnpm's and npm's trees are laid out from the lockfile alone with
 nothing fetched, not even a version document, each package's directory empty.
 A package is fetched and unpacked once the build reads anything in it: resolving
-an import into it, which reads its `package.json`, is enough. A package only
-declared is never fetched. The bundle and lockfile are the ones the full tree
-gives, byte for byte, its warnings said once.
+an import into it, which reads its `package.json`, is enough. What its
+`package.json` depends on is fetched and unpacked with it, as the build would
+read it next; a package neither read nor depended on by one read is never
+fetched. The bundle and lockfile are the ones the full tree gives, byte for
+byte, its warnings said once.
 
 ```sh
 stasis github-bundle --github=owner/name --lazy src/index.js
 ```
 
 The build reads synchronously, so it runs in rounds: a round that reads in a
-package not yet unpacked is set aside, those packages are unpacked, and the
-build runs again, until a round reads none it has not unpacked.
+package not yet unpacked is set aside once it has scanned what it reaches,
+those packages are unpacked, and the build runs again, until a round reads none
+it has not unpacked. What a round scans of a file is kept for the rounds after
+it, unless scanning it read in a package not yet unpacked: each file is scanned
+once, but those, which are scanned again in the next round.
 
 Each package unpacked is held to the lockfile, and checked as without
 `--lazy`, so a broken tarball the build reaches is refused as before. One it
-never reaches is never fetched, so never refused: such a lockfile builds with
-`--lazy`, and is refused without it. yarn 1 and Soldeer lay out their trees by
+never reaches is never refused, whether it is fetched or not: such a lockfile
+builds with `--lazy`, and is refused without it. yarn 1 and Soldeer lay out their trees by
 what the packages hold, and refuse `--lazy`, before anything is fetched; so
 does a [`.yarnclean`](#yarnclean) that keeps paths with `!`, as what it keeps
 of one package turns on what the others hold. `--lazy` is a flag of the
