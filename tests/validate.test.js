@@ -13,7 +13,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -916,6 +916,58 @@ test('historyOf: the ref of the repository holding a commit in its history, its 
     throw new HttpError(403, 'GET compare 403: {"message":"API rate limit exceeded"}')
   }
   await t.assert.rejects(historyOf(followingMoves(limited, 'org/repo'), commit), { name: 'HttpError', status: 403 }, 'GitHub refusing, as it refuses')
+})
+
+test('historyOf: other branches compared `maxCompared` at most, none past `deadline`; where those left uncompared might hold the commit, it can\'t tell', async (t) => {
+  const release = 'e'.repeat(40)
+  const repository = () => followingMoves(repoClient({}, { history: { main: [], a: [], b: [release], c: [] } }), 'org/repo')
+  t.assert.deepStrictEqual(await historyOf(repository(), release, { maxCompared: 2 }), { branch: 'b' }, 'held by one compared')
+  t.assert.equal(await historyOf(repository(), 'f'.repeat(40), { maxCompared: 3 }), null, 'held by none, each compared')
+  await t.assert.rejects(historyOf(repository(), release, { maxCompared: 1 }), { name: 'ValidateError', code: 'history-unread',
+    message: `${release} is at no tag or branch head of org/repo nor in its default branch's history, and 2 of its 3 other branches were left uncompared (1 compared at most): give --sha= a commit of its default branch or at a tag` })
+  let clock = 0
+  await t.assert.rejects(historyOf(repository(), release, { deadline: 0, now: () => ++clock }), { code: 'history-unread', message: /, and 3 of its 3 other branches were left uncompared past the deadline: /u })
+})
+
+test('validateRepository: own code held to a listing of the commit\'s tree, its lockfile found by it; `strict` false, a commit not of its history or no lockfile told, not thrown', async (t) => {
+  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
+  const client = repoClient(files)
+  client.listRepoDir = client.getRepoTreeTarball = async () => {
+    throw new Error('read of the listing alone')
+  }
+  const repository = followingMoves(client, 'org/repo')
+  const plan = validationPlan(new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+  ]) }))
+  const asked = []
+  const listTree = async (paths) => {
+    asked.push(paths)
+    return { entries: [{ path: 'web', mode: '040000', type: 'tree', sha: blob('') }, ...Object.entries(files).map(([path, text]) => ({ path, mode: '100644', type: 'blob', sha: blob(text) }))], cut: false }
+  }
+  const where = { repository, commit, directory: 'web' }
+  const report = await validateRepository(plan, where, { listTree, fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.own, report.lockfiles, 'lockfileError' in report], ['valid', { checked: true, repository: 'org/repo', commit, ref: { branch: 'main' }, directory: 'web' }, ['pnpm-lock.yaml'], false])
+  t.assert.deepStrictEqual(asked, [['web/src/main.js', 'web/package.json']], 'its own files\' paths, and its directory\'s')
+
+  // Its tree cut short, the lockfile not listed: own code unverified, the dependencies held to their registry alone.
+  const cut = await validateRepository(plan, where, { listTree: async () => ({ entries: [], cut: true }), strict: false, fetch: upstream() })
+  t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.lockfiles, cut.lockfileError, cut.problems], ['incomplete', true, null, 'no-lockfile', [{ path: 'src/main.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
+  await t.assert.rejects(validateRepository(plan, where, { listTree: async () => ({ entries: [], cut: true }), fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
+
+  // A commit of a fork's: its tree not listed, nor its lockfile read.
+  asked.length = 0
+  const fork = { ...where, commit: 'f'.repeat(40) }
+  const forked = await validateRepository(plan, fork, { listTree, strict: false, fetch: upstream() })
+  t.assert.deepStrictEqual([forked.status, forked.own, forked.lockfiles, asked], ['incomplete', { checked: false, reason: 'commit-not-in-history' }, null, []])
+  await t.assert.rejects(validateRepository(plan, fork, { listTree, fetch: upstream() }), { name: 'ValidateError', code: 'commit-not-in-history' })
+
+  // An own file at a path no tree has, not asked for: unexpected.
+  const odd = { ...plan, own: [...plan.own, { path: '../x.js', dir: '.', rel: '../x.js', format: 'commonjs', bytes: () => bytes('x\n') }] }
+  asked.length = 0
+  const outside = await validateRepository(odd, where, { listTree, fetch: upstream() })
+  t.assert.deepStrictEqual([outside.status, outside.problems.map((problem) => [problem.path, problem.kind]), asked], ['invalid', [['../x.js', 'unexpected']], [['web/src/main.js', 'web/package.json']]])
 })
 
 test('validate: own code, a lockfile or the patches the bundle holds read of a commit in the repository\'s own history alone, a fork\'s refused', withTmp(async (t, tmp) => {

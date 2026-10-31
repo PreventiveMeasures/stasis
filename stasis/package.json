@@ -20,7 +20,10 @@
     "./prune": "./src/prune.js",
     "./sbom": "./src/sbom.js",
     "./audit-corrections": "./src/audit-corrections.js",
-    "./validate": "./src/validate.js",
+    "./validate": {
+      "types": "./src/validate.d.ts",
+      "default": "./src/validate.js"
+    },
     "./vfs-bundle": "./src/vfs-bundle.js",
     "./logo.svg": "./logo.svg"
   },
@@ -73,6 +76,7 @@
     "src/rollup.js",
     "src/sbom.js",
     "src/table.js",
+    "src/validate.d.ts",
     "src/validate.js",
     "src/scan.js",
     "src/vfs-bundle.js",
