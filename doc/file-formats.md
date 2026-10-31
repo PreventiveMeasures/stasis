@@ -35,6 +35,7 @@ it, or take it for another path.
 | `brotliQuality` | integer `0`–`11` | `9` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
 | `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
+| `installDevDependencies` | boolean | `true` | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -145,11 +146,20 @@ as [Entry options](bundle.md#entry-options-stasisconfigjson) describes, and
 `stasis github-bundle`'s, but none that runs a program (see its
 [Entries](github-bundle.md#entries)). `stasis run` takes nothing from it.
 
-Unknown keys are rejected. A key set by both file and env var must match. `extra`
-and `entries` are set in the file alone. Only `scope` is persisted into the lockfile/bundle
-`config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
-`brotliQuality` are run-time flags, not attested, and `extra`'s effect is the
-files it adds.
+`installDevDependencies` says how the project is installed where it ships, for
+the trees stasis lays out from its lockfile itself: `false` leaves out what
+devDependencies alone reach, as `pnpm install --prod`, `npm ci --omit=dev` and
+`yarn install --production` do, so a build that reaches one fails to resolve it
+there too. See [`stasis github-bundle`](github-bundle.md#devdependencies-installdevdependencies).
+It has nothing to do with `process.env.NODE_ENV` or `__DEV__`, which an entry's
+`define` sets. `stasis run` and `stasis bundle` read `node_modules` as it was
+installed, and take nothing from it.
+
+Unknown keys are rejected. A key set by both file and env var must match.
+`extra`, `entries` and `installDevDependencies` are set in the file alone. Only
+`scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
+`brotliQuality` are run-time flags, not attested, `extra`'s effect is the
+files it adds, and `installDevDependencies`' the packages a build can reach.
 
 ## `stasis.lock.json`
 

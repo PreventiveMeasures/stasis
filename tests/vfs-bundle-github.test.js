@@ -843,6 +843,22 @@ const checkOut = (dir, files) => Promise.all(Object.entries(files).map(async ([p
   await writeFile(join(dir, path), text)
 }))
 
+test("buildGitHubBundle leaves out what devDependencies alone reach where the directory's stasis.config.json says installDevDependencies is false", async (t) => {
+  const pnpmLock = ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    devDependencies:', '      devonly:', '        specifier: link:vendor/devonly', '        version: link:vendor/devonly', ''].join('\n')
+  const repo = (config) => ({
+    'package.json': json({ name: 'p', version: '1.0.0', devDependencies: { devonly: 'link:vendor/devonly' } }),
+    'pnpm-lock.yaml': pnpmLock,
+    'vendor/devonly/package.json': json({ name: 'devonly', version: '1.0.0' }),
+    'index.js': 'module.exports = 1\n',
+    ...config === undefined ? {} : { 'stasis.config.json': json(config) },
+  })
+  t.assert.equal((await build({ client: fakeClient(repo()), entries: ['index.js'] })).stats.links, 1)
+  t.assert.equal((await build({ client: fakeClient(repo({ installDevDependencies: false })), entries: ['index.js'] })).stats.links, 0)
+  // With a directory, the stasis.config.json there.
+  const nested = Object.fromEntries(Object.entries(repo({ installDevDependencies: false })).map(([path, text]) => [`app/${path}`, text]))
+  t.assert.equal((await build({ client: fakeClient(nested), directory: 'app', entries: ['index.js'] })).stats.links, 0)
+})
+
 test("buildGitHubBundle adds the files stasis.config.json's extra names, as stasis bundle adds them from a checkout", async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-extra-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))

@@ -1,6 +1,7 @@
 import { posix } from 'node:path'
 
 import { Vfs } from '@preventive/vfs'
+import { installsDevDependencies } from './cmd/bundle.js'
 import { KINDS, checkAhead, defaultEntries } from './vfs-bundle/entries.js'
 import { suggestedRepoEntries } from './vfs-bundle/github.js'
 import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
@@ -49,7 +50,9 @@ export function createVfsHost(vfs) {
 // os, libc defaults to 'unknown'). Without a `packageManager`, it is the one of the three whose
 // lockfile installs cwd, where only one's does. `cache` is where the packages' tarballs and version
 // documents are kept, as @preventive/upstream's CacheOptions take it: left out, in setCacheDir's
-// cache; a store with `read` and `write`, in place of it; or false, nowhere.
+// cache; a store with `read` and `write`, in place of it; or false, nowhere. Where the
+// stasis.config.json in cwd sets `installDevDependencies` false, what devDependencies alone reach is
+// left out, as buildVfsBundle's tree leaves it out.
 export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, cache } = {}) {
   checkVfs('loadNodeModules', vfs)
   checkTarget('loadNodeModules', { os, cpu, libc })
@@ -58,7 +61,8 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
   // A real path, as detection and the layout take it.
   cwd = project.realpath(posix.resolve('/', cwd))
   packageManager = packageManagerFor('loadNodeModules', project, cwd, { packageManager, packageManagerVersion, os }, NODE_MODULES_MANAGERS)
-  return loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, cache })
+  const installDevDependencies = installsDevDependencies('loadNodeModules', cwd, project)
+  return loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, cache, installDevDependencies })
 }
 
 // -> the entries buildGitHubBundle takes where none are given, as paths from the project's

@@ -131,6 +131,51 @@ test('pnpm: links a directory a `link:` override names, and installs one a `file
   t.assert.deepStrictEqual(vfs.readdir('/'), ['node_modules'], 'the tree alone')
 })
 
+// A project whose root depends on vendor/prod, and on vendor/devonly as a devDependency, each by
+// `link:`; and on the ms of `more`'s lockfile lines, where given.
+const devProject = (config, { manifest = {}, importer = [], more = [] } = {}) => project({
+  'package.json': { name: 'p', version: '1.0.0', dependencies: { prod: 'link:vendor/prod' }, devDependencies: { devonly: 'link:vendor/devonly', ...manifest } },
+  'pnpm-lock.yaml': ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    dependencies:', '      prod:', '        specifier: link:vendor/prod', '        version: link:vendor/prod', '    devDependencies:', '      devonly:', '        specifier: link:vendor/devonly', '        version: link:vendor/devonly', ...importer, '', ...more].join('\n'),
+  'vendor/prod/package.json': { name: 'prod', version: '1.0.0' },
+  'vendor/prod/index.js': 'module.exports = 1\n',
+  'vendor/devonly/package.json': { name: 'devonly', version: '1.0.0' },
+  'vendor/devonly/index.js': 'module.exports = 2\n',
+  'index.js': "module.exports = require('prod')\n",
+  ...config === undefined ? {} : { 'stasis.config.json': config },
+})
+
+test("pnpm: leaves out what devDependencies alone reach where stasis.config.json's installDevDependencies is false, as pnpm install --prod does", async (t) => {
+  const configs = [undefined, {}, { installDevDependencies: true }]
+  const trees = await Promise.all(configs.map((config) => load({ vfs: devProject(config) })))
+  for (const [i, { vfs }] of trees.entries()) t.assert.deepStrictEqual(vfs.readdir('/node_modules'), ['.pnpm', 'devonly', 'prod'], JSON.stringify(configs[i]))
+  const production = devProject({ installDevDependencies: false })
+  const tree = await load({ vfs: production })
+  t.assert.deepStrictEqual(tree.vfs.readdir('/node_modules'), ['.pnpm', 'prod'])
+  t.assert.equal(tree.host.resolve('/index.js', 'prod'), '/vendor/prod/index.js')
+  t.assert.throws(() => tree.host.resolve('/index.js', 'devonly'), { code: 'MODULE_NOT_FOUND' })
+  // The stasis.config.json of cwd, as buildVfsBundle reads it: another directory's says nothing.
+  t.assert.deepStrictEqual((await load({ vfs: write(devProject(undefined), { 'src/stasis.config.json': { installDevDependencies: false } }) })).vfs.readdir('/node_modules'), ['.pnpm', 'devonly', 'prod'])
+  t.assert.deepStrictEqual((await load({ vfs: write(devProject(undefined), { 'src/stasis.config.json': { installDevDependencies: false } }), cwd: '/src' })).vfs.readdir('/node_modules'), ['.pnpm', 'prod'])
+
+  // buildVfsBundle lays out the same tree, lazily too: a devDependency's tarball is never fetched,
+  // so one that would not match the lockfile is never refused.
+  const bogus = `sha512-${'A'.repeat(86)}==`
+  const ms = { manifest: { ms: '2.1.3' }, importer: ['      ms:', '        specifier: 2.1.3', '        version: 2.1.3'], more: ['packages:', '', '  ms@2.1.3:', `    resolution: {integrity: ${bogus}}`, '', 'snapshots:', '', '  ms@2.1.3: {}', ''] }
+  const builts = await Promise.all([false, true].map((lazy) => build({ vfs: devProject({ installDevDependencies: false }, ms), entries: ['index.js'], lazy })))
+  for (const [lazy, built] of builts.entries()) {
+    t.assert.deepStrictEqual([...built.bundle.sources.keys()], ['index.js', 'vendor/prod/index.js'])
+    t.assert.deepStrictEqual({ installed: built.stats.installed, links: built.stats.links, tarballs: built.stats.tarballs }, { installed: 0, links: 1, tarballs: 0 }, `lazy: ${Boolean(lazy)}`)
+  }
+  t.assert.deepStrictEqual((await build({ vfs: devProject(undefined, ms), entries: ['index.js'], lazy: true })).stats.installed, 1, 'which a tree with devDependencies installs')
+
+  // Anything but a boolean is refused before anything is fetched.
+  await Promise.all(['false', 0, null].flatMap((installDevDependencies) => {
+    const message = `stasis.config.json: installDevDependencies must be true or false, got ${JSON.stringify(installDevDependencies)}`
+    const refused = (err) => err instanceof TypeError && err.message === message
+    return [t.assert.rejects(load({ vfs: devProject({ installDevDependencies }, ms) }), refused), t.assert.rejects(build({ vfs: devProject({ installDevDependencies }, ms), entries: ['index.js'] }), refused)]
+  }))
+})
+
 test('buildVfsBundle checks its entries first, reads no EXODUS_STASIS_* setting and keeps no State', async (t) => {
   const bogus = `sha512-${'A'.repeat(86)}==`
   const files = {

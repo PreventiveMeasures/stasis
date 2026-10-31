@@ -17,7 +17,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseInstallDevDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1026,6 +1026,10 @@ export function readConfigFile(name, cwd, host = diskHost) {
     throw new Error(`${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`, { cause })
   }
 }
+
+// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` installs
+// devDependencies: the `installDevDependencies` of the stasis.config.json there, true without one.
+export const installsDevDependencies = (name, cwd, host) => parseInstallDevDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.installDevDependencies)
 
 // --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
 // `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
@@ -2171,6 +2175,8 @@ export function checkVfsOptions(name, options) {
 // them, but none that runs a program; an option given has to agree with theirs, one left out is
 // theirs (configuredBuilds). The files its `extra` names are added as `stasis bundle` adds them,
 // globbed in the Vfs as Node globs the disk (vfs-bundle/glob.js), which needs the optional minimatch.
+// Where its `installDevDependencies` is false, what devDependencies alone reach is left out of the
+// tree, as the package manager's production install leaves it out.
 // `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
@@ -2218,6 +2224,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
   // config there).
   const bundleExtra = configured !== null
   if (parseExtraOption(CONFIG_FILE, readConfigFile('buildVfsBundle', cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
+  const installDevDependencies = installsDevDependencies('buildVfsBundle', cwd, project)
   for (const build of builds) checkKind('buildVfsBundle', checkVfsOptions('buildVfsBundle', { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
@@ -2226,7 +2233,7 @@ export async function buildVfsBundle({ vfs, packageManager, cwd = '/', packageMa
     if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
     if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
   }
-  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy })
+  const tree = await loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy, installDevDependencies })
   // What follows reads the tree through the hosts `hostOf` makes, of the project's host: once, or
   // for a lazy tree, in rounds, each reading into its `reads`, each build keeping what its scans read
   // across them in a memo of its own.

@@ -66,6 +66,28 @@ test('yarn1: links each workspace, and cwd may be in any of them', async (t) => 
   t.assert.deepStrictEqual([website.root, [...website.projects]], ['/website', ['.']])
 })
 
+test("yarn1: leaves out what devDependencies alone reach where stasis.config.json's installDevDependencies is false, as yarn install --production does", async (t) => {
+  const files = (config, more = {}) => project({
+    'package.json': { name: 'p', version: '1.0.0', dependencies: { prod: 'file:vendor/prod' }, devDependencies: { devonly: 'file:vendor/devonly' } },
+    'yarn.lock': `${LOCKFILE}"devonly@file:vendor/devonly":\n  version "1.0.0"\n\n"prod@file:vendor/prod":\n  version "1.0.0"\n`,
+    'vendor/prod/package.json': { name: 'prod', version: '1.0.0' },
+    'vendor/prod/index.js': 'module.exports = 1\n',
+    'vendor/devonly/package.json': { name: 'devonly', version: '1.0.0' },
+    'vendor/devonly/index.js': 'module.exports = 2\n',
+    'index.js': "module.exports = require('prod')\n",
+    ...config === undefined ? {} : { 'stasis.config.json': config },
+    ...more,
+  })
+  const configs = [undefined, { installDevDependencies: true }]
+  const trees = await Promise.all(configs.map((config) => load({ vfs: files(config) })))
+  for (const [i, { vfs }] of trees.entries()) t.assert.deepStrictEqual(vfs.readdir('/node_modules'), ['devonly', 'prod'], JSON.stringify(configs[i]))
+  t.assert.deepStrictEqual((await load({ vfs: files({ installDevDependencies: false }) })).vfs.readdir('/node_modules'), ['prod'])
+  const built = await buildVfsBundle({ vfs: files({ installDevDependencies: false }), entries: ['index.js'] })
+  t.assert.deepStrictEqual([built.packageManager, [...built.bundle.sources.keys()], built.stats.installed], ['yarn1', ['index.js', 'node_modules/prod/index.js'], 1])
+  // yarn's own setting for it is still refused: it would change what the project's own install does.
+  await t.assert.rejects(load({ vfs: files({ installDevDependencies: false }, { '.yarnrc': '--production true\n' }) }), /\.yarnrc:1: "--production" is a setting not supported here/u)
+})
+
 test('yarn1: refuses, naming the file, what it cannot reproduce', async (t) => {
   const manifest = { 'package.json': { name: 'p', version: '1.0.0' } }
   await t.assert.rejects(load({ vfs: project(manifest) }), /^Error: no yarn\.lock found in \/ or any parent directory/u)
