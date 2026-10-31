@@ -1155,21 +1155,72 @@ test('stasis github-bundle writes the bundle of a directory too deep to name in 
   t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/a.js'])
 })
 
-test('stasis github-bundle requires --github, and takes --sha or --tag', async (t) => {
+// `stasis github-bundle ...args`: its exit status and its stderr, run with `nodeArgs`.
+async function githubBundleCli(args, nodeArgs = []) {
+  const child = spawn(process.execPath, [...nodeArgs, join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', ...args])
+  const stderr = []
+  child.stderr.on('data', (chunk) => stderr.push(chunk))
+  const [status] = await once(child, 'close')
+  return { status, stderr: Buffer.concat(stderr).toString('utf8') }
+}
+
+test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag', async (t) => {
   const usage = async (args) => {
-    const child = spawn(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'github-bundle', ...args, 'a.js'])
-    const stderr = []
-    child.stderr.on('data', (chunk) => stderr.push(chunk))
-    const [status] = await once(child, 'close')
-    return { status, error: Buffer.concat(stderr).toString('utf8').split('\n')[0] }
+    const { status, stderr } = await githubBundleCli(args)
+    return { status, error: stderr.split('\n')[0] }
   }
+  const none = 'Error: github-bundle requires the repo to bundle: owner/name[/path], or --github=owner/name'
+  const both = 'Error: github-bundle takes owner/name[/path] or --github=owner/name [--directory=path], not both'
   const cases = [
-    [[`--sha=${SHA}`, '--package-manager=pnpm'], 'Error: github-bundle requires --github=owner/name, the repo to bundle'],
-    [[`--sha=${SHA}`], 'Error: github-bundle requires --github=owner/name, the repo to bundle'],
-    [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0'], 'Error: github-bundle takes --sha or --tag, not both'],
+    [[`--sha=${SHA}`, '--package-manager=pnpm'], none],
+    [[`--sha=${SHA}`], none],
+    [[`--sha=${SHA}`, 'a.js'], "Error: github-bundle: 'a.js' is not owner/name[/path], the repo to bundle"],
+    [[GITHUB, `--github=${GITHUB}`, 'a.js'], both],
+    [[`${GITHUB}/packages/api`, '--directory=packages/api', 'a.js'], both],
+    [[GITHUB, '--directory=packages/api', 'a.js'], both],
+    [['--directory=packages/api', GITHUB, 'a.js'], both],
+    [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
+    [[GITHUB, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
   t.assert.deepStrictEqual(results, cases.map(([, error]) => ({ status: 1, error })))
+})
+
+// A preload under which the GitHub client `stasis github-bundle` fetches with says each call made of
+// it on stderr, as `call <method> <options as JSON>`, and answers none.
+const js = (source) => `data:text/javascript,${encodeURIComponent(source)}`
+const RECORDING_CLIENT = js(`export const createClient = () => new Proxy({}, {
+  get: (_, method) => (method === 'then' ? undefined : async (options) => {
+    process.stderr.write(\`call \${method} \${JSON.stringify(options)}\\n\`)
+    throw new Error('offline')
+  }),
+})`)
+const RECORDING_HOOKS = js(`export const resolve = (specifier, context, next) =>
+  specifier === '@preventive/upstream/github.js' && context.parentURL?.endsWith('/stasis/src/cmd/github-bundle.js')
+    ? { url: ${JSON.stringify(RECORDING_CLIENT)}, shortCircuit: true }
+    : next(specifier, context)`)
+const RECORDING = js(`import { register } from 'node:module'; register(${JSON.stringify(RECORDING_HOOKS)})`)
+
+test('stasis github-bundle owner/name/path fetches what --github=owner/name --directory=path does', async (t) => {
+  const calls = async (args) => {
+    const { status, stderr } = await githubBundleCli(args, [`--import=${RECORDING}`])
+    t.assert.equal(status, 1)
+    return stderr.split('\n').filter((line) => line.startsWith('call ')).map((line) => JSON.parse(line.split(' ').slice(2).join(' ')))
+  }
+  const [directory, bare, after, root, bareRoot, slash] = await Promise.all([
+    [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'a.js'],
+    [`${GITHUB}/packages/api`, `--sha=${SHA}`, 'a.js'],
+    [`--sha=${SHA}`, `${GITHUB}/packages/api`, 'a.js'],
+    [`--github=${GITHUB}`, `--sha=${SHA}`, 'a.js'],
+    [GITHUB, `--sha=${SHA}`, 'a.js'],
+    [`${GITHUB}/`, `--sha=${SHA}`, 'a.js'],
+  ].map(calls))
+  t.assert.ok(directory.some((options) => options.repo === GITHUB && options.directory === 'packages/api'), JSON.stringify(directory))
+  t.assert.deepStrictEqual(bare, directory)
+  t.assert.deepStrictEqual(after, directory, 'after the options')
+  t.assert.ok(root.length > 0 && root.every((options) => options.repo === GITHUB && options.directory === undefined), JSON.stringify(root))
+  t.assert.deepStrictEqual(bareRoot, root)
+  t.assert.deepStrictEqual(slash, root, 'with a / after it')
 })
 
 // A home whose ~/.audit/config.json is `config`, removed after the test.

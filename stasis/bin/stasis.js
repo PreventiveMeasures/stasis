@@ -24,7 +24,7 @@ const HELP = `Usage:
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
  stasis bundle [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
- stasis github-bundle --github=owner/name [--sha=commit|--tag=name] [--directory=path] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] path/to/(stasis.code.br|stasis.lock.json) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
@@ -156,8 +156,21 @@ if (command === '-v' || command === '--version') {
     'brotli-quality': { type: 'string' },
     generate: { type: 'string', multiple: true },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
-  if (values.github === undefined) fail('Error: github-bundle requires --github=owner/name, the repo to bundle')
+  const parse = (args) => parseLeadingOptions(args, options, { valueFlags: valueFlagsOf(options), onError: fail })
+  // The repo as `owner/name[/path]`, for --github=owner/name [--directory=path]: the first argument
+  // that is no option, where no --github comes before it, with options on either side of it.
+  const rest = [...argv]
+  const bare = parse(rest).github === undefined && rest.length > 0 ? argv.splice(argv.length - rest.length, 1)[0] : undefined
+  const values = parse(argv)
+  let { github, directory } = values
+  if (bare !== undefined) {
+    if (github !== undefined || directory !== undefined) fail('Error: github-bundle takes owner/name[/path] or --github=owner/name [--directory=path], not both')
+    const [owner, name, ...path] = bare.split('/')
+    if (name === undefined) fail(`Error: github-bundle: '${bare}' is not owner/name[/path], the repo to bundle`)
+    github = `${owner}/${name}`
+    directory = path.join('/') || undefined
+  }
+  if (github === undefined) fail('Error: github-bundle requires the repo to bundle: owner/name[/path], or --github=owner/name')
   if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
@@ -176,10 +189,10 @@ if (command === '-v' || command === '--version') {
   setCacheDir(userCacheDir())
   const { githubBundleCommand } = await import('../src/cmd/github-bundle.js')
   await githubBundleCommand({
-    github: values.github,
+    github,
     sha: values.sha,
     tag: values.tag,
-    directory: values.directory,
+    directory,
     packageManager: values['package-manager'],
     packageManagerVersion: values['package-manager-version'],
     lazy: Boolean(values.lazy),
