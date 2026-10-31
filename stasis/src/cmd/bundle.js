@@ -2237,24 +2237,21 @@ export function checkVfsOptions(name, options) {
 // are deptree's, and `stats.unpacked` the packages unpacked: each one installed, or those a lazy
 // tree unpacked.
 // -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
-export async function buildVfsBundle({ vfs, ...options } = {}) {
+export async function buildVfsBundle(options = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
-  checkVfs('buildVfsBundle', vfs)
-  return buildFromLockfile('buildVfsBundle', vfsHost(vfs), { ...options, vfs })
+  checkVfs('buildVfsBundle', options.vfs)
+  return buildFromLockfile('buildVfsBundle', vfsHost(options.vfs), options)
 }
 
 // buildVfsBundle's build, `name`'s, of the project `project` (a host, @exodus/stasis-core/host)
 // reads: of a Vfs, which `vfs` is (for `generate` alone), or of the disk, for `stasis bundle
 // --deptree`. As buildVfsBundle builds it, with `options` as it takes them, but for what bundleCommand
-// gives besides (none of which buildVfsBundle takes): `builds`, where given, are the builds (each
-// `{ entries, ...options }`) bundleCommand plans (bundle-options.js), in place of those
-// configuredBuilds makes, `configured` where stasis.config.json's `entries` makes them, whose union's
-// `extra` is then the bundle's, as bundleCommand adds it. `env` is what the builds read their
-// settings from (none by default); `outputsAt(root)` the absolute paths written, which `extra` never
-// takes; `why`, what a refusal to detect the package manager says it is detected for; with
-// `refuseInstalled`, the project holding anything where the tree installs is refused, before
-// anything is fetched (layOutTree).
-async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy = false, ...options } = {}, { env = {}, builds: planned, configured: plannedFromConfig = false, outputsAt = () => [], why, refuseInstalled = false } = {}) {
+// gives besides (none of which buildVfsBundle takes): `plan`, `{ builds, bundleExtra }`, the builds
+// (each `{ entries, ...options }`) bundleCommand plans (bundle-options.js) in place of those
+// configuredBuilds makes, and whether their union's `extra` is the bundle's, as bundleCommand adds
+// it; `env`, what the builds read their settings from (none by default); `outputsAt(root)`, the
+// absolute paths written, which `extra` never takes; and `refuseInstalled`, layOutTree's.
+async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy = false, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
   const { checkCache, checkKind, checkLazy, checkTarget, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
@@ -2265,20 +2262,19 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   if (repo !== undefined) repo = new Bundle({ repo }).repo
   // A real path, as every file the scan reaches is.
   cwd = project.realpath(posix.resolve('/', cwd))
-  packageManager = packageManagerFor(name, project, cwd, { packageManager, packageManagerVersion, os, why })
+  packageManager = packageManagerFor(name, project, cwd, { packageManager, packageManagerVersion, os })
   const pm = packageManagerOf(name, packageManager)
   if (lazy) checkLazy(name, packageManager)
   // The entries stasis.config.json's `entries` names, every one where none are given, each built
   // with its options there, which the options given agree with (configuredBuilds); else built with
-  // the options given. Each build is checked with the options it is built with.
-  const configured = planned === undefined ? configuredBuilds(name, { cwd, host: project, entries: options.entries, options }) : null
-  const builds = planned ?? configured?.builds ?? [options]
+  // the options given. Each build is checked with the options it is built with. With the builds its
+  // `entries` make, `extra` is the bundle's, added once to their union, as bundleCommand adds it;
+  // else the build's own, as buildOfKind adds it.
+  const configured = plan === undefined ? configuredBuilds(name, { cwd, host: project, entries: options.entries, options }) : null
+  const { builds, bundleExtra } = plan ?? { builds: configured?.builds ?? [options], bundleExtra: configured !== null }
   if (builds.length === 0) throw new Error(`${name}: no entries given, and ${CONFIG_FILE}'s entries name none`)
-  // With the builds its `entries` make, `extra` is the bundle's, added once to their union, as
-  // bundleCommand adds it; else the build's own, as buildOfKind adds it. That the Vfs can be globbed
-  // for it is checked before anything is fetched (for a State rooted above cwd, where it reads the
-  // config there).
-  const bundleExtra = planned === undefined ? configured !== null : plannedFromConfig
+  // That the Vfs can be globbed for `extra` is checked before anything is fetched (for a State
+  // rooted above cwd, where it reads the config there).
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
   const installDevDependencies = installsDevDependencies(name, cwd, project)
   for (const build of builds) checkKind(name, checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
@@ -2426,11 +2422,11 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // With `deptree`, the dependencies are not read from disk but laid out in memory from the lockfile
 // that installs cwd, as buildVfsBundle lays them out (for JS, pnpm, yarn 1 or npm's; for Solidity,
 // Soldeer's), and the rest of the project read from disk through them: refused where no lockfile
-// of those installs cwd, or more than one does, and where the project holds anything where the tree
-// installs (each project's node_modules, Soldeer's dependencies folder), before anything is fetched.
-// The tarballs are fetched (or read from a cache that holds them, held to the lockfile all the same)
-// and nothing is cached: nothing is written but the bundle and the lockfile. A Soldeer git
-// dependency is fetched from GitHub with `env`'s GITHUB_TOKEN where it is set.
+// of those installs cwd, or more than one does, and where anything is installed already
+// (layOutTree's `refuseInstalled`), before anything is fetched. The tarballs are fetched (or read
+// from a cache that holds them, held to the lockfile all the same) and nothing is cached: nothing
+// is written but the bundle and the lockfile. A Soldeer git dependency is fetched from GitHub with
+// `env`'s GITHUB_TOKEN where it is set.
 export async function bundleCommand({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds, deptree = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   if (builds !== undefined) {
@@ -2455,22 +2451,15 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
   const bundleExtra = builds !== undefined
   let union, root
   if (deptree) {
-    if (typeof deptree !== 'boolean') throw new TypeError('bundleCommand: deptree must be a boolean')
     // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
-    const { createClient } = await import('@preventive/upstream/github.js')
+    const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
     const built = await buildFromLockfile('bundleCommand', diskHost, {
       cwd: resolve(cwd),
+      packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
       lockfile,
       cache: false,
       client: createClient({ token: env.GITHUB_TOKEN || null }),
-    }, {
-      env,
-      builds: plans,
-      configured: bundleExtra,
-      outputsAt,
-      why: '--deptree lays out the dependencies from a lockfile',
-      refuseInstalled: true,
-    })
+    }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true })
     console.warn(unpackedSummary(built.stats))
     root = built.root
     union = { bundle: built.bundle, lockfile: () => built.lockfile }
@@ -2487,20 +2476,19 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, en
     // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
     for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
     union = unionOfBuilds('bundleCommand', plans, builts, roots)
+    if (bundleExtra) {
+      // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
+      // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
+      const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
+      if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
+      union = withExtras
+    }
   }
   // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
   // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
   // files above it.
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
 
-  // A tree laid out from the lockfile adds `extra` as it builds (buildFromLockfile).
-  if (bundleExtra && !deptree) {
-    // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
-    // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
-    const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
-    if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
-    union = withExtras
-  }
   let { bundle } = union
   // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
   let lockData = lockfile ? union.lockfile().serialize() : undefined

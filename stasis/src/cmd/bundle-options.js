@@ -209,12 +209,9 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   return { mappingFile: values.mapping, manifests, scope: values.scope, conditions, mainFields, metro, metroResolver, babel, babelAliases: values['babel-aliases'], platforms, jsx, flow, typescript, tsconfig: values.tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
 }
 
-// The entry flags that run a program of the project's from disk, which needs what it installs on
+// The CONSENT_FLAGS that run a program of the project's from disk, which needs what it installs on
 // disk: none that --deptree lays out in memory.
-const DISK_RUN_FLAGS = new Map([
-  ['babel', "the project's Babel config"],
-  ['metro-resolver', "the project's metro-resolver"],
-])
+const DISK_RUN_FLAGS = ['babel', 'metro-resolver']
 
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
 function outputOptions(values, { allJs, allSol }) {
@@ -223,8 +220,8 @@ function outputOptions(values, { allJs, allSol }) {
   // never read from disk, which holds none.
   const deptree = Boolean(values.deptree)
   if (deptree && !allJs && !allSol) throw new Error('--deptree is only valid for JS and .sol bundles')
-  for (const [flag, what] of DISK_RUN_FLAGS) {
-    if (deptree && values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${what} from disk, where --deptree installs nothing)`)
+  for (const flag of deptree ? DISK_RUN_FLAGS : []) {
+    if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${CONSENT_FLAGS.get(flag)} from disk, where --deptree installs nothing)`)
   }
   // --brotli-quality: valid for every entry language (no allJs gate).
   const brotliQuality = values['brotli-quality'] === undefined ? undefined : parseBrotliQuality('--brotli-quality', values['brotli-quality'])
