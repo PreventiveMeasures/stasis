@@ -9,7 +9,7 @@ import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost, loadNodeModules,
 import { Lockfile } from '@exodus/stasis/lockfile'
 import { buildPurl, collectComponents, generateSbom, sbom, toCyclonedx, toSpdx } from '@exodus/stasis/sbom'
 import { CORRECTIONS, isEvidenceFile } from '@exodus/stasis/audit-corrections'
-import { FETCHED, fetchPackage, gitBlobId, lockedPatches, parsePatch, patchedFiles, repositoryFiles, validate, validateBundle, validationPlan } from '@exodus/stasis/validate'
+import { FETCHED, ValidateError, fetchPackage, gitBlobId, lockedBy, parsePatch, patchedFiles, repositoryFiles, repositoryLockfiles, validate, validateBundle, validationPlan } from '@exodus/stasis/validate'
 import { StasisEsbuild } from '@exodus/stasis/esbuild'
 import { StasisWebpack } from '@exodus/stasis/webpack'
 import { StasisRollup } from '@exodus/stasis/rollup'
@@ -746,7 +746,7 @@ test('Bundle.serialize rejects a node_modules module missing name/version (resou
 })
 
 test('@exodus/stasis/validate exports the bundle validation API, its inputs taken as any reader has them', (t) => {
-  for (const fn of [fetchPackage, gitBlobId, lockedPatches, parsePatch, patchedFiles, repositoryFiles, validate, validateBundle, validationPlan]) {
+  for (const fn of [ValidateError, fetchPackage, gitBlobId, lockedBy, parsePatch, patchedFiles, repositoryFiles, repositoryLockfiles, validate, validateBundle, validationPlan]) {
     t.assert.equal(typeof fn, 'function')
   }
   t.assert.deepStrictEqual([...FETCHED], ['npm', 'cargo'])

@@ -31,7 +31,7 @@ const HELP = `Usage:
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
- stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--no-own] path/to/bundle
+ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
 
@@ -308,24 +308,41 @@ if (command === '-v' || command === '--version') {
   printAuditReport(report)
   process.exitCode = report.rows.length === 0 ? 0 : 1
 } else if (command === 'validate') {
-  const values = parseLeadingOptions(argv, { github: { type: 'string' }, sha: { type: 'string' }, directory: { type: 'string' }, 'no-own': { type: 'boolean' } }, {
-    valueFlags: ['--github', '--sha', '--directory'],
+  const values = parseLeadingOptions(argv, {
+    github: { type: 'string' },
+    sha: { type: 'string' },
+    directory: { type: 'string' },
+    'only-deps': { type: 'boolean' },
+    lockfile: { type: 'string', multiple: true },
+    'no-lockfile': { type: 'boolean' },
+  }, {
+    valueFlags: ['--github', '--sha', '--directory', '--lockfile'],
     onError: fail,
   })
   if (argv.length !== 1) fail('Error: stasis validate takes one bundle')
+  if (values.lockfile !== undefined && values['no-lockfile']) fail('Error: --lockfile and --no-lockfile: give one')
   // The repository is read with GITHUB_TOKEN where it is set; its trees and the packages fetched are
   // cached where `stasis audit` caches, each held to its id or integrity as it is read.
   const { createClient } = await import('@preventive/upstream/github.js')
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
-  const { validate, printValidationReport } = await import('../src/validate.js')
-  const report = await validate(resolve(argv[0]), {
-    client: createClient({ token: process.env.GITHUB_TOKEN || null }),
-    github: values.github,
-    sha: values.sha,
-    directory: values.directory,
-    own: !values['no-own'],
-  })
+  const { ValidateError, validate, printValidationReport } = await import('../src/validate.js')
+  let report
+  try {
+    // Its dependencies alone only with --only-deps, and held to no lockfile only with --no-lockfile: a
+    // bundle with no repository or commit to read its own code or its lockfile of is refused otherwise.
+    report = await validate(resolve(argv[0]), {
+      client: createClient({ token: process.env.GITHUB_TOKEN || null }),
+      github: values.github,
+      sha: values.sha,
+      directory: values.directory,
+      own: !values['only-deps'],
+      lockfile: values['no-lockfile'] ? false : values.lockfile?.map((path) => resolve(path)) ?? true,
+    })
+  } catch (cause) {
+    if (!(cause instanceof ValidateError)) throw cause
+    fail(`Error: ${cause.message}`)
+  }
   printValidationReport(report)
   // Exit 1 where a file differs or is unexpected, so it composes in CI; files left unverified are
   // told, not failed.
