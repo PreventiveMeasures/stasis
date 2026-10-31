@@ -1,25 +1,16 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 
 import { createNodeResolver } from '../stasis/src/resolve-node.js'
 import { diskHost } from '@exodus/stasis-core/host'
+import { withTmp } from './tmp.helper.js'
 
 // The host-based reimplementation of Node's CJS resolver (used by @exodus/stasis/vfs-bundle over an
 // in-memory node_modules) checked against `require.resolve` itself on a real tree covering every
 // rule it mirrors: lookup paths, extension probing, directory main/index, exports (conditions,
 // patterns, arrays, null, sugar), imports, self-reference, symlinks and the error codes.
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-resolve-node-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 function writeTree(d) {
   const w = (rel, content = '') => {

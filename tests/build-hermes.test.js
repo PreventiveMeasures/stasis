@@ -1,12 +1,12 @@
 import { test, describe } from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -43,15 +43,6 @@ const runNode = (t, file, { cwd } = {}) => {
   const r = spawnSync(process.execPath, [file], { encoding: 'utf-8', cwd })
   t.assert.equal(r.status, 0, `running ${file} failed: ${r.stderr}`)
   return stripVTControlCharacters(r.stdout)
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-build-hermes-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 // --platform=hermes / --babel resolve Babel from the PROJECT dir (it's the project's dev

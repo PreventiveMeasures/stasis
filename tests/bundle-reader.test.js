@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { createReadStream, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { createReadStream, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
@@ -8,18 +7,10 @@ import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { readBundle } from '@exodus/stasis/bundle-reader'
 import { collectComponents } from '../stasis/src/sbom.js'
+import { withTmp } from './tmp.helper.js'
 
 /* eslint-disable no-await-in-loop -- tests walk small tables of sources and malformed bundles one
    at a time, so a failure names the case (and one-shot sources like a Readable aren't raced). */
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-reader-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 // Enough of everything a bundle carries: both bucket kinds, a base64 resource, a BOM, non-ASCII,
 // escapes, a platform import map, an executable, a reason map -- and a large file plus many small

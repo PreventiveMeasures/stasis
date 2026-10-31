@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
@@ -14,20 +13,12 @@ import { buildSolidityBundle, bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { extractCommand, lockfileFromBundle } from '@exodus/stasis-core/extract'
 import { prune } from '@exodus/stasis-core/prune'
 import { sha512integrity } from '@exodus/stasis-core/state-util'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
 const fixtures = join(here, 'fixtures')
 const solFixtures = join(fixtures, 'solidity-bundle')
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-extract-cmd-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const cleanEnv = (() => {
   const {

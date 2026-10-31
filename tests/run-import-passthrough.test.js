@@ -25,14 +25,14 @@ import { before, describe, test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { hardlinkCopy } from './hardlink-copy.helper.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -73,15 +73,6 @@ const run = async (args, opts = {}) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'stasis-import-tsx-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
   }
 }
 

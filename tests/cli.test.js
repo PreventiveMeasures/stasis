@@ -11,6 +11,7 @@ import { generateKeyPairSync, sign } from 'node:crypto'
 
 // shard.js is internal to stasis-core (no package export), like fs.js in metro-fs.test.js.
 import { serializeShard } from '../stasis-core/src/shard.js'
+import { withTmp } from './tmp.helper.js'
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
 const runFixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cli-run')
@@ -57,15 +58,6 @@ const run = async (args, opts = {}) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
   }
 }
 

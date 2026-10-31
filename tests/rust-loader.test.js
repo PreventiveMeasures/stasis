@@ -18,19 +18,9 @@ import {
   scanRustItems,
 } from '../stasis/src/loaders/rust.js'
 import { rustFixture } from './rust-fixtures.helper.js'
+import { captureWarnings } from './warnings.helper.js'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'rust-bundle')
-
-const captureWarnings = (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    return { result: fn(), warnings }
-  } finally {
-    console.warn = original
-  }
-}
 
 const modNames = (content) => scanRustItems(content).mods.map((m) => m.name)
 const refSpecs = (content) => scanRustItems(content).refs.map((r) => r.spec)

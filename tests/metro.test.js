@@ -28,6 +28,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 // preload-singleton invariant the spawned tests rely on.
 import { withStasis } from '../stasis-plugins/src/metro.js'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const helper = join(here, 'metro-run.helper.js')
@@ -90,15 +91,6 @@ const run = async (entry, { cwd, env = {}, graph = FULL_GRAPH }) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-metro-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
   }
 }
 

@@ -21,6 +21,8 @@ import {
 } from '../stasis/src/cmd/bundle.js'
 import { diffCommand } from '../stasis/src/cmd/diff.js'
 import { rustFixture } from './rust-fixtures.helper.js'
+import { withTmp } from './tmp.helper.js'
+import { captureWarningsAsync } from './warnings.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -33,15 +35,6 @@ const fieldsFixture = join(here, 'fixtures', 'resolve-fields')
 const contextMissFixture = join(here, 'fixtures', 'bundle-context-miss')
 const contextDivergeFixture = join(here, 'fixtures', 'bundle-context-diverge')
 const contextOutsideFixture = join(here, 'fixtures', 'bundle-context-outside')
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-cmd-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 // Write `files` (a path from `dir` -> its content, an object as JSON) under `dir`, with their directories.
 const writeTree = (dir, files) => {
@@ -5883,17 +5876,6 @@ test('buildRustBundle takes the workspace bucket name/version from package.json'
   t.assert.equal(workspace.name, 'rusty')
   t.assert.equal(workspace.version, '3.0.0')
 })
-
-const captureWarningsAsync = async (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    return { result: await fn(), warnings }
-  } finally {
-    console.warn = original
-  }
-}
 
 test('buildRustBundle pulls the package\'s own lib in when main.rs uses it, bucketed by Cargo.toml', async (t) => {
   const bundle = await buildRustBundle({ cwd: join(rustFixtures, 'lib-bin'), entries: ['src/main.rs'] })

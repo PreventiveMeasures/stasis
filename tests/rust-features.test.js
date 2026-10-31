@@ -20,6 +20,7 @@ import {
 import { buildRustBundle } from '../stasis/src/cmd/bundle.js'
 import { buildRustTree, collectRustBundle, collectRustFilesFromDisk } from '../stasis/src/loaders/rust.js'
 import { rustFixture } from './rust-fixtures.helper.js'
+import { captureWarningsAsync } from './warnings.helper.js'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'rust-bundle')
 const featuresFixture = join(fixtures, 'features')
@@ -44,16 +45,6 @@ const withProject = (files, fn) => {
     return fn(tmp)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
-  }
-}
-const captureWarningsAsync = async (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    return { result: await fn(), warnings }
-  } finally {
-    console.warn = original
   }
 }
 const withProjectAsync = async (files, fn) => {

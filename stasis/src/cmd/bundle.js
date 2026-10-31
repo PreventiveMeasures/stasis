@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, findPackageMetadata, normalizeEntries, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import {
@@ -911,7 +911,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   const byParent = new Map()
   for (const [key, parents] of scanner.imports) {
     for (const [parentURL, specs] of parents) {
-      for (const [spec, childURL] of specs) mapAt(mapAt(byParent, parentURL), spec).set(key, childURL)
+      for (const [spec, childURL] of specs) nestedMap(nestedMap(byParent, parentURL), spec).set(key, childURL)
     }
   }
   for (const [parentURL, bySpec] of byParent) {
@@ -1139,9 +1139,6 @@ function requireFrom(dir, spec, host) {
   }
 }
 
-// The value under `key` in the map `map`, `make()` stored there first where there's none.
-const mapAt = (map, key, make = () => new Map()) => map.get(key) ?? map.set(key, make()).get(key)
-
 // The AST of the module `file`, read through `host` (`source` where read already).
 const parseModule = (file, host, source = host.readFile(file).toString('utf8')) => getParser().parseSync(file, source, { sourceType: 'unambiguous' }).program
 
@@ -1259,11 +1256,12 @@ function babelPathCall(node, file, host) {
 // spreads, variables, branches and the array methods making a list of another (LIST_METHODS); each
 // entry (or the first of a `[name, options]` pair) passed to `entry(type, node)`.
 function readLists(program, lists, entry) {
-  // Each variable's initializers, by its name.
-  const inits = new Map()
+  // Each variable's declarators with an initializer, by its name.
+  const declarators = []
   walkAst(program, (node) => {
-    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) mapAt(inits, node.id.name, () => []).push(node.init)
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) declarators.push(node)
   })
+  const inits = Map.groupBy(declarators, (node) => node.id.name)
   const seen = new Map()
   // Read `node` for the `type`s it lists: `depth` levels of arrays in it lists (1 a list, 2 one `.flat()`
   // flattens), and an array below them an entry's `[name, options]` pair. A spread joins its elements to
@@ -1281,7 +1279,7 @@ function readLists(program, lists, entry) {
         else read(element, type, depth - 1)
       }
     } else if (node.type === 'Identifier') {
-      for (const init of inits.get(node.name) ?? []) read(init, type, depth)
+      for (const { init } of inits.get(node.name) ?? []) read(init, type, depth)
     } else if (node.type === 'ConditionalExpression' || node.type === 'LogicalExpression') {
       for (const side of node.type === 'LogicalExpression' ? [node.left, node.right] : [node.consequent, node.alternate]) read(side, type, depth)
     } else if (depth > 0 && LIST_METHODS.has(memberCall(node))) {
@@ -1541,7 +1539,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           else continue // unresolved (already warned/thrown by reportScanIssues)
           // A transform's input is no dependency of Metro's: the import is gone before Metro sees it.
           if (e.child && isTransformInput(fileURLToPath(e.child), scanner.files.get(e.child))) continue
-          mapAt(mapAt(edges, rel), e.spec).set(platformKey, target)
+          nestedMap(nestedMap(edges, rel), e.spec).set(platformKey, target)
         }
       }
       return scanner
@@ -1584,7 +1582,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // conditions key -> parentRel -> specifier -> targetRel, beside the bundle's '*' edges.
   const keyedResolutions = new Map()
   // The edges from `parent` (rel) keyed `key`: specifier -> targetRel.
-  const keyedFrom = (key, parent) => mapAt(mapAt(keyedResolutions, key), parent)
+  const keyedFrom = (key, parent) => nestedMap(nestedMap(keyedResolutions, key), parent)
   // The configs' edges some context misses or leaves out: `${parentRel}\0${specifier}` -> the miss.
   const configMissed = new Map()
   // The files the configs reach (rel), and of them those the app's build doesn't: the bundler's,
@@ -1897,7 +1895,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
       if (pkgDir === undefined) continue
       for (const manifest of [moduleFileKey(pkgDir, 'package.json'), scopeManifestOf(rel, pkgDir, exists)]) {
-        if (manifest !== undefined) mapAt(manifests, manifest, () => []).push(rel)
+        if (manifest !== undefined) (manifests.get(manifest) ?? manifests.set(manifest, []).get(manifest)).push(rel)
       }
     }
     for (const [rel, of] of manifests) {

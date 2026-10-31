@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
+import { withTmp } from './tmp.helper.js'
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'stasis', 'bin', 'stasis.js')
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cli-run-cjs')
@@ -35,15 +36,6 @@ const run = async (args, opts = {}) => {
     status,
     stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
     stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-cjs-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
   }
 }
 

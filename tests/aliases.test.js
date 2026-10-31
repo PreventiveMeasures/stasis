@@ -11,6 +11,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { createAliases } from '../stasis/src/babel.js'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -23,15 +24,6 @@ const runCli = async (args, cwd) => {
   child.stderr.on('data', (d) => (stderr += d))
   const [status] = await once(child, 'close')
   return { status, stderr }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-aliases-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 const writeTree = (dir, files) => {

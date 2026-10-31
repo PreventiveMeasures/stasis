@@ -13,6 +13,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { Vfs, buildVfsBundle, loadNodeModules, setCacheDir } from '../stasis/src/vfs-bundle.js'
 import { hardlinkCopy } from './hardlink-copy.helper.js'
+import { withTmp } from './tmp.helper.js'
 
 // @exodus/stasis/vfs-bundle builds from a lockfile alone: @preventive/deptree fetches the tarballs
 // into a cache, verifies them and lays them out in memory as the package manager would, which is
@@ -121,15 +122,6 @@ const run = async (args, { node = false, ...opts } = {}) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-bundle-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
   }
 }
 

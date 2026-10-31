@@ -10,6 +10,7 @@ import { stripVTControlCharacters } from 'node:util'
 import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib'
 
 import { hardlinkCopy } from './hardlink-copy.helper.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -70,15 +71,6 @@ const run = async (args, opts = {}) => {
     status,
     stdout: stripVTControlCharacters(Buffer.concat(stdoutChunks).toString('utf-8')),
     stderr: stripVTControlCharacters(Buffer.concat(stderrChunks).toString('utf-8')),
-  }
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'stasis-popular-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
   }
 }
 

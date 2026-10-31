@@ -1,8 +1,7 @@
 import { test, describe } from 'node:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
@@ -11,6 +10,7 @@ import { brotliCompressSync } from 'node:zlib'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundleFromLockfile } from '../stasis/src/cmd/build.js'
+import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
@@ -55,15 +55,6 @@ const runNode = (t, file, { cwd } = {}) => {
   const r = spawnSync(process.execPath, [file], { encoding: 'utf-8', cwd })
   t.assert.equal(r.status, 0, `running ${file} failed: ${r.stderr}`)
   return r.stdout
-}
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-build-cmd-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 }
 
 // node --test runs test files in parallel; each test here spawns a `stasis build`

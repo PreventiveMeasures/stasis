@@ -150,7 +150,7 @@ export class StasisMetro {
   #seen = new Set()
   // The project root's real path, once a consumed resource needs it (#consumedResources).
   #realRoot
-  // Under load, the bundle's files by directory (rel), once an asset needs them (#bundleDirHost).
+  // Under load, the bundle's files (rel) by directory, once an asset needs them (#bundleDirHost).
   #bundleDirs
   #state
   #resources
@@ -557,15 +557,9 @@ export class StasisMetro {
   // files as captured.
   #bundleDirHost() {
     const state = this.#state
-    if (this.#bundleDirs === undefined) {
-      this.#bundleDirs = new Map()
-      for (const rel of [...state.sources.keys(), ...state.resources.keys()]) {
-        const dir = posix.dirname(rel)
-        if (!this.#bundleDirs.has(dir)) this.#bundleDirs.set(dir, [])
-        this.#bundleDirs.get(dir).push({ name: posix.basename(rel) })
-      }
-    }
-    return { readdir: (dir) => this.#bundleDirs.get(toPosix(state.relative(dir))) ?? [], stat: () => FILE_STAT }
+    this.#bundleDirs ??= Map.groupBy([...state.sources.keys(), ...state.resources.keys()], (rel) => posix.dirname(rel))
+    const readdir = (dir) => (this.#bundleDirs.get(toPosix(state.relative(dir))) ?? []).map((rel) => ({ name: posix.basename(rel) }))
+    return { readdir, stat: () => FILE_STAT }
   }
 
   // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:

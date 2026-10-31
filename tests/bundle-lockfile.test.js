@@ -1,12 +1,12 @@
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
+import { withTmp } from './tmp.helper.js'
 
 // No bundle carries a stasis.lock.json: extracted, it would replace the lockfile a frozen extract checks the
 // bundle against, or root a stasis project of its own. Bundle refuses one both ways, so every producer and
@@ -24,15 +24,6 @@ const {
   EXODUS_STASIS_PID: _pid,
   ...cleanEnv
 } = process.env
-
-const withTmp = (fn) => (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-bundle-lockfile-'))
-  try {
-    return fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 const refusal = (key) => new RegExp(`bundle: ${key.replaceAll('.', '\\.')} is a stasis lockfile, which no bundle may carry`)
 

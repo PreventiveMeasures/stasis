@@ -1,6 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
@@ -9,15 +8,7 @@ import { addCommand } from '@exodus/stasis-core/add'
 import { detectRepo, githubHomepageDirectory, gitOriginUrl, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
-
-const withTmp = (fn) => async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'stasis-repo-'))
-  try {
-    return await fn(t, dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
+import { withTmp } from './tmp.helper.js'
 
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value))
 const writeGitConfig = (dir, text) => {

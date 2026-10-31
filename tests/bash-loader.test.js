@@ -8,31 +8,9 @@ import {
   extractBashCalls,
   resolveBashCall,
 } from '../stasis/src/loaders/bash.js'
+import { captureWarnings, captureWarningsAsync } from './warnings.helper.js'
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'bash-bundle')
-
-const captureWarnings = (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    return { result: fn(), warnings }
-  } finally {
-    console.warn = original
-  }
-}
-
-const captureWarningsAsync = async (fn) => {
-  const original = console.warn
-  const warnings = []
-  console.warn = (...args) => warnings.push(args.join(' '))
-  try {
-    const result = await fn()
-    return { result, warnings }
-  } finally {
-    console.warn = original
-  }
-}
 
 test('extractBashCalls finds `source ./file` references', (t) => {
   t.assert.deepStrictEqual(extractBashCalls('#!/usr/bin/env bash\nsource ./lib.sh\n'), ['./lib.sh'])
