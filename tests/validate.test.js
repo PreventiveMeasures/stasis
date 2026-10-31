@@ -133,7 +133,7 @@ test('validateBundle: own code held to the repository, each dependency to its pa
     { ecosystem: 'npm', name: 'gone', version: '1.0.0', files: 1, status: 'unverified', reason: 'not-published' },
     { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } },
   ], 'ms as the patch the bundle holds named for it changes it, with no lockfile read, the patch as the repository has it')
-  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0 })
+  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0, misplaced: 0 })
   t.assert.equal(report.lockfiles, null, 'held to no lockfile')
   // Own code read as bytes, as a tree's tarball has them, alike.
   const asBytes = Object.fromEntries(Object.entries(LISTED).map(([path, entry]) => [path, entry.sha === blob('main\n') ? { data: bytes('main\n') } : entry]))
@@ -252,6 +252,69 @@ test('validateBundle: a package installed from a directory of the repository hel
   ], [{ ecosystem: 'npm', name: 'lib', version: '2.0.0', files: 2, status: 'invalid', directory: 'lib' }]])
   t.assert.deepStrictEqual((await told(null)).slice(0, 1).concat([(await told(null))[2][0].reason]), ['incomplete', 'local'], 'the repository unread')
   t.assert.deepStrictEqual(fetched, [])
+})
+
+test('validateBundle: each npm copy held to where Node resolves it: the name its path installs it as, pnpm\'s store directory above it, an alias only as a lockfile tells it', async (t) => {
+  const told = async (dir, { locked = null, name = 'ms', version = '2.1.3' } = {}) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { name, version, files: { 'index.js': MS['index.js'] } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: async () => new Map([['index.js', bytes(MS['index.js'])]]), locked })
+    return [report.status, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  const valid = ['valid', []]
+  t.assert.deepStrictEqual(await told('node_modules/ms'), valid)
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms'), valid)
+  t.assert.deepStrictEqual(await told('node_modules/@scope/pkg', { name: '@scope/pkg', version: '1.0.0' }), valid)
+  // pnpm's store: its directory names the package and its version, its peers and patch after them.
+  t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@2.1.3/node_modules/ms'), valid)
+  t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@2.1.3_react@18.2.0/node_modules/ms'), valid)
+  t.assert.deepStrictEqual(await told('node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg', { name: '@scope/pkg', version: '1.0.0' }), valid)
+  t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@file+vendor+ms/node_modules/ms'), valid, 'a version no registry\'s: held to its lockfile alone')
+  t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@2.0.0_${'a'.repeat(26)}/node_modules/ms`), valid, 'one pnpm hashed: its version not told')
+  const misplaced = (at) => ['invalid', [['invalid', 'misplaced', at]]]
+  const others = ['node_modules/.pnpm/ms@2.0.0/node_modules/ms', 'node_modules/.pnpm/debug@2.1.3/node_modules/ms', 'node_modules/.pnpm/ms@2.1.3/node_modules/debug']
+  t.assert.deepStrictEqual(await Promise.all(others.map((dir) => told(dir))), others.map(misplaced), 'another version or package, with no lockfile read')
+  // Installed under another name: an alias, which only a lockfile tells; unverified where none is read.
+  t.assert.deepStrictEqual(await told('node_modules/helmet'), ['incomplete', [['unverified', 'alias-unverified', 'node_modules/helmet']]])
+  const pnpm = (importer) => lockedBy([{ path: 'pnpm-lock.yaml', text: `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n${importer}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n` }])
+  t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n') }), misplaced('node_modules/helmet'), 'no alias the lockfile has')
+  t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n') }), valid, 'pnpm\'s alias of it')
+})
+
+// npm's lockfile of an app installing ms@2.0.0, tool's ms@2.1.3 and an alias of it (helmet), at its
+// root, or with `prefix` (`web/`), of the workspace web.
+const OTHER_SRI = `sha512-${'B'.repeat(85)}A==`
+const lockEntry = (name, version, integrity, more = {}) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity, ...more })
+const npmLock = (prefix) => {
+  const dependencies = { helmet: 'npm:ms@2.1.3', ms: '2.0.0', tool: '1.0.0' }
+  return `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+    '': { name: 'app', version: '1.0.0', ...(prefix ? { workspaces: ['web'] } : { dependencies }) },
+    ...(prefix && { web: { version: '1.0.0', dependencies }, 'node_modules/web': { resolved: 'web', link: true } }),
+    [`${prefix}node_modules/helmet`]: { name: 'ms', ...lockEntry('ms', '2.1.3', SRI) },
+    [`${prefix}node_modules/ms`]: lockEntry('ms', '2.0.0', OTHER_SRI),
+    [`${prefix}node_modules/tool`]: lockEntry('tool', '1.0.0', OTHER_SRI, { dependencies: { ms: '2.1.3' } }),
+    [`${prefix}node_modules/tool/node_modules/ms`]: lockEntry('ms', '2.1.3', SRI),
+  } }, null, 2)}\n`
+}
+
+test('validateBundle: an npm copy held to the version npm\'s lockfile installs at its location, from the lockfile\'s directory (the bundle\'s root under it, or one of its importers on disk)', async (t) => {
+  const told = async (dir, locked) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: async () => new Map([['index.js', bytes(MS['index.js'])]]), locked })
+    return [report.status, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  const valid = ['valid', []]
+  const misplaced = (at) => ['invalid', [['invalid', 'misplaced', at]]]
+  const root = lockedBy([{ path: 'package-lock.json', text: npmLock('') }])
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', root), valid)
+  t.assert.deepStrictEqual(await told('node_modules/helmet', root), valid, 'npm\'s alias of it there')
+  t.assert.deepStrictEqual(await told('node_modules/ms', root), misplaced('node_modules/ms'), 'the version locked elsewhere, another here')
+  t.assert.deepStrictEqual(await told('node_modules/other/node_modules/ms', root), misplaced('node_modules/other/node_modules/ms'), 'none installed there')
+  // A bundle built in web, its lockfile the workspace's root's: its locations under web.
+  const workspace = npmLock('web/')
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', lockedBy([{ path: 'package-lock.json', text: workspace, from: 'repository', root: 'web' }])), valid)
+  t.assert.deepStrictEqual(await told('node_modules/ms', lockedBy([{ path: 'package-lock.json', text: workspace, from: 'repository', root: 'web' }])), misplaced('node_modules/ms'))
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', lockedBy([{ path: '/tmp/package-lock.json', text: workspace, from: 'local', root: 'web' }])), valid, 'on disk, its importer named for the bundle\'s directory')
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', lockedBy([{ path: '/tmp/package-lock.json', text: npmLock(''), from: 'local', root: 'web' }])), valid, 'on disk with no such importer: of its own directory')
 })
 
 test('validateBundle: a patch the bundle holds is taken as the repository has it alone: refused where it differs, its files as patched unverified where that is not told', async (t) => {
@@ -777,6 +840,21 @@ test('validate: a dependency from the repository\'s root (`file:.`) held to the 
   const checked = await validate(file, { client })
   t.assert.deepStrictEqual([checked.status, checked.problems], ['valid', []], 'of the own code\'s tree')
   t.assert.deepStrictEqual([(await validate(file, { client, own: false })).status], ['valid'], 'of the root\'s own tree')
+}))
+
+test('validate: an npm copy held to where the repository\'s npm lockfile installs it, from the lockfile\'s directory to the bundle\'s', withTmp(async (t, tmp) => {
+  const files = { 'package.json': '{"name":"app","version":"1.0.0","workspaces":["web"]}\n', 'package-lock.json': npmLock('web/'), 'web/package.json': '{"name":"web","version":"1.0.0"}\n', 'web/src/main.js': 'main\n' }
+  const at = async (dir) => {
+    const file = join(tmp, 'web.stasis.code.br')
+    writeBundle(file, { repo: { github: 'org/repo', commit, directory: 'web' }, modules: new Map([
+      ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+      [dir, { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+    ]) })
+    const report = await validate(file, { client: repoClient(files), fetch: upstream() })
+    return [report.status, report.lockfiles, report.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])]
+  }
+  t.assert.deepStrictEqual(await at('node_modules/tool/node_modules/ms'), ['valid', ['package-lock.json'], []], 'at web/node_modules/tool/node_modules/ms')
+  t.assert.deepStrictEqual(await at('node_modules/ms'), ['invalid', ['package-lock.json'], [['misplaced', 'node_modules/ms']]], 'web/node_modules/ms is ms@2.0.0')
 }))
 
 test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-unverified), 3 refused or failed; own code skipped with --only-deps, its dependencies held to a lockfile given or, with --no-lockfile, none', withTmp((t, tmp) => {

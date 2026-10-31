@@ -31,7 +31,7 @@ It exits:
 | Code | |
 | - | - |
 | 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
-| 1 | `invalid`: a file differs or is unexpected, or a version fails its lockfile. |
+| 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile, or a copy is installed where another is. |
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
 | 3 | It refused the bundle (no repository or commit, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
@@ -101,7 +101,8 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
    the bundle holds of a package must match the file at its path there. Files
    of a package the bundle leaves out are expected: a bundle holds those its
    code reaches alone. Each installed copy of a version is held to it apart, and
-   the version fetched once. A vendored crate's `.cargo-checksum.json`, which
+   the version fetched once. An npm copy is held to where it is installed too,
+   as Node resolves a package by its path (below). A vendored crate's `.cargo-checksum.json`, which
    `cargo vendor` writes and no crate holds, is held to the crate: its package
    checksum, and the sha256 of each file it lists.
 3. **Coverage**: every file the bundle holds must be one or the other. Stasis's
@@ -163,6 +164,32 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
 
 A version failing its lockfile is not compared, its files counted unverified.
 
+## Where a package is installed
+
+Node resolves an npm package by its path, so a bundle could otherwise hold a
+version where another belongs (an old one the lockfile installs elsewhere, or
+another package altogether). Each npm copy must be installed where the bundle
+has it:
+
+- **Its name**: the name its path installs it as (after its last
+  `node_modules/`) is its own, but for an alias its lockfile has: npm's at that
+  location, yarn's (`foo@npm:ms@…`) or pnpm's (`foo: ms@2.1.3`).
+- **pnpm's store**: a copy under `node_modules/.pnpm/<name>@<version>/`
+  (its peers or patch after an `_`, a scope's `/` a `+`) is of that name and
+  version. One pnpm hashed (a long name, or one with uppercase) tells no
+  version, and one that is no registry's (`file+lib`) is held to its lockfile
+  alone.
+- **npm's lockfile** installs it there: the version `package-lock.json` (or
+  `npm-shrinkwrap.json`) locks at its location, the bundle's directory's path
+  from the lockfile's added in front. One given on disk takes that path where
+  the bundle's directory is one of its workspaces, else its own directory.
+
+A copy installed where its path or its lockfile names another fails
+(`misplaced`), its files counted unverified. One installed under another name
+with no lockfile to tell of an alias (`--no-lockfile`, or none showing one) is
+unverified (`alias-unverified`). A crate is found by its `Cargo.toml`, not its
+directory, so its place is not checked.
+
 ## Patched dependencies
 
 A version pnpm patches as it installs it (its lockfile's `patchedDependencies`)
@@ -214,11 +241,11 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
-| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
+| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`), `installed(dir)` the version npm's lockfile installs at a copy's directory (`<name>@<version>`, null for none, undefined where its lockfile locks no location), `aliased(as, named)` whether it installs `named` under the name `as` (undefined for no lockfile). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
-| `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts. |
+| `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's (`''`, the default, for the same). |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
