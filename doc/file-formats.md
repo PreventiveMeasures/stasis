@@ -32,7 +32,7 @@ it, or take it for another path.
 | `debug` | boolean | `false` | `EXODUS_STASIS_DEBUG` |
 | `packageJSON` | boolean | `false` | `EXODUS_STASIS_PACKAGE_JSON` |
 | `fs` | `"sync"`, `"async"` | unset | `EXODUS_STASIS_FS` |
-| `brotliQuality` | integer `0`–`11` | `9` | `EXODUS_STASIS_BROTLI_QUALITY` |
+| `brotliQuality` | integer `0`–`11` | `6` | `EXODUS_STASIS_BROTLI_QUALITY` |
 | `extra` | array of paths and glob patterns | unset | none |
 | `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `installDevDependencies` | boolean | `true` | none |
