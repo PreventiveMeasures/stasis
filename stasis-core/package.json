@@ -17,7 +17,8 @@
     "./util": "./src/util.js",
     "./brotli": "./src/brotli.js",
     "./state-util": "./src/state-util.js",
-    "./prune": "./src/prune.js"
+    "./prune": "./src/prune.js",
+    "./cli": "./src/cli.js"
   },
   "files": [
     "bin/stasis-core.js",
@@ -26,6 +27,7 @@
     "src/brotli.js",
     "src/bundle.js",
     "src/bundle-util.js",
+    "src/cli.js",
     "src/config.js",
     "src/extract.js",
     "src/fs.js",
