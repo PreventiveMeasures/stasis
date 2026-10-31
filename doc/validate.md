@@ -6,7 +6,7 @@ and each dependency as its published package has it, held to the lockfile that
 installed it, those two covering every file it holds.
 
 ```sh
-stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] path/to/bundle
+stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
 ```
 
 | Flag | Meaning |
@@ -18,6 +18,7 @@ stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-
 | `--lockfile=path` | Hold the dependencies to this lockfile, on disk, in place of the repository's. Give it twice for a bundle with both npm packages and crates. |
 | `--no-lockfile` | Hold the dependencies to no lockfile: each tarball to its registry's integrity alone. |
 | `--allow-unverified` | Exit 0 where the bundle is incomplete: files it was to check went unverified, and nothing failed. |
+| `--show-valid` | List the packages that are valid too (those patched), each with its patch; left out otherwise. |
 
 Both checks are on unless turned off. A bundle that records no repository or
 commit, with none given, is refused (exit 3), since its own code can't be read:
@@ -34,8 +35,8 @@ It exits:
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
 | 3 | It refused the bundle (no repository or commit, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
-The files failing and the packages patched, failing or not checked go to
-stdout, a line each; the summary, why own code wasn't checked, and the
+The files failing and the packages failing or not checked go to stdout, a line
+each (and, with `--show-valid`, those valid that are patched); the summary, why own code wasn't checked, and the
 lockfiles the dependencies were held to go to stderr.
 
 ```sh
@@ -134,9 +135,13 @@ algorithm, which pnpm bundles: each hunk where its header says, else up to 20
 lines either side, its lines the same but for the space they end in, a byte
 order mark the file starts with kept). The patch is the one the
 `pnpm-lock.yaml` locks the version with, read of the bundle where it holds a
-file of that hash (pnpm 11 names a patch by its hash alone), else beside the
-lockfile: of the repository, or of the disk for one given, and held to that
-hash (`patch-mismatch` where it isn't). With no
+file of that hash, else beside the lockfile: of the repository, or of the disk
+for one given, and held to that hash (`patch-mismatch` where it isn't). One
+the lockfile names by its hash alone, as pnpm 11 does (its file in pnpm's
+settings), is the file pnpm names for it (`patches/name@version.patch`, or by
+its selector) in the `patches` directory of the bundle's project, else of the
+repository's root (beside the lockfile, for one given on disk), whose text is
+of that hash; with none, it is `in no file of its hash`. With no
 `pnpm-lock.yaml` read (`--no-lockfile`, or npm's or yarn's), it is the patch
 the bundle holds named for the version, pnpm's way (`patches/name@version.patch`).
 
@@ -156,6 +161,10 @@ applied is held to its files as published.
 ## Access
 
 GitHub is asked with `GITHUB_TOKEN` where it is set, for a private repository.
+A repository renamed or transferred, which GitHub's API answers with a redirect
+(`301 Moved Permanently`), is followed to the name it has now, asked once by
+the id GitHub redirects to; what is read is held to the commit's and tree's ids
+all the same, and the report tells the name it was moved from.
 A private scoped npm package is fetched with `PREVENTIVE_MEASURES_NPM_TOKEN`,
 `STASIS_NPM_TOKEN` or `NPM_TOKEN`, as upstream reads them. Trees and tarballs
 are cached where `stasis audit` caches, each held to its id or integrity as it
@@ -172,6 +181,8 @@ repository or packages its own way (a server listing a tree's blob ids, say):
 | `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
+| `printValidationReport(report, { out, err, showValid })` | The report as the CLI prints it, the packages valid left out but with `showValid`. |
+| `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts. |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
