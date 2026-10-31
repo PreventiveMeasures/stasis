@@ -3,8 +3,9 @@ import { AssertionError } from 'node:assert'
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { stripVTControlCharacters, styleText } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
 
@@ -12,7 +13,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -526,11 +527,21 @@ test('tarballFiles and fetchPackage: a package\'s files as upstream fetches its 
 
 // The repository as fakeClient serves it, with what `stasis validate` reads beside its trees: a file at
 // the commit, as upstream's getRepoFile reads one.
-// The fake GitHub client, its files read alone too, its listings with git's blob id of each file.
-const repoClient = (files) => {
+// The fake GitHub client, its files read alone too, its listings with git's blob id of each file; its
+// branches each with the commits in its history (`history`, main's the commit, its head another),
+// and its tags each with its commit, as GitHub's compare and listings tell them.
+const repoClient = (files, { history = { main: [commit] }, tags = {} } = {}) => {
   const client = fakeClient(files)
   const list = client.listRepoDir.bind(client)
+  const headOf = (branch) => sha256(branch).slice(0, 40)
   return Object.assign(client, {
+    getRepoHead: async () => ({ branch: 'main', oid: headOf('main') }),
+    listRepoTags: async () => Object.entries(tags).map(([tag, oid]) => ({ tag, oid })),
+    listRepoBranches: async () => Object.keys(history).map((branch) => ({ branch, oid: headOf(branch) })),
+    async compareCommits({ base, head }) {
+      if (!Object.values(history).flat().includes(base) && !Object.values(tags).includes(base)) throw new HttpError(404, `GET compare/${base}...${head} 404: {"message":"Not Found"}`)
+      return { status: history[head]?.includes(base) ? 'ahead' : 'diverged' }
+    },
     async getRepoFile({ path }) {
       if (typeof files[path] !== 'string') throw new Error(`getRepoFile: no file at ${path}`)
       return files[path]
@@ -587,7 +598,7 @@ test('validate: the repository its bundle names, at its commit and directory, re
   const client = repoClient(files)
   const integrities = []
   const report = await validate(file, { client, fetch: upstream(PACKAGES, [], integrities) })
-  t.assert.deepStrictEqual([report.status, report.own, report.counts.matched, report.lockfiles], ['valid', { checked: true, repository: 'org/repo', commit, directory: 'web' }, 2, ['pnpm-lock.yaml']])
+  t.assert.deepStrictEqual([report.status, report.own, report.counts.matched, report.lockfiles], ['valid', { checked: true, repository: 'org/repo', commit, ref: { branch: 'main' }, directory: 'web' }, 2, ['pnpm-lock.yaml']])
   t.assert.deepStrictEqual(integrities, [['npm:ms@2.1.3', SRI]], 'ms fetched with the integrity the lockfile locks')
   t.assert.deepStrictEqual(report.packages, [{ ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 1, status: 'valid',
     patch: { hash: sha256(MS_PATCH), path: 'patches/ms@2.1.3.patch', from: 'repository', applied: true } }], 'its patch the lockfile\'s, read of the repository')
@@ -622,7 +633,7 @@ test('validate: the repository its bundle names, at its commit and directory, re
   const lines = printed(report)
   t.assert.equal(lines.out, '', 'a package valid told on stdout but where asked')
   t.assert.deepStrictEqual(printed(report, { showValid: true }).rows, [['status', 'package', 'note'], ['valid', 'ms@2.1.3', 'patched by patches/ms@2.1.3.patch']])
-  t.assert.match(lines.err, /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} under web\nDependencies held to pnpm-lock\.yaml\n$/u)
+  t.assert.match(lines.err, /^valid: 2 of 2 files as they should be, 0 differ, 0 unexpected, 0 unverified; 1 of 1 packages as published\nOwn code held to org\/repo at 7{40} of main under web\nDependencies held to pnpm-lock\.yaml\n$/u)
 }))
 
 test('repositoryLockfiles: as the build finds each package manager\'s root, pnpm\'s (its workspace\'s), npm\'s and yarn\'s (the root whose workspaces take the package), else the nearest; a crate\'s beside its Cargo workspace\'s root; refused where none is, or two package managers\' are', async (t) => {
@@ -838,7 +849,7 @@ test('validate: a repository renamed or transferred followed, as GitHub redirect
   const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': PNPM_LOCK, 'patches/ms@2.1.3.patch': MS_PATCH }
   const asked = []
   // GitHub's API for a repository moved: 301, to it by its id.
-  const moved = (client) => Object.assign(Object.create(client), Object.fromEntries(['getRepoTreeId', 'getRepoTreeTarball', 'listRepoDir', 'getRepoFile'].map((method) => [method, async (options) => {
+  const moved = (client) => Object.assign(Object.create(client), Object.fromEntries(['getRepoTreeId', 'getRepoTreeTarball', 'listRepoDir', 'getRepoFile', 'getRepoHead', 'listRepoTags', 'listRepoBranches', 'compareCommits'].map((method) => [method, async (options) => {
     asked.push([method, options.repo])
     if (options.repo === 'org/old') throw new HttpError(301, 'GET https://api.github.com/repos/org/old 301: {"message":"Moved Permanently"}', new Headers({ location: 'https://api.github.com/repositories/7' }))
     return client[method](options)
@@ -854,11 +865,11 @@ test('validate: a repository renamed or transferred followed, as GitHub redirect
     ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
   ]) })
   const report = await validate(file, { client: moved(repoClient(files)), fetch: upstream() })
-  t.assert.deepStrictEqual([report.status, report.own], ['valid', { checked: true, repository: 'org/repo', movedFrom: 'org/old', commit, directory: 'web' }])
+  t.assert.deepStrictEqual([report.status, report.own], ['valid', { checked: true, repository: 'org/repo', movedFrom: 'org/old', commit, ref: { branch: 'main' }, directory: 'web' }])
   t.assert.deepStrictEqual(asked.filter(([method]) => method === 'getRepo'), [['getRepo', 'org/old', true]], 'its name asked once')
   t.assert.ok(asked.every(([method, repo]) => method === 'getRepo' || repo === 'org/repo' || repo === 'org/old'))
   const { err } = printed(report)
-  t.assert.ok(err.split('\n').includes(`Own code held to org/repo (moved from org/old) at ${commit} under web`), err)
+  t.assert.ok(err.split('\n').includes(`Own code held to org/repo (moved from org/old) at ${commit} of main under web`), err)
 
   // Another redirect, of no other name: refused as GitHub answered it.
   const same = Object.assign(Object.create(repoClient(files)), { async getRepoTreeId() { throw new HttpError(301, 'Moved Permanently') }, getRepo: async () => ({ id: 7, full_name: 'org/repo' }) })
@@ -871,6 +882,60 @@ test('validate: a bundle carrying content for a payload-free stat record is refu
     sources: { '.': { name: 'app', version: '1.0.0', files: { 'src/main.js': "require('./evil.js')\n", 'src/evil.js': "console.log('evil')\n" } } }, repo: { github: 'org/repo', commit } })))
   await t.assert.rejects(validate(file, { own: false, lockfile: false, fetch: upstream() }),
     (error) => error.cause?.message === 'bundle: \'src/evil.js\' is a payload-free \'stat:file\' record, yet carries content')
+}))
+
+test('followingMoves: each read it wraps one upstream\'s client has, as the CLI runs it', async (t) => {
+  // As the CLI loads it, of the stasis package.
+  const { createClient } = await import(pathToFileURL(createRequire(join(here, '..', 'stasis', 'package.json')).resolve('@preventive/upstream/github.js')).href)
+  const client = createClient({ token: null })
+  const wrapped = Object.keys(followingMoves(client, 'org/repo')).filter((method) => method !== 'name')
+  t.assert.ok(wrapped.includes('compareCommits') && wrapped.includes('listRepoBranches'))
+  t.assert.deepStrictEqual(wrapped.filter((method) => typeof client[method] !== 'function'), [], 'none the fake client alone has')
+})
+
+test('historyOf: the ref of the repository holding a commit in its history, its default branch first, then a tag or a branch at it, then another branch; none for a fork\'s', async (t) => {
+  const fork = 'f'.repeat(40)
+  const release = 'e'.repeat(40)
+  const compared = []
+  const repository = (options) => {
+    const client = repoClient({}, options)
+    const compare = client.compareCommits.bind(client)
+    client.compareCommits = (asked) => (compared.push(asked.head), compare(asked))
+    return followingMoves(client, 'org/repo')
+  }
+  t.assert.deepStrictEqual(await historyOf(repository(), commit), { branch: 'main' })
+  t.assert.deepStrictEqual(await historyOf(repository({ history: { main: [], release: [release] } }), release), { branch: 'release' }, 'another branch\'s history')
+  t.assert.deepStrictEqual(await historyOf(repository({ history: { main: [] }, tags: { 'v1.0.0': release } }), release), { tag: 'v1.0.0' })
+  const head = sha256('release').slice(0, 40)
+  t.assert.deepStrictEqual(await historyOf(repository({ history: { main: [], release: [] } }), head), { branch: 'release' }, 'a branch at it, GitHub knowing none in common with the default branch')
+  compared.length = 0
+  t.assert.equal(await historyOf(repository({ history: { main: [commit], release: [release], other: [] } }), fork), null, 'a fork\'s commit, in no history of the repository\'s')
+  t.assert.deepStrictEqual(compared.toSorted(), ['main', 'other', 'release'], 'each branch compared')
+  const limited = repoClient({})
+  limited.compareCommits = async () => {
+    throw new HttpError(403, 'GET compare 403: {"message":"API rate limit exceeded"}')
+  }
+  await t.assert.rejects(historyOf(followingMoves(limited, 'org/repo'), commit), { name: 'HttpError', status: 403 }, 'GitHub refusing, as it refuses')
+})
+
+test('validate: own code, a lockfile or the patches the bundle holds read of a commit in the repository\'s own history alone, a fork\'s refused', withTmp(async (t, tmp) => {
+  const fork = 'f'.repeat(40)
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': PNPM_LOCK, 'web/patches/ms@2.1.3.patch': MS_PATCH }
+  const file = join(tmp, 'fork.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/repo', directory: 'web', commit: fork }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n', 'patches/ms@2.1.3.patch': MS_PATCH } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': 'one\nTWO\nthree\n' } }],
+  ]) })
+  const refused = { name: 'ValidateError', code: 'commit-not-in-history', message: `${fork} is in the history of no branch or tag of org/repo (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own` }
+  await t.assert.rejects(validate(file, { client: repoClient(files), fetch: upstream() }), refused)
+  await t.assert.rejects(validate(file, { client: repoClient(files), sha: fork, fetch: upstream() }), refused, 'one given, too')
+  await t.assert.rejects(validate(file, { client: repoClient(files), own: false, fetch: upstream() }), refused, 'its lockfile read there')
+  await t.assert.rejects(validate(file, { client: repoClient(files), own: false, lockfile: false, fetch: upstream() }), refused, 'the patches the bundle holds checked there')
+  const held = await validate(file, { client: repoClient(files, { history: { main: [], 'release/1.x': [fork] } }), fetch: upstream() })
+  t.assert.deepStrictEqual([held.status, held.own.ref], ['valid', { branch: 'release/1.x' }], 'one of a branch of its own')
+  t.assert.ok(printed(held).err.includes(`Own code held to org/repo at ${fork} of release/1.x under web`))
+  const tagged = await validate(file, { client: repoClient(files, { history: { main: [] }, tags: { 'v1.0.0': fork } }), fetch: upstream() })
+  t.assert.ok(printed(tagged).err.includes(`Own code held to org/repo at ${fork}, tag v1.0.0 under web`))
 }))
 
 test('validate: a dependency from the repository\'s root (`file:.`) held to the root\'s files, its directory read as the root', withTmp(async (t, tmp) => {
