@@ -118,6 +118,15 @@ taken as always):
 { "extra": ["ios", "ios/.xcode.env", "!ios/Pods", "!ios/build", "!**/xcuserdata"] }
 ```
 
+A `stasis.config.json` that sets `extra` names itself too, so whatever carries
+the files it adds carries the config that adds them: `"extra": []` adds the
+config alone. An entry `!stasis.config.json` leaves it out, as any exclusion
+matching it does (`!*.json`):
+
+```json
+{ "extra": ["scripts/", "!stasis.config.json"] }
+```
+
 - `stasis run` adds them only when it writes: with `lock` or `bundle` set to
   `add` or `replace`. A `frozen`, `load` or `ignore` run never reads `extra`. A
   file the run loaded itself keeps the run's record; any other is recorded as a
@@ -136,7 +145,8 @@ taken as always):
 - [`stasis github-bundle`](github-bundle.md#extra-files) adds them as `stasis
   bundle` does, from the repository's tree, globbed and matched as Node globs
   and matches the disk, but never folding case. It needs `minimatch`, an
-  optional dependency: without it, an `extra` naming anything is refused.
+  optional dependency: without it, an `extra` naming anything is refused, the
+  config itself included.
 
 In a bundle's provenance (the `reason` [`stasis audit`](audit.md) shows), every
 file `extra` names is the `extra` consumer's, a file the run or build reached

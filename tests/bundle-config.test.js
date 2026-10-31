@@ -225,9 +225,9 @@ test('bundleCommand adds the config\'s extra once, beside each build\'s own cons
   writeTree(tmp, { 'tool.js': 'module.exports = 2\n', 'stasis.config.json': { extra: ['tool.js'] } })
   await bundleCommand({ cwd: tmp, output: 'metro.br', metro: true, platforms: ['ios'], entries: ['index.js'] })
   // A --metro build's files stay bundle:metro's alone.
-  t.assert.deepStrictEqual(readBundle(join(tmp, 'metro.br')).reason, { 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['tool.js'] })
+  t.assert.deepStrictEqual(readBundle(join(tmp, 'metro.br')).reason, { 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['stasis.config.json', 'tool.js'] })
   await bundleCommand({ cwd: tmp, output: 'both.br', builds: [{ entries: ['index.js'], metro: true, platforms: ['ios'] }, { entries: ['cli.js'] }] })
-  t.assert.deepStrictEqual(readBundle(join(tmp, 'both.br')).reason, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['tool.js'] })
+  t.assert.deepStrictEqual(readBundle(join(tmp, 'both.br')).reason, { 'bundle': ['b.js', 'cli.js'], 'bundle:metro': ['a.ios.js', 'index.js'], 'extra': ['stasis.config.json', 'tool.js'] })
 }))
 
 test('bundleCommand keeps the repo its builds detect where it adds the config\'s extra to them', withTmp(async (t, tmp) => {
@@ -249,7 +249,7 @@ test('bundleCommand keeps the repo its builds detect where it adds the config\'s
     // eslint-disable-next-line no-await-in-loop -- one build at a time, over the same tree
     await bundleCommand({ cwd: tmp, output: 'out.br', ...options })
     const bundle = readBundle(join(tmp, 'out.br'))
-    t.assert.deepStrictEqual(bundle.reason.extra, ['tool.js'], `${label}: extra added`)
+    t.assert.deepStrictEqual(bundle.reason.extra, ['stasis.config.json', 'tool.js'], `${label}: extra added`)
     t.assert.deepStrictEqual({ ...bundle.repo }, repo, `${label}: repo kept`)
   }
 }))
@@ -267,7 +267,7 @@ test('bundleCommand adds builds\' extra by the config\'s resources, whatever the
   await bundleCommand({ cwd: tmp, output: 'a.br', builds })
   await bundleCommand({ cwd: tmp, output: 'b.br', builds: builds.toReversed() })
   t.assert.equal(readBundle(join(tmp, 'a.br')).serialize(), readBundle(join(tmp, 'b.br')).serialize())
-  t.assert.deepStrictEqual(readBundle(join(tmp, 'a.br')).reason.extra, ['logo.png'])
+  t.assert.deepStrictEqual(readBundle(join(tmp, 'a.br')).reason.extra, ['logo.png', 'stasis.config.json'])
   t.assert.equal(readBundle(join(tmp, 'a.br')).formats.get('logo.png'), 'resource')
 }))
 
