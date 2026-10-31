@@ -268,15 +268,20 @@ export class Scan {
     return this
   }
 
+  // The parse of the file being scanned a scan before kept (#scanKept), and the parse of it made here.
+  #reparse
+  #parse
+
   // With a `memo` (url -> what a scan read of it, kept across the rounds a lazy tree is read in,
   // vfs-bundle/lazy.js): a file a scan before kept is taken as it read it, what it found and queued
   // and the warnings it gave alike. One scanned here is kept where reading it touched no package not
   // unpacked yet (`host.touches()` counts each such read, through a host that caches nothing such a
   // read reads), so read what the full tree holds: the next scan reads only the files that did, and
-  // those it reaches.
+  // those it reaches. Of one that did, its parse is kept alone, which is the file's whatever the tree
+  // holds: the next scan resolves its imports again, but parses it no more.
   #scanKept(url, queue) {
     const kept = this.memo.get(url)
-    if (kept !== undefined) {
+    if (kept?.queued !== undefined) {
       this.files.set(url, kept.file)
       for (const [key, specMap] of kept.imports) nestedMap(this.imports, key).set(url, specMap)
       this.unresolved.push(...kept.unresolved)
@@ -294,12 +299,18 @@ export class Scan {
       warnings.push(args)
       warn.apply(console, args)
     }
+    this.#reparse = kept?.parse
+    this.#parse = undefined
     try {
       this.#scanFile(url, queue)
     } finally {
       console.warn = warn
+      this.#reparse = undefined
     }
-    if (this.host.touches() !== touches) return
+    if (this.host.touches() !== touches) {
+      if (this.#parse !== undefined) this.memo.set(url, { parse: this.#parse })
+      return
+    }
     this.memo.set(url, {
       file: this.files.get(url),
       imports: [...this.imports].filter(([, byParent]) => byParent.has(url)).map(([key, byParent]) => [key, byParent.get(url)]),
@@ -491,7 +502,8 @@ export class Scan {
       return
     }
 
-    const result = this.parseFile(file)
+    const result = this.#reparse ?? this.parseFile(file)
+    this.#parse = result
     if (result.crash !== undefined) {
       this.#recordParseError(url, result.declared, result.crash, false)
       return

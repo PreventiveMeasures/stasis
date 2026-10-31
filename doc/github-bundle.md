@@ -92,7 +92,11 @@ nothing fetched, not even a version document, each package's directory empty.
 A package is fetched and unpacked once the build reads anything in it: resolving
 an import into it, which reads its `package.json`, is enough. What its
 `package.json` depends on is fetched and unpacked with it, as the build would
-read it next; a package neither read nor depended on by one read is never
+likely read it next, but not what those depend on in turn: a package's
+dependencies are often its tools, which an app's build never reads. A package
+the build only checks for files (with `--metro`, each dependency of the project,
+for a `react-native.config.js` and native code, as React Native's CLI does) is
+unpacked alone. A package neither read nor depended on by one read is never
 fetched, but where deptree needs it to lay one out as the full tree has it. With
 pnpm, a package whose files linking bins would change (a bin pnpm makes
 executable, say) is unpacked once the packages whose bins pnpm reads beside it
@@ -112,7 +116,8 @@ package not yet unpacked is set aside once it has scanned what it reaches,
 those packages are unpacked, and the build runs again, until a round reads none
 it has not unpacked. What a round scans of a file is kept for the rounds after
 it, unless scanning it read in a package not yet unpacked: each file is scanned
-once, but those, which are scanned again in the next round.
+once, but those, whose imports are resolved again in the next round, from the
+parse kept.
 
 Each package unpacked is held to the lockfile, and checked as without
 `--lazy`, so a broken tarball the build reaches is refused as before. One it

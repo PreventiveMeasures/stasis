@@ -1368,6 +1368,10 @@ const ASSET_REGISTRY = 'react-native/Libraries/Image/AssetRegistry'
 // with an `import()`, as the Metro plugin's graph then holds it.
 const ASYNC_REQUIRE = 'metro-runtime/src/modules/asyncRequire.js'
 
+// `fn()` on `host`, its reads probes of what files packages hold, which read none of their code,
+// where the host tells them apart (a lazy tree's, vfs-bundle/tree.js's treeHost).
+const probing = (host, fn) => (host.probing === undefined ? fn() : host.probing(fn))
+
 // What Babel and Metro add to a React Native build beyond what its source imports (#99 records no
 // edge to one, as Metro bundles them unasserted), each resolved as `resolver` resolves it (Babel's
 // aliases applied), or `platformResolver` where Babel never runs, from a file of `files` (absolute
@@ -1623,9 +1627,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     // loads its own (`react-native config`'s packages, read as data).
     // Each by its real path, as Node loads it (a pnpm install's package linked into node_modules
     // requires what lies beside it in the store).
-    for (const dir of linkedPackages(baseDir, host)) {
+    for (const dir of probing(host, () => linkedPackages(baseDir, host))) {
       const file = join(dir, 'react-native.config.js')
-      if (!host.stat(file)?.isFile()) continue
+      if (!probing(host, () => host.stat(file)?.isFile())) continue
       const real = host.realpath(file)
       if (relWithin(real) !== null) configs.push(real)
     }
@@ -1847,7 +1851,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     }
     // And the app's packages React Native links whether JS imports them or not (`react-native config`'s
     // list, read as data), by their real path, but one above the root, which the plugin passes over too.
-    for (const dir of linkedNativePackages(baseDir, host)) {
+    for (const dir of probing(host, () => linkedNativePackages(baseDir, host))) {
       const rel = relWithin(host.realpath(dir))
       if (rel !== null && !pkgDirs.has(rel)) pkgDirs.set(rel, readPackageJson(baseDir, `${rel}/package.json`, { host })?.name)
     }
@@ -1866,7 +1870,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       // react-native core isn't a Pod (config reports it via reactNativePath, not `dependencies`),
       // but its native source (React/, ReactCommon/, ReactAndroid/, ...) is walked all the same.
       const isRnCore = name === 'react-native'
-      if (!isRnCore && !looksNative(pkgAbs, nativeFs)) continue
+      if (!isRnCore && !probing(host, () => looksNative(pkgAbs, nativeFs))) continue
       for (const { file, source, action, format } of nativeInputs(pkgAbs, nativeFs, { resources: resourceSet, skip: (abs) => sources.has(toRel(abs)) })) {
         if (action === 'code') putCode(toRel(file), source, format, 'native source')
         else putResource(toRel(file), source)

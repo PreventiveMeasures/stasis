@@ -322,6 +322,15 @@ function metroExportsMap(exportsField) {
   return keys.some((key) => key.startsWith('.')) ? null : new Map([['.', flat]])
 }
 
+// metroExportsMap of each `exports` object, as each resolver's manifests hold one (manifestReader),
+// made once: a package's many imports each read it.
+const exportsMaps = new WeakMap()
+function metroExportsMapOf(exportsField) {
+  if (exportsField === null || typeof exportsField !== 'object') return metroExportsMap(exportsField)
+  if (!exportsMaps.has(exportsField)) exportsMaps.set(exportsField, metroExportsMap(exportsField))
+  return exportsMaps.get(exportsField)
+}
+
 // Metro's relative specifier (isRelativeImport): `.`, `..`, or one starting `./` or `../`.
 const METRO_RELATIVE = /^\.\.?(?:\/|$)/u
 
@@ -502,7 +511,7 @@ export function createFieldResolver({
     }
     // The file `subpath` names through the package at `pkgDir`'s `exports` field, as Metro maps it.
     const viaExports = (pkgDir, exportsField, subpath) => {
-      const map = metroExportsMap(exportsField)
+      const map = metroExportsMapOf(exportsField)
       const target = map === null ? null : metroMapTarget(map, subpath, conds, { exports: true })
       return target === null ? null : metroTargetFile(pkgDir, target)
     }
