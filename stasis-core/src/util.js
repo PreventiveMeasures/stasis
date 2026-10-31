@@ -102,6 +102,10 @@ export function parseBrotliQuality(name, value) {
   return n
 }
 
+// The `valueFlags` (parseLeadingOptions') of parseArgs `options`: each string option's flag and its short alias.
+export const valueFlagsOf = (options) => Object.entries(options).filter(([, { type }]) => type === 'string')
+  .flatMap(([name, { short }]) => (short === undefined ? [`--${name}`] : [`--${name}`, `-${short}`]))
+
 // Shifts the leading option tokens off `argv`, stopping at the first positional so `run`'s forwarded
 // child argv survives. `valueFlags` lists options whose separate-token value (`-o dir`) isn't the positional.
 export function parseLeadingOptions(argv, options, { valueFlags = [], onError } = {}) {
@@ -290,7 +294,7 @@ export function classifyFormat(name, { content } = {}) {
   return undefined
 }
 
-export const extSetsEqual = (a, b) => a.size === b.size && [...a].every((ext) => b.has(ext))
+export const extSetsEqual = (a, b) => a.size === b.size && a.isSubsetOf(b)
 
 export const EXECUTE_BITS = 0o111
 

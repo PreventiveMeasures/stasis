@@ -54,6 +54,9 @@ export function moduleFileKey(dir, rel) {
   return dir === '.' ? rel : `${dir}/${rel}`
 }
 
+// A file's key inside its bucket `dir`, of its flat project-relative `path` below it: the inverse of moduleFileKey.
+export const fileInBucket = (dir, path) => (dir === '.' ? path : path.slice(dir.length + 1))
+
 // GitHub `owner/name` (owner 1-39, name 1-100 chars).
 const GITHUB_REPO = /^(?=[A-Za-z0-9-]{1,39}\/)[A-Za-z0-9](?:-?[A-Za-z0-9])*\/(?!\.\.?$)[\w.-]{1,100}$/u
 // Non-empty normalized repo-relative path of URL-safe segments.
@@ -152,7 +155,7 @@ function carriedEntries(entries, files) {
     const dir = entryDirOf(entries, rel)
     if (dir !== undefined) carried.add(dir)
   }
-  return carried.size === 0 ? undefined : Object.freeze(fromEntries([...carried].toSorted(sortPaths).map((dir) => [dir, entries[dir]])))
+  return carried.size === 0 ? undefined : Object.freeze(fromEntries(sortedByPath(carried).map((dir) => [dir, entries[dir]])))
 }
 
 // A dependency's `field` of DIR_METADATA, validated: each entry holds one of the record's `files`. First-party
@@ -315,42 +318,53 @@ export function assert(condition, msg) {
 // stasis's lockfile, by name at any depth and in any case: a case-insensitive disk resolves `STASIS.LOCK.JSON` to it too.
 export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === 'stasis.lock.json'
 
-export function sortPaths(a, b) {
-  const [al, bl] = [a.split('/'), b.split('/')]
-  while (al.length > 0 && al[0] === bl[0]) {
-    al.shift()
-    bl.shift()
-  }
-  if (al.length === 0 && bl.length === 0) return 0
+// sortPaths' order, of two paths as split at '/' (read, not changed).
+function compareSegments(al, bl) {
+  // The segments from `i` on are where the two differ.
+  let i = 0
+  while (i < al.length && al[i] === bl[i]) i++
+  const ar = al.length - i
+  const br = bl.length - i
+  if (ar === 0 && br === 0) return 0
 
   // First process each file in dir, then subdirs
-  if (al.length < 2) return bl.length < 2 && al > bl ? 1 : -1
-  if (bl.length < 2) return 1
+  if (ar < 2) return br < 2 && (al[i] ?? '') > (bl[i] ?? '') ? 1 : -1
+  if (br < 2) return 1
 
-  if (al[0] === '*') return -1
-  if (bl[0] === '*') return 1
+  if (al[i] === '*') return -1
+  if (bl[i] === '*') return 1
 
-  if (al[0] === 'node_modules') return 1
-  if (bl[0] === 'node_modules') return -1
+  if (al[i] === 'node_modules') return 1
+  if (bl[i] === 'node_modules') return -1
 
   // Prefer example/ over example-something/
-  const [an, bn] = [al, bl].map((list) => list.join(String.fromCodePoint(0)))
+  const an = al.slice(i).join('\0')
+  const bn = bl.slice(i).join('\0')
   if (an < bn) return -1
   if (an > bn) return 1
   throw new Error('Unreachable')
 }
 
-const byPath = (a, b) => sortPaths(a[0], b[0])
+export function sortPaths(a, b) {
+  return compareSegments(a.split('/'), b.split('/'))
+}
+
+// `items` in sortPaths' order of `keyOf(item)`, each key split once, not at each of the sort's comparisons.
+export const sortedByPath = (items, keyOf = (item) => item) => Array.from(items, (item) => ({ item, segments: keyOf(item).split('/') }))
+  .toSorted((a, b) => compareSegments(a.segments, b.segments))
+  .map(({ item }) => item)
+
+const entryKey = ([key]) => key
 
 export const isPlainObject = (x) => x && [null, Object.prototype].includes(Object.getPrototypeOf(x))
 
 export const fromEntries = (entries) => Object.setPrototypeOf(Object.fromEntries(entries), null)
 
-export const fileSetToObject = (set) => [...set].toSorted(sortPaths)
+export const fileSetToObject = (set) => sortedByPath(set)
 
 // `sorted: false` only for a machine-only payload whose reader does not care about ordering (shard.js).
 export const fileMapToObject = (map, { sorted = true } = {}) => {
-  const entries = sorted ? [...map].toSorted(byPath) : [...map]
+  const entries = sorted ? sortedByPath(map, entryKey) : [...map]
   return fromEntries(entries.map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v]))
 }
 
@@ -493,7 +507,7 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
     if (skipEmpty && Object.keys(info.files).length === 0) continue
     const inNodeModules = hasNodeModulesSegment(dir)
     if (inNodeModules) assert(info.name && info.version && info.files)
-    const files = fromEntries(Object.entries(info.files).toSorted(byPath))
+    const files = fromEntries(sortedByPath(Object.entries(info.files), entryKey))
     grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({
       ...info,
       repo: metadata.includes('repo') ? normalizeModuleRepo(dir, info, what) : undefined,
@@ -501,11 +515,12 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
       files,
     })])
   }
-  return { modules: fromEntries(grouped.modules.toSorted(byPath)), sources: fromEntries(grouped.sources.toSorted(byPath)) }
+  return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
 
 // A target is a resolved-file string, or a { platform: file } Map under --metro.
-function importTargetsEqual(a, b) {
+// Whether two import targets are the same: a file, or a per-platform Map<platform, file> compared structurally.
+export function importTargetsEqual(a, b) {
   const aMap = a instanceof Map
   if (aMap !== (b instanceof Map)) return false
   if (!aMap) return a === b

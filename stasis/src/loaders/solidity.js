@@ -25,6 +25,7 @@ import {
   shownFrom,
   toSolcRemapping,
 } from './foundry.js'
+import { applyToDir, isDotRelative } from './paths.js'
 import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
 
 // --- Import scan ------------------------------------------------------------------------------
@@ -201,24 +202,7 @@ export function applyRemappings(name, fromFile, remappings) {
 // A relative import (first segment `.` or `..`) as solc resolves it: against the importing file's
 // directory. Null when it climbs above the root: solc clamps there (`../../B.sol` from `src/A.sol`
 // is `B.sol`), but an import reaching out of the project is refused rather than redirected.
-function resolveRelativeImport(specifier, fromFile) {
-  const resolved = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')).split('/') : []
-  for (const part of specifier.split('/')) {
-    if (part === '.' || part === '') continue
-    if (part === '..') {
-      if (resolved.length === 0) return null
-      resolved.pop()
-    } else {
-      resolved.push(part)
-    }
-  }
-  return resolved.join('/')
-}
-
-const isRelativeImport = (specifier) => {
-  const first = specifier.split('/')[0]
-  return first === '.' || first === '..'
-}
+const resolveRelativeImport = (specifier, fromFile) => applyToDir(fromFile, specifier.split('/'))
 
 // `<baseDir>/<spec>` when a real file sits there, as a clean project-relative path.
 function projectFile(baseDir, spec, host) {
@@ -263,7 +247,7 @@ function nodeModulesFile(baseDir, spec, fromFile, host) {
 // Where an import resolves, as `{ path }`, or `{ reason }` when it may not be read (`reason: null`:
 // it names no file). See resolveSolImport.
 function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [], ownership, host = diskHost } = {}) {
-  const relativeImport = isRelativeImport(specifier)
+  const relativeImport = isDotRelative(specifier)
   const name = relativeImport ? resolveRelativeImport(specifier, fromFile) : specifier
   if (name === null) return { reason: 'it climbs above the project root' }
   let path = applyRemappings(name, fromFile, remappings)

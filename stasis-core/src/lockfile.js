@@ -1,4 +1,4 @@
-import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -31,6 +31,20 @@ export class Lockfile {
     this.imports = imports ?? null
     this.formats = formats ?? null
     this.executable = executable ?? new Set()
+  }
+
+  // The companion lockfile of `bundle`: its shape, each file's content swapped for its integrity,
+  // `integrityOf(file, content)` of its project-relative path. Imports and formats carry across, else
+  // the lockfile is bytes-only and a frozen run skips those cross-checks; the file set is the bundle's,
+  // so its executable list attests it as-is.
+  static fromBundle(bundle, integrityOf) {
+    const modules = new Map()
+    for (const [dir, m] of bundle.modules) {
+      const files = Object.create(null)
+      for (const [rel, content] of Object.entries(m.files)) files[rel] = integrityOf(moduleFileKey(dir, rel), content)
+      modules.set(dir, moduleInfo({ ...m, files }))
+    }
+    return new Lockfile({ config: bundle.config, entries: bundle.entries, modules, imports: bundle.imports, formats: bundle.formats, executable: bundle.executable })
   }
 
   static parse(text) {

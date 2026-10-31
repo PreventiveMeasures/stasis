@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { resolvePluginState } from './plugins.js'
+import { resolvePluginState, unsupportedExtension } from './plugins.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
@@ -434,10 +434,7 @@ export class StasisMetro {
 
       const kind = classifyExtension(modPath, this.#resources)
       if (kind === 'unknown') {
-        throw new Error(
-          `StasisMetro: unsupported extension for '${modPath}' -- ` +
-          `add its extension or filename to the plugin's resources option or stop importing it`
-        )
+        throw new Error(unsupportedExtension('StasisMetro', `'${modPath}'`))
       }
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
@@ -474,11 +471,10 @@ export class StasisMetro {
     try {
       real = diskHost.realpath(path)
       this.#realRoot ??= diskHost.realpath(this.#state.root)
-      this.#state.relative(real)
     } catch {
       return null
     }
-    return isPathWithin(this.#realRoot, real) ? real : null
+    return this.#within(real) && isPathWithin(this.#realRoot, real) ? real : null
   }
 
   // The resources a Babel plugin consumed in transforming `module`, read and inlined in their imports'
@@ -497,10 +493,7 @@ export class StasisMetro {
       const kind = classifyExtension(file, this.#resources)
       if (kind === 'code') continue
       if (kind === 'unknown') {
-        throw new Error(
-          `StasisMetro: unsupported extension for '${file}', which a Babel plugin inlines into '${modPath}' -- ` +
-          `add its extension or filename to the plugin's resources option or stop importing it`
-        )
+        throw new Error(unsupportedExtension('StasisMetro', `'${file}', which a Babel plugin inlines into '${modPath}'`))
       }
       yield { file, read }
     }

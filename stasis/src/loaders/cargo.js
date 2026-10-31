@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 
 import { readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { canonicalizePath } from '@exodus/stasis-core/state-util'
-import { relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 
 import { LockfileError, linkCargo, parseCargoConfig, parseCargoLock, parseCargoManifest as readCargoManifest, readCargoVendor, resolveCargoFeatures } from '@preventive/lockfile/cargo.js'
 import { matches, parseVersion, parseVersionReq } from '@preventive/lockfile/rust-semver.js'
@@ -66,7 +66,7 @@ const table = (v) => (isTomlTable(v) ? v : null)
 export function normalizeRel(dir, sub) {
   if (isAbsolute(sub) || posix.isAbsolute(sub)) return null
   const rel = posix.normalize(posix.join(dir === '.' ? '' : dir, sub))
-  if (rel === '..' || rel.startsWith('../') || posix.isAbsolute(rel)) return null
+  if (posixPathEscapes(rel)) return null
   return rel
 }
 

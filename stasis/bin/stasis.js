@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import assert from 'node:assert/strict'
-import { parseLeadingOptions } from '@exodus/stasis-core/util'
+import { parseLeadingOptions, valueFlagsOf } from '@exodus/stasis-core/util'
 import { addCli, brotliQualityOption, extractCli, parseRunOptions, pruneCli, runProgram, setEnv, setRunEnv } from '@exodus/stasis-core/cli'
 import pkg from '../package.json' with { type: 'json' }
 
@@ -112,8 +112,8 @@ if (command === '-v' || command === '--version') {
   const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')
   await runProgram(argv, { nodeArgs, loader, imports: run.imports })
 } else if (command === 'bundle') {
-  const { BUNDLE_FLAGS, BUNDLE_VALUE_FLAGS, bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
-  const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: BUNDLE_VALUE_FLAGS, onError: fail })
+  const { BUNDLE_FLAGS, bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
+  const values = parseLeadingOptions(argv, BUNDLE_FLAGS, { valueFlags: valueFlagsOf(BUNDLE_FLAGS), onError: fail })
   const cwd = process.cwd()
   let plan
   try {
@@ -129,7 +129,7 @@ if (command === '-v' || command === '--version') {
   const { bundleCommand } = await import('../src/cmd/bundle.js')
   await bundleCommand({ cwd, ...plan })
 } else if (command === 'github-bundle') {
-  const values = parseLeadingOptions(argv, {
+  const options = {
     github: { type: 'string' },
     sha: { type: 'string' },
     tag: { type: 'string' },
@@ -155,10 +155,8 @@ if (command === '-v' || command === '--version') {
     'package-json': { type: 'boolean' },
     'brotli-quality': { type: 'string' },
     generate: { type: 'string', multiple: true },
-  }, {
-    valueFlags: ['--github', '--sha', '--tag', '--directory', '--package-manager', '--package-manager-version', '--mapping', '--output', '--scope', '--lockfile', '--conditions', '--mainFields', '--platforms', '--tsconfig', '--resources', '--define', '--brotli-quality', '--generate', '-o'],
-    onError: fail,
-  })
+  }
+  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (values.github === undefined) fail('Error: github-bundle requires --github=owner/name, the repo to bundle')
   if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
@@ -220,10 +218,7 @@ if (command === '-v' || command === '--version') {
     external: { type: 'string', multiple: true },
     loader: { type: 'string', multiple: true },
   }
-  const values = parseLeadingOptions(argv, options, {
-    valueFlags: ['--output', '-o', '--format', '--platform', '--define', '--external', '--loader'],
-    onError: fail,
-  })
+  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to build: no bundle or lockfile given')
   if (argv.length > 2) fail('Error: build takes a bundle or lockfile and an optional entry point')
   // esbuild output knobs; the import graph itself is fixed by the artifact, not these.
@@ -290,7 +285,8 @@ if (command === '-v' || command === '--version') {
 } else if (command === 'prune') {
   await pruneCli(argv, { label: 'stasis', fail })
 } else if (command === 'audit') {
-  const values = parseLeadingOptions(argv, { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }, { valueFlags: ['--reason'], onError: fail })
+  const options = { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }
+  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to audit: no path to file given')
   const repoAdvisories = Boolean(values['repo-advisories'])
   if (repoAdvisories && !process.env.GITHUB_TOKEN) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
@@ -311,7 +307,7 @@ if (command === '-v' || command === '--version') {
     format: { type: 'string' },
     output: { type: 'string', short: 'o' },
   }
-  const values = parseLeadingOptions(argv, options, { valueFlags: ['--format', '--output', '-o'], onError: fail })
+  const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (!values.format) fail('Error: stasis sbom requires --format=(spdx|cyclonedx)')
   if (!['spdx', 'cyclonedx'].includes(values.format)) fail('Error: --format must be spdx or cyclonedx')
   if (argv.length === 0) fail('Nothing to export: no lockfile or bundle given')

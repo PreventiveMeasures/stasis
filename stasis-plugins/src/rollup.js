@@ -6,12 +6,12 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { resolvePluginState } from './plugins.js'
+import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
 import { inScope, realReadFile } from '@exodus/stasis-core/state-util'
-import { classifyExtension } from '@exodus/stasis-core/util'
+import { classifyExtension, isPathWithin } from '@exodus/stasis-core/util'
 
 // Rollup chains resolveId/load hooks first-non-null-wins, so put this plugin FIRST in `plugins`:
 // listed later, a sibling resolver (node-resolve, commonjs) answers before stasis sees the edge --
@@ -145,20 +145,13 @@ export class StasisRollup {
   #classifyOrThrow(id) {
     const kind = classifyExtension(id, this.#resources)
     if (kind === 'unknown') {
-      throw new Error(
-        `StasisRollup: unsupported extension for '${id}' -- add its extension or filename to the plugin's resources option or stop importing it`
-      )
+      throw new Error(unsupportedExtension('StasisRollup', `'${id}'`))
     }
     return kind
   }
 
   #inRoot(path) {
-    try {
-      this.#state.relative(path)
-      return true
-    } catch {
-      return false
-    }
+    return isPathWithin(this.#state.root, path)
   }
 
   async #resolveId(ctx, source, importer, opts) {
@@ -191,16 +184,10 @@ export class StasisRollup {
       this.#assertPersistableAttributes(attrs)
       // Forward import attributes (`with { type: 'json' }`) so plugin-capture round-trips to
       // plugin-load, both keyed under `* (with: ...)`.
-      let url, format
-      try {
-        ;({ url, format } = this.#state.getImport(parentURL, source, { importAttributes: attrs }))
-      } catch (err) {
-        // No attested edge -- at a successful capture that's an EXTERNAL (never recorded as an
-        // edge), so hand it back to rollup. File BYTES still fail closed at the load hook.
-        // A non-MODULE_NOT_FOUND error is a real fault -- rethrow.
-        if (err?.code === 'ERR_MODULE_NOT_FOUND') return null
-        throw err
-      }
+      // No attested edge: rollup's. File BYTES still fail closed at the load hook.
+      const attested = attestedImport(this.#state, parentURL, source, { importAttributes: attrs })
+      if (attested === undefined) return null
+      const { url, format } = attested
       const path = fileURLToPath(url)
       // Refuse a resource only when load mode would actually serve it: an out-of-scope workspace
       // resource under node_modules scope comes from disk via the user's asset plugin, exactly

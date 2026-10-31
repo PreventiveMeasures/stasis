@@ -150,7 +150,7 @@ export class Bundle {
     this.imports = imports ?? new Map()
     this.executable = executable ?? new Set()
     this.reason = reason
-    this.repo = normalizeRepo(repo)
+    this.repo = repo
     this.package = pkg
   }
 

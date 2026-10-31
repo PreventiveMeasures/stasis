@@ -1,8 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { brotliCompressSync } from 'node:zlib'
 
-import { brotliOptions } from '@exodus/stasis-core/brotli'
+import { compressBundleText } from '@exodus/stasis-core/brotli'
 
 // Default bundle output: stasis.code.br, the same name `stasis run --bundle=load` discovers, so the two round-trip with no flags.
 export const DEFAULT_BUNDLE_FILE = 'stasis.code.br'
@@ -24,7 +23,7 @@ export function writeOutput(cwd, target, data) {
 }
 
 // Write a bundle's `serialized` text brotli-compressed (at `brotliQuality`) as writeOutput does. -> where it went
-export const writeBundle = (cwd, target, serialized, brotliQuality) => writeOutput(cwd, target, brotliCompressSync(serialized, brotliOptions(brotliQuality)))
+export const writeBundle = (cwd, target, serialized, brotliQuality) => writeOutput(cwd, target, compressBundleText(serialized, brotliQuality))
 
 // `N package(s)`: every non-empty bucket of a bundle's `modules` (the "." workspace bucket counts as one).
 export function packagesLabel(modules) {

@@ -1,5 +1,6 @@
-import { constants as zlibConstants } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 
+import { Bundle } from './bundle.js'
 import { assert, isBrotliQuality, parseBrotliQuality } from './util.js'
 
 // Default brotli quality; 11 (max) costs far more for a marginal gain over 9.
@@ -18,3 +19,7 @@ export function brotliOptions(quality) {
   }
   return { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: quality ?? DEFAULT_BROTLI_QUALITY } }
 }
+
+// A bundle file's bytes, of a serialized bundle's text (brotliOptions' `quality`), and the Bundle of those bytes.
+export const compressBundleText = (text, quality) => brotliCompressSync(text, brotliOptions(quality))
+export const parseBundleBytes = (bytes) => Bundle.parse(brotliDecompressSync(bytes).toString('utf8'))

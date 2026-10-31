@@ -22,7 +22,7 @@ import { extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
 //  7. lock='none' AND bundle='none' with no preload is a no-op (env-controlled-off framework plugins).
 export function resolvePluginState(label, options, cwd) {
   validatePluginOptions(label, options)
-  const { scope, lock, bundle, bundleFile, resourcesBundleFile, debug, childProcess, packageJSON, resources } = options
+  const { lock, bundle, bundleFile, resourcesBundleFile, resources } = options
   // Same-instance fast path: loader installed but lazy initState hasn't fired (webpack builds plugins
   // before user code). Force-init so the plugin lands in the ambient branch. NOT for a separate
   // stasis-core copy -- that would mint a phantom State.preload racing the real loader's write.
@@ -69,21 +69,13 @@ export function resolvePluginState(label, options, cwd) {
 
   // Preload active: the lockfile is necessarily the ambient's. Enforce field coordination, then reuse or sidecar.
   const pc = ambient.config
-  if (lock !== undefined && lock !== pc.lock) {
-    throw new Error(`${label}: lock='${lock}' conflicts with active preload lock='${pc.lock}'`)
-  }
-  // scope/debug/childProcess must agree with the preload (reuse adopts it, sidecar copies it).
-  if (scope !== undefined && scope !== pc.scope) {
-    throw new Error(`${label}: scope='${scope}' conflicts with active preload scope='${pc.scope}'`)
-  }
-  if (debug !== undefined && debug !== pc.debug) {
-    throw new Error(`${label}: debug=${debug} conflicts with active preload debug=${pc.debug}`)
-  }
-  if (childProcess !== undefined && childProcess !== pc.childProcess) {
-    throw new Error(`${label}: childProcess=${childProcess} conflicts with active preload childProcess=${pc.childProcess}`)
-  }
-  if (packageJSON !== undefined && packageJSON !== pc.packageJSON) {
-    throw new Error(`${label}: packageJSON=${packageJSON} conflicts with active preload packageJSON=${pc.packageJSON}`)
+  // lock/scope/debug/childProcess/packageJSON must agree with the preload (reuse adopts it, sidecar
+  // copies it). The string modes are quoted, the boolean toggles not (validatePluginOptions typed them).
+  const shown = (value) => (typeof value === 'string' ? `'${value}'` : value)
+  for (const key of ['lock', 'scope', 'debug', 'childProcess', 'packageJSON']) {
+    if (options[key] !== undefined && options[key] !== pc[key]) {
+      throw new Error(`${label}: ${key}=${shown(options[key])} conflicts with active preload ${key}=${shown(pc[key])}`)
+    }
   }
   // resources is process-wide, so a plugin's allowlist must agree with the preload's -- compare
   // parsed sets (order/dupes/case-insensitive) to prevent one plugin silently widening the asset set.
@@ -100,13 +92,27 @@ export function resolvePluginState(label, options, cwd) {
   // fs-READ during the build from genuine run dependencies recorded before any plugin existed.
   ambient.markPluginAttached()
 
+  // A State of its own bundle (`mode`, at bundleFile) beside the preload, whose lockfile it shares
+  // and whose other settings it carries over (sidecars skip stasis.config.json discovery).
+  const sidecar = (mode) => ({
+    state: new State(cwd, {
+      parent: ambient,
+      scope: pc.scope,
+      lock: pc.lock,
+      bundle: mode,
+      bundleFile,
+      resourcesBundleFile,
+      debug: pc.debug,
+      childProcess: pc.childProcess,
+      packageJSON: pc.packageJSON,
+      resources: [...pc.resources],
+      brotliQuality: pc.brotliQuality,
+    }),
+    isNoop: false,
+  })
+
   if (pc.bundle) {
-    // Preload has bundle on -- plugin can't disable, must match mode.
-    if (bundle === 'none' || bundle === 'ignore') {
-      throw new Error(
-        `${label}: bundle='${bundle}' conflicts with active preload bundle='${pc.bundleMode}'`
-      )
-    }
+    // Preload has bundle on -- plugin can't disable (pc.bundleMode is neither 'none' nor 'ignore'), must match mode.
     if (bundle !== undefined && bundle !== pc.bundleMode) {
       throw new Error(
         `${label}: bundle='${bundle}' conflicts with active preload bundle='${pc.bundleMode}'`
@@ -118,21 +124,7 @@ export function resolvePluginState(label, options, cwd) {
       return { state: ambient, isNoop: false }
     }
     // Rule 6: different path -- sidecar inherits preload's modes, overrides bundleFile.
-    const sidecar = new State(cwd, {
-      parent: ambient,
-      scope: pc.scope,
-      lock: pc.lock,
-      bundle: pc.bundleMode,
-      bundleFile,
-      resourcesBundleFile,
-      debug: pc.debug,
-      childProcess: pc.childProcess,
-      packageJSON: pc.packageJSON,
-      resources: [...pc.resources],
-      // carried over: sidecars skip stasis.config.json discovery
-      brotliQuality: pc.brotliQuality,
-    })
-    return { state: sidecar, isNoop: false }
+    return sidecar(pc.bundleMode)
   }
 
   // Preload exists but has no bundle.
@@ -152,18 +144,23 @@ export function resolvePluginState(label, options, cwd) {
       `${label}: bundle='${bundle}' alongside a preload without bundle requires an explicit bundleFile`
     )
   }
-  const sidecar = new State(cwd, {
-    parent: ambient,
-    scope: pc.scope,
-    lock: pc.lock,
-    bundle,
-    bundleFile,
-    resourcesBundleFile,
-    debug: pc.debug,
-    childProcess: pc.childProcess,
-    packageJSON: pc.packageJSON,
-    resources: [...pc.resources],
-    brotliQuality: pc.brotliQuality, // carried over, like the Rule 6 sidecar above
-  })
-  return { state: sidecar, isNoop: false }
+  return sidecar(bundle)
+}
+
+// What a plugin (`label`) says of a file it is given (`what`, as it names it) whose extension it
+// neither bundles as code nor is allowed as a resource.
+export const unsupportedExtension = (label, what) =>
+  `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
+
+// `state.getImport(parentURL, specifier, options)`, or undefined where the bundle attests no such edge:
+// at a successful capture that's an EXTERNAL (never recorded as an edge), the bundler's to resolve as
+// without us. File BYTES still fail closed where the plugin loads them; any other error is a real
+// fault, thrown.
+export function attestedImport(state, parentURL, specifier, options) {
+  try {
+    return state.getImport(parentURL, specifier, options)
+  } catch (err) {
+    if (err?.code === 'ERR_MODULE_NOT_FOUND') return undefined
+    throw err
+  }
 }

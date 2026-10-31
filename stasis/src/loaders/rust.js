@@ -13,7 +13,7 @@ import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, posix, relative } from 'node:path'
 
-import { assertRealPathWithinBase, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, nestedMap, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { TARGET_CFG_KEYS, TARGET_UNIT, VENDOR_DIR, cached, cfgName, createCargoContext, evalCfg, evalCfgKey, isTestTargetPath, normName, normalizeCfg, normalizeRel } from './cargo.js'
 import { matchClose, splitTopLevel } from './toml.js'
@@ -1788,7 +1788,7 @@ function withAlternatives(found, asker) {
 // answer. A list built while the closure was still being resolved (an import cycle, see
 // memoized) is not kept.
 function providedAll(root, at, name, seeing, ctx) {
-  const memo = ctx.provided.get(root) ?? ctx.provided.set(root, new Map()).get(root)
+  const memo = nestedMap(ctx.provided, root)
   const key = `${at}\0${name}\0${seeing}`
   let list = memo.get(key)
   if (list === undefined) {
@@ -1948,7 +1948,7 @@ function providedFrom(root, at, name, ctx, file, asker, ns = null) {
   // The files holding the module's imports, gathered once (they are all in place by now).
   const files = of === undefined ? null : (of.files ??= new Set([...of.globs, ...[...of.named.values()].flat()].map((im) => im.file)))
   if (files === null || files.size === (files.has(file) ? 1 : 0)) return provided(root, at, name, at, ctx, asker, ns)
-  const memo = ctx.provided.get(root) ?? ctx.provided.set(root, new Map()).get(root)
+  const memo = nestedMap(ctx.provided, root)
   const seeing = at.split('::').length
   const key = `${at}\0${name}\0@${file}`
   let list = memo.get(key)
@@ -2008,7 +2008,7 @@ function importsOf(root, at, name, seeing, ctx, onlyFile) {
 // on from it; a closure asked for while it is being computed (a glob into a module whose own
 // imports name the glob's source) is a cycle, and reads as empty.
 function globClosure(root, at, seeing, ctx) {
-  const memo = ctx.closures.get(root) ?? ctx.closures.set(root, new Map()).get(root)
+  const memo = nestedMap(ctx.closures, root)
   const key = `${at}\0${seeing}`
   return memoized(memo, key, ctx, () => {
     const modules = []
@@ -2290,7 +2290,7 @@ function opaqueGlobsOf(root, ctx) {
 }
 
 function globMayProvide(root, at, lead, ctx) {
-  const memo = ctx.opaque.get(root) ?? ctx.opaque.set(root, new Map()).get(root)
+  const memo = nestedMap(ctx.opaque, root)
   const key = `${at}\0${lead}`
   if (memo.has(key)) return memo.get(key)
   memo.set(key, false)
@@ -2378,7 +2378,7 @@ function resolvePathRef(ref, file, bindings, ctx) {
 
 // `map`: root → name → Set<module>, noting `module` under (root, name).
 const note = (map, root, name, module) => {
-  const byName = map.get(root) ?? map.set(root, new Map()).get(root)
+  const byName = nestedMap(map, root)
   ;(byName.get(name) ?? byName.set(name, new Set()).get(name)).add(module)
 }
 
@@ -2473,7 +2473,7 @@ function buildOf(rel, ctx, units = null) {
   const test = isTestTarget(rel, ctx)
   const set = unitsOf(units, rel)
   const key = `${ctx?.packageInfo(rel)?.dir ?? ''}\0${test}\0${[...set].toSorted().join()}`
-  const memo = buildMemo.get(ctx ?? NO_CTX) ?? buildMemo.set(ctx ?? NO_CTX, new Map()).get(ctx ?? NO_CTX)
+  const memo = nestedMap(buildMemo, ctx ?? NO_CTX)
   return cached(memo, key, () => {
     const one = (unit) => ({ features: ctx?.featuresFor(rel, unit) ?? null, maybeFeatures: ctx?.maybeFeaturesFor(rel, unit) ?? null, target: ctx?.platformOf(unit)?.cfgs ?? null })
     const each = [...set].map(one)
@@ -2632,8 +2632,8 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
         }
         continue
       }
-      const keyed = byCfg.get(spec) ?? byCfg.set(spec, new Map()).get(spec)
-      const byFile = cfgsHere.get(spec) ?? cfgsHere.set(spec, new Map()).get(spec)
+      const keyed = nestedMap(byCfg, spec)
+      const byFile = nestedMap(cfgsHere, spec)
       for (const t of targets) {
         const cfg = t.cfg ?? decl.cfg ?? null
         const base = cfgKey(cfg ?? (decl.macro === null ? null : `${decl.macro}!`))
@@ -2725,7 +2725,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   // build may compile (walkPath asks whether one of them may be there at all).
   const moduleFiles = new Map()
   for (const [path, f] of files) {
-    const byModule = moduleFiles.get(f.root) ?? moduleFiles.set(f.root, new Map()).get(f.root)
+    const byModule = nestedMap(moduleFiles, f.root)
     ;(byModule.get(f.modulePath) ?? byModule.set(f.modulePath, []).get(f.modulePath)).push(path)
   }
   // Per crate root, what a path may continue along where a segment names no module: the imports
@@ -2747,7 +2747,6 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   const exportedMacros = new Map() // root -> name -> every `#[macro_export]` definition, `{ file, leaves }`
   const fileMacros = new Map()
   const externPrelude = new Map()
-  const perRoot = (map, root) => map.get(root) ?? map.set(root, new Map()).get(root)
   // An import's or item's leaves: those its file (`here`) was mounted under, its own cfg's, and
   // its gate macro's.
   const itemLeaves = (here, x, path) => unionLeaves(here.leaves, leafSet([...cfgLeaves(x.cfg), ...gateLeaves(x.macro, gatesOf(path))], leafSets), leafSets)
@@ -2774,7 +2773,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       // `mod lib { pub use core::fmt; … }` is what every file's `use crate::lib::*` names.)
       if (im.template === true) continue
       const modulePath = [here.modulePath, ...im.inlinePath].join('::')
-      const byModule = perRoot(imports, here.root)
+      const byModule = nestedMap(imports, here.root)
       const of = byModule.get(modulePath) ?? byModule.set(modulePath, { named: new Map(), globs: [] }).get(modulePath)
       const entry = { ...im, file: path, module: modulePath, scopeDepth: scopeDepthOf(im.vis, modulePath), leaves: itemLeaves(here, im, path) }
       if (im.glob) of.globs.push(entry)
@@ -2782,11 +2781,11 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     }
     for (const d of items.defined) {
       const modulePath = [here.modulePath, ...d.inlinePath].join('::')
-      const byModule = perRoot(defined, here.root)
-      const names = byModule.get(modulePath) ?? byModule.set(modulePath, new Map()).get(modulePath)
+      const byModule = nestedMap(defined, here.root)
+      const names = nestedMap(byModule, modulePath)
       ;(names.get(d.name) ?? names.set(d.name, []).get(d.name)).push({ file: path, scopeDepth: scopeDepthOf(d.vis, modulePath), ns: d.ns, leaves: itemLeaves(here, d, path) })
     }
-    const scopes = perRoot(modScope, here.root)
+    const scopes = nestedMap(modScope, here.root)
     const specMap = resolutions.get(path)
     for (const decl of modsOf(path)) {
       const parent = [here.modulePath, ...decl.inlinePath].join('::')
@@ -2809,13 +2808,13 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     fileMacros.set(path, new Set(items.macros.map((m) => m.name)))
     for (const m of items.macros) {
       if (!m.exported) continue
-      const byName = perRoot(macros, here.root)
+      const byName = nestedMap(macros, here.root)
       if (!byName.has(m.name)) byName.set(m.name, path)
-      const defs = perRoot(exportedMacros, here.root)
+      const defs = nestedMap(exportedMacros, here.root)
       ;(defs.get(m.name) ?? defs.set(m.name, []).get(m.name)).push({ file: path, leaves: itemLeaves(here, m, path) })
     }
     if (here.modulePath === 'crate') {
-      const prelude = perRoot(externPrelude, here.root)
+      const prelude = nestedMap(externPrelude, here.root)
       for (const e of items.externCrates) {
         // `extern crate self as x;` puts this crate's root in the prelude as `x` (kept as `self`).
         const named = e.name === 'self' ? e.alias !== null : !NON_CRATE_LEADS.has(e.name)
@@ -3230,7 +3229,7 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       // A template's `mod`s wait for the files invoking it (expandTemplates).
       for (const decl of mods) {
         if (decl.template === null) modFrom(decl, relPath)
-        else (templateMods.get(decl.template) ?? templateMods.set(decl.template, new Map()).get(decl.template)).set(`${relPath}\0${decl.at}`, { decl, from: relPath, exported: macros.some((m) => m.name === decl.template && m.exported) })
+        else nestedMap(templateMods, decl.template).set(`${relPath}\0${decl.at}`, { decl, from: relPath, exported: macros.some((m) => m.name === decl.template && m.exported) })
       }
       // `include!("x.rs")` splices Rust source (scanned next wave, under this module); the asset
       // macros name a file to carry as it is. A build-output path (`concat!(env!("OUT_DIR"), …)`)

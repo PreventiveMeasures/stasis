@@ -126,6 +126,17 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
   }
 }
 
+// findPackageMetadata (with `options`) of each project-relative path, once per directory, the only
+// thing its answer depends on.
+export function packageLookup(baseDir, options) {
+  const byDir = new Map()
+  return (path) => {
+    const dir = posix.dirname(path)
+    if (!byDir.has(dir)) byDir.set(dir, findPackageMetadata(baseDir, path, options))
+    return byDir.get(dir)
+  }
+}
+
 // The directory, package-relative, of the package.json naming `manifestName` at `dir` (project-relative,
 // POSIX) where it is a subpackage (isSubpackage) of the package at `pkgDir`; else undefined. The package's
 // own package.json is read only where the name ends in that directory.
@@ -161,6 +172,11 @@ export function statStrict(host, file, label) {
   if (failure === null) return null
   throw new Error(`${label}: can't be read (${failure.code ?? failure.message})`, { cause: failure })
 }
+
+// The error Node gives for a package.json at `path` that is no JSON object (`cause`: why it doesn't parse).
+export const invalidPackageConfig = (path, cause) => Object.assign(
+  cause === undefined ? new Error(`Invalid package config ${path}.`) : new Error(`Invalid package config ${path}.`, { cause }),
+  { code: 'ERR_INVALID_PACKAGE_CONFIG' })
 
 // host.stat for a package.json, as Node's lookups read one: null when nothing is there, and one that
 // can't be read (a link loop, a directory that may not be searched) throws ERR_INVALID_PACKAGE_CONFIG,

@@ -52,6 +52,20 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
   }
 }
 
+// A get-or-read cache, `(key, read) => read()`'s value, as for a tree that holds still: but kept only
+// where reading it read nothing a lazy tree does not hold yet (counted by `touches`, a lazy tree's
+// host's), which is read again; and kept nowhere without `cache`.
+export function untouchedMemo(touches = () => 0, { cache = true } = {}) {
+  const kept = new Map()
+  return (key, read) => {
+    if (kept.has(key)) return kept.get(key)
+    const before = touches()
+    const value = read()
+    if (cache && touches() === before) kept.set(key, value)
+    return value
+  }
+}
+
 // What console.warn gives within a round, held for the round: one that is void says nothing.
 const rounds = new AsyncLocalStorage()
 let holders = 0

@@ -15,6 +15,7 @@ import {
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { createNodeResolver } from './resolve-node.js'
+import { untouchedMemo } from './vfs-bundle/lazy.js'
 
 // Static module resolver for legacy package fields (`react-native`/`browser`/`main` + browser-spec
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), reproducing Metro/React-Native
@@ -145,15 +146,8 @@ function matchRedirect(map, relPath) {
 // but one whose reading read what a lazy tree does not hold yet (`host.touches`), read again. Each
 // resolver reads its own, so a build on the disk reads each manifest as it is then.
 function manifestReader(host) {
-  const touches = host.touches ?? (() => 0)
-  const kept = new Map()
-  return (path) => {
-    if (kept.has(path)) return kept.get(path)
-    const before = touches()
-    const pkg = readJson(path, host)
-    if (touches() === before) kept.set(path, pkg)
-    return pkg
-  }
+  const manifests = untouchedMemo(host.touches)
+  return (path) => manifests(path, () => readJson(path, host))
 }
 
 // The package.json closest to `path` as Metro finds a module's package (getPackageForModule, through

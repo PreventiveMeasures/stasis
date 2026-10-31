@@ -1,15 +1,14 @@
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
-import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
-import { brotliOptions } from './brotli.js'
-import { detectRepo, findPackageMetadata, normalizeEntries, packageType, readJson, statStrict } from './bundle-util.js'
+import { compressBundleText, parseBundleBytes } from './brotli.js'
+import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, classifyFormat, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleFileKey, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
 // these at write (outputMatcher), which must read the real disk, not be captured as the program's
@@ -78,13 +77,7 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, {
     modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
     return modules.get(dir).files
   }
-  // findPackageMetadata's result depends only on the file's directory.
-  const metaByDir = new Map()
-  const metaFor = (rel) => {
-    const dir = dirname(rel)
-    if (!metaByDir.has(dir)) metaByDir.set(dir, findPackageMetadata(baseDir, rel, { host }))
-    return metaByDir.get(dir)
-  }
+  const metaFor = packageLookup(baseDir, { host })
 
   for (const [rel, { content, format, executable: isExec }] of files) {
     const meta = metaFor(rel)
@@ -92,12 +85,8 @@ function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, {
     if (splitNodeModulesPath(rel) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
       throw new Error(`add: no package.json with name+version found for ${rel}`)
     }
-    if (meta) {
-      const relInBucket = meta.pkgDir === '.' ? rel : rel.slice(meta.pkgDir.length + 1)
-      bucketFiles(meta.pkgDir, meta)[relInBucket] = content
-    } else {
-      bucketFiles('.', { name: workspaceName, version: workspaceVersion })[rel] = content
-    }
+    const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
+    bucketFiles(dir, identity)[fileInBucket(dir, rel)] = content
     if (format != null) formats.set(rel, format)
     if (isExec) executable.add(rel)
   }
@@ -115,7 +104,7 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
   if (existsSync(abs)) {
     let existing
     try {
-      existing = Bundle.parse(brotliDecompressSync(readFileSync(abs)).toString('utf8'))
+      existing = parseBundleBytes(readFileSync(abs))
     } catch (cause) {
       throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
     }
@@ -126,22 +115,14 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
   return {
     write: () => {
       mkdirSync(dirname(abs), { recursive: true })
-      writeFileSync(abs, brotliCompressSync(bundle.serialize(), brotliOptions(brotliQuality)))
+      writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
     },
     counts: { path: targetPath, total: files, packages, added: mergedFrom === undefined ? files : files - mergedFrom },
   }
 }
 
 // Companion Lockfile: the bundle's shape with each file's content swapped for its on-disk integrity, so `--lock=frozen` matches.
-function bundleToLockfile(bundle, integrities) {
-  const modules = new Map()
-  for (const [dir, m] of bundle.modules) {
-    const files = Object.create(null)
-    for (const rel of Object.keys(m.files)) files[rel] = integrities.get(moduleFileKey(dir, rel))
-    modules.set(dir, moduleInfo({ ...m, files }))
-  }
-  return new Lockfile({ config: bundle.config, entries: bundle.entries, modules, imports: bundle.imports, formats: bundle.formats, executable: bundle.executable })
-}
+const bundleToLockfile = (bundle, integrities) => Lockfile.fromBundle(bundle, (file) => integrities.get(file))
 
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
 // prepareBundleFile so a conflict here doesn't leave the bundles updated.
@@ -340,8 +321,10 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
 // `carried`: the files named that `bundle` carries already, the `extra` consumer's too
 export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set(), host = diskHost }) {
   const named = expandExtra(baseDir, patterns, outputs, host).files
-  const carried = [...named.keys()].filter((rel) => bundle.sources.has(rel))
-  const files = new Map([...named].filter(([rel]) => !bundle.sources.has(rel)))
+  // Bundle#sources builds its Map afresh on each read: once.
+  const bundled = bundle.sources
+  const carried = [...named.keys()].filter((rel) => bundled.has(rel))
+  const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
   if (files.size === 0) return { bundle: null, lockfile: null, carried }
   const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, withIntegrity: true, label: 'extra', host })
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}

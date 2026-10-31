@@ -10,7 +10,7 @@ import { utf8toString } from '@exodus/bytes/utf8.js'
 import { LockfileError, parseGitmodules } from '@preventive/lockfile/foundry.js'
 import { NO_ENTRY, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 
 // `/`-separated, as the loader's paths are: only Windows' separator is converted (on POSIX a `\\` is
@@ -33,7 +33,7 @@ export function realpathOrNull(p, host = diskHost) {
 }
 
 // A path relative to a dir (slashes) that stays inside it.
-const inRoot = (rel) => rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel)
+const inRoot = (rel) => !relativeEscapes(rel)
 
 // `abs`, a file the resolution read, relative to the project `root` (slashes): as spelled when that
 // lies inside it with no `..` to resolve (a linked lib's files keep the lib's path), else by real
@@ -147,7 +147,7 @@ function gitmodulesLeniently(text) {
     if (!variable?.startsWith('submodule.')) continue
     const name = variable.slice('submodule.'.length)
     if (section !== 'submodule') notes.push(`${header}, a section git reads as [submodule "${name}"]; reading it as that`)
-    const kept = sections.get(name) ?? sections.set(name, new Map()).get(name)
+    const kept = nestedMap(sections, name)
     const given = paths.get(name) ?? paths.set(name, []).get(name)
     for (const entry of keys) {
       if (!SUBMODULE_KEYS.has(entry.key)) continue

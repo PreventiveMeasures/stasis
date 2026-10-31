@@ -1,11 +1,11 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { brotliDecompressSync } from 'node:zlib'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
+import { parseBundleBytes } from './brotli.js'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleFileKeys, moduleInfo } from './util.js'
+import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleFileKeys, relativeEscapes } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
 const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
@@ -19,28 +19,9 @@ function assertCanonicalBase64(content, file) {
   return buf
 }
 
-export function lockfileFromBundle(bundle) {
-  const modules = new Map()
-  for (const [dir, { files, ...info }] of bundle.modules) {
-    const hashed = Object.create(null)
-    for (const [rel, content] of Object.entries(files)) {
-      // Hash the raw on-disk bytes, so decode 'resource:base64' back first.
-      const file = moduleFileKey(dir, rel)
-      hashed[rel] = sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content)
-    }
-    modules.set(dir, moduleInfo({ ...info, files: hashed }))
-  }
-  // Carry imports+formats across, else the derived lockfile is bytes-only and a later frozen run skips those cross-checks.
-  return new Lockfile({
-    config: bundle.config,
-    entries: bundle.entries,
-    modules,
-    imports: bundle.imports,
-    formats: bundle.formats,
-    // Same file set as the bundle, so its executable list transfers as-is.
-    executable: bundle.executable,
-  })
-}
+// Hashes the raw on-disk bytes, so decodes 'resource:base64' back first.
+export const lockfileFromBundle = (bundle) => Lockfile.fromBundle(bundle, (file, content) =>
+  sha512integrity(bundle.formats.get(file) === 'resource:base64' ? assertCanonicalBase64(content, file) : content))
 
 // Where two parsed JSON values first differ, as a path into them, or null when they are equal.
 function firstDifference(bundle, lock, path = '') {
@@ -125,7 +106,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
 
   let bundle
   try {
-    bundle = Bundle.parse(brotliDecompressSync(readFileSync(bundleAbs)).toString('utf-8'))
+    bundle = parseBundleBytes(readFileSync(bundleAbs))
   } catch (cause) {
     // Bundle.parse throws message-less asserts; wrap so the user learns which file failed.
     throw new Error(`extract: not a valid stasis bundle: ${bundleAbs}`, { cause })
@@ -173,8 +154,8 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       if (typeof content !== 'string') throw new Error(`extract: bundle file content is not a string: ${file}`)
       const abs = resolve(outDir, file)
       const relToOut = relative(outDir, abs)
-      // The `..` test is `../`-aware, NOT a bare startsWith('..') -- that would reject a legit `..foo` filename.
-      if (relToOut === '..' || relToOut.startsWith(`..${sep}`) || isAbsolute(relToOut) || !abs.startsWith(outPrefix)) {
+      // relativeEscapes is `../`-aware, NOT a bare startsWith('..') -- that would reject a legit `..foo` filename.
+      if (relativeEscapes(relToOut) || !abs.startsWith(outPrefix)) {
         throw new Error(`extract: bundle path escapes output dir: ${file}`)
       }
       // A non-canonical path changes under the resolve+relative round-trip; writing it desyncs tree from lockfile.
