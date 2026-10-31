@@ -103,13 +103,13 @@ export function locatePackage(fromDir, spec, host = diskHost) {
 }
 
 // Nearest package.json at/above `file`'s dir — the package whose fields (browser/RN map, imports)
-// govern the file's own imports.
-export function nearestPackage(file, host = diskHost) {
+// govern the file's own imports. `read` reads a manifest, as readJson does.
+export function nearestPackage(file, host = diskHost, read = readJson) {
   let dir = dirname(file)
   while (true) {
     const pkgPath = join(dir, 'package.json')
     if (isFile(pkgPath, host)) {
-      const pkg = readJson(pkgPath, host)
+      const pkg = read(pkgPath, host)
       if (pkg) return { pkgDir: dir, pkg }
     }
     const parent = dirname(dir)

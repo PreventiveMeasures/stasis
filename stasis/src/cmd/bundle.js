@@ -1492,13 +1492,17 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
   // (`metro`, no edge): no edge to one, and no asset registry for one.
   const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs, assetExts)
+  // A round of a lazy tree that asked for a package already is void (vfs-bundle/lazy.js): it reads
+  // on, for all else it asks for, but reports and refuses nothing, which the round that asks for
+  // none does, and stops before it reads the files in.
+  const voided = () => Boolean(memo) && host.touches() > 0
   // Scan from `roots` with `options`, keeping what lies within the root (one the entries link eagerly
   // is refused, see withinRoot), its issues reported under `label`, by which a lazy tree's `memo`
-  // keeps what each of its scans read (vfs-bundle/lazy.js). -> { scanner, leftOut }
+  // keeps what each of its scans read. -> { scanner, leftOut }
   const scanWithin = (roots, options, label) => {
     const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(fileURLToPath(url)) !== null)
     for (const url of outside) toRel(fileURLToPath(url))
-    reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
+    if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
@@ -1572,7 +1576,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
 
   // One platform leaving out an edge another resolves within the root is a split too: collapsed
   // below, the edge would serve that platform the other's file in its place.
-  refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(fileURLToPath(e.parentURL)))?.has(e.spec)), baseDir)
+  if (!voided()) refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(fileURLToPath(e.parentURL)))?.has(e.spec)), baseDir)
 
   // --metro: and the project's configs a React Native build loads, though nothing the app imports
   // reaches them: Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel
@@ -1726,6 +1730,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       else formatsByRel.set(rel, format ?? undefined)
     }
   }
+
+  if (voided()) throw new Error('buildResolvedJsBundle: this round reads a package not unpacked yet')
 
   // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is
   // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.

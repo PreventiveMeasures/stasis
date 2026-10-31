@@ -18,7 +18,8 @@ import { HEAD, fakeClient, json } from './vfs-bundle-github.helper.js'
 // test's, which answers for each, so nothing is fetched, and what the store is asked tells what the
 // build fetched. `used` requires `deep`; `unused` and `broken` are dependencies nothing requires,
 // and `broken`'s tarball is not the lockfile's. `phantom` requires `deep`, which it does not
-// declare; `declares` depends on `deep` and `broken`, and requires `deep` alone.
+// declare; `declares` depends on `deep` and `broken`, and requires `deep` alone. `mconf` is what a
+// Metro config requires, and `babel-plugin-plug` the plugin a Babel config names.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const encoder = new TextEncoder()
@@ -40,6 +41,8 @@ const PACKAGES = await Promise.all([
   published('broken', { 'index.js': 'module.exports = 3\n' }),
   published('phantom', { 'index.js': "module.exports = require('deep')\n" }),
   published('declares', { 'index.js': "module.exports = require('deep')\n" }, { manifest: { dependencies: { deep: '1.0.0', broken: '1.0.0' } } }),
+  published('mconf', { 'index.js': 'module.exports = {}\n' }),
+  published('babel-plugin-plug', { 'index.js': 'module.exports = () => ({})\n' }),
 ])
 const BY_NAME = Object.fromEntries(PACKAGES.map((pkg) => [pkg.name, pkg]))
 const DEPENDENCIES = { used: { deep: '1.0.0' }, declares: { deep: '1.0.0', broken: '1.0.0' } }
@@ -153,6 +156,26 @@ for (const packageManager of ['pnpm', 'npm']) {
     t.assert.ok([...bundle.modules.keys()].some((dir) => dir.endsWith('/deep')))
     const entry = "require('declares')\nrequire('broken')\n"
     await t.assert.rejects(build(packageManager, { cache: store(), lazy: true }, { names: ['declares', 'broken'], entry }), /integrity|is not sha512-/u)
+  })
+
+  // Under --metro, the first round reads on past src/a.js's import of `used`, not unpacked yet, which
+  // would break the bundle, through both platforms and the configs, reporting nothing: it asks for
+  // used, mconf and babel-plugin-plug at once, and the next is the build, which traces the plugin too. Each round scans the entry for
+  // each platform and the configs; the build, the plugin as well.
+  test(`${packageManager}: lazily under --metro, a round that asks reads on through the configs, as the full tree's build`, async (t) => {
+    const names = ['used', 'mconf', 'babel-plugin-plug']
+    const files = { 'metro.config.js': "module.exports = require('mconf')\n", 'babel.config.js': "module.exports = { plugins: ['plug'] }\n", 'aliases.json': '{}\n' }
+    const options = { metro: true, platforms: ['ios', 'android'], babelAliases: 'aliases.json' }
+    const entry = "import used from 'used'\nexport default used\n"
+    const full = await build(packageManager, { cache: store(), ...options }, { names, entry, files })
+    const cache = store()
+    const walks = t.mock.method(Scan.prototype, 'walk')
+    const lazy = await build(packageManager, { cache, lazy: true, ...options }, { names, entry, files })
+    t.assert.equal(lazy.bundle.serialize(), full.bundle.serialize())
+    t.assert.equal(lazy.lockfile.serialize(), full.lockfile.serialize())
+    t.assert.ok([...lazy.bundle.modules.keys()].some((dir) => dir.endsWith('/babel-plugin-plug')))
+    t.assert.deepStrictEqual(tarballs(cache), ['babel-plugin-plug', 'deep', 'mconf', 'used'])
+    t.assert.equal(walks.mock.callCount(), 3 + 4)
   })
 
   test(`${packageManager}: lazily, the warnings of the build are said once, as without lazy`, async (t) => {
