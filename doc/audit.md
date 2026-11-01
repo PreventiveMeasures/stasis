@@ -51,7 +51,10 @@ white on red, critical magenta, high red, moderate yellow, low cyan, unrated
 dimmed), and so is the summary's count of each. Where the terminal draws sixel
 images (it answers a Primary Device Attributes query with sixel graphics among
 what it has), each id has an icon before it for where the advisory comes from:
-npm's registry, a GitHub repository's advisories, or OSV.
+npm's registry, a GitHub repository's advisories, or OSV. The icon is sized to
+fit two of the terminal's cells, as it reports their size: iTerm2's
+`ReportCellSize` (in points, by its Retina scale), else `CSI 16 t`; 16 pixels
+where it reports none.
 
 An advisory of malware, not a vulnerability, is rated `malware`, above
 critical, whatever its source rates it. `@preventive/upstream` flags it as
