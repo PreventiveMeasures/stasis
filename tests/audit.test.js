@@ -785,8 +785,9 @@ test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted t
   t.assert.equal(fitted({}).split('\n').length, 6, 'a pipe\'s, or a file\'s, unwrapped')
 })
 
-// CLI integration
+// CLI integration. Without CI, which colours what the CLI prints (a padded malware badge, say).
 const {
+  CI: _ci,
   EXODUS_STASIS_LOCK: _l,
   EXODUS_STASIS_SCOPE: _s,
   EXODUS_STASIS_BUNDLE: _b,
