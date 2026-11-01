@@ -30,8 +30,8 @@ const HELP = `Usage:
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
- stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
- stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
+ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle) ...
+ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
  stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
@@ -331,8 +331,9 @@ if (command === '-v' || command === '--version') {
 } else if (command === 'prune') {
   await pruneCli(argv, { label: 'stasis', fail })
 } else if (command === 'audit') {
-  const options = { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }
+  const options = { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' }, 'no-repo-advisories': { type: 'boolean' } }
   const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
+  if (values['repo-advisories'] && values['no-repo-advisories']) fail('Error: --repo-advisories and --no-repo-advisories: give one')
   // With no file, the bundle a bare `stasis bundle` would write of the entries stasis.config.json's
   // `entries` names, planned (and refused) as it plans them, and built after the checks below.
   let plan
@@ -348,9 +349,13 @@ if (command === '-v' || command === '--version') {
       fail(`Error: ${cause.message}`)
     }
   }
-  const repoAdvisories = Boolean(values['repo-advisories'])
+  // Each package's GitHub repository is asked for its advisories, a request a package, unless
+  // --no-repo-advisories: with githubToken's token, as GitHub's anonymous rate wouldn't last a project.
+  // Without one, they are not asked, which a line above the table says; --repo-advisories fails instead.
   const token = (await import('../src/cmd/tokens.js')).githubToken()
-  if (repoAdvisories && !token) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
+  if (values['repo-advisories'] && !token) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
+  const repoAdvisories = !values['no-repo-advisories'] && Boolean(token)
+  const tokenless = !values['no-repo-advisories'] && !token
   // Built as `stasis bundle` builds it, but neither written nor compressed, nor its warnings said
   // unless it fails (its error is, as ever).
   let files = argv.map((f) => resolve(f))
@@ -388,7 +393,8 @@ if (command === '-v' || command === '--version') {
   // Each advisory's source as an icon, where the terminal draws sixel images, sized to its cells.
   const { capabilities, logos } = await import('../src/sixel.js')
   const terminal = await capabilities()
-  printAuditReport(report, { icons: terminal.sixel && logos(terminal.cell, terminal.background) })
+  const notes = tokenless ? ['Repository advisories require GITHUB_TOKEN; continuing without them'] : []
+  printAuditReport(report, { icons: terminal.sixel && logos(terminal.cell, terminal.background), notes })
   // Malware npm's registry tells of in any dependency fails it too, whatever --reason.
   process.exitCode = report.rows.length === 0 && report.npmMalware.length === 0 ? 0 : 1
 } else if (command === 'validate') {

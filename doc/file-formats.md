@@ -445,7 +445,7 @@ than ship it, and reading one is refused as well.
   where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)
   takes the side that records one, the existing bundle's, whole, where both do:
   a `commit` only the added side records is not taken into it. `stasis
-  audit --repo-advisories` asks it rather than looking one up, and for a record
+  audit` asks it for its advisories rather than looking one up, and for a record
   with none, the one its bundled `package.json` names by the same rules (see the
   `stasis` README).
 - A dependency record may carry `vendored`, after `repo`: the packages copied

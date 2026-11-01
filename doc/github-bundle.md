@@ -52,7 +52,7 @@ Every tarball and zip is held to the lockfile. Beside each npm package's
 tarball, the registry's version document of it is fetched, held to the same
 integrity, for the commit it was published from (`gitHead`). A Soldeer git
 dependency on GitHub is fetched as the repo is. All of it is cached where
-`stasis audit` caches: the user cache directory, see [audit](audit.md#repository-advisories---repo-advisories).
+`stasis audit` caches: the user cache directory, see [audit](audit.md#repository-advisories).
 
 A private (scoped) npm package is fetched with the first of
 `PREVENTIVE_MEASURES_NPM_TOKEN`, `STASIS_NPM_TOKEN` and `NPM_TOKEN` that is
