@@ -116,6 +116,53 @@ test('--generate=prisma skips, with a warning, a project it cannot generate for'
   t.assert.equal(said().length, quiet)
 })
 
+test('--generate=prisma says where it takes another generator\'s output as committed', async (t) => {
+  const said = warnings(t)
+  const about = (name) => said().findLast((warning) => warning.includes(`generator ${name}:`))
+  const skipped = (name) => `[stasis] prisma: not generating /packages/b/prisma/schema.prisma's generator ${name}: stasis generates the "prisma-client" provider's alone`
+  const taken = (name, output) => `${skipped(name)}, and takes its output, ${output}, as committed, not as \`prisma generate\` would write it`
+  // Pothos's types beside the client, as its docs lay them out for the `prisma-client` generator.
+  const pothos = (output, extra = '') => `\ngenerator pothos {\n  provider = "prisma-pothos-types"${output === undefined ? '' : `\n  output   = "${output}"`}${extra}\n}\n`
+  const withPothos = (output, files = {}, extra = '') => workspace({ files: { 'packages/b/prisma/schema.prisma': schema() + pothos(output, extra), ...files } })
+
+  // Not in the tree: nothing is taken, and the bundle reaches nothing of it.
+  await build(project(withPothos('../src/generated/pothos-types.ts')), { generate: ['prisma'] })
+  t.assert.equal(about('pothos'), skipped('pothos'))
+
+  // Committed: the bundle carries it as it is, which may be stale, and the warning names it.
+  const stale = 'export function getDatamodel() { return { datamodel: { models: {} } } }\n'
+  const { bundle } = await build(project(withPothos('../src/generated/pothos-types.ts', {
+    'packages/b/src/generated/pothos-types.ts': stale,
+    'packages/b/src/index.ts': "export { PrismaClient } from './generated/prisma/client.ts'\nexport { getDatamodel } from './generated/pothos-types.ts'\n",
+  })), { generate: ['prisma'] })
+  t.assert.equal(text(bundle, 'packages/b/src/generated/pothos-types.ts'), stale)
+  t.assert.equal(about('pothos'), taken('pothos', '/packages/b/src/generated/pothos-types.ts'))
+
+  // A directory output, Prisma's older client's, likewise.
+  const legacy = '\ngenerator legacy {\n  provider = "prisma-client-js"\n  output   = "../src/generated/legacy"\n}\n'
+  await build(project(workspace({ files: { 'packages/b/prisma/schema.prisma': schema() + legacy, 'packages/b/src/generated/legacy/index.js': 'module.exports = {}\n' } })), { generate: ['prisma'] })
+  t.assert.equal(about('legacy'), taken('legacy', '/packages/b/src/generated/legacy'))
+
+  // One in node_modules is the lockfile's, not the repo's: nothing is said of it.
+  await build(project(withPothos('../node_modules/prisma/package.json')), { generate: ['prisma'] })
+  t.assert.equal(about('pothos'), skipped('pothos'))
+})
+
+test('--generate=prisma says nothing of Pothos\'s generator with no output: types alone, in its own package', async (t) => {
+  const said = warnings(t)
+  const pothos = (extra = '') => `\ngenerator pothos {\n  provider = "prisma-pothos-types"${extra}\n}\n`
+  const withPothos = (extra) => workspace({ files: { 'packages/b/prisma/schema.prisma': schema() + pothos(extra) } })
+  const { bundle } = await build(project(withPothos()), { generate: ['prisma'] })
+  t.assert.ok(bundle.sources.has(`${CLIENT}/client.ts`), 'the client is generated all the same')
+  t.assert.deepStrictEqual(said().filter((warning) => warning.includes('generator pothos')), [])
+  await build(project(withPothos('\n  generateDatamodel = "false"')), { generate: ['prisma'] })
+  t.assert.deepStrictEqual(said().filter((warning) => warning.includes('generator pothos')), [])
+  // generateDatamodel writes getDatamodel() there too, code the bundle may run: still said.
+  await build(project(withPothos('\n  generateDatamodel = "true"')), { generate: ['prisma'] })
+  t.assert.equal(said().findLast((warning) => warning.includes('generator pothos')),
+    `[stasis] prisma: not generating /packages/b/prisma/schema.prisma's generator pothos: stasis generates the "prisma-client" provider's alone`)
+})
+
 test('beside Prisma 8, the Prisma generated as is the one @prisma/prisma7 runs as `prisma7`', async (t) => {
   const prisma = (version) => json({ name: 'prisma', version })
   const base = { 'prisma/schema.prisma': schema({ output: '../client' }), 'node_modules/prisma/package.json': prisma('8.0.0') }
