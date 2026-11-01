@@ -321,7 +321,7 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
 test('CLI: stasis bundle strips an entry\'s Flow types with stasis\'s own flow-remove-types, no --flow given', withTmp(async (t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'app', version: '1.0.0', type: 'module' },
-    'index.js': '// @flow\nimport type { T } from "./types.js"\nimport { dep } from "./dep.js"\nexport const v: number = dep\n',
+    'index.js': 'import type { T } from "./types.js"\nimport { dep } from "./dep.js"\nexport const v: number = dep\n',
     'dep.js': 'export const dep = 1\n',
     'types.js': 'export const T = 1\n',
     'stasis.config.json': { entries: { 'index.js': { flow: true } } },

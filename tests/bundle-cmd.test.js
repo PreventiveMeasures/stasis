@@ -4327,7 +4327,7 @@ cliTest('CLI: bundle --flow strips Flow types from a .jsx dependency and walks i
   // rewritten).
   jsProject(tmp, {
     'index.js': "import { C } from './comp.jsx'\nexport const App = C\n",
-    'comp.jsx': "// @flow\nimport { dep } from './dep.js'\nexport const C = (x: number): mixed => <View>{dep}{x}</View>\n",
+    'comp.jsx': "import { dep } from './dep.js'\nexport const C = (x: number): mixed => <View>{dep}{x}</View>\n",
     'dep.js': 'export const dep = 1\n',
   })
   const outPath = join(tmp, 'out.br')
@@ -4345,17 +4345,18 @@ cliTest('CLI: bundle --flow strips Flow types from a .jsx dependency and walks i
   t.assert.match(bundle.sources.get('comp.jsx'), /x: number/u)
 }))
 
-test('buildBundle --metro strips Flow types from a file marked @flow and parses JSX in .js, with neither flow nor jsx given', withTmp(async (t, tmp) => {
+test('buildBundle --metro strips Flow types and parses JSX in .js, with neither flow nor jsx given, in a file marked @flow or not', withTmp(async (t, tmp) => {
   jsProject(tmp, {
-    'index.js': "// @flow\nimport { View } from './view.js'\nexport const App = (x: number): mixed => <View>{x}</View>\n",
+    'index.js': "// @flow\nimport { View } from './view.js'\nimport prompt from './prompt.js'\nexport const App = (x: number): mixed => <View>{x}{prompt}</View>\n",
     'view.js': 'export const View = () => <div />\n',
-    'unmarked.js': 'export const v: number = 1\n',
+    // react-native-prompt-android 1.0's index.ios.js: Flow types, no pragma.
+    'prompt.js': "import { tag } from './tag.js'\nexport default function prompt(\n    title: ?string,\n    callbackOrButtons?: ?((text: string) => void) | Object,\n): void { tag(title) }\n",
+    'tag.js': 'export const tag = (x) => x\n',
   })
-  const options = { cwd: tmp, metro: true, platforms: ['ios', 'android'] }
-  const bundle = await buildBundle({ ...options, entries: ['index.js'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'view.js'])
-  // Flow types in a file not marked @flow are no Flow --flow strips: a parse error, as without it.
-  await t.assert.rejects(() => buildBundle({ ...options, entries: ['unmarked.js'] }), /JS bundle would be broken at load time/u)
+  const bundle = await buildBundle({ cwd: tmp, metro: true, platforms: ['ios', 'android'], entries: ['index.js'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'prompt.js', 'tag.js', 'view.js'])
+  // Not under --metro: a parse error.
+  await t.assert.rejects(() => buildBundle({ cwd: tmp, jsx: true, entries: ['prompt.js'] }), /JS bundle would be broken at load time/u)
 }))
 
 // --- --resources: carry reached assets instead of failing "can't carry" ---------------------

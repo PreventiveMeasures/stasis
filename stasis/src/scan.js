@@ -205,7 +205,7 @@ export class Scan {
   // (`empty` = a browser/react-native `false` redirect) and owns builtin handling when set.
   // `jsx` opts the .js/.cjs/.mjs family into JSX syntax (React Native's JSX-in-.js convention);
   // off by default because oxc, like tsc, only auto-enables JSX for .jsx/.tsx by extension.
-  // `flow`: strip Flow type syntax from the JS-family sources marked `@flow` (see parseFile).
+  // `flow`: strip Flow type syntax from JS-family sources, as Metro's Babel does (see parseFile).
   // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
   // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) adding tsconfig alias support; only consulted
   // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling. Without it, the
@@ -383,15 +383,15 @@ export class Scan {
     return hit == null ? null : pathToFileURL(hit).toString()
   }
 
-  // Strip Flow type syntax to plain JS (flow.js's stripFlowTypes). Only invoked as a parse fallback
-  // for a file marked `@flow` (see parseFile), so plain-JS files never reach it. Returns the rewritten
-  // source, or null when the transform itself fails on this file -- the caller then keeps oxc's
-  // original parse error.
-  #stripFlow(src, file) {
+  // Strip Flow type syntax to plain JS (flow.js's stripFlowTypes): of a file marked `@flow`, or as a
+  // parse fallback (see parseFile), so plain-JS files never reach it. Returns the rewritten source, or
+  // null when the transform itself fails on this file -- the caller then keeps oxc's original parse,
+  // saying so where that failed (`failed`).
+  #stripFlow(src, file, failed) {
     try {
       return stripFlowTypes(src)
     } catch (cause) {
-      console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`)
+      if (failed) console.warn(`[stasis] --flow: could not strip Flow types from ${file}; leaving it to oxc (${cause.message})`)
       return null
     }
   }
@@ -464,16 +464,18 @@ export class Scan {
       } catch { /* keep the script parse and its recorded errors */ }
     }
 
-    // --flow: oxc parses JS/TS but not Flow, so a Flow-typed .js/.cjs/.mjs file lands here with
-    // parse errors. Only now -- after a raw oxc parse actually failed, of a file marked `@flow`
-    // (hasFlowPragma) -- strip Flow types and re-parse, so plain-JS files never pay the transform
-    // cost, and one not marked is never read as Flow. Only the parse input is rewritten;
+    // --flow: oxc parses JS/TS but not Flow, so a Flow-typed .js/.cjs/.mjs/.jsx file lands here
+    // with parse errors. Strip Flow types and re-parse as Metro's Babel reads the file: one marked
+    // `@flow` (hasFlowPragma) is Flow, stripped whether or not oxc parses it as it is (where
+    // `f<T>(x)` is a comparison, not Flow's call), as Babel parses it with hermes-parser; any other
+    // only now, after a raw oxc parse actually failed, as Babel's own Flow parser takes annotations
+    // in any file, so plain-JS files never pay the transform cost. Only the parse input is rewritten;
     // the bundle stores the pristine on-disk source (State/buildResolvedJsBundle re-read it), so
-    // attestation still covers the real bytes. A clean re-parse replaces the errored one; otherwise
+    // attestation still covers the real bytes. A clean re-parse replaces the original one; otherwise
     // we keep the original result so a genuine (non-Flow) parse error still surfaces.
     let strippedSource = null
-    if (errors.length > 0 && this.flow && FLOW_EXTS.has(ext) && hasFlowPragma(src)) {
-      const flowSrc = this.#stripFlow(src, file)
+    if (this.flow && FLOW_EXTS.has(ext) && (errors.length > 0 || hasFlowPragma(src))) {
+      const flowSrc = this.#stripFlow(src, file, errors.length > 0)
       if (flowSrc !== null) {
         try {
           const asFlow = parser.parseSync(file, flowSrc, parseOptions(baseSourceType))
