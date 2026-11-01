@@ -768,7 +768,7 @@ test('printAuditReport: icons the size given, as sixel.js logos() picks them for
   printAuditReport({ packages: [{}], rows: [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 't', id: 'GHSA-1111-1111-1111', source: 'osv', reason: '' }] },
     { out: { write: (s) => { out += s } }, err: { write() {} }, colors: false, icons: larger })
   t.assert.ok(out.includes(`\x1b7${larger.osv}\x1b8\x1b[2C GHSA-1111-1111-1111`), out)
-  t.assert.ok(larger.osv.startsWith('\x1bP9;1q"1;1;28;28'), 'the 28-pixel one')
+  t.assert.ok(larger.osv.startsWith('\x1bP9;1q"1;1;28;31'), 'the 28-pixel one, lowered by 3')
 })
 
 test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted to a terminal\'s width', (t) => {
@@ -1275,10 +1275,12 @@ test('stasis audit --reason=<a consumer no file records> exits as a usage error,
   t.assert.equal(r.stdout, '')
 }))
 
-// npm's registry: `hijacked`'s malware advisory (CWE-506, rated high), and a HEAD of a name's document
-// answered 200, but 404 for @acme/secret, a private package to a request with no token; OSV: its record
+// npm's registry: `hijacked`'s malware advisory (CWE-506, rated high), and each name's latest version to
+// a request with no token, but 404 for @acme/secret, a private package, and its document; OSV: its record
 // of a malicious `evil`, a version npm took down.
 const npmOsvFetch = ({ url, opts }) => {
+  const latest = /^https:\/\/registry\.npmjs\.org\/(.+)\/latest$/u.exec(url)?.[1]
+  if (latest !== undefined) return latest === '@acme/secret' ? new Response('"Not Found"', { status: 404 }) : json({ name: latest, version: '1.0.0' })
   if (opts?.method === 'HEAD') return new Response(null, { status: url.endsWith('/@acme/secret') ? 404 : 200 })
   if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') {
     const asked = JSON.parse(opts.body)
