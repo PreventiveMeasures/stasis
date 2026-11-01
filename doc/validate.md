@@ -237,7 +237,10 @@ default branch, or a tag or a branch at it, or that of another of its
 branches, as GitHub's compare tells it (the branch `ahead` of the commit, or
 the same). One in none, a fork's say, is refused (exit 3), whether the bundle
 records it or `--sha` gives it. The report names the ref that has it (`of
-main`, `, tag v1.0.0`).
+main`, `, tag v1.0.0`). Other branches are compared 100 at most: a commit at no
+tag or branch head, nor in the default branch's history, of a repository with
+more branches than that, is refused unless one of those compared has it
+(`history-unread`).
 
 ## Access
 
@@ -254,17 +257,19 @@ is read.
 ## API
 
 `@exodus/stasis/validate` exports the steps apart, for a caller reading a
-repository or packages its own way (a server listing a tree's blob ids, say):
+repository or packages its own way (a server listing a tree's blob ids, say),
+with their types (`src/validate.d.ts`):
 
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
 | `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`), `installed(dir)` the version npm's lockfile installs at a copy's directory (`<name>@<version>`, null for none, undefined where its lockfile locks no location), `aliased(as, named)` whether it installs `named` under the name `as` (undefined for no lockfile). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
+| `validateRepository(plan, { repository, commit, directory }, { own, lockfile, listTree, strict, fetch, deadline })` | A plan validated against `repository` (`followingMoves`'s, null for none) at `commit`, held to its history (`historyOf`), as `validate` validates a file. Own code is read of the commit's tree, its files' bytes; or, given `listTree(paths)`, of a listing of it (`{ entries, cut }`, as upstream's `listRepoTree` lists it, for the paths of the bundle's own files and of its directory's), by git's blob ids, the lockfile's directories' files named by it too. `lockfile` is `true` (the repository's), lockfiles as `lockedBy` takes them, or `false`. With `strict` false, no repository or commit to read own code or the lockfile of (`no-repository`, `no-commit`), a commit not of the repository's history (`commit-not-in-history`, `history-unread`), or no lockfile to hold the dependencies to is told in the report, not thrown: own code unverified for the `ValidateError`'s code (`own.reason`), and the dependencies held to their registry alone, the code told (`lockfileError`) where their lockfile went unread for it. |
 | `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
-| `historyOf(repository, commit)` | The ref of `repository` (`followingMoves`'s) that has `commit` in its history, `{ branch }` or `{ tag }`, null for none: its default branch, a tag or a branch at it, then its other branches. |
+| `historyOf(repository, commit, { maxCompared, deadline })` | The ref of `repository` (`followingMoves`'s) that has `commit` in its history, `{ branch }` or `{ tag }`, null for none: its default branch, a tag or a branch at it, then its other branches, `maxCompared` (100) at most and none past `deadline`; where one left uncompared might have it, a `ValidateError` (`history-unread`). |
 | `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's (`''`, the default, for the same). |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |

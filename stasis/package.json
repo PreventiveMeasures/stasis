@@ -20,7 +20,10 @@
     "./prune": "./src/prune.js",
     "./sbom": "./src/sbom.js",
     "./audit-corrections": "./src/audit-corrections.js",
-    "./validate": "./src/validate.js",
+    "./validate": {
+      "types": "./src/validate.d.ts",
+      "default": "./src/validate.js"
+    },
     "./vfs-bundle": "./src/vfs-bundle.js",
     "./validate-notes": {
       "types": "./src/validate-notes.d.ts",
@@ -77,6 +80,7 @@
     "src/rollup.js",
     "src/sbom.js",
     "src/table.js",
+    "src/validate.d.ts",
     "src/validate.js",
     "src/validate-notes.d.ts",
     "src/validate-notes.js",

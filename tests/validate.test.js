@@ -13,7 +13,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -82,6 +82,8 @@ const own = (entries = LISTED, more = {}) => ({ entries: new Map(Object.entries(
 const PACKAGES = { 'npm:ms@2.1.3': MS, 'npm:left@1.0.0': { 'index.js': 'original\n', 'other.js': 'never bundled\n' } }
 // A sha512 integrity, as a lockfile locks a version with.
 const SRI = `sha512-${'A'.repeat(86)}==`
+// A pnpm lockfile installing ms@2.1.3 from npm, `importer` its importer's id and `dependencies` its YAML.
+const msLock = (importer, dependencies) => `lockfileVersion: '9.0'\n\nimporters:\n\n  ${importer}:\n    dependencies:\n${dependencies}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
 // Upstream's packages, as `fetch` takes them, each version fetched told (`fetched`), with the
 // integrity it is to be held to where it is given one (`integrities`).
 const upstream = (packages = PACKAGES, fetched = [], integrities = []) => async (ecosystem, name, version, integrity) => {
@@ -294,7 +296,7 @@ test('validateBundle: each npm copy held to where Node resolves it: the name its
   t.assert.deepStrictEqual(await Promise.all(others.map((dir) => told(dir))), others.map(misplaced), 'another version or package, with no lockfile read')
   // Installed under another name: an alias, which only a lockfile tells; unverified where none is read.
   t.assert.deepStrictEqual(await told('node_modules/helmet'), ['incomplete', [['unverified', 'alias-unverified', 'node_modules/helmet']]])
-  const pnpm = (importer) => lockedBy([{ path: 'pnpm-lock.yaml', text: `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n${importer}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n` }])
+  const pnpm = (dependencies) => lockedBy([{ path: 'pnpm-lock.yaml', text: msLock('.', dependencies) }])
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n') }), misplaced('node_modules/helmet'), 'no alias the lockfile has')
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n') }), valid, 'pnpm\'s alias of it')
 
@@ -916,6 +918,83 @@ test('historyOf: the ref of the repository holding a commit in its history, its 
     throw new HttpError(403, 'GET compare 403: {"message":"API rate limit exceeded"}')
   }
   await t.assert.rejects(historyOf(followingMoves(limited, 'org/repo'), commit), { name: 'HttpError', status: 403 }, 'GitHub refusing, as it refuses')
+})
+
+test('historyOf: other branches compared `maxCompared` at most, none past `deadline`; where those left uncompared might hold the commit, it can\'t tell', async (t) => {
+  const release = 'e'.repeat(40)
+  const repository = () => followingMoves(repoClient({}, { history: { main: [], a: [], b: [release], c: [] } }), 'org/repo')
+  t.assert.deepStrictEqual(await historyOf(repository(), release, { maxCompared: 2 }), { branch: 'b' }, 'held by one compared')
+  t.assert.equal(await historyOf(repository(), 'f'.repeat(40), { maxCompared: 3 }), null, 'held by none, each compared')
+  await t.assert.rejects(historyOf(repository(), release, { maxCompared: 1 }), { name: 'ValidateError', code: 'history-unread',
+    message: `${release} is at no tag or branch head of org/repo nor in its default branch's history, and 2 of its 3 other branches were left uncompared (1 compared at most): give --sha= a commit of its default branch or at a tag` })
+  await t.assert.rejects(historyOf(repository(), release, { deadline: 0, now: () => 1 }), { code: 'history-unread', message: /, and 3 of its 3 other branches were left uncompared past the deadline: /u })
+})
+
+test('validateRepository: own code held to a listing of the commit\'s tree, its lockfile found by it; `strict` false, a commit not of its history or no lockfile told, not thrown', async (t) => {
+  const lock = msLock('web', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n')
+  const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
+  const client = repoClient(files)
+  client.listRepoDir = client.getRepoTreeTarball = async () => {
+    throw new Error('read of the listing alone')
+  }
+  const repository = followingMoves(client, 'org/repo')
+  const plan = validationPlan(new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['.', { name: 'web', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+  ]) }))
+  const asked = []
+  const listTree = async (paths) => {
+    asked.push(paths)
+    return { entries: [{ path: 'web', mode: '040000', type: 'tree', sha: blob('') }, ...Object.entries(files).map(([path, text]) => ({ path, mode: '100644', type: 'blob', sha: blob(text) }))], cut: false }
+  }
+  const where = { repository, commit, directory: 'web' }
+  const report = await validateRepository(plan, where, { listTree, fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.own, report.lockfiles, 'lockfileError' in report], ['valid', { checked: true, repository: 'org/repo', commit, ref: { branch: 'main' }, directory: 'web' }, ['pnpm-lock.yaml'], false])
+  t.assert.deepStrictEqual(asked, [['web/src/main.js', 'web/package.json']], 'its own files\' paths, and its directory\'s')
+
+  // Its tree cut short: own code unverified; the directories it doesn't list asked for alone, its lockfile found by them.
+  const none = async () => ({ entries: [], cut: true })
+  const cut = await validateRepository(plan, { ...where, repository: followingMoves(repoClient(files), 'org/repo') }, { listTree: none, fetch: upstream() })
+  t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.lockfiles, cut.problems], ['incomplete', true, ['pnpm-lock.yaml'], [{ path: 'src/main.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
+  // No lockfile: refused, or, `strict` false, the dependencies held to their registry alone, and why.
+  const unlocked = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n' }
+  const listUnlocked = async () => ({ entries: Object.entries(unlocked).map(([path, text]) => ({ path, mode: '100644', type: 'blob', sha: blob(text) })), cut: false })
+  await t.assert.rejects(validateRepository(plan, where, { listTree: listUnlocked, fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
+  const held = await validateRepository(plan, where, { listTree: listUnlocked, strict: false, fetch: upstream() })
+  t.assert.deepStrictEqual([held.status, held.lockfiles, held.lockfileError], ['valid', null, 'no-lockfile'])
+  // Cut short of the bundle's directory: its files asked for alone, its own lockfile found there, not the root's.
+  const nearer = { 'pnpm-lock.yaml': msLock('.', ''), 'web/pnpm-lock.yaml': msLock('.', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n'), 'web/package.json': '{}\n' }
+  const rootOnly = async () => ({ entries: [{ path: 'pnpm-lock.yaml', mode: '100644', type: 'blob', sha: blob(nearer['pnpm-lock.yaml']) }, { path: 'web', mode: '040000', type: 'tree', sha: blob('') }], cut: true })
+  const near = await validateRepository(plan, { ...where, repository: followingMoves(repoClient(nearer), 'org/repo') }, { listTree: rootOnly, fetch: upstream() })
+  t.assert.deepStrictEqual([near.lockfiles, near.packages.map((pkg) => pkg.status)], [['web/pnpm-lock.yaml'], []])
+
+  // A commit of a fork's: its tree not listed, nor its lockfile read.
+  asked.length = 0
+  const fork = { ...where, commit: 'f'.repeat(40) }
+  const forked = await validateRepository(plan, fork, { listTree, strict: false, fetch: upstream() })
+  t.assert.deepStrictEqual([forked.status, forked.own, forked.lockfiles, forked.lockfileError, asked], ['incomplete', { checked: false, reason: 'commit-not-in-history' }, null, 'commit-not-in-history', []])
+  await t.assert.rejects(validateRepository(plan, fork, { listTree, fetch: upstream() }), { name: 'ValidateError', code: 'commit-not-in-history' })
+
+  // An own file at a path no tree has, not asked for: unexpected, the tree cut short or not.
+  const odd = { ...plan, own: [...plan.own, { path: '../x.js', dir: '.', rel: '../x.js', format: 'commonjs', bytes: () => bytes('x\n') }] }
+  asked.length = 0
+  const outside = await validateRepository(odd, where, { listTree, fetch: upstream() })
+  t.assert.deepStrictEqual([outside.status, outside.problems.map((problem) => [problem.path, problem.kind]), asked], ['invalid', [['../x.js', 'unexpected']], [['web/src/main.js', 'web/package.json']]])
+  const cutOutside = await validateRepository(odd, where, { listTree: async (paths) => ({ ...await listTree(paths), cut: true }), fetch: upstream() })
+  t.assert.deepStrictEqual([cutOutside.status, cutOutside.problems.map((problem) => [problem.path, problem.kind, problem.reason ?? null])], ['invalid', [['../x.js', 'unexpected', null]]])
+
+  // Own code or the repository's lockfile with no repository or commit to read it of: refused, or, `strict` false, told.
+  asked.length = 0
+  await Promise.all([[{ repository, directory: 'web' }, 'no-commit'], [{ commit, directory: 'web' }, 'no-repository']].map(async ([at, code]) => {
+    await t.assert.rejects(validateRepository(plan, at, { listTree, fetch: upstream() }), { name: 'ValidateError', code })
+    await t.assert.rejects(validateRepository(plan, at, { own: false, fetch: upstream() }), { name: 'ValidateError', code }, 'its lockfile read there')
+    const told = await validateRepository(plan, at, { listTree, strict: false, fetch: upstream() })
+    t.assert.deepStrictEqual([told.status, told.own, told.lockfiles, told.lockfileError], ['incomplete', { checked: false, reason: code }, null, code])
+    const depsAlone = await validateRepository(plan, at, { own: false, strict: false, fetch: upstream() })
+    t.assert.deepStrictEqual([depsAlone.status, depsAlone.own, depsAlone.lockfileError], ['valid', { checked: false, reason: 'skipped' }, code], 'its own code skipped as asked, its lockfile unread')
+  }))
+  t.assert.deepStrictEqual(asked, [], 'nothing listed')
+  t.assert.equal((await validateRepository(plan, { directory: 'web' }, { own: false, lockfile: false, fetch: upstream() })).own.reason, 'skipped', 'neither read')
 })
 
 test('validate: own code, a lockfile or the patches the bundle holds read of a commit in the repository\'s own history alone, a fork\'s refused', withTmp(async (t, tmp) => {
