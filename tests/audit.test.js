@@ -955,6 +955,30 @@ test("audit with no file takes --reason, by the consumers of stasis.config.json'
   t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
 }))
 
+test("audit with no file says the bundle's warnings only where the bundle fails, before its error", withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, NPM_SPY)
+  const project = join(tmp, 'project')
+  writeProject(project, { entries: { 'index.js': {}, 'cli.js': { jsx: true } } })
+  // A lazy require of a package that isn't there, which stasis bundle warns of.
+  writeFileSync(join(project, 'index.js'), "require('foo')\nmodule.exports = () => require('nope')\n")
+  const warning = '[stasis] Bundle has 1 unresolved import(s); they will fall through at load time:\n  require nope from index.js (MODULE_NOT_FOUND)\n'
+  t.assert.ok(runSpied(spy, project, ['bundle', `--output=${join(tmp, 'warned.br')}`]).stderr.startsWith(warning), 'stasis bundle warns')
+  const quiet = runSpied(spy, project, ['audit'])
+  t.assert.equal(quiet.status, 1)
+  t.assert.equal(quiet.stderr, 'npm {"bar":["2.0.0"],"foo":["1.0.0"]}\n\nScanned 2 packages: 2 alerts (2 high)\n')
+  // A second build, of an entry importing a file that isn't there, fails after the first warned.
+  writeFileSync(join(project, 'cli.mjs'), "import 'bar'\nimport './missing.js'\n")
+  writeFileSync(join(project, 'stasis.config.json'), JSON.stringify({ entries: { 'index.js': {}, 'cli.mjs': { jsx: true } } }))
+  const failed = runSpied(spy, project, ['audit'])
+  t.assert.equal(failed.status, 1)
+  t.assert.equal(failed.stdout, '')
+  t.assert.ok(failed.stderr.startsWith(warning), failed.stderr)
+  t.assert.match(failed.stderr, /\nError: JS bundle would be broken at load time:\n {2}unresolved import \.\/missing\.js from cli\.mjs \(MODULE_NOT_FOUND\)\n/u)
+  t.assert.doesNotMatch(failed.stderr, /^npm /mu, 'nothing asked')
+  t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
+}))
+
 test("audit with no file is refused as stasis bundle is, or without stasis.config.json's entries", withTmp((t, tmp) => {
   const project = join(tmp, 'project')
   writeProject(project)

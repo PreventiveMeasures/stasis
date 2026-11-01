@@ -13,10 +13,12 @@ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisor
 With no file, in a directory whose [`stasis.config.json`](file-formats.md#stasisconfigjson)
 names `entries`, it audits the bundle a bare `stasis bundle` there would write
 (see [Entry options](bundle.md#entry-options-stasisconfigjson)), as if it were
-written and then given: built the same way, with the same warnings and
-refusals, but neither compressed nor written. Its consumers are the builds'
-(`bundle`, `bundle:metro`, and `extra` for the files the config's `extra`
-adds), which `--reason` takes. Bare `stasis bundle` takes no flag, so an entry
+written and then given: built the same way, with the same refusals, but
+neither compressed nor written. The build's warnings (`[stasis] Bundle has 6
+unresolved import(s) ...`) are said only where it fails, before its error;
+where it succeeds, the audit's output is all there is. Its consumers are the
+builds' (`bundle`, `bundle:metro`, and `extra` for the files the config's
+`extra` adds), which `--reason` takes. Bare `stasis bundle` takes no flag, so an entry
 setting an option that needs consent (`babel`, `metro-resolver`, `cargo`,
 `cargo-target`) is refused here as it is there; bundle such entries with
 `stasis bundle` and audit the file.
