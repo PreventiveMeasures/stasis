@@ -32,7 +32,7 @@
     "babel-plugin-module-resolver": "^3.2.0",
     "esbuild": "^0.27.3",
     "file-loader": "^6.2.0",
-    "metro-resolver": "^0.87.0",
+    "metro-resolver": "^0.87.2",
     "oxlint": "^1.52.0",
     "rollup": "^4.62.4",
     "string-replace-loader": "^2.3.0",

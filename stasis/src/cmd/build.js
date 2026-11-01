@@ -8,11 +8,13 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
 import { toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
-import { bundleDirHost, metroAssetFiles } from '@exodus/stasis-plugins/metro-native'
+import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
+import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
+import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { FLOW_EXTS, stripFlowTypes } from '../flow.js'
-import { ASSET_REGISTRY, assetRegistryResolver, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
+import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
 
@@ -185,26 +187,31 @@ function loadStateForBundle(root, bundle) {
 // A file's bytes as the State serves them: a Buffer for a base64 resource, else a string.
 const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
 
-// The bytes the artifact carries for `file` (a path from the State's root), verified by getFile.
+// The bytes the artifact carries for `file` (a path from the State's root, or an absolute one), verified
+// by getFile.
 const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
 // --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches -- in a
 // --metro bundle, a Metro asset, as it records an import edge to no other -- served as the module
-// Metro builds of it for `platform` (metro-assets.js), from the files of the asset the artifact carries
-// in its directory. The module's require of the asset registry resolves to the file the artifact
-// carries for it, an edge added to the State's graph: the bundle records none, as Metro adds it past
-// the source. `built` collects each asset's { descriptor, files } for --assets-dest.
+// Metro builds of it for `platform` (@preventive/rn's assetData and assetModule), from the files of the
+// asset the artifact carries in its directory, at its path from the project root. The module's require
+// of the asset registry resolves to the file the artifact carries for it (metro-assets.js), an edge
+// added to the State's graph: the bundle records none, as Metro adds it past the source. `built`
+// collects each asset's data for --assets-dest.
 function metroAssetResource(state, platform, built) {
-  const host = bundleDirHost(state)
+  const listing = bundleDirHost(state)
   const registryFor = assetRegistryResolver(platform, state.sources)
   return (source, { path }) => {
     const rel = toPosix(state.relative(path))
-    const files = metroAssetFiles(path, platform, host).map((file) => toPosix(state.relative(file)))
-    // The asset's own bytes are those the plugin serves it by.
-    const asset = metroAssetDescriptor(rel, { platform, files, read: (file) => (file === rel ? asBytes(source) : readCarried(state, file)) })
+    // The files the artifact carries, the asset's own bytes those the plugin serves it by.
+    const host = {
+      readdir: (dir) => listing.readdir(dir).map(({ name }) => name),
+      readFile: (file) => (file === path ? asBytes(source) : readCarried(state, file)),
+    }
+    const data = assetData(path, { urlPath: rel, platform, host })
     state.addImport(pathToFileURL(path).href, ASSET_REGISTRY, pathToFileURL(resolve(state.root, registryFor(rel))).href)
-    built.set(rel, asset)
-    return { contents: metroAssetModule(asset.descriptor), loader: 'js' }
+    built.set(rel, data)
+    return { contents: assetModule(data, ASSET_REGISTRY), loader: 'js' }
   }
 }
 
@@ -441,11 +448,12 @@ export async function buildCommand({
   }
 
   // --assets-dest's copies of the assets built, as `react-native bundle --assets-dest` lays them out for
-  // the platform, from the bytes the artifact carries, in a stable order (esbuild loads in parallel).
+  // the platform (@preventive/rn's assetsDestFiles), from the bytes the artifact carries, in a stable
+  // order (esbuild loads in parallel).
   const assetFiles = assetsDest === undefined
     ? []
-    : metroAssetCopies(metro, [...builtAssets.keys()].toSorted().map((rel) => builtAssets.get(rel)))
-        .map(({ dest, file, contents }) => ({ path: resolve(cwd, assetsDest, dest), contents: contents ?? readCarried(state, file) }))
+    : assetsDestFiles([...builtAssets.keys()].toSorted().map((rel) => builtAssets.get(rel)), metro)
+        .map(({ dest, src, contents }) => ({ path: resolve(cwd, assetsDest, dest), contents: contents ?? readCarried(state, src) }))
   const writes = [...result.outputFiles, ...assetFiles]
 
   // Refuse to clobber an attested source, checked against the actual output paths before any write.

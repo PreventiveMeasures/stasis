@@ -12,9 +12,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stripVTControlCharacters } from 'node:util'
 
-import {
-  ASSET_REGISTRY, assetRegistryResolver, filterPlatformAssetScales, imageDimensions, metroAssetCopies, metroAssetDescriptor, metroAssetModule,
-} from '../stasis/src/metro-assets.js'
+import { ASSET_REGISTRY, assetRegistryResolver } from '../stasis/src/metro-assets.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -66,126 +64,10 @@ const md5 = (...contents) => {
   return hasher.digest('hex')
 }
 
-// --- image dimensions -------------------------------------------------------------------------
-
-test('imageDimensions reads each image type Metro reads, as Metro does', (t) => {
-  t.assert.deepStrictEqual(imageDimensions('png', png(20, 10), 'f'), { width: 20, height: 10 })
-  // Apple's CgBI PNG: IHDR after the CgBI chunk.
-  const cgbi = Buffer.concat([png(0, 0).subarray(0, 8), Buffer.from([0, 0, 0, 4]), Buffer.from('CgBI'), Buffer.alloc(8), png(7, 9).subarray(8)])
-  t.assert.deepStrictEqual(imageDimensions('png', cgbi, 'f'), { width: 7, height: 9 })
-  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 0x01, 0xe0, 0x02, 0x80, 3, 0, 0, 0, 0xff, 0xd9])
-  t.assert.deepStrictEqual(imageDimensions('jpg', jpeg, 'f'), { width: 640, height: 480 })
-  const gif = Buffer.alloc(13)
-  gif.write('GIF89a')
-  gif.writeUInt16LE(11, 6)
-  gif.writeUInt16LE(12, 8)
-  t.assert.deepStrictEqual(imageDimensions('gif', gif, 'f'), { width: 11, height: 12 })
-  const bmp = Buffer.alloc(54)
-  bmp.write('BM')
-  bmp.writeUInt32LE(40, 14)
-  bmp.writeInt32LE(13, 18)
-  bmp.writeInt32LE(-14, 22) // top-down: a negative height
-  t.assert.deepStrictEqual(imageDimensions('bmp', bmp, 'f'), { width: 13, height: 14 })
-  const vp8x = Buffer.alloc(30)
-  vp8x.write('RIFF')
-  vp8x.write('WEBP', 8)
-  vp8x.write('VP8X', 12)
-  vp8x.writeUInt32LE(10, 16)
-  vp8x.writeUIntLE(299, 24, 3)
-  vp8x.writeUIntLE(199, 27, 3)
-  t.assert.deepStrictEqual(imageDimensions('webp', vp8x, 'f'), { width: 300, height: 200 })
-  const vp8l = Buffer.alloc(26)
-  vp8l.write('RIFF')
-  vp8l.write('WEBP', 8)
-  vp8l.write('VP8L', 12)
-  vp8l.writeUInt32LE(5, 16)
-  // width-1 = 99 (14 bits), height-1 = 49 (14 bits), packed little-endian after the 0x2f signature
-  const packed = 99 | (49 << 14)
-  Buffer.from([0x2f, packed & 0xff, (packed >> 8) & 0xff, (packed >> 16) & 0xff, (packed >> 24) & 0xff]).copy(vp8l, 20)
-  t.assert.deepStrictEqual(imageDimensions('webp', vp8l, 'f'), { width: 100, height: 50 })
-  const psd = Buffer.alloc(26)
-  psd.write('8BPS')
-  psd.writeUInt16BE(1, 4)
-  psd.writeUInt32BE(30, 14)
-  psd.writeUInt32BE(40, 18)
-  t.assert.deepStrictEqual(imageDimensions('psd', psd, 'f'), { width: 40, height: 30 })
-  const tiff = Buffer.alloc(8 + 2 + 24)
-  tiff.write('MM')
-  tiff.writeUInt16BE(42, 2)
-  tiff.writeUInt32BE(8, 4)
-  tiff.writeUInt16BE(2, 8)
-  for (const [i, [tag, value]] of [[256, 5], [257, 6]].entries()) {
-    tiff.writeUInt16BE(tag, 10 + i * 12)
-    tiff.writeUInt16BE(3, 12 + i * 12)
-    tiff.writeUInt32BE(1, 14 + i * 12)
-    tiff.writeUInt16BE(value, 18 + i * 12)
-  }
-  t.assert.deepStrictEqual(imageDimensions('tiff', tiff, 'f'), { width: 5, height: 6 })
-  const ktx2 = Buffer.alloc(80)
-  Buffer.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a]).copy(ktx2)
-  ktx2.writeUInt32LE(64, 20)
-  ktx2.writeUInt32LE(32, 24)
-  t.assert.deepStrictEqual(imageDimensions('ktx', ktx2, 'f'), { width: 64, height: 32 })
-  // SVG: width/height in CSS units, else scaled by the viewBox, else the viewBox.
-  t.assert.deepStrictEqual(imageDimensions('svg', Buffer.from('<?xml version="1.0"?><svg width="2in" height="3cm"/>'), 'f'), { width: 192, height: 113 })
-  t.assert.deepStrictEqual(imageDimensions('svg', Buffer.from("<svg viewBox='0 0 120 60' width='50'>"), 'f'), { width: 50, height: 25 })
-  t.assert.deepStrictEqual(imageDimensions('svg', Buffer.from('<svg viewBox="0,0,30,10">'), 'f'), { width: 30, height: 10 })
-  // A type's own parser failing falls back to the others: a PNG named .jpg is read as a PNG.
-  t.assert.deepStrictEqual(imageDimensions('jpg', png(3, 4), 'f'), { width: 3, height: 4 })
-  t.assert.throws(() => imageDimensions('png', Buffer.from('not an image'), 'img/x.png'), /^Error: Invalid png image asset: img\/x\.png$/u)
-  t.assert.throws(() => imageDimensions('png', png(0, 10), 'img/x.png'), /Invalid png image asset/u)
-})
-
-// --- the asset module -------------------------------------------------------------------------
-
-test('metroAssetDescriptor builds Metro\'s descriptor: scales in order, md5 of the files, size at the first scale', (t) => {
-  const bytes = {
-    'img/logo.png': png(20, 10),
-    'img/logo@2x.png': png(40, 20),
-    'img/logo@3x.png': png(60, 30),
-    'img/logo@1.5x.png': png(30, 15),
-  }
-  const read = (file) => bytes[file]
-  const { descriptor, files } = metroAssetDescriptor('img/logo.png', { platform: 'ios', files: Object.keys(bytes).toReversed(), read })
-  t.assert.deepStrictEqual(files, ['img/logo.png', 'img/logo@1.5x.png', 'img/logo@2x.png', 'img/logo@3x.png'])
-  t.assert.deepStrictEqual(descriptor, {
-    __packager_asset: true,
-    httpServerLocation: '/assets/img',
-    width: 20,
-    height: 10,
-    scales: [1, 1.5, 2, 3],
-    hash: md5(...files.map(read)),
-    name: 'logo',
-    type: 'png',
-  })
-  // Keys in Metro's order: generateAssetCodeFileAst stringifies getAssetData's object.
-  t.assert.deepStrictEqual(Object.keys(descriptor), ['__packager_asset', 'httpServerLocation', 'width', 'height', 'scales', 'hash', 'name', 'type'])
-  t.assert.equal(
-    metroAssetModule(descriptor),
-    `module.exports = require("react-native/Libraries/Image/AssetRegistry").registerAsset(${JSON.stringify(descriptor)});\n`
-  )
-
-  // An asset of one file, on iOS.
-  const one = (rel, content = png(1, 1)) => metroAssetDescriptor(rel, { platform: 'ios', files: [rel], read: () => content }).descriptor
-  // Only a scale variant: the size over its scale. A platform file names the asset without its suffix.
-  const only = one('img/only@3x.ios.png', png(30, 60))
-  t.assert.deepStrictEqual([only.name, only.scales, only.width, only.height], ['only', [3], 10, 20])
-  // Another platform's suffix is part of the name.
-  t.assert.equal(one('a.android.png').name, 'a.android')
-  // Equal scales keep readdir's bytewise name order (`tie.png` before `tie@1x.png`).
-  t.assert.deepStrictEqual(
-    metroAssetDescriptor('img/tie.png', { platform: 'ios', files: ['img/tie@1x.png', 'img/tie.png', 'img/tie@2x.png'], read: () => png(2, 2) }).files,
-    ['img/tie.png', 'img/tie@1x.png', 'img/tie@2x.png']
-  )
-  // At the root, in node_modules, or outside the project root (Metro joins no `..` path).
-  t.assert.equal(one('logo.png').httpServerLocation, '/assets')
-  t.assert.equal(one('node_modules/pkg/a.png').httpServerLocation, '/assets/node_modules/pkg')
-  t.assert.equal(one('../shared/a.png').httpServerLocation, '/assets/../shared')
-  // No image: no size.
-  const font = one('fonts/Inter.ttf', Buffer.from('font'))
-  t.assert.deepStrictEqual([font.width, font.height, JSON.stringify(font).includes('width')], [undefined, undefined, false])
-  t.assert.throws(() => one('e.png', Buffer.alloc(0)), /Image asset `e\.png` cannot be an empty file/u)
-})
+// --- the asset registry ----------------------------------------------------------------------
+//
+// How Metro reads an asset (its files, sizes and hash), the module it builds of one and where
+// --assets-dest copies its files are @preventive/rn's, tested there; the CLI tests below build them.
 
 test('assetRegistryResolver resolves the registry from the asset, among the files the artifact carries', (t) => {
   const resolveFrom = (rel, platform, ...carried) => assetRegistryResolver(platform, new Set(carried))(rel)
@@ -205,40 +87,6 @@ test('assetRegistryResolver resolves the registry from the asset, among the file
   t.assert.throws(() => resolveFrom('img/logo.png', 'ios', 'index.js'), new RegExp(`requiring ${ASSET_REGISTRY}, which the artifact doesn't carry`, 'u'))
   const other = 'node_modules/.pnpm/react-native@0.80.0/node_modules/react-native/Libraries/Image/AssetRegistry.js'
   t.assert.throws(() => resolveFrom('img/logo.png', 'ios', pnpm, other), /several .* none of them nearest/u)
-})
-
-// --- --assets-dest ----------------------------------------------------------------------------
-
-test('metroAssetCopies lays the files out as react-native bundle --assets-dest does', (t) => {
-  // What metroAssetCopies reads of an asset: its descriptor's location, name, type and scales, and its files.
-  const logo = {
-    descriptor: { httpServerLocation: '/assets/img', name: 'Logo-Big', type: 'png', scales: [1, 2, 3, 4] },
-    files: ['img/Logo-Big.png', 'img/Logo-Big@2x.png', 'img/Logo-Big@3x.png', 'img/Logo-Big@4x.png'],
-  }
-  const font = { descriptor: { httpServerLocation: '/assets/fonts', name: 'Inter', type: 'ttf', scales: [1] }, files: ['fonts/Inter.ttf'] }
-  const odd = { descriptor: { httpServerLocation: '/assets/img', name: 'odd', type: 'png', scales: [2.5] }, files: ['img/odd@2.5x.png'] }
-  // iOS: by the asset's path under assets/, scales 1x-3x.
-  t.assert.deepStrictEqual(metroAssetCopies('ios', [logo, font]), [
-    { file: 'img/Logo-Big.png', dest: 'assets/img/Logo-Big.png' },
-    { file: 'img/Logo-Big@2x.png', dest: 'assets/img/Logo-Big@2x.png' },
-    { file: 'img/Logo-Big@3x.png', dest: 'assets/img/Logo-Big@3x.png' },
-    { file: 'fonts/Inter.ttf', dest: 'assets/fonts/Inter.ttf' },
-  ])
-  // Android: drawable-<density>/ by the folded resource name, raw/ for a type no drawable, and keep.xml.
-  t.assert.deepStrictEqual(metroAssetCopies('android', [logo, font]), [
-    { file: 'img/Logo-Big.png', dest: 'drawable-mdpi/img_logobig.png' },
-    { file: 'img/Logo-Big@2x.png', dest: 'drawable-xhdpi/img_logobig.png' },
-    { file: 'img/Logo-Big@3x.png', dest: 'drawable-xxhdpi/img_logobig.png' },
-    { file: 'img/Logo-Big@4x.png', dest: 'drawable-xxxhdpi/img_logobig.png' },
-    { file: 'fonts/Inter.ttf', dest: 'raw/fonts_inter.ttf' },
-    { dest: 'raw/keep.xml', contents: '<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@drawable/img_logobig,@raw/fonts_inter" />\n' },
-  ])
-  t.assert.throws(() => metroAssetCopies('android', [odd]), /Don't know which android drawable suffix/u)
-  // iOS keeps 1x-3x, else the next scale above, else the largest; other platforms keep all.
-  t.assert.deepStrictEqual(filterPlatformAssetScales('ios', [0.75, 1, 4]), [1])
-  t.assert.deepStrictEqual(filterPlatformAssetScales('ios', [0.5, 4, 5]), [4])
-  t.assert.deepStrictEqual(filterPlatformAssetScales('ios', [0.5, 0.75]), [0.75])
-  t.assert.deepStrictEqual(filterPlatformAssetScales('android', [0.75, 4]), [0.75, 4])
 })
 
 // --- stasis build --metro on a `stasis bundle --metro` bundle ---------------------------------

@@ -315,8 +315,9 @@ preset doesn't; Flow's transform has no such option). One written with no
 specifiers (`import {} from`, a comment in it or not) is an edge either way.
 `import type` and `export type` statements are no edge anywhere.
 
-It takes Metro's own steps, as `metro-resolver` takes them, where they differ
-from Node's and esbuild's:
+It takes Metro's own steps, as `metro-resolver` 0.87.2 takes them with the
+context Metro gives it ([`@preventive/rn`](https://github.com/PreventiveMeasures/libraries/tree/main/rn)'s
+resolver), where they differ from Node's and esbuild's:
 
 - A package's `browser`/`react-native` map applies before its `exports`, so
   `@noble/hashes` 1.x's `{ "./crypto": "./crypto.js" }` wins over the
@@ -334,9 +335,10 @@ from Node's and esbuild's:
   not starting `./` (a package name, a `../` path) is refused whole, as is an
   `imports` map with a key not starting `#`; an `exports` target with an empty,
   `.`, `..` or `node_modules` segment is refused on its own. A fallback array
-  takes its first entry in `exports` and serves nothing in `imports`, a `null`
-  subpath falls through to a matching pattern, and a target names its file
-  exactly, with no extension or `index` probing. Where a map serves nothing,
+  takes its first entry in `exports` and serves nothing in `imports`, a number
+  or boolean anywhere in a map refuses it too, a `null` key shadows the
+  patterns that would match it, and a target names its file exactly, with no
+  extension or `index` probing. Where a map serves nothing,
   resolution falls back to the files: for a `#` specifier, the importer's
   `browser`/`react-native` map, then `node_modules`. A `#` specifier from a
   package with no `imports` resolves nowhere.
@@ -344,7 +346,14 @@ from Node's and esbuild's:
   `node_modules` up, but a package whose `main` resolves to nothing fails, as
   in Metro, without falling back to its root `index`.
 - A map entry sending a relative path to a package name is taken as a path in
-  the package, as Metro takes it, and so resolves nowhere.
+  the package, as Metro takes it, and so resolves nowhere; one sending a
+  specifier to an absolute path fails it.
+- A path ending in `/` names a directory: its `main` or `index`, never a file
+  of that name. Platform suffixes are tried with an extension only
+  (`where.ios.js`, never `where.ios`).
+- A type declaration (`.d.ts`) is no module: a package whose entry field names
+  one (`"main": "dist/index.d.ts"`) resolves by its stem, to the `dist/index.js`
+  beside it.
 - An asset (an extension in Metro's `assetExts`, as above) resolves to itself or one of its scale variants (`@1x` to `@4x`),
   the lowest path among those that exist, so `./logo.png` reaches
   `logo@3x.png` where only that exists, as does an `exports` or `imports`
@@ -490,8 +499,9 @@ synthetic empty `.stasis/empty-module.js`.
 
 `--metro-resolver` resolves through the project's own installed
 `metro-resolver` (it ships with `react-native`/`metro`) for byte-for-byte
-Metro fidelity, instead of the built-in approximation. It can't substitute
-`.js` for `.ts`, so it doesn't combine with `--typescript`.
+fidelity to that project's Metro, instead of the built-in one, given the same
+context over the disk. It can't substitute `.js` for `.ts`, so it doesn't
+combine with `--typescript`.
 
 `--babel` resolves the import aliases the project's Babel config sets, which
 Metro applies before it resolves: a `babel-plugin-module-resolver` that maps
