@@ -746,13 +746,18 @@ const listed = (items, line = (s) => s) => {
 // Classify scanner unresolved edges into fatal (broken/divergent at load) vs tolerated (a
 // catchable runtime miss); every parse error is fatal. Shared so the plain and --mainFields JS
 // paths gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
-function analyzeScanner(scanner, { baseDir }) {
+// `generated(u)` (vfs-bundle/prisma.js's generatedMiss) says why a miss of a file a generator would
+// write is missing: such a miss is fatal however it is imported, at load or at run time.
+function analyzeScanner(scanner, { baseDir, generated }) {
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
-  const fatalUnresolved = (u) => STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL)
-  const fatal = scanner.unresolved
-    .filter((u) => fatalUnresolved(u))
-    .map((u) => `unresolved ${describeUnresolved(u, show)}`)
+  const fatal = []
+  const tolerated = []
+  for (const u of scanner.unresolved) {
+    const why = generated?.(u)
+    if (why === undefined && !(STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL))) tolerated.push(u)
+    else fatal.push(`unresolved ${describeUnresolved(u, show)}${why === undefined ? '' : `: ${why}`}`)
+  }
   // A file the parser couldn't read cleanly, however it is reached: its edges are unknown (a module
   // file's are discarded) or partial (those of a script's recovered AST), never a graph to record.
   for (const p of scanner.parseErrors) fatal.push(`parse error in ${show(p.url)}: ${p.message}`)
@@ -767,7 +772,6 @@ function analyzeScanner(scanner, { baseDir }) {
       }
     }
   }
-  const tolerated = scanner.unresolved.filter((u) => !fatalUnresolved(u))
   return { fatal, tolerated }
 }
 
@@ -826,7 +830,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // Node's glob reads the disk. `memo` is what the build's scans keep across the rounds a lazy tree is
 // read in, by each scan's label (vfs-bundle/lazy.js): the scan keeps what it reads there, and a round
 // that read a package not unpacked yet (`host.touches()`) stops after it.
-export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo } = {}) {
+export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('buildJsBundle: at least one entry .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file is required')
   }
@@ -844,7 +848,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   typescript ||= importsTypescriptByOutputName(absEntries, host)
   const typescriptPaths = typescriptPathsFor(typescript, baseDir, tsconfig, host, env)
 
-  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null })
+  const scanned = scan(absEntries, { conditions: scanConditions, jsx, flow, typescript, typescriptPaths, resources: resourceSet, define, host, memo: memo ? nestedMap(memo, 'js') : null, missTargets: generated !== undefined })
   // A round of a lazy tree that asked for a package already is void: the rest is moot.
   if (memo && host.touches() > 0) throw new Error('buildJsBundle: this round reads a package not unpacked yet')
 
@@ -873,7 +877,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
     throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
   }
   // Fail closed where the bundle is guaranteed broken at load; warn on catchable misses (see analyzeScanner).
-  reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, root })
+  reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, root })
   for (const [url, info] of scanner.files) {
     // A resource carries bytes only: addFile derives resource vs resource:base64 from the content
     // and stores it under `resources` (a resource can't be an entry, so no isEntry).
@@ -1550,7 +1554,7 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
 // are fieldBuildOptions'. Returns { bundle, lockfile: () => Lockfile }, the lockfile built when called.
-async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo }) {
+async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo, generated }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
   const normalized = normalizeEntries(entries, cwd)
@@ -1637,7 +1641,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const scanWithin = (roots, options, label) => {
     const { scanner, outside, leftOut } = withinRoot(scan(roots, { ...options, memo: memo ? nestedMap(memo, label) : null }), (url) => relWithin(pathOf(url)) !== null)
     for (const url of outside) toRel(pathOf(url))
-    if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir }), leftOut }, { baseDir, label, root: ' at .' })
+    if (!voided()) reportScanIssues({ ...analyzeScanner(scanner, { baseDir, generated }), leftOut }, { baseDir, label, root: ' at .' })
     return { scanner, leftOut }
   }
   for (const platform of platforms) {
@@ -1662,7 +1666,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const keepsTypeImports = babel ? createBabelTypeImportsKept({ projectDir: baseDir, platform }) : null
     const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
     // --metro: built through Babel, which erases an import listing types alone (Scan's `babel`).
-    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, keepsTypeImports, host }
+    const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, keepsTypeImports, host, missTargets: generated !== undefined }
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens
     // Record what scanning from `roots` reaches: its files, their formats and edges. -> its scanner
     const absorb = (roots) => {
@@ -2398,7 +2402,8 @@ export function checkVfsOptions(name, options) {
 // through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
 // tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js); without `generate`, those of
 // the projects the entries reach, silently, unless the stasis.config.json in cwd sets
-// `generatePrisma` false; `generate: []`, none. `client`, a
+// `generatePrisma` false; `generate: []`, none. Whichever, an import of a file a generator would
+// write that isn't there fails the bundle, saying why, however it is reached. `client`, a
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
@@ -2478,7 +2483,7 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
   if (!plannedTrees({ project, specs }).some(({ root, projects }) => schemaProjects(project, root, projects).size > 0)) return []
   loadGenerator()
   const tree = await layOutTrees({ project, specs, client, cache, installDevDependencies: true })
-  return prismaOutputs(tree, project, { projects: schemaProjects(project, tree.root, tree.projects), strict: false, shared: true })
+  return (await prismaOutputs(tree, project, { projects: schemaProjects(project, tree.root, tree.projects), strict: false, shared: true })).outputs
 }
 
 // buildVfsBundle's build, `name`'s, of the project `project` (a host, @exodus/stasis-core/host)
@@ -2520,10 +2525,12 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   await layLazily(name, project, cwd, specs, lazy)
   // Each project's Prisma Client: asked for (`generate: ['prisma']`), every project's, strictly; else, of a JS
   // build of a Vfs, detected where stasis.config.json's `generatePrisma` leaves it: the projects the entries
-  // are in and their workspace dependencies, silently. `generate: []`, or `generatePrisma` false: none.
+  // are in and their workspace dependencies, silently but for what reaches an output it lacks; or none
+  // (`generate: []`, or `generatePrisma` false), what their schemas would write read all the same.
   const generatePrisma = generatesPrisma(name, cwd, project)
   if (generate?.length > 0 && !generatePrisma) throw new Error(`${name}: generate is given, and ${CONFIG_FILE}'s generatePrisma is false`)
-  const prismaGeneration = generate?.includes('prisma') ? 'asked' : generate === undefined && generatePrisma && vfs !== undefined && pms.some((pm) => pm.kind === 'js') ? 'detected' : null
+  const vfsJs = vfs !== undefined && pms.some((pm) => pm.kind === 'js')
+  const prismaGeneration = generate?.includes('prisma') ? 'asked' : !vfsJs ? null : generate === undefined && generatePrisma ? 'detected' : 'off'
   // Each build's kind, one a tree's package manager builds.
   const kinds = builds.map((build) => {
     const kind = checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project })
@@ -2563,8 +2570,9 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // any build, for a lazy tree in rounds of their own (they read the tree's `prisma`), so that each
   // of the build's rounds reads the same project, as what its scans keep across them takes it to.
   let outside = project
-  if (prismaGeneration !== null) {
-    const prisma = await import('../vfs-bundle/prisma.js')
+  let expected = []
+  const prisma = prismaGeneration === null ? null : await import('../vfs-bundle/prisma.js')
+  if (prisma !== null) {
     // The projects with a schema (looked for before any `prisma` is read, which a lazy tree fetches once read):
     // all of them, asked for; else those the entries reach. Nothing done, nor said, where none has one.
     const withSchema = prisma.schemaProjects(project, tree.root, tree.projects)
@@ -2582,10 +2590,14 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     const reached = () => prisma.reachedProjects(project, tree.root, tree.projects, builds.flatMap((build) => build.entries.map(entryPath)))
     const projects = strict || withSchema.size === 0 ? withSchema : withSchema.intersection(reached())
     if (projects.size > 0) {
-      const outputs = await debugTimed('Generated the Prisma Clients', () => prismaOutputs(tree, project, { projects, strict }))
-      if (outputs.length > 0) outside = vfsHost(prisma.withPrismaClients(vfs, outputs))
+      const off = prismaGeneration === 'off' ? `generation is off: ${generate === undefined ? `${CONFIG_FILE}'s generatePrisma is false` : 'generate is [] (--no-generate)'}` : undefined
+      const clients = off === undefined ? await debugTimed('Generated the Prisma Clients', () => prismaOutputs(tree, project, { projects, strict })) : { outputs: [] }
+      // What their generators would write, read from the project alone: a lazy tree fetches nothing for it.
+      expected = prisma.expectedOutputs({ host: project, root: tree.root, projects, ...clients, off })
+      if (clients.outputs.length > 0) outside = vfsHost(prisma.withPrismaClients(vfs, clients.outputs))
     }
   }
+  const generated = expected.length === 0 ? undefined : prisma.generatedMiss(expected)
   // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
   // each reading into its `reads`, each build keeping what its scans read across them in a memo of
   // its own.
@@ -2603,7 +2615,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       let built
       try {
         // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-        built = kinds[i] === 'sol' ? await solidityBuilt(build, args) : [await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i] })]
+        built = kinds[i] === 'sol' ? await solidityBuilt(build, args) : [await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i], generated })]
       } catch (error) {
         if (reads === undefined || reads.asked.size === 0) throw error
         voided ??= { error }
@@ -2632,6 +2644,8 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const { bundle, lockfile, root } = built
   // After the lazy rounds, so only the full tree's build is checked.
   assertPolicies(name, { builds, builts: built.builts, bundle, root, host: project, files: built.host, label: `${name}: ${CONFIG_FILE}` })
+  // Detected, what generators stasis didn't run it took as the repo has them is said where it carries some.
+  if (prismaGeneration === 'detected') for (const warning of prisma.committedWarnings(expected, bundle, root)) console.warn(warning)
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
   const unpacked = unpackedOf(tree)
