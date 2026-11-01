@@ -151,9 +151,10 @@ function probeIndex(dir, exts, host) {
 // `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
 // so only substitution applies (matching tsc's node16 rules). `js` completes JS extensions too, for
 // a base Node never probed (see completionExts). With `outputs` (a package's layout by its dir, as
-// tsconfigOutputs gives it), what misses and names an output of a package is its source, probed by
-// the same rules: a directory's `main` of the package the directory holds, and `base` itself of the
-// package in `pkgDir` (a manifest target's, or a bare subpath's).
+// tsconfigOutputs gives it), what misses by every rule above and names an output of a package is
+// its source, probed by the same rules: a directory's `main` of the package the directory holds,
+// and `base` itself of the package in `pkgDir` (a manifest target's, or a bare subpath's). The
+// layout is read only then, so a miss it can't map is all that a tsconfig.json can fail.
 function probeTypescriptTarget(base, { js = false, dirOnly = false, completion = true, dir = true, pkgDir = null, outputs = null, host = diskHost } = {}) {
   const exts = completionExts(js)
   if (!dirOnly) {
@@ -179,14 +180,13 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
       // like Node.
       const entry = resolvePath(base, main)
       const fromMain = (path) => probeTypescriptTarget(path, { js, dir: false, host }) ?? probeIndex(path, exts, host)
-      const input = outputs === null ? null : outputSource(base, entry, outputs)
-      const hit = fromMain(entry) ?? (input === null ? null : fromMain(input))
+      const hit = fromMain(entry) ?? fromSource(base, entry, outputs, fromMain)
       if (hit) return hit
     }
-    return probeIndex(base, exts, host)
+    const hit = probeIndex(base, exts, host)
+    if (hit) return hit
   }
-  const input = pkgDir === null || outputs === null ? null : outputSource(pkgDir, base, outputs)
-  return input === null ? null : probeTypescriptTarget(input, { js, dirOnly, completion, dir, host })
+  return fromSource(pkgDir, base, outputs, (input) => probeTypescriptTarget(input, { js, dirOnly, completion, dir, host }))
 }
 
 // --- tsc's `outDir` -> `rootDir` inversion ---
@@ -209,16 +209,16 @@ export function tsconfigOutputs(pkgDir, host = diskHost) {
   return { dir, outDir, rootDir: typeof rootDir === 'string' ? rootDir : dir }
 }
 
-// The source tsc builds `path`, an output of the package in `pkgDir`, from: its place under the
-// package's `outDir` taken under its `rootDir`, as tsc maps an output back to its input
-// (tryLoadInputFileForPath); or null where the package has no layout (`outputs`, as
-// tsconfigOutputs gives it) or `path` lies outside its `outDir`. A path to probe still, its
-// extension the output's: `dist/x.js` -> `src/x.js`, whose TS siblings are the sources.
-function outputSource(pkgDir, path, outputs) {
-  const layout = outputs(pkgDir)
+// `probeSource` of the source tsc builds `path`, an output of the package in `pkgDir`, from: its
+// place under the package's `outDir` taken under its `rootDir`, as tsc maps an output back to its
+// input (tryLoadInputFileForPath); or null where there is no package or layout (`outputs`, as
+// tsconfigOutputs gives it), or `path` lies outside its `outDir`. The source is a path to probe
+// still, its extension the output's: `dist/x.js` -> `src/x.js`, whose TS siblings are the sources.
+function fromSource(pkgDir, path, outputs, probeSource) {
+  const layout = pkgDir === null || outputs === null ? null : outputs(pkgDir)
   if (layout === null) return null
   const output = join(layout.dir, relative(pkgDir, path)) // by the package's real path
-  return isPathWithin(layout.outDir, output) ? join(layout.rootDir, relative(layout.outDir, output)) : null
+  return isPathWithin(layout.outDir, output) ? probeSource(join(layout.rootDir, relative(layout.outDir, output))) : null
 }
 
 // --- package `exports`/`imports` map resolution (candidate generation) ---

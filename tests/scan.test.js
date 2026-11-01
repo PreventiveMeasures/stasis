@@ -1181,8 +1181,9 @@ test('packageTsconfigPaths loads each config once, when first matched; lenient, 
 // A monorepo whose workspace packages name their tsc outputs, which no build has written: only the
 // sources are on disk. dep names them in `exports` (`types` the source) and `imports`, its tsconfig
 // setting `outDir` and `rootDir`; old in `main`, its `outDir` and `rootDir` from a base through
-// `${configDir}`; plain in `main`, with `outDir` alone, so its root is its tsconfig's directory
-// (TypeScript 6's); bare names an output too, with no tsconfig.json to map it by.
+// `${configDir}`, and a build that copied an asset alone into its `outDir`; plain in `main`, with
+// `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); bare names an output
+// too, with no tsconfig.json to map it by.
 const unbuiltWorkspace = {
   'package.json': { name: 'root', private: true, workspaces: ['packages/*'] },
   '.git/HEAD': '',
@@ -1204,6 +1205,8 @@ const unbuiltWorkspace = {
   'packages/old/tsconfig.json': { extends: '../../tsconfig.base.json' },
   'packages/old/src/index.ts': 'export const o: number = 3\n',
   'packages/old/src/deep.ts': 'export const d: number = 4\n',
+  'packages/old/src/nested/index.ts': 'export const n: number = 7\n',
+  'packages/old/dist/nested/styles.css': '',
   'packages/plain/package.json': { name: 'plain', main: './dist/src/index.js' },
   'packages/plain/tsconfig.json': { compilerOptions: { outDir: 'dist' } },
   'packages/plain/src/index.ts': 'export const p: number = 5\n',
@@ -1223,9 +1226,10 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
       "import { foo } from 'dep/foo'",
       "import { o } from 'old'",
       "import { d } from 'old/dist/deep.js'",
+      "import { n } from 'old/dist/nested'",
       "import { p } from 'plain'",
       "import { b } from 'bare'",
-      'export const v: number = x + foo + o + d + p + b',
+      'export const v: number = x + foo + o + d + n + p + b',
       '',
     ].join('\n'),
   })
@@ -1235,6 +1239,7 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
     ['dep/foo', 'packages/dep/src/foo.ts'],
     ['old', 'packages/old/src/index.ts'],
     ['old/dist/deep.js', 'packages/old/src/deep.ts'],
+    ['old/dist/nested', 'packages/old/src/nested/index.ts'],
     ['plain', 'packages/plain/src/index.ts'],
   ])
   // Each package's layout read as resolution asks for it, and through the build's matcher.
@@ -1282,12 +1287,21 @@ test("a workspace package's tsconfig.json that does not load fails a typescript:
     ...unbuiltWorkspace,
     'packages/dep/tsconfig.json': { extends: './missing.json', compilerOptions: { outDir: 'dist', rootDir: 'src' } },
     'entry.ts': "import { foo } from 'dep/foo'\nexport const v: number = foo\n",
+    // A main that substitution maps in place never reads the tsconfig.json.
+    'packages/inplace/package.json': { name: 'inplace', main: 'dist/index.js' },
+    'packages/inplace/tsconfig.json': { extends: './missing.json', compilerOptions: { outDir: 'dist', rootDir: 'src' } },
+    'packages/inplace/dist/index.ts': 'export const i: number = 1\n',
+    'inplace.ts': "import { i } from 'inplace'\nexport const v: number = i\n",
   })
-  linkWorkspace(tmp, ['dep'])
+  linkWorkspace(tmp, ['dep', 'inplace'])
   const entry = join(tmp, 'entry.ts')
   const missing = /^Error: tsconfig extends target not found: '\.\/missing\.json'/u
   t.assert.throws(() => scan([entry], { typescript: true }), missing)
   t.assert.throws(() => scan([entry], { typescript: true, typescriptPaths: packageTsconfigPaths(tmp) }), missing)
+  for (const typescriptPaths of [null, packageTsconfigPaths(tmp)]) {
+    const inplace = scan([join(tmp, 'inplace.ts')], { typescript: true, typescriptPaths }).toRelative(tmp)
+    t.assert.equal(flattenImports(inplace.imports).get('inplace.ts').get('inplace'), 'packages/inplace/dist/index.ts')
+  }
   const hinted = scan([entry], { typescriptPaths: packageTsconfigPaths(tmp, { lenient: true }) }).toRelative(tmp)
   t.assert.deepStrictEqual(hinted.unresolved.map((u) => [u.spec, u.typescript]), [['dep/foo', undefined]])
 }))
