@@ -5496,7 +5496,8 @@ cliTest('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing
   // carries only the zero-dep @exodus/stasis-core (so the moved-module shims
   // resolve), @exodus/stasis-plugins (whose native walk `--metro` imports, on the
   // core alone), @preventive/lockfile (whose TOML, .gitmodules and Cargo readers the
-  // loaders import) and @exodus/bytes (its dependency, and the loaders' UTF-8 decoder), so
+  // loaders import), @exodus/bytes (its dependency, and the loaders' UTF-8 decoder) and
+  // the zero-dep @preventive/rn (Metro's resolution, which the resolvers import), so
   // the bundle command loads, but no oxc-parser, so the lazy lookup (createRequire
   // from src/scan.js) genuinely misses.
   const stasisCopy = join(tmp, 'stasis')
@@ -5517,6 +5518,7 @@ cliTest('CLI: bundle (JS) fails loudly when the oxc-parser dependency is missing
   const lockfile = realpathSync(join(here, '..', 'stasis', 'node_modules', '@preventive', 'lockfile'))
   cpSync(lockfile, join(stasisCopy, 'node_modules', '@preventive', 'lockfile'), { recursive: true })
   cpSync(realpathSync(join(lockfile, '..', '..', '@exodus', 'bytes')), join(stasisCopy, 'node_modules', '@exodus', 'bytes'), { recursive: true })
+  cpSync(realpathSync(join(here, '..', 'stasis', 'node_modules', '@preventive', 'rn')), join(stasisCopy, 'node_modules', '@preventive', 'rn'), { recursive: true })
   const proj = join(tmp, 'proj')
   mkdirSync(proj)
   jsProject(proj, { 'file.mjs': 'export * from "@noble/ciphers/_arx.js"\n' })

@@ -53,8 +53,8 @@ importers:
         specifier: ^6.2.0
         version: 6.2.0(webpack@4.47.0)
       metro-resolver:
-        specifier: ^0.87.0
-        version: 0.87.0
+        specifier: ^0.87.2
+        version: 0.87.2
       oxlint:
         specifier: ^1.52.0
         version: 1.52.0
@@ -91,6 +91,9 @@ importers:
       '@preventive/lockfile':
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
+      '@preventive/rn':
+        specifier: 1.0.0-alpha.0
+        version: 1.0.0-alpha.0
       '@preventive/upstream':
         specifier: ^1.5.1
         version: 1.5.1(@noble/hashes@2.4.0)
@@ -758,6 +761,10 @@ packages:
 
   '@preventive/lockfile@1.2.0':
     resolution: {integrity: sha512-naLhjcPE6tb4D4g1I2VBQMzHk7/YwXKi6TV8S8m81mCUQ9MTI4WSSMAHlkpkTXtglxoLzWxzXQyVTToNRYYs9A==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.2.0.tgz}
+    engines: {node: '>=24.14.0'}
+
+  '@preventive/rn@1.0.0-alpha.0':
+    resolution: {integrity: sha512-CN91MLJYqKYAcDjhfUiQdHmprZWRl3RjQPB8M976FqWZ0eaud7MCWTXAEoJhce+KsghCOxTy4iu8NYCmVqe83w==, tarball: https://registry.npmjs.org/@preventive/rn/-/rn-1.0.0-alpha.0.tgz}
     engines: {node: '>=24.14.0'}
 
   '@preventive/upstream@1.5.1':
@@ -2058,8 +2065,8 @@ packages:
     resolution: {integrity: sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==, tarball: https://registry.npmjs.org/merge2/-/merge2-1.4.1.tgz}
     engines: {node: '>= 8'}
 
-  metro-resolver@0.87.0:
-    resolution: {integrity: sha512-Xl3M9R3KToaHJvXlI2lSOxtYHitzxite+195DSi00HL9PcS7Xik5+3xlRjfkKb3FA86SZxYPj+WJwlcfgaZoxg==, tarball: https://registry.npmjs.org/metro-resolver/-/metro-resolver-0.87.0.tgz}
+  metro-resolver@0.87.2:
+    resolution: {integrity: sha512-5irxge/5uJ+OqPwdj4GARrSmJVMVj4mkgn5WKv83X7NP9MH/AedDStqvZaMwEaiH/mQFm5W4GDbEqx1OJJeLBg==, tarball: https://registry.npmjs.org/metro-resolver/-/metro-resolver-0.87.2.tgz}
     engines: {node: ^22.13.0 || ^24.3.0 || >= 26.0.0}
 
   micromatch@3.1.10:
@@ -3287,6 +3294,8 @@ snapshots:
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - '@noble/hashes'
+
+  '@preventive/rn@1.0.0-alpha.0': {}
 
   '@preventive/upstream@1.5.1(@noble/hashes@2.4.0)':
     dependencies:
@@ -4799,7 +4808,7 @@ snapshots:
 
   merge2@1.4.1: {}
 
-  metro-resolver@0.87.0:
+  metro-resolver@0.87.2:
     dependencies:
       flow-enums-runtime: 0.0.6
 

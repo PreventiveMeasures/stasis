@@ -138,9 +138,10 @@ is for every platform it names at once; Metro builds one platform at a time.
   where it has any. `scales` lists them in order, `hash` is the md5 of their
   bytes, and `width`/`height` are the first file's dimensions divided by its
   scale (images only). `httpServerLocation` is the asset's directory, relative
-  to the artifact's root, under `/assets`. This matches Metro 0.83's
-  `getAssetData`, image-size parsing included, and is computed from the bytes
-  the artifact carries.
+  to the artifact's root, under `/assets`. This is Metro 0.87's
+  `getAssetData`, image-size parsing included, as
+  [`@preventive/rn`](https://github.com/PreventiveMeasures/libraries/tree/main/rn)
+  builds it, computed from the bytes the artifact carries.
 - **The asset registry.** `react-native/Libraries/Image/AssetRegistry` (React
   Native's `assetRegistryPath`) resolves to the copy the bundle carries.
   `stasis bundle --metro` carries one for each asset but records no edge to
@@ -150,9 +151,10 @@ is for every platform it names at once; Metro builds one platform at a time.
   project with `react-native` installed).
 
 `--assets-dest=DIR` copies each asset's files out the way `react-native bundle
---assets-dest` does for `PLATFORM`: `android` uses Android's `res/` layout
-(`drawable-mdpi/img_logo.png` … `drawable-xxhdpi/`, `raw/` for non-drawable
-types, plus `raw/keep.xml`). Any other platform uses iOS's layout
+--assets-dest` (React Native 0.88's) does for `PLATFORM`: `android` uses
+Android's `res/` layout (`drawable-mdpi/img_logo.png` … `drawable-xxhdpi/`, a
+scale with no density of its own as `drawable-<dpi>dpi/`, `raw/` for
+non-drawable types, plus `raw/keep.xml`). Any other platform uses iOS's layout
 (`assets/img/logo@2x.png`, scales 1x–3x only). The copies use the artifact's
 bytes, and the build refuses to overwrite a file the artifact carries.
 

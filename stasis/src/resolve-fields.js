@@ -1,7 +1,9 @@
 import { isBuiltin } from 'node:module'
-import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { isAssetFile } from '@preventive/rn/metro-assets.js'
+import { createMetroResolver, defaults as metroDefaults } from '@preventive/rn/metro-resolver.js'
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
   inNodeModules,
@@ -14,6 +16,7 @@ import {
   typescriptSiblings,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
+import { metroHost, scanResolution } from './metro-resolver.js'
 import { createNodeResolver } from './resolve-node.js'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 
@@ -21,8 +24,8 @@ import { untouchedMemo } from './vfs-bundle/lazy.js'
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), reproducing Metro/React-Native
 // resolution that Node's own resolver (used by scan.js) can't. `exports`-bearing packages are
 // delegated to Node's algorithm, under a bundler's conditions rather than Node's (see
-// resolveConditions); under `metro`, metro-resolver's own steps around them (viaMetro) and its own
-// reading of `exports` and `imports` maps (metroMapTarget).
+// resolveConditions). Under `metro`, Metro's own resolution instead: metro-resolver's steps, as
+// @preventive/rn takes them (viaMetro).
 // No user code is executed (only package.json is stat/read).
 //
 // Returns, for each specifier:
@@ -36,17 +39,6 @@ import { untouchedMemo } from './vfs-bundle/lazy.js'
 // (platform browser), webpack 5 (target web) and Metro bundle it. Where nothing is installed it
 // stays a builtin, as the --metro-resolver adapter reports Metro's miss on one (metro-resolver.js),
 // rather than an unresolved edge: Metro and webpack fail the build there.
-
-// Metro divergence toggle. When a package's browser map maps its OWN entry to `false` (under
-// Metro's matching rules, which include bare keys like {"buf": false} for main "./buf.js"),
-// Metro's `getPackageEntryPoint` ignores the non-string replacement and keeps `main`. The
-// `--metro` resolver matches that by default; flip this to `false` to fail closed instead:
-// a `false` match on the entry then yields an EMPTY module. Note the off state is deliberately
-// stricter than both tools -- for a bare-key `false`, Metro keeps `main` and esbuild would not
-// match the entry at all -- it exists as an escape hatch, not an esbuild-parity mode. This only
-// affects the `--metro` path; the `--mainFields` path always empties (matching esbuild).
-// Tests can override per-resolver via createFieldResolver's `metroKeepEntryOnBrowserFalse`.
-const METRO_KEEP_ENTRY_ON_BROWSER_FALSE = true
 
 // First mainFields entry that's a non-empty string, else `index` (object-valued fields are redirect maps).
 function packageEntry(pkg, mainFields) {
@@ -71,48 +63,25 @@ function mergeRedirectMap(pkg, mainFields) {
   return map
 }
 
-// Metro's entry-variant list for `main` (getPackageEntryPoint, metro-resolver
-// PackageResolve.js): the main spelling and its ./-toggled twin, each expanded to
-// [self, +'.js', +'.json', ext-stripped]. ORDER MATTERS -- the first variant with ANY mapping
-// (string or false) decides, so this must reproduce Metro's list exactly, duplicates included.
-function metroEntryVariants(main) {
-  const toggled = main.startsWith('./') ? main.slice(2) : `./${main}`
-  return [main, toggled].flatMap((v) => [v, `${v}.js`, `${v}.json`, v.replace(/\.(?:js|json)$/u, '')])
-}
-
-// Resolve the package ENTRY (from mainFields) through the package's own redirect map.
-// Returns { entry } (the redirected or original entry to resolve) or { empty: true }.
-// Both halves of the entry semantics -- WHICH keys match, and what `false` means -- live here
-// so no caller can get one without the other:
-// - metro: Metro's getPackageEntryPoint. First matching variant (Metro's order) wins; a string
-//   redirects; `false` (any non-string) keeps `main`, unless the keep-on-false toggle is off,
-//   in which case it fails closed to an empty module (see METRO_KEEP_ENTRY_ON_BROWSER_FALSE).
-// - default (--mainFields): esbuild-shaped candidates; `false` empties the entry, matching
-//   esbuild. The extension-STRIPPED bare spelling is not probed: for an extensioned main,
-//   esbuild treats it as a bare module name, not the entry. (For an extensionless main the
-//   `bare` candidate covers it -- esbuild does match that spelling; verified empirically.)
-function resolveEntryThroughMap(map, main, opts) {
+// Resolve the package ENTRY (from mainFields) through the package's own redirect map, as esbuild
+// does. Returns { entry } (the redirected or original entry to resolve) or { empty: true }: a string
+// redirects, `false` empties the entry. The extension-STRIPPED bare spelling is not probed: for an
+// extensioned main, esbuild treats it as a bare module name, not the entry. (For an extensionless
+// main the `bare` candidate covers it -- esbuild does match that spelling; verified empirically.)
+function resolveEntryThroughMap(map, main) {
   if (map.size === 0) return { entry: main }
-  let cands
-  if (opts.metro) {
-    cands = metroEntryVariants(main)
-  } else {
-    const bare = main.replace(/^\.\//u, '')
-    const stripped = bare.replace(/\.(?:js|json)$/u, '')
-    cands = [
-      `./${bare}`, bare,
-      `./${stripped}`,
-      `./${stripped}.js`, `${stripped}.js`,
-      `./${stripped}.json`, `${stripped}.json`,
-    ]
-  }
+  const bare = main.replace(/^\.\//u, '')
+  const stripped = bare.replace(/\.(?:js|json)$/u, '')
+  const cands = [
+    `./${bare}`, bare,
+    `./${stripped}`,
+    `./${stripped}.js`, `${stripped}.js`,
+    `./${stripped}.json`, `${stripped}.json`,
+  ]
   for (const cand of cands) {
     const v = map.get(cand)
     if (typeof v === 'string') return { entry: v }
-    if (v === false) {
-      if (opts.metro && opts.metroKeepEntryOnBrowserFalse) return { entry: main }
-      return { empty: true }
-    }
+    if (v === false) return { empty: true }
   }
   return { entry: main }
 }
@@ -120,9 +89,8 @@ function resolveEntryThroughMap(map, main, opts) {
 // A resolved file by its REAL path (through `host`, so a Vfs host's links are followed too), as Node,
 // Metro and esbuild record one: under pnpm's isolated layout `node_modules/debug` links into
 // `node_modules/.pnpm/debug@x/node_modules/debug`, whose own imports (a sibling `ms`) resolve only
-// from where it really lies. Probing stays on the path as reached, so a candidate and the package
-// scope read from it (resolveSourceFile's metro redirect) are one spelling; only the hit is
-// realpathed. null where the file has no real path (gone since it was probed).
+// from where it really lies. Probing stays on the path as reached; only the hit is realpathed. null
+// where the file has no real path (gone since it was probed).
 function fileResolution(path, host) {
   let real
   try {
@@ -151,229 +119,27 @@ function manifestReader(host) {
   return (path) => manifests(path, () => readJson(path, host))
 }
 
-// The package.json closest to `path` as Metro finds a module's package (getPackageForModule, through
-// metro-file-map's hierarchicalLookup): at the path itself where it is a directory, else above it,
-// none past a `node_modules` segment. A nested package.json (`dist/esm/package.json`, or a subpath
-// directory's own) is one, read by `read`. -> { pkgDir, pkg } or null
-function metroPackageScope(path, host, read = readJson) {
-  for (let dir = isDir(path, host) ? path : dirname(path); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
-    const pkgPath = join(dir, 'package.json')
-    if (isFile(pkgPath, host)) {
-      const pkg = read(pkgPath, host)
-      if (pkg) return { pkgDir: dir, pkg }
-    }
-    if (dirname(dir) === dir) break
-  }
-  return null
-}
-
-// Metro's redirectModulePath for an absolute `path`: the browser/react-native map of the package
-// closest to it (metroPackageScope), matched by the path's package-relative spelling. A string is
-// taken as package-relative, as Metro takes it, even where it names another package.
-// -> the path, redirected where the map says so, or false (an empty module)
-function metroRedirect(path, opts) {
-  const scope = metroPackageScope(path, opts.host, opts.read)
-  if (!scope) return path
-  const rel = path === scope.pkgDir ? '' : toPosix(relative(scope.pkgDir, path))
-  const r = matchRedirect(mergeRedirectMap(scope.pkg, opts.mainFields), `./${rel}`)
-  if (r === false) return false
-  if (typeof r === 'string') return isAbsolute(r) ? normalize(r) : join(scope.pkgDir, r)
-  return path
-}
-
-// A bare specifier's package name, first segment and `exports` subpath ('.' or './x'), as Metro
-// parses one (parseBareSpecifier).
-function parseBare(spec) {
-  const parts = spec.split('/')
-  const n = spec.startsWith('@') && parts.length > 1 ? 2 : 1
-  return { name: parts.slice(0, n).join('/'), firstPart: parts[0], subpath: parts.length > n ? `./${parts.slice(n).join('/')}` : '.' }
-}
-
-// Metro's default sourceExts, in the order its resolver probes them, and its default assetExts and
-// assetResolutions (metro-config's defaults).
-export const METRO_SOURCE_EXTS = ['js', 'jsx', 'json', 'ts', 'tsx']
-export const METRO_ASSET_EXTS = new Set(['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', 'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip'])
-const METRO_ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4']
-
-// Metro's isAssetFile: any of the file name's dot-suffixes (`png`, or `tar.gz` and `gz`) one of
-// `assetExts` (Metro's defaults, else the project's).
-export function isMetroAssetFile(path, assetExts = METRO_ASSET_EXTS) {
-  const name = basename(path)
-  for (let i = name.length - 1; i >= 0; i--) {
-    if (name[i] === '.' && assetExts.has(name.slice(i + 1))) return true
-  }
-  return false
-}
-
-// Metro's own resolveAsset (metro's DependencyGraph): `assetName` with `ext` in `dirPath`, and its
-// scale variants (`a@1x.png` ... `a@4x.png`), those that exist, by real path. -> the paths, or null
-export function metroAssetCandidates(dirPath, assetName, ext, host = diskHost) {
-  const base = join(dirPath, assetName)
-  const files = [`${base}${ext}`, ...METRO_ASSET_RESOLUTIONS.map((r) => `${base}@${r}x${ext}`)]
-    .filter((p) => isFile(p, host))
-    .map((p) => host.realpath(p))
-  return files.length > 0 ? files : null
-}
-
-// The file Metro takes for an asset of several (getArrayLowestItem): the lowest path.
-export const lowestPath = (paths) => paths.reduce((lowest, p) => (p < lowest ? p : lowest))
-
-// Metro's asset resolution of `path` (resolveFile's, through metro-resolver's resolveAsset): the
-// lowest of it and its scale variants, so `./a.png` lands on `a@3x.png` where only that exists;
-// nothing for a path naming a scale variant itself (`./a@2x.png`), which Metro refuses.
-function metroAsset(path, host) {
-  const ext = extname(path)
-  const name = basename(path, ext)
-  if (/@\d+(?:\.\d+)?x$/u.test(name)) return null
-  const files = metroAssetCandidates(dirname(path), name, ext, host)
-  return files === null ? null : lowestPath(files)
-}
-
-// --metro: metro-resolver's own reading of an `exports` or `imports` map (PackageExportsResolve,
-// PackageImportsResolve and their utils), which Node's differs from. Each entry reduces by the
-// conditions (reduceConditionalExport): an object to the first of its keys `conds` holds, again
-// until a string or null, so a fallback array, whose indices no condition names, to null. The whole
-// map is refused where an entry reduces to a value not starting `./` (reduceExportsLikeMap), as
-// Metro refuses it: a bare or `../` target anywhere fails every specifier the map serves. A
-// specifier takes its own entry, else (where that reduces to null as well) the pattern whose base
-// before its `*` is longest, then the longest (matchSubpathFromExportsLike). Each miss -- the map
-// refused, the specifier unmatched, its target null or naming no file -- is Metro's cue to fall
-// back to file-based resolution, which the callers take.
-
-// Metro failing a resolution outright, where a miss falls back: on a map value it can't reduce (a
-// number or boolean, where its reduceConditionalExport throws), or a `#` specifier from a package
-// with no `imports` (resolve.js throws before its fallback).
-class MetroFailure extends Error {}
-
-// reduceConditionalExport: the string or null `value` reduces to under `conds`, or 'no-match'.
-function metroReduceConditional(value, conds) {
-  let reduced = value
-  while (reduced != null && typeof reduced !== 'string') {
-    if (typeof reduced !== 'object') throw new MetroFailure(`Can't reduce ${JSON.stringify(reduced)} by conditions`)
-    let match = 'default' in reduced ? 'no-match' : null
-    for (const name in reduced) {
-      if (conds.has(name)) {
-        match = reduced[name]
-        break
-      }
-    }
-    reduced = match
-  }
-  return reduced
-}
-
-// matchSubpathPattern: what `pattern`'s `*` stands for in `subpath`, else null.
-function metroPatternMatch(pattern, subpath) {
-  const [base, trailer] = pattern.split('*')
-  if (subpath.startsWith(base) && (trailer.length === 0 || (subpath.endsWith(trailer) && subpath.length >= pattern.length))) {
-    return subpath.slice(base.length, subpath.length - trailer.length)
-  }
-  return null
-}
-
-// The target `subpath` takes in `map` (a Map of a package map's entries) under `conds`, each `*` its
-// match, as Metro maps it; null where it takes none. An `exports` target holding an empty, `.`,
-// `..` or `node_modules` segment is refused besides (findInvalidPathSegment).
-function metroMapTarget(map, subpath, conds, { exports = false } = {}) {
-  // isSubpathDefinedInExportsLike: listed, as itself or by a one-`*` pattern, before conditions apply.
-  if (!map.has(subpath) && ![...map.keys()].some((key) => key.split('*').length === 2 && metroPatternMatch(key, subpath) !== null)) return null
-  const reduced = new Map()
-  for (const [key, value] of map) {
-    const target = metroReduceConditional(value, conds)
-    if (target !== 'no-match') reduced.set(key, target)
-  }
-  if ([...reduced.values()].some((target) => target != null && !target.startsWith('./'))) return null
-  let target = reduced.get(subpath)
-  let match = null
-  if (target == null) {
-    const patterns = [...reduced.keys()].filter((key) => key.includes('*')).toSorted((a, b) => b.indexOf('*') - a.indexOf('*') || b.length - a.length)
-    for (const key of patterns) {
-      match = metroPatternMatch(key, subpath)
-      if (match !== null) {
-        target = reduced.get(key)
-        break
-      }
-    }
-  }
-  if (target == null) return null
-  if (exports && target.slice(2).split(/[\\/]/u).some((segment) => ['', '.', '..', 'node_modules'].includes(segment))) return null
-  // The match as a replacement pattern, as Metro's replaceAll takes it: a `$&` in it is the `*`.
-  return match === null ? target : target.replaceAll('*', match)
-}
-
-// normalizeExportsField: an `exports` field as Metro's Map of subpaths, null where it refuses it --
-// an array to its first `./` string (or first value), each subpath's legacy array to its first item.
-function metroExportsMap(exportsField) {
-  if (typeof exportsField === 'string') return new Map([['.', exportsField]])
-  let root = exportsField
-  if (Array.isArray(exportsField)) root = exportsField.every((value) => typeof value === 'string') ? exportsField.find((value) => value.startsWith('./')) : exportsField[0]
-  if (root == null || Array.isArray(root)) return null
-  if (typeof root === 'string') return new Map([['.', root]])
-  const flat = {}
-  for (const [key, value] of Object.entries(root)) {
-    if (Array.isArray(value) && (value.length === 0 || Array.isArray(value[0]))) return null
-    flat[key] = Array.isArray(value) ? value[0] : value
-  }
-  const keys = Object.keys(root)
-  if (keys.every((key) => key.startsWith('.') || key.startsWith('#'))) return new Map(Object.entries(flat))
-  return keys.some((key) => key.startsWith('.')) ? null : new Map([['.', flat]])
-}
-
-// metroExportsMap of each `exports` object, as each resolver's manifests hold one (manifestReader),
-// made once: a package's many imports each read it.
-const exportsMaps = new WeakMap()
-function metroExportsMapOf(exportsField) {
-  if (exportsField === null || typeof exportsField !== 'object') return metroExportsMap(exportsField)
-  if (!exportsMaps.has(exportsField)) exportsMaps.set(exportsField, metroExportsMap(exportsField))
-  return exportsMaps.get(exportsField)
-}
-
-// Metro's relative specifier (isRelativeImport): `.`, `..`, or one starting `./` or `../`.
-const METRO_RELATIVE = /^\.\.?(?:\/|$)/u
+// React Native's Metro config defaults: the extensions its resolver probes, in order, and those it
+// takes as assets.
+export const METRO_SOURCE_EXTS = metroDefaults.sourceExts
+export const METRO_ASSET_EXTS = new Set(metroDefaults.assetExts)
+// The conditions Metro asserts itself, by the kind of import.
+const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
 // Probe `base` for a source file in platform order: bare name first, then per ext
 // `base.<platform>.<ext>`, `base.native.<ext>` (native only), `base.<ext>`. `platform: null`
-// disables suffixes. Under metro, every SUFFIXED candidate first passes through the candidate's
-// own package redirect map -- mirroring Metro's resolveSourceFileForExt, which runs
-// redirectModulePath on each non-bare candidate: `false` short-circuits the whole probe to an
-// empty module (e.g. browser { "./index.ios.js": false }), and a string redirect re-lands the
-// candidate package-root-relative. Returns a path, { empty: true } (metro only), or null.
+// disables suffixes. Returns a path, or null.
 function resolveSourceFile(base, opts) {
   // A path that literally names a `.d.ts` names no runtime module (types are erased). Probe its
   // declaration-free stem instead, so an entry field pointing at `dist/index.d.ts` lands on the real
   // `dist/index.js` beside it rather than bundling the declaration -- or failing the package
   // outright by falling back to a different index. The probe below still refuses a literal hit.
   base = stripTypeDeclaration(base)
-  // Metro resolves an asset by its own rule, scale variants and all, not as a source file.
-  if (opts.metro && isMetroAssetFile(base, opts.assetExts)) return metroAsset(base, opts.host)
-  // Candidates share base's directory, hence its package scope; resolve it lazily, once.
-  let scope
-  const redirectCandidate = (p) => {
-    if (scope === undefined) {
-      const pkg = nearestPackage(base, opts.host, opts.read)
-      scope = pkg ? { pkgDir: pkg.pkgDir, map: mergeRedirectMap(pkg.pkg, opts.mainFields) } : null
-    }
-    if (!scope || scope.map.size === 0) return p
-    const rel = `./${toPosix(relative(scope.pkgDir, p))}`
-    const r = matchRedirect(scope.map, rel)
-    if (r === false) return false
-    if (typeof r === 'string') return isAbsolute(r) ? r : resolvePath(scope.pkgDir, r)
-    return p
-  }
-  // `derived` marks a candidate that is not the literal base; Metro redirect-checks those only.
-  const probePath = (p, derived) => {
-    if (opts.metro && derived) {
-      const r = redirectCandidate(p)
-      if (r === false) return { empty: true }
-      p = r
-    }
-    // A `.d.ts` is types-only, erased at runtime: never a resolution target, so a package whose
-    // entry field points at one falls through to its real `.js` instead of bundling the declaration.
-    if (isTypeDeclaration(p)) return null
-    return isFile(p, opts.host) ? p : null
-  }
+  // A `.d.ts` is types-only, erased at runtime: never a resolution target, so a package whose
+  // entry field points at one falls through to its real `.js` instead of bundling the declaration.
+  const probePath = (p) => (!isTypeDeclaration(p) && isFile(p, opts.host) ? p : null)
   // `suffix` is everything appended to `base`.
-  const probe = (suffix) => probePath(`${base}${suffix}`, suffix !== '')
+  const probe = (suffix) => probePath(`${base}${suffix}`)
   const tryExt = (sourceExt) => {
     if (opts.platform) {
       const hit = probe(`.${opts.platform}${sourceExt}`)
@@ -398,9 +164,9 @@ function resolveSourceFile(base, opts) {
   // `typescript` for an importer there.
   if (opts.typescript) {
     for (const cand of typescriptSiblings(base)) {
-      const hit = probePath(cand, true)
+      const hit = probePath(cand)
       if (hit === null) continue
-      return typeof hit === 'string' && inNodeModules(hit, opts.host) ? null : hit
+      return inNodeModules(hit, opts.host) ? null : hit
     }
   }
   for (const ext of opts.sourceExts) {
@@ -414,22 +180,19 @@ function resolveSourceFile(base, opts) {
 // mainFields + entry redirect, else `index`). `exports` is NOT consulted — Node applies it only to
 // bare package-name imports, not to a path landing on a directory.
 function resolveFileOrDir(base, opts) {
-  // resolveSourceFile yields a path, { empty: true } (a metro candidate-redirect hit), or null.
-  const asResolution = (hit) => (hit == null ? null : typeof hit === 'string' ? fileResolution(hit, opts.host) : hit)
+  const asResolution = (hit) => (hit === null ? null : fileResolution(hit, opts.host))
   const file = asResolution(resolveSourceFile(base, opts))
   if (file) return file
   if (isDir(base, opts.host)) {
     const dpkg = opts.read(join(base, 'package.json'))
     if (dpkg) {
-      const r = resolveEntryThroughMap(mergeRedirectMap(dpkg, opts.mainFields), packageEntry(dpkg, opts.mainFields), opts)
+      const r = resolveEntryThroughMap(mergeRedirectMap(dpkg, opts.mainFields), packageEntry(dpkg, opts.mainFields))
       if (r.empty) return { empty: true }
       // Node's LOAD_AS_DIRECTORY resolves `main` as a file, else as a directory index
       // (`main: "./lib/"` -> lib/index.js); a broken `main` falls back to the package index below.
-      // Metro's resolvePackageEntryPoint has no such fallback: it throws (InvalidPackageError).
       const entryBase = join(base, r.entry)
       const inner = asResolution(resolveSourceFile(entryBase, opts) ?? resolveSourceFile(join(entryBase, 'index'), opts))
       if (inner) return inner
-      if (opts.metro) return null
     }
     const index = asResolution(resolveSourceFile(join(base, 'index'), opts))
     if (index) return index
@@ -440,13 +203,11 @@ function resolveFileOrDir(base, opts) {
 // Build a resolver bound to options: `conditions` (a resolveConditions set) gates `exports`
 // packages (delegated to Node's algorithm), `mainFields`/`platform`/`preferNative`/`sourceExts`
 // drive the legacy-field + suffix probing.
-// `metro` opts into Metro's package-entry + candidate-redirect semantics (see
-// resolveEntryThroughMap and resolveSourceFile), and its asset rule for `assetExts` (Metro's
-// defaults, else the project's); leave it off for the esbuild-parity `--mainFields` path. `typescript` adds tsc's extension substitution (a missing `x.js` probes
-// its `x.ts` sibling; see resolveSourceFile) plus the shared miss fallback (see below), and
+// `metro` resolves as Metro does instead (viaMetro), taking `assetExts` (Metro's defaults, else the
+// project's) as assets; leave it off for the esbuild-parity `--mainFields` path. `typescript` adds
+// tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling; see resolveSourceFile)
+// plus the shared miss fallback (see below), the one --typescript mapping under `metro`, and
 // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
-// `metroKeepEntryOnBrowserFalse` overrides the module-level toggle
-// (METRO_KEEP_ENTRY_ON_BROWSER_FALSE) per resolver -- primarily so tests can cover both branches.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default. `kept`, a Map
 // kept across a lazy tree's rounds, keeps there each resolution that read nothing the tree does not
 // hold yet (untouchedMemo's `across`), for the rounds after.
@@ -460,98 +221,35 @@ export function createFieldResolver({
   assetExts = METRO_ASSET_EXTS,
   typescript = false,
   typescriptPaths = null,
-  metroKeepEntryOnBrowserFalse = METRO_KEEP_ENTRY_ON_BROWSER_FALSE,
   host = diskHost,
   kept,
 } = {}) {
   const read = manifestReader(host)
-  const opts = { platform, preferNative, sourceExts, mainFields, metro, assetExts, typescript, metroKeepEntryOnBrowserFalse, host, read }
+  const opts = { platform, preferNative, sourceExts, mainFields, typescript, host, read }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
   // one (see the header) resolves through this instead, with builtins off; built on first use.
   let packageResolver
   const nodeResolver = () => (packageResolver ??= createNodeResolver(host))
-  // --metro: the file a package-map target (`exports`, `imports`; a path from `pkgDir`) names, as
-  // Metro takes it (PackageExportsResolve, PackageImportsResolve): an asset as an asset, its scale
-  // variants included, so `"./logo": "./logo.png"` reaches `logo@3x.png` where only that exists,
-  // else that file itself, no probing; null where it names none.
-  const metroTargetFile = (pkgDir, target) => {
-    const path = join(pkgDir, target)
-    const asset = isMetroAssetFile(path, assetExts) ? metroAsset(path, host) : null
-    if (asset !== null) return fileResolution(asset, host)
-    return isFile(path, host) && !isTypeDeclaration(path) ? fileResolution(path, host) : null
-  }
-  // --metro: the file a `#` specifier names through the `imports` of the package closest to the
-  // importer, as Metro maps it (resolvePackageTargetFromImports), which refuses a map with no keys
-  // or with one not starting `#`; null where it names none. With no such package or no `imports`
-  // in it, Metro fails the specifier, with no file-based fallback.
-  const viaMetroImports = (parentFile, specifier, conds) => {
-    const scope = metroPackageScope(parentFile, host, read)
-    const imports = scope?.pkg.imports
-    if (imports == null) throw new MetroFailure(`No "imports" for ${specifier} from ${parentFile}`)
-    const keys = Object.keys(imports)
-    if (keys.length === 0 || !keys.every((key) => key.startsWith('#'))) return null
-    const target = metroMapTarget(new Map(Object.entries(imports)), specifier, conds)
-    return target === null ? null : metroTargetFile(scope.pkgDir, target)
-  }
-
-  // --metro: metro-resolver's own steps (its resolve.js), so the two resolve alike where they can.
-  // A path takes the redirect of the package closest to it, then resolves as a file or directory
-  // (resolveModulePath). A bare specifier takes the importer's redirect, then the importer's own
-  // `exports` where it names its own package, then, in each node_modules up from the importer, the
-  // package there (resolveModuleFromTargetPath): the redirect of the package closest to the
-  // candidate path -- a nested package.json counts -- then the `exports` of the one closest to where
-  // that lands, else that path as a file or directory. Metro falls back so from any `exports` miss,
-  // which keeps `main` and the browser map in play where `exports` serves no condition it asserts.
-  const viaMetro = (parentFile, specifier, conds, fileOpts) => {
-    const viaPath = (abs) => {
-      const target = metroRedirect(abs, opts)
-      return target === false ? { empty: true } : resolveFileOrDir(target, fileOpts)
+  // --metro: Metro's own resolution, @preventive/rn's, over `host` as stasis reads it (metroHost). Metro
+  // asserts `default` and `import` or `require` by the kind of import itself, and takes the rest of an
+  // importer's conditions as its `conditionNames`: one resolver for each such set, made on first use.
+  // Off web it prefers `.native` files (preferNative). A builtin it fails to resolve, one the importer's
+  // browser map doesn't remap, is a builtin (see the header).
+  const metroResolvers = new Map()
+  const viaMetro = (parentFile, specifier, conds) => {
+    const conditionNames = [...conds].filter((name) => !METRO_OWN_CONDITIONS.has(name))
+    const key = conditionNames.join('\0')
+    if (!metroResolvers.has(key)) {
+      metroResolvers.set(key, createMetroResolver({ host: metroHost(host, mainFields), sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
     }
-    // The file `subpath` names through the package at `pkgDir`'s `exports` field, as Metro maps it.
-    const viaExports = (pkgDir, exportsField, subpath) => {
-      const map = metroExportsMapOf(exportsField)
-      const target = map === null ? null : metroMapTarget(map, subpath, conds, { exports: true })
-      return target === null ? null : metroTargetFile(pkgDir, target)
+    const resolution = metroResolvers.get(key)(parentFile, specifier, { platform, isESMImport: conds.has('import') })
+    const remapped = () => {
+      const imp = nearestPackage(parentFile, host, read)
+      return imp !== null && matchRedirect(mergeRedirectMap(imp.pkg, mainFields), specifier) !== undefined
     }
-    const viaPackage = (spec) => {
-      const { name, firstPart, subpath } = parseBare(spec)
-      const own = nearestPackage(parentFile, host, read)
-      if (own?.pkg.exports != null && own.pkg.name === name) {
-        const hit = viaExports(own.pkgDir, own.pkg.exports, subpath)
-        if (hit) return hit
-      }
-      for (let dir = dirname(parentFile); ; dir = dirname(dir)) {
-        const nm = join(dir, 'node_modules')
-        // The shallowest directory the package can be in must exist (resolveFromNodeModulesPath).
-        if (isDir(subpath !== '.' || name !== firstPart ? join(nm, firstPart) : nm, host)) {
-          const target = metroRedirect(join(nm, spec), opts)
-          if (target === false) return { empty: true }
-          const scope = metroPackageScope(target, host, read)
-          const hit = (scope?.pkg.exports != null && viaExports(scope.pkgDir, scope.pkg.exports, target === scope.pkgDir ? '.' : `./${toPosix(relative(scope.pkgDir, target))}`)) || viaPath(target)
-          if (hit) return hit
-          // A package there whose entry resolves to nothing ends the lookup: Metro throws on it
-          // (InvalidPackageError). Anything else that misses gives way to the next node_modules up.
-          if (isFile(join(target, 'package.json'), host)) return null
-        }
-        if (dirname(dir) === dir) return null
-      }
-    }
-    if (METRO_RELATIVE.test(specifier) || isAbsolute(specifier)) {
-      return viaPath(isAbsolute(specifier) ? specifier : resolvePath(dirname(parentFile), specifier))
-    }
-    let spec = specifier
-    const imp = nearestPackage(parentFile, host, read)
-    const r = imp ? matchRedirect(mergeRedirectMap(imp.pkg, mainFields), spec) : undefined
-    if (r === false) return { empty: true }
-    if (typeof r === 'string') {
-      if (METRO_RELATIVE.test(r) || isAbsolute(r)) return viaPath(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r))
-      spec = r
-    }
-    // A builtin the importer's map did not remap: as for the field resolver (see the header).
-    if (isBuiltin(spec)) return spec.startsWith('node:') ? { builtin: true } : (viaPackage(spec) ?? { builtin: true })
-    return viaPackage(spec)
+    return scanResolution(resolution, resolution === null && isBuiltin(specifier) && !remapped())
   }
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
@@ -581,16 +279,8 @@ export function createFieldResolver({
       const target = typeof r === 'string' ? r : sub
       return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
     }
-    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them,
-    // Metro's own under --metro, which falls back to file-based resolution where `imports` misses.
-    if (metro) {
-      try {
-        return (specifier.startsWith('#') && viaMetroImports(parentFile, specifier, conds)) || viaMetro(parentFile, specifier, conds, fileOpts)
-      } catch (error) {
-        if (error instanceof MetroFailure) return null
-        throw error
-      }
-    }
+    if (metro) return viaMetro(parentFile, specifier, conds)
+    // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
     if (specifier.startsWith('#')) return viaNode(specifier)
 
     let spec = specifier
@@ -642,8 +332,8 @@ export function createFieldResolver({
   return once(function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
     const resolved = resolve(parentFile, specifier, callConditions)
     if (resolved) return resolved
-    // Under --metro an asset is Metro's asset rule's to resolve (resolveSourceFile), as tsc never does.
-    if (metro && isMetroAssetFile(specifier, assetExts)) return null
+    // Under --metro an asset is Metro's asset rule's to resolve, as tsc never does.
+    if (metro && isAssetFile(specifier, assetExts)) return null
     const hit = resolveTypescriptFallback(parentFile, specifier, {
       conditions: new Set(callConditions ?? conditions),
       paths: typescriptPaths,

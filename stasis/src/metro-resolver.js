@@ -1,84 +1,79 @@
 import { createRequire, isBuiltin } from 'node:module'
-import { dirname, isAbsolute, join } from 'node:path'
+import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { createMetroResolver as createRnMetroResolver, defaults } from '@preventive/rn/metro-resolver.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { isTypeDeclaration } from '@exodus/stasis-core/util'
-import { readJson } from './resolve-typescript.js'
-import { METRO_ASSET_EXTS, lowestPath, metroAssetCandidates } from './resolve-fields.js'
+import { isTypeDeclaration, stripTypeDeclaration } from '@exodus/stasis-core/util'
 
-// Adapter that drives the PROJECT's own `metro-resolver` from stasis's static scanner, so
-// `stasis bundle --metro --metro-resolver` resolves modules EXACTLY the way that project's
-// installed Metro does -- rather than the hand-rolled Metro/RN approximation in
-// resolve-fields.js. `metro-resolver` is a leaf of the Metro toolchain (it takes a context of
-// filesystem callbacks and does no I/O of its own), so we load whichever copy the project
-// already ships and feed it a synchronous, disk-backed ResolutionContext.
-//
-// Returns, for each specifier, the same shape scan.js expects from a custom resolver:
-//   { url }      resolved to a real file (file: URL string)
-//   { empty }    a browser/react-native field mapped it to `false` (empty module)
-//   { builtin }  a Node builtin (Metro itself has none; we classify a bare-name miss)
-//   null         unresolved
-//
-// It is deliberately version-agnostic: it never imports metro-resolver internals (the
-// `./private/*` subpath), only the public `resolve`. `resolve` applies the browser-field
-// redirect via its own bundled helper, so the `redirectModulePath` we place on the context is
-// an inert placeholder that satisfies the type but is never consulted for base resolution.
+// Metro's module resolution is @preventive/rn's (metro-resolver's own steps, over a host), for both
+// `stasis bundle --metro` (resolve-fields.js) and `--metro --metro-resolver` (createMetroResolver
+// below). What stays stasis's: no `.d.ts` is a module to it (metroHost), a Node builtin Metro misses
+// is a builtin, and its answers take the shape scan.js expects of a custom resolver (scanResolution).
 
-// 'f' | 'd' | null for a path, without throwing.
-function pathType(p) {
-  const s = diskHost.stat(p)
-  return s?.isFile() ? 'f' : s?.isDirectory() ? 'd' : null
+// A manifest as stasis has Metro read it: an entry field (one of `mainFields`) naming a `.d.ts` names
+// its declaration-free stem instead, so the package's entry lands on the real module beside it
+// (`dist/index.d.ts` -> `dist/index`, then `dist/index.js`). Any other manifest, or one that is no
+// JSON object (which the resolver refuses), is read as it is.
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+const DECLARATION = /\.d\.[cm]?ts\b/iu
+function manifestStems(bytes, mainFields) {
+  let manifest
+  try {
+    const text = utf8.decode(bytes)
+    if (!DECLARATION.test(text)) return bytes
+    manifest = JSON.parse(text)
+  } catch {
+    return bytes
+  }
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return bytes
+  const typed = mainFields.filter((field) => typeof manifest[field] === 'string' && isTypeDeclaration(manifest[field]))
+  if (typed.length === 0) return bytes
+  for (const field of typed) manifest[field] = stripTypeDeclaration(manifest[field])
+  return Buffer.from(JSON.stringify(manifest))
 }
 
-// A `.d.ts` is types-only, erased at runtime, so the resolver must never land on one: report it as
-// non-existent to Metro's filesystem hooks and a package whose entry points at a declaration falls
-// through to its real `.js`. Only the RESOLUTION hooks use this -- getPackageForModule's own
-// dir-vs-file probe stays on raw pathType (it locates package scopes, never a module target).
-const resolvableType = (p) => (isTypeDeclaration(p) ? null : pathType(p))
-
-// Metro's `getPackageForModule`: the closest package scope for an absolute candidate path
-// (which need not exist). The candidate can be a package DIRECTORY (a bare import lands on
-// `<node_modules>/<pkg>`), so probing starts at the path itself, then walks up. `packageRelativePath`
-// is '' when the candidate IS the package root -- Metro's exports resolver maps '' to the '.' subpath,
-// and a stray '.' there would mismatch the exports key.
-function getPackageForModule(absModulePath) {
-  let dir = pathType(absModulePath) === 'd' ? absModulePath : dirname(absModulePath)
-  while (true) {
-    const pkg = readJson(join(dir, 'package.json'))
-    if (pkg) {
-      const rel = dir === absModulePath ? '' : absModulePath.slice(dir.length + 1)
-      return { rootPath: dir, packageJson: pkg, packageRelativePath: rel }
-    }
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
+// `host` (@exodus/stasis-core/host) as @preventive/rn reads one, for Metro's `mainFields`. A `.d.ts`
+// is types-only, erased at runtime, so the resolver never lands on one: no `.d.ts` is a file, and a
+// manifest's entry naming one names its stem (manifestStems).
+export function metroHost(host, mainFields = defaults.mainFields) {
+  return {
+    isFile: (path) => !isTypeDeclaration(path) && (host.stat(path)?.isFile() ?? false),
+    isDirectory: (path) => host.stat(path)?.isDirectory() ?? false,
+    realpath: (path) => host.realpath(path),
+    readFile: (path) => (basename(path) === 'package.json' ? manifestStems(host.readFile(path), mainFields) : host.readFile(path)),
   }
 }
 
-// Build a resolver bound to a platform. `metro-resolver` is required from `projectDir` so we
-// honour the version the project's Metro uses; a missing package throws with actionable guidance.
-// `sourceExts` are the extensions Metro probes (kept to what a source bundle can carry, so the
-// resolver never lands on a file the bundle would reject). `mainFields` drives the browser-field
-// spec; `conditionNames` are the extra `exports`/`imports` conditions on top of the ones Metro
-// derives itself (default + require|import + platform); `assetExts` the extensions it takes as assets.
-export function createMetroResolver({
-  projectDir,
-  platform,
-  sourceExts = ['js', 'jsx', 'json', 'ts', 'tsx'],
-  mainFields = ['react-native', 'browser', 'main'],
-  conditionNames = ['react-native'],
-  conditionsByPlatform = { web: ['browser'] },
-  enablePackageExports = true,
-  assetExts = METRO_ASSET_EXTS,
-  host = diskHost,
-} = {}) {
+// The file Metro builds an asset of several into the module of (getArrayLowestItem): the lowest path.
+const lowestPath = (paths) => paths.reduce((lowest, path) => (path < lowest ? path : lowest))
+
+// @preventive/rn's Resolution of `specifier` (null where Metro fails it) as scan.js takes a custom
+// resolver's answer:
+//   { url }      resolved to a file, by its real path (file: URL string)
+//   { empty }    a browser/react-native field mapped it to `false` (empty module)
+//   { builtin }  a Node builtin Metro failed to resolve, where `builtin` says it is one
+//   null         unresolved
+export function scanResolution(resolution, builtin) {
+  if (resolution === null) return builtin ? { builtin: true } : null
+  if (resolution.type === 'empty') return { empty: true }
+  const file = resolution.type === 'sourceFile' ? resolution.filePath : lowestPath(resolution.filePaths)
+  return { url: pathToFileURL(file).toString() }
+}
+
+// `stasis bundle --metro --metro-resolver`: resolve through the PROJECT's own `metro-resolver`, so
+// modules resolve exactly the way that project's installed Metro does. `metro-resolver` is a leaf of
+// the Metro toolchain (it takes a context of filesystem callbacks and does no I/O of its own), so
+// whichever copy the project ships is loaded and given the context Metro's DependencyGraph builds,
+// over the disk (@preventive/rn's `metroResolver`). The options are Metro's resolver config, React
+// Native's defaults where left out; Metro only prefers native suffixes off web. Metro carries no Node
+// builtins, so a builtin it fails to resolve (one no browser map remaps) is reported as one.
+export function createMetroResolver({ projectDir, platform, sourceExts, mainFields, conditionNames, conditionsByPlatform, assetExts, host = diskHost } = {}) {
   // It loads the project's metro-resolver, which reads the disk: never off it.
   if (host !== diskHost) throw new Error('createMetroResolver: metro-resolver reads the disk, so it is not supported off disk')
-  const require = createRequire(join(projectDir, 'noop.js'))
-  let resolve
+  let metroResolver
   try {
-    ;({ resolve } = require('metro-resolver'))
+    metroResolver = createRequire(join(projectDir, 'noop.js'))('metro-resolver')
   } catch (cause) {
     throw new Error(
       `StasisMetroResolver: couldn't load 'metro-resolver' from ${projectDir}. --metro-resolver ` +
@@ -87,65 +82,20 @@ export function createMetroResolver({
       { cause }
     )
   }
-
-  // A React Native app has no Node builtins by default; Metro only prefers native suffixes off web.
-  const base = {
-    allowHaste: false,
-    // The asset extensions (Metro's defaults, else the project's), resolved as Metro's DependencyGraph
-    // resolves them.
-    assetExts,
-    customResolverOptions: {},
-    disableHierarchicalLookup: false,
-    doesFileExist: (p) => resolvableType(p) === 'f',
-    extraNodeModules: null,
-    dev: false,
-    getPackage: (packageJsonPath) => readJson(packageJsonPath),
-    getPackageForModule,
-    fileSystemLookup: (p) => {
-      const abs = isAbsolute(p) ? p : join(projectDir, p)
-      const type = resolvableType(abs)
-      if (!type) return { exists: false }
-      let realPath = abs
-      try {
-        realPath = diskHost.realpath(abs)
-      } catch { /* keep the lexical path when realpath fails (e.g. a broken symlink) */ }
-      return { exists: true, type, realPath }
-    },
-    mainFields,
-    nodeModulesPaths: [],
-    preferNativePlatform: platform !== 'web',
-    resolveAsset: (dirPath, assetName, ext) => metroAssetCandidates(dirPath, assetName, ext),
-    resolveHasteModule: () => null,
-    resolveHastePackage: () => null,
-    // Inert placeholder: `resolve` redirects via its own bundled helper, never this (see header).
-    redirectModulePath: (modulePath) => modulePath,
+  const resolve = createRnMetroResolver({
+    host: metroHost(host, mainFields),
     sourceExts,
-    unstable_conditionNames: conditionNames,
-    unstable_conditionsByPlatform: conditionsByPlatform,
-    unstable_enablePackageExports: enablePackageExports,
-    unstable_incrementalResolution: false,
-    unstable_logWarning: () => {}, // a static build must not spam on exports fallbacks
-  }
-
-  return function resolveOne(parentFile, specifier, callConditions) {
-    // Metro splits `exports` on whether the edge was an ESM import vs a CJS require. scan.js hands
-    // us the parent's format-derived condition set, so 'import' membership is that signal.
-    const isESMImport = callConditions instanceof Set ? callConditions.has('import') : false
-    const context = { ...base, originModulePath: parentFile, isESMImport }
-    let res
-    try {
-      res = resolve(context, specifier, platform)
-    } catch {
-      // Metro carries no Node builtins: an unmapped builtin fails to resolve here. The browser-field
-      // remap of a builtin (`{"crypto": false}` / a shim) is handled inside resolve() before this.
-      if (isBuiltin(specifier)) return { builtin: true }
-      return null
-    }
-    if (!res) return null
-    if (res.type === 'empty') return { empty: true }
-    if (res.type === 'sourceFile') return { url: pathToFileURL(res.filePath).toString() }
-    // An asset's files are it and its scale variants: Metro's graph takes the lowest path for the module.
-    if (res.type === 'assetFiles' && res.filePaths?.length) return { url: pathToFileURL(lowestPath(res.filePaths)).toString() }
-    return null
+    assetExts,
+    mainFields,
+    conditionNames,
+    conditionsByPlatform,
+    preferNativePlatform: platform !== 'web',
+    metroResolver,
+  })
+  // Metro splits `exports` on whether the edge was an ESM import or a CJS require: scan.js hands over
+  // the parent's format-derived condition set, so `import` in it is that signal.
+  return (parentFile, specifier, callConditions) => {
+    const isESMImport = callConditions instanceof Set && callConditions.has('import')
+    return scanResolution(resolve(parentFile, specifier, { platform, isESMImport }), isBuiltin(specifier))
   }
 }

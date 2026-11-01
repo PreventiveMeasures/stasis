@@ -8,7 +8,7 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
 import { parseDefine } from '../define.js'
-import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, isMetroAssetFile, resolveConditions } from '../resolve-fields.js'
+import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
@@ -22,6 +22,7 @@ import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBuck
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
+import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
   SOLIDITY_ROOT_MANIFESTS,
@@ -1505,7 +1506,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
   // (`metro`, no edge): no edge to one, and no asset registry for one.
-  const isTransformInput = (abs, info) => metro && info?.resource === true && !isMetroAssetFile(abs, assetExts)
+  const isTransformInput = (abs, info) => metro && info?.resource === true && !isAssetFile(abs, assetExts)
   // A round of a lazy tree that asked for a package already is void (vfs-bundle/lazy.js): it reads
   // on, for all else it asks for, but reports and refuses nothing, which the round that asks for
   // none does, and stops before it reads the files in.

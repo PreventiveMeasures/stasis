@@ -62,14 +62,13 @@ const withTsTmp = (fn) => (t) => {
 // the target `platform` and native-suffix preference, and any extra `exports`
 // conditions). `platform: null` (the default, the `--mainFields` case) disables
 // platform-suffix probing; for a real platform, web alone excludes `.native`.
-const mk = ({ mainFields = ['react-native', 'browser', 'main'], extras = [], platform = null, preferNative = platform !== null && platform !== 'web', metro = false, keepEntryOnFalse } = {}) =>
+const mk = ({ mainFields = ['react-native', 'browser', 'main'], extras = [], platform = null, preferNative = platform !== null && platform !== 'web', metro = false } = {}) =>
   createFieldResolver({
     conditions: resolveConditions('module', extras),
     mainFields,
     platform,
     preferNative,
     metro,
-    ...(keepEntryOnFalse === undefined ? {} : { metroKeepEntryOnBrowserFalse: keepEntryOnFalse }),
   })
 
 test('a relative import resolves with extension probing', (t) => {
@@ -189,7 +188,7 @@ test('a browser-map false on the package entry disables it (empty module) (--mai
 test('--metro: a browser-map false on the package entry keeps main (Metro ignores it)', (t) => {
   // Metro's getPackageEntryPoint ignores a non-string (false) entry replacement and keeps
   // `main`, so under `metro` entryfalse resolves to fe.js -- NOT an empty module (verified
-  // against the real metro-resolver). Gated by METRO_KEEP_ENTRY_ON_BROWSER_FALSE.
+  // against the real metro-resolver).
   t.assert.equal(rel(mk({ mainFields: ['browser', 'main'], platform: 'ios', metro: true })(entry, 'entryfalse')), 'node_modules/entryfalse/fe.js')
 })
 
@@ -199,20 +198,8 @@ test('--metro: a bare browser-map false also keeps main', (t) => {
   // outcome is identical whether or not the bare variant matched (no match would also leave
   // buf.js), so it does NOT discriminate the bare-key matching itself -- the streampkg test
   // above covers that. What it pins is Metro parity for the combined case (verified against
-  // the real metro-resolver), and the toggle-off test below pins the branch actually taken.
+  // the real metro-resolver).
   t.assert.equal(rel(mk({ mainFields: ['browser', 'main'], platform: 'ios', metro: true })(entry, 'barefalse')), 'node_modules/barefalse/buf.js')
-})
-
-test('--metro: with the keep-on-false toggle off, a false entry match fails closed to empty', (t) => {
-  // metroKeepEntryOnBrowserFalse: false (the METRO_KEEP_ENTRY_ON_BROWSER_FALSE=false state):
-  // any `false` match on the entry -- under Metro's MATCHING rules, bare keys included --
-  // yields an empty module. Deliberately stricter than both tools for bare keys (Metro keeps
-  // main; esbuild wouldn't match the entry): it's a fail-closed escape hatch, not esbuild parity.
-  const off = mk({ mainFields: ['browser', 'main'], platform: 'ios', metro: true, keepEntryOnFalse: false })
-  t.assert.equal(rel(off(entry, 'entryfalse')), '<empty>')
-  t.assert.equal(rel(off(entry, 'barefalse')), '<empty>')
-  // A plain string redirect is unaffected by the toggle.
-  t.assert.equal(rel(off(entry, 'streampkg')), 'node_modules/streampkg/vendor/sb.js')
 })
 
 // --- Metro entry-variant fidelity (each expectation verified against the real metro-resolver) ---
