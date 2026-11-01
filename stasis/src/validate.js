@@ -795,15 +795,21 @@ function readLockfile(name, read) {
   }
   const local = (pkg, dir) => locals.set(pkg, new Set([...(locals.get(pkg) ?? []), posix.normalize(dir)]))
   // Each name a version is installed as in place of its own (an alias, `foo: npm:ms@2.1.3`), as
-  // `<name it is installed as>\0<its name>@<its version>`.
+  // `<name it is installed as>\0<its name>@<its version>`; and each a directory's package is, any version
+  // of it, as `<name it is installed as>\0<its name>`.
   const aliases = new Set()
+  const directoryAliases = new Set()
   if (name === 'pnpm-lock.yaml') {
     const { lockfile } = parsePnpmLockfile(text)
-    // pnpm locks an alias's dependency by its name and version (`foo: ms@2.1.3`), a version alone otherwise.
+    // pnpm locks an alias's dependency by its name and version (`foo: ms@2.1.3`), a version alone
+    // otherwise; one of a directory by its name and the directory (`foo: lib@file:lib`, as a `file:`
+    // override installs it), the version the one it has there.
     for (const node of [...Object.values(lockfile?.importers ?? {}), ...Object.values(lockfile?.packages ?? {})]) {
       for (const [as, ref] of Object.entries({ ...node.dependencies, ...node.devDependencies, ...node.optionalDependencies })) {
         const split = typeof ref === 'string' ? ref.indexOf('@', 1) : -1
-        if (split > 0 && VERSION.test(ref.slice(split + 1).split('(')[0])) aliases.add(`${as}\0${ref.slice(0, split)}@${ref.slice(split + 1).split('(')[0]}`)
+        const of = split > 0 ? ref.slice(split + 1) : ''
+        if (VERSION.test(of.split('(')[0])) aliases.add(`${as}\0${ref.slice(0, split)}@${of.split('(')[0]}`)
+        else if (of.startsWith('file:') && as !== ref.slice(0, split)) directoryAliases.add(`${as}\0${ref.slice(0, split)}`)
       }
     }
     const hashes = new Map()
@@ -821,7 +827,7 @@ function readLockfile(name, read) {
     for (const [selector, { hash, path }] of Object.entries(lockfile?.patchedDependencies ?? {})) {
       paths.set(hash, { path: paths.get(hash)?.path ?? path, selectors: [...(paths.get(hash)?.selectors ?? []), selector] })
     }
-    return { entries, locals, aliases, patches: { hashes, paths } }
+    return { entries, locals, aliases, directoryAliases, patches: { hashes, paths } }
   }
   if (name === 'Cargo.lock') {
     for (const pkg of Object.values(parseCargoLock(text).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.source?.startsWith('git+'), CRATES_IO.has(pkg.source), pkg.checksum))
@@ -934,8 +940,11 @@ export function lockedBy(lockfiles) {
       const location = npm.root ? `${npm.root}/${dir}` : dir
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
-    // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`; undefined for none read.
-    aliased: (as, named) => npm?.aliases.has(`${as}\0${named}`),
+    // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`: that version,
+    // or a directory's package of that name, where it locks no other of that version, so that its
+    // files are held to the directory's (locals); undefined for none read.
+    aliased: (as, named) => npm && (npm.aliases.has(`${as}\0${named}`)
+      || (!npm.entries.has(named) && Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`)))),
     from: npm?.from,
     tree: npm?.tree,
     read(path) {

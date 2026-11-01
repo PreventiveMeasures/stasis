@@ -364,6 +364,23 @@ test('validateBundle: an npm copy held to the version npm\'s lockfile installs a
   }
   t.assert.deepStrictEqual(await local('lib'), valid, 'its directory\'s files')
   t.assert.deepStrictEqual(await local('other'), ['invalid', [['invalid', 'misplaced', 'node_modules/lib']]], 'another name there, which the lockfile has no alias of')
+
+  // A `file:` override pnpm installs under the name it overrides (hoisted, `nodeLinker: hoisted`): the
+  // directory's package there, whatever its own name, held to the directory's files.
+  const overridden = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ms:\n        specifier: file:local-ms\n        version: ms-fork@file:local-ms\n\npackages:\n\n  ms-fork@file:local-ms:\n    resolution: {directory: local-ms, type: directory}\n\nsnapshots:\n\n  ms-fork@file:local-ms: {}\n`
+  const forkTree = async (dir) => (dir === 'local-ms' ? new Map([['index.js', bytes('fork\n')]]) : new Map())
+  const fork = async (name, text = 'fork\n', lockfile = overridden) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([['node_modules/ms', { name, version: '2.0.0', files: { 'index.js': text } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: upstream(), locked: lockedBy([{ path: 'pnpm-lock.yaml', text: lockfile, from: 'repository', tree: forkTree }]) })
+    return [report.status, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  t.assert.deepStrictEqual(await fork('ms-fork'), valid, 'the overriding directory\'s package')
+  t.assert.deepStrictEqual((await fork('ms-fork', 'tampered\n'))[0], 'invalid', 'its files the directory\'s all the same')
+  t.assert.deepStrictEqual(await fork('other'), ['invalid', [['invalid', 'misplaced', 'node_modules/ms']]], 'another package than the directory\'s')
+  // The same version locked from its registry too: which it is there, no lockfile tells, so neither is taken.
+  const both = overridden.replace('    dependencies:\n', '    dependencies:\n      ms-fork:\n        specifier: 2.0.0\n        version: 2.0.0\n')
+    .replace('packages:\n\n', `packages:\n\n  ms-fork@2.0.0:\n    resolution: {integrity: ${SRI}}\n\n`).replace('snapshots:\n\n', 'snapshots:\n\n  ms-fork@2.0.0: {}\n\n')
+  t.assert.deepStrictEqual(await fork('ms-fork', 'fork\n', both), ['invalid', [['invalid', 'misplaced', 'node_modules/ms']]], 'its version also the registry\'s')
 })
 
 test('validateBundle: a patch the bundle holds is taken as the repository has it alone: refused where it differs, its files as patched unverified where that is not told', async (t) => {
