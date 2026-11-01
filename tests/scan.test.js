@@ -1284,6 +1284,21 @@ test('scan typescript:true maps no output but a missing one under its package\'s
   }
 }))
 
+test('scan typescript:true maps an unnamed root\'s outputs by its tsconfig, through a `type` marker among them', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { private: true, type: 'module', imports: { '#foo': './dist/foo.js', '#esm': './dist/esm/x.js' } },
+    'tsconfig.json': { compilerOptions: { outDir: 'dist', rootDir: 'src' } },
+    '.git/HEAD': '',
+    'dist/esm/package.json': { type: 'module' },
+    'src/foo.ts': 'export const foo: number = 1\n',
+    'src/esm/x.ts': 'export const x: number = 2\n',
+    'src/entry.ts': "import { foo } from '#foo'\nimport { x } from '#esm'\nexport const v: number = foo + x\n",
+  })
+  const result = scan([join(tmp, 'src', 'entry.ts')], { typescript: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(flattenImports(result.imports).get('src/entry.ts'), new Map([['#foo', 'src/foo.ts'], ['#esm', 'src/esm/x.ts']]))
+}))
+
 test("a workspace package's tsconfig.json that does not load fails a typescript:true miss into it, and hints none without", withTmp((t, tmp) => {
   writeTree(tmp, {
     ...unbuiltWorkspace,
