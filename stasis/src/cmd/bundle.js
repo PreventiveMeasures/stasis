@@ -796,9 +796,9 @@ const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'str
 
 // --typescript honours tsconfig `paths` aliases: an explicit --tsconfig's for every file (it must
 // exist), else those of the tsconfig.json beside each importing file's package.json
-// (packageTsconfigPaths, the project read as the State reads it, to `env`'s PROJECT_CWD). Either
-// way, each package's own tsconfig.json gives its layout (`outputs`, tsconfigOutputsOf's). Without
-// --typescript they only hint a miss (Scan#typescriptCandidate), so a config that doesn't load is none.
+// (packageTsconfigPaths, the project read as the State reads it, to `env`'s PROJECT_CWD). Either way
+// it carries the packages' layouts (`outputs`). Without --typescript they only hint a miss
+// (Scan#typescriptCandidate), so a config that doesn't load is none.
 function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
   if (typescript && tsconfig !== undefined) {
     const matcher = loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)

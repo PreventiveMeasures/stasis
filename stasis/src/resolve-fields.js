@@ -6,6 +6,7 @@ import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { createMetroResolver, defaults as metroDefaults } from '@preventive/rn/metro-resolver.js'
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
+  fromOutputSource,
   inNodeModules,
   isDir,
   isFile,
@@ -13,6 +14,7 @@ import {
   nearestPackage,
   readJson,
   resolveTypescriptFallback,
+  tsconfigOutputsOf,
   typescriptSiblings,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -128,13 +130,15 @@ const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
 // --metro --typescript: `view` (a metroHost over `host`) with tsc's extension substitution, as
 // resolveSourceFile's: a file named for a JS output that is absent (`native.js`) is the first of its TS
-// source siblings on disk (`native.ts`), unless that lies in node_modules by its real path. So Metro's
-// own steps -- the entry its mainFields pick, a browser-map or `exports` target, the path itself --
-// land on the source of a compiled file that exists only as that source.
-function typescriptView(view, host) {
+// source siblings on disk (`native.ts`), unless that lies in node_modules by its real path, else an
+// unbuilt output's source (`dist/native.js` -> `src/native.ts`; fromOutputSource). So Metro's own
+// steps -- the entry its mainFields pick, a browser-map or `exports` target, the path itself, each
+// platform file it tries -- land on the source of a compiled file that exists only as that source.
+function typescriptView(view, { outputs, host }) {
+  const sibling = (path) => typescriptSiblings(path).find((candidate) => view.isFile(candidate)) ?? null
   const source = (path) => {
-    const pick = typescriptSiblings(path).find((sibling) => view.isFile(sibling))
-    return pick === undefined || inNodeModules(pick, host) ? null : pick
+    const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host })
+    return pick === null || inNodeModules(pick, host) ? null : pick
   }
   const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))
   return {
@@ -191,6 +195,15 @@ function resolveSourceFile(base, opts) {
     const hit = tryExt(`.${ext}`)
     if (hit) return hit
   }
+  // --typescript: an unbuilt output's source, probed the same way (fromOutputSource), never in
+  // node_modules. Not for a directory: resolveFileOrDir probes its index, which maps.
+  if (opts.typescript && !isDir(base, opts.host)) {
+    const source = (input) => {
+      const hit = resolveSourceFile(input, { ...opts, outputs: null })
+      return hit === null || inNodeModules(hit, opts.host) ? null : hit
+    }
+    return fromOutputSource(base, source, opts)
+  }
   return null
 }
 
@@ -209,7 +222,8 @@ function resolveFileOrDir(base, opts) {
       // Node's LOAD_AS_DIRECTORY resolves `main` as a file, else as a directory index
       // (`main: "./lib/"` -> lib/index.js); a broken `main` falls back to the package index below.
       const entryBase = join(base, r.entry)
-      const inner = asResolution(resolveSourceFile(entryBase, opts) ?? resolveSourceFile(join(entryBase, 'index'), opts))
+      const entryOpts = { ...opts, pkgDir: base } // the package naming the entry, for its unbuilt output
+      const inner = asResolution(resolveSourceFile(entryBase, entryOpts) ?? resolveSourceFile(join(entryBase, 'index'), entryOpts))
       if (inner) return inner
     }
     const index = asResolution(resolveSourceFile(join(base, 'index'), opts))
@@ -223,9 +237,10 @@ function resolveFileOrDir(base, opts) {
 // drive the legacy-field + suffix probing.
 // `metro` resolves as Metro does instead (viaMetro), taking `assetExts` (Metro's defaults, else the
 // project's) as assets; leave it off for the esbuild-parity `--mainFields` path. `typescript` adds
-// tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling; see resolveSourceFile;
-// under `metro`, typescriptView) plus the shared miss fallback (see below), and
-// `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
+// tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling) and unbuilt outputs'
+// sources (see resolveSourceFile; under `metro`, typescriptView) plus the shared miss fallback (see
+// below), and `typescriptPaths` (a tsconfig paths matcher, with the packages' layouts; see
+// resolveTypescriptFallback) its tsconfig alias mapping.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default. `kept`, a Map
 // kept across a lazy tree's rounds, keeps there each resolution that read nothing the tree does not
 // hold yet (untouchedMemo's `across`), for the rounds after.
@@ -243,7 +258,8 @@ export function createFieldResolver({
   kept,
 } = {}) {
   const read = manifestReader(host)
-  const opts = { platform, preferNative, sourceExts, mainFields, typescript, host, read }
+  const outputs = typescript ? typescriptPaths?.outputs ?? tsconfigOutputsOf({ host }) : null
+  const opts = { platform, preferNative, sourceExts, mainFields, typescript, outputs, host, read }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
@@ -262,7 +278,7 @@ export function createFieldResolver({
     const key = `${substituting}\0${conditionNames.join('\0')}`
     if (!metroResolvers.has(key)) {
       const view = metroHost(host, mainFields)
-      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, host) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
+      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, opts) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
     }
     return metroResolvers.get(key)
   }

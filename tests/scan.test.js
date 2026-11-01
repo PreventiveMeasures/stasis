@@ -1181,9 +1181,10 @@ test('packageTsconfigPaths loads each config once, when first matched; lenient, 
 // A monorepo whose workspace packages name their tsc outputs, which no build has written: only the
 // sources are on disk. dep names them in `exports` (`types` the source) and `imports`, its tsconfig
 // setting `outDir` and `rootDir`; old in `main`, its `outDir` and `rootDir` from a base through
-// `${configDir}`, and a build that copied an asset alone into its `outDir`; plain in `main`, with
-// `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); bare names an output
-// too, with no tsconfig.json to map it by.
+// `${configDir}`, and a build that copied an asset alone into its `outDir`; each of the two with a
+// package.json copied into its `outDir` to publish from, which builds nothing; plain in `main`, with
+// `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); shared in `main`, into an
+// `outDir` outside it; bare names an output too, with no tsconfig.json to map it by.
 const unbuiltWorkspace = {
   'package.json': { name: 'root', private: true, workspaces: ['packages/*'] },
   '.git/HEAD': '',
@@ -1201,17 +1202,22 @@ const unbuiltWorkspace = {
   'packages/dep/src/index.ts': "import { i } from '#internal'\nexport const x: number = i\n",
   'packages/dep/src/internal.ts': 'export const i: number = 1\n',
   'packages/dep/src/foo.ts': 'export const foo: number = 2\n',
+  'packages/dep/dist/package.json': { name: 'dep', type: 'module' },
   'packages/old/package.json': { name: 'old', main: 'dist/index.js' },
   'packages/old/tsconfig.json': { extends: '../../tsconfig.base.json' },
   'packages/old/src/index.ts': 'export const o: number = 3\n',
   'packages/old/src/deep.ts': 'export const d: number = 4\n',
   'packages/old/src/nested/index.ts': 'export const n: number = 7\n',
   'packages/old/dist/nested/styles.css': '',
+  'packages/old/dist/package.json': { name: 'old' },
   'packages/plain/package.json': { name: 'plain', main: './dist/src/index.js' },
   'packages/plain/tsconfig.json': { compilerOptions: { outDir: 'dist' } },
   'packages/plain/src/index.ts': 'export const p: number = 5\n',
   'packages/bare/package.json': { name: 'bare', main: './dist/index.js' },
   'packages/bare/src/index.ts': 'export const b: number = 6\n',
+  'packages/shared/package.json': { name: 'shared', main: '../../dist/shared/index.js' },
+  'packages/shared/tsconfig.json': { compilerOptions: { outDir: '../../dist/shared', rootDir: 'src' } },
+  'packages/shared/src/index.ts': 'export const s: number = 8\n',
 }
 const linkWorkspace = (tmp, names) => {
   mkdirSync(join(tmp, 'node_modules'), { recursive: true })
@@ -1227,19 +1233,23 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
       "import { o } from 'old'",
       "import { d } from 'old/dist/deep.js'",
       "import { n } from 'old/dist/nested'",
+      "import { d as relative } from './packages/old/dist/deep.js'",
       "import { p } from 'plain'",
       "import { b } from 'bare'",
-      'export const v: number = x + foo + o + d + n + p + b',
+      "import { s } from 'shared'",
+      'export const v: number = x + foo + o + d + n + relative + p + b + s',
       '',
     ].join('\n'),
   })
-  linkWorkspace(tmp, ['dep', 'old', 'plain', 'bare'])
+  linkWorkspace(tmp, ['dep', 'old', 'plain', 'bare', 'shared'])
   const mapped = new Map([
     ['dep', 'packages/dep/src/index.ts'],
     ['dep/foo', 'packages/dep/src/foo.ts'],
     ['old', 'packages/old/src/index.ts'],
     ['old/dist/deep.js', 'packages/old/src/deep.ts'],
     ['old/dist/nested', 'packages/old/src/nested/index.ts'],
+    ['./packages/old/dist/deep.js', 'packages/old/src/deep.ts'], // however reached
+    ['shared', 'packages/shared/src/index.ts'],
     ['plain', 'packages/plain/src/index.ts'],
   ])
   // Each package's layout read as resolution asks for it, and through the build's matcher.
@@ -1280,6 +1290,21 @@ test('scan typescript:true maps no output but a missing one under its package\'s
     t.assert.deepStrictEqual(result.unresolved.map((u) => [u.spec, u.typescript]), [['elsewhere', undefined], ['installed', undefined]], `typescript: ${typescript}`)
     t.assert.equal(flattenImports(result.imports).get('entry.ts').get('built'), 'packages/built/dist/index.js')
   }
+}))
+
+test('scan typescript:true maps an unnamed root\'s outputs by its tsconfig, through a `type` marker among them', withTmp((t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { private: true, type: 'module', imports: { '#foo': './dist/foo.js', '#esm': './dist/esm/x.js' } },
+    'tsconfig.json': { compilerOptions: { outDir: 'dist', rootDir: 'src' } },
+    '.git/HEAD': '',
+    'dist/esm/package.json': { type: 'module' },
+    'src/foo.ts': 'export const foo: number = 1\n',
+    'src/esm/x.ts': 'export const x: number = 2\n',
+    'src/entry.ts': "import { foo } from '#foo'\nimport { x } from '#esm'\nexport const v: number = foo + x\n",
+  })
+  const result = scan([join(tmp, 'src', 'entry.ts')], { typescript: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.unresolved, [])
+  t.assert.deepStrictEqual(flattenImports(result.imports).get('src/entry.ts'), new Map([['#foo', 'src/foo.ts'], ['#esm', 'src/esm/x.ts']]))
 }))
 
 test("a workspace package's tsconfig.json that does not load fails a typescript:true miss into it, and hints none without", withTmp((t, tmp) => {
