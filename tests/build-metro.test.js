@@ -257,6 +257,38 @@ describe('stasis build --metro (spawned, concurrent)', { concurrency: CONCURRENC
     t.assert.match(runNode(t, join(tmp, 'both.cjs')), /^data:image\/png;base64,/u)
   }))
 
+  test('--metro builds as Metro\'s release build: JSX in .js, Flow stripped from a file marked @flow, __DEV__ and NODE_ENV defined', withTmp(async (t, tmp) => {
+    rnProject(tmp, {
+      index: [
+        '// @flow',
+        "import { where } from './lib/where'",
+        '/** @jsx h */',
+        'const h = (type: string): string => type',
+        "const View = 'View'",
+        'console.log(JSON.stringify({ where, dev: __DEV__, env: process.env.NODE_ENV, el: <View /> }))',
+        '',
+      ].join('\n'),
+    })
+    // Neither --jsx nor --flow: --metro turns both on.
+    const bundled = await runCli(['bundle', '--metro', '--platforms=ios,android', '--output=app.code.br', 'index.js'], { cwd: tmp })
+    t.assert.equal(bundled.status, 0, bundled.stderr)
+
+    // Nor --loader=.js:jsx, --flow or a --define.
+    const r = await runCli(['build', '--format=cjs', '--metro=ios', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'out.cjs'))), { where: 'ios', dev: false, env: 'production', el: 'View' })
+
+    // A --define takes the place of the default for its name alone.
+    const dev = await runCli(['build', '--format=cjs', '--metro=android', '--define=__DEV__=true', '--output=dev.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(dev.status, 0, dev.stderr)
+    t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'dev.cjs'))), { where: 'android', dev: true, env: 'production', el: 'View' })
+
+    // Without --metro, none of it: esbuild can't parse the Flow, before it gets to the per-platform edge.
+    const plain = await runCli(['build', '--format=cjs', '--output=plain.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.notEqual(plain.status, 0)
+    t.assert.match(plain.stderr, /Expected "\)" but found ":"\n\n {4}index\.js:4:/u)
+  }))
+
   test('--metro fails closed where the bundle carries no asset registry', withTmp(async (t, tmp) => {
     rnProject(tmp, { registry: false, index: "console.log(require('./img/logo.png'))\n" })
     const bundled = await bundleRn(tmp)
@@ -325,6 +357,14 @@ describe('stasis build takes the entry\'s options from the artifact\'s stasis.co
     t.assert.equal(own.status, 0, own.stderr)
     t.assert.match(own.stderr, /index\.js: --loader=\.js:jsx --metro=ios, as/u)
     t.assert.equal(JSON.parse(runNode(t, join(tmp, 'own.cjs'))).dev, true)
+  }))
+
+  test('metro alone builds as --metro does: JSX in .js and Metro\'s release defines, with no jsx or define set', withTmp(async (t, tmp) => {
+    await configuredApp(t, tmp, { metro: true, platforms: ['ios'] })
+    const r = await runCli(['build', '--format=cjs', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
+    t.assert.equal(r.status, 0, r.stderr)
+    t.assert.match(r.stderr, /index\.js: --metro=ios, as stasis\.config\.json's entries "index\.js" sets/u)
+    t.assert.deepStrictEqual(JSON.parse(runNode(t, join(tmp, 'out.cjs'))), { where: 'ios', dev: false, el: 'View' })
   }))
 
   test('metro with several platforms needs --metro, one of them', withTmp(async (t, tmp) => {

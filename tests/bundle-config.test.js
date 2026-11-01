@@ -321,7 +321,7 @@ test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', 
 test('CLI: stasis bundle strips an entry\'s Flow types with stasis\'s own flow-remove-types, no --flow given', withTmp(async (t, tmp) => {
   writeTree(tmp, {
     'package.json': { name: 'app', version: '1.0.0', type: 'module' },
-    'index.js': 'import type { T } from "./types.js"\nimport { dep } from "./dep.js"\nexport const v: number = dep\n',
+    'index.js': '// @flow\nimport type { T } from "./types.js"\nimport { dep } from "./dep.js"\nexport const v: number = dep\n',
     'dep.js': 'export const dep = 1\n',
     'types.js': 'export const T = 1\n',
     'stasis.config.json': { entries: { 'index.js': { flow: true } } },
@@ -333,6 +333,31 @@ test('CLI: stasis bundle strips an entry\'s Flow types with stasis\'s own flow-r
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.deepStrictEqual(readBundle(join(tmp, 'stasis.code.br')).reason, { bundle: ['dep.js', 'index.js'] })
   t.assert.throws(() => readFileSync(join(tmp, 'node_modules/flow-remove-types/loaded')), { code: 'ENOENT' })
+}))
+
+test('CLI: stasis bundle builds an entry stasis.config.json sets metro for, or --metro, with JSX, Flow and Metro\'s release defines', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'index.js': "// @flow\nconst f = (x: number): number => x\nif (__DEV__) require('./dev.js')\nif (process.env.NODE_ENV !== 'production') require('./notProd.js')\nrequire('./b.js')\nmodule.exports = <View>{f(1)}</View>\n",
+    'dev.js': 'module.exports = 1\n',
+    'notProd.js': 'module.exports = 1\n',
+    'b.js': 'module.exports = 1\n',
+    'stasis.config.json': { entries: { 'index.js': { metro: true, platforms: ['ios'] } } },
+  })
+  const files = (bundle) => [...readBundle(join(tmp, bundle)).sources.keys()].toSorted()
+  const configured = await runCli(['bundle', '--output=configured.br'], tmp)
+  t.assert.equal(configured.status, 0, configured.stderr)
+  t.assert.deepStrictEqual(files('configured.br'), ['b.js', 'index.js'])
+  // The entry's define takes the place of the default for its name alone.
+  writeTree(tmp, { 'stasis.config.json': { entries: { 'index.js': { metro: true, platforms: ['ios'], define: '__DEV__=true' } } } })
+  const dev = await runCli(['bundle', '--output=dev.br'], tmp)
+  t.assert.equal(dev.status, 0, dev.stderr)
+  t.assert.deepStrictEqual(files('dev.br'), ['b.js', 'dev.js', 'index.js'])
+  // And as flags.
+  writeTree(tmp, { 'stasis.config.json': {} })
+  const flags = await runCli(['bundle', '--metro', '--platforms=ios', '--output=flags.br', 'index.js'], tmp)
+  t.assert.equal(flags.status, 0, flags.stderr)
+  t.assert.deepStrictEqual(files('flags.br'), ['b.js', 'index.js'])
 }))
 
 test('readConfigEntries reads an entry\'s define as the --define flags it gives, each one whole', withTmp((t, tmp) => {

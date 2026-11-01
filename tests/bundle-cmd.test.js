@@ -2237,13 +2237,19 @@ const writeDefineProject = (dir) => {
   writeTree(dir, files)
 }
 
-test('buildBundle (JS) define leaves out what only the branches it keeps from running import, under Node and --metro', withTmp(async (t, tmp) => {
+test('buildBundle (JS) define leaves out what only the branches it keeps from running import, under Node and --metro, which defines the release build\'s by default', withTmp(async (t, tmp) => {
   writeDefineProject(tmp)
   const files = async (options) => [...(await buildBundle({ cwd: tmp, entries: ['index.js'], ...options })).sources.keys()].toSorted()
   const release = { __DEV__: false, 'process.env.NODE_ENV': 'production' }
   const releaseFiles = ['index.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.production.js']
   t.assert.deepStrictEqual(await files({ define: release }), releaseFiles)
   t.assert.deepStrictEqual(await files({ define: release, metro: true, platforms: ['ios', 'android'] }), releaseFiles)
+  // --metro defines both as Metro's release build does; a name given takes its own value, the other the default.
+  t.assert.deepStrictEqual(await files({ metro: true, platforms: ['ios', 'android'] }), releaseFiles)
+  t.assert.deepStrictEqual(await files({ metro: true, platforms: ['ios'], define: { __DEV__: true } }),
+    ['index.js', 'node_modules/devtool/index.js', 'node_modules/devtool/inspector.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.production.js'])
+  t.assert.deepStrictEqual(await files({ metro: true, platforms: ['ios'], define: { 'process.env.NODE_ENV': 'development' } }),
+    ['index.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.development.js'])
   t.assert.deepStrictEqual(await files({ define: release, mainFields: ['browser', 'main'] }), releaseFiles)
   t.assert.deepStrictEqual(await files({ define: { __DEV__: true, 'process.env.NODE_ENV': 'development' } }),
     ['index.js', 'node_modules/devtool/index.js', 'node_modules/devtool/inspector.js', 'node_modules/lib/index.js', 'node_modules/lib/lib.development.js'])
@@ -4081,23 +4087,26 @@ cliTest('CLI: bundle --jsx parses JSX in a .js file and walks its import graph',
   t.assert.match(decoded.sources['.'].files['entry.js'], /<Text>\{greet\}<\/Text>/u)
 }))
 
-cliTest('CLI: bundle --metro --jsx bundles a React Native JSX-in-.js entry (the reported scenario)', withTmp(async (t, tmp) => {
-  // Modern RN source is ESM with JSX in .js files; under --metro the parse error was fatal
-  // ("JS bundle would be broken at load time"). --jsx makes the scanner parse past the JSX.
+cliTest('CLI: bundle --metro bundles a React Native JSX-in-.js entry, as --jsx does (the reported scenario)', withTmp(async (t, tmp) => {
+  // Modern RN source is ESM with JSX in .js files, a parse error without --jsx ("JS bundle would be
+  // broken at load time"). --metro turns --jsx on, as Metro's Babel parses JSX in every file.
   jsProject(tmp, {
     'index.js': "import { Component } from './Component.js'\nexport const App = () => <Component />\n",
     'Component.js': "export const Component = () => <View>hi</View>\n",
   })
   const outPath = join(tmp, 'out.br')
-  const noJsx = await runCli(['bundle', '--metro', '--platforms=ios,android', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.notEqual(noJsx.status, 0, 'without --jsx, --metro must still fail closed on JSX-in-.js')
+  const noJsx = await runCli(['bundle', `--output=${outPath}`, 'index.js'], { cwd: tmp })
+  t.assert.notEqual(noJsx.status, 0, 'without --jsx or --metro, JSX-in-.js must fail closed')
   t.assert.match(noJsx.stderr, /JS bundle would be broken at load time/)
 
-  const r = await runCli(['bundle', '--metro', '--platforms=ios,android', '--jsx', `--output=${outPath}`, 'index.js'], { cwd: tmp })
-  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
-  const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
-  t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
-    'the whole JSX chain must be walked on every platform')
+  for (const flags of [[], ['--jsx']]) {
+    // eslint-disable-next-line no-await-in-loop -- both write outPath
+    const r = await runCli(['bundle', '--metro', '--platforms=ios,android', ...flags, `--output=${outPath}`, 'index.js'], { cwd: tmp })
+    t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+    const decoded = JSON.parse(brotliDecompressSync(readFileSync(outPath)).toString('utf-8'))
+    t.assert.deepStrictEqual(Object.keys(decoded.sources['.'].files).toSorted(), ['Component.js', 'index.js'],
+      'the whole JSX chain must be walked on every platform')
+  }
 }))
 
 cliTest('CLI: bundle --jsx handles a typeless package (RN convention: no "type"), still detecting ESM', withTmp(async (t, tmp) => {
@@ -4318,7 +4327,7 @@ cliTest('CLI: bundle --flow strips Flow types from a .jsx dependency and walks i
   // rewritten).
   jsProject(tmp, {
     'index.js': "import { C } from './comp.jsx'\nexport const App = C\n",
-    'comp.jsx': "import { dep } from './dep.js'\nexport const C = (x: number): mixed => <View>{dep}{x}</View>\n",
+    'comp.jsx': "// @flow\nimport { dep } from './dep.js'\nexport const C = (x: number): mixed => <View>{dep}{x}</View>\n",
     'dep.js': 'export const dep = 1\n',
   })
   const outPath = join(tmp, 'out.br')
@@ -4334,6 +4343,19 @@ cliTest('CLI: bundle --flow strips Flow types from a .jsx dependency and walks i
     'stripping Flow from the .jsx must reveal its edge to dep.js')
   // Stored bytes are pristine: the Flow annotation survives in the bundle (only parsing saw it stripped).
   t.assert.match(bundle.sources.get('comp.jsx'), /x: number/u)
+}))
+
+test('buildBundle --metro strips Flow types from a file marked @flow and parses JSX in .js, with neither flow nor jsx given', withTmp(async (t, tmp) => {
+  jsProject(tmp, {
+    'index.js': "// @flow\nimport { View } from './view.js'\nexport const App = (x: number): mixed => <View>{x}</View>\n",
+    'view.js': 'export const View = () => <div />\n',
+    'unmarked.js': 'export const v: number = 1\n',
+  })
+  const options = { cwd: tmp, metro: true, platforms: ['ios', 'android'] }
+  const bundle = await buildBundle({ ...options, entries: ['index.js'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['index.js', 'view.js'])
+  // Flow types in a file not marked @flow are no Flow --flow strips: a parse error, as without it.
+  await t.assert.rejects(() => buildBundle({ ...options, entries: ['unmarked.js'] }), /JS bundle would be broken at load time/u)
 }))
 
 // --- --resources: carry reached assets instead of failing "can't carry" ---------------------
@@ -5028,7 +5050,8 @@ const METRO_ADDED = {
   // For an `import()`, as Metro adds it then (its graph, the Metro plugin's).
   asyncRequire: ['node_modules/metro-runtime/src/modules/asyncRequire.js'],
   polyfills: ['node_modules/@react-native/js-polyfills/console.js', 'node_modules/@react-native/js-polyfills/error-guard.js'],
-  jsx: ['node_modules/react/cjs/react-jsx-runtime.development.js', 'node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
+  // Its production build alone: --metro defines process.env.NODE_ENV as Metro's release build does.
+  jsx: ['node_modules/react/cjs/react-jsx-runtime.production.js', 'node_modules/react/jsx-runtime.js'],
 }
 
 test('buildBundle --metro records no edge for an import listing types alone, which Babel erases, as the Metro plugin records none', withTmp(async (t, tmp) => {
@@ -5093,18 +5116,18 @@ test('buildBundle --metro carries what Babel and Metro add to the build, as Metr
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios', 'android'] }
   // Babel's (--babel-aliases): its helpers, all of them, which ones it adds hanging on the syntax a
   // file uses; Metro's module system; the polyfills React Native's Metro config prepends, as
-  // js-polyfills lists them (read, never run). And the JSX runtime for JSX (--jsx), and Metro's
-  // asyncRequire for the `import()`.
-  const bundle = await buildBundle({ ...options, babelAliases: 'aliases.json', jsx: true })
+  // js-polyfills lists them (read, never run). And the JSX runtime for JSX (--jsx, which --metro
+  // turns on), and Metro's asyncRequire for the `import()`.
+  const bundle = await buildBundle({ ...options, babelAliases: 'aliases.json' })
   t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), [...Object.values(METRO_ADDED).flat(), 'index.js', 'plain.js'].toSorted())
   // No edge to any from the source, which imports none; theirs among themselves, written in theirs.
   t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), { './plain.js': 'plain.js' })
   t.assert.equal(importTarget(bundle, 'node_modules/@babel/runtime/helpers/toPropertyKey.js', './typeof.js'), 'node_modules/@babel/runtime/helpers/typeof.js')
   // Metro's code: no format.
   t.assert.equal(bundle.formats.get('node_modules/react/jsx-runtime.js'), undefined)
-  // Plain --metro adds none of it for a file with no `import()`; a .tsx file, JSX itself, takes the
-  // JSX runtime without --jsx.
-  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()], ['plain.js'])
+  // Plain --metro adds none of the rest for a file with no `import()`: the JSX runtime alone, as
+  // --jsx adds it to any file; a .tsx file, JSX itself, takes it without --jsx or --metro.
+  t.assert.deepStrictEqual([...(await buildBundle({ ...options, entries: ['plain.js'] })).sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'plain.js'].toSorted())
   writeFileSync(join(tmp, 'view.tsx'), 'export const View = () => <div />\n')
   const tsx = await buildBundle({ ...options, entries: ['view.tsx'] })
   t.assert.deepStrictEqual([...tsx.sources.keys()].toSorted(), [...METRO_ADDED.jsx, 'view.tsx'].toSorted())

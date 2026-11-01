@@ -7,7 +7,7 @@ import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
-import { parseDefine } from '../define.js'
+import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
@@ -2118,9 +2118,12 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
 // `metro`, whose per-platform edges and synthetic empty module a State can't hold, else through a
 // State, which detects the bundle's repo itself. `root` is the directory the bundle's paths are
 // relative to: cwd for the resolver's, the State's root for the State's. `extra` and `outputsAt` are
-// buildJsBundle's, for the State's alone (see withExtra).
+// buildJsBundle's, for the State's alone (see withExtra). `metro` turns on `jsx` and `flow`, as
+// Metro's Babel parses JSX and Flow in every file, and defines what Metro's release build does
+// (METRO_RELEASE_DEFINE), each name `define` gives a value taking that one instead.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt, root }
 async function buildJs({ mainFields, platforms, metro, metroResolver, babel, babelAliases, innermostRoot, extra, outputsAt, ...options }) {
+  if (metro) options = { ...options, jsx: true, flow: true, define: { ...METRO_RELEASE_DEFINE, ...options.define } }
   if (metro || mainFields !== undefined) {
     const built = await buildResolvedJsBundle({ ...options, mainFields: metro ? METRO_MAIN_FIELDS : mainFields, platforms: metro ? platforms : [null], metro: Boolean(metro), metroResolver: Boolean(metroResolver), babel: Boolean(babel), babelAliases })
     return { bundle: built.bundle, lockfile: built.lockfile, stateBuilt: false, root: resolve(options.cwd) }

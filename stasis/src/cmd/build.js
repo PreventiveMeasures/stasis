@@ -13,7 +13,8 @@ import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
 import { assetData, assetModule } from '@preventive/rn/metro-assets.js'
 import { HERMES_UNSUPPORTED, createBabelConfigTransform, createHermesTransform } from '../babel.js'
 import { bundleFromLockfile } from '../bundle-from-lockfile.js'
-import { FLOW_EXTS, stripFlowTypes } from '../flow.js'
+import { METRO_RELEASE_DEFINE } from '../define.js'
+import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
 import { writeFile } from './output.js'
@@ -216,14 +217,15 @@ function metroAssetResource(state, platform, built) {
 }
 
 // --flow's per-file transform (StasisEsbuild's `transform` hook shape), as `stasis bundle --flow` reads
-// a file: a JS-family one esbuild can't parse gets its Flow types stripped (flow.js), an import listing
-// types alone dropped whole, as Babel's Flow transform drops it (a --metro bundle records no edge for
-// it). One that parses is never touched, as stripping plain JS as Flow can misread it (`a < b > (c)`
-// as a call). A file still unparseable fails the build in esbuild: Flow syntax that is code, which
-// stripping leaves, or one flow-remove-types itself can't parse, served as it is.
+// a file: a JS-family one marked `@flow` (hasFlowPragma) that esbuild can't parse gets its Flow types
+// stripped (flow.js), an import listing types alone dropped whole, as Babel's Flow transform drops it
+// (a --metro bundle records no edge for it). One not marked, or that parses, is never touched, as
+// stripping plain JS as Flow can misread it (`a < b > (c)` as a call). A file still unparseable fails
+// the build in esbuild: Flow syntax that is code, which stripping leaves, or one flow-remove-types
+// itself can't parse, served as it is.
 function createFlowTransform(esbuild) {
   return async (source, { path, loader }) => {
-    if (!FLOW_EXTS.has(extname(path))) return undefined
+    if (!FLOW_EXTS.has(extname(path)) || !hasFlowPragma(String(source))) return undefined
     try {
       await esbuild.transform(source, { loader, sourcefile: path, logLevel: 'silent' })
       return undefined
@@ -380,6 +382,18 @@ export async function buildCommand({
       }
     }
     if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
+  }
+  // --metro, given or the config's, builds as `stasis bundle --metro` reads the files: JSX in .js
+  // (--loader=.js:jsx, where no --loader names .js), Flow stripped (--flow, not under --babel, whose
+  // config compiles it), and each of METRO_RELEASE_DEFINE's names defined as Metro's release build
+  // defines it, where neither --define nor the config gives it a value, as esbuild takes one (JS):
+  // outside Metro's prelude, `__DEV__` is no global at all.
+  if (metro !== undefined) {
+    if (loader['.js'] === undefined) loader = { ...loader, '.js': 'jsx' }
+    if (!babel) flow = true
+    for (const [key, value] of Object.entries(METRO_RELEASE_DEFINE)) {
+      if (!Object.hasOwn(define, key)) define = { ...define, [key]: JSON.stringify(value) }
+    }
   }
   if (assetsDest !== undefined && metro === undefined) {
     throw new Error('stasis build: --assets-dest copies the assets --metro builds; pass --metro=PLATFORM with it')

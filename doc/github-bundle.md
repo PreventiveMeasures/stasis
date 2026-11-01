@@ -102,8 +102,8 @@ them, as a plain install does.
 It is the file's alone. The project's own settings for it (`.npmrc`'s `omit`,
 `production` or `only`, `.yarnrc`'s `--production`) stay refused, as they
 change a developer's install too. Nor is it `process.env.NODE_ENV`, which an
-entry's [`define`](bundle.md#entry-options-stasisconfigjson) sets: the two are
-independent.
+entry's [`define`](bundle.md#entry-options-stasisconfigjson) sets, or its
+`metro` by default: the two are independent.
 
 ### `.yarnclean`
 

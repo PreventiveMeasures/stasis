@@ -536,7 +536,8 @@ test("buildGitHubBundle bundles the entries stasis.config.json names or others, 
 test("buildGitHubBundle refuses an option given that stasis.config.json's entries set otherwise, rather than take it over them", async (t) => {
   const refused = {
     '--platforms=ios is given, but stasis.config.json\'s entries build "index.js" with --platforms=ios,android': { entries: ['index.js'], metro: true, platforms: ['ios'] },
-    '--jsx is given, but stasis.config.json\'s entries build "index.js" without --jsx': { jsx: true },
+    // index.js, built with metro, is built with --jsx, which metro turns on.
+    '--jsx is given, but stasis.config.json\'s entries build "./cli.js" without --jsx': { jsx: true },
     '--metro is given, but stasis.config.json\'s entries build "./cli.js" without --metro': { metro: true, platforms: ['ios', 'android'] },
     '--conditions=browser is given, but stasis.config.json\'s entries build "./cli.js" with --conditions=node': { entries: ['cli.js'], conditions: ['browser'], config: { 'cli.js': { conditions: ['node'] } } },
     '--define=__DEV__=true is given, but stasis.config.json\'s entries build "./cli.js" with --define=__DEV__=false': { entries: ['cli.js'], define: { __DEV__: true }, config: { 'cli.js': { define: '__DEV__=false' } } },
@@ -547,9 +548,10 @@ test("buildGitHubBundle refuses an option given that stasis.config.json's entrie
     // By default, before buildVfsBundle sees them, by buildGitHubBundle.
     await t.assert.rejects(build({ client: fakeClient(files), ...options }), options.entries ? pattern : new RegExp(pattern.source.replace('buildVfsBundle', 'buildGitHubBundle'), 'u'), message)
   }))
-  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo()), jsx: true }), /^Error: suggestedEntries: --jsx is given, but stasis\.config\.json's entries build "index\.js" without --jsx: /u, 'as the build checks it')
-  // One it sets alike is no other: the same platforms in another order, or a define of the same value.
-  const same = await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], metro: true, platforms: ['android', 'ios', 'ios'] })
+  await t.assert.rejects(suggestedEntries({ vfs: vfsOf(configuredRepo()), jsx: true }), /^Error: suggestedEntries: --jsx is given, but stasis\.config\.json's entries build "\.\/cli\.js" without --jsx: /u, 'as the build checks it')
+  // One it sets alike is no other: the same platforms in another order, jsx and flow, which metro
+  // turns on, or a define of the same value.
+  const same = await build({ client: fakeClient(configuredRepo()), entries: ['index.js'], metro: true, platforms: ['android', 'ios', 'ios'], jsx: true, flow: true })
   t.assert.deepStrictEqual([...same.bundle.sources.keys()].toSorted(), ['a.android.js', 'a.ios.js', 'index.js'])
   const defined = await build({ client: fakeClient(configuredRepo({ 'cli.js': { define: ['__DEV__=false', 'X="y"'], 'package-json': false } })), define: { X: 'y', __DEV__: false }, packageJSON: false })
   t.assert.deepStrictEqual([...defined.bundle.entries], ['cli.js'])
