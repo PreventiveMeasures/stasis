@@ -456,6 +456,17 @@ test("typescript: a package's entry fields naming unbuilt outputs outside it lan
   t.assert.equal(relTo(tmp, createFieldResolver({ mainFields: ['main'], typescript: true })(from, 'shared')), 'packages/shared/src/index.ts')
 }))
 
+test("typescript: an unbuilt output's source whose real path lies in node_modules is no target", withTsTmp((t, tmp) => {
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({ compilerOptions: { outDir: 'dist', rootDir: 'src' } }))
+  mkdirSync(join(tmp, 'src'))
+  writeFileSync(join(tmp, 'src', 'own.ts'), 'export const o: number = 1\n')
+  symlinkSync(join('..', 'node_modules', 'tspkg-installed', 'lib', 'main.ts'), join(tmp, 'src', 'linked.ts'))
+  const resolver = createFieldResolver({ mainFields: ['main'], typescript: true })
+  const from = join(tmp, 'entry.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './dist/own')), 'src/own.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './dist/linked')), null)
+}))
+
 test('typescript: an importer in node_modules gets no mapping, even where its import leaves it', withTsTmp((t, tmp) => {
   // An installed package's file reaching out of node_modules to ./only-ts.js (only-ts.ts on disk)
   // resolves as without --typescript; a linked workspace package's file, in node_modules by its

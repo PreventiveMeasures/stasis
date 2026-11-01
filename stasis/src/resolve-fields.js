@@ -195,9 +195,15 @@ function resolveSourceFile(base, opts) {
     const hit = tryExt(`.${ext}`)
     if (hit) return hit
   }
-  // --typescript: an unbuilt output's source, probed the same way (fromOutputSource). Not for a
-  // directory: resolveFileOrDir probes its index, which maps.
-  if (opts.typescript && !isDir(base, opts.host)) return fromOutputSource(base, (input) => resolveSourceFile(input, { ...opts, outputs: null }), opts)
+  // --typescript: an unbuilt output's source, probed the same way (fromOutputSource), never in
+  // node_modules. Not for a directory: resolveFileOrDir probes its index, which maps.
+  if (opts.typescript && !isDir(base, opts.host)) {
+    const source = (input) => {
+      const hit = resolveSourceFile(input, { ...opts, outputs: null })
+      return hit === null || inNodeModules(hit, opts.host) ? null : hit
+    }
+    return fromOutputSource(base, source, opts)
+  }
   return null
 }
 
