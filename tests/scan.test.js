@@ -627,21 +627,25 @@ test('scan --flow strips Flow type syntax before oxc so the real import graph re
   t.assert.ok(!result.files.has('types.js'), 'the Flow type-only import is erased, so types.js is never walked')
 }))
 
-test('scan --flow strips only a file marked @flow, anywhere in it, never one with no pragma', withTmp((t, tmp) => {
-  // The pragma need not lead the file: flow-remove-types finds it anywhere, and so does --flow.
+test('scan --flow reads a file as Metro\'s Babel does: one marked @flow as Flow, any other with types where oxc can\'t parse it', withTmp((t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'flow', version: '0.0.0', type: 'module' }))
-  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\n/**\n * Typed.\n * @flow strict\n */\nexport const v: number = dep\n')
-  writeFileSync(join(tmp, 'dep.js'), 'export const dep = 1\n')
-  const marked = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
-  t.assert.deepStrictEqual(marked.parseErrors, [])
-  t.assert.ok(marked.files.has('dep.js'))
+  // react-native-prompt-android 1.0's index.ios.js: Flow types and no pragma, which Metro's Babel strips.
+  writeFileSync(join(tmp, 'unmarked.js'), 'import { dep } from "./dep.js"\nexport default function prompt(\n    title: ?string,\n    options?: Object\n): void {}\nexport const v = dep\n')
+  // Marked anywhere, `require<T>(...)` is Flow's call, though oxc parses it as comparisons, as
+  // hermes-parser reads it there; in a file not marked, comparisons, as Babel's own parser reads it.
+  writeFileSync(join(tmp, 'marked.js'), '/**\n * Loads a.\n * @flow strict\n */\nexport const a = require<number>("./a.js")\n')
+  writeFileSync(join(tmp, 'ambiguous.js'), 'export const f = (x: number): number => x\nexport const b = require<number>("./b.js")\n')
+  for (const name of ['dep.js', 'a.js', 'b.js']) writeFileSync(join(tmp, name), 'export const dep = 1\n')
+  const result = scan(['unmarked.js', 'marked.js', 'ambiguous.js'].map((name) => join(tmp, name)), { flow: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(result.parseErrors, [])
+  t.assert.ok(result.files.has('dep.js'), 'the unmarked file\'s types are stripped where oxc can\'t parse it')
+  t.assert.ok(result.files.has('a.js'), 'the marked file is read as Flow, though oxc parses it')
+  t.assert.ok(!result.files.has('b.js'), 'the unmarked file reads what JS can read as JS')
 
-  // The same types with no pragma: not Flow's to strip, so the parse error stands.
-  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v: number = dep\n')
-  const unmarked = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
-  t.assert.equal(unmarked.parseErrors.length, 1)
-  t.assert.equal(unmarked.parseErrors[0].file, 'entry.js')
-  t.assert.ok(!unmarked.files.has('dep.js'))
+  // Without --flow, the marked file is JS, and the unmarked one a parse error.
+  const plain = scan([join(tmp, 'marked.js'), join(tmp, 'unmarked.js')]).toRelative(tmp)
+  t.assert.ok(!plain.files.has('a.js'))
+  t.assert.deepStrictEqual(plain.parseErrors.map((e) => e.file), ['unmarked.js'])
 }))
 
 test('scan --flow leaves .ts sources to oxc (does not run flow-remove-types on TS constructs)', withTmp((t, tmp) => {

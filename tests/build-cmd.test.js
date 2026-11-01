@@ -494,13 +494,22 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '<p>hi</p>')
   }))
 
-  test('build --flow strips Flow types from a file esbuild can\'t parse, and only from one', withTmp(async (t, tmp) => {
+  test('build --flow strips Flow types as Metro\'s Babel does: a file marked @flow as Flow, any other where esbuild can\'t parse it', withTmp(async (t, tmp) => {
     // A Flow file (types, a type alias, an import listing types alone) and a plain one whose
     // `a < b > (c)` a Flow parser reads as a call: --flow strips the one esbuild can't parse and
-    // leaves the other as written, as `stasis bundle --flow` reads them.
+    // leaves the other as written, as `stasis bundle --flow` reads them. One not marked @flow is read
+    // as Babel's own Flow parser reads it, `a < b > (c)` as comparisons where its types are stripped;
+    // one marked, as Flow throughout, `id<number>(5)` as a call, though esbuild parses it.
     writeFileSync(join(tmp, 'package.json'), '{ "name": "flow-app", "version": "0.0.0", "private": true, "type": "module" }')
     // One string logged: Node colours a logged number or boolean under FORCE_COLOR (as CI sets it).
-    writeFileSync(join(tmp, 'index.js'), "import { add } from './math.js'\nimport { tricky } from './plain.js'\nconsole.log(`${add(1, 2)} ${tricky}`)\n")
+    writeFileSync(join(tmp, 'index.js'), [
+      "import { add } from './math.js'",
+      "import { tricky } from './plain.js'",
+      "import { amb } from './ambiguous.js'",
+      "import { called } from './called.js'",
+      'console.log(`${add(1, 2)} ${tricky} ${amb(0)} ${called}`)',
+      '',
+    ].join('\n'))
     writeFileSync(join(tmp, 'math.js'), [
       '// @flow',
       "import { type Unit } from './types.js'",
@@ -508,8 +517,10 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
       'export function add(a: Num, b: Num): Num { return a + b }',
       '',
     ].join('\n'))
-    writeFileSync(join(tmp, 'types.js'), "// @flow\nconsole.log('types.js ran')\nexport type Unit = 'px'\n")
+    writeFileSync(join(tmp, 'types.js'), "console.log('types.js ran')\nexport type Unit = 'px'\n")
     writeFileSync(join(tmp, 'plain.js'), 'const a = 1, b = 2, c = 0\nexport const tricky = a < b > (c)\n')
+    writeFileSync(join(tmp, 'ambiguous.js'), 'const a = 1, b = 2\nexport const amb = (c: number): boolean => a < b > (c)\n')
+    writeFileSync(join(tmp, 'called.js'), '/* @flow */\nconst id = (x) => x\nexport const called = id<number>(5)\n')
     const bundled = await runCli(['bundle', '--flow', '--output=app.code.br', 'index.js'], { cwd: tmp })
     t.assert.equal(bundled.status, 0, bundled.stderr)
 
@@ -518,11 +529,12 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
     t.assert.notEqual(fail.status, 0)
     t.assert.match(fail.stderr, /math\.js/)
 
-    // With --flow: builds and runs. `(1 < 2) > 0` is true, not a call; the import listing types alone
-    // goes whole, as Babel's Flow transform drops it, so types.js doesn't run.
+    // With --flow: builds and runs. `(1 < 2) > 0` is true, not a call, in both files not marked;
+    // `id<number>(5)` is 5; the import listing types alone goes whole, as Babel's Flow transform
+    // drops it, so types.js doesn't run.
     const ok = await runCli(['build', '--format=cjs', '--flow', '--output=out.cjs', 'app.code.br'], { cwd: tmp })
     t.assert.equal(ok.status, 0, ok.stderr)
-    t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '3 true')
+    t.assert.equal(runNode(t, join(tmp, 'out.cjs')).trim(), '3 true true 5')
   }))
 
   test('build --flow fails on Flow syntax that is code, which stripping leaves (a component declaration)', withTmp(async (t, tmp) => {

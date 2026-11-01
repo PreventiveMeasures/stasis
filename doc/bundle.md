@@ -33,7 +33,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
 | `--babel-aliases=path.json` | With `--metro`: resolve through the import aliases a JSON file of the project lists, as `--babel` would, without running anything. See [Metro](#metro---metro). |
 | `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files marked `@flow` that oxc can't parse. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as Metro's Babel does: one marked `@flow`, and any other oxc can't parse. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
@@ -589,8 +589,8 @@ config, rewrites it first, as it would under Metro.
 It builds as Metro's release build (`react-native bundle --dev false`) does:
 
 - `--jsx` and `--flow` are on, as Metro's Babel parses JSX in every file and
-  strips Flow types: JSX in a `.js` file parses, and a file marked `@flow` has
-  its types stripped. See [JSX and Flow](#jsx-and-flow).
+  strips Flow types: JSX in a `.js` file parses, and Flow types are stripped.
+  See [JSX and Flow](#jsx-and-flow).
 - `__DEV__` is defined as `false` and `process.env.NODE_ENV` as
   `"production"`, the values Metro's release build inlines, so what only a dev
   build imports (`if (__DEV__) require(...)`) is left out. A `--define`, or an
@@ -679,13 +679,22 @@ JSX in TS goes in a `.tsx` file, as TypeScript itself requires. The JSX source
 is stored verbatim, for `stasis build --loader=.js:jsx` to transform later: see
 [build](build.md#jsx-in-jsts).
 
-`--flow` strips Flow type syntax from a `.js`/`.cjs`/`.mjs`/`.jsx` file marked
-`@flow` (anywhere in it, as `flow-remove-types` looks for the pragma) that oxc
-can't parse and retries, so the import graph resolves; the stored source stays
-the original bytes. A file not marked `@flow` is never stripped, Flow types or
-not. It strips with `flow-remove-types`, a dependency of stasis resolved from
-where stasis is installed, never from the project being bundled, and combines
-with `--jsx`, `--conditions` and `--mainFields`; `--metro` turns it on.
+`--flow` strips Flow type syntax from `.js`/`.cjs`/`.mjs`/`.jsx` files, so the
+import graph resolves, as Metro's Babel (React Native's preset) strips it; the
+stored source stays the original bytes. `.ts`/`.tsx` files are never stripped.
+
+- A file marked `@flow`, anywhere in it, is Flow: it is stripped whether or not
+  oxc parses it as it is, and syntax both Flow and JS can read is Flow's
+  (`require<T>('./x')` is a call), as the preset parses such a file with
+  hermes-parser.
+- Any other file is stripped only where oxc can't parse it, Flow types
+  without the pragma (`react-native-prompt-android`'s `index.ios.js`), and
+  syntax both can read is JS's (`a < b > (c)` compares), as Babel's own Flow
+  parser reads a file not marked.
+
+It strips with `flow-remove-types`, a dependency of stasis resolved from where
+stasis is installed, never from the project being bundled, and combines with
+`--jsx`, `--conditions` and `--mainFields`; `--metro` turns it on.
 Stripping removes types only: Flow syntax that compiles to code, as `component`
 and `hook` declarations and `enum`s do, stays, so a file using it still doesn't
 parse (React Native 0.81's `View.js` and `VirtualView.js`).

@@ -19,7 +19,7 @@ stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|
 | `--format` | esbuild output format `esm`\|`cjs`\|`iife`. Default `esm` (`iife` under `--platform=hermes`). |
 | `--platform` | Target platform `node`\|`browser`\|`neutral` (esbuild's), or `hermes`. Default `node`. See [Hermes](#hermes---platformhermes). |
 | `--babel` | Transform every code file with the project's own `babel.config.*` before bundling. See [`--babel`](#the-projects-babel-config---babel). |
-| `--flow` | Strip Flow types from a `.js`/`.cjs`/`.mjs`/`.jsx` file marked `@flow` that esbuild can't parse, as `stasis bundle --flow` does. On under `--metro` (not with `--babel`). See [Flow](#flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs`/`.jsx` files as `stasis bundle --flow` does: one marked `@flow`, and any other esbuild can't parse. On under `--metro` (not with `--babel`). See [Flow](#flow). |
 | `--minify`, `--sourcemap` | Forwarded to esbuild. |
 | `--define=KEY=VALUE` (repeatable) | esbuild [define](https://esbuild.github.io/api/#define); value forwarded verbatim, must be valid JS as esbuild's CLI expects (e.g. `--define=process.env.NODE_ENV='"production"'`, `--define=__DEV__=false`). Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. |
 | `--external=PATTERN` (repeatable) | esbuild [external](https://esbuild.github.io/api/#external). See [Externals](#externals). |
@@ -144,9 +144,9 @@ is for every platform it names at once; Metro builds one platform at a time.
   builds it, computed from the bytes the artifact carries.
 - **As a release build.** It builds as `react-native bundle --dev false`
   does, and as `stasis bundle --metro` reads the files: JSX in `.js` parses
-  (`--loader=.js:jsx`, unless a `--loader` names `.js`), a file marked `@flow`
-  has its Flow types stripped (`--flow`, not with `--babel`, whose config
-  compiles Flow itself), and `__DEV__` is defined as `false` and
+  (`--loader=.js:jsx`, unless a `--loader` names `.js`), Flow types are
+  stripped (`--flow`, not with `--babel`, whose config compiles Flow itself),
+  and `__DEV__` is defined as `false` and
   `process.env.NODE_ENV` as `"production"`, the values Metro's release build
   gives them. Outside Metro's prelude `__DEV__` is no global at all, and React
   Native reads it everywhere. A `--define`, or the entry's `define`, for either
@@ -297,12 +297,12 @@ dependency reached through one, e.g. a package whose React Native entry is
 
 ### Flow
 
-esbuild doesn't parse Flow. `--flow` strips Flow type syntax from a
-`.js`/`.cjs`/`.mjs`/`.jsx` file marked `@flow` that esbuild can't parse, with
-the same `flow-remove-types` that `stasis bundle --flow` uses (stasis's own
-dependency, never the project's), then hands the result to esbuild, or to the
-`--platform=hermes` downlevel. `--metro` turns it on, as `stasis bundle
---metro` does:
+esbuild doesn't parse Flow. `--flow` strips Flow type syntax from
+`.js`/`.cjs`/`.mjs`/`.jsx` files as Metro's Babel (React Native's preset)
+strips it, with the same `flow-remove-types` that `stasis bundle --flow` uses
+(stasis's own dependency, never the project's), then hands the result to
+esbuild, or to the `--platform=hermes` downlevel. `--metro` turns it on, as
+`stasis bundle --metro` does:
 
 ```sh
 stasis bundle --flow index.js
@@ -310,11 +310,14 @@ stasis build --flow --output=main.js stasis.code.br
 stasis build --platform=hermes --metro=ios --output=main.js stasis.code.br   # --flow too
 ```
 
-- Only a file marked `@flow`, anywhere in it (as `flow-remove-types` looks for
-  the pragma), is stripped. One that isn't is left as written, Flow types or
-  not, and fails the build where esbuild can't parse it.
-- A file esbuild already parses is left as written. Stripping plain JS as Flow can
-  misread it: `a < b > (c)` would become a call.
+- A file marked `@flow`, anywhere in it, is Flow: it is stripped whether or not
+  esbuild parses it as it is, and syntax both Flow and JS can read is Flow's
+  (`id<number>(5)` calls `id`, where esbuild would read comparisons), as the
+  preset parses such a file with hermes-parser.
+- Any other file is stripped only where esbuild can't parse it (Flow types
+  without the pragma), and syntax both can read is JS's (`a < b > (c)`
+  compares), as Babel's own Flow parser reads a file not marked. One esbuild
+  parses is left as written.
 - An import listing types alone (`import { type A } from`) is dropped whole, as
   Babel's Flow transform drops it. A `--metro` bundle records no edge for it.
 - Stripping removes types only. Flow syntax that compiles to code (`component`

@@ -217,24 +217,26 @@ function metroAssetResource(state, platform, built) {
 }
 
 // --flow's per-file transform (StasisEsbuild's `transform` hook shape), as `stasis bundle --flow` reads
-// a file: a JS-family one marked `@flow` (hasFlowPragma) that esbuild can't parse gets its Flow types
-// stripped (flow.js), an import listing types alone dropped whole, as Babel's Flow transform drops it
-// (a --metro bundle records no edge for it). One not marked, or that parses, is never touched, as
-// stripping plain JS as Flow can misread it (`a < b > (c)` as a call). A file still unparseable fails
-// the build in esbuild: Flow syntax that is code, which stripping leaves, or one flow-remove-types
-// itself can't parse, served as it is.
+// a file, and Metro's Babel builds it: a JS-family one gets its Flow types stripped (flow.js), an
+// import listing types alone dropped whole, as Babel's Flow transform drops it (a --metro bundle
+// records no edge for it) -- one marked `@flow` (hasFlowPragma) whether or not esbuild parses it as it
+// is (where `f<T>(x)` is a comparison, not Flow's call), any other only where esbuild can't parse it.
+// A file still unparseable fails the build in esbuild: Flow syntax that is code, which stripping
+// leaves, or one flow-remove-types itself can't parse, served as it is.
 function createFlowTransform(esbuild) {
   return async (source, { path, loader }) => {
-    if (!FLOW_EXTS.has(extname(path)) || !hasFlowPragma(String(source))) return undefined
-    try {
-      await esbuild.transform(source, { loader, sourcefile: path, logLevel: 'silent' })
-      return undefined
-    } catch {
+    if (!FLOW_EXTS.has(extname(path))) return undefined
+    const text = String(source)
+    if (!hasFlowPragma(text)) {
       try {
-        return { contents: stripFlowTypes(source, { removeEmptyImports: true }), loader }
-      } catch {
+        await esbuild.transform(text, { loader, sourcefile: path, logLevel: 'silent' })
         return undefined
-      }
+      } catch { /* stripped below */ }
+    }
+    try {
+      return { contents: stripFlowTypes(text, { removeEmptyImports: true }), loader }
+    } catch {
+      return undefined
     }
   }
 }
