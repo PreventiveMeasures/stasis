@@ -17,11 +17,11 @@ written and then given: built the same way, with the same refusals, but
 neither compressed nor written. The build's warnings (`[stasis] Bundle has 6
 unresolved import(s) ...`) are said only where it fails, before its error;
 where it succeeds, the audit's output is all there is. Its consumers are the
-builds' (`bundle`, `bundle:metro`, and `extra` for the files the config's
-`extra` adds), which `--reason` takes. Bare `stasis bundle` takes no flag, so an entry
-setting an option that needs consent (`babel`, `metro-resolver`, `cargo`,
-`cargo-target`) is refused here as it is there; bundle such entries with
-`stasis bundle` and audit the file.
+builds' (`bundle`, `metro` for `bundle:metro` as below, and `extra` for the
+files the config's `extra` adds), which `--reason` takes. Bare `stasis bundle`
+takes no flag, so an entry setting an option that needs consent (`babel`,
+`metro-resolver`, `cargo`, `cargo-target`) is refused here as it is there;
+bundle such entries with `stasis bundle` and audit the file.
 
 | Flag | Meaning |
 | - | - |
@@ -88,7 +88,7 @@ With `--reason`, the summary says whose packages were scanned
 ```sh
 stasis audit stasis.lock.json
 stasis audit --why app.stasis.code.br
-stasis audit --reason=bundle:metro   # the Metro build of stasis.config.json's entries
+stasis audit --reason=metro   # the Metro build of stasis.config.json's entries
 stasis audit --reason=run --why app.stasis.code.br
 GITHUB_TOKEN=... stasis audit --repo-advisories stasis.lock.json
 ```
@@ -126,7 +126,11 @@ vulnerable versions, title and id, plus a `reason` column where the artifacts
 record provenance: which bundle consumers (`run`, `metro`, `esbuild`, ...,
 `bundle` for `stasis bundle`, `bundle:metro` for the source `stasis bundle --metro`
 bundles, whose configs are `bundle`'s)
-recorded the package, and with `--why`, how.
+recorded the package, and with `--why`, how. Where no input records `metro` (a
+build Metro ran), `bundle:metro` is shown as `metro`, in the table, the chains,
+the summary and the consumers an unknown `--reason` names, and `--reason=metro`
+and `--reason=bundle:metro` both take it. Where one does, the two are shown
+apart, as they are.
 
 ## Import chains (`--why`)
 

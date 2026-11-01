@@ -138,9 +138,10 @@ function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
   return graphs
 }
 
-// Invert the reason map to file -> Set(consumer). null when the artifact carries
-// no reason map (single-consumer bundle / lockfile) -> chains render bare.
-export function invertReason(reason) {
+// Invert the reason map to file -> Set(consumer), each consumer by `name(consumer)` (as it is, by
+// default). null when the artifact carries no reason map (single-consumer bundle / lockfile) ->
+// chains render bare.
+export function invertReason(reason, name = (consumer) => consumer) {
   if (!reason) return null
   const byFile = new Map()
   for (const [consumer, list] of Object.entries(reason)) {
@@ -148,7 +149,7 @@ export function invertReason(reason) {
     for (const f of list) {
       let set = byFile.get(f)
       if (set === undefined) byFile.set(f, (set = new Set()))
-      set.add(consumer)
+      set.add(name(consumer))
     }
   }
   return byFile
@@ -344,8 +345,9 @@ function dropSuffixed(chains) {
 // `full` (--why-full) -- then every surviving chain is spelled out with no `...`
 // collapse, in the same shortest-first order. The flags compose: deep + full is
 // the complete raw listing. Artifacts without a resolution graph (`imports`)
-// contribute nothing.
-export function collectWhy(files, targetKeys, reasonFilter = null, { deep = false, full = false } = {}) {
+// contribute nothing. Each consumer is `consumerName(consumer)` (as it is, by default),
+// which `reasonFilter` names it by too.
+export function collectWhy(files, targetKeys, reasonFilter = null, { deep = false, full = false, consumerName } = {}) {
   // key -> reason bucket ('' = unattributed) -> Map(chainKey -> node-name array)
   const acc = new Map()
   const truncatedKeys = new Set()
@@ -367,7 +369,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
 
     const { fileToDir, dirInfo, dirFiles } = moduleIndex(artifact)
     const edges = fileEdges(imports)
-    const fileReasons = invertReason(artifact.reason)
+    const fileReasons = invertReason(artifact.reason, consumerName)
     const graphs = bucketGraphs(edges, fileToDir, dirInfo, fileReasons)
     const dirReasons = dirReasonsIndex(dirFiles, fileReasons)
     // Terminal packages end a chain regardless of what imports them.

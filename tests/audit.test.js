@@ -938,11 +938,15 @@ test("audit with no file takes --reason, by the consumers of stasis.config.json'
   const spy = join(tmp, 'spy.mjs')
   writeFileSync(spy, NPM_SPY)
   const project = join(tmp, 'project')
-  // index.js built as Metro builds it (bundle:metro), cli.js as Node does (bundle).
+  // index.js built as Metro builds it (bundle:metro, shown as metro), cli.js as Node does (bundle).
   writeProject(project, { entries: { 'index.js': { metro: true, platforms: ['ios'] }, 'cli.js': {} } })
-  const metro = runSpied(spy, project, ['audit', '--reason=bundle:metro'])
+  const all = runSpied(spy, project, ['audit'])
+  t.assert.match(all.stdout, /│ foo +│ 1\.0\.0 +│ metro +│/u)
+  t.assert.match(all.stdout, /│ bar +│ 2\.0\.0 +│ bundle +│/u)
+  const metro = runSpied(spy, project, ['audit', '--reason=metro'])
   t.assert.equal(metro.status, 1, metro.stderr)
-  t.assert.match(metro.stderr, /^npm \{"foo":\["1\.0\.0"\]\}\n[^]*Scanned 1 package recorded by bundle:metro: 1 alert \(1 high\)\n$/u)
+  t.assert.match(metro.stderr, /^npm \{"foo":\["1\.0\.0"\]\}\n[^]*Scanned 1 package recorded by metro: 1 alert \(1 high\)\n$/u)
+  t.assert.deepStrictEqual(runSpied(spy, project, ['audit', '--reason=bundle:metro']), metro, '--reason=bundle:metro as --reason=metro')
   const node = runSpied(spy, project, ['audit', '--why', '--reason=bundle'])
   t.assert.equal(node.status, 1, node.stderr)
   t.assert.match(node.stderr, /^npm \{"bar":\["2\.0\.0"\]\}\n[^]*Scanned 1 package recorded by bundle: 1 alert \(1 high\)\n$/u)
@@ -950,7 +954,7 @@ test("audit with no file takes --reason, by the consumers of stasis.config.json'
   t.assert.deepStrictEqual(runSpied(spy, project, ['audit', '--reason=run']), {
     status: 1,
     stdout: '',
-    stderr: "Error: --reason=run: no file records that consumer; they record bundle, bundle:metro\nRun 'stasis --help' for usage.\n",
+    stderr: "Error: --reason=run: no file records that consumer; they record bundle, metro\nRun 'stasis --help' for usage.\n",
   })
   t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
 }))
@@ -1381,9 +1385,45 @@ test('audit(--reason) refuses a consumer no file records before anything is aske
     try {
       const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js'], esbuild: ['src/entry.js'], 'bundle:metro': ['src/entry.js'] } })
       await t.assert.rejects(audit([bundle], { reason: 'not-present-in-bundle' }), (error) => error instanceof AuditError
-        && error.message === '--reason=not-present-in-bundle: no file records that consumer; they record bundle:metro, esbuild, run')
+        && error.message === '--reason=not-present-in-bundle: no file records that consumer; they record esbuild, metro, run')
       await t.assert.rejects(audit([writeLock(tmp)], { reason: 'run' }), { name: 'AuditError', message: '--reason=run: the files record no consumers (only a bundle does)' })
       t.assert.deepStrictEqual(calls, [])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit() names bundle:metro metro where no file records metro, and --reason takes either name', withFetch(
+  ({ opts }) => {
+    const ids = { foo: 1, baz: 2 }
+    const answer = Object.keys(JSON.parse(opts.body)).map((name) => [name, [{ id: ids[name], severity: 'high', title: `${name} bug`, url: 'https://x', vulnerable_versions: '*' }]])
+    return new Response(JSON.stringify(Object.fromEntries(answer)), { status: 200, headers: { 'content-type': 'application/json' } })
+  },
+  async (t) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const imports = { '*': { 'src/entry.js': { foo: 'node_modules/foo/index.js', baz: 'node_modules/baz/index.js' } } }
+      const cells = (report) => report.rows.map((row) => [row.package, row.reason])
+      // `stasis bundle --metro`'s consumer, with no Metro run's beside it.
+      const bundled = writeBundle(tmp, 'bundled.br', { imports, reason: { 'bundle:metro': ['src/entry.js', 'node_modules/foo/index.js'], run: ['src/entry.js', 'node_modules/baz/index.js'] } })
+      t.assert.deepStrictEqual(cells(await audit([bundled])), [['baz', 'run'], ['foo', 'metro']])
+      t.assert.deepStrictEqual(cells(await audit([bundled], { why: true })), [['baz', 'run: baz'], ['foo', 'metro: foo']])
+      // --reason=metro, then --reason=bundle:metro: the same audit.
+      const byEither = (options) => Promise.all(['metro', 'bundle:metro'].map((reason) => audit([bundled], { reason, ...options })))
+      for (const report of await byEither()) {
+        t.assert.equal(report.reason, 'metro')
+        t.assert.deepStrictEqual(report.packages.map((pkg) => pkg.name), ['foo'])
+        t.assert.deepStrictEqual(cells(report), [['foo', 'metro']])
+      }
+      t.assert.deepStrictEqual((await byEither({ why: true })).map(cells), [[['foo', 'foo']], [['foo', 'foo']]])
+      // Where a file records metro too, bundle:metro is shown, and taken, as it is.
+      const both = writeBundle(tmp, 'both.br', { imports, reason: { 'bundle:metro': ['src/entry.js', 'node_modules/foo/index.js'], metro: ['src/entry.js', 'node_modules/baz/index.js'] } })
+      t.assert.deepStrictEqual(cells(await audit([both])), [['baz', 'metro'], ['foo', 'bundle:metro']])
+      t.assert.deepStrictEqual(cells(await audit([both], { reason: 'bundle:metro' })), [['foo', 'bundle:metro']])
+      t.assert.deepStrictEqual(cells(await audit([both], { reason: 'metro' })), [['baz', 'metro']])
+      const ran = writeBundle(tmp, 'ran.br', { imports, reason: { metro: ['src/entry.js', 'node_modules/baz/index.js'] } })
+      t.assert.deepStrictEqual(cells(await audit([bundled, ran])), [['baz', 'metro, run'], ['foo', 'bundle:metro']], "another file's metro")
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
