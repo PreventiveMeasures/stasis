@@ -278,6 +278,9 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
   return rows
 }
 
+// `files` are the lockfiles' and bundles' paths, or a Bundle or Lockfile in place of one (one built in
+// memory, as `stasis audit` with no file builds stasis.config.json's entries' bundle), taken as the
+// file would read.
 // `repoAdvisories` and `github` (a @preventive/upstream/github.js client) go to advisories() as they
 // are; a Soldeer package or a GitHub repo needs the client, their repository being their only source.
 // A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.

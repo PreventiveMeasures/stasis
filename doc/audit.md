@@ -7,7 +7,19 @@ sent to a registry.
 
 ```sh
 stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
+stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories]   # stasis.config.json's entries' bundle
 ```
+
+With no file, in a directory whose [`stasis.config.json`](file-formats.md#stasisconfigjson)
+names `entries`, it audits the bundle a bare `stasis bundle` there would write
+(see [Entry options](bundle.md#entry-options-stasisconfigjson)), as if it were
+written and then given: built the same way, with the same warnings and
+refusals, but neither compressed nor written. Its consumers are the builds'
+(`bundle`, `bundle:metro`, and `extra` for the files the config's `extra`
+adds), which `--reason` takes. Bare `stasis bundle` takes no flag, so an entry
+setting an option that needs consent (`babel`, `metro-resolver`, `cargo`,
+`cargo-target`) is refused here as it is there; bundle such entries with
+`stasis bundle` and audit the file.
 
 | Flag | Meaning |
 | - | - |
@@ -68,6 +80,7 @@ With `--reason`, the summary says whose packages were scanned
 ```sh
 stasis audit stasis.lock.json
 stasis audit --why app.stasis.code.br
+stasis audit --reason=bundle:metro   # the Metro build of stasis.config.json's entries
 stasis audit --reason=run --why app.stasis.code.br
 GITHUB_TOKEN=... stasis audit --repo-advisories stasis.lock.json
 ```

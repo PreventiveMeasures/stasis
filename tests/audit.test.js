@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -875,6 +875,101 @@ test("audit --repo-advisories asks GitHub with GITHUB_TOKEN, else with ~/.audit/
   t.assert.deepStrictEqual(run(audited), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-audit\nScanned 1 package: 0 alerts\n' })
   t.assert.deepStrictEqual(run(audited, { GITHUB_TOKEN: 'from-env' }), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-env\nScanned 1 package: 0 alerts\n' }, "GITHUB_TOKEN's first")
   t.assert.deepStrictEqual(run(join(tmp, 'nowhere')), { status: 1, stderr: "Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN\nRun 'stasis --help' for usage.\n" }, 'refused without either, as before')
+}))
+
+// A preload answering npm's batch requests with an advisory for each of foo and bar it is asked
+// about, saying what it was asked; OSV's with none, and anything else as not found.
+const NPM_SPY = `
+globalThis.fetch = async (input, init) => {
+  const url = new URL(input)
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  if (url.href === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') {
+    process.stderr.write(\`npm \${init.body}\\n\`)
+    const asked = JSON.parse(init.body)
+    const advisory = (id, title) => [{ id, severity: 'high', title, url: 'https://x', vulnerable_versions: '*' }]
+    return json({ ...(asked.foo && { foo: advisory(1, 'foo bug') }), ...(asked.bar && { bar: advisory(2, 'bar bug') }) })
+  }
+  if (url.href === 'https://api.osv.dev/v1/querybatch') return json({ results: JSON.parse(init.body).queries.map(() => ({})) })
+  return json({ message: 'Not Found' }, 404)
+}
+`
+
+// A project in `dir` whose index.js needs foo and cli.js bar, with `config` its stasis.config.json.
+const writeProject = (dir, config) => {
+  const files = {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'index.js': "require('foo')\n",
+    'cli.js': "require('bar')\n",
+    'node_modules/foo/package.json': { name: 'foo', version: '1.0.0' },
+    'node_modules/foo/index.js': 'module.exports = 1\n',
+    'node_modules/bar/package.json': { name: 'bar', version: '2.0.0' },
+    'node_modules/bar/index.js': 'module.exports = 2\n',
+    ...(config === undefined ? {} : { 'stasis.config.json': config }),
+  }
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true })
+    writeFileSync(join(dir, rel), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+}
+
+// `stasis ...args` in `cwd`, with NPM_SPY (written to `spy`) answering what it asks.
+const runSpied = (spy, cwd, args) => {
+  const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, ...args], { cwd, encoding: 'utf-8', env: { ...cleanEnv, XDG_CACHE_HOME: join(cwd, '..', 'cache') } })
+  return { status: r.status, stdout: stripVTControlCharacters(r.stdout), stderr: stripVTControlCharacters(r.stderr) }
+}
+
+test("audit with no file audits the bundle stasis bundle builds of stasis.config.json's entries, writing nothing", withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, NPM_SPY)
+  const project = join(tmp, 'project')
+  writeProject(project, { entries: { 'index.js': {}, 'cli.js': { jsx: true } } })
+  const argless = runSpied(spy, project, ['audit'])
+  t.assert.equal(argless.status, 1, argless.stderr)
+  t.assert.match(argless.stderr, /^npm \{"bar":\["2\.0\.0"\],"foo":\["1\.0\.0"\]\}\n/u)
+  t.assert.match(argless.stdout, /foo .* foo bug/u)
+  t.assert.match(argless.stdout, /bar .* bar bug/u)
+  t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
+  // The same as `stasis bundle`, then `stasis audit` of what it wrote.
+  t.assert.equal(runSpied(spy, project, ['bundle']).status, 0)
+  t.assert.deepStrictEqual(runSpied(spy, project, ['audit', 'stasis.code.br']), argless)
+}))
+
+test("audit with no file takes --reason, by the consumers of stasis.config.json's entries' bundle", withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, NPM_SPY)
+  const project = join(tmp, 'project')
+  // index.js built as Metro builds it (bundle:metro), cli.js as Node does (bundle).
+  writeProject(project, { entries: { 'index.js': { metro: true, platforms: ['ios'] }, 'cli.js': {} } })
+  const metro = runSpied(spy, project, ['audit', '--reason=bundle:metro'])
+  t.assert.equal(metro.status, 1, metro.stderr)
+  t.assert.match(metro.stderr, /^npm \{"foo":\["1\.0\.0"\]\}\n[^]*Scanned 1 package recorded by bundle:metro: 1 alert \(1 high\)\n$/u)
+  const node = runSpied(spy, project, ['audit', '--why', '--reason=bundle'])
+  t.assert.equal(node.status, 1, node.stderr)
+  t.assert.match(node.stderr, /^npm \{"bar":\["2\.0\.0"\]\}\n[^]*Scanned 1 package recorded by bundle: 1 alert \(1 high\)\n$/u)
+  t.assert.doesNotMatch(node.stdout, /foo/u)
+  t.assert.deepStrictEqual(runSpied(spy, project, ['audit', '--reason=run']), {
+    status: 1,
+    stdout: '',
+    stderr: "Error: --reason=run: no file records that consumer; they record bundle, bundle:metro\nRun 'stasis --help' for usage.\n",
+  })
+  t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
+}))
+
+test("audit with no file is refused as stasis bundle is, or without stasis.config.json's entries", withTmp((t, tmp) => {
+  const project = join(tmp, 'project')
+  writeProject(project)
+  const refused = (config, stderr) => {
+    if (config !== undefined) writeFileSync(join(project, 'stasis.config.json'), typeof config === 'string' ? config : JSON.stringify(config))
+    t.assert.deepStrictEqual((({ status, stderr: text }) => ({ status, stderr: text }))(runCli(['audit'], { cwd: project })), { status: 1, stderr: `${stderr}\nRun 'stasis --help' for usage.\n` })
+  }
+  const nothing = 'Nothing to audit: no path to file given, nor entries in stasis.config.json to bundle'
+  refused(undefined, nothing)
+  refused({ extra: ['cli.js'] }, nothing)
+  refused({ entries: {} }, nothing)
+  refused('{', 'Error: stasis.config.json is not valid JSON')
+  refused({ entries: { 'index.js': { minify: true } } }, 'Error: stasis.config.json: entries "index.js": unknown option "minify"')
+  refused({ entries: { 'index.js': { metro: true, platforms: ['ios'], 'metro-resolver': true } } }, `Error: stasis.config.json: entries "index.js" sets metro-resolver, which runs the project's metro-resolver: pass --metro-resolver to allow it`)
+  t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
 }))
 
 const withFetch = (impl, fn) => async (t) => {

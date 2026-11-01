@@ -155,7 +155,9 @@ itself as well as its own consumer's (`run`, `bundle`). They are never entries.
 `entries` names `stasis bundle`'s entries, each with the flags it is built with,
 as [Entry options](bundle.md#entry-options-stasisconfigjson) describes, and
 `stasis github-bundle`'s, but none that runs a program (see its
-[Entries](github-bundle.md#entries)). `stasis run` takes nothing from it.
+[Entries](github-bundle.md#entries)). `stasis audit` with no file audits the
+bundle a bare `stasis bundle` builds of them, unwritten (see
+[audit](audit.md)). `stasis run` takes nothing from it.
 
 `installDevDependencies` says how the project is installed where it ships, for
 the trees stasis lays out from its lockfile itself: `false` leaves out what

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 
 import { Bundle } from '@exodus/stasis/bundle'
 import { readBundle } from '@exodus/stasis/bundle-reader'
-import { buildBundle, bundleCommand } from '@exodus/stasis/cmd/bundle'
+import { buildBundle, buildCommandBundle, bundleCommand } from '@exodus/stasis/cmd/bundle'
 import { buildCommand, bundleFromLockfile } from '@exodus/stasis/cmd/build'
 import { diffArtifacts, formatDiffStat, hasDifferences, normalizeArtifact } from '@exodus/stasis/diff'
 import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost, loadNodeModules, setCacheDir } from '@exodus/stasis/vfs-bundle'
@@ -50,6 +50,7 @@ test('@exodus/stasis/metro-transformer re-exports the stasis-plugins worker tran
 
 test('@exodus/stasis/cmd/bundle exports the bundle command and its in-memory API', (t) => {
   t.assert.equal(typeof buildBundle, 'function')
+  t.assert.equal(typeof buildCommandBundle, 'function')
   t.assert.equal(typeof bundleCommand, 'function')
 })
 

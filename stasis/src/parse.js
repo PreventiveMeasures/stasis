@@ -7,7 +7,10 @@ import { Lockfile } from '@exodus/stasis-core/lockfile'
 // Read a stasis artifact and parse it into a Lockfile or Bundle, reporting its `kind`
 // ('lockfile' | 'bundle'). Lockfiles are JSON starting with `{`; bundles are brotli-compressed
 // JSON — sniff the leading byte to route to the right parser so its diagnostic surfaces on failure.
+// A Lockfile or Bundle in place of the path (one built in memory) is taken as it is.
 export function parseFileWithKind(file) {
+  if (file instanceof Lockfile) return { kind: 'lockfile', artifact: file }
+  if (file instanceof Bundle) return { kind: 'bundle', artifact: file }
   let buf
   try {
     buf = readFileSync(file)
