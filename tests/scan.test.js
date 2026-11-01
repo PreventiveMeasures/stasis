@@ -1181,7 +1181,8 @@ test('packageTsconfigPaths loads each config once, when first matched; lenient, 
 // A monorepo whose workspace packages name their tsc outputs, which no build has written: only the
 // sources are on disk. dep names them in `exports` (`types` the source) and `imports`, its tsconfig
 // setting `outDir` and `rootDir`; old in `main`, its `outDir` and `rootDir` from a base through
-// `${configDir}`, and a build that copied an asset alone into its `outDir`; plain in `main`, with
+// `${configDir}`, and a build that copied an asset alone into its `outDir`; each of the two with a
+// package.json copied into its `outDir` to publish from, which builds nothing; plain in `main`, with
 // `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); shared in `main`, into an
 // `outDir` outside it; bare names an output too, with no tsconfig.json to map it by.
 const unbuiltWorkspace = {
@@ -1201,12 +1202,14 @@ const unbuiltWorkspace = {
   'packages/dep/src/index.ts': "import { i } from '#internal'\nexport const x: number = i\n",
   'packages/dep/src/internal.ts': 'export const i: number = 1\n',
   'packages/dep/src/foo.ts': 'export const foo: number = 2\n',
+  'packages/dep/dist/package.json': { name: 'dep', type: 'module' },
   'packages/old/package.json': { name: 'old', main: 'dist/index.js' },
   'packages/old/tsconfig.json': { extends: '../../tsconfig.base.json' },
   'packages/old/src/index.ts': 'export const o: number = 3\n',
   'packages/old/src/deep.ts': 'export const d: number = 4\n',
   'packages/old/src/nested/index.ts': 'export const n: number = 7\n',
   'packages/old/dist/nested/styles.css': '',
+  'packages/old/dist/package.json': { name: 'old' },
   'packages/plain/package.json': { name: 'plain', main: './dist/src/index.js' },
   'packages/plain/tsconfig.json': { compilerOptions: { outDir: 'dist' } },
   'packages/plain/src/index.ts': 'export const p: number = 5\n',

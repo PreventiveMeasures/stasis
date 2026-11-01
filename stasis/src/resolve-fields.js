@@ -134,10 +134,10 @@ const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 // unbuilt output's source (`dist/native.js` -> `src/native.ts`; fromOutputSource). So Metro's own
 // steps -- the entry its mainFields pick, a browser-map or `exports` target, the path itself, each
 // platform file it tries -- land on the source of a compiled file that exists only as that source.
-function typescriptView(view, { outputs, host, read }) {
+function typescriptView(view, { outputs, host }) {
   const sibling = (path) => typescriptSiblings(path).find((candidate) => view.isFile(candidate)) ?? null
   const source = (path) => {
-    const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host, read })
+    const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host })
     return pick === null || inNodeModules(pick, host) ? null : pick
   }
   const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))

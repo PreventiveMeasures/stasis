@@ -220,15 +220,14 @@ export function tsconfigOutputsOf({ host = diskHost, lenient = false } = {}) {
   }
 }
 
-// The package `path` lies in. A package.json counts when named or beside a tsconfig.json (an
-// unnamed private root); a bare `type` marker holds files of the package above it. An installed
-// package is none, and its manifest is never read.
-function packageHolding(path, host, read) {
+// The package whose tsc build `path` would be an output of: the nearest package.json beside a
+// tsconfig.json, named or not. One without (a `type` marker, a manifest copied into `dist/` to
+// publish from) builds nothing. An installed package is none.
+function packageHolding(path, host) {
   for (let dir = dirname(path); basename(dir) !== 'node_modules'; dir = dirname(dir)) {
-    const manifest = join(dir, 'package.json')
-    if (isFile(manifest, host)) {
+    if (isFile(join(dir, 'package.json'), host)) {
       if (inNodeModules(dir, host)) return null
-      if (isFile(join(dir, 'tsconfig.json'), host) || read(manifest)?.name !== undefined) return dir
+      if (isFile(join(dir, 'tsconfig.json'), host)) return dir
     }
     if (dirname(dir) === dir) return null
   }
@@ -239,10 +238,11 @@ function packageHolding(path, host, read) {
 // its package's `outDir`, `probeSource` of the same place under `rootDir` (`dist/x.js` ->
 // `src/x.js`, whose TS siblings substitution finds), else null. Call it only once `path` itself
 // missed: the tsconfig.json is read, and can throw, only then. `pkgDir` is the package that names
-// `path` (its `main`, say), where known: its `outDir` may lie outside it (`../../dist/dep`).
-export function fromOutputSource(path, probeSource, { outputs, host = diskHost, read = (file) => readJson(file, host), pkgDir } = {}) {
+// `path` (its `main`, an `exports` target), where known: its `outDir` may lie outside it
+// (`../../dist/dep`).
+export function fromOutputSource(path, probeSource, { outputs, host = diskHost, pkgDir } = {}) {
   if (outputs == null) return null
-  const owner = pkgDir ?? packageHolding(path, host, read)
+  const owner = pkgDir ?? packageHolding(path, host)
   const layout = owner === null ? null : outputs(owner)
   if (layout === null) return null
   const rel = relative(layout.outDir, join(layout.dir, relative(owner, path))) // by the package's real path
@@ -317,8 +317,10 @@ function manifestTargets(map, subpathKey, conditions) {
 // requires exports/imports targets to name exact files) or an unbuilt output's source (`outputs`);
 // the first on disk, or null.
 export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), outputs = (dir) => tsconfigOutputs(dir, host), host = diskHost } = {}) {
+  const probeTarget = (path) => probeTypescriptTarget(path, { completion: false, dir: false, host })
   for (const target of manifestTargets(exports, key, conditions)) {
-    const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { completion: false, dir: false, outputs, host })
+    const base = resolvePath(pkgDir, target)
+    const hit = probeTarget(base) ?? fromOutputSource(base, probeTarget, { outputs, host, pkgDir })
     if (hit) return hit
   }
   return null
