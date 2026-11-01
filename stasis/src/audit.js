@@ -197,6 +197,29 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
+// The consumer `stasis bundle --metro` records a Metro build's files under, and the one Metro's own
+// plugin records a build Metro ran under.
+const BUNDLE_METRO = 'bundle:metro'
+const METRO = 'metro'
+
+// How audit names the consumers the files record (`consumers`, reasonIndex's): each as it is, but
+// `bundle:metro` as `metro` where none records `metro`, which it then can't be taken for.
+// -> consumer -> its name
+function consumerNames(consumers) {
+  if (!consumers.has(BUNDLE_METRO) || consumers.has(METRO)) return (consumer) => consumer
+  return (consumer) => (consumer === BUNDLE_METRO ? METRO : consumer)
+}
+
+// reasonIndex's `byPkg` and `consumers` with each consumer as audit names it (consumerNames), and `name`, that naming.
+function namedIndex({ byPkg, consumers }) {
+  const name = consumerNames(consumers)
+  return {
+    byPkg: new Map([...byPkg].map(([key, set]) => [key, new Set([...set].map(name))])),
+    consumers: new Set([...consumers].map(name)),
+    name,
+  }
+}
+
 // `malware` first: a package that is malware is worse than any vulnerability in one. An advisory
 // advisories() flags as malware (`malware: true`) is rated so, whatever its source rates it.
 const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
@@ -291,24 +314,28 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // `npmMalware` is what npm's registry tells of malware in any npm dependency, whatever `reason`: rows as
 // `rows` are, each package's consumers its reason. Under --reason, the npm packages its consumer didn't
 // record are asked of npm's registry alone for it (fast, where OSV and their repositories aren't).
+// Consumers are named as consumerNames names them, across all the files: `bundle:metro` as `metro`
+// where none records `metro`, in the rows, the chains and the `reason` returned, and `reason` may
+// name it either way.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
   why = why || whyDeep || whyFull
-  let reasons // collectReasons(files), once it is needed
+  let index // namedIndex(reasonIndex(files)), once it is needed
+  const indexed = () => (index ??= namedIndex(reasonIndex(files)))
   if (reason) {
-    const index = reasonIndex(files)
-    if (!index.consumers.has(reason)) {
-      const known = [...index.consumers].toSorted(byConsumerOrder)
+    const { consumers, name } = indexed()
+    if (!consumers.has(name(reason))) {
+      const known = [...consumers].toSorted(byConsumerOrder)
       throw new AuditError(`--reason=${reason}: ${known.length === 0
         ? 'the files record no consumers (only a bundle does)'
         : `no file records that consumer; they record ${known.join(', ')}`}`)
     }
-    reasons = index.byPkg
+    reason = name(reason)
   }
   const all = collectPackages(files)
-  const packages = reason ? all.filter((pkg) => reasons.get(packageKey(pkg.ecosystem, pkg.name, pkg.version, pkg.vendoredIn?.[0]))?.has(reason)) : all
+  const packages = reason ? all.filter((pkg) => indexed().byPkg.get(packageKey(pkg.ecosystem, pkg.name, pkg.version, pkg.vendoredIn?.[0]))?.has(reason)) : all
   const skipped = packages.flatMap((pkg) => {
     const because = unaudited(pkg)
     return because === undefined ? [] : [{ ...pkg, because }]
@@ -338,25 +365,21 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
   // npm's registry's malware advisories (`registry` rows, not OSV's records), of every npm dependency.
   const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
-  if (malware.length > 0) reasons ??= collectReasons(files)
-  const npmMalware = flattenAdvisories(malware, reasons, null, null, vendoredOf([...asked, ...others]))
-  // `--why` REPLACES the consumer list with per-consumer import paths, so only
-  // one of the two is computed for npm's advisories, the only ones collectWhy has
-  // paths for: another ecosystem's keep their consumers. Restrict the (potentially
-  // expensive) path search to the packages that actually carry an advisory.
+  const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, indexed().byPkg, null, null, vendoredOf([...asked, ...others]))
+  // `--why` REPLACES the consumer list with per-consumer import paths for npm's
+  // advisories, the only ones collectWhy has paths for: another ecosystem's keep
+  // their consumers. Restrict the (potentially expensive) path search to the
+  // packages that actually carry an advisory; its consumers are named as the
+  // cells' are (consumerNames), which takes every file's consumers to know.
   // `reason` (--reason) narrows both the paths (in collectWhy) and the consumer
   // list (in flattenAdvisories) to a single consumer, dropping advisories
   // unrelated to it.
-  const vendoredByKey = vendoredOf(asked)
-  let rows
+  let whyByPkg = null
   if (why) {
-    const npm = result.filter((adv) => adv.ecosystem === 'npm')
-    const targetKeys = new Set(npm.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
-    if (npm.length < result.length) reasons ??= collectReasons(files)
-    rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason, vendoredByKey)
-  } else {
-    rows = flattenAdvisories(result, reasons ?? collectReasons(files), null, reason, vendoredByKey)
+    const targetKeys = new Set(result.filter((adv) => adv.ecosystem === 'npm').flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
+    whyByPkg = collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull, consumerName: indexed().name })
   }
+  const rows = flattenAdvisories(result, indexed().byPkg, whyByPkg, reason, vendoredOf(asked))
   return { packages, skipped, advisories: result, rows, npmMalware, why, whyDeep, whyFull, reason }
 }
 
