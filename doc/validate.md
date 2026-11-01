@@ -176,7 +176,10 @@ has it:
 
 - **Its name**: the name its path installs it as (after its last
   `node_modules/`) is its own, but for an alias its lockfile has: npm's at that
-  location, yarn's (`foo@npm:ms@…`) or pnpm's (`foo: ms@2.1.3`).
+  location, yarn's (`foo@npm:ms@…`) or pnpm's (`foo: ms@2.1.3`). pnpm's of a
+  directory (`foo: lib@file:lib`, as a `file:` override installs one, hoisted
+  under the name it overrides) is of the package of that name in the
+  directory, any version: its files are held to the directory's (above).
 - **pnpm's store**: a copy under `node_modules/.pnpm/<name>@<version>/`
   (its peers or patch after an `_`, a scope's `/` a `+`) is of that name and
   version. One pnpm hashed (a long name, or one with uppercase) tells no
