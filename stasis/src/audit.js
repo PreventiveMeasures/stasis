@@ -3,7 +3,7 @@ import { dependencyEcosystem, moduleFileKey, packageRecords, sameGithub } from '
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
-import { formatTable } from './table.js'
+import { DIM, formatTable, painter } from './table.js'
 
 export { formatTable }
 import { parseFile, parseFileWithKind } from './parse.js'
@@ -32,6 +32,15 @@ const versionOf = (ecosystem, version) => (ecosystem === 'github' && version ===
 // A package's key across the audit: `name@version` for npm, as collectWhy keys its chains, and
 // prefixed by the ecosystem for the others, whose names may be npm's too.
 const keyOf = (ecosystem, name, version) => `${ecosystem === 'npm' ? '' : `${ecosystem}:`}${name}@${version}`
+
+// A package's key as collectPackages and collectReasons tell packages apart: keyOf it, but a copy a dependency
+// ships with no version, which is one package for each host, by its host's `name@version` too.
+const packageKey = (ecosystem, name, version, host) => (version === undefined ? `${ecosystem}:${name} in ${host}` : keyOf(ecosystem, name, version))
+
+// A refused audit, as a usage error: one for the message alone, never a stack.
+export class AuditError extends Error {
+  name = 'AuditError'
+}
 
 // Composer's dev versions (`dev-main`, `1.x-dev`), as Composer tells them, a `#ref` dropped: no
 // advisory database lists those, and advisories() takes releases alone.
@@ -119,7 +128,7 @@ export function collectPackages(files) {
   const repos = new Map() // `ecosystem:name` -> the one repository recorded for it, or null
   for (const file of files) {
     for (const { github, vendoredIn, ...pkg } of collectPackagesFromFile(file)) {
-      const key = pkg.version === undefined ? `${pkg.ecosystem}:${pkg.name} in ${vendoredIn}` : keyOf(pkg.ecosystem, pkg.name, pkg.version)
+      const key = packageKey(pkg.ecosystem, pkg.name, pkg.version, vendoredIn)
       if (!byKey.has(key)) byKey.set(key, pkg)
       if (!vendored.has(key)) vendored.set(key, { hosts: new Set(), only: true })
       if (vendoredIn === undefined) vendored.get(key).only = false
@@ -147,36 +156,55 @@ export function collectPackages(files) {
 // (see audit-corrections.js): a consumer that recorded nothing of a package but a corrected file or
 // its manifest carries none of its real code and is NOT a reason -- e.g. webpack shipping only ws's
 // noop browser.js stub, while `run` bundles the real ws.
-// A file of a copy a dependency ships (packageRecords) attributes to both: the copy and its host.
+// A file of a copy a dependency ships (packageRecords) attributes to both: the copy and its host; a copy
+// with no version by packageKey.
 export function collectReasons(files) {
+  return reasonIndex(files).byPkg
+}
+
+// collectReasons' map (`byPkg`), and every consumer the files' reason maps record (`consumers`), a consumer
+// that recorded first-party code alone too: what --reason may name.
+function reasonIndex(files) {
   const byPkg = new Map()
+  const consumers = new Set()
   for (const file of files) {
     const artifact = parseFile(file)
     const fileReasons = invertReason(artifact.reason)
     if (!fileReasons) continue
+    for (const [consumer, list] of Object.entries(artifact.reason)) if (Array.isArray(list)) consumers.add(consumer)
     const fileToPkgs = new Map()
-    for (const [dir, { name, version, ecosystem: tagged, files: modFiles }] of packageRecords(artifact.modules)) {
+    for (const [dir, { name, version, ecosystem: tagged, files: modFiles, vendoredIn }] of packageRecords(artifact.modules)) {
       const ecosystem = dependencyEcosystem(dir, tagged)
-      if (ecosystem === undefined || !name || !version) continue
+      if (ecosystem === undefined || !name || (!version && vendoredIn === undefined)) continue
+      const host = vendoredIn === undefined ? undefined : artifact.modules.get(vendoredIn)
+      const key = packageKey(ecosystem, name, version === undefined ? undefined : versionOf(ecosystem, version), host && `${host.name}@${host.version}`)
       for (const rel of Object.keys(modFiles)) {
-        if (!isEvidenceFile(name, version, rel, ecosystem)) continue
+        if (!isEvidenceFile(name, version ?? null, rel, ecosystem)) continue
         const f = moduleFileKey(dir, rel)
         if (!fileToPkgs.has(f)) fileToPkgs.set(f, [])
-        fileToPkgs.get(f).push(keyOf(ecosystem, name, versionOf(ecosystem, version)))
+        fileToPkgs.get(f).push(key)
       }
     }
-    for (const [f, consumers] of fileReasons) {
+    for (const [f, recorded] of fileReasons) {
       for (const key of fileToPkgs.get(f) ?? []) {
         let set = byPkg.get(key)
         if (set === undefined) byPkg.set(key, (set = new Set()))
-        for (const consumer of consumers) set.add(consumer)
+        for (const consumer of recorded) set.add(consumer)
       }
     }
   }
-  return byPkg
+  return { byPkg, consumers }
 }
 
-const SEVERITY_ORDER = { critical: 0, high: 1, moderate: 2, low: 3, info: 4, none: 5 }
+// `malware` first: a package that is malware is worse than any vulnerability in one.
+const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
+
+// Whether an advisory is of malware, not a vulnerability: one of OSV's malicious packages' records
+// (`MAL-...`, its id or among its aliases, as advisories() gives a registry row the ids of OSV's records
+// of it), or one filed under CWE-506, Embedded Malicious Code, as GitHub files its malware advisories
+// (flatmap-stream's "Malicious Package", ua-parser-js's "Embedded malware", which it rates high). Its row's
+// severity is `malware`, whatever its source rates it, or doesn't (OSV's MAL- records have none).
+const isMalware = ({ id, aliases = [], cwe = [] }) => [id, ...aliases].some((each) => each.startsWith('MAL-')) || cwe.includes('CWE-506')
 
 // Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
 // then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
@@ -237,7 +265,7 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
       package: adv.name,
       installed: adv.versions.map((v) => installedCell(adv, v, vendoredByKey)).join(', '),
       vulnerable: adv.range ?? '',
-      severity: adv.severity ?? '',
+      severity: isMalware(adv) ? 'malware' : adv.severity ?? '',
       title: adv.title ?? '',
       id: adv.id,
       reason,
@@ -257,19 +285,33 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // `repoAdvisories` and `github` (a @preventive/upstream/github.js client) go to advisories() as they
 // are; a Soldeer package or a GitHub repo needs the client, their repository being their only source.
 // A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.
+// `reason` (--reason) audits only the packages that consumer recorded (collectReasons): no other is
+// counted, listed, or asked about. One no file records is refused (AuditError) before anything is,
+// naming those they do; a lockfile records none.
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
   why = why || whyDeep || whyFull
-  const packages = collectPackages(files)
+  let reasons // collectReasons(files), once it is needed
+  if (reason) {
+    const index = reasonIndex(files)
+    if (!index.consumers.has(reason)) {
+      const known = [...index.consumers].toSorted(byConsumerOrder)
+      throw new AuditError(`--reason=${reason}: ${known.length === 0
+        ? 'the files record no consumers (only a bundle does)'
+        : `no file records that consumer; they record ${known.join(', ')}`}`)
+    }
+    reasons = index.byPkg
+  }
+  const packages = collectPackages(files).filter((pkg) => !reason || reasons.get(packageKey(pkg.ecosystem, pkg.name, pkg.version, pkg.vendoredIn?.[0]))?.has(reason))
   const skipped = packages.flatMap((pkg) => {
     const because = unaudited(pkg)
     return because === undefined ? [] : [{ ...pkg, because }]
   })
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
   if (asked.length === 0) {
-    return { packages, skipped, advisories: [], rows: [], why }
+    return { packages, skipped, advisories: [], rows: [], why, whyDeep, whyFull, reason }
   }
   let result
   try {
@@ -293,38 +335,74 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   if (why) {
     const npm = result.filter((adv) => adv.ecosystem === 'npm')
     const targetKeys = new Set(npm.flatMap((adv) => adv.versions.map((v) => keyOf(adv.ecosystem, adv.name, v))))
-    const reasons = npm.length < result.length ? collectReasons(files) : undefined
+    if (npm.length < result.length) reasons ??= collectReasons(files)
     rows = flattenAdvisories(result, reasons, collectWhy(files, targetKeys, reason, { deep: whyDeep, full: whyFull }), reason, vendoredByKey)
   } else {
-    rows = flattenAdvisories(result, collectReasons(files), null, reason, vendoredByKey)
+    rows = flattenAdvisories(result, reasons ?? collectReasons(files), null, reason, vendoredByKey)
   }
   return { packages, skipped, advisories: result, rows, why, whyDeep, whyFull, reason }
 }
 
-// `10 alerts, 1 critical, 5 high, 3 moderate, 1 low`: the rows, then each severity present, in the
-// rows' own order (most severe first); a row without one is `unrated`, so the parts add up.
-function alertStats(rows) {
-  const bySeverity = Map.groupBy(rows, (r) => r.severity || 'unrated')
-  return [`${rows.length} alert${rows.length === 1 ? '' : 's'}`, ...[...bySeverity].map(([severity, list]) => `${list.length} ${severity}`)].join(', ')
+// Each severity's colour, the worst the loudest (malware white on red); an advisory without one (RustSec's)
+// `unrated`, dimmed.
+const SEVERITY_TONES = { malware: ['bold', 'white', 'bgRed'], critical: ['bold', 'magenta'], high: ['bold', 'red'], moderate: 'yellow', low: 'cyan', info: DIM, none: DIM, unrated: DIM }
+const severityOf = (row) => row.severity || 'unrated'
+
+// The columns whose text wraps where the table is wider than the terminal: the long ones, free text first.
+const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
+
+// `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`: the rows, then each severity present, in the rows'
+// own order (most severe first), so the parts add up; each in its colour, and none in green.
+function alertStats(rows, paint) {
+  const count = `${rows.length} alert${rows.length === 1 ? '' : 's'}`
+  if (rows.length === 0) return paint(['bold', 'green'], count)
+  const bySeverity = Map.groupBy(rows, severityOf)
+  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], `${list.length} ${severity}`)).join(', ')})`
 }
 
-export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr } = {}) {
-  const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}`
+// The advisories as a table on `out`, fitted to `width` (the terminal's, where `out` is one) by wrapping
+// its long columns; on `err`, the packages not audited, then the summary, last, so it is what is read
+// after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
+// colours (`colors`, else takesColors).
+export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined } = {}) {
+  const paintOut = painter(out, colors)
+  const paintErr = painter(err, colors)
+  const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
-    err.write(`${scanned}\nNo dependencies found in the input files\n`)
+    err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
     return
   }
-  err.write(`${scanned}: ${alertStats(rows)}\n`)
-  for (const pkg of skipped) err.write(`Not audited: ${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}, ${pkg.because}\n`)
-  if (rows.length === 0) return
-  // The ecosystem column only where one is not npm's, which the others were all once.
-  const columns = ['severity', ...(rows.some((r) => r.ecosystem !== 'npm') ? ['ecosystem'] : []), 'package', 'installed', 'vulnerable', 'title', 'id']
-  // Surface the reason column only when some advisory has provenance -- bundle
-  // consumers, or (with --why) import paths. Under --reason WITHOUT --why every
-  // cell is just the filter value repeated, so drop the column then; --why still
-  // earns it (the import chains differ per row).
-  if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
-  // Under --why the reason cell is a list of `consumer: path` lines; let it span
-  // multiple physical rows instead of collapsing to one.
-  out.write(formatTable(rows, columns, { multiline: why ? ['reason'] : [] }) + '\n')
+  if (rows.length > 0) {
+    // The ecosystem column only where one is not npm's, which the others were all once.
+    const columns = ['severity', ...(rows.some((r) => r.ecosystem !== 'npm') ? ['ecosystem'] : []), 'package', 'installed', 'vulnerable', 'title', 'id']
+    // Surface the reason column only when some advisory has provenance -- bundle
+    // consumers, or (with --why) import paths. Under --reason WITHOUT --why every
+    // cell is just the filter value repeated, so drop the column then; --why still
+    // earns it (the import chains differ per row).
+    if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
+    // A chain's arrows and `...` dimmed, so the packages in it stand out.
+    const paint = (text, column, row) => {
+      if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity], text)
+      if (column === 'package') return paintOut('bold', text)
+      if (column === 'reason' && why) return text.replaceAll(/(?<=^| )(?:->|\.\.\.)(?= |$)/gu, (arrow) => paintOut(DIM, arrow))
+      return text
+    }
+    // Under --why the reason cell is a list of `consumer: path` lines; let it span
+    // multiple physical rows instead of collapsing to one.
+    out.write(`${formatTable(rows.map((row) => ({ ...row, severity: severityOf(row) })), columns, {
+      multiline: why ? ['reason'] : [],
+      wrap: WRAPPED,
+      width,
+      paint,
+      paintHeader: (text) => paintOut('bold', text),
+      paintFrame: (text) => paintOut(DIM, text),
+    })}\n`)
+  }
+  if (skipped.length > 0) {
+    const names = skipped.map((pkg) => `${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}`)
+    const pad = Math.max(...names.map((name) => name.length))
+    const lines = skipped.map((pkg, i) => `  ${names[i].padEnd(pad)}  ${paintErr(DIM, pkg.because)}`)
+    err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines.join('\n')}\n`)
+  }
+  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr)}\n`)
 }

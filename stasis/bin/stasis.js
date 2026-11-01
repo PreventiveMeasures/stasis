@@ -325,9 +325,16 @@ if (command === '-v' || command === '--version') {
   // answers from it without asking: a per-user directory, never one shared with less trusted jobs.
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
-  const { audit, printAuditReport } = await import('../src/audit.js')
+  const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
   const files = argv.map((f) => resolve(f))
-  const report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github })
+  let report
+  try {
+    // --reason audits that consumer's packages alone; one no file records is refused before any is asked about.
+    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github })
+  } catch (cause) {
+    if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
+    throw cause
+  }
   printAuditReport(report)
   process.exitCode = report.rows.length === 0 ? 0 : 1
 } else if (command === 'validate') {

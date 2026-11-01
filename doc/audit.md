@@ -14,12 +14,52 @@ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisor
 | `--why` | Per advisory, the cross-module import chains that pull the package in. See [Import chains](#import-chains---why). |
 | `--why-deep` | Like `--why`, also keeping a chain a shorter listed chain is the tail of. |
 | `--why-full` | Spell every chain out, with no `...` collapse. With `--why-deep`, the complete raw listing. |
-| `--reason=consumer` | Only advisories tied to that consumer (`run`, `metro`, `bundle:metro`, ...); with `--why`, only its chains. |
+| `--reason=consumer` | Only the packages that consumer (`run`, `metro`, `bundle:metro`, ...) recorded are scanned, counted and asked about; with `--why`, only its chains. A consumer no input records is an error naming those they do. |
 | `--repo-advisories` | Also ask each package's GitHub repository for its advisories. Needs `GITHUB_TOKEN`. See [Repository advisories](#repository-advisories---repo-advisories). |
 
 Exits 0 when nothing is flagged and 1 otherwise, so it composes in CI. The
-summary (`Scanned N packages: ...`) and the not-audited lines go to stderr; the
-table goes to stdout.
+table goes to stdout; the not-audited packages and then the summary go to
+stderr, so the summary is the last thing printed (here in a 140-column terminal):
+
+```
+┌──────────┬───────────┬─────────────────┬───────────────┬────────┬─────────────────────┬─────────────────────────┬─────────────────────┐
+│ severity │ ecosystem │ package         │ installed     │ reason │ vulnerable          │ title                   │ id                  │
+├──────────┼───────────┼─────────────────┼───────────────┼────────┼─────────────────────┼─────────────────────────┼─────────────────────┤
+│ critical │ npm       │ form-data       │ 4.0.0         │ run    │ >=4.0.0 <4.0.4      │ form-data uses unsafe   │ GHSA-fjxv-7rqg-78g4 │
+│          │           │                 │               │        │                     │ random function in      │                     │
+│          │           │                 │               │        │                     │ form-data for choosing  │                     │
+│          │           │                 │               │        │                     │ boundary                │                     │
+│ low      │ npm       │ brace-expansion │ 1.1.11, 2.0.1 │ run    │ >=1.0.0 <=1.1.11 || │ brace-expansion Regular │ GHSA-v6h2-p8h4-qcjw │
+│          │           │                 │               │        │ >=2.0.0 <=2.0.1     │ Expression Denial of    │                     │
+│          │           │                 │               │        │                     │ Service vulnerability   │                     │
+│ unrated  │ cargo     │ atty            │ 0.2.14        │ bundle │                     │ Potential unaligned     │ RUSTSEC-2021-0145   │
+│          │           │                 │               │        │                     │ read                    │                     │
+└──────────┴───────────┴─────────────────┴───────────────┴────────┴─────────────────────┴─────────────────────────┴─────────────────────┘
+
+Not audited:
+  composer acme/tools@dev-main  a Composer dev version, which no advisory database lists
+
+Scanned 42 packages: 3 alerts (1 critical, 1 low, 1 unrated)
+```
+
+In a terminal the table is fitted to its width: the title, reason, vulnerable
+and installed columns wrap, the widest first, a word kept whole where the
+column can take it (a `--why` chain's further lines indented). Piped or
+written to a file, each row stays on one line. Where the stream takes colours
+(a terminal that has them, or a CI log), severities are coloured (malware
+white on red, critical magenta, high red, moderate yellow, low cyan, unrated
+dimmed), and so is the summary's count of each.
+
+An advisory of malware, not a vulnerability, is rated `malware`, above
+critical, whatever its source rates it: one of OSV's records of malicious
+packages (`MAL-...`, its id or one of its aliases), which rate none, or one filed
+under CWE-506 (Embedded Malicious Code), as GitHub files its malware advisories
+(`Embedded malware in ua-parser-js`, which npm's advisories rate high). Those
+rows come first, and the summary counts them first
+(`5 alerts (3 malware, 1 critical, 1 moderate)`).
+
+With `--reason`, the summary says whose packages were scanned
+(`Scanned 12 packages recorded by run: ...`).
 
 ```sh
 stasis audit stasis.lock.json
@@ -81,9 +121,12 @@ to `a -> b -> ... -> d`, the hidden part being spelled out by an earlier line;
 --why-full` is the complete raw listing. Chains are capped per package on
 pathological graphs, which is reported on a marker line rather than dropped.
 
-`--reason=run` keeps only the advisories tied to that consumer, and with
-`--why`, only its chains. Artifacts without a resolution graph (`imports`)
-contribute no chains.
+`--reason=run` audits only the packages that consumer recorded: no other is
+scanned, counted, listed as not audited, or sent to an advisory source. With
+`--why`, only its chains are shown. A consumer that no input records stops the
+audit before anything is asked, naming the consumers they do record; a lockfile
+records none. Artifacts without a resolution graph (`imports`) contribute no
+chains.
 
 ## Repository advisories (`--repo-advisories`)
 

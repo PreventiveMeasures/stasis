@@ -5,12 +5,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliCompressSync } from 'node:zlib'
 import { spawnSync } from 'node:child_process'
-import { stripVTControlCharacters } from 'node:util'
+import { stripVTControlCharacters, styleText } from 'node:util'
 
 import { sha512integrity } from '@exodus/stasis-core/state-util'
 
-import { audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
+import { AuditError, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
+import { DIM } from '../stasis/src/table.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -434,6 +435,21 @@ test('flattenAdvisories sorts by severity then package', (t) => {
   ])
 })
 
+test('flattenAdvisories rates malware `malware`, above critical: OSV\'s MAL- records, by id or alias, and advisories filed under CWE-506', (t) => {
+  const rows = flattenAdvisories([
+    found('bad', ['1.0.0'], { severity: 'critical', title: 'a vulnerability' }),
+    // OSV's record of a malicious package, which rates none.
+    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined }),
+    // GitHub's malware advisory, rated high, as npm's registry has ua-parser-js's.
+    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'] }),
+    // A registry row OSV's MAL- record is of, its id among the row's aliases.
+    found('typo', ['2.0.0'], { id: 'GHSA-1111-2222-3333', title: 'Malicious Package in typo', severity: 'critical', aliases: ['MAL-2022-1234'] }),
+    // Hidden functionality alone is no malware.
+    found('backdoor', ['1.0.0'], { severity: 'moderate', title: 'a debug endpoint', cwe: ['CWE-912'] }),
+  ])
+  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['malware', 'typo'], ['critical', 'bad'], ['moderate', 'backdoor']])
+})
+
 test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
   t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
@@ -599,15 +615,15 @@ test('printAuditReport summarizes the alerts by severity, most severe first', (t
   const row = (severity) => ({ severity, package: 'foo', installed: '1.0.0', vulnerable: '*', title: 't', id: 'GHSA-aaaa-bbbb-cccc', reason: '' })
   printAuditReport(
     { packages: [{ name: 'foo', version: '1.0.0' }, { name: 'bar', version: '1.0.0' }, { name: 'baz', version: '1.0.0' }], rows: [row('critical'), row('high'), row('high'), row('low'), row('')] },
-    { out: { write: () => {} }, err: { write: (s) => err.push(s) } }
+    { out: { write: () => {} }, err: { write: (s) => err.push(s) }, colors: false }
   )
-  t.assert.equal(err.join(''), 'Scanned 3 packages: 5 alerts, 1 critical, 2 high, 1 low, 1 unrated\n')
+  t.assert.equal(err.join(''), '\nScanned 3 packages: 5 alerts (1 critical, 2 high, 1 low, 1 unrated)\n', 'after the table, a blank line between')
 })
 
 test('printAuditReport reports 0 alerts and prints no table', (t) => {
   const out = []
   const err = []
-  printAuditReport({ packages: [{ name: 'foo', version: '1.0.0' }], rows: [] }, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } })
+  printAuditReport({ packages: [{ name: 'foo', version: '1.0.0' }], rows: [] }, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) }, colors: false })
   t.assert.equal(err.join(''), 'Scanned 1 package: 0 alerts\n')
   t.assert.deepStrictEqual(out, [])
 })
@@ -615,7 +631,7 @@ test('printAuditReport reports 0 alerts and prints no table', (t) => {
 test('printAuditReport hints when nothing was scanned', (t) => {
   const lines = []
   const err = { write: (s) => lines.push(s) }
-  printAuditReport({ packages: [], rows: [] }, { out: { write: () => {} }, err })
+  printAuditReport({ packages: [], rows: [] }, { out: { write: () => {} }, err, colors: false })
   t.assert.equal(lines.join(''), 'Scanned 0 packages\nNo dependencies found in the input files\n')
 })
 
@@ -624,7 +640,7 @@ test('printAuditReport shows the ecosystem column where a row is not npm, and li
   const print = (report) => {
     const out = []
     const err = []
-    printAuditReport(report, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } })
+    printAuditReport(report, { out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) }, colors: false })
     return { out: out.join(''), err: err.join('') }
   }
   const npmOnly = print({ packages: [{}], rows: [row('npm', 'foo')] })
@@ -636,7 +652,7 @@ test('printAuditReport shows the ecosystem column where a row is not npm, and li
   })
   t.assert.match(mixed.out.split('\n')[1], /^│ severity +│ ecosystem +│ package +│/u)
   t.assert.match(mixed.out, /│ cargo +│ serde +│/u)
-  t.assert.equal(mixed.err, 'Scanned 3 packages: 2 alerts, 2 high\nNot audited: composer acme/tools@dev-main, a Composer dev version, which no advisory database lists\n')
+  t.assert.equal(mixed.err, '\nNot audited:\n  composer acme/tools@dev-main  a Composer dev version, which no advisory database lists\n\nScanned 3 packages: 2 alerts (2 high)\n')
 })
 
 test('formatTable produces a boxed table with header and separator', (t) => {
@@ -653,6 +669,84 @@ test('formatTable produces a boxed table with header and separator', (t) => {
   t.assert.match(lines[1], /^│ a +│ b +│$/u)
   t.assert.match(lines[2], /^├─+┼─+┤$/u)
   t.assert.match(lines[5], /^└─+┴─+┘$/u)
+})
+
+// A table's rows as printed, each its cells.
+const rowsOf = (text) => text.split('\n').filter((line) => line.startsWith('│ ')).map((line) => line.slice(2, -2).split(' │ ').map((cell) => cell.trim()))
+
+test('formatTable fits `width` by wrapping the `wrap` columns at spaces, the widest first, a word whole where it can be', (t) => {
+  const rows = [{ id: 'GHSA-aaaa-bbbb-cccc', title: 'brace-expansion Regular Expression Denial of Service vulnerability', reason: 'run: minimatch -> brace-expansion\nwebpack: glob -> ... -> brace-expansion' }]
+  const columns = ['id', 'title', 'reason']
+  t.assert.equal(formatTable(rows, columns, { multiline: ['reason'], wrap: ['title', 'reason'] }).split('\n').length, 6, 'no width, no wrapping')
+  const out = formatTable(rows, columns, { multiline: ['reason'], wrap: ['title', 'reason'], width: 72 })
+  t.assert.ok(out.split('\n').every((line) => line.length <= 72), out)
+  t.assert.deepStrictEqual(rowsOf(out).slice(1), [
+    ['GHSA-aaaa-bbbb-cccc', 'brace-expansion', 'run: minimatch ->'],
+    ['', 'Regular Expression', 'brace-expansion'],
+    ['', 'Denial of Service', 'webpack: glob -> ...'],
+    ['', 'vulnerability', '-> brace-expansion'],
+  ])
+  t.assert.ok(out.includes('│   -> brace-expansion │'), 'an entry\'s further lines indented, so they read as its own')
+  // Too narrow for its words: no column narrows past its longest one, nor a fixed column at all.
+  const narrow = formatTable(rows, columns, { multiline: ['reason'], wrap: ['title', 'reason'], width: 20 })
+  t.assert.ok(rowsOf(narrow).flat().includes('brace-expansion'), narrow)
+  t.assert.ok(rowsOf(narrow).flat().includes('GHSA-aaaa-bbbb-cccc'), narrow)
+  // A word longer than any column takes is cut.
+  const long = formatTable([{ a: 'x'.repeat(30) }], ['a'], { wrap: ['a'], width: 10 })
+  t.assert.deepStrictEqual(rowsOf(long).slice(1).map(([a]) => a), ['x'.repeat(20), 'x'.repeat(10)])
+})
+
+test('formatTable fits a --why cell of 2000 chains of 40 packages, more words than one call takes arguments', (t) => {
+  const chain = Array.from({ length: 40 }, (_, i) => `package-${i}`).join(' -> ')
+  const reason = Array.from({ length: 2000 }, (_, i) => `run: head-${i} -> ${chain}`).join('\n')
+  const out = formatTable([{ severity: 'high', package: 'foo', reason }], ['severity', 'package', 'reason'], { multiline: ['reason'], wrap: ['reason'], width: 100 })
+  t.assert.ok(out.split('\n').every((line) => line.length <= 100))
+  t.assert.ok(out.split('\n').length > 2000 * 4, 'each chain wrapped')
+})
+
+test('printAuditReport: severities in colour, the header bold and the box dimmed, the summary coloured, where asked; the widths those of the text unstyled', (t) => {
+  const row = (severity, pkg) => ({ ecosystem: 'npm', package: pkg, installed: '1.0.0', vulnerable: '<2', severity, title: 't', id: 'GHSA-aaaa-bbbb-cccc', reason: '' })
+  const report = { packages: [{}, {}, {}, {}, {}], rows: [row('critical', 'a'), row('high', 'b'), row('moderate', 'c'), row('low', 'd'), row('', 'e')] }
+  const print = (colors) => {
+    const text = { out: '', err: '' }
+    printAuditReport(report, { out: { write: (s) => { text.out += s } }, err: { write: (s) => { text.err += s } }, colors })
+    return text
+  }
+  const plain = print(false)
+  t.assert.equal(plain.out, stripVTControlCharacters(plain.out), 'no colours where not asked')
+  t.assert.deepStrictEqual(rowsOf(plain.out).map(([severity]) => severity), ['severity', 'critical', 'high', 'moderate', 'low', 'unrated'], 'one without a severity unrated, as the summary counts it')
+  const painted = print(true)
+  const styled = (format, text) => styleText(format, text, { validateStream: false })
+  const bar = styled(DIM, '│')
+  t.assert.ok(painted.out.includes(`${bar} ${styled(['bold', 'magenta'], 'critical')} ${bar} ${styled('bold', 'a')} `), painted.out)
+  t.assert.ok(painted.out.includes(`${bar} ${styled(['bold', 'red'], 'high')}     ${bar}`), 'high in red')
+  t.assert.ok(painted.out.includes(`${bar} ${styled('yellow', 'moderate')} ${bar}`), 'moderate in yellow')
+  t.assert.ok(painted.out.includes(`${bar} ${styled('cyan', 'low')}      ${bar}`), 'low in cyan')
+  t.assert.ok(painted.out.includes(`${bar} ${styled(DIM, 'unrated')}  ${bar}`), 'unrated dimmed')
+  t.assert.ok(painted.out.includes(`${bar} ${styled('bold', 'severity')} ${bar}`), 'the header bold')
+  t.assert.equal(stripVTControlCharacters(painted.out), plain.out, 'its widths those of its text unstyled')
+  t.assert.equal(painted.err, `\nScanned 5 packages: ${styled('bold', '5 alerts')} (${styled(['bold', 'magenta'], '1 critical')}, ${styled(['bold', 'red'], '1 high')}, ${styled('yellow', '1 moderate')}, ${styled('cyan', '1 low')}, ${styled(DIM, '1 unrated')})\n`)
+  const malware = { out: '', err: '' }
+  printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { malware.out += s } }, err: { write: (s) => { malware.err += s } }, colors: true })
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], 'malware')}  ${bar} ${styled('bold', 'evil')} `), malware.out)
+  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], '1 malware')}, ${styled(['bold', 'red'], '1 high')})\n`)
+  const none = { err: '' }
+  printAuditReport({ packages: [{}], rows: [] }, { out: { write() {} }, err: { write: (s) => { none.err += s } }, colors: true })
+  t.assert.equal(none.err, `Scanned 1 package: ${styled(['bold', 'green'], '0 alerts')}\n`)
+})
+
+test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted to a terminal\'s width', (t) => {
+  const rows = [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 'A rather long title, of the kind advisories have, that a narrow terminal cannot show on one line', id: 'GHSA-aaaa-bbbb-cccc', reason: 'run: a -> ... -> foo' }]
+  let out = ''
+  printAuditReport({ why: true, packages: [{}], rows }, { out: { write: (s) => { out += s } }, err: { write() {} }, colors: true })
+  t.assert.ok(out.includes(`run: a ${styleText(DIM, '->', { validateStream: false })} ${styleText(DIM, '...', { validateStream: false })} ${styleText(DIM, '->', { validateStream: false })} foo`), out)
+  const fitted = (stream) => {
+    let text = ''
+    printAuditReport({ packages: [{}], rows }, { out: { ...stream, write: (s) => { text += s } }, err: { write() {} }, colors: false })
+    return text
+  }
+  t.assert.ok(fitted({ isTTY: true, columns: 100 }).split('\n').every((line) => line.length <= 100))
+  t.assert.equal(fitted({}).split('\n').length, 6, 'a pipe\'s, or a file\'s, unwrapped')
 })
 
 // CLI integration
@@ -706,7 +800,7 @@ test('audit lists a Composer dev version as not audited, asking nothing for it',
   })
   const r = runCli(['audit', file])
   t.assert.equal(r.status, 0, r.stderr)
-  t.assert.equal(r.stderr, 'Scanned 1 package: 0 alerts\nNot audited: composer acme/tools@1.x-dev, a Composer dev version, which no advisory database lists\n')
+  t.assert.equal(r.stderr, 'Not audited:\n  composer acme/tools@1.x-dev  a Composer dev version, which no advisory database lists\n\nScanned 1 package: 0 alerts\n')
 }))
 
 test('audit --reason consumes its value (space form) then reports no files', (t) => {
@@ -838,9 +932,8 @@ test('audit(--why) replaces the reason cell with per-consumer import paths', wit
       const filtered = await audit([path], { why: true, reason: 'run' })
       t.assert.equal(filtered.rows.find((r) => r.package === 'foo').reason, 'dep -> foo')
 
-      // --reason for a consumer that recorded nothing drops the row entirely.
-      const none = await audit([path], { why: true, reason: 'metro' })
-      t.assert.equal(none.rows.length, 0)
+      // --reason for a consumer no file records is refused, naming those they do.
+      await t.assert.rejects(audit([path], { why: true, reason: 'metro' }), { name: 'AuditError', message: '--reason=metro: no file records that consumer; they record webpack, run' })
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -1072,6 +1165,49 @@ test('audit(--why --reason) keeps the advisories of other ecosystems by the cons
   }
 ))
 
+test('audit(--reason) scans, counts and asks about only the packages that consumer recorded', withFetch(
+  () => new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js', 'node_modules/foo/index.js'], webpack: ['src/entry.js', 'node_modules/baz/index.js'] } })
+      const report = await audit([bundle], { reason: 'run' })
+      t.assert.deepStrictEqual(calls.map((call) => JSON.parse(call.opts.body)), [{ foo: ['2.0.0'] }], 'baz, which run did not record, never asked about')
+      t.assert.deepStrictEqual(report.packages.map((pkg) => pkg.name), ['foo'])
+      let err = ''
+      printAuditReport(report, { out: { write() {} }, err: { write: (s) => { err += s } }, colors: false })
+      t.assert.equal(err, 'Scanned 1 package recorded by run: 0 alerts\n')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('audit(--reason) refuses a consumer no file records before anything is asked, naming those they do', withFetch(
+  () => { throw new Error('nothing is to be asked') },
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js'], esbuild: ['src/entry.js'], 'bundle:metro': ['src/entry.js'] } })
+      await t.assert.rejects(audit([bundle], { reason: 'not-present-in-bundle' }), (error) => error instanceof AuditError
+        && error.message === '--reason=not-present-in-bundle: no file records that consumer; they record bundle:metro, esbuild, run')
+      // A consumer that recorded first-party code alone is one all the same, with no package of its own.
+      t.assert.deepStrictEqual((await audit([bundle], { reason: 'esbuild' })).packages, [])
+      await t.assert.rejects(audit([writeLock(tmp)], { reason: 'run' }), { name: 'AuditError', message: '--reason=run: the files record no consumers (only a bundle does)' })
+      t.assert.deepStrictEqual(calls, [])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('stasis audit --reason=<a consumer no file records> exits as a usage error, naming those they do', withTmp((t, tmp) => {
+  const r = runCli(['audit', '--reason=not-present-in-bundle', writeBundle(tmp, 'snapshot.br', { reason: { run: ['node_modules/foo/index.js'], webpack: ['node_modules/baz/index.js'] } })])
+  t.assert.equal(r.status, 1)
+  t.assert.equal(r.stderr, 'Error: --reason=not-present-in-bundle: no file records that consumer; they record webpack, run\nRun \'stasis --help\' for usage.\n')
+  t.assert.equal(r.stdout, '')
+}))
+
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
   ({ url }) => {
     if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
@@ -1273,11 +1409,18 @@ test('audit() asks about a versioned copy, says it is vendored, attributes it, a
       t.assert.deepStrictEqual(report.skipped.map(({ name, because }) => [name, because]),
         [['ua-parser-js', 'a copy vendored in next@16.4.0 whose package.json gives no version, so no advisory can be matched to it']])
       const err = []
-      printAuditReport(report, { out: { write() {} }, err: { write: (s) => err.push(s) } })
-      t.assert.ok(err.includes('Not audited: npm ua-parser-js, a copy vendored in next@16.4.0 whose package.json gives no version, so no advisory can be matched to it\n'), err.join(''))
+      printAuditReport(report, { out: { write() {} }, err: { write: (s) => err.push(s) }, colors: false })
+      t.assert.ok(err.join('').includes('Not audited:\n  npm ua-parser-js  a copy vendored in next@16.4.0 whose package.json gives no version, so no advisory can be matched to it\n'), err.join(''))
       // --why follows the import graph into the copy.
       const why = await audit([writeNextBundle(tmp)], { why: true })
       t.assert.equal(why.rows[0].reason, 'run: next -> react-is')
+      // --reason: a copy with no version is the consumer's as its files are, listed as not audited.
+      t.assert.deepStrictEqual((await audit([writeNextBundle(tmp)], { reason: 'run' })).skipped.map(({ name }) => name), ['ua-parser-js'])
+      const webpack = await audit([writeNextBundle(tmp)], { reason: 'webpack' })
+      t.assert.deepStrictEqual([webpack.packages, webpack.skipped], [[], []], 'webpack recorded first-party code alone')
+      let none = ''
+      printAuditReport(webpack, { out: { write() {} }, err: { write: (s) => { none += s } }, colors: false })
+      t.assert.equal(none, 'Scanned 0 packages recorded by webpack\nNo dependencies recorded by webpack\n')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
