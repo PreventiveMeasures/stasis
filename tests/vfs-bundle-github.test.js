@@ -267,12 +267,8 @@ test('suggestedEntries maps what resolution misses to its TS source under typesc
 const unbuiltSibling = {
   'package.json': json({ name: 'root', version: '1.0.0', private: true }),
   'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
-  'pnpm-lock.yaml': [
-    "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '',
-    'importers:', '', '  .: {}', '',
-    '  packages/app:', '    dependencies:', '      dep:', '        specifier: workspace:*', '        version: link:../dep', '',
-    '  packages/dep: {}', '',
-  ].join('\n'),
+  'tsconfig.json': json({ compilerOptions: { strict: true } }),
+  'pnpm-lock.yaml': lockfile('.', 'packages/app', 'packages/dep').replace('  packages/app: {}\n', '  packages/app:\n    dependencies:\n      dep:\n        specifier: workspace:*\n        version: link:../dep\n'),
   'packages/dep/package.json': json({
     name: 'dep',
     version: '1.0.0',
@@ -291,8 +287,9 @@ const unbuiltSibling = {
 
 test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their sources under typescript", async (t) => {
   const sources = ['packages/app/src/entry.ts', 'packages/dep/src/index.ts', 'packages/dep/src/foo.ts']
-  // Lazy and not, through Node's resolution and the field resolver's.
-  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }, { metro: true, platforms: ['ios'] }].map(async (options) => {
+  // Lazy and not, through Node's resolution and the field resolver's, and with an explicit --tsconfig
+  // (whose `paths` alone it names: the layout is still the package's).
+  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }, { metro: true, platforms: ['ios'] }, { tsconfig: 'tsconfig.json' }].map(async (options) => {
     const { bundle } = await build({ client: fakeClient(unbuiltSibling), entries: ['packages/app/src/entry.ts'], typescript: true, ...options })
     t.assert.deepStrictEqual([...bundle.sources.keys()], sources, JSON.stringify(options))
     const [resolutions] = bundle.imports.values()

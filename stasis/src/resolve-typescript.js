@@ -1,6 +1,6 @@
 import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
-import { isPathWithin, isTypeDeclaration } from '@exodus/stasis-core/util'
+import { isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 
@@ -150,12 +150,10 @@ function probeIndex(dir, exts, host) {
 // directory-only ('.', '..', a trailing '/'), so './' never probes the pathological '.ts' dotfile.
 // `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
 // so only substitution applies (matching tsc's node16 rules). `js` completes JS extensions too, for
-// a base Node never probed (see completionExts). With `outputs` (a package's layout by its dir, as
-// tsconfigOutputs gives it), what misses by every rule above and names an output of a package is
-// its source, probed by the same rules: a directory's `main` of the package the directory holds,
-// and `base` itself of the package in `pkgDir` (a manifest target's, or a bare subpath's). The
-// layout is read only then, so a miss it can't map is all that a tsconfig.json can fail.
-function probeTypescriptTarget(base, { js = false, dirOnly = false, completion = true, dir = true, pkgDir = null, outputs = null, host = diskHost } = {}) {
+// a base Node never probed (see completionExts). With `outputs` (packages' layouts by their dirs,
+// as tsconfigOutputs gives them), a directory's `main` that misses and names an output of the
+// package the directory holds is its source, probed the same way (fromSource).
+function probeTypescriptTarget(base, { js = false, dirOnly = false, completion = true, dir = true, outputs = null, host = diskHost } = {}) {
   const exts = completionExts(js)
   if (!dirOnly) {
     const literal = probe(base, host)
@@ -183,10 +181,9 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
       const hit = fromMain(entry) ?? fromSource(base, entry, outputs, fromMain)
       if (hit) return hit
     }
-    const hit = probeIndex(base, exts, host)
-    if (hit) return hit
+    return probeIndex(base, exts, host)
   }
-  return fromSource(pkgDir, base, outputs, (input) => probeTypescriptTarget(input, { js, dirOnly, completion, dir, host }))
+  return null
 }
 
 // --- tsc's `outDir` -> `rootDir` inversion ---
@@ -201,7 +198,7 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
 // A tsconfig.json that does not load throws, as loadTsconfigCompilerOptions does.
 export function tsconfigOutputs(pkgDir, host = diskHost) {
   const dir = realpathOr(pkgDir, host)
-  if (inNodeModules(dir, host)) return null
+  if (IN_NODE_MODULES.test(dir)) return null
   const file = join(dir, 'tsconfig.json')
   if (!isFile(file, host)) return null
   const { outDir, rootDir } = loadTsconfigCompilerOptions(file, host)
@@ -209,16 +206,38 @@ export function tsconfigOutputs(pkgDir, host = diskHost) {
   return { dir, outDir, rootDir: typeof rootDir === 'string' ? rootDir : dir }
 }
 
+// `read()`, or with `lenient`, null where it throws.
+function leniently(lenient, read) {
+  try {
+    return read()
+  } catch (error) {
+    if (!lenient) throw error
+    return null
+  }
+}
+
+// tsconfigOutputs as a function of a package's dir, each read once as for a tree that holds still,
+// but one whose reading read what a lazy tree does not hold yet (`host.touches`, untouchedMemo's),
+// which is read again; with `lenient`, a tsconfig.json that does not load gives none.
+export function tsconfigOutputsOf({ host = diskHost, lenient = false } = {}) {
+  const layouts = untouchedMemo(host.touches, { retouch: host.retouch })
+  return (pkgDir) => {
+    const dir = realpathOr(pkgDir, host)
+    return layouts(dir, () => leniently(lenient, () => tsconfigOutputs(dir, host)))
+  }
+}
+
 // `probeSource` of the source tsc builds `path`, an output of the package in `pkgDir`, from: its
 // place under the package's `outDir` taken under its `rootDir`, as tsc maps an output back to its
-// input (tryLoadInputFileForPath); or null where there is no package or layout (`outputs`, as
-// tsconfigOutputs gives it), or `path` lies outside its `outDir`. The source is a path to probe
+// input (tryLoadInputFileForPath); or null where `outputs` (as tsconfigOutputs gives them) gives the
+// package no layout, or `path` lies outside its `outDir`. Each caller asks only once `path` itself
+// missed, so a tsconfig.json is read, and can fail, for nothing else. The source is a path to probe
 // still, its extension the output's: `dist/x.js` -> `src/x.js`, whose TS siblings are the sources.
 function fromSource(pkgDir, path, outputs, probeSource) {
-  const layout = pkgDir === null || outputs === null ? null : outputs(pkgDir)
+  const layout = outputs?.(pkgDir) ?? null
   if (layout === null) return null
-  const output = join(layout.dir, relative(pkgDir, path)) // by the package's real path
-  return isPathWithin(layout.outDir, output) ? probeSource(join(layout.rootDir, relative(layout.outDir, output))) : null
+  const rel = relative(layout.outDir, join(layout.dir, relative(pkgDir, path))) // by the package's real path
+  return relativeEscapes(rel) ? null : probeSource(join(layout.rootDir, rel))
 }
 
 // --- package `exports`/`imports` map resolution (candidate generation) ---
@@ -289,8 +308,10 @@ function manifestTargets(map, subpathKey, conditions) {
 // requires exports/imports targets to name exact files), each else as the source of the output it
 // names, by `outputs` (tsconfigOutputs, by default); the first on disk, or null.
 export function typescriptExportsTarget(pkgDir, exports, key, { conditions = new Set(), outputs = (dir) => tsconfigOutputs(dir, host), host = diskHost } = {}) {
+  const probeTarget = (path) => probeTypescriptTarget(path, { completion: false, dir: false, host })
   for (const target of manifestTargets(exports, key, conditions)) {
-    const hit = probeTypescriptTarget(resolvePath(pkgDir, target), { completion: false, dir: false, pkgDir, outputs, host })
+    const base = resolvePath(pkgDir, target)
+    const hit = probeTarget(base) ?? fromSource(pkgDir, base, outputs, probeTarget)
     if (hit) return hit
   }
   return null
@@ -477,8 +498,7 @@ const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'
 // named). Never in node_modules: no walk enters a node_modules directory, and resolveTypescriptFallback
 // matches no alias for a file under one. Each config loads once, when first matched; with `lenient`,
 // one that doesn't load matches nothing instead of throwing. Its outputs(pkgDir) is each package's
-// layout (tsconfigOutputs), read once as for a tree that holds still, but one whose reading read
-// what a lazy tree does not hold yet (`host.touches`, untouchedMemo's), and lenient as it is.
+// layout (tsconfigOutputsOf's), lenient as it is.
 export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, projectCwd } = {}) {
   const stop = projectCwd ? realpathOr(resolvePath(projectCwd), host) : null
   const dirs = [] // cwd and above, while the State's walk would go on; real paths, as importers are read
@@ -507,32 +527,16 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, pr
   const matcherOf = (dir) => {
     if (!matchers.has(dir)) {
       const file = join(dir, 'tsconfig.json')
-      let matcher = null
-      if (isFile(file, host)) {
-        try {
-          matcher = loadTsconfigPaths(file, host)
-        } catch (error) {
-          if (!lenient) throw error
-        }
-      }
-      matchers.set(dir, matcher)
+      matchers.set(dir, isFile(file, host) ? leniently(lenient, () => loadTsconfigPaths(file, host)) : null)
     }
     return matchers.get(dir)
   }
-  const layouts = untouchedMemo(host.touches, { retouch: host.retouch })
   return {
     matchPaths(spec, parentFile) {
       const dir = packageOf(parentFile)
       return dir === null ? [] : (matcherOf(dir)?.matchPaths(spec) ?? [])
     },
-    outputs: (pkgDir) => layouts(realpathOr(pkgDir, host), () => {
-      try {
-        return tsconfigOutputs(pkgDir, host)
-      } catch (error) {
-        if (!lenient) throw error
-        return null
-      }
-    }),
+    outputs: tsconfigOutputsOf({ host, lenient }),
   }
 }
 
@@ -562,16 +566,16 @@ export const inNodeModules = (file, host = diskHost) => IN_NODE_MODULES.test(rea
 //                     the named package: its `exports` targets (substitution only) when it has
 //                     them, else its `main`/index (bare root) or subpath (substitution/completion).
 // A package's output that misses (a manifest target, a directory's `main`, a bare subpath) maps to
-// its source by the package's layout: `paths`'s outputs where it has them (packageTsconfigPaths's),
+// its source by the package's layout: `paths`'s outputs where it has them (tsconfigOutputsOf's),
 // else tsconfigOutputs's.
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), paths = null, host = diskHost } = {}) {
   if (inNodeModules(parentFile, host)) return null
-  const outputs = paths?.outputs ?? ((dir) => tsconfigOutputs(dir, host))
-  const hit = typescriptTarget(parentFile, spec, { conditions, paths, outputs, host })
+  const hit = typescriptTarget(parentFile, spec, { conditions, paths, host })
   return hit == null || inNodeModules(hit, host) ? null : hit
 }
 
-function typescriptTarget(parentFile, spec, { conditions, paths, outputs, host }) {
+function typescriptTarget(parentFile, spec, { conditions, paths, host }) {
+  const outputs = paths?.outputs ?? ((dir) => tsconfigOutputs(dir, host))
   if (spec.startsWith('#')) {
     const scope = nearestPackage(parentFile, host)
     return scope?.pkg.imports ? typescriptExportsTarget(scope.pkgDir, scope.pkg.imports, spec, { conditions, outputs, host }) : null
@@ -597,5 +601,7 @@ function typescriptTarget(parentFile, spec, { conditions, paths, outputs, host }
     // Bare package root: LOAD_AS_DIRECTORY only (never `node_modules/dep.ts`).
     return probeTypescriptTarget(loc.pkgDir, { dirOnly: true, outputs, host })
   }
-  return probeTypescriptTarget(join(loc.pkgDir, loc.subpath), { dirOnly: DIR_ONLY_SPEC.test(spec), pkgDir: loc.pkgDir, outputs, host })
+  const dirOnly = DIR_ONLY_SPEC.test(spec)
+  const base = join(loc.pkgDir, loc.subpath)
+  return probeTypescriptTarget(base, { dirOnly, outputs, host }) ?? fromSource(loc.pkgDir, base, outputs, (input) => probeTypescriptTarget(input, { dirOnly, host }))
 }
