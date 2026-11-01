@@ -126,6 +126,24 @@ export const METRO_ASSET_EXTS = new Set(metroDefaults.assetExts)
 // The conditions Metro asserts itself, by the kind of import.
 const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
+// --metro --typescript: `view` (a metroHost over `host`) with tsc's extension substitution, as
+// resolveSourceFile's: a file named for a JS output that is absent (`native.js`) is the first of its TS
+// source siblings on disk (`native.ts`), unless that lies in node_modules by its real path. So Metro's
+// own steps -- the entry its mainFields pick, a browser-map or `exports` target, the path itself --
+// land on the source of a compiled file that exists only as that source.
+function typescriptView(view, host) {
+  const source = (path) => {
+    const pick = typescriptSiblings(path).find((sibling) => view.isFile(sibling))
+    return pick === undefined || inNodeModules(pick, host) ? null : pick
+  }
+  const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))
+  return {
+    ...view,
+    isFile: (path) => view.isFile(path) || substituted(path) !== null,
+    realpath: (path) => view.realpath(substituted(path) ?? path),
+  }
+}
+
 // Probe `base` for a source file in platform order: bare name first, then per ext
 // `base.<platform>.<ext>`, `base.native.<ext>` (native only), `base.<ext>`. `platform: null`
 // disables suffixes. Returns a path, or null.
@@ -205,8 +223,8 @@ function resolveFileOrDir(base, opts) {
 // drive the legacy-field + suffix probing.
 // `metro` resolves as Metro does instead (viaMetro), taking `assetExts` (Metro's defaults, else the
 // project's) as assets; leave it off for the esbuild-parity `--mainFields` path. `typescript` adds
-// tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling; see resolveSourceFile)
-// plus the shared miss fallback (see below), the one --typescript mapping under `metro`, and
+// tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling; see resolveSourceFile;
+// under `metro`, typescriptView) plus the shared miss fallback (see below), and
 // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default. `kept`, a Map
 // kept across a lazy tree's rounds, keeps there each resolution that read nothing the tree does not
@@ -235,16 +253,24 @@ export function createFieldResolver({
   // --metro: Metro's own resolution, @preventive/rn's, over `host` as stasis reads it (metroHost). Metro
   // asserts `default` and `import` or `require` by the kind of import itself, and takes the rest of an
   // importer's conditions as its `conditionNames`: one resolver for each such set, made on first use.
-  // Off web it prefers `.native` files (preferNative). A builtin it fails to resolve, one the importer's
-  // browser map doesn't remap, is a builtin (see the header).
+  // Off web it prefers `.native` files (preferNative). --typescript resolves what that misses again,
+  // over the view of tsc's extension substitution (typescriptView), but for an importer in
+  // node_modules (inNodeModules), so it never overrides what Metro resolves. A builtin it fails to
+  // resolve, one the importer's browser map doesn't remap, is a builtin (see the header).
   const metroResolvers = new Map()
+  const metroResolver = (conditionNames, substituting) => {
+    const key = `${substituting}\0${conditionNames.join('\0')}`
+    if (!metroResolvers.has(key)) {
+      const view = metroHost(host, mainFields)
+      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, host) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
+    }
+    return metroResolvers.get(key)
+  }
   const viaMetro = (parentFile, specifier, conds) => {
     const conditionNames = [...conds].filter((name) => !METRO_OWN_CONDITIONS.has(name))
-    const key = conditionNames.join('\0')
-    if (!metroResolvers.has(key)) {
-      metroResolvers.set(key, createMetroResolver({ host: metroHost(host, mainFields), sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
-    }
-    const resolution = metroResolvers.get(key)(parentFile, specifier, { platform, isESMImport: conds.has('import') })
+    const request = { platform, isESMImport: conds.has('import') }
+    let resolution = metroResolver(conditionNames, false)(parentFile, specifier, request)
+    if (resolution === null && typescript && !inNodeModules(parentFile, host)) resolution = metroResolver(conditionNames, true)(parentFile, specifier, request)
     const remapped = () => {
       const imp = nearestPackage(parentFile, host, read)
       return imp !== null && matchRedirect(mergeRedirectMap(imp.pkg, mainFields), specifier) !== undefined

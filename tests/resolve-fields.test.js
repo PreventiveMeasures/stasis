@@ -46,6 +46,7 @@ const withTsTmp = (fn) => (t) => {
     for (const [name, manifest, files] of [
       ['tspkg', { main: './lib/main.js' }, ['main.ts']],
       ['exppkg', { exports: { '.': './lib/main.js', './sub': { default: './lib/sub.js' } } }, ['main.ts', 'sub.ts']],
+      ['rnpkg', { 'react-native': './lib/native.js', main: './lib/main.js' }, ['native.ts', 'main.ts']],
     ]) {
       tsPackage(join(tmp, 'packages', name), { name, ...manifest }, files)
       mkdirSync(join(tmp, 'node_modules'), { recursive: true })
@@ -465,6 +466,20 @@ test('typescript: no mapping to a sibling whose real path lies in node_modules, 
   writeFileSync(join(tmp, 'linked.tsx'), 'export const l = (): unknown => null\n')
   t.assert.equal(relTo(tmp, resolver(from, './linked.js')), null)
   t.assert.equal(resolveTypescriptFallback(from, './linked.js'), null)
+}))
+
+test('typescript --metro: the entry Metro picks, naming a missing .js, lands on its own .ts source', withTsTmp((t, tmp) => {
+  // rnpkg: react-native "./lib/native.js", main "./lib/main.js", only their .ts sources on disk. Metro
+  // picks the react-native entry, which maps to native.ts, never main's main.ts -- in a linked
+  // workspace package and a directory alike, but never in node_modules, nor from an importer there.
+  const resolver = createFieldResolver({ mainFields: ['react-native', 'browser', 'main'], platform: 'ios', preferNative: true, metro: true, typescript: true })
+  const from = join(tmp, 'entry.ts')
+  t.assert.equal(relTo(tmp, resolver(from, 'rnpkg')), 'packages/rnpkg/lib/native.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './packages/rnpkg')), 'packages/rnpkg/lib/native.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './only-ts.js')), 'only-ts.ts')
+  t.assert.equal(relTo(tmp, resolver(from, './both.js')), 'both.js')
+  t.assert.equal(relTo(tmp, resolver(from, 'rnpkg-installed')), null)
+  t.assert.equal(relTo(tmp, resolver(join(tmp, 'node_modules', 'tspkg-installed', 'lib', 'main.ts'), '../../../only-ts.js')), null)
 }))
 
 test('typescript: substitution beats the appended-extension probe for a pathological x.js.ts', withTsTmp((t, tmp) => {
