@@ -379,6 +379,25 @@ function generateClientFor({ schemaPath, datamodel, generator, dmmf, datasources
 
 const readingSchema = (path, what) => Promise.try(what).catch((cause) => { throw new Error(`prisma: ${path}: ${cause.message}`, { cause }) })
 
+// Where a generator's `output` points, relative to the schema file declaring it.
+const outputOf = (generator, path) => posix.resolve(posix.dirname(generator.sourceFilePath ?? path), generator.output.value)
+
+// The output of a generator stasis doesn't run, where the tree already has it: the bundle takes what it
+// reaches there as committed, however stale -> its path, or undefined. Not one in node_modules, laid out
+// from the lockfile, nor one no `output` or an env() names, which stasis can't know.
+function committedOutput(host, generator, path) {
+  if (generator.output === null || generator.output.fromEnvVar !== null) return undefined
+  const output = outputOf(generator, path)
+  return !hasNodeModulesSegment(output) && (isFile(output, host) || isDir(output, host)) ? output : undefined
+}
+
+// A generator whose output no bundle needs, not run and not warned of: @pothos/plugin-prisma's with no
+// `output`, which writes types alone into its own package (generated.d.ts), there in node_modules as a
+// placeholder. With `generateDatamodel = "true"` it writes getDatamodel() there too, code a bundle may run.
+const POTHOS = 'prisma-pothos-types'
+const needsNoOutput = (generator) => generator.provider.value === POTHOS && generator.provider.fromEnvVar === null &&
+  generator.output === null && generator.config.generateDatamodel !== 'true'
+
 // Each `{ dir, files }` output. Projects without a schema or a `prisma-client` generator are skipped
 // quietly; ones stasis can't generate for with a warning, the scan then reporting what is missing.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
@@ -397,7 +416,11 @@ export async function generatePrismaClients({ host, root, projects }) {
     const { internals } = loadGenerator()
     const config = await readingSchema(path, () => internals.getConfig({ datamodel: files }))
     const generators = config.generators.filter((generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null)
-    for (const other of config.generators.filter((generator) => !generators.includes(generator))) skip(`${path}'s generator ${other.name}`, `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone`)
+    for (const other of config.generators.filter((generator) => !generators.includes(generator) && !needsNoOutput(generator))) {
+      const committed = committedOutput(host, other, path)
+      const taken = committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`
+      skip(`${path}'s generator ${other.name}`, `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone${taken}`)
+    }
     if (generators.length === 0) continue
     for (const warning of config.warnings) console.warn(`[stasis] prisma: ${warning}`)
     if (config.datasources.length === 0) throw new Error(`prisma: ${path} defines no datasource`)
@@ -409,7 +432,7 @@ export async function generatePrismaClients({ host, root, projects }) {
         skip(`${path}'s generator ${generator.name}`, `its output is env("${generator.output.fromEnvVar}"), which stasis doesn't read`)
         continue
       }
-      const outputDir = posix.resolve(posix.dirname(generator.sourceFilePath ?? path), generator.output.value)
+      const outputDir = outputOf(generator, path)
       if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
       if (outputs.some((output) => output.dir === outputDir)) throw new Error(`prisma: ${outputDir} is the output of more than one generator`)
       outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
