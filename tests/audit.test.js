@@ -1232,18 +1232,23 @@ test('audit(--why --reason) keeps the advisories of other ecosystems by the cons
   }
 ))
 
-test('audit(--reason) scans, counts and asks about only the packages that consumer recorded', withFetch(
+test('audit(--reason) scans, counts and asks about only the packages that consumer recorded, the others of npm\'s registry alone, for malware', withFetch(
   () => new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }),
   async (t, calls) => {
     const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
     try {
-      const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js', 'node_modules/foo/index.js'], webpack: ['src/entry.js', 'node_modules/baz/index.js'] } })
-      const report = await audit([bundle], { reason: 'run' })
-      t.assert.deepStrictEqual(calls.map((call) => JSON.parse(call.opts.body)), [{ foo: ['2.0.0'] }], 'baz, which run did not record, never asked about')
+      const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js', 'node_modules/foo/index.js'], webpack: ['src/entry.js', 'node_modules/baz/index.js'], esbuild: ['src/entry.js'] } })
+      const report = await audit([bundle], { reason: 'run', osv: true })
+      t.assert.deepStrictEqual(calls.filter((call) => call.url.endsWith('/advisories/bulk')).map((call) => JSON.parse(call.opts.body)), [{ foo: ['2.0.0'] }, { baz: ['0.0.1'] }], 'baz, which run did not record, of npm\'s registry apart')
+      t.assert.ok(!calls.some((call) => /baz/u.test(`${call.url} ${call.opts?.body ?? ''}`) && !call.url.endsWith('/advisories/bulk')), 'nor of OSV, nor checked for it')
       t.assert.deepStrictEqual(report.packages.map((pkg) => pkg.name), ['foo'])
       let err = ''
       printAuditReport(report, { out: { write() {} }, err: { write: (s) => { err += s } }, colors: false })
       t.assert.equal(err, 'Scanned 1 package recorded by run: 0 alerts\n')
+      // A consumer that recorded first-party code alone is one all the same, with no package of its own.
+      calls.length = 0
+      t.assert.deepStrictEqual((await audit([bundle], { reason: 'esbuild' })).packages, [])
+      t.assert.deepStrictEqual(calls.map((call) => JSON.parse(call.opts.body)), [{ baz: ['0.0.1'], foo: ['2.0.0'] }], 'every npm package of npm\'s registry, for malware')
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -1258,8 +1263,6 @@ test('audit(--reason) refuses a consumer no file records before anything is aske
       const bundle = writeBundle(tmp, 'snapshot.br', { reason: { run: ['src/entry.js'], esbuild: ['src/entry.js'], 'bundle:metro': ['src/entry.js'] } })
       await t.assert.rejects(audit([bundle], { reason: 'not-present-in-bundle' }), (error) => error instanceof AuditError
         && error.message === '--reason=not-present-in-bundle: no file records that consumer; they record bundle:metro, esbuild, run')
-      // A consumer that recorded first-party code alone is one all the same, with no package of its own.
-      t.assert.deepStrictEqual((await audit([bundle], { reason: 'esbuild' })).packages, [])
       await t.assert.rejects(audit([writeLock(tmp)], { reason: 'run' }), { name: 'AuditError', message: '--reason=run: the files record no consumers (only a bundle does)' })
       t.assert.deepStrictEqual(calls, [])
     } finally {
@@ -1321,6 +1324,53 @@ test('audit(osv) asks OSV about public npm packages, never a private one, and ra
     }
   }
 ))
+
+test('audit: npm\'s malware advisories of any dependency, whatever --reason, apart from the table, each with the consumers that recorded it', withFetch(
+  npmOsvFetch,
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      // run recorded evil (OSV's record of it malicious) and ok; webpack hijacked (npm's malware advisory) and a private one.
+      const bundle = writeBundle(tmp, 'reasons.br', { ...OSV_BUNDLE, reason: {
+        run: ['node_modules/evil/index.js', 'node_modules/ok/index.js'],
+        webpack: ['node_modules/hijacked/index.js', 'node_modules/@acme/secret/index.js'],
+      } })
+      const run = await audit([bundle], { reason: 'run', osv: true })
+      t.assert.deepStrictEqual(run.rows.map(({ severity, package: pkg, id }) => [severity, pkg, id]), [['malware', 'evil', 'MAL-2099-0001']], 'the table run\'s')
+      t.assert.deepStrictEqual(run.npmMalware.map(({ package: pkg, id, reason }) => [pkg, id, reason]), [['hijacked', 'GHSA-pjwm-rvh2-c87w', 'webpack']], 'npm\'s malware advisory of a package run did not record; OSV\'s record of evil not npm\'s')
+      const bulk = calls.filter((call) => call.url.endsWith('/advisories/bulk')).map((call) => JSON.parse(call.opts.body))
+      t.assert.deepStrictEqual(bulk, [{ evil: ['1.0.0'], ok: ['2.0.0'] }, { '@acme/secret': ['1.0.0'], hijacked: ['0.7.29'] }])
+      const osvQueries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepStrictEqual(osvQueries.map(({ package: { name } }) => name).toSorted(), ['evil', 'ok'], 'OSV asked about run\'s alone')
+
+      let printed = ''
+      printAuditReport(run, { out: { write() {} }, err: { write: (s) => { printed += s } }, colors: false })
+      t.assert.equal(printed, "\nScanned 2 packages recorded by run: 1 alert (1 malware)\n\nmalware in 1 dependency, as npm's advisories tell:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked  webpack\n")
+      let painted = ''
+      printAuditReport(run, { out: { write() {} }, err: { write: (s) => { painted += s } }, colors: true })
+      const styled = (format, text) => styleText(format, text, { validateStream: false })
+      t.assert.ok(painted.includes(`\n\n${styled(['bold', 'white', 'bgRed'], ' malware ')} in 1 dependency, as npm's advisories tell:\n`), painted)
+
+      // Its own packages' npm malware advisories too, in the table and apart.
+      const webpack = await audit([bundle], { reason: 'webpack', osv: true })
+      t.assert.deepStrictEqual(webpack.rows.map(({ package: pkg }) => pkg), ['hijacked'])
+      t.assert.deepStrictEqual(webpack.npmMalware.map(({ package: pkg, reason }) => [pkg, reason]), [['hijacked', 'webpack']])
+      // With no --reason: npm's alone, OSV's record in the table only.
+      const everything = await audit([bundle], { osv: true })
+      t.assert.deepStrictEqual(everything.rows.map(({ package: pkg }) => pkg), ['evil', 'hijacked'])
+      t.assert.deepStrictEqual(everything.npmMalware.map(({ package: pkg }) => pkg), ['hijacked'])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test('printAuditReport: npm\'s malware advisories told where --reason\'s consumer recorded no package', (t) => {
+  let printed = ''
+  const row = { ecosystem: 'npm', package: 'hijacked', installed: '0.7.29', vulnerable: '=0.7.29', severity: 'malware', title: 'Embedded malware in hijacked', id: 'GHSA-pjwm-rvh2-c87w', source: 'registry', reason: '' }
+  printAuditReport({ packages: [], rows: [], npmMalware: [row, { ...row, id: 'GHSA-1111-2222-3333', title: 'Malicious Package in hijacked' }], reason: 'esbuild' }, { out: { write() {} }, err: { write: (s) => { printed += s } }, colors: false })
+  t.assert.equal(printed, "Scanned 0 packages recorded by esbuild\nNo dependencies recorded by esbuild\n\nmalware in 1 dependency, as npm's advisories tell:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked\n  hijacked 0.7.29  GHSA-1111-2222-3333  Malicious Package in hijacked\n", 'one line an advisory, no consumers where none is recorded')
+})
 
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
   ({ url }) => {

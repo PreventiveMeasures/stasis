@@ -341,7 +341,8 @@ if (command === '-v' || command === '--version') {
   const { capabilities, logos } = await import('../src/sixel.js')
   const terminal = await capabilities()
   printAuditReport(report, { icons: terminal.sixel && logos(terminal.cell, terminal.background) })
-  process.exitCode = report.rows.length === 0 ? 0 : 1
+  // Malware npm's registry tells of in any dependency fails it too, whatever --reason.
+  process.exitCode = report.rows.length === 0 && report.npmMalware.length === 0 ? 0 : 1
 } else if (command === 'validate') {
   // Exits 0 where the bundle is valid, 1 where it is invalid, 2 where a file it was to check went
   // unverified (unless --allow-unverified), and 3 where it refused the bundle, or failed.

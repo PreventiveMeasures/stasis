@@ -282,9 +282,12 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // are; a Soldeer package or a GitHub repo needs the client, their repository being their only source.
 // A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.
 // `reason` (--reason) audits only the packages that consumer recorded (collectReasons): no other is
-// counted, listed, or asked about. One no file records is refused (AuditError) before anything is,
-// naming those they do; a lockfile records none. `osv` asks OSV about npm packages too, those whose
+// counted, listed, or asked about as they are. One no file records is refused (AuditError) before anything
+// is, naming those they do; a lockfile records none. `osv` asks OSV about npm packages too, those whose
 // name npm's registry serves to anyone; advisories() never sends it a private one.
+// `npmMalware` is what npm's registry tells of malware in any npm dependency, whatever `reason`: rows as
+// `rows` are, each package's consumers its reason. Under --reason, the npm packages its consumer didn't
+// record are asked of npm's registry alone for it (fast, where OSV and their repositories aren't).
 export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
@@ -301,25 +304,39 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     }
     reasons = index.byPkg
   }
-  const packages = collectPackages(files).filter((pkg) => !reason || reasons.get(packageKey(pkg.ecosystem, pkg.name, pkg.version, pkg.vendoredIn?.[0]))?.has(reason))
+  const all = collectPackages(files)
+  const packages = reason ? all.filter((pkg) => reasons.get(packageKey(pkg.ecosystem, pkg.name, pkg.version, pkg.vendoredIn?.[0]))?.has(reason)) : all
   const skipped = packages.flatMap((pkg) => {
     const because = unaudited(pkg)
     return because === undefined ? [] : [{ ...pkg, because }]
   })
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
-  if (asked.length === 0) {
-    return { packages, skipped, advisories: [], rows: [], why, whyDeep, whyFull, reason }
+  // Under --reason, the npm packages its consumer didn't record, for npm's malware advisories.
+  const own = new Set(packages)
+  const others = reason ? all.filter((pkg) => !own.has(pkg) && pkg.ecosystem === 'npm' && unaudited(pkg) === undefined) : []
+  if (asked.length === 0 && others.length === 0) {
+    return { packages, skipped, advisories: [], rows: [], npmMalware: [], why, whyDeep, whyFull, reason }
   }
+  const query = (list) => list.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] }))
   let result
+  let elsewhere
   try {
-    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github, osv })
+    ;[result, elsewhere] = await Promise.all([
+      asked.length > 0 ? advisories(query(asked), { repoAdvisories, github, osv }) : [],
+      others.length > 0 ? advisories(query(others)) : [],
+    ])
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
     if (cause?.code === 'ERR_ASSERTION') throw cause
-    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
+    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(others.length > 0 ? ['npm'] : []), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
+  const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
+  // npm's registry's malware advisories (`registry` rows, not OSV's records), of every npm dependency.
+  const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
+  if (malware.length > 0) reasons ??= collectReasons(files)
+  const npmMalware = flattenAdvisories(malware, reasons, null, null, vendoredOf([...asked, ...others]))
   // `--why` REPLACES the consumer list with per-consumer import paths, so only
   // one of the two is computed for npm's advisories, the only ones collectWhy has
   // paths for: another ecosystem's keep their consumers. Restrict the (potentially
@@ -327,7 +344,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   // `reason` (--reason) narrows both the paths (in collectWhy) and the consumer
   // list (in flattenAdvisories) to a single consumer, dropping advisories
   // unrelated to it.
-  const vendoredByKey = new Map(asked.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
+  const vendoredByKey = vendoredOf(asked)
   let rows
   if (why) {
     const npm = result.filter((adv) => adv.ecosystem === 'npm')
@@ -337,7 +354,7 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   } else {
     rows = flattenAdvisories(result, reasons ?? collectReasons(files), null, reason, vendoredByKey)
   }
-  return { packages, skipped, advisories: result, rows, why, whyDeep, whyFull, reason }
+  return { packages, skipped, advisories: result, rows, npmMalware, why, whyDeep, whyFull, reason }
 }
 
 // Each severity's colour, the worst the loudest (malware white on red); an advisory without one (RustSec's)
@@ -377,14 +394,16 @@ const ROOM_BELOW = '\n\n\x1b[2A'
 // after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
 // colours (`colors`, else takesColors). With `icons` (the logos sixel.js logos() picks for a terminal
 // that draws sixel images, true for its 16-pixel ones), each id has its source's icon before it.
-export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false } = {}) {
+export function printAuditReport({ packages, skipped = [], rows, npmMalware = [], why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false } = {}) {
   const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
   const coloredOut = colors ?? takesColors(out)
+  const coloredErr = colors ?? takesColors(err)
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
     err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
+    printMalware(npmMalware, err, paintErr, coloredErr)
     return
   }
   if (rows.length > 0) {
@@ -422,5 +441,19 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     const lines = skipped.map((pkg, i) => `  ${names[i].padEnd(pad)}  ${paintErr(DIM, pkg.because)}`)
     err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines.join('\n')}\n`)
   }
-  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, colors ?? takesColors(err))}\n`)
+  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, coloredErr)}\n`)
+  printMalware(npmMalware, err, paintErr, coloredErr)
+}
+
+// What npm's registry tells of malware in any dependency, whatever --reason (audit()'s `npmMalware`), after
+// the summary, apart from the table: each advisory a line, its package and version, id and title, and the
+// consumers that recorded it.
+function printMalware(rows, err, paint, colored) {
+  if (rows.length === 0) return
+  const packages = new Set(rows.map((row) => `${row.package}@${row.installed}`)).size
+  const names = rows.map((row) => `${row.package} ${row.installed}`)
+  const pad = (list) => Math.max(...list.map((text) => text.length))
+  const [nameWidth, idWidth, titleWidth] = [pad(names), pad(rows.map((row) => row.id)), pad(rows.map((row) => row.title))]
+  const lines = rows.map((row, i) => `  ${names[i].padEnd(nameWidth)}  ${row.id.padEnd(idWidth)}  ${row.reason ? `${row.title.padEnd(titleWidth)}  ${paint(DIM, row.reason)}` : row.title}`)
+  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}, as npm's advisories tell:\n${lines.join('\n')}\n`)
 }
