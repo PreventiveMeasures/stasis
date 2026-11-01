@@ -696,6 +696,14 @@ test('formatTable fits `width` by wrapping the `wrap` columns at spaces, the wid
   t.assert.deepStrictEqual(rowsOf(long).slice(1).map(([a]) => a), ['x'.repeat(20), 'x'.repeat(10)])
 })
 
+test('formatTable fits a --why cell of 2000 chains of 40 packages, more words than one call takes arguments', (t) => {
+  const chain = Array.from({ length: 40 }, (_, i) => `package-${i}`).join(' -> ')
+  const reason = Array.from({ length: 2000 }, (_, i) => `run: head-${i} -> ${chain}`).join('\n')
+  const out = formatTable([{ severity: 'high', package: 'foo', reason }], ['severity', 'package', 'reason'], { multiline: ['reason'], wrap: ['reason'], width: 100 })
+  t.assert.ok(out.split('\n').every((line) => line.length <= 100))
+  t.assert.ok(out.split('\n').length > 2000 * 4, 'each chain wrapped')
+})
+
 test('printAuditReport: severities in colour, the header bold and the box dimmed, the summary coloured, where asked; the widths those of the text unstyled', (t) => {
   const row = (severity, pkg) => ({ ecosystem: 'npm', package: pkg, installed: '1.0.0', vulnerable: '<2', severity, title: 't', id: 'GHSA-aaaa-bbbb-cccc', reason: '' })
   const report = { packages: [{}, {}, {}, {}, {}], rows: [row('critical', 'a'), row('high', 'b'), row('moderate', 'c'), row('low', 'd'), row('', 'e')] }

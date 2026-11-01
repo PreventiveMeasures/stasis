@@ -13,6 +13,10 @@ const cell = (v) => String(v ?? '').replace(/[\r\n\u2028\u2029]+/gu, ' ')
 const cellLines = (v, multiline) =>
   multiline ? String(v ?? '').split('\n').map((s) => cell(s)) : [cell(v)]
 
+// The longest of `items` by `lengthOf` (a string's or an array's length), 0 for none: a fold, as a column
+// (a --why cell of 2000 chains, say) may hold more lines and words than one call takes arguments.
+const longest = (items, lengthOf = (item) => item.length) => items.reduce((max, item) => Math.max(max, lengthOf(item)), 0)
+
 // A column that wraps narrows no further than its header, and its longest word up to this, so that only
 // a longer word is ever cut.
 const MAX_WHOLE_WORD = 20
@@ -51,7 +55,7 @@ export function formatTable(rows, columns, { multiline = [], paint, paintHeader,
   const header = columns.map((c) => [c])
   let body = rows.map((r) => linesOf(r))
   const measure = () => columns.map((c, i) =>
-    Math.max(c.length, ...body.map((cells) => Math.max(0, ...cells[i].map((l) => l.length))))
+    Math.max(c.length, longest(body, (cells) => longest(cells[i])))
   )
   let widths = measure()
   // Each column's text, a space either side, and a border after it; one more border before the first.
@@ -59,8 +63,8 @@ export function formatTable(rows, columns, { multiline = [], paint, paintHeader,
   const wrapping = columns.flatMap((c, i) => (wrap.includes(c) ? [i] : []))
   if (width !== undefined && wrapping.length > 0 && total() > width) {
     const indent = (i) => (ml.has(columns[i]) ? INDENT : '')
-    const words = (i) => body.flatMap((cells) => cells[i].flatMap((l) => l.split(' ')))
-    const floors = new Map(wrapping.map((i) => [i, Math.max(columns[i].length, indent(i).length + Math.min(MAX_WHOLE_WORD, Math.max(...words(i).map((w) => w.length))))]))
+    const longestWord = (i) => longest(body, (cells) => longest(cells[i], (line) => longest(line.split(' '))))
+    const floors = new Map(wrapping.map((i) => [i, Math.max(columns[i].length, indent(i).length + Math.min(MAX_WHOLE_WORD, longestWord(i)))]))
     while (total() > width) {
       const widest = wrapping.filter((i) => widths[i] > floors.get(i)).toSorted((a, b) => widths[b] - widths[a])[0]
       if (widest === undefined) break
@@ -77,7 +81,7 @@ export function formatTable(rows, columns, { multiline = [], paint, paintHeader,
   // A row spans as many physical lines as its tallest cell; shorter cells pad
   // out with blanks so the borders stay aligned.
   const render = (cells, style) => {
-    const height = Math.max(...cells.map((c) => c.length))
+    const height = longest(cells)
     const out = []
     for (let i = 0; i < height; i++) {
       out.push(`${bar} ${cells.map((c, j) => {
