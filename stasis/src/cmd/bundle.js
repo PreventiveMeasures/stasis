@@ -2434,72 +2434,21 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // from a cache that holds them, held to the lockfile all the same) and nothing is cached: nothing
 // is written but the bundle and the lockfile. A Soldeer git dependency is fetched from GitHub with
 // `env`'s GITHUB_TOKEN where it is set; npm is asked with withNpmToken's token (tokens.js).
-export async function bundleCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, brotliQuality, add = false, builds, deptree = false } = {}) {
-  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
-  if (builds !== undefined) {
-    if (!Array.isArray(builds) || builds.length === 0) throw new TypeError('bundleCommand: builds must be a non-empty array')
-    const given = Object.entries(options).find(([key, value]) => !['cwd', 'env'].includes(key) && value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))
-    if (given) throw new TypeError(`bundleCommand: ${given[0]} can't be combined with builds (each build sets its own)`)
-  }
-  // Each build's options, the defaults above where it leaves one out.
-  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...build, cwd, env }))
-  const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
-
+export async function bundleCommand({ cwd = process.cwd(), output, lockfile, brotliQuality, add = false, ...options } = {}) {
   // --add has nothing to merge into on stdout (write-only).
   if (add && output === '-') {
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
-
-  // The files this build writes, never taken into `extra`, given the root its paths are relative to:
-  // the bundle (by default at that root, see `target` below) and the lockfile.
-  const outputsAt = (root) => [output ?? join(root, DEFAULT_BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
-  // With `builds` (stasis.config.json's entries, however many builds they make), `extra` is the
-  // bundle's, not any build's: added to their union below.
-  const bundleExtra = builds !== undefined
-  let union, root
-  if (deptree) {
-    // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
-    const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
-    const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
-      cwd: resolve(cwd),
-      packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
-      lockfile,
-      cache: false,
-      lazy: false,
-      client: createClient({ token: env.GITHUB_TOKEN || null }),
-    }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true }))
-    console.warn(unpackedSummary(built.stats))
-    root = built.root
-    union = { bundle: built.bundle, lockfile: () => built.lockfile }
-  } else {
-    const builts = []
-    for (const [i, plan] of plans.entries()) {
-      // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-      builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: !bundleExtra }))
-    }
-    // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
-    // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
-    const roots = builts.map((built) => built.root ?? resolve(cwd))
-    root = roots[0]
-    // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
-    for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
-    union = unionOfBuilds('bundleCommand', plans, builts, roots)
-    if (bundleExtra) {
-      // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
-      // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
-      const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
-      if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
-      union = withExtras
-    }
-  }
+  const built = await buildOfCommand({ ...options, cwd, output, lockfile })
+  const { root } = built
   // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
   // the root it would load as rooted at cwd, and root the next `stasis bundle` there too, out of the
   // files above it.
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
 
-  let { bundle } = union
+  let { bundle } = built
   // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
-  let lockData = lockfile ? union.lockfile().serialize() : undefined
+  let lockData = lockfile ? built.lockfile().serialize() : undefined
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
@@ -2547,4 +2496,73 @@ export async function bundleCommand({ cwd = process.cwd(), env = process.env, ho
   } else {
     console.warn(bundledSummary(files.length, modules, fromDir, dest))
   }
+}
+
+// The bundle bundleCommand writes of its options (but `brotliQuality` and `add`, which say how it is
+// written), built as it builds it, warnings and all, and not written: as `stasis audit` would read it
+// back from the file, a Bundle parsed from what bundleCommand would compress (no lockfile is
+// written either). Its errors are bundleCommand's.
+export async function buildCommandBundle(options = {}) {
+  const { bundle } = await buildOfCommand(options)
+  return Bundle.parse(bundle.serialize())
+}
+
+// bundleCommand's bundle, and its lockfile (`lockfile()`, a JS bundle's), built as it builds them from
+// its options (but `brotliQuality` and `add`, which say how they are written) and not written, with
+// the root their paths are relative to. `output` and `lockfile` are where it would write them, which
+// `extra` never takes in. -> { bundle, lockfile: () => Lockfile, root }
+async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, builds, deptree = false } = {}) {
+  const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
+  if (builds !== undefined) {
+    if (!Array.isArray(builds) || builds.length === 0) throw new TypeError('bundleCommand: builds must be a non-empty array')
+    const given = Object.entries(options).find(([key, value]) => !['cwd', 'env'].includes(key) && value !== undefined && value !== false && value !== null && !(Array.isArray(value) && value.length === 0))
+    if (given) throw new TypeError(`bundleCommand: ${given[0]} can't be combined with builds (each build sets its own)`)
+  }
+  // Each build's options, the defaults above where it leaves one out.
+  const plans = (builds ?? [{}]).map((build) => ({ ...options, ...build, cwd, env }))
+  const kinds = plans.map((plan) => classifyEntries('bundleCommand', { ...plan, lockfile }))
+
+  // The files this build writes, never taken into `extra`, given the root its paths are relative to:
+  // the bundle (by default at that root, see bundleCommand's `target`) and the lockfile.
+  const outputsAt = (root) => [output ?? join(root, DEFAULT_BUNDLE_FILE), lockfile].filter((file) => file !== undefined && file !== '-').map((file) => resolve(cwd, file))
+  // With `builds` (stasis.config.json's entries, however many builds they make), `extra` is the
+  // bundle's, not any build's: added to their union below.
+  const bundleExtra = builds !== undefined
+  let union, root
+  if (deptree) {
+    // The disk read through the tree, nothing cached (`cache: false`, and no setCacheDir here).
+    const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
+    const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
+      cwd: resolve(cwd),
+      packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
+      lockfile,
+      cache: false,
+      lazy: false,
+      client: createClient({ token: env.GITHUB_TOKEN || null }),
+    }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true }))
+    console.warn(unpackedSummary(built.stats))
+    root = built.root
+    union = { bundle: built.bundle, lockfile: () => built.lockfile }
+  } else {
+    const builts = []
+    for (const [i, plan] of plans.entries()) {
+      // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
+      builts.push(await buildOfKind(kinds[i], { ...plan, outputsAt, extra: !bundleExtra }))
+    }
+    // The directory the bundle's paths are relative to: a State-built JS bundle's root, which is the
+    // project's at or above cwd (a workspace package's is the workspace root's), else cwd.
+    const roots = builts.map((built) => built.root ?? resolve(cwd))
+    root = roots[0]
+    // State-built bundles keep the State root's repo (no cwd fallback: their paths are relative to that root).
+    for (const built of builts) if (!built.stateBuilt) built.bundle.repo ??= detectRepo(cwd)
+    union = unionOfBuilds('bundleCommand', plans, builts, roots)
+    if (bundleExtra) {
+      // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
+      // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
+      const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
+      if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
+      union = withExtras
+    }
+  }
+  return { ...union, root }
 }

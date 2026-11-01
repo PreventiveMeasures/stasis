@@ -31,6 +31,7 @@ const HELP = `Usage:
  stasis diff --stat [--imports] path/to/(lockfile|bundle) path/to/(lockfile|bundle)
  stasis prune [path/to/project]
  stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
+ stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories]  (the bundle stasis bundle builds of stasis.config.json's entries, not written)
  stasis validate [--github=owner/name] [--sha=commit] [--directory=path] [--only-deps] [--lockfile=path | --no-lockfile] [--allow-unverified] [--show-valid] path/to/bundle
  stasis sbom --format=(spdx|cyclonedx) [--output=(path|-)] path/to/(lockfile|bundle) ...
  stasis --version
@@ -315,10 +316,26 @@ if (command === '-v' || command === '--version') {
 } else if (command === 'audit') {
   const options = { why: { type: 'boolean' }, 'why-deep': { type: 'boolean' }, 'why-full': { type: 'boolean' }, reason: { type: 'string' }, 'repo-advisories': { type: 'boolean' } }
   const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
-  if (argv.length === 0) fail('Nothing to audit: no path to file given')
+  // With no file, the bundle a bare `stasis bundle` would write of the entries stasis.config.json's
+  // `entries` names, planned (and refused) as it plans them, and built after the checks below.
+  let plan
+  if (argv.length === 0) {
+    const cwd = process.cwd()
+    const { bundlePlan, readConfigEntries } = await import('../src/cmd/bundle-options.js')
+    try {
+      const config = readConfigEntries(cwd)
+      const entries = [...(config?.values() ?? [])].map(({ entry }) => entry)
+      if (entries.length === 0) fail('Nothing to audit: no path to file given, nor entries in stasis.config.json to bundle')
+      plan = { cwd, ...bundlePlan({ cwd, entries, values: {}, config }) }
+    } catch (cause) {
+      fail(`Error: ${cause.message}`)
+    }
+  }
   const repoAdvisories = Boolean(values['repo-advisories'])
   const token = (await import('../src/cmd/tokens.js')).githubToken()
   if (repoAdvisories && !token) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
+  // Built as `stasis bundle` builds it, warnings and all, but neither written nor compressed.
+  const files = plan === undefined ? argv.map((f) => resolve(f)) : [await (await import('../src/cmd/bundle.js')).buildCommandBundle(plan)]
   // A Soldeer package's and a GitHub repo's advisories are their repository's, asked of GitHub with
   // githubToken's token where there is one; the client asks nothing for any other package by itself.
   const github = (await import('@preventive/upstream/github.js')).createClient({ token })
@@ -327,7 +344,6 @@ if (command === '-v' || command === '--version') {
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
   const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
-  const files = argv.map((f) => resolve(f))
   let report
   try {
     // --reason audits that consumer's packages alone; one no file records is refused before any is asked about.
