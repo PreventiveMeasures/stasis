@@ -82,6 +82,8 @@ const own = (entries = LISTED, more = {}) => ({ entries: new Map(Object.entries(
 const PACKAGES = { 'npm:ms@2.1.3': MS, 'npm:left@1.0.0': { 'index.js': 'original\n', 'other.js': 'never bundled\n' } }
 // A sha512 integrity, as a lockfile locks a version with.
 const SRI = `sha512-${'A'.repeat(86)}==`
+// A pnpm lockfile installing ms@2.1.3 from npm, `importer` its importer's id and `dependencies` its YAML.
+const msLock = (importer, dependencies) => `lockfileVersion: '9.0'\n\nimporters:\n\n  ${importer}:\n    dependencies:\n${dependencies}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
 // Upstream's packages, as `fetch` takes them, each version fetched told (`fetched`), with the
 // integrity it is to be held to where it is given one (`integrities`).
 const upstream = (packages = PACKAGES, fetched = [], integrities = []) => async (ecosystem, name, version, integrity) => {
@@ -294,7 +296,7 @@ test('validateBundle: each npm copy held to where Node resolves it: the name its
   t.assert.deepStrictEqual(await Promise.all(others.map((dir) => told(dir))), others.map(misplaced), 'another version or package, with no lockfile read')
   // Installed under another name: an alias, which only a lockfile tells; unverified where none is read.
   t.assert.deepStrictEqual(await told('node_modules/helmet'), ['incomplete', [['unverified', 'alias-unverified', 'node_modules/helmet']]])
-  const pnpm = (importer) => lockedBy([{ path: 'pnpm-lock.yaml', text: `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n${importer}\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n` }])
+  const pnpm = (dependencies) => lockedBy([{ path: 'pnpm-lock.yaml', text: msLock('.', dependencies) }])
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n') }), misplaced('node_modules/helmet'), 'no alias the lockfile has')
   t.assert.deepStrictEqual(await told('node_modules/helmet', { locked: pnpm('      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n') }), valid, 'pnpm\'s alias of it')
 
@@ -925,12 +927,11 @@ test('historyOf: other branches compared `maxCompared` at most, none past `deadl
   t.assert.equal(await historyOf(repository(), 'f'.repeat(40), { maxCompared: 3 }), null, 'held by none, each compared')
   await t.assert.rejects(historyOf(repository(), release, { maxCompared: 1 }), { name: 'ValidateError', code: 'history-unread',
     message: `${release} is at no tag or branch head of org/repo nor in its default branch's history, and 2 of its 3 other branches were left uncompared (1 compared at most): give --sha= a commit of its default branch or at a tag` })
-  let clock = 0
-  await t.assert.rejects(historyOf(repository(), release, { deadline: 0, now: () => ++clock }), { code: 'history-unread', message: /, and 3 of its 3 other branches were left uncompared past the deadline: /u })
+  await t.assert.rejects(historyOf(repository(), release, { deadline: 0, now: () => 1 }), { code: 'history-unread', message: /, and 3 of its 3 other branches were left uncompared past the deadline: /u })
 })
 
 test('validateRepository: own code held to a listing of the commit\'s tree, its lockfile found by it; `strict` false, a commit not of its history or no lockfile told, not thrown', async (t) => {
-  const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  const lock = msLock('web', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n')
   const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock }
   const client = repoClient(files)
   client.listRepoDir = client.getRepoTreeTarball = async () => {
@@ -952,15 +953,16 @@ test('validateRepository: own code held to a listing of the commit\'s tree, its 
   t.assert.deepStrictEqual(asked, [['web/src/main.js', 'web/package.json']], 'its own files\' paths, and its directory\'s')
 
   // Its tree cut short, the lockfile not listed: own code unverified, the dependencies held to their registry alone.
-  const cut = await validateRepository(plan, where, { listTree: async () => ({ entries: [], cut: true }), strict: false, fetch: upstream() })
+  const none = async () => ({ entries: [], cut: true })
+  const cut = await validateRepository(plan, where, { listTree: none, strict: false, fetch: upstream() })
   t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.lockfiles, cut.lockfileError, cut.problems], ['incomplete', true, null, 'no-lockfile', [{ path: 'src/main.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
-  await t.assert.rejects(validateRepository(plan, where, { listTree: async () => ({ entries: [], cut: true }), fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
+  await t.assert.rejects(validateRepository(plan, where, { listTree: none, fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
 
   // A commit of a fork's: its tree not listed, nor its lockfile read.
   asked.length = 0
   const fork = { ...where, commit: 'f'.repeat(40) }
   const forked = await validateRepository(plan, fork, { listTree, strict: false, fetch: upstream() })
-  t.assert.deepStrictEqual([forked.status, forked.own, forked.lockfiles, asked], ['incomplete', { checked: false, reason: 'commit-not-in-history' }, null, []])
+  t.assert.deepStrictEqual([forked.status, forked.own, forked.lockfiles, forked.lockfileError, asked], ['incomplete', { checked: false, reason: 'commit-not-in-history' }, null, 'commit-not-in-history', []])
   await t.assert.rejects(validateRepository(plan, fork, { listTree, fetch: upstream() }), { name: 'ValidateError', code: 'commit-not-in-history' })
 
   // An own file at a path no tree has, not asked for: unexpected, the tree cut short or not.
@@ -977,7 +979,9 @@ test('validateRepository: own code held to a listing of the commit\'s tree, its 
     await t.assert.rejects(validateRepository(plan, at, { listTree, fetch: upstream() }), { name: 'ValidateError', code })
     await t.assert.rejects(validateRepository(plan, at, { own: false, fetch: upstream() }), { name: 'ValidateError', code }, 'its lockfile read there')
     const told = await validateRepository(plan, at, { listTree, strict: false, fetch: upstream() })
-    t.assert.deepStrictEqual([told.status, told.own, told.lockfiles], ['incomplete', { checked: false, reason: code }, null])
+    t.assert.deepStrictEqual([told.status, told.own, told.lockfiles, told.lockfileError], ['incomplete', { checked: false, reason: code }, null, code])
+    const depsAlone = await validateRepository(plan, at, { own: false, strict: false, fetch: upstream() })
+    t.assert.deepStrictEqual([depsAlone.status, depsAlone.own, depsAlone.lockfileError], ['valid', { checked: false, reason: 'skipped' }, code], 'its own code skipped as asked, its lockfile unread')
   }))
   t.assert.deepStrictEqual(asked, [], 'nothing listed')
   t.assert.equal((await validateRepository(plan, { directory: 'web' }, { own: false, lockfile: false, fetch: upstream() })).own.reason, 'skipped', 'neither read')

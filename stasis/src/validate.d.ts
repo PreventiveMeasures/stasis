@@ -98,39 +98,25 @@ export function validateBundle(plan: ValidationPlan, own: OwnCode | Promise<OwnC
 export function exitCodeOf(report: BundleValidation, options?: { allowUnverified?: boolean }): 0 | 1 | 2
 
 type Read = 'getRepoTreeId' | 'getRepoTreeTarball' | 'listRepoDir' | 'getRepoFile' | 'getRepoHead' | 'listRepoTags' | 'listRepoBranches' | 'compareCommits'
-type OfRepository<F> = F extends (options: infer O) => infer R ? (options: Omit<O, 'repo'>) => R : never
+// The reads of upstream's client followingMoves wraps, and getRepo, which it follows a move by.
+type Reads = Pick<Client, Read | 'getRepo'>
 // A repository's reads (followingMoves's), where it has moved too.
-export type Repository = { name(): string } & { [M in Read]: OfRepository<Client[M]> }
-export function followingMoves(client: Pick<Client, Read | 'getRepo'>, github: string): Repository
+export type Repository = { name(): string } & { [M in Read]: (options: Omit<Parameters<Client[M]>[0], 'repo'>) => ReturnType<Client[M]> }
+export function followingMoves(client: Reads, github: string): Repository
 export function historyOf(repository: Repository, commit: string, options?: { maxCompared?: number; deadline?: number; now?: () => number }): Promise<Ref | null>
 
-export function repositoryFiles(repository: Repository, where: { github: string; commit: string; directory?: string }): Promise<Map<string, RepositoryEntry>>
+export function repositoryFiles(repository: Repository, where: { github?: string; commit: string; directory?: string }): Promise<Map<string, RepositoryEntry>>
 export function repositoryLockfiles(options: { directory?: string; ecosystems: Set<string>; list: (dir: string) => Promise<string[]>; read: (path: string) => Promise<string> })
   : Promise<{ path: string; text: string }[]>
 
-export function validateRepository(plan: ValidationPlan, where: { repository?: Repository | null; commit?: string; directory?: string }, options?: {
-  own?: boolean
+interface Options { own?: boolean; fetch?: Fetch; deadline?: number }
+export function validateRepository(plan: ValidationPlan, where: { repository?: Repository | null; commit?: string; directory?: string }, options?: Options & {
   lockfile?: boolean | Lockfile[]
   // A listing of the commit's tree, as upstream's listRepoTree gives it, for these paths.
   listTree?: (paths: string[]) => Promise<{ entries: RepoDirEntry[]; cut?: boolean }>
   strict?: boolean
-  fetch?: Fetch
-  deadline?: number
 }): Promise<BundleValidation>
-export function validate(file: string, options?: {
-  client?: Pick<Client, Read | 'getRepo'>
-  github?: string
-  sha?: string
-  directory?: string
-  own?: boolean
-  lockfile?: boolean | string[]
-  fetch?: Fetch
-  deadline?: number
-}): Promise<BundleValidation>
+export function validate(file: string, options?: Options & { client?: Reads; github?: string; sha?: string; directory?: string; lockfile?: boolean | string[] }): Promise<BundleValidation>
 
-export function printValidationReport(report: BundleValidation, options?: {
-  out?: { write(chunk: string): unknown }
-  err?: { write(chunk: string): unknown }
-  showValid?: boolean
-  colors?: boolean
-}): void
+type Stream = { write(chunk: string): unknown }
+export function printValidationReport(report: BundleValidation, options?: { out?: Stream; err?: Stream; showValid?: boolean; colors?: boolean }): void

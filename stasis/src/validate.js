@@ -515,8 +515,12 @@ async function patchOf(held, pkg, files, locked, verdicts) {
   }
 }
 
-// A path git can have in a tree, which upstream lists: no part empty, `.`, `..` or `.git`.
+// A path git can have in a tree, which upstream lists: no part empty, `.`, `..` or `.git`, as upstream's
+// isRepoPath (src/args.js) has it, which it doesn't export.
 const inTree = (path) => path.length <= 4096 && path.isWellFormed() && !/\p{Cc}/u.test(path) && path.split('/').every((part) => !['', '.', '..', '.git'].includes(part.toLowerCase()))
+
+// `name` in the directory `dir` of the repository, '' its root.
+const pathIn = (dir, name) => (dir ? `${dir}/${name}` : name)
 
 // `items` each run through `run`, `parallel` at a time.
 async function eachOf(items, parallel, run) {
@@ -956,7 +960,6 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
     if (dir === '') break
   }
   const listed = await Promise.all(dirs.map(list))
-  const at = (dir, name) => (dir ? `${dir}/${name}` : name)
   const where = directory || 'the repository\'s root'
   // The manifests a root is found by, read where a lockfile they could pick is listed: package.json
   // for npm's and yarn's workspaces, Cargo.toml for cargo's.
@@ -968,9 +971,9 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
   // Each directory there, whatever it holds of those.
   const files = Object.fromEntries(dirs.filter(Boolean).map((dir) => [dir, { type: 'directory' }]))
   await Promise.all(dirs.flatMap((dir, index) => listed[index].map(async (name) => {
-    if (manifests.has(name)) files[at(dir, name)] = await read(at(dir, name))
+    if (manifests.has(name)) files[pathIn(dir, name)] = await read(pathIn(dir, name))
     // npm reads npm-shrinkwrap.json in place of package-lock.json, at the root it finds by either.
-    else if (LOCKFILES.has(name) || name === 'pnpm-workspace.yaml') files[at(dir, name === 'npm-shrinkwrap.json' ? 'package-lock.json' : name)] ??= ''
+    else if (LOCKFILES.has(name) || name === 'pnpm-workspace.yaml') files[pathIn(dir, name === 'npm-shrinkwrap.json' ? 'package-lock.json' : name)] ??= ''
   })))
   const host = vfsHost(createVfs(files))
   const cwd = posix.resolve('/', directory || '.')
@@ -988,7 +991,7 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
       }
       if (root === null) continue
       const names = listed[dirs.indexOf(fromRoot(root))]
-      found.push(at(fromRoot(root), pm === 'npm' && names.includes('npm-shrinkwrap.json') ? 'npm-shrinkwrap.json' : lockfileOf(pm)))
+      found.push(pathIn(fromRoot(root), pm === 'npm' && names.includes('npm-shrinkwrap.json') ? 'npm-shrinkwrap.json' : lockfileOf(pm)))
     }
     if (found.length === 0) {
       const bun = ['bun.lock', 'bun.lockb'].find((name) => lists(name))
@@ -1070,12 +1073,13 @@ export async function historyOf(repository, commit, { maxCompared = MAX_COMPARED
   const at = branches.find((entry) => entry.oid === commit)
   if (at) return { branch: at.branch }
   let found = null
-  let left = Math.max(0, branches.length - maxCompared)
+  let compared = 0
   await eachOf(branches.slice(0, maxCompared), BRANCHES_AT_ONCE, async ({ branch }) => {
-    if (found !== null) return
-    if (now() > deadline) left++
-    else if (await holds(branch)) found ??= { branch }
+    if (found !== null || now() > deadline) return
+    compared++
+    if (await holds(branch)) found ??= { branch }
   })
+  const left = branches.length - compared
   if (found === null && left > 0) {
     throw new ValidateError('history-unread', `${commit} is at no tag or branch head of ${repository.name()} nor in its default branch's history, and ${left} of its ${branches.length} other branches were left uncompared${now() > deadline ? ' past the deadline' : ` (${maxCompared} compared at most)`}: give --sha= a commit of its default branch or at a tag`)
   }
@@ -1091,7 +1095,7 @@ function listedEntries(listed, dir = '') {
   const entries = new Map()
   for (const entry of listed) {
     const value = entry.type === 'commit' ? { submodule: true } : entry.mode === '120000' ? { symlink: '' } : entry.type === 'blob' ? { sha: entry.sha } : undefined
-    if (value) entries.set(dir ? `${dir}/${entry.path}` : entry.path, value)
+    if (value) entries.set(pathIn(dir, entry.path), value)
   }
   return entries
 }
@@ -1103,45 +1107,50 @@ function listedEntries(listed, dir = '') {
 // of the commit's tree as upstream's listRepoTree lists it (`{ entries, cut }`), asked for the paths of
 // the bundle's own files and of `directory`'s files, its lockfile's directories' files named by it too.
 // Its dependencies held to the lockfile that installs it there (repositoryLockfiles, `lockfile` true),
-// or to those `lockfile` gives (lockedBy's), or, `lockfile` false, to their registry alone. A commit of
-// none of the repository's own history, or no lockfile to hold the dependencies to, is refused
-// (ValidateError); `strict` false, told instead: the dependencies alone validated, own code unverified
-// for the error's code (`own.reason`: commit-not-in-history, history-unread), or held to their
-// registry alone for it (`lockfileError`). So is one with no repository or commit (`no-repository`,
-// `no-commit`) where own code or the repository's lockfile is to be read.
+// or to those `lockfile` gives (lockedBy's), or, `lockfile` false, to their registry alone. Refused
+// (ValidateError): no repository or commit (`no-repository`, `no-commit`) where own code or the
+// repository's lockfile is to be read, a commit of none of its own history (`commit-not-in-history`,
+// `history-unread`), and no lockfile to hold the dependencies to. With `strict` false, told instead:
+// own code unverified for the error's code (`own.reason`), and the dependencies held to their registry
+// alone, the code told (`lockfileError`) where their lockfile went unread for it.
 export async function validateRepository(plan, { repository = null, commit, directory = '' }, { own = true, lockfile = true, listTree, strict = true, fetch, deadline } = {}) {
   const ecosystems = fetchedEcosystems(plan)
+  const fromRepository = lockfile === true && ecosystems.size > 0
   const github = repository?.name()
-  const where = { github, commit, directory }
   const told = (error) => {
     if (strict || !(error instanceof ValidateError)) throw error
     return error.code
   }
-  // Read at a commit of its own history alone: GitHub serves a commit of any fork of it through its name too.
-  const readsRepository = own || (lockfile === true && ecosystems.size > 0)
-  const readsCommit = readsRepository || (plan.patches.size > 0 && commit !== undefined)
   let ref
   try {
-    if (readsRepository && (repository === null || commit === undefined)) {
+    if ((own || fromRepository) && (repository === null || commit === undefined)) {
       const [code, what] = repository === null ? ['no-repository', 'repository to read it of'] : ['no-commit', 'commit to read it at']
       throw new ValidateError(code, `no ${what}: ${own ? 'its own code' : 'its lockfile'} is read of the repository`)
     }
-    ref = repository && readsCommit && commit !== undefined ? await historyOf(repository, commit, { deadline }) : undefined
+    // Read at a commit of its own history alone: GitHub serves a commit of any fork of it through its name too.
+    ref = repository && commit !== undefined && (own || fromRepository || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
       throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
     }
   } catch (error) {
-    return validateBundle(plan, { reason: told(error) }, { fetch, locked: null, deadline })
+    const code = told(error)
+    const report = await validateBundle(plan, { reason: own ? code : 'skipped' }, { fetch, deadline })
+    return fromRepository ? { ...report, lockfileError: code } : report
   }
-  const at = (dir, name) => (dir ? `${dir}/${name}` : name)
-  // Own code's files, read whole (the tree's tarball), else of the listing; awaited later, its failure then.
-  const reading = own && !listTree ? repositoryFiles(repository, where) : null
-  const listing = own && listTree ? listTree([...new Set([...plan.own.map((file) => at(directory, file.path)), at(directory, 'package.json')])].filter(inTree)) : null
+  // Own code's files, read whole (the tree's tarball), or by git's blob ids of a listing, with each
+  // directory's files' names; awaited later, its failure then.
+  const reading = own && !listTree ? repositoryFiles(repository, { commit, directory }) : null
+  const listing = own && listTree
+    ? listTree([...new Set([...plan.own.map((file) => pathIn(directory, file.path)), pathIn(directory, 'package.json')])].filter(inTree)).then(({ entries, cut }) => {
+      const listed = listedEntries(entries)
+      return { entries: listed, cut, names: Map.groupBy([...listed.keys()].filter((path) => !listed.get(path).submodule), (path) => posix.dirname(path)) }
+    })
+    : null
   reading?.catch(() => {})
   listing?.catch(() => {})
-  const list = listing
-    ? async (dir) => (await listing).entries.filter((entry) => entry.type === 'blob' && posix.dirname(entry.path) === (dir || '.')).map((entry) => posix.basename(entry.path))
-    : async (dir) => (await repository.listRepoDir({ sha: commit, ...(dir && { directory: dir }) })).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+  const listDir = (dir) => repository.listRepoDir({ sha: commit, ...(dir && { directory: dir }) })
+  const list = listing ? async (dir) => ((await listing).names.get(dir || '.') ?? []).map((path) => posix.basename(path))
+    : async (dir) => (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
   // A directory that isn't there, as upstream tells it: one with no files.
   const absent = (error) => /has no directory at/u.test(error?.message ?? '')
   const under = (path) => reading && (directory === '' || path === directory || path.startsWith(`${directory}/`))
@@ -1151,7 +1160,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
   const tree = (dir) => {
     if (!trees.has(dir)) {
       const prefix = dir ? `${dir}/` : ''
-      trees.set(dir, (under(dir) ? reading : repositoryFiles(repository, { ...where, directory: dir }))
+      trees.set(dir, (under(dir) ? reading : repositoryFiles(repository, { commit, directory: dir }))
         .catch((error) => {
           if (absent(error)) return new Map()
           throw error
@@ -1163,10 +1172,11 @@ export async function validateRepository(plan, { repository = null, commit, dire
   // The repository's entries at the patches the bundle holds, by git's blob ids its listings give.
   const patchEntries = async () => {
     const entries = new Map()
-    const paths = [...plan.patches.keys()].map((path) => at(directory, path))
-    await Promise.all([...new Set(paths.map((path) => posix.dirname(path)))].map(async (dir) => {
+    const dirs = new Set([...plan.patches.keys()].map((path) => posix.dirname(pathIn(directory, path))))
+    await Promise.all([...dirs].map(async (dir) => {
+      const of = dir === '.' ? '' : dir
       try {
-        for (const [path, entry] of listedEntries(await repository.listRepoDir({ sha: commit, ...(dir !== '.' && { directory: dir }) }), dir === '.' ? '' : dir)) entries.set(path, entry)
+        for (const [path, entry] of listedEntries(await listDir(of), of)) entries.set(path, entry)
       } catch (error) {
         if (!absent(error)) throw error
       }
@@ -1185,24 +1195,22 @@ export async function validateRepository(plan, { repository = null, commit, dire
       : (await repositoryLockfiles({ directory, ecosystems, list, read: readRepository })).map((one) => ({
         ...one, from: 'repository', read: readRepository, tree, root: posix.relative(posix.dirname(one.path), directory),
         // A patch the lockfile names by its hash alone, looked for in the project's patches directory, then the root's.
-        patches: [...new Set([at(directory, 'patches'), 'patches'])],
+        patches: [...new Set([pathIn(directory, 'patches'), 'patches'])],
       }))
-    locked = files && lockedBy(files)
-    for (const ecosystem of locked ? ecosystems : []) {
-      if (!locked.locks(ecosystem)) throw new ValidateError('no-lockfile', `no lockfile given locks its ${ecosystem} packages: give it with --lockfile=path, or --no-lockfile to hold them to their registry alone`)
+    const held = files && lockedBy(files)
+    for (const ecosystem of held ? ecosystems : []) {
+      if (!held.locks(ecosystem)) throw new ValidateError('no-lockfile', `no lockfile given locks its ${ecosystem} packages: give it with --lockfile=path, or --no-lockfile to hold them to their registry alone`)
     }
+    locked = held
   } catch (error) {
     lockfileError = told(error)
-    locked = null
   }
   // The packages fetched as the repository's tree is read, where it is; own code skipped, the patches
   // the bundle holds checked all the same, where a repository and commit are given or recorded.
+  const read = reading?.then((entries) => ({ entries })) ?? listing?.then(({ entries, cut }) => ({ entries, cut }))
+    ?? (repository && commit !== undefined && plan.patches.size > 0 ? patchEntries().then((entries) => ({ reason: 'skipped', entries })) : null)
   // Where it was read, the name it has now where it has moved.
-  const of = () => ({ repository: repository.name(), ...(repository.name() !== github && { movedFrom: github }), commit, ...(ref && { ref }), directory })
-  const checked = reading ? reading.then((entries) => ({ entries, ...of() }))
-    : listing ? listing.then(({ entries, cut }) => ({ entries: listedEntries(entries), ...(cut && { cut }), ...of() }))
-      : repository && commit !== undefined && plan.patches.size > 0 ? patchEntries().then((entries) => ({ reason: 'skipped', entries, ...of() }))
-        : { reason: 'skipped' }
+  const checked = read ? read.then((found) => ({ ...found, repository: repository.name(), ...(repository.name() !== github && { movedFrom: github }), commit, ref, directory })) : { reason: 'skipped' }
   const report = await validateBundle(plan, checked, { fetch, locked, deadline })
   return lockfileError ? { ...report, lockfileError } : report
 }
@@ -1218,17 +1226,8 @@ export async function validate(file, { client, github, sha, directory, own = tru
   const { kind, artifact } = parseFileWithKind(file)
   if (kind !== 'bundle') throw new ValidateError('not-a-bundle', `${file} is a lockfile, which holds no file to check; give a bundle`)
   const plan = validationPlan(artifact)
-  const ecosystems = fetchedEcosystems(plan)
-  const fromRepository = lockfile === true && ecosystems.size > 0
   const repo = artifact.repo ?? {}
   const where = { github: github ?? repo.github, commit: sha ?? repo.commit, directory: directory ?? repo.directory ?? '' }
-  if (own || fromRepository) {
-    const or = !own ? 'or --lockfile=path, or --no-lockfile to hold its dependencies to their registry alone'
-      : fromRepository ? 'or, to validate its dependencies alone, --only-deps with --lockfile=path or --no-lockfile' : 'or --only-deps to validate its dependencies alone'
-    const what = own ? 'its own code' : 'its lockfile'
-    if (where.github === undefined) throw new ValidateError('no-repository', `${file} records no repository to read ${what} of: give --github=owner/name and --sha=commit, ${or}`)
-    if (where.commit === undefined) throw new ValidateError('no-commit', `${file} records no commit to read ${what} at: give --sha=commit, ${or}`)
-  }
   const readLocal = (path) => {
     try {
       return readFileSync(path, 'utf8')
@@ -1236,9 +1235,22 @@ export async function validate(file, { client, github, sha, directory, own = tru
       throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
     }
   }
-  const lockfiles = Array.isArray(lockfile) && ecosystems.size > 0 ? lockfile.map((path) => ({ path, text: readLocal(path), from: 'local', read: readLocal, root: where.directory })) : lockfile
-  const repository = where.github === undefined ? null : followingMoves(client, where.github)
-  return validateRepository(plan, { repository, commit: where.commit, directory: where.directory }, { own, lockfile: lockfiles, fetch, deadline })
+  // Each read as it is held to, once the commit is: none where no package needs one.
+  const lockfiles = Array.isArray(lockfile) ? lockfile.map((path) => ({ path, get text() { return readLocal(path) }, from: 'local', read: readLocal, root: where.directory })) : lockfile
+  try {
+    return await validateRepository(plan, { repository: where.github === undefined ? null : followingMoves(client, where.github), commit: where.commit, directory: where.directory },
+      { own, lockfile: lockfiles, fetch, deadline })
+  } catch (error) {
+    if (!(error instanceof ValidateError) || !['no-repository', 'no-commit'].includes(error.code)) throw error
+    // What the file records none of, and what to give in its place.
+    const fromRepository = lockfile === true && fetchedEcosystems(plan).size > 0
+    const or = !own ? 'or --lockfile=path, or --no-lockfile to hold its dependencies to their registry alone'
+      : fromRepository ? 'or, to validate its dependencies alone, --only-deps with --lockfile=path or --no-lockfile' : 'or --only-deps to validate its dependencies alone'
+    const what = own ? 'its own code' : 'its lockfile'
+    throw error.code === 'no-repository'
+      ? new ValidateError('no-repository', `${file} records no repository to read ${what} of: give --github=owner/name and --sha=commit, ${or}`)
+      : new ValidateError('no-commit', `${file} records no commit to read ${what} at: give --sha=commit, ${or}`)
+  }
 }
 
 // Why own code or a package wasn't checked, or a file is as it is, as a report tells it.
