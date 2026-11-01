@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed } from './bundle.js'
-import { auditTokens, withNpmToken } from './tokens.js'
+import { githubToken, withNpmToken } from './tokens.js'
 import { bundledSummary, unpackedSummary, writeBundle, writeFile } from './output.js'
 
 // The longest file name ext4, APFS and NTFS take: 255 bytes, or characters, ours being ASCII.
@@ -32,13 +32,10 @@ export function githubBundleFile({ github, directory, commit }) {
 // brotli-compressed to `output` (githubBundleFile's name for it by default, of the directory
 // bundled, the one a `path` gives too; `-` for stdout), and a JS bundle's lockfile to `lockfile`
 // where given; then it says how many packages it unpacked, and what it bundled.
-// The tree is fetched with GITHUB_TOKEN from `env` where it is set, else with auditTokens(home)'s
-// `token` (tokens.js); nothing else of `env` is read. Where process.env gives the npm client no
-// token, it is given auditTokens(home)'s `npmToken`, else the one `<home>/.npmrc` gives npm's
-// registry, while the bundle is built (tokens.js's withNpmToken).
+// GitHub is asked with githubToken's token, `env`'s GITHUB_TOKEN where it is set, nothing else of
+// `env` being read; npm, with withNpmToken's (tokens.js).
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, brotliQuality, client, ...options } = {}) {
-  const audit = auditTokens(home)
-  const built = await withNpmToken({ home, audit }, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: env.GITHUB_TOKEN || audit.token || null }) }))
+  const built = await withNpmToken({ home }, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
   const { directory } = built
   const dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
   if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())
