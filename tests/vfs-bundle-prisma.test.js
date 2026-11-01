@@ -169,17 +169,19 @@ test('given no generate, a JS build of a Vfs writes the client of each project i
   t.assert.deepStrictEqual(said(), [])
 })
 
+// The workspace with c, a package of its own with a schema, which a doesn't depend on; `lockfile` the importers
+// beside c's (the root's `{}`, unless given).
+const C_IMPORTER = ['  packages/c:', '    dependencies:', "      '@prisma/client':", '        specifier: link:../../vendor/client', '        version: link:../../vendor/client',
+  '    devDependencies:', '      prisma:', '        specifier: link:../../vendor/prisma', '        version: link:../../vendor/prisma', ''].join('\n')
+const withC = (cSchema, files = {}, lockfile = LOCKFILE) => workspace({ files: {
+  'pnpm-lock.yaml': `${lockfile}${C_IMPORTER}`,
+  'packages/c/package.json': json({ name: 'c', version: '1.0.0', type: 'module', dependencies: { '@prisma/client': 'link:../../vendor/client' }, devDependencies: { prisma: 'link:../../vendor/prisma' } }),
+  'packages/c/prisma/schema.prisma': cSchema,
+  ...files,
+} })
+
 test('given no generate, only the projects the entries reach are generated for, and one they don\'t is never said', async (t) => {
   const said = warnings(t)
-  // c, a workspace package a doesn't depend on, with a schema of its own.
-  const lockfile = `${LOCKFILE}${['  packages/c:', '    dependencies:', "      '@prisma/client':", '        specifier: link:../../vendor/client', '        version: link:../../vendor/client',
-    '    devDependencies:', '      prisma:', '        specifier: link:../../vendor/prisma', '        version: link:../../vendor/prisma', ''].join('\n')}`
-  const withC = (cSchema, files = {}) => workspace({ files: {
-    'pnpm-lock.yaml': lockfile,
-    'packages/c/package.json': json({ name: 'c', version: '1.0.0', type: 'module', dependencies: { '@prisma/client': 'link:../../vendor/client' }, devDependencies: { prisma: 'link:../../vendor/prisma' } }),
-    'packages/c/prisma/schema.prisma': cSchema,
-    ...files,
-  } })
   // Its client isn't generated: a reaching it by path, not by dependency, finds none; asked for, every project's is.
   const byPath = withC(schema(), { 'packages/a/index.ts': "export { PrismaClient } from 'b'\nexport { PrismaClient as C } from '../c/src/generated/prisma/client.ts'\n" })
   await t.assert.rejects(build(project(byPath)), /unresolved export-from \.\.\/c\/src\/generated\/prisma\/client\.ts from index\.ts \(MODULE_NOT_FOUND\)$/u)
@@ -189,6 +191,16 @@ test('given no generate, only the projects the entries reach are generated for, 
   t.assert.ok((await build(project(broken))).bundle.sources.has(`${CLIENT}/client.ts`), "b's, which a depends on")
   t.assert.deepStrictEqual(said(), [])
   await t.assert.rejects(build(project(broken), { generate: ['prisma'] }), /^Error: prisma: \/packages\/c\/prisma\/schema\.prisma: /u)
+})
+
+test('given no generate, the projects reached are the entries\', not those of the directory bundled from', async (t) => {
+  // From the workspace root, which depends on c, a's entry alone: c's client, which would collide with b's, is no
+  // concern of a's. Asked for, every project's is.
+  const rooted = withC(schema({ output: '../../b/src/generated/prisma' }), { 'package.json': json({ name: 'mono', version: '1.0.0', private: true, devDependencies: { c: 'workspace:*' } }) },
+    LOCKFILE.replace('  .: {}\n', '  .:\n    devDependencies:\n      c:\n        specifier: workspace:*\n        version: link:packages/c\n'))
+  const fromRoot = { cwd: '/', entries: ['packages/a/index.ts'] }
+  t.assert.ok((await build(project(rooted), fromRoot)).bundle.sources.has(`${CLIENT}/client.ts`))
+  await t.assert.rejects(build(project(rooted), { ...fromRoot, generate: ['prisma'] }), /^Error: prisma: \/packages\/b\/src\/generated\/prisma is the output of more than one generator$/u)
 })
 
 test('two generators writing one output are refused, given generate or not', async (t) => {
