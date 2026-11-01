@@ -330,7 +330,8 @@ if (command === '-v' || command === '--version') {
   let report
   try {
     // --reason audits that consumer's packages alone; one no file records is refused before any is asked about.
-    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github })
+    // OSV is asked about npm packages too, never a private one (upstream checks each name is public).
+    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github, osv: true })
   } catch (cause) {
     if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
     throw cause

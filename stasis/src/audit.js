@@ -196,15 +196,9 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
-// `malware` first: a package that is malware is worse than any vulnerability in one.
+// `malware` first: a package that is malware is worse than any vulnerability in one. An advisory
+// advisories() flags as malware (`malware: true`) is rated so, whatever its source rates it.
 const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
-
-// Whether an advisory is of malware, not a vulnerability: one of OSV's malicious packages' records
-// (`MAL-...`, its id or among its aliases, as advisories() gives a registry row the ids of OSV's records
-// of it), or one filed under CWE-506, Embedded Malicious Code, as GitHub files its malware advisories
-// (flatmap-stream's "Malicious Package", ua-parser-js's "Embedded malware", which it rates high). Its row's
-// severity is `malware`, whatever its source rates it, or doesn't (OSV's MAL- records have none).
-const isMalware = ({ id, aliases = [], cwe = [] }) => [id, ...aliases].some((each) => each.startsWith('MAL-')) || cwe.includes('CWE-506')
 
 // Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
 // then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
@@ -265,7 +259,7 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
       package: adv.name,
       installed: adv.versions.map((v) => installedCell(adv, v, vendoredByKey)).join(', '),
       vulnerable: adv.range ?? '',
-      severity: isMalware(adv) ? 'malware' : adv.severity ?? '',
+      severity: adv.malware ? 'malware' : adv.severity ?? '',
       title: adv.title ?? '',
       id: adv.id,
       reason,
@@ -287,8 +281,9 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.
 // `reason` (--reason) audits only the packages that consumer recorded (collectReasons): no other is
 // counted, listed, or asked about. One no file records is refused (AuditError) before anything is,
-// naming those they do; a lockfile records none.
-export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github } = {}) {
+// naming those they do; a lockfile records none. `osv` asks OSV about npm packages too, those whose
+// name npm's registry serves to anyone; advisories() never sends it a private one.
+export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
@@ -315,12 +310,12 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github, osv })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
     if (cause?.code === 'ERR_ASSERTION') throw cause
-    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(repoAdvisories ? ['GitHub'] : [])])
+    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   // `--why` REPLACES the consumer list with per-consumer import paths, so only

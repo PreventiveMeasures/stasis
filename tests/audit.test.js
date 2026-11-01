@@ -435,19 +435,16 @@ test('flattenAdvisories sorts by severity then package', (t) => {
   ])
 })
 
-test('flattenAdvisories rates malware `malware`, above critical: OSV\'s MAL- records, by id or alias, and advisories filed under CWE-506', (t) => {
+test('flattenAdvisories rates `malware`, above critical, what advisories() flags as malware, whatever its source rates it', (t) => {
   const rows = flattenAdvisories([
     found('bad', ['1.0.0'], { severity: 'critical', title: 'a vulnerability' }),
     // OSV's record of a malicious package, which rates none.
-    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined }),
+    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined, malware: true }),
     // GitHub's malware advisory, rated high, as npm's registry has ua-parser-js's.
-    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'] }),
-    // A registry row OSV's MAL- record is of, its id among the row's aliases.
-    found('typo', ['2.0.0'], { id: 'GHSA-1111-2222-3333', title: 'Malicious Package in typo', severity: 'critical', aliases: ['MAL-2022-1234'] }),
-    // Hidden functionality alone is no malware.
+    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'], malware: true }),
     found('backdoor', ['1.0.0'], { severity: 'moderate', title: 'a debug endpoint', cwe: ['CWE-912'] }),
   ])
-  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['malware', 'typo'], ['critical', 'bad'], ['moderate', 'backdoor']])
+  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['critical', 'bad'], ['moderate', 'backdoor']])
 })
 
 test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
@@ -1207,6 +1204,51 @@ test('stasis audit --reason=<a consumer no file records> exits as a usage error,
   t.assert.equal(r.stderr, 'Error: --reason=not-present-in-bundle: no file records that consumer; they record webpack, run\nRun \'stasis --help\' for usage.\n')
   t.assert.equal(r.stdout, '')
 }))
+
+// npm's registry: `hijacked`'s malware advisory (CWE-506, rated high), and a HEAD of a name's document
+// answered 200, but 404 for @acme/secret, a private package to a request with no token; OSV: its record
+// of a malicious `evil`, a version npm took down.
+const npmOsvFetch = ({ url, opts }) => {
+  if (opts?.method === 'HEAD') return new Response(null, { status: url.endsWith('/@acme/secret') ? 404 : 200 })
+  if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') {
+    const asked = JSON.parse(opts.body)
+    return json(Object.hasOwn(asked, 'hijacked') ? { hijacked: [{ id: 1, url: 'https://github.com/advisories/GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', vulnerable_versions: '=0.7.29', cwe: ['CWE-506'] }] } : {})
+  }
+  if (url === 'https://api.osv.dev/v1/querybatch') {
+    return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'evil' ? { vulns: [{ id: 'MAL-2099-0001' }] } : {})) })
+  }
+  if (url === 'https://api.osv.dev/v1/vulns/MAL-2099-0001') {
+    return json({ id: 'MAL-2099-0001', summary: 'Malicious code in evil (npm)', affected: [{ package: { ecosystem: 'npm', name: 'evil' } }] })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+const OSV_BUNDLE = {
+  modules: Object.fromEntries([['evil', '1.0.0'], ['hijacked', '0.7.29'], ['ok', '2.0.0'], ['@acme/secret', '1.0.0']]
+    .map(([name, version]) => [`node_modules/${name}`, { name, version, files: { 'index.js': '' } }])),
+  formats: {},
+}
+
+test('audit(osv) asks OSV about public npm packages, never a private one, and rates what advisories() flags as malware `malware`', withFetch(
+  npmOsvFetch,
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const bundle = writeBundle(tmp, 'osv.br', OSV_BUNDLE)
+      const report = await audit([bundle], { osv: true })
+      const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepStrictEqual(queries.map(({ package: { name } }) => name).toSorted(), ['evil', 'hijacked', 'ok'])
+      t.assert.ok(!calls.some((call) => call.url.startsWith('https://api.osv.dev/') && `${call.url} ${call.opts?.body ?? ''}`.includes('secret')), 'the private package never named to OSV')
+      t.assert.deepStrictEqual(report.rows.map(({ severity, package: pkg, id }) => [severity, pkg, id]), [['malware', 'evil', 'MAL-2099-0001'], ['malware', 'hijacked', 'GHSA-pjwm-rvh2-c87w']])
+      // Without `osv`: npm's registry alone, its malware rated so all the same.
+      calls.length = 0
+      const registryOnly = await audit([bundle])
+      t.assert.deepStrictEqual(calls.map((call) => call.url), ['https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'])
+      t.assert.deepStrictEqual(registryOnly.rows.map(({ severity, package: pkg }) => [severity, pkg]), [['malware', 'hijacked']])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
 
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
   ({ url }) => {
