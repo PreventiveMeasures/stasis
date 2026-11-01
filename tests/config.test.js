@@ -154,7 +154,7 @@ test('Config extra: names stasis.config.json itself, unless an entry names it or
   t.assert.deepStrictEqual(c.extra, [])
 })
 
-for (const key of ['installDevDependencies', 'lazyDependencies']) {
+for (const key of ['installDevDependencies', 'lazyDependencies', 'generatePrisma']) {
   test(`Config ${key}: taken by stasis.config.json as a boolean alone, changing nothing a run does, and never serialized`, (t) => {
     for (const value of [true, false]) {
       const c = new Config()

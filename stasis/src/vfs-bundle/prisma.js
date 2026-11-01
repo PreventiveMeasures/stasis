@@ -4,7 +4,7 @@ import { posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
-import { hasNodeModulesSegment } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
 import { getParser, literalSpec, syntaxErrors } from '../scan.js'
@@ -169,6 +169,9 @@ function installedPrisma(host, dir) {
 
 // @prisma/config's search order; only 7.10.0 reads the first two (prisma7.config.*).
 const CONFIG_BASES = ['prisma7.config', '.config/prisma7', ...['prisma.config', '.config/prisma', '.config/prisma.config'].flatMap((base) => [base, `${base}/index`])]
+const configFiles = (bases) => bases.flatMap((base) => ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].map((ext) => `${base}${ext}`))
+// Where `prisma generate` looks for a schema without a config's.
+const DEFAULT_SCHEMAS = ['schema.prisma', 'prisma/schema.prisma']
 
 // The modules a config's top-level imports and requires may bind, as `name.export` (`name.*`: the module).
 const MODULES = { path: 'path', 'node:path': 'path', 'prisma/config': 'config', '@prisma/config': 'config' }
@@ -239,9 +242,9 @@ function schemaFilesAt(host, path) {
 // else ./schema.prisma or ./prisma/schema.prisma; null if none.
 function projectSchema(host, dir, version) {
   const first = (names) => names.map((name) => posix.join(dir, name)).find((file) => isFile(file, host))
-  const config = first(CONFIG_BASES.slice(newerThan(version, '7.9.1') ? 0 : 2).flatMap((base) => ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'].map((ext) => `${base}${ext}`)))
+  const config = first(configFiles(CONFIG_BASES.slice(newerThan(version, '7.9.1') ? 0 : 2)))
   const named = config && configSchema(config, host.readFile(config).toString('utf8'))
-  const path = named === undefined ? first(['schema.prisma', 'prisma/schema.prisma']) : posix.resolve(posix.dirname(config), named)
+  const path = named === undefined ? first(DEFAULT_SCHEMAS) : posix.resolve(posix.dirname(config), named)
   if (path === undefined) return null
   if (!isFile(path, host) && !isDir(path, host)) throw new Error(`${config}: its schema ${named} is no file or directory`)
   return path
@@ -391,54 +394,101 @@ function committedOutput(host, generator, path) {
   return !hasNodeModulesSegment(output) && (isFile(output, host) || isDir(output, host)) ? output : undefined
 }
 
-// A generator whose output no bundle needs, not run and not warned of: @pothos/plugin-prisma's with no
-// `output`, which writes types alone into its own package (generated.d.ts), there in node_modules as a
-// placeholder. With `generateDatamodel = "true"` it writes getDatamodel() there too, code a bundle may run.
+const ours = (generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null
+const SKIPPED = `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone`
+// That `writer` (a schema's generator) isn't generated, `why`; and where the tree has its output, `committed`, that
+// the bundle takes it as committed.
+const notGenerating = (writer, why, committed) => `not generating ${writer}: ${why}${committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`}`
+
+// A generator whose output no bundle needs, not warned of: @pothos/plugin-prisma's with no `output`, which writes
+// types alone into its own package (generated.d.ts), there in node_modules as a placeholder. With
+// `generateDatamodel = "true"` it writes getDatamodel() there too, code a bundle may run.
 const POTHOS = 'prisma-pothos-types'
 const needsNoOutput = (generator) => generator.provider.value === POTHOS && generator.provider.fromEnvVar === null &&
   generator.output === null && generator.config.generateDatamodel !== 'true'
 
-// Each `{ dir, files }` output. Projects without a schema or a `prisma-client` generator are skipped
-// quietly; ones stasis can't generate for with a warning, the scan then reporting what is missing.
+// Those of `projects` (directories relative to `root`) that may have a schema: a Prisma config, schema.prisma or
+// prisma/schema.prisma there. Looked for before any `prisma` is read, which a lazy tree fetches once read.
+const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
+export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
+
+// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas. Asked for
+// (`strict`), what stasis can't generate is warned of, and a schema it can't take refused, as `prisma generate`
+// refuses it; detected, both are silent, the scan then reporting what is missing. Two generators writing one
+// output are refused either way.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
-export async function generatePrismaClients({ host, root, projects }) {
+export async function generatePrismaClients({ host, root, projects, strict = true }) {
   const outputs = []
-  const skip = (what, why) => { console.warn(`[stasis] prisma: not generating ${what}: ${why}`) }
+  const say = strict ? (message) => { console.warn(`[stasis] prisma: ${message}`) } : undefined
+  const skip = (what, why) => say?.(`not generating ${what}: ${why}`)
   for (const project of [...projects].toSorted()) {
     const dir = posix.join(root, project)
     const prisma = installedPrisma(host, dir)
     const supported = PRISMA_VERSIONS.includes(prisma?.version)
     const path = await Promise.try(projectSchema, host, dir, supported ? prisma.version : GENERATOR_VERSION).catch((error) => skip(`for ${dir}`, error.message))
+    if (!path) continue
     // Checked before parsing: another Prisma's schema needn't satisfy 7.10.0.
-    if (path && !supported) skip(`for ${path}`, `stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`}`)
-    if (!path || !supported) continue
-    const files = await readingSchema(path, () => schemaFilesAt(host, path))
-    const { internals } = loadGenerator()
-    const config = await readingSchema(path, () => internals.getConfig({ datamodel: files }))
-    const generators = config.generators.filter((generator) => generator.provider.value === PROVIDER && generator.provider.fromEnvVar === null)
-    for (const other of config.generators.filter((generator) => !generators.includes(generator) && !needsNoOutput(generator))) {
-      const committed = committedOutput(host, other, path)
-      const taken = committed === undefined ? '' : `, and takes its output, ${committed}, as committed, not as \`prisma generate\` would write it`
-      skip(`${path}'s generator ${other.name}`, `stasis generates the ${JSON.stringify(PROVIDER)} provider's alone${taken}`)
+    if (!supported) {
+      skip(`for ${path}`, `stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`}`)
+      continue
     }
-    if (generators.length === 0) continue
-    for (const warning of config.warnings) console.warn(`[stasis] prisma: ${warning}`)
-    if (config.datasources.length === 0) throw new Error(`prisma: ${path} defines no datasource`)
-    const dmmf = await readingSchema(path, () => internals.getDMMF({ datamodel: files }))
-    const datamodel = internals.mergeSchemas({ schemas: files })
-    for (const generator of generators) {
-      if (generator.output === null) throw new Error(`prisma: ${path}: generator ${generator.name} names no output`)
-      if (generator.output.fromEnvVar !== null) {
-        skip(`${path}'s generator ${generator.name}`, `its output is env("${generator.output.fromEnvVar}"), which stasis doesn't read`)
-        continue
-      }
-      const outputDir = outputOf(generator, path)
-      if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
-      if (outputs.some((output) => output.dir === outputDir)) throw new Error(`prisma: ${outputDir} is the output of more than one generator`)
-      outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
+    try {
+      outputs.push(...await generateSchema({ host, path, prisma, say, skip }))
+    } catch (error) {
+      if (strict) throw error
     }
   }
+  const dirs = outputs.map(({ dir }) => dir)
+  const twice = dirs.find((dir, i) => dirs.indexOf(dir) !== i)
+  if (twice !== undefined) throw new Error(`prisma: ${twice} is the output of more than one generator`)
   return outputs
+}
+/* eslint-enable no-await-in-loop */
+
+// The outputs of the `prisma-client` generators of the schema at `path`, as `prisma` writes them, what isn't
+// generated said through `say` and `skip` (generatePrismaClients').
+async function generateSchema({ host, path, prisma, say, skip }) {
+  const files = await readingSchema(path, () => schemaFilesAt(host, path))
+  const { internals } = loadGenerator()
+  const config = await readingSchema(path, () => internals.getConfig({ datamodel: files }))
+  const generators = config.generators.filter(ours)
+  for (const other of config.generators.filter((generator) => !ours(generator) && !needsNoOutput(generator))) say?.(notGenerating(`${path}'s generator ${other.name}`, SKIPPED, committedOutput(host, other, path)))
+  if (generators.length === 0) return []
+  for (const warning of config.warnings) say?.(warning)
+  if (config.datasources.length === 0) throw new Error(`prisma: ${path} defines no datasource`)
+  const dmmf = await readingSchema(path, () => internals.getDMMF({ datamodel: files }))
+  const datamodel = internals.mergeSchemas({ schemas: files })
+  const outputs = []
+  for (const generator of generators) {
+    if (generator.output === null) throw new Error(`prisma: ${path}: generator ${generator.name} names no output`)
+    if (generator.output.fromEnvVar !== null) {
+      skip(`${path}'s generator ${generator.name}`, `its output is env("${generator.output.fromEnvVar}"), which stasis doesn't read`)
+      continue
+    }
+    const outputDir = outputOf(generator, path)
+    if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
+    outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
+  }
+  return outputs
+}
+
+// The projects (`projects`, directories relative to `root`) a build of `paths` (absolute) may import the generated
+// outputs of: those the paths are in, and the workspace packages they depend on by name, theirs in turn.
+export function reachedProjects(host, root, projects, paths) {
+  const manifests = new Map([...projects].map((dir) => {
+    const json = readJson(posix.join(root, dir, 'package.json'), host)
+    return [dir, isPlainObject(json) ? json : {}]
+  }))
+  const byName = new Map([...manifests].map(([dir, { name }]) => [name, dir]))
+  const projectOf = (dir) => posix.relative(root, dir) || '.'
+  const reached = new Set(paths.map((path) => nearest(path, (dir) => manifests.has(projectOf(dir)))).filter((dir) => dir !== null).map(projectOf))
+  for (const dir of reached) {
+    const json = manifests.get(dir)
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const name of isPlainObject(json[field]) ? Object.keys(json[field]) : []) if (byName.has(name)) reached.add(byName.get(name))
+    }
+  }
+  return reached
 }
 
 // What deleteOutputDir clears before writing (its globs skip dot paths), in an output that must

@@ -24,7 +24,7 @@ const HELP = `Usage:
  stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
  stasis bundle [--add] [--output=(path|-)] path/to/file.(php|sh|bash) ...
  stasis bundle [--deptree] [--babel] [--metro-resolver] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--brotli-quality=0..11] [--add] [--output=(path|-)] [entry ...]  (the entries' options from stasis.config.json's entries)
- stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
+ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
  stasis add path/to/(file|dir) ...
  stasis build --output=(dir|file.js) [--format=(esm|cjs|iife)] [--platform=(node|browser|neutral|hermes)] [--babel|--flow] [--minify] [--sourcemap] [--define=K=V ...] [--external=pkg ...] [--loader=.ext:name ...] [--metro=(ios|android|...) [--assets-dest=dir]] path/to/(stasis.code.br|stasis.lock.json) [entry]
  stasis extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|none)] path/to/bundle.stasis.code.br
@@ -174,6 +174,7 @@ if (command === '-v' || command === '--version') {
     'package-json': { type: 'boolean' },
     'brotli-quality': { type: 'string' },
     generate: { type: 'string', multiple: true },
+    'no-generate': { type: 'boolean' },
   }
   const parse = (args) => parseLeadingOptions(args, options, { valueFlags: valueFlagsOf(options), onError: fail })
   // The repo as `owner/name[/path]`, for --github=owner/name [--directory=path]: the first argument
@@ -193,6 +194,7 @@ if (command === '-v' || command === '--version') {
   }
   if (github === undefined) fail('Error: github-bundle requires the repo to bundle: owner/name[/path], or --github=owner/name')
   if (values.sha !== undefined && values.tag !== undefined) fail('Error: github-bundle takes --sha or --tag, not both')
+  if (values.generate !== undefined && values['no-generate']) fail('Error: github-bundle takes --generate or --no-generate, not both')
   // Whether each option applies to the entries is buildGitHubBundle's to say.
   const list = (value) => [value ?? []].flat().flatMap((v) => v.split(',')).map((s) => s.trim()).filter(Boolean)
   const brotliQuality = brotliQualityOption(values['brotli-quality'], fail)
@@ -236,7 +238,8 @@ if (command === '-v' || command === '--version') {
     resources: values.resources === undefined ? undefined : list(values.resources),
     define,
     packageJSON: Boolean(values['package-json']),
-    generate: list(values.generate),
+    // Detected without either, unless stasis.config.json's generatePrisma says not.
+    generate: values['no-generate'] ? [] : values.generate === undefined ? undefined : list(values.generate),
     brotliQuality,
   })
 } else if (command === 'add') {
