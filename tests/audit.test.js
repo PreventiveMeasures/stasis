@@ -12,6 +12,7 @@ import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { AuditError, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 import { DIM } from '../stasis/src/table.js'
+import { GITHUB, NPM, OSV } from '../stasis/src/sixel.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -447,9 +448,9 @@ test('flattenAdvisories rates `malware`, above critical, what advisories() flags
   t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['critical', 'bad'], ['moderate', 'backdoor']])
 })
 
-test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
+test('flattenAdvisories lists the covered versions and carries range, title, id and source', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
-  t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
+  t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', source: 'registry', reason: '' }])
 })
 
 test('flattenAdvisories joins the reasons of the affected versions, sorted', (t) => {
@@ -730,6 +731,27 @@ test('printAuditReport: severities in colour, the header bold and the box dimmed
   const none = { err: '' }
   printAuditReport({ packages: [{}], rows: [] }, { out: { write() {} }, err: { write: (s) => { none.err += s } }, colors: true })
   t.assert.equal(none.err, `Scanned 1 package: ${styled(['bold', 'green'], '0 alerts')}\n`)
+})
+
+test('printAuditReport: with icons, each id has its source\'s sixel icon drawn before it, over two cells kept blank, and room made below its line', (t) => {
+  const row = (source, id) => ({ ecosystem: 'npm', package: 'foo', installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 't', id, source, reason: '' })
+  const report = { packages: [{}], rows: [row('registry', 'GHSA-1111-1111-1111'), row('repository', 'GHSA-2222-2222-2222'), row('osv', 'MAL-2025-20690'), row('elsewhere', 'X-1')] }
+  const print = (options) => {
+    let out = ''
+    printAuditReport(report, { out: { write: (s) => { out += s } }, err: { write() {} }, colors: false, ...options })
+    return out
+  }
+  const plain = print()
+  t.assert.ok(!plain.includes('\x1bP'), 'none without icons')
+  const drawn = print({ icons: true })
+  for (const [icon, id] of [[NPM, 'GHSA-1111-1111-1111'], [GITHUB, 'GHSA-2222-2222-2222'], [OSV, 'MAL-2025-20690']]) {
+    t.assert.ok(drawn.includes(`\n\n\x1b[2A│ high`) && drawn.includes(`│ \x1b7${icon}\x1b8\x1b[2C ${id}`), id)
+  }
+  // Seen as a terminal shows it: the icon's cells blank, the borders where they are without icons.
+  let shown = drawn.replaceAll('\n\n\x1b[2A', '')
+  for (const icon of [NPM, GITHUB, OSV]) shown = shown.replaceAll(`\x1b7${icon}\x1b8\x1b[2C`, '  ')
+  t.assert.deepStrictEqual(rowsOf(shown).map((cells) => cells.at(-1)), ['id', 'GHSA-1111-1111-1111', 'GHSA-2222-2222-2222', 'MAL-2025-20690', 'X-1'], 'a source with no icon, its cells blank')
+  t.assert.equal(new Set(shown.trimEnd().split('\n').map((line) => line.length)).size, 1, 'every line as wide')
 })
 
 test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted to a terminal\'s width', (t) => {

@@ -48,7 +48,10 @@ column can take it (a `--why` chain's further lines indented). Piped or
 written to a file, each row stays on one line. Where the stream takes colours
 (a terminal that has them, or a CI log), severities are coloured (malware
 white on red, critical magenta, high red, moderate yellow, low cyan, unrated
-dimmed), and so is the summary's count of each.
+dimmed), and so is the summary's count of each. Where the terminal draws sixel
+images (it answers a Primary Device Attributes query with sixel graphics among
+what it has), each id has an icon before it for where the advisory comes from:
+npm's registry, a GitHub repository's advisories, or OSV.
 
 An advisory of malware, not a vulnerability, is rated `malware`, above
 critical, whatever its source rates it. `@preventive/upstream` flags it as
