@@ -441,6 +441,21 @@ test('typescript: a package main naming a missing .js lands on its .ts source', 
   t.assert.equal(relTo(tmp, resolver(join(tmp, 'entry.ts'), 'tspkg-installed')), null)
 }))
 
+test("typescript: a package's entry fields naming unbuilt outputs outside it land on its sources, by its tsconfig", withTsTmp((t, tmp) => {
+  // A package building into a directory it shares with others: the outputs' own ancestors hold no
+  // package of theirs, so the package naming them maps them.
+  const dir = join(tmp, 'packages', 'shared')
+  mkdirSync(join(dir, 'src'), { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'shared', main: '../../dist/shared/index.js', 'react-native': '../../dist/shared/index.native.js' }))
+  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { outDir: '../../dist/shared', rootDir: 'src' } }))
+  writeFileSync(join(dir, 'src', 'index.ts'), 'export const s: string = "main"\n')
+  writeFileSync(join(dir, 'src', 'index.native.ts'), 'export const s: string = "native"\n')
+  symlinkSync(join('..', 'packages', 'shared'), join(tmp, 'node_modules', 'shared'))
+  const from = join(tmp, 'entry.ts')
+  t.assert.equal(relTo(tmp, createFieldResolver({ mainFields: ['react-native', 'main'], typescript: true })(from, 'shared')), 'packages/shared/src/index.native.ts')
+  t.assert.equal(relTo(tmp, createFieldResolver({ mainFields: ['main'], typescript: true })(from, 'shared')), 'packages/shared/src/index.ts')
+}))
+
 test('typescript: an importer in node_modules gets no mapping, even where its import leaves it', withTsTmp((t, tmp) => {
   // An installed package's file reaching out of node_modules to ./only-ts.js (only-ts.ts on disk)
   // resolves as without --typescript; a linked workspace package's file, in node_modules by its

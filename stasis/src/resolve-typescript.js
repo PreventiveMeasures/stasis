@@ -176,7 +176,7 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
       // too where it is unbuilt; a broken main falls through to the package index, like Node.
       const entry = resolvePath(base, main)
       const fromMain = (path) => probeTypescriptTarget(path, { js, dir: false, host }) ?? probeIndex(path, exts, host)
-      const hit = fromMain(entry) ?? fromOutputSource(entry, fromMain, { outputs, host })
+      const hit = fromMain(entry) ?? fromOutputSource(entry, fromMain, { outputs, host, pkgDir: base })
       if (hit) return hit
     }
     const hit = probeIndex(base, exts, host)
@@ -238,13 +238,14 @@ function packageHolding(path, host, read) {
 // tsc's mapping of an output back to its input (tryLoadInputFileForPath): where `path` lies under
 // its package's `outDir`, `probeSource` of the same place under `rootDir` (`dist/x.js` ->
 // `src/x.js`, whose TS siblings substitution finds), else null. Call it only once `path` itself
-// missed: the tsconfig.json is read, and can throw, only then.
-export function fromOutputSource(path, probeSource, { outputs, host = diskHost, read = (file) => readJson(file, host) } = {}) {
+// missed: the tsconfig.json is read, and can throw, only then. `pkgDir` is the package that names
+// `path` (its `main`, say), where known: its `outDir` may lie outside it (`../../dist/dep`).
+export function fromOutputSource(path, probeSource, { outputs, host = diskHost, read = (file) => readJson(file, host), pkgDir } = {}) {
   if (outputs == null) return null
-  const pkgDir = packageHolding(path, host, read)
-  const layout = pkgDir === null ? null : outputs(pkgDir)
+  const owner = pkgDir ?? packageHolding(path, host, read)
+  const layout = owner === null ? null : outputs(owner)
   if (layout === null) return null
-  const rel = relative(layout.outDir, join(layout.dir, relative(pkgDir, path))) // by the package's real path
+  const rel = relative(layout.outDir, join(layout.dir, relative(owner, path))) // by the package's real path
   return relativeEscapes(rel) ? null : probeSource(join(layout.rootDir, rel))
 }
 

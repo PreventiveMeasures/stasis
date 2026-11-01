@@ -1182,8 +1182,8 @@ test('packageTsconfigPaths loads each config once, when first matched; lenient, 
 // sources are on disk. dep names them in `exports` (`types` the source) and `imports`, its tsconfig
 // setting `outDir` and `rootDir`; old in `main`, its `outDir` and `rootDir` from a base through
 // `${configDir}`, and a build that copied an asset alone into its `outDir`; plain in `main`, with
-// `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); bare names an output
-// too, with no tsconfig.json to map it by.
+// `outDir` alone, so its root is its tsconfig's directory (TypeScript 6's); shared in `main`, into an
+// `outDir` outside it; bare names an output too, with no tsconfig.json to map it by.
 const unbuiltWorkspace = {
   'package.json': { name: 'root', private: true, workspaces: ['packages/*'] },
   '.git/HEAD': '',
@@ -1212,6 +1212,9 @@ const unbuiltWorkspace = {
   'packages/plain/src/index.ts': 'export const p: number = 5\n',
   'packages/bare/package.json': { name: 'bare', main: './dist/index.js' },
   'packages/bare/src/index.ts': 'export const b: number = 6\n',
+  'packages/shared/package.json': { name: 'shared', main: '../../dist/shared/index.js' },
+  'packages/shared/tsconfig.json': { compilerOptions: { outDir: '../../dist/shared', rootDir: 'src' } },
+  'packages/shared/src/index.ts': 'export const s: number = 8\n',
 }
 const linkWorkspace = (tmp, names) => {
   mkdirSync(join(tmp, 'node_modules'), { recursive: true })
@@ -1230,11 +1233,12 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
       "import { d as relative } from './packages/old/dist/deep.js'",
       "import { p } from 'plain'",
       "import { b } from 'bare'",
-      'export const v: number = x + foo + o + d + n + relative + p + b',
+      "import { s } from 'shared'",
+      'export const v: number = x + foo + o + d + n + relative + p + b + s',
       '',
     ].join('\n'),
   })
-  linkWorkspace(tmp, ['dep', 'old', 'plain', 'bare'])
+  linkWorkspace(tmp, ['dep', 'old', 'plain', 'bare', 'shared'])
   const mapped = new Map([
     ['dep', 'packages/dep/src/index.ts'],
     ['dep/foo', 'packages/dep/src/foo.ts'],
@@ -1242,6 +1246,7 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
     ['old/dist/deep.js', 'packages/old/src/deep.ts'],
     ['old/dist/nested', 'packages/old/src/nested/index.ts'],
     ['./packages/old/dist/deep.js', 'packages/old/src/deep.ts'], // however reached
+    ['shared', 'packages/shared/src/index.ts'],
     ['plain', 'packages/plain/src/index.ts'],
   ])
   // Each package's layout read as resolution asks for it, and through the build's matcher.

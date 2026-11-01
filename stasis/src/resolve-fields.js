@@ -216,7 +216,8 @@ function resolveFileOrDir(base, opts) {
       // Node's LOAD_AS_DIRECTORY resolves `main` as a file, else as a directory index
       // (`main: "./lib/"` -> lib/index.js); a broken `main` falls back to the package index below.
       const entryBase = join(base, r.entry)
-      const inner = asResolution(resolveSourceFile(entryBase, opts) ?? resolveSourceFile(join(entryBase, 'index'), opts))
+      const entryOpts = { ...opts, pkgDir: base } // the package naming the entry, for its unbuilt output
+      const inner = asResolution(resolveSourceFile(entryBase, entryOpts) ?? resolveSourceFile(join(entryBase, 'index'), entryOpts))
       if (inner) return inner
     }
     const index = asResolution(resolveSourceFile(join(base, 'index'), opts))
