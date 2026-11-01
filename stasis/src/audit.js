@@ -3,7 +3,7 @@ import { dependencyEcosystem, moduleFileKey, packageRecords, sameGithub } from '
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
-import { DIM, formatTable, painter } from './table.js'
+import { DIM, formatTable, painter, takesColors } from './table.js'
 
 export { formatTable }
 import { parseFile, parseFileWithKind } from './parse.js'
@@ -350,12 +350,15 @@ const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
 
 // `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`: the rows, then each severity present, in the rows'
 // own order (most severe first), so the parts add up; each in its colour, and none in green.
-function alertStats(rows, paint) {
+function alertStats(rows, paint, colored) {
   const count = `${rows.length} alert${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return paint(['bold', 'green'], count)
   const bySeverity = Map.groupBy(rows, severityOf)
-  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], `${list.length} ${severity}`)).join(', ')})`
+  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], badge(severity, `${list.length} ${severity}`, colored))).join(', ')})`
 }
+
+// Malware as a badge: its colour a space wider on either side, where there is colour.
+const badge = (severity, text, colored) => (severity === 'malware' && colored ? ` ${text} ` : text)
 
 // Where an advisory comes from (upstream's `source`), as sixel.js draws it: npm's registry, a GitHub
 // repository's advisories, or OSV.
@@ -377,6 +380,7 @@ const ROOM_BELOW = '\n\n\x1b[2A'
 export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons = false } = {}) {
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
+  const coloredOut = colors ?? takesColors(out)
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
     err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
@@ -394,14 +398,14 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     const iconOf = (row) => (icons ? SOURCE_ICONS[row.source] : undefined)
     const paint = (text, column, row) => {
       if (column === 'id' && iconOf(row)) return drawIcon(iconOf(row)) + text.slice(ICON_CELLS)
-      if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity], text)
+      if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity.trim()], text)
       if (column === 'package') return paintOut('bold', text)
       if (column === 'reason' && why) return text.replaceAll(/(?<=^| )(?:->|\.\.\.)(?= |$)/gu, (arrow) => paintOut(DIM, arrow))
       return text
     }
     // Under --why the reason cell is a list of `consumer: path` lines; let it span
     // multiple physical rows instead of collapsing to one.
-    const table = formatTable(rows.map((row) => ({ ...row, severity: severityOf(row), ...(icons && { id: `${' '.repeat(ICON_CELLS)} ${row.id}` }) })), columns, {
+    const table = formatTable(rows.map((row) => ({ ...row, severity: badge(severityOf(row), severityOf(row), coloredOut), ...(icons && { id: `${' '.repeat(ICON_CELLS)} ${row.id}` }) })), columns, {
       multiline: why ? ['reason'] : [],
       wrap: WRAPPED,
       width,
@@ -417,5 +421,5 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     const lines = skipped.map((pkg, i) => `  ${names[i].padEnd(pad)}  ${paintErr(DIM, pkg.because)}`)
     err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines.join('\n')}\n`)
   }
-  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr)}\n`)
+  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, colors ?? takesColors(err))}\n`)
 }

@@ -726,8 +726,16 @@ test('printAuditReport: severities in colour, the header bold and the box dimmed
   t.assert.equal(painted.err, `\nScanned 5 packages: ${styled('bold', '5 alerts')} (${styled(['bold', 'magenta'], '1 critical')}, ${styled(['bold', 'red'], '1 high')}, ${styled('yellow', '1 moderate')}, ${styled('cyan', '1 low')}, ${styled(DIM, '1 unrated')})\n`)
   const malware = { out: '', err: '' }
   printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { malware.out += s } }, err: { write: (s) => { malware.err += s } }, colors: true })
-  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], 'malware')}  ${bar} ${styled('bold', 'evil')} `), malware.out)
-  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], '1 malware')}, ${styled(['bold', 'red'], '1 high')})\n`)
+  // Malware a badge, its colour a space wider on either side, in the table and the summary.
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], ' malware ')} ${bar} ${styled('bold', 'evil')} `), malware.out)
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'red'], 'high')}      ${bar}`), 'the column a space wider for it')
+  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], ' 1 malware ')}, ${styled(['bold', 'red'], '1 high')})\n`)
+  // With no colour, no spaces: they'd only pad the word.
+  const uncoloured = { out: '', err: '' }
+  printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { uncoloured.out += s } }, err: { write: (s) => { uncoloured.err += s } }, colors: false })
+  t.assert.deepStrictEqual(rowsOf(uncoloured.out).map(([severity]) => severity), ['severity', 'malware', 'high'])
+  t.assert.ok(uncoloured.out.includes('│ malware  │ evil'), uncoloured.out)
+  t.assert.equal(uncoloured.err, '\nScanned 2 packages: 2 alerts (1 malware, 1 high)\n')
   const none = { err: '' }
   printAuditReport({ packages: [{}], rows: [] }, { out: { write() {} }, err: { write: (s) => { none.err += s } }, colors: true })
   t.assert.equal(none.err, `Scanned 1 package: ${styled(['bold', 'green'], '0 alerts')}\n`)
