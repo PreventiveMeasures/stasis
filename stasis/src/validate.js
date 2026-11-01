@@ -28,7 +28,8 @@
 // holds, is held to the crate instead: its package checksum, and each file's it lists.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { posix } from 'node:path'
+import { readFile, readdir } from 'node:fs/promises'
+import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
 import { toBase32 } from '@exodus/bytes/base32.js'
 import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
@@ -1023,6 +1024,42 @@ export async function repositoryLockfiles({ directory = '', ecosystems, list, re
     chosen.push(fromRoot(lock))
   }
   return Promise.all(chosen.map(async (path) => ({ path, text: await read(path) })))
+}
+
+// The npm packages the package manager's lockfile installing `dir` (an absolute path) locks of a
+// registry, each `{ name, version }` once, a version locked from git or a directory left out; and the
+// lockfile's absolute `path`. Found as repositoryLockfiles finds it, read of the disk at and above `dir`;
+// null where none is. Refused (ValidateError) where more than one package manager's is, it is bun's, which
+// isn't read, or it can't be read.
+export async function installedNpmPackages(dir) {
+  const { root } = parsePath(dir)
+  const at = (path) => join(root, ...path.split('/'))
+  let found
+  try {
+    found = await repositoryLockfiles({
+      directory: relative(root, dir).split(sep).join('/'),
+      ecosystems: new Set(['npm']),
+      list: (path) => readdir(at(path)).catch(() => []),
+      read: (path) => readFile(at(path), 'utf8'),
+    })
+  } catch (error) {
+    if (!(error instanceof ValidateError)) throw error
+    if (error.code === 'no-lockfile') return null
+    // As repositoryLockfiles tells it, but the flags validate takes in its place.
+    throw new ValidateError(error.code, error.message.replace(/[:;] give --lockfile=path.*$/su, '').replace("which validate doesn't read", "which isn't read"))
+  }
+  const [{ path, text }] = found
+  let locks
+  try {
+    locks = readLockfile(posix.basename(path), text)
+  } catch (error) {
+    throw new ValidateError('lockfile-unreadable', `${at(path)}: ${error.message}`)
+  }
+  const packages = [...locks.entries].filter(([, entries]) => entries.some((entry) => entry.from === 'registry')).map(([key]) => {
+    const split = key.lastIndexOf('@')
+    return { name: key.slice(0, split), version: key.slice(split + 1) }
+  })
+  return { path: at(path), packages }
 }
 
 // GitHub's redirects for a repository renamed or transferred.

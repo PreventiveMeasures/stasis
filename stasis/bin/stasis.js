@@ -366,11 +366,21 @@ if (command === '-v' || command === '--version') {
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
   const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
+  // With no file, the package manager's lockfile installing the project too: its packages the bundle
+  // doesn't hold checked for malware (npm's registry alone), it being found or refused told, not failed.
+  let lockfile = null
+  if (plan !== undefined) {
+    try {
+      lockfile = await (await import('../src/validate.js')).installedNpmPackages(plan.cwd)
+    } catch (cause) {
+      console.error(`Lockfile not checked for malware: ${cause.message}`)
+    }
+  }
   let report
   try {
     // --reason audits that consumer's packages alone; one no file records is refused before any is asked about.
     // OSV is asked about npm packages too, never a private one (upstream checks each name is public).
-    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github, osv: true })
+    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github, osv: true, lockfile })
   } catch (cause) {
     if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
     throw cause

@@ -887,7 +887,8 @@ globalThis.fetch = async (input, init) => {
     process.stderr.write(\`npm \${init.body}\\n\`)
     const asked = JSON.parse(init.body)
     const advisory = (id, title) => [{ id, severity: 'high', title, url: 'https://x', vulnerable_versions: '*' }]
-    return json({ ...(asked.foo && { foo: advisory(1, 'foo bug') }), ...(asked.bar && { bar: advisory(2, 'bar bug') }) })
+    const malware = [{ id: 3, severity: 'critical', title: 'Malicious code in evil', url: 'https://github.com/advisories/GHSA-3333-4444-5555', vulnerable_versions: '*', cwe: ['CWE-506'] }]
+    return json({ ...(asked.foo && { foo: advisory(1, 'foo bug') }), ...(asked.bar && { bar: advisory(2, 'bar bug') }), ...(asked.evil && { evil: malware }) })
   }
   if (url.href === 'https://api.osv.dev/v1/querybatch') return json({ results: JSON.parse(init.body).queries.map(() => ({})) })
   return json({ message: 'Not Found' }, 404)
@@ -981,6 +982,28 @@ test("audit with no file says the bundle's warnings only where the bundle fails,
   t.assert.match(failed.stderr, /\nError: JS bundle would be broken at load time:\n {2}unresolved import \.\/missing\.js from cli\.mjs \(MODULE_NOT_FOUND\)\n/u)
   t.assert.doesNotMatch(failed.stderr, /^npm /mu, 'nothing asked')
   t.assert.ok(!existsSync(join(project, 'stasis.code.br')), 'no bundle written')
+}))
+
+test('audit with no file checks the packages the package manager\'s lockfile installs too, for malware, each once', withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, NPM_SPY)
+  const project = join(tmp, 'project')
+  writeProject(project, { entries: { 'index.js': {}, 'cli.js': {} } })
+  // npm's lockfile, as npm writes it: foo and bar, which the bundle holds, and evil, which it doesn't.
+  const SRI = `sha512-${'A'.repeat(86)}==`
+  const entry = (name, version) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: SRI })
+  writeFileSync(join(project, 'package-lock.json'), `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+    '': { name: 'app', version: '1.0.0', dependencies: { bar: '2.0.0', evil: '6.6.6', foo: '1.0.0' } },
+    'node_modules/bar': entry('bar', '2.0.0'),
+    'node_modules/evil': entry('evil', '6.6.6'),
+    'node_modules/foo': entry('foo', '1.0.0'),
+  } }, null, 2)}\n`)
+  const r = runSpied(spy, project, ['audit'])
+  t.assert.equal(r.status, 1, r.stderr)
+  const asked = r.stderr.split('\n').filter((line) => line.startsWith('npm ')).toSorted()
+  t.assert.deepStrictEqual(asked, ['npm {"bar":["2.0.0"],"foo":["1.0.0"]}', 'npm {"evil":["6.6.6"]}'], 'the bundle\'s, then the lockfile\'s it doesn\'t hold, apart')
+  t.assert.doesNotMatch(r.stdout, /evil/u, 'not in the table')
+  t.assert.match(r.stderr, /\nmalware in 1 dependency:\n {2}evil 6\.6\.6 {2}GHSA-3333-4444-5555 {2}Malicious code in evil {2}package-lock\.json\n$/u)
 }))
 
 test("audit with no file is refused as stasis bundle is, or without stasis.config.json's entries", withTmp((t, tmp) => {
@@ -1504,11 +1527,11 @@ test('audit: npm\'s malware advisories of any dependency, whatever --reason, apa
 
       let printed = ''
       printAuditReport(run, { out: { write() {} }, err: { write: (s) => { printed += s } }, colors: false })
-      t.assert.equal(printed, "\nScanned 2 packages recorded by run: 1 alert (1 malware)\n\nmalware in 1 dependency, as npm's advisories tell:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked  webpack\n")
+      t.assert.equal(printed, "\nScanned 2 packages recorded by run: 1 alert (1 malware)\n\nmalware in 1 dependency:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked  webpack\n")
       let painted = ''
       printAuditReport(run, { out: { write() {} }, err: { write: (s) => { painted += s } }, colors: true })
       const styled = (format, text) => styleText(format, text, { validateStream: false })
-      t.assert.ok(painted.includes(`\n\n${styled(['bold', 'white', 'bgRed'], ' malware ')} in 1 dependency, as npm's advisories tell:\n`), painted)
+      t.assert.ok(painted.includes(`\n\n${styled(['bold', 'white', 'bgRed'], ' malware ')} in 1 dependency:\n`), painted)
 
       // Its own packages' npm malware advisories too, in the table and apart.
       const webpack = await audit([bundle], { reason: 'webpack', osv: true })
@@ -1524,11 +1547,29 @@ test('audit: npm\'s malware advisories of any dependency, whatever --reason, apa
   }
 ))
 
+test('audit: the packages a package manager\'s lockfile locks, deduped with the files\' before anything is asked, for npm\'s malware advisories alone', withFetch(
+  ({ opts }) => json(Object.hasOwn(JSON.parse(opts.body), 'evil')
+    ? { evil: [{ id: 3, severity: 'critical', title: 'Malicious code in evil', url: 'https://github.com/advisories/GHSA-3333-4444-5555', vulnerable_versions: '*', cwe: ['CWE-506'] }] }
+    : {}),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const lockfile = { path: join(tmp, 'pnpm-lock.yaml'), packages: [{ name: 'foo', version: '2.0.0' }, { name: 'evil', version: '6.6.6' }, { name: 'evil', version: '6.6.6' }] }
+      const report = await audit([writeBundle(tmp)], { lockfile })
+      t.assert.deepStrictEqual(calls.map((call) => JSON.parse(call.opts.body)), [{ baz: ['0.0.1'], foo: ['2.0.0'] }, { evil: ['6.6.6'] }], 'foo, which the bundle holds, asked once; evil apart, once')
+      t.assert.deepStrictEqual(report.rows, [])
+      t.assert.deepStrictEqual(report.npmMalware.map(({ package: pkg, id, reason }) => [pkg, id, reason]), [['evil', 'GHSA-3333-4444-5555', 'pnpm-lock.yaml']], 'named by the lockfile it is in')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
 test('printAuditReport: npm\'s malware advisories told where --reason\'s consumer recorded no package', (t) => {
   let printed = ''
   const row = { ecosystem: 'npm', package: 'hijacked', installed: '0.7.29', vulnerable: '=0.7.29', severity: 'malware', title: 'Embedded malware in hijacked', id: 'GHSA-pjwm-rvh2-c87w', source: 'registry', reason: '' }
   printAuditReport({ packages: [], rows: [], npmMalware: [row, { ...row, id: 'GHSA-1111-2222-3333', title: 'Malicious Package in hijacked' }], reason: 'esbuild' }, { out: { write() {} }, err: { write: (s) => { printed += s } }, colors: false })
-  t.assert.equal(printed, "Scanned 0 packages recorded by esbuild\nNo dependencies recorded by esbuild\n\nmalware in 1 dependency, as npm's advisories tell:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked\n  hijacked 0.7.29  GHSA-1111-2222-3333  Malicious Package in hijacked\n", 'one line an advisory, no consumers where none is recorded')
+  t.assert.equal(printed, "Scanned 0 packages recorded by esbuild\nNo dependencies recorded by esbuild\n\nmalware in 1 dependency:\n  hijacked 0.7.29  GHSA-pjwm-rvh2-c87w  Embedded malware in hijacked\n  hijacked 0.7.29  GHSA-1111-2222-3333  Malicious Package in hijacked\n", 'one line an advisory, no consumers where none is recorded')
 })
 
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
