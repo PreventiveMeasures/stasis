@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliCompressSync } from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import { stripVTControlCharacters, styleText } from 'node:util'
@@ -836,6 +836,37 @@ test('audit --reason consumes its value (space form) then reports no files', (t)
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /Nothing to audit/)
 })
+
+// A preload answering npm's and OSV's batch requests with no advisories, and GitHub with none to
+// see, saying for each request to GitHub its path and the token it was sent with.
+const GITHUB_SPY = `
+globalThis.fetch = async (input, init) => {
+  const url = new URL(input)
+  if (url.host === 'api.github.com') process.stderr.write(\`github \${url.pathname} \${new Headers(init?.headers).get('authorization')}\\n\`)
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  if (url.href === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+  if (url.href === 'https://api.osv.dev/v1/querybatch') return json({ results: JSON.parse(init.body).queries.map(() => ({})) })
+  return json({ message: 'Not Found' }, 404)
+}
+`
+
+test("audit --repo-advisories asks GitHub with GITHUB_TOKEN, else with ~/.audit/config.json's token", withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, GITHUB_SPY)
+  const file = writeBundle(tmp, 'snapshot.br', { modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', repo: { github: 'o/dep' }, files: { 'index.js': '' } } }, formats: {} })
+  const audited = join(tmp, 'audited')
+  mkdirSync(join(audited, '.audit'), { recursive: true })
+  writeFileSync(join(audited, '.audit', 'config.json'), JSON.stringify({ token: 'from-audit' }))
+  const { GITHUB_TOKEN: _token, ...env } = cleanEnv
+  // `stasis audit --repo-advisories` with `home` as the user's, and `more` in its environment.
+  const run = (home, more = {}) => {
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', '--repo-advisories', file], { encoding: 'utf-8', env: { ...env, HOME: home, XDG_CACHE_HOME: join(tmp, 'cache'), ...more } })
+    return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
+  }
+  t.assert.deepStrictEqual(run(audited), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-audit\nScanned 1 package: 0 alerts\n' })
+  t.assert.deepStrictEqual(run(audited, { GITHUB_TOKEN: 'from-env' }), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-env\nScanned 1 package: 0 alerts\n' }, "GITHUB_TOKEN's first")
+  t.assert.deepStrictEqual(run(join(tmp, 'nowhere')), { status: 1, stderr: "Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN\nRun 'stasis --help' for usage.\n" }, 'refused without either, as before')
+}))
 
 const withFetch = (impl, fn) => async (t) => {
   const original = globalThis.fetch
