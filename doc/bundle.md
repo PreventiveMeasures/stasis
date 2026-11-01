@@ -8,7 +8,7 @@ to be captured (a React Native app, a library's entry points).
 
 ```sh
 stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
 stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
@@ -28,16 +28,16 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
-| `--metro --platforms=ios,android` | Resolve the way Metro does. See [Metro](#metro---metro). |
+| `--metro --platforms=ios,android` | Resolve the way Metro does, building as its release build does: `--jsx`, `--flow`, and Metro's release defines. See [Metro](#metro---metro). |
 | `--metro-resolver` | With `--metro`: resolve through the project's own `metro-resolver` instead of the built-in approximation. |
 | `--babel` | With `--metro`: resolve through the import aliases of the project's `babel.config.*` (`babel-plugin-module-resolver`). See [Metro](#metro---metro). |
 | `--babel-aliases=path.json` | With `--metro`: resolve through the import aliases a JSON file of the project lists, as `--babel` would, without running anything. See [Metro](#metro---metro). |
-| `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. See [JSX and Flow](#jsx-and-flow). |
-| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files oxc can't parse. See [JSX and Flow](#jsx-and-flow). |
+| `--jsx` | Parse JSX in `.js`/`.cjs`/`.mjs` files. `.jsx`/`.tsx` files need no flag. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
+| `--flow` | Strip Flow types from `.js`/`.cjs`/`.mjs` files marked `@flow` that oxc can't parse. On under `--metro`. See [JSX and Flow](#jsx-and-flow). |
 | `--typescript` | Resolve TypeScript sources the way tsc does. See [TypeScript](#typescript---typescript). |
 | `--tsconfig=path` | With `--typescript`: the tsconfig whose `compilerOptions.paths` aliases apply. |
 | `--resources=png,svg` | Carry reached non-code files as resources instead of failing on them. With `--mainFields`/`--metro`, the cwd's `stasis.config.json` `resources` where not given. See [Resources and manifests](#resources-and-manifests). |
-| `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. See [Defines](#defines---define). |
+| `--define=K=V` | A global's value as the build gives it (`__DEV__=false`): imports only in branches it keeps from running are left out. Repeatable. Under `--metro`, `__DEV__` and `process.env.NODE_ENV` have Metro's release values unless given. See [Defines](#defines---define). |
 | `--package-json` | Also bundle each bundled module's `package.json`, and the nearest one above each bundled file (an `esm/package.json`), even ones the scan never reached. |
 | `--brotli-quality=0..11` | Compression level, default `6`. |
 
@@ -133,7 +133,7 @@ directory, and its value the flags building it, named as they are without the
 ```json
 {
   "entries": {
-    "index.js": { "metro": true, "metro-resolver": true, "platforms": ["ios", "android"], "flow": true, "jsx": true },
+    "index.js": { "metro": true, "metro-resolver": true, "platforms": ["ios", "android"] },
     "node_modules/@react-native-community/cli/build/bin.js": { "metro": false }
   }
 }
@@ -586,12 +586,19 @@ under either, as `babel-plugin-module-resolver` leaves it: its target must name
 the file itself. An alias of the same name, in the aliases file or the Babel
 config, rewrites it first, as it would under Metro.
 
-What only a dev build imports (`if (__DEV__) require(...)`) is bundled too,
-unless `--define` gives the values a release build inlines: see
-[Defines](#defines---define).
+It builds as Metro's release build (`react-native bundle --dev false`) does:
+
+- `--jsx` and `--flow` are on, as Metro's Babel parses JSX in every file and
+  strips Flow types: JSX in a `.js` file parses, and a file marked `@flow` has
+  its types stripped. See [JSX and Flow](#jsx-and-flow).
+- `__DEV__` is defined as `false` and `process.env.NODE_ENV` as
+  `"production"`, the values Metro's release build inlines, so what only a dev
+  build imports (`if (__DEV__) require(...)`) is left out. A `--define`, or an
+  entry's `define`, for either name gives it that value instead, the other
+  keeping its default: see [Defines](#defines---define).
 
 ```sh
-stasis bundle --metro --platforms=ios,android --jsx --resources=png,svg,ttf index.js
+stasis bundle --metro --platforms=ios,android --resources=png,svg,ttf index.js
 ```
 
 ### TypeScript (`--typescript`)
@@ -666,16 +673,19 @@ stasis bundle --typescript --tsconfig=tsconfig.build.json src/index.ts
 
 `--jsx` has the scanner parse JSX in `.js`/`.cjs`/`.mjs` files, whose extension
 can't tell whether they hold JSX (the React Native convention); it is off by
-default, and `.jsx`/`.tsx` files are parsed as JSX by extension with no flag.
+default, on under `--metro`, and `.jsx`/`.tsx` files are parsed as JSX by
+extension with no flag.
 JSX in TS goes in a `.tsx` file, as TypeScript itself requires. The JSX source
 is stored verbatim, for `stasis build --loader=.js:jsx` to transform later: see
 [build](build.md#jsx-in-jsts).
 
-`--flow` strips Flow type syntax from a `.js`/`.cjs`/`.mjs` file oxc can't
-parse and retries, so the import graph resolves; the stored source stays the
-original bytes. It strips with `flow-remove-types`, a dependency of stasis
-resolved from where stasis is installed, never from the project being bundled,
-and combines with `--jsx`, `--conditions`, `--mainFields` and `--metro`.
+`--flow` strips Flow type syntax from a `.js`/`.cjs`/`.mjs`/`.jsx` file marked
+`@flow` (anywhere in it, as `flow-remove-types` looks for the pragma) that oxc
+can't parse and retries, so the import graph resolves; the stored source stays
+the original bytes. A file not marked `@flow` is never stripped, Flow types or
+not. It strips with `flow-remove-types`, a dependency of stasis resolved from
+where stasis is installed, never from the project being bundled, and combines
+with `--jsx`, `--conditions` and `--mainFields`; `--metro` turns it on.
 Stripping removes types only: Flow syntax that compiles to code, as `component`
 and `hook` declarations and `enum`s do, stays, so a file using it still doesn't
 parse (React Native 0.81's `View.js` and `VirtualView.js`).
@@ -691,7 +701,7 @@ is none to record.
 leaves out what only the code that value keeps from running imports:
 
 ```sh
-stasis bundle --metro --platforms=ios,android --define=__DEV__=false --define=process.env.NODE_ENV='"production"' index.js
+stasis bundle --define=__DEV__=false --define=process.env.NODE_ENV='"production"' index.js
 ```
 
 With those, `if (__DEV__) require('./devtools')` reaches nothing, and a package
@@ -718,10 +728,13 @@ reaches only its production build.
 Metro's release build (`dev: false`) inlines `__DEV__` as `false` and
 `process.env.NODE_ENV` as `"production"`, folds away the branches they decide,
 and only then collects a file's dependencies. Its dev build inlines neither.
-So under `--metro`, those two defines bundle what a release build reaches, and
-no define what a dev build reaches. The scan folds only tests Metro's constant
-folding folds too, and leaves alone those React Native's Babel transforms keep
-it from folding: `??`, which becomes an assignment, and a `typeof` compared
+So `--metro` defines those two by default, and its bundle carries what a
+release build reaches. A define given for either name takes the place of its
+default (`--define=__DEV__=true`), the other keeping its own. Neither can be
+left undefined under `--metro`, so a `--metro` bundle never holds a dev
+build's whole graph. The scan folds only tests Metro's constant folding folds
+too, and leaves alone those React Native's Babel transforms keep it from
+folding: `??`, which becomes an assignment, and a `typeof` compared
 with anything but a string, which becomes a call. So the bundle carries every
 file Metro's graph holds. Metro may fold tests the scan doesn't; what those
 import is carried anyway. A name a Babel plugin of the project inlines

@@ -627,13 +627,21 @@ test('scan --flow strips Flow type syntax before oxc so the real import graph re
   t.assert.ok(!result.files.has('types.js'), 'the Flow type-only import is erased, so types.js is never walked')
 }))
 
-test('scan --flow works on Flow files with no @flow pragma (all:true ignores the pragma)', withTmp((t, tmp) => {
+test('scan --flow strips only a file marked @flow, anywhere in it, never one with no pragma', withTmp((t, tmp) => {
+  // The pragma need not lead the file: flow-remove-types finds it anywhere, and so does --flow.
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'flow', version: '0.0.0', type: 'module' }))
-  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v: number = dep\n')
+  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\n/**\n * Typed.\n * @flow strict\n */\nexport const v: number = dep\n')
   writeFileSync(join(tmp, 'dep.js'), 'export const dep = 1\n')
-  const result = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
-  t.assert.deepStrictEqual(result.parseErrors, [])
-  t.assert.ok(result.files.has('dep.js'))
+  const marked = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
+  t.assert.deepStrictEqual(marked.parseErrors, [])
+  t.assert.ok(marked.files.has('dep.js'))
+
+  // The same types with no pragma: not Flow's to strip, so the parse error stands.
+  writeFileSync(join(tmp, 'entry.js'), 'import { dep } from "./dep.js"\nexport const v: number = dep\n')
+  const unmarked = scan([join(tmp, 'entry.js')], { flow: true }).toRelative(tmp)
+  t.assert.equal(unmarked.parseErrors.length, 1)
+  t.assert.equal(unmarked.parseErrors[0].file, 'entry.js')
+  t.assert.ok(!unmarked.files.has('dep.js'))
 }))
 
 test('scan --flow leaves .ts sources to oxc (does not run flow-remove-types on TS constructs)', withTmp((t, tmp) => {

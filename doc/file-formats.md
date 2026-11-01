@@ -165,7 +165,7 @@ devDependencies alone reach, as `pnpm install --prod`, `npm ci --omit=dev` and
 `yarn install --production` do, so a build that reaches one fails to resolve it
 there too. See [`stasis github-bundle`](github-bundle.md#devdependencies-installdevdependencies).
 It has nothing to do with `process.env.NODE_ENV` or `__DEV__`, which an entry's
-`define` sets. `stasis run` and `stasis bundle` read `node_modules` as it was
+`define` sets, or its `metro` by default. `stasis run` and `stasis bundle` read `node_modules` as it was
 installed, and take nothing from it.
 
 `lazyDependencies: false` has `stasis github-bundle` fetch and unpack every

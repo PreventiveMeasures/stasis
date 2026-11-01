@@ -134,9 +134,15 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.conditions !== undefined && conditions.length === 0) {
     throw new Error('--conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
   }
-  // --flow: strip Flow type syntax (via stasis's own flow-remove-types) before parsing; JS-only.
+  // --metro: resolve like Metro/RN (its own conditions + mainFields, platform suffixes per
+  // --platforms target). --platforms is repeatable and/or comma-separated; the values union.
+  // It turns on --jsx and --flow, as Metro's Babel parses JSX and Flow in every file (and defines what
+  // Metro's release build does, see buildJs).
+  const metro = Boolean(values.metro)
+  // --flow: strip Flow type syntax (via stasis's own flow-remove-types) from a file marked `@flow`
+  // before parsing; JS-only.
   if (values.flow && !allJs) throw new Error('--flow is only valid for JS bundles')
-  const flow = Boolean(values.flow)
+  const flow = Boolean(values.flow) || metro
   // --typescript: resolve like tsc -- a specifier naming a missing JS output (./x.js, .mjs, .cjs,
   // extensionless) lands on its on-disk TS source (./x.ts, .mts, .cts); an existing .js always wins.
   if (values.typescript && !allJs) throw new Error('--typescript is only valid for JS bundles')
@@ -152,9 +158,6 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.mainFields !== undefined && mainFields.length === 0) {
     throw new Error('--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
   }
-  // --metro: resolve like Metro/RN (its own conditions + mainFields, platform suffixes per
-  // --platforms target). --platforms is repeatable and/or comma-separated; the values union.
-  const metro = Boolean(values.metro)
   // --metro-resolver: resolve through the project's own metro-resolver instead of the built-in
   // approximation. Only meaningful alongside --metro (enforced below and in classifyEntries).
   const metroResolver = Boolean(values['metro-resolver'])
@@ -166,8 +169,8 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if ((metro || platforms.length > 0) && !allJs) throw new Error('--metro is only valid for JS bundles')
   // --jsx: parse React Native's JSX-in-.js source in the static scanner (off by default; oxc,
   // like tsc, auto-enables JSX for .jsx/.tsx only). Orthogonal to the resolver, so it pairs with
-  // plain/--mainFields/--metro alike -- JS-only, since no other entry language is scanned.
-  const jsx = Boolean(values.jsx)
+  // plain/--mainFields/--metro alike -- JS-only, since no other entry language is scanned. On under --metro.
+  const jsx = Boolean(values.jsx) || metro
   if (jsx && !allJs) throw new Error('--jsx is only valid for JS bundles')
   // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
   // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).

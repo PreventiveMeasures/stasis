@@ -508,7 +508,7 @@ describe('stasis build (spawned, concurrent)', { concurrency: CONCURRENCY }, () 
       'export function add(a: Num, b: Num): Num { return a + b }',
       '',
     ].join('\n'))
-    writeFileSync(join(tmp, 'types.js'), "console.log('types.js ran')\nexport type Unit = 'px'\n")
+    writeFileSync(join(tmp, 'types.js'), "// @flow\nconsole.log('types.js ran')\nexport type Unit = 'px'\n")
     writeFileSync(join(tmp, 'plain.js'), 'const a = 1, b = 2, c = 0\nexport const tricky = a < b > (c)\n')
     const bundled = await runCli(['bundle', '--flow', '--output=app.code.br', 'index.js'], { cwd: tmp })
     t.assert.equal(bundled.status, 0, bundled.stderr)

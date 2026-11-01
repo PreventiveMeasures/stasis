@@ -9,6 +9,11 @@ import { isPlainObject } from '@exodus/stasis-core/util'
 // no test Metro wouldn't, after React Native's Babel transforms, so a --metro bundle never lacks a
 // file Metro's graph holds.
 
+// The values Metro's release build (`dev: false`, `react-native bundle --dev false`) inlines, and its
+// prelude gives the globals: what `stasis bundle --metro` and `stasis build --metro` define by
+// default, for each name no define given (a flag or the entry's `define`) gives a value of its own.
+export const METRO_RELEASE_DEFINE = Object.freeze({ __DEV__: false, 'process.env.NODE_ENV': 'production' })
+
 // A defined name: an identifier, or a dotted path of them (`process.env.NODE_ENV`).
 const NAME = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u
 
