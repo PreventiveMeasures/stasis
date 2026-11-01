@@ -1,10 +1,11 @@
-import { dirname, extname, resolve as resolvePath, relative } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
 import { classifyExtension, classifyFormat, isTypeDeclaration, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
@@ -211,7 +212,8 @@ export class Scan {
   // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling. Without it, the
   // mapping only names the file a miss would resolve to under --typescript (see #typescriptCandidate).
   // `typescriptResolve`: the custom `resolve`'s --typescript twin (same shape), consulted only for
-  // that hint; null when there is no custom resolver or `typescript` is on.
+  // that hint; null when there is no custom resolver or `typescript` is on. `missTargets`: record
+  // where each miss would have landed (see #missTargets).
   // `resources` (a `parseResourcesOption` Set of extensions/filenames): reached files matching it
   // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
   // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
@@ -224,7 +226,7 @@ export class Scan {
   // `onlyRemoveTypeImports`, as --babel reads the project's config); Flow's erases them always.
   // `memo`: what scans before this one, with these options, read of each file, and where to keep
   // what this one reads (see #scanKept).
-  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null } = {}) {
+  constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
     this.typescriptResolve = typescriptResolve
@@ -232,6 +234,7 @@ export class Scan {
     this.flow = flow
     this.typescript = typescript
     this.typescriptPaths = typescriptPaths
+    this.missTargets = missTargets
     this.resources = resources
     this.defines = parseDefine('scan', define)
     this.babel = babel
@@ -381,6 +384,34 @@ export class Scan {
     if (this.customResolve) return this.typescriptResolve?.(parentFile, spec, conditions)?.url ?? null
     const hit = this.#typescriptResolve(parentFile, spec, conditions)
     return hit == null ? null : pathToFileURL(hit).toString()
+  }
+
+  // Where a miss of `spec` from `parentFile` would have landed (vfs-bundle/prisma.js's generatedMiss matches
+  // them to generator outputs): a relative or absolute path's file; the file a package's `exports`, `imports`
+  // or `main` named (`target`, the resolver's error's); and under --typescript, where a tsconfig alias points
+  // (without it, an alias is never resolved at all, a miss of another kind).
+  #missTargets(parentFile, spec, target) {
+    const path = RELATIVE_REQUEST.test(spec) || isAbsolute(spec)
+    const aliased = !path && !spec.startsWith('#') && this.typescript && this.typescriptPaths !== null && !inNodeModules(parentFile, this.host)
+    return [
+      ...(path ? [resolvePath(dirname(parentFile), spec)] : []),
+      ...(typeof target === 'string' ? [target] : []),
+      ...(aliased ? this.typescriptPaths.matchPaths(spec, parentFile) : []),
+    ].map((at) => this.#realTarget(at))
+  }
+
+  // Where a missing file `path` would be, as a real path, as every recorded edge is: its deepest ancestor
+  // that is there realpathed (a package reached through node_modules is a link to it), the rest kept.
+  #realTarget(path) {
+    const rest = []
+    for (let at = path; ; at = dirname(at)) {
+      try {
+        return join(this.host.realpath(at), ...rest)
+      } catch {
+        if (dirname(at) === at) return path
+        rest.unshift(basename(at))
+      }
+    }
   }
 
   // Strip Flow type syntax to plain JS (flow.js's stripFlowTypes): of a file marked `@flow`, or as a
@@ -555,11 +586,13 @@ export class Scan {
       nestedMap(specMaps, key).set(s.spec, childURL)
       if (RESOLVABLE_EXTS.has(extname(childPath)) || this.#isResource(childPath)) queue.push(childURL)
     }
-    // Records the file --typescript would land the miss on too (typescriptURL), resolved as the miss was.
-    const addUnresolved = (s, reason, conditions) => {
+    // Records the file --typescript would land the miss on too (typescriptURL), resolved as the miss was,
+    // and with `missTargets`, where it would have landed (targets; `target`, the resolver's error's).
+    const addUnresolved = (s, reason, conditions, target) => {
       edges.push({ ...s, error: reason })
       const typescriptURL = this.#typescriptCandidate(file, s.spec, conditions)
-      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...(typescriptURL ? { typescriptURL } : {}) })
+      const targets = this.missTargets ? this.#missTargets(file, s.spec, target) : []
+      this.unresolved.push({ parentURL: url, kind: s.kind, spec: s.spec, reason, ...(typescriptURL ? { typescriptURL } : {}), ...(targets.length > 0 ? { targets } : {}) })
     }
 
     for (const s of specs) {
@@ -598,7 +631,7 @@ export class Scan {
         // stays keyed by the ORIGINAL specifier -- only the target is the mapped file.
         if (this.typescript) childPath = this.#typescriptResolve(file, s.spec, conditions)
         if (childPath == null) {
-          addUnresolved(s, cause.code ?? cause.message, conditions)
+          addUnresolved(s, cause.code ?? cause.message, conditions, cause.target)
           continue
         }
       }
@@ -633,7 +666,7 @@ export class Scan {
           ),
         ])
       ),
-      unresolved: this.unresolved.map(({ parentURL, typescriptURL, ...rest }) => ({ parent: rel(parentURL), ...rest, ...(typescriptURL ? { typescript: rel(typescriptURL) } : {}) })),
+      unresolved: this.unresolved.map(({ parentURL, typescriptURL, targets: _, ...rest }) => ({ parent: rel(parentURL), ...rest, ...(typescriptURL ? { typescript: rel(typescriptURL) } : {}) })),
       parseErrors: this.parseErrors.map(({ url, ...rest }) => ({ file: rel(url), ...rest })),
     }
   }

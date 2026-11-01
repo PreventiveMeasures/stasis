@@ -12,7 +12,7 @@ import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, createVfsHost } from '../stasis/src/vfs-bundle.js'
-import { generatePrismaClients, reachedProjects, withPrismaClients } from '../stasis/src/vfs-bundle/prisma.js'
+import { generatePrismaClients, generatedMiss, reachedProjects, withPrismaClients } from '../stasis/src/vfs-bundle/prisma.js'
 import { fakeClient, json } from './vfs-bundle-github.helper.js'
 import { captureWarningsAsync } from './warnings.helper.js'
 
@@ -128,8 +128,11 @@ const withPothos = ({ output = '../src/generated/pothos-types.ts', extra = '', i
   ...(index === undefined ? {} : { 'packages/b/src/index.ts': index }),
   ...files,
 } })
+const WRITES_POTHOS = `/packages/b/prisma/schema.prisma's generator pothos would write it, but ${SKIPPED}`
 const CLIENT_EXPORT = "export { PrismaClient } from './generated/prisma/client.ts'\n"
+const LOAD_POTHOS = `${CLIENT_EXPORT}export const load = () => import('./generated/pothos-types.ts')\n`
 const COMMITTED_POTHOS = { 'packages/b/src/generated/pothos-types.ts': 'export function getDatamodel() { return {} }\n' }
+const OFF = 'generation is off: generate is [] (--no-generate)'
 
 test('--generate=prisma says where it takes another generator\'s output as committed', async (t) => {
   const said = warnings(t)
@@ -223,14 +226,84 @@ test('two generators writing one output are refused, given generate or not', asy
   for (const generate of [undefined, ['prisma']]) await t.assert.rejects(build(project(twice), { generate }), /^Error: prisma: \/packages\/b\/src\/generated\/prisma is the output of more than one generator$/u)
 })
 
-test('what stasis cannot generate is silent given no generate; asked for, it is said', async (t) => {
+test('what stasis cannot generate is silent given no generate, but an import of it fails however it is reached, saying why', async (t) => {
   const said = warnings(t)
-  // Another generator, and another Prisma: silent, a miss of what it would write the scan's to report.
+  const broken = (spec, from = '/packages/b/src/index.ts', why = WRITES_POTHOS, kind = 'dynamic-import') => ({ message: `JS bundle would be broken at load time:\n  unresolved ${kind} ${spec} from ${from} (MODULE_NOT_FOUND): ${why}` })
+  // Reached by none: built, and nothing said.
   await build(project(withPothos({ index: CLIENT_EXPORT })))
-  await t.assert.rejects(build(project(workspace({ version: '6.19.0' }))), /unresolved export-from \.\/generated\/prisma\/client\.ts from \/packages\/b\/src\/index\.ts \(MODULE_NOT_FOUND\)$/u)
   t.assert.deepStrictEqual(said(), [])
-  await build(project(withPothos({ index: CLIENT_EXPORT })), { generate: ['prisma'] })
-  t.assert.deepStrictEqual(said(), [notGenerating('pothos')])
+  // By import() (or require()), which would fail at run time; or statically, by a file reached that way.
+  await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS }))), broken('./generated/pothos-types.ts'))
+  await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('./schema-builder.ts')\n`, files: { 'packages/b/src/schema-builder.ts': "export { getDatamodel } from './generated/pothos-types'\n" } }))),
+    broken('./generated/pothos-types', '/packages/b/src/schema-builder.ts', WRITES_POTHOS, 'export-from'))
+  // Through a package's exports (b's, which a imports), or under --typescript a tsconfig alias.
+  const exporting = { name: 'b', version: '1.0.0', type: 'module', exports: { '.': './src/index.ts', './pothos': './src/generated/pothos-types.ts' }, dependencies: { '@prisma/client': 'link:../../vendor/client' }, devDependencies: { prisma: 'link:../../vendor/prisma' } }
+  await t.assert.rejects(build(project(withPothos({ index: CLIENT_EXPORT, files: { 'packages/b/package.json': json(exporting), 'packages/a/index.ts': "export { PrismaClient } from 'b'\nexport const load = () => import('b/pothos')\n" } }))), broken('b/pothos', 'index.ts'))
+  const tsconfig = { 'packages/b/tsconfig.json': json({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }) }
+  await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('@/generated/pothos-types')\n`, files: tsconfig })), { typescript: true }), broken('@/generated/pothos-types'))
+  // A file the client it generated doesn't hold.
+  await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const edge = () => import('./generated/prisma/edge.ts')\n` }))),
+    broken('./generated/prisma/edge.ts', '/packages/b/src/index.ts', "in the output of /packages/b/prisma/schema.prisma's generator client, which writes no such file"))
+  t.assert.deepStrictEqual(said(), [])
+  // An alias to anything else is no generator's: warned of as falling through at run time, as before.
+  await build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('@/elsewhere')\n`, files: tsconfig })), { typescript: true })
+  t.assert.match(said().join('\n'), /unresolved import\(s\); they will fall through at load time:\n {2}dynamic-import @\/elsewhere from \/packages\/b\/src\/index\.ts \(MODULE_NOT_FOUND\)$/u)
+  // Asked for, the same, and said beforehand.
+  await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS })), { generate: ['prisma'] }), broken('./generated/pothos-types.ts'))
+  t.assert.equal(said().at(-1), notGenerating('pothos'))
+})
+
+test('with generation off, an import of a file a generator would write still fails however it is reached', async (t) => {
+  const said = warnings(t)
+  await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS })), { generate: [] }),
+    { message: `JS bundle would be broken at load time:\n  unresolved export-from ./generated/prisma/client.ts from /packages/b/src/index.ts (MODULE_NOT_FOUND): /packages/b/prisma/schema.prisma's generator client would write it, but ${OFF}\n  unresolved dynamic-import ./generated/pothos-types.ts from /packages/b/src/index.ts (MODULE_NOT_FOUND): /packages/b/prisma/schema.prisma's generator pothos would write it, but ${OFF}` })
+  // Committed, they are taken as they are, and nothing is said.
+  const committed = { ...COMMITTED_POTHOS, 'packages/b/src/generated/prisma/client.ts': 'export class PrismaClient {}\n' }
+  t.assert.ok((await build(project(withPothos({ index: LOAD_POTHOS, files: committed })), { generate: [] })).bundle.sources.has('packages/b/src/generated/pothos-types.ts'))
+  t.assert.deepStrictEqual(said(), [])
+})
+
+test('given no generate, a committed output of a generator stasis does not run is said only where the bundle carries it', async (t) => {
+  const said = warnings(t)
+  await build(project(withPothos({ index: CLIENT_EXPORT, files: COMMITTED_POTHOS })))
+  t.assert.deepStrictEqual(said(), [])
+  const { bundle } = await build(project(withPothos({ index: `${CLIENT_EXPORT}export { getDatamodel } from './generated/pothos-types.ts'\n`, files: COMMITTED_POTHOS })))
+  t.assert.ok(bundle.sources.has('packages/b/src/generated/pothos-types.ts'))
+  t.assert.deepStrictEqual(said(), [notGenerating('pothos', '/packages/b/src/generated/pothos-types.ts')])
+})
+
+test('given no generate, a project stasis cannot generate for is silent, and what reaches its output fails saying why', async (t) => {
+  const said = warnings(t)
+  // Read without Prisma's parser, which another Prisma's schema needn't satisfy.
+  await t.assert.rejects(build(project(workspace({ version: '6.19.0' }))),
+    /unresolved export-from \.\/generated\/prisma\/client\.ts from \/packages\/b\/src\/index\.ts \(MODULE_NOT_FOUND\): \/packages\/b\/prisma\/schema\.prisma's generator client would write it, but stasis generates as Prisma 7\.4\.0 to 7\.10\.0 do, and \/packages\/b\/node_modules\/prisma\/package\.json is 6\.19\.0$/u)
+  // A default output, in a package: Prisma's older client, which @prisma/client requires as .prisma/client.
+  const legacy = workspace({ files: {
+    'packages/b/prisma/schema.prisma': `${schema()}\ngenerator legacy {\n  provider = "prisma-client-js"\n}\n`,
+    'packages/b/src/index.ts': `${CLIENT_EXPORT}export const legacy = () => import('@prisma/client')\n`,
+    'vendor/client/package.json': json({ name: '@prisma/client', version: '7.9.0', exports: { '.': './default.js', './runtime/client': './runtime/client.js', './runtime/*': './runtime/*' } }),
+    'vendor/client/default.js': "module.exports = { ...require('.prisma/client/default') }\n",
+  } })
+  await t.assert.rejects(build(project(legacy)), new RegExp(`unresolved require \\.prisma/client/default from /vendor/client/default\\.js \\(MODULE_NOT_FOUND\\): ${RegExp.escape(`/packages/b/prisma/schema.prisma's generator legacy would write it, but ${SKIPPED}`)}$`, 'u'))
+  t.assert.deepStrictEqual(said(), [])
+})
+
+test('generatedMiss: an import whose resolution landed in a generator\'s output, or one into a default output by its specifier', (t) => {
+  const miss = generatedMiss([
+    { path: '/p/src/generated/pothos-types.ts', writer: 'pothos', why: 'not run' },
+    { path: '/p/src/generated/prisma', writer: 'client' },
+    { specifier: '@pothos/plugin-prisma/generated', writer: 'pothos2', why: 'not run' },
+    { specifier: '.prisma/client', writer: 'js', why: 'not run' },
+  ])
+  const from = (spec, targets) => miss({ kind: 'import', spec, reason: 'MODULE_NOT_FOUND', ...(targets === undefined ? {} : { targets }) })
+  // Where it landed (the scan's targets), its extension left out or written as .js, or the output's directory or a file in it.
+  for (const target of ['/p/src/generated/pothos-types', '/p/src/generated/pothos-types.js', '/p/src/generated/pothos-types.ts']) t.assert.equal(from('x', [target]), 'pothos would write it, but not run', target)
+  for (const target of ['/p/src/generated/prisma', '/p/src/generated/prisma/edge.ts']) t.assert.equal(from('x', ['/elsewhere', target]), 'in the output of client, which writes no such file', target)
+  t.assert.equal(from('@pothos/plugin-prisma/generated'), 'pothos2 would write it, but not run')
+  t.assert.equal(from('.prisma/client/default'), 'js would write it, but not run')
+  for (const target of ['/p/src/generated/other.ts', '/p/src/generated/prismatic.ts']) t.assert.equal(from('x', [target]), undefined, target)
+  for (const spec of ['@pothos/plugin-prisma', '.prisma/clientele']) t.assert.equal(from(spec), undefined, spec)
+  t.assert.equal(miss({ kind: 'dynamic-import', reason: 'dynamic' }), undefined)
 })
 
 test('reachedProjects: the projects the paths are in, and the workspace packages they depend on, theirs in turn', (t) => {
@@ -250,7 +323,7 @@ test('reachedProjects: the projects the paths are in, and the workspace packages
 test('beside Prisma 8, the Prisma generated as is the one @prisma/prisma7 runs as `prisma7`', async (t) => {
   const prisma = (version) => json({ name: 'prisma', version })
   const base = { 'prisma/schema.prisma': schema({ output: '../client' }), 'node_modules/prisma/package.json': prisma('8.0.0') }
-  const namespace = async (vfs) => (await generatePrismaClients({ host: createVfsHost(vfs), root: '/', projects: new Set(['.']) }))[0]?.files.get('internal/prismaNamespace.ts')
+  const namespace = async (vfs) => (await generatePrismaClients({ host: createVfsHost(vfs), root: '/', projects: new Set(['.']) })).outputs[0]?.files.get('internal/prismaNamespace.ts')
   // npm nests the Prisma it runs under it; pnpm lays it out beside it, linked from the project.
   const nested = project({ ...base, 'node_modules/@prisma/prisma7/package.json': json({ name: '@prisma/prisma7', version: '7.9.1' }), 'node_modules/@prisma/prisma7/node_modules/prisma/package.json': prisma('7.9.1') })
   t.assert.match(await namespace(nested), / \* Prisma Client JS version: 7\.9\.1\n/u)
@@ -266,11 +339,11 @@ test('beside Prisma 8, the Prisma generated as is the one @prisma/prisma7 runs a
 })
 
 // generatePrismaClients over one project, with Prisma `version` installed.
-const clients = (files, version = '7.10.0') => generatePrismaClients({
+const clients = async (files, version = '7.10.0') => (await generatePrismaClients({
   host: createVfsHost(project({ 'node_modules/prisma/package.json': json({ name: 'prisma', version }), ...files })),
   root: '/',
   projects: new Set(['.']),
-})
+})).outputs
 const outputDirs = async (...args) => (await clients(...args)).map((output) => output.dir)
 
 const DEFINE = "import { defineConfig } from 'prisma/config'\n"
@@ -441,7 +514,7 @@ test("given no generate, stasis.config.json's generatePrisma false writes none",
   // In a project of its own: a stasis.config.json in a workspace package roots the bundle there.
   const published = (generatePrisma, options) => buildPublished({ ...publishedFiles('pnpm'), ...(generatePrisma === undefined ? {} : { 'stasis.config.json': json({ generatePrisma }) }) }, options)
   for (const generatePrisma of [undefined, true]) t.assert.ok((await published(generatePrisma)).built.bundle.sources.has('src/generated/prisma/client.ts'))
-  await t.assert.rejects(published(false), /unresolved export-from \.\/generated\/prisma\/client\.ts from src\/index\.ts \(MODULE_NOT_FOUND\)$/u)
+  await t.assert.rejects(published(false), /unresolved export-from \.\/generated\/prisma\/client\.ts from src\/index\.ts \(MODULE_NOT_FOUND\): \/prisma\/schema\.prisma's generator client would write it, but generation is off: stasis\.config\.json's generatePrisma is false$/u)
   // Asked for where the config says not, or a generatePrisma that is no boolean: refused.
   await t.assert.rejects(published(false, { generate: ['prisma'] }), /^Error: buildVfsBundle: generate is given, and stasis\.config\.json's generatePrisma is false$/u)
   await t.assert.rejects(published('no'), /^TypeError: stasis\.config\.json: generatePrisma must be true or false, got "no"$/u)
@@ -468,8 +541,13 @@ for (const packageManager of ['pnpm', 'npm']) {
   })
 }
 
-test('a lazy tree fetches the prisma of a project with a schema alone', async (t) => {
+test('a lazy tree fetches the prisma of a project with a schema alone, and with generation off, none', async (t) => {
   const { 'prisma/schema.prisma': _, ...files } = { ...publishedFiles('pnpm'), 'src/index.ts': 'export {}\n' }
   for (const generate of [undefined, ['prisma']]) t.assert.deepStrictEqual((await buildPublished(files, { lazy: true, generate })).asked, [], `generate: ${JSON.stringify(generate)}`)
   t.assert.deepStrictEqual((await buildPublished({ ...files, 'prisma/schema.prisma': schema() }, { lazy: true })).asked, ['prisma@7.9.0'])
+  // Off, what the schema would write is read from the project alone.
+  const cache = registry()
+  const off = buildPublished({ ...files, 'prisma/schema.prisma': schema(), 'src/index.ts': "export const load = () => import('./generated/prisma/client.ts')\n" }, { lazy: true, generate: [], cache })
+  await t.assert.rejects(off, new RegExp(`\\(MODULE_NOT_FOUND\\): /prisma/schema\\.prisma's generator client would write it, but ${RegExp.escape(OFF)}$`, 'u'))
+  t.assert.deepStrictEqual(cache.asked, [])
 })
