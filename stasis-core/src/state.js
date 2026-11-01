@@ -60,6 +60,7 @@ const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts'
 // Maintained list: add only a confirmed upstream false positive, with its reason.
 const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
   'node_modules/@redis/client/dist/package.json', // stale build-time copy
+  'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
 ]
 const isInconsistentPackageJsonException = (file) =>
   INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
