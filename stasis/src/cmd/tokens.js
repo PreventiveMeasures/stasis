@@ -53,12 +53,12 @@ export function npmrcToken(home) {
 }
 
 // Run `fn`, with a token for the npm client where process.env gives it none (none of
-// NPM_TOKEN_VARS set and not empty), as a fallback: auditTokens(home)'s `npmToken` (`audit`, where
-// it is read already), else npmrcToken(home)'s, each file only read then. That token is
-// STASIS_NPM_TOKEN in process.env while `fn` runs, for the client to read, and process.env is as it
-// was after, unless something else set STASIS_NPM_TOKEN meanwhile. -> what `fn` gives
-export async function withNpmToken({ home, audit } = {}, fn) {
-  const token = NPM_TOKEN_VARS.some((name) => process.env[name]) ? undefined : ((audit ?? auditTokens(home)).npmToken ?? npmrcToken(home))
+// NPM_TOKEN_VARS set and not empty), as a fallback: auditTokens(home)'s `npmToken`, else
+// npmrcToken(home)'s, each file only read then. That token is STASIS_NPM_TOKEN in process.env while
+// `fn` runs, for the client to read, and process.env is as it was after, unless something else set
+// STASIS_NPM_TOKEN meanwhile. -> what `fn` gives
+export async function withNpmToken(home, fn) {
+  const token = NPM_TOKEN_VARS.some((name) => process.env[name]) ? undefined : (auditTokens(home).npmToken ?? npmrcToken(home))
   if (token === undefined) return fn()
   const before = process.env.STASIS_NPM_TOKEN
   process.env.STASIS_NPM_TOKEN = token

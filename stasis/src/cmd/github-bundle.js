@@ -35,7 +35,7 @@ export function githubBundleFile({ github, directory, commit }) {
 // GitHub is asked with githubToken's token, `env`'s GITHUB_TOKEN where it is set, nothing else of
 // `env` being read; npm, with withNpmToken's (tokens.js).
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, brotliQuality, client, ...options } = {}) {
-  const built = await withNpmToken({ home }, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
+  const built = await withNpmToken(home, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
   const { directory } = built
   const dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
   if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())

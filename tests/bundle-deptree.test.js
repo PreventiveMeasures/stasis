@@ -9,6 +9,7 @@ import { stripVTControlCharacters } from 'node:util'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { lockfile } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
+import { NOT_UTF8_NPMRC, NPM_TOKEN, npmTokenVars, tokenHome, withoutNpmTokenVars } from './tokens.helper.js'
 
 // `stasis bundle --deptree`: the dependencies laid out in memory from the lockfile, as
 // @exodus/stasis/vfs-bundle lays them out, the rest of the project read from disk through them.
@@ -137,53 +138,37 @@ describe('stasis bundle --deptree refusals, before anything is fetched', { concu
   }))
 })
 
+// How the npm token is chosen is withNpmToken's (tokens.test.js); here, that --deptree builds with it.
 test("stasis bundle --deptree gives npm, as a fallback where the environment gives none, ~/.audit/config.json's npmToken, else the token ~/.npmrc gives npm's registry", withTmp(async (t, tmp) => {
-  const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
-  const saved = NPM_TOKEN_VARS.map((name) => [name, process.env[name]])
-  for (const name of NPM_TOKEN_VARS) delete process.env[name]
-  t.after(() => {
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
-  })
+  withoutNpmTokenVars(t)
   t.mock.method(console, 'warn', () => {})
-  const token = `npm_${'a1B'.repeat(12)}`
   // A private package, which the npm client sends a token for (only a scoped one is private).
   const root = { name: 'p', version: '1.0.0', dependencies: { '@scope/q': '1.0.0' } }
   const q = { version: '1.0.0', resolved: 'https://registry.npmjs.org/@scope/q/-/q-1.0.0.tgz', integrity: `sha512-${'A'.repeat(86)}==` }
   const lock = { name: 'p', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': root, 'node_modules/@scope/q': q } }
-  const project = join(tmp, 'project')
-  writeTree(project, { 'package.json': `${JSON.stringify(root, null, 2)}\n`, 'package-lock.json': `${JSON.stringify(lock, null, 2)}\n`, 'index.js': "require('@scope/q')\n" })
-  const home = join(tmp, 'home')
-  writeTree(home, { '.npmrc': `//npm.pkg.github.com/:_authToken=npm_${'z9Y'.repeat(12)}\n//registry.npmjs.org/:_authToken=${token}\n` })
-  const empty = join(tmp, 'empty')
-  writeTree(empty, { '.npmrc': `//npm.pkg.github.com/:_authToken=${token}\n` })
-  const audited = join(tmp, 'audited')
-  writeTree(audited, { '.npmrc': `//registry.npmjs.org/:_authToken=${token}\n`, '.audit/config.json': JSON.stringify({ npmToken: 'npm-audit' }) })
-  const notUtf8 = join(tmp, 'not-utf8')
-  mkdirSync(notUtf8)
-  writeFileSync(join(notUtf8, '.npmrc'), Buffer.concat([Buffer.from([0xff]), Buffer.from(`\n//registry.npmjs.org/:_authToken=${token}\n`)]))
+  writeTree(tmp, { 'package.json': `${JSON.stringify(root, null, 2)}\n`, 'package-lock.json': `${JSON.stringify(lock, null, 2)}\n`, 'index.js': "require('@scope/q')\n" })
+  const npmrc = `//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n`
+  const [home, audited, notUtf8] = await Promise.all([{ npmrc }, { npmrc, audit: { npmToken: 'npm-audit' } }, { npmrc: NOT_UTF8_NPMRC }].map((files) => tokenHome(t, files)))
   const sent = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     sent.push(`${new URL(url).host} ${new Headers(init?.headers).get('authorization')}`)
     return new Response('Not Found', { status: 404 })
   })
-  // What the npm registry was sent for authorization, building with `home`'s ~/.npmrc.
+  const bundleIn = (at) => bundleCommand({ cwd: tmp, home: at, entries: ['index.js'], deptree: true, env: {}, output: 'out.br' })
+  // What the npm registry was sent for authorization, building with `at`'s home.
   const authorized = async (at) => {
     sent.length = 0
-    await t.assert.rejects(bundleCommand({ cwd: project, home: at, entries: ['index.js'], deptree: true, env: {}, output: 'out.br' }))
+    await t.assert.rejects(bundleIn(at))
     t.assert.ok(sent.length > 0)
     return [...new Set(sent)]
   }
-  t.assert.deepStrictEqual(await authorized(home), [`registry.npmjs.org Bearer ${token}`])
-  t.assert.deepStrictEqual(NPM_TOKEN_VARS.map((name) => process.env[name]), [undefined, undefined, undefined], 'process.env as it was after')
-  t.assert.deepStrictEqual(await authorized(empty), ['registry.npmjs.org null'], "none but npm's registry's")
+  t.assert.deepStrictEqual(await authorized(home), [`registry.npmjs.org Bearer ${NPM_TOKEN}`])
+  t.assert.deepStrictEqual(npmTokenVars(), [undefined, undefined, undefined], 'process.env as it was after')
   t.assert.deepStrictEqual(await authorized(audited), ['registry.npmjs.org Bearer npm-audit'], "~/.audit/config.json's first")
   sent.length = 0
-  await t.assert.rejects(bundleCommand({ cwd: project, home: notUtf8, entries: ['index.js'], deptree: true, env: {}, output: 'out.br' }), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
+  await t.assert.rejects(bundleIn(notUtf8), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
   t.assert.deepStrictEqual(sent, [], 'an ~/.npmrc that is not valid UTF-8 is refused before anything is fetched')
   process.env.NPM_TOKEN = 'npm-env'
-  t.assert.deepStrictEqual(await authorized(home), ['registry.npmjs.org Bearer npm-env'], "the environment's first")
-  t.assert.equal(existsSync(join(project, 'out.br')), false, 'nothing is written')
+  t.assert.deepStrictEqual(await authorized(audited), ['registry.npmjs.org Bearer npm-env'], "the environment's first")
+  t.assert.equal(existsSync(join(tmp, 'out.br')), false, 'nothing is written')
 }))

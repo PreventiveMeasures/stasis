@@ -14,9 +14,9 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { buildBundle } from '../stasis/src/cmd/bundle.js'
 import { githubBundleCommand, githubBundleFile } from '../stasis/src/cmd/github-bundle.js'
-import { auditTokens } from '../stasis/src/cmd/tokens.js'
 import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
 import { HEAD, HIDE_MINIMATCH, fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
+import { NOT_UTF8_NPMRC, NPM_TOKEN, npmTokenVars, tokenHome, withoutNpmTokenVars } from './tokens.helper.js'
 
 // @exodus/stasis/vfs-bundle's buildGitHubBundle over a fake @preventive/upstream/github.js client
 // serving a repo held in memory: nothing is fetched, and every lockfile here locks no registry package.
@@ -1291,45 +1291,8 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
   t.assert.deepStrictEqual(rootSlash, root, 'the root, with a / after it')
 })
 
-// A home whose ~/.audit/config.json is `config`, removed after the test.
-async function auditHome(t, config) {
-  const home = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-audit-'))
-  t.after(() => rm(home, { recursive: true, force: true }))
-  await mkdir(join(home, '.audit'))
-  await writeFile(join(home, '.audit', 'config.json'), json(config))
-  return home
-}
-
-test("auditTokens reads ~/.audit/config.json's token and npmToken, and nothing of a file it cannot", async (t) => {
-  const home = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-audit-'))
-  t.after(() => rm(home, { recursive: true, force: true }))
-  t.assert.deepStrictEqual(auditTokens(home), {}, 'no ~/.audit')
-  await mkdir(join(home, '.audit', 'config.json'), { recursive: true })
-  t.assert.deepStrictEqual(auditTokens(home), {}, 'a directory')
-  await rm(join(home, '.audit', 'config.json'), { recursive: true })
-  t.assert.deepStrictEqual(auditTokens(home), {}, 'no config.json')
-  const read = async (text) => {
-    await writeFile(join(home, '.audit', 'config.json'), text)
-    return auditTokens(home)
-  }
-  t.assert.deepStrictEqual(await read(json({ token: 'ghp_abc', npmToken: 'npm_def', other: 1 })), { token: 'ghp_abc', npmToken: 'npm_def' })
-  t.assert.deepStrictEqual(await read(json({ token: ' ghp_abc\n' })), { token: 'ghp_abc', npmToken: undefined })
-  // Not JSON, not an object, or no token where one is named: none, and nothing to say of it.
-  const unread = ['{', '', 'null', '"ghp_abc"', '[]', json({ token: 'two words', npmToken: 1 }), json({ token: '', npmToken: null })]
-  const found = await Promise.all(unread.map(async (text) => {
-    const at = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-audit-'))
-    t.after(() => rm(at, { recursive: true, force: true }))
-    await mkdir(join(at, '.audit'))
-    await writeFile(join(at, '.audit', 'config.json'), text)
-    return Object.values(auditTokens(at)).filter(Boolean)
-  }))
-  t.assert.deepStrictEqual(found, unread.map(() => []))
-})
-
 test("stasis github-bundle fetches with ~/.audit/config.json's token where GITHUB_TOKEN is not set", async (t) => {
-  const home = await auditHome(t, { token: 'from-audit' })
-  const empty = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-audit-'))
-  t.after(() => rm(empty, { recursive: true, force: true }))
+  const [home, empty] = await Promise.all([tokenHome(t, { audit: { token: 'from-audit' } }), tokenHome(t)])
   const sent = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     sent.push(`${new URL(url).host} ${new Headers(init?.headers).get('authorization')}`)
@@ -1346,84 +1309,31 @@ test("stasis github-bundle fetches with ~/.audit/config.json's token where GITHU
   t.assert.deepStrictEqual(await fetched({}, empty), ['api.github.com null'], 'anonymous without either')
 })
 
-test("stasis github-bundle gives npm ~/.audit/config.json's npmToken while it builds, where no npm token is set", async (t) => {
-  const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
-  const saved = NPM_TOKEN_VARS.map((name) => [name, process.env[name]])
-  const restore = () => {
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
-  }
-  for (const name of NPM_TOKEN_VARS) delete process.env[name]
-  t.after(restore)
+// How the npm token is chosen is withNpmToken's (tokens.test.js); here, that github-bundle builds with it.
+test("stasis github-bundle gives npm, as a fallback where the environment gives none, ~/.audit/config.json's npmToken, else the token ~/.npmrc gives npm's registry", async (t) => {
+  withoutNpmTokenVars(t)
   t.mock.method(console, 'warn', () => {})
-  const home = await auditHome(t, { npmToken: 'npm-audit' })
+  const npmrc = `//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n`
+  const [home, audited, notUtf8] = await Promise.all([{ npmrc }, { npmrc, audit: { npmToken: 'npm-audit' } }, { npmrc: NOT_UTF8_NPMRC }].map((files) => tokenHome(t, files)))
   const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '' }
-  // The npm token variables as the build sees them, and as they are after it.
-  const seen = async (options = {}) => {
+  const bundleIn = (at, client) => githubBundleCommand({ cwd: at, home: at, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' })
+  // The npm token variables as the build in `at` sees them, and as they are after it.
+  const seen = async (at) => {
     const client = fakeClient(files)
     const during = []
     const { getRepoTarball } = client
     client.getRepoTarball = async (...args) => {
-      during.push(NPM_TOKEN_VARS.map((name) => process.env[name]))
-      return options.fail ? Promise.reject(new Error('fails')) : getRepoTarball(...args)
-    }
-    const run = githubBundleCommand({ cwd: home, home, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' })
-    await (options.fail ? t.assert.rejects(run, /^Error: fails$/u) : run)
-    return { during, after: NPM_TOKEN_VARS.map((name) => process.env[name]) }
-  }
-  t.assert.deepStrictEqual(await seen(), { during: [[undefined, 'npm-audit', undefined]], after: [undefined, undefined, undefined] })
-  t.assert.deepStrictEqual(await seen({ fail: true }), { during: [[undefined, 'npm-audit', undefined]], after: [undefined, undefined, undefined] }, 'a build that fails')
-  process.env.STASIS_NPM_TOKEN = ''
-  t.assert.deepStrictEqual(await seen(), { during: [[undefined, 'npm-audit', undefined]], after: [undefined, '', undefined] }, 'set but empty')
-  process.env.NPM_TOKEN = 'npm-env'
-  t.assert.deepStrictEqual(await seen(), { during: [[undefined, '', 'npm-env']], after: [undefined, '', 'npm-env'] }, "the environment's first")
-})
-
-test("stasis github-bundle gives npm, as a fallback where the environment gives none, ~/.audit/config.json's npmToken, else the token ~/.npmrc gives npm's registry, as bundle --deptree does", async (t) => {
-  const NPM_TOKEN_VARS = ['PREVENTIVE_MEASURES_NPM_TOKEN', 'STASIS_NPM_TOKEN', 'NPM_TOKEN']
-  const saved = NPM_TOKEN_VARS.map((name) => [name, process.env[name]])
-  for (const name of NPM_TOKEN_VARS) delete process.env[name]
-  t.after(() => {
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
-  })
-  t.mock.method(console, 'warn', () => {})
-  const token = `npm_${'a1B'.repeat(12)}`
-  const npmrc = `registry=https://registry.npmjs.org/\n//npm.pkg.github.com/:_authToken=npm_${'z9Y'.repeat(12)}\n//registry.npmjs.org/:_authToken=${token}\n`
-  const files = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': '' }
-  // The npm token variables as the build sees them in `home`, and as they are after it.
-  const seen = async (home) => {
-    const client = fakeClient(files)
-    const during = []
-    const { getRepoTarball } = client
-    client.getRepoTarball = async (...args) => {
-      during.push(NPM_TOKEN_VARS.map((name) => process.env[name]))
+      during.push(npmTokenVars())
       return getRepoTarball(...args)
     }
-    await githubBundleCommand({ cwd: home, home, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' })
-    return { during, after: NPM_TOKEN_VARS.map((name) => process.env[name]) }
+    await bundleIn(at, client)
+    return { during, after: npmTokenVars() }
   }
-  const home = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
-  t.after(() => rm(home, { recursive: true, force: true }))
-  await writeFile(join(home, '.npmrc'), npmrc)
-  t.assert.deepStrictEqual(await seen(home), { during: [[undefined, token, undefined]], after: [undefined, undefined, undefined] })
-  const audited = await auditHome(t, { npmToken: 'npm-audit' })
-  await writeFile(join(audited, '.npmrc'), npmrc)
+  t.assert.deepStrictEqual(await seen(home), { during: [[undefined, NPM_TOKEN, undefined]], after: [undefined, undefined, undefined] })
   t.assert.deepStrictEqual(await seen(audited), { during: [[undefined, 'npm-audit', undefined]], after: [undefined, undefined, undefined] }, "~/.audit/config.json's first")
-  const other = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
-  t.after(() => rm(other, { recursive: true, force: true }))
-  await writeFile(join(other, '.npmrc'), `//npm.pkg.github.com/:_authToken=${token}\n//registry.npmjs.org/:_authToken=\${NPM_TOKEN}\n`)
-  t.assert.deepStrictEqual(await seen(other), { during: [[undefined, undefined, undefined]], after: [undefined, undefined, undefined] }, "none but npm's registry's, as a token")
-  const notUtf8 = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-npmrc-'))
-  t.after(() => rm(notUtf8, { recursive: true, force: true }))
-  await writeFile(join(notUtf8, '.npmrc'), Buffer.concat([Buffer.from([0xff]), Buffer.from(`\n//registry.npmjs.org/:_authToken=${token}\n`)]))
   const client = fakeClient(files)
-  await t.assert.rejects(githubBundleCommand({ cwd: notUtf8, home: notUtf8, env: {}, github: GITHUB, sha: SHA, packageManager: 'pnpm', client, entries: ['src/a.js'], output: 'out.br' }), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
+  await t.assert.rejects(bundleIn(notUtf8, client), { message: `${join(notUtf8, '.npmrc')} is not valid UTF-8` })
   t.assert.deepStrictEqual(client.calls, [], 'an ~/.npmrc that is not valid UTF-8 is refused before anything is fetched')
   process.env.NPM_TOKEN = 'npm-env'
-  t.assert.deepStrictEqual(await seen(home), { during: [[undefined, undefined, 'npm-env']], after: [undefined, undefined, 'npm-env'] }, "the environment's first")
+  t.assert.deepStrictEqual(await seen(audited), { during: [[undefined, undefined, 'npm-env']], after: [undefined, undefined, 'npm-env'] }, "the environment's first")
 })
