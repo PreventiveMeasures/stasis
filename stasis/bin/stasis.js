@@ -317,10 +317,11 @@ if (command === '-v' || command === '--version') {
   const values = parseLeadingOptions(argv, options, { valueFlags: valueFlagsOf(options), onError: fail })
   if (argv.length === 0) fail('Nothing to audit: no path to file given')
   const repoAdvisories = Boolean(values['repo-advisories'])
-  if (repoAdvisories && !process.env.GITHUB_TOKEN) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
+  const token = (await import('../src/cmd/tokens.js')).githubToken()
+  if (repoAdvisories && !token) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
   // A Soldeer package's and a GitHub repo's advisories are their repository's, asked of GitHub with
-  // GITHUB_TOKEN where it is set; the client asks nothing for any other package by itself.
-  const github = (await import('@preventive/upstream/github.js')).createClient({ token: process.env.GITHUB_TOKEN || null })
+  // githubToken's token where there is one; the client asks nothing for any other package by itself.
+  const github = (await import('@preventive/upstream/github.js')).createClient({ token })
   // Upstream caches what it looks up (a package's GitHub repo, a month each) only where told to, and
   // answers from it without asking: a per-user directory, never one shared with less trusted jobs.
   const { setCacheDir } = await import('@preventive/upstream/npm.js')

@@ -24,6 +24,12 @@ export function auditTokens(home) {
   return config === null ? {} : { token: asToken(config.token), npmToken: asToken(config.npmToken) }
 }
 
+// The GitHub token: `env`'s GITHUB_TOKEN where it is set, else, as a fallback, auditTokens(home)'s,
+// only read then. -> it, or null where there is none
+export function githubToken({ env = process.env, home } = {}) {
+  return env.GITHUB_TOKEN || auditTokens(home).token || null
+}
+
 // A line of an .npmrc giving npm's own registry an npm token, exactly as npm writes it: no other
 // registry's, no variable for npm to expand, and nothing else on the line.
 const NPMRC_LINE = /^\/\/registry\.npmjs\.org\/:_authToken=(npm_[\dA-Za-z]+)\r?$/u
