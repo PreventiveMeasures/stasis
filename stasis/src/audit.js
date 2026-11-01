@@ -196,7 +196,15 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
-const SEVERITY_ORDER = { critical: 0, high: 1, moderate: 2, low: 3, info: 4, none: 5 }
+// `malware` first: a package that is malware is worse than any vulnerability in one.
+const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
+
+// Whether an advisory is of malware, not a vulnerability: one of OSV's malicious packages' records
+// (`MAL-...`, its id or among its aliases, as advisories() gives a registry row the ids of OSV's records
+// of it), or one filed under CWE-506, Embedded Malicious Code, as GitHub files its malware advisories
+// (flatmap-stream's "Malicious Package", ua-parser-js's "Embedded malware", which it rates high). Its row's
+// severity is `malware`, whatever its source rates it, or doesn't (OSV's MAL- records have none).
+const isMalware = ({ id, aliases = [], cwe = [] }) => [id, ...aliases].some((each) => each.startsWith('MAL-')) || cwe.includes('CWE-506')
 
 // Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
 // then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
@@ -257,7 +265,7 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
       package: adv.name,
       installed: adv.versions.map((v) => installedCell(adv, v, vendoredByKey)).join(', '),
       vulnerable: adv.range ?? '',
-      severity: adv.severity ?? '',
+      severity: isMalware(adv) ? 'malware' : adv.severity ?? '',
       title: adv.title ?? '',
       id: adv.id,
       reason,
@@ -335,8 +343,9 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   return { packages, skipped, advisories: result, rows, why, whyDeep, whyFull, reason }
 }
 
-// Each severity's colour, the worst the loudest; an advisory without one (RustSec's) `unrated`, dimmed.
-const SEVERITY_TONES = { critical: ['bold', 'magenta'], high: ['bold', 'red'], moderate: 'yellow', low: 'cyan', info: DIM, none: DIM, unrated: DIM }
+// Each severity's colour, the worst the loudest (malware white on red); an advisory without one (RustSec's)
+// `unrated`, dimmed.
+const SEVERITY_TONES = { malware: ['bold', 'white', 'bgRed'], critical: ['bold', 'magenta'], high: ['bold', 'red'], moderate: 'yellow', low: 'cyan', info: DIM, none: DIM, unrated: DIM }
 const severityOf = (row) => row.severity || 'unrated'
 
 // The columns whose text wraps where the table is wider than the terminal: the long ones, free text first.

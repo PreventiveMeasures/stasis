@@ -435,6 +435,21 @@ test('flattenAdvisories sorts by severity then package', (t) => {
   ])
 })
 
+test('flattenAdvisories rates malware `malware`, above critical: OSV\'s MAL- records, by id or alias, and advisories filed under CWE-506', (t) => {
+  const rows = flattenAdvisories([
+    found('bad', ['1.0.0'], { severity: 'critical', title: 'a vulnerability' }),
+    // OSV's record of a malicious package, which rates none.
+    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined }),
+    // GitHub's malware advisory, rated high, as npm's registry has ua-parser-js's.
+    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'] }),
+    // A registry row OSV's MAL- record is of, its id among the row's aliases.
+    found('typo', ['2.0.0'], { id: 'GHSA-1111-2222-3333', title: 'Malicious Package in typo', severity: 'critical', aliases: ['MAL-2022-1234'] }),
+    // Hidden functionality alone is no malware.
+    found('backdoor', ['1.0.0'], { severity: 'moderate', title: 'a debug endpoint', cwe: ['CWE-912'] }),
+  ])
+  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['malware', 'typo'], ['critical', 'bad'], ['moderate', 'backdoor']])
+})
+
 test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
   t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
@@ -703,6 +718,10 @@ test('printAuditReport: severities in colour, the header bold and the box dimmed
   t.assert.ok(painted.out.includes(`${bar} ${styled('bold', 'severity')} ${bar}`), 'the header bold')
   t.assert.equal(stripVTControlCharacters(painted.out), plain.out, 'its widths those of its text unstyled')
   t.assert.equal(painted.err, `\nScanned 5 packages: ${styled('bold', '5 alerts')} (${styled(['bold', 'magenta'], '1 critical')}, ${styled(['bold', 'red'], '1 high')}, ${styled('yellow', '1 moderate')}, ${styled('cyan', '1 low')}, ${styled(DIM, '1 unrated')})\n`)
+  const malware = { out: '', err: '' }
+  printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { malware.out += s } }, err: { write: (s) => { malware.err += s } }, colors: true })
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], 'malware')}  ${bar} ${styled('bold', 'evil')} `), malware.out)
+  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], '1 malware')}, ${styled(['bold', 'red'], '1 high')})\n`)
   const none = { err: '' }
   printAuditReport({ packages: [{}], rows: [] }, { out: { write() {} }, err: { write: (s) => { none.err += s } }, colors: true })
   t.assert.equal(none.err, `Scanned 1 package: ${styled(['bold', 'green'], '0 alerts')}\n`)
