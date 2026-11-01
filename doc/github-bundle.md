@@ -6,6 +6,11 @@ the repository's tree is fetched at a commit, and its dependencies are laid out
 in memory from its lockfile alone. No package script runs, and nothing of the
 repository executes.
 
+So nothing is built: a workspace package's `tsc` outputs (`dist/`) are missing,
+as in a fresh checkout. With `--typescript`, an import of one resolves to the
+source it is built from, by the package's `tsconfig.json` `outDir` and
+`rootDir`, as [`stasis bundle`](bundle.md#typescript---typescript) resolves it.
+
 ```sh
 stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma] [--lockfile=path/to/stasis.lock.json] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
