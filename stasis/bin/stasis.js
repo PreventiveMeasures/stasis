@@ -51,6 +51,23 @@ function fail(message) {
   process.exit(1)
 }
 
+// `build()`'s result, what it warns (console.warn's) held meanwhile: dropped where it succeeds, said
+// where it fails, before its error is.
+async function warningsOnFailure(build) {
+  const warn = console.warn
+  const held = []
+  console.warn = (...args) => held.push(args)
+  try {
+    return await build()
+  } catch (error) {
+    console.warn = warn
+    for (const args of held) console.warn(...args)
+    throw error
+  } finally {
+    console.warn = warn
+  }
+}
+
 // The per-user cache directory, as each platform names it (XDG ignores a relative path).
 function userCacheDir() {
   if (isAbsolute(process.env.XDG_CACHE_HOME ?? '')) return join(process.env.XDG_CACHE_HOME, 'stasis')
@@ -334,8 +351,13 @@ if (command === '-v' || command === '--version') {
   const repoAdvisories = Boolean(values['repo-advisories'])
   const token = (await import('../src/cmd/tokens.js')).githubToken()
   if (repoAdvisories && !token) fail('Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN')
-  // Built as `stasis bundle` builds it, warnings and all, but neither written nor compressed.
-  const files = plan === undefined ? argv.map((f) => resolve(f)) : [await (await import('../src/cmd/bundle.js')).buildCommandBundle(plan)]
+  // Built as `stasis bundle` builds it, but neither written nor compressed, nor its warnings said
+  // unless it fails (its error is, as ever).
+  let files = argv.map((f) => resolve(f))
+  if (plan !== undefined) {
+    const { buildCommandBundle } = await import('../src/cmd/bundle.js')
+    files = [await warningsOnFailure(() => buildCommandBundle(plan))]
+  }
   // A Soldeer package's and a GitHub repo's advisories are their repository's, asked of GitHub with
   // githubToken's token where there is one; the client asks nothing for any other package by itself.
   const github = (await import('@preventive/upstream/github.js')).createClient({ token })
