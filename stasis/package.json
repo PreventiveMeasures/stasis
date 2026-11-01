@@ -73,6 +73,7 @@
     "src/metro-transformer.js",
     "src/mock.js",
     "src/parse.js",
+    "src/po.js",
     "src/prune.js",
     "src/resolve-fields.js",
     "src/resolve-node.js",

@@ -14,6 +14,7 @@ import { bundleFromLockfile } from '../bundle-from-lockfile.js'
 import { FLOW_EXTS, stripFlowTypes } from '../flow.js'
 import { ASSET_REGISTRY, assetRegistryResolver, metroAssetCopies, metroAssetDescriptor, metroAssetModule } from '../metro-assets.js'
 import { parseFileWithKind } from '../parse.js'
+import { PO_EXT, createPoModule, isRelativePo, loadPoTransform } from '../po.js'
 import { writeFile } from './output.js'
 
 export { bundleFromLockfile }
@@ -230,6 +231,29 @@ function createFlowTransform(esbuild) {
   }
 }
 
+// StasisEsbuild's `consumed` hook for a `.po` the artifact records no import of. A --metro bundle records
+// none, because @exodus/i18n's plugin-inline-po inlines the file into the one requiring it, reading it by
+// its path from that file's directory, so Metro never sees the import (po.js). The webpack plugin records
+// no edge to any resource either. Under --po, the hook serves the file the artifact carries at that path,
+// built as `.po` files are. Without --po, or where the artifact carries none there, the build fails,
+// saying so. Any other import the artifact records no edge for stays esbuild's, as before.
+function consumedPo(state, po) {
+  const relativeOf = (path) => toPosix(relative(state.root, path))
+  return (specifier, { importer }) => {
+    if (!isRelativePo(specifier)) return undefined
+    const from = relativeOf(importer)
+    if (!po) {
+      throw new Error(`'${specifier}' in ${from} is a .po file the artifact records no import of; build it with --po, which reads it by that path, as @exodus/i18n's plugin-inline-po does`)
+    }
+    const path = join(dirname(importer), specifier)
+    const file = relativeOf(path)
+    if (!state.resources.has(file)) {
+      throw new Error(`--po: '${specifier}' in ${from} names ${file}, which the artifact doesn't carry (bundle with --resources=po)`)
+    }
+    return path
+  }
+}
+
 // Two transform hooks over a file in turn, the second over what the first made of it.
 const chainTransforms = (first, second) => async (source, file) => {
   const firstMade = await first(source, file)
@@ -301,6 +325,7 @@ export async function buildCommand({
   platform = 'node',
   babel = false,
   flow = false,
+  po = false,
   minify = false,
   sourcemap = false,
   define = {},
@@ -314,6 +339,9 @@ export async function buildCommand({
   if (!Array.isArray(external)) throw new Error('stasis build: external must be an array of esbuild patterns')
   if (metro !== undefined && (typeof metro !== 'string' || !/^[^/,]+$/u.test(metro))) {
     throw new Error(`stasis build: --metro takes the platform to build for, e.g. --metro=ios (got '${metro}')`)
+  }
+  if (po && loader[PO_EXT] !== undefined) {
+    throw new Error(`stasis build: --po builds each .po as @exodus/i18n does; --loader=${PO_EXT}:${loader[PO_EXT]} would load it as esbuild's loader does -- pass one`)
   }
   if (flow && babel) {
     throw new Error('stasis build: --babel hands the project\'s Babel config each file as it is, Flow included, for it to compile; --flow strips Flow before esbuild without it -- pass one')
@@ -390,7 +418,20 @@ export async function buildCommand({
   if (flow) transform = transform === undefined ? createFlowTransform(esbuild) : chainTransforms(createFlowTransform(esbuild), transform)
   // --metro=PLATFORM: PLATFORM's target of each per-platform edge, and each asset as Metro builds it.
   const builtAssets = new Map()
-  const resource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
+  const assetResource = metro === undefined ? undefined : metroAssetResource(state, metro, builtAssets)
+  // --po: each .po as the project's own @exodus/i18n transform builds it (po.js), ahead of --metro's asset
+  // module, which a .po isn't. Loaded (from the project, cwd) before esbuild runs, so a missing install
+  // fails first.
+  const poTransform = po ? await loadPoTransform(cwd) : undefined
+  const builtPo = new Set()
+  const poModule = poTransform === undefined ? undefined : createPoModule(poTransform, (path) => toPosix(relative(state.root, path)))
+  const resource = poModule === undefined
+    ? assetResource
+    : (source, file) => {
+        if (extname(file.path) !== PO_EXT) return assetResource?.(source, file)
+        builtPo.add(file.path)
+        return poModule(source, file)
+      }
 
   const outAbs = resolve(cwd, output)
   const asFile = /\.[cm]?js$/u.test(output)
@@ -417,7 +458,7 @@ export async function buildCommand({
       ...(asFile ? { outfile: outAbs } : { outdir: outAbs }),
       // Loader overrides go through the plugin: it serves every in-bundle file, so esbuild's
       // own `loader` option never sees them. e.g. { '.js': 'jsx' } to parse JSX in .js files.
-      plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, platform: metro })],
+      plugins: [new StasisEsbuild(state, { loaders: new Map(Object.entries(loader)), transform, resource, consumed: consumedPo(state, po), platform: metro })],
     })
   } catch (err) {
     // Under logLevel:'silent' esbuild puts the real errors on err.errors; surface them, then fail.
@@ -426,7 +467,9 @@ export async function buildCommand({
       for (const line of formatted) process.stderr.write(line)
       // A resource the build reaches with no loader for its extension: what builds one.
       const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
-      if (unloaded !== undefined) {
+      if (unloaded === PO_EXT) {
+        process.stderr.write(`[stasis] Build a "${PO_EXT}" file with --po, as @exodus/i18n builds it, with the project's @exodus/i18n-babel-webpack\n`)
+      } else if (unloaded !== undefined) {
         process.stderr.write(
           `[stasis] Build a "${unloaded}" resource with --loader=${unloaded}:NAME (an esbuild loader: dataurl, file, text, ...), ` +
           `or with --metro=PLATFORM as the asset module Metro builds of it\n`
@@ -466,6 +509,9 @@ export async function buildCommand({
   for (const { path, contents } of writes) writeFile(path, contents)
 
   console.warn(`[stasis] Built ${selectedEntry} from ${kind} ${artifact} to ${output}`)
+  if (builtPo.size > 0) {
+    console.warn(`[stasis] Built ${builtPo.size} .po file${builtPo.size === 1 ? '' : 's'} with ${poTransform.name}`)
+  }
   if (assetsDest !== undefined) {
     console.warn(`[stasis] Copied ${builtAssets.size} asset${builtAssets.size === 1 ? '' : 's'} (${assetFiles.length} file${assetFiles.length === 1 ? '' : 's'}) for ${metro} to ${assetsDest}`)
   } else if (builtAssets.size > 0) {

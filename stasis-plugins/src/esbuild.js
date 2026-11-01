@@ -72,6 +72,7 @@ export class StasisEsbuild {
   #loaders
   #transform
   #resource
+  #consumed
   #platform
   #emptyModule  // URL of the empty module disabled imports point at, once capture recorded it
   #browserScopes = new Map()  // dir -> Promise<[{ dir, keys }]>: `false` keys of it and its ancestors
@@ -81,7 +82,7 @@ export class StasisEsbuild {
   // the second is refused in onStart.
   #captureBuildCount = 0
 
-  constructor(options = {}, { loaders, transform, resource, platform } = {}) {
+  constructor(options = {}, { loaders, transform, resource, consumed, platform } = {}) {
     // A caller that owns a State (e.g. `stasis build`) can pass it directly; a foreign-copy State
     // fails closed via the instanceof miss.
     const state = options instanceof State
@@ -100,6 +101,11 @@ export class StasisEsbuild {
     // Load-mode-only module builder for a resource no loader override names (e.g. `stasis build
     // --metro`'s asset module): (source, { path }) => { contents, loader } | undefined, may be async.
     this.#resource = resource
+    // Load-mode-only resolution of an import the artifact records no edge for, because a Babel plugin
+    // consumed it (e.g. `stasis build --po`'s `.po` in a --metro bundle):
+    // (specifier, { importer, kind }) => the absolute path of the file the artifact carries for it, or
+    // undefined to leave it to esbuild. It may throw to fail the import, an error esbuild reports there.
+    this.#consumed = consumed
     // Load mode: the platform whose target a --metro per-platform edge resolves to (none fails
     // closed on one, as plain bundle=load does).
     this.#platform = platform
@@ -234,8 +240,20 @@ export class StasisEsbuild {
         // No attested edge (a built-in, or another external): esbuild's, which externalizes it as
         // without us (built-ins under platform:'node'). File BYTES still fail closed at onLoad.
         const attested = attestedImport(this.#state, parentURL, specifier, { importAttributes: attrs, platform: this.#platform })
-        if (attested === undefined) return undefined
-        ;({ url } = attested)
+        if (attested === undefined) {
+          // Unless it's one a Babel plugin consumed, served from the file the artifact carries for it. The
+          // hook's failure is the import's, reported where it's written.
+          let consumed
+          try {
+            consumed = this.#consumed?.(specifier, { importer, kind: resolveKind })
+          } catch (err) {
+            return { errors: [{ text: err?.message ?? String(err) }] }
+          }
+          if (consumed === undefined) return undefined
+          url = pathToFileURL(consumed).toString()
+        } else {
+          ;({ url } = attested)
+        }
       }
       const format = this.#state.getFormat(url)
       const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
