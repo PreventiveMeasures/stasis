@@ -34,6 +34,27 @@ export const OSV = '\x1bP9;1q"1;1;16;16#1;2;55;58;62#2;2;88;13;16#3;2;98;86;86#4
 // pixel covered for a pixel to be drawn, in 8 colours at most): 16 pixels for the cells most terminals
 // draw sixel images over, more for larger ones, as a Retina screen's are in iTerm2, two pixels a point.
 const LOGOS = {
+  12: {
+    npm: '\x1bP9;1q"1;1;12;12#1;2;80;22;22#2;2;100;100;100#3;2;84;40;40#4;2;93;71;71#5;2;90;61;61#6;2;89;56;56#7;' +
+    '2;89;57;57#8;2;89;59;59#1~~F!3BbBBF~~$#2!3?!3wGGw$#3!3?!4CcC$#4!7?O$#5!6?O$#6??w$#8!9?w-#1~~!4o~!3o~' +
+    '~$#2!3?!3F??F$#3??G!4?N?G$#5!3?!3G??G$#7??F$#8!9?F\x1b\\',
+    github: '\x1bP9;1q"1;1;12;12#1;2;99;99;99#2;2;9;9;9#3;2;14;13;13#4;2;42;42;42#5;2;11;10;10#6;2;73;73;73#1!3?!6w$' +
+    '#2owAABEEBAAwO$#3?CC??@@??CC$#4??WC!4?CW$#5!4?C??C!3?_$#6??_!6?_-#1!3?BB^^BB$#2CB!6?WKFE$#3?CO_$#4??' +
+    'E[_??wCA$#5BG!7?OG@$#6??H?[??C?@\x1b\\',
+    osv: '\x1bP9;1q"1;1;12;12#1;2;99;89;89#2;2;55;58;62#3;2;54;58;62#4;2;94;54;55#5;2;88;18;20#2??G?@?@??O$#3o{EE' +
+    'ABABEM{o$#4!5?__$#5!3?_oWWo_-#1!5?@@$#2!4?_??_?A?@$#3BFEOOooWW[NA$#4!6?A$#5!3?@BECB@\x1b\\',
+  },
+  14: {
+    npm: '\x1bP9;1q"1;1;14;14#1;2;80;22;22#2;2;100;100;100#3;2;84;38;37#4;2;80;25;24#5;2;80;23;23#6;2;79;22;21#1}' +
+    '~~!9F~}$#2!3?!4wWWww$#3!7?__$#4!11?w$#6@!12?@-#1~~@!4?_~??_~~$#2!3?!4^??^^$#3!3?!4_??__$#4!11?^$#5??' +
+    ']!4?^$#6??_-#1!13B@$#6!13?A\x1b\\',
+    github: '\x1bP9;1q"1;1;14;14#1;2;10;9;9#2;2;99;99;99#3;2;9;9;9#4;2;20;20;20#5;2;45;45;45#6;2;77;77;77#1_w[C!6EC[' +
+    'w$#2!3?_!6o_$#3!3?A??@@??A??_$#4??_!8?_$#5!5?!4G$#6!3?WG!4?GW-#1B^g?O!4?oowNB$#2!3?FNn~~NNF$#3K_!10?' +
+    'oK$#4??C!8?C$#5??RW!4?O?GB$#6!3?__O??_-#1!9?@@$#2!6?@@$#3??@@A!4?A?@$#4!4?@$#6!5?@??@\x1b\\',
+    osv: '\x1bP9;1q"1;1;14;14#1;2;99;91;91#2;2;54;58;62#3;2;88;12;16#4;2;95;62;63#5;2;55;58;62#6;2;90;31;34#2?GcG' +
+    'D@@?@?A_G_$#3!4?_oOOo_$#4!6?__$#5_oWE!3ABEEK[o-#1!6?AA$#2@?A?!4_!3?DOE$#3!4?F!4GF$#4!6?DD$#5E^L!5?__' +
+    'oyN@$#6!5?F??F-#2!5?!4A?@$#5!3?!7@\x1b\\',
+  },
   16: { npm: NPM, github: GITHUB, osv: OSV },
   20: {
     npm: '\x1bP9;1q"1;1;20;20#1;2;80;22;22#2;2;100;100;100#3;2;89;58;58#4;2;80;22;21#5;2;95;79;79#6;2;80;24;24#7;' +
@@ -145,12 +166,89 @@ const LOGOS = {
   },
 }
 
-// The largest of the logos that fits two of the terminal's cells, `cell` (its `width` and `height` in the
-// pixels it draws sixel images in, as capabilities() tells them), and no taller than one; those 16 pixels
-// square where none does, or `cell` isn't known.
-export function logos(cell) {
-  const fits = (size) => cell && size <= cell.height && size <= 2 * cell.width
-  return LOGOS[Object.keys(LOGOS).map(Number).findLast(fits) ?? 16]
+const SIZES = Object.keys(LOGOS).map(Number)
+
+// An image's size, its colours by register, and each pixel's register (0 for none), as sixel data draws
+// them: in bands of six rows, a character's bits a band's column, top first.
+function decode(image) {
+  const header = image.slice(0, image.indexOf('#'))
+  const [width, height] = header.split(';').slice(-2).map(Number)
+  const colours = new Map()
+  const pixels = new Uint8Array(width * height)
+  let register = 0
+  let x = 0
+  let y = 0
+  for (const [, at, rgb, count = '1', sixel, control] of image.slice(header.length, -2).matchAll(/#(\d+)(?:;2;([\d;]+))?|(?:!(\d+))?([?-~])|([$-])/gu)) {
+    if (at !== undefined) {
+      register = Number(at)
+      if (rgb !== undefined) colours.set(register, rgb)
+    } else if (control !== undefined) {
+      x = 0
+      if (control === '-') y += 6
+    } else {
+      const bits = sixel.charCodeAt(0) - 0x3f
+      for (let n = 0; n < Number(count); n++, x++) {
+        for (let bit = 0; bit < 6; bit++) if (bits & (1 << bit)) pixels[(y + bit) * width + x] = register
+      }
+    }
+  }
+  return { width, height, colours, pixels }
+}
+
+// decode()'s image as sixel data, as the logos above are written: square pixels, the background left as
+// it is, a band's registers each a line, runs of three or more counted.
+function encode({ width, height, colours, pixels }) {
+  const bands = []
+  for (let y = 0; y < height; y += 6) {
+    const lines = []
+    for (const register of colours.keys()) {
+      let line = ''
+      for (let x = 0; x < width; x++) {
+        let bits = 0
+        for (let bit = 0; bit < 6 && y + bit < height; bit++) if (pixels[(y + bit) * width + x] === register) bits |= 1 << bit
+        line += String.fromCharCode(0x3f + bits)
+      }
+      line = line.replace(/\?+$/u, '')
+      if (line !== '') lines.push(`#${register}${line.replaceAll(/(.)\1{2,}/gu, (run, sixel) => `!${run.length}${sixel}`)}`)
+    }
+    bands.push(lines.join('$'))
+  }
+  const defined = [...colours].map(([register, rgb]) => `#${register};2;${rgb}`).join('')
+  return `\x1bP9;1q"1;1;${width};${height}${defined}${bands.join('-')}\x1b\\`
+}
+
+// `image` lowered by `top` pixels, the rows above it left as the terminal has them.
+function lowered(image, top) {
+  const { width, height, colours, pixels } = decode(image)
+  const below = new Uint8Array(width * (height + top))
+  below.set(pixels, width * top)
+  return encode({ width, height: height + top, colours, pixels: below })
+}
+
+// A register above the logos' own (8 at most), for the terminal's background: iTerm2 draws what a sixel image
+// leaves undrawn in the highest register drawn with (libsixel's index for none, 255, cut to the highest),
+// where other terminals leave it as it is; so it is drawn with, a blank character, which draws nothing.
+const BACKGROUND = 9
+
+// The logos to draw over two of the terminal's cells, `cell` (its `width` and `height` in the pixels it
+// draws sixel images in, as capabilities() tells them): the largest that fits two cells, a gap of an eighth
+// of a row (two pixels at least) left over, lowered by half of it, so that it sits in the middle of its row,
+// apart from those on the lines above and below; the smallest where none fits. With `background` (`r;g;b`
+// in percent, as capabilities() tells it), what a logo leaves undrawn is that, for iTerm2. Those 16 pixels
+// square, as they are, where `cell` isn't known.
+export function logos(cell, background) {
+  let size = 16
+  let top = 0
+  if (cell) {
+    const room = cell.height - Math.max(2, Math.ceil(cell.height / 8))
+    size = SIZES.findLast((each) => each <= room && each <= 2 * cell.width) ?? SIZES[0]
+    top = Math.floor((cell.height - size) / 2)
+  }
+  const fitted = (image) => {
+    const placed = top > 0 ? lowered(image, top) : image
+    return background ? `${placed.slice(0, -2)}$#${BACKGROUND};2;${background}?\x1b\\` : placed
+  }
+  return Object.fromEntries(Object.entries(LOGOS[size]).map(([name, image]) => [name, fitted(image)]))
 }
 
 // Primary Device Attributes (DA1), which a terminal answers `CSI ? 62 ; 4 ; 22 c`, say: its class, then
@@ -165,6 +263,9 @@ const REPORT_CELL_SIZE = '\x1b]1337;ReportCellSize\x1b\\'
 // A cell's size in pixels (XTWINOPS 16), answered `CSI 6 ; height ; width t`: as xterm.js draws sixel images,
 // in CSS pixels; but iTerm2's in points, which it doesn't draw them in.
 const CELL_SIZE = '\x1b[16t'
+// The terminal's background colour (OSC 11), answered `OSC 11 ; rgb:RRRR/GGGG/BBBB ST`, each of 1 to 4 hex
+// digits.
+const BACKGROUND_COLOUR = '\x1b]11;?\x1b\\'
 
 // The first reply in `read` that `pattern` matches after an ESC, its parameters; text like a reply,
 // without its ESC, is not one.
@@ -216,10 +317,17 @@ function ask(question, { input = process.stdin, output = process.stdout, env = p
 // among what it has (see ask(), for `options`).
 export const supported = async (options) => sixelIn((await ask(DA1, options)) ?? '')
 
+// The background colour in `read`, `r;g;b` in percent, as a sixel image's colours are; null where it isn't
+// answered.
+function backgroundIn(read) {
+  const colour = reply(read, /\]11;rgb:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})/giu)
+  return colour ? colour.slice(1).map((hex) => Math.round((Number.parseInt(hex, 16) / (16 ** hex.length - 1)) * 100)).join(';') : null
+}
+
 // What the terminal `output` writes to tells of its images, in one round trip: whether it draws sixel images
-// (`sixel`, as supported()), and its cells' size in the pixels it draws them in (`cell`, `{ width, height }`,
-// see cellIn), null where it doesn't tell.
+// (`sixel`, as supported()), its cells' size in the pixels it draws them in (`cell`, `{ width, height }`, see
+// cellIn), and its background colour (`background`, see backgroundIn), each null where it doesn't tell.
 export async function capabilities(options) {
-  const read = (await ask(REPORT_CELL_SIZE + CELL_SIZE + DA1, options)) ?? ''
-  return { sixel: sixelIn(read), cell: cellIn(read) }
+  const read = (await ask(REPORT_CELL_SIZE + CELL_SIZE + BACKGROUND_COLOUR + DA1, options)) ?? ''
+  return { sixel: sixelIn(read), cell: cellIn(read), background: backgroundIn(read) }
 }
