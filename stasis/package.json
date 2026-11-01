@@ -79,6 +79,7 @@
     "src/resolve-typescript.js",
     "src/rollup.js",
     "src/sbom.js",
+    "src/sixel.js",
     "src/table.js",
     "src/validate.d.ts",
     "src/validate.js",
