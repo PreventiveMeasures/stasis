@@ -203,6 +203,14 @@ test('given no generate, the projects reached are the entries\', not those of th
   await t.assert.rejects(build(project(rooted), { ...fromRoot, generate: ['prisma'] }), /^Error: prisma: \/packages\/b\/src\/generated\/prisma is the output of more than one generator$/u)
 })
 
+test('given no generate, an entry reached through a link is the project of the file it links to', async (t) => {
+  // /app links to packages/a, whose dependency b has the schema. Built with --mainFields: a build through a State
+  // refuses an entry reached through a link from above it, Prisma or not.
+  const vfs = project(workspace())
+  vfs.symlink('packages/a', '/app')
+  t.assert.ok((await build(vfs, { cwd: '/', entries: ['app/index.ts'], mainFields: ['module', 'main'] })).bundle.sources.has(`${CLIENT}/client.ts`))
+})
+
 test('two generators writing one output are refused, given generate or not', async (t) => {
   const twice = workspace({ files: { 'packages/b/prisma/schema.prisma': `${schema()}\ngenerator again {\n  provider = "prisma-client"\n  output   = "../src/generated/prisma"\n}\n` } })
   for (const generate of [undefined, ['prisma']]) await t.assert.rejects(build(project(twice), { generate }), /^Error: prisma: \/packages\/b\/src\/generated\/prisma is the output of more than one generator$/u)
