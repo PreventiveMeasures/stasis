@@ -7,7 +7,7 @@ import { DIM, formatTable, painter, takesColors } from './table.js'
 
 export { formatTable }
 import { parseFile, parseFileWithKind } from './parse.js'
-import { GITHUB, NPM, OSV } from './sixel.js'
+import { logos } from './sixel.js'
 import { collectWhy, invertReason } from './why.js'
 
 // Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates (those
@@ -362,8 +362,8 @@ const badge = (severity, text, colored) => (severity === 'malware' && colored ? 
 
 // Where an advisory comes from (upstream's `source`), as sixel.js draws it: npm's registry, a GitHub
 // repository's advisories, or OSV.
-const SOURCE_ICONS = { registry: NPM, repository: GITHUB, osv: OSV }
-// The cells an icon covers: 16 pixels wide, two cells of 8 or more.
+const SOURCE_LOGOS = { registry: 'npm', repository: 'github', osv: 'osv' }
+// The cells an icon covers: two, as sixel.js logos() picks icons no wider than two of the terminal's cells.
 const ICON_CELLS = 2
 // An icon, drawn with the cursor saved and put back, as a terminal may leave it below the image, then
 // moved past the cells it covers, as text written over them would erase it.
@@ -375,9 +375,10 @@ const ROOM_BELOW = '\n\n\x1b[2A'
 // The advisories as a table on `out`, fitted to `width` (the terminal's, where `out` is one) by wrapping
 // its long columns; on `err`, the packages not audited, then the summary, last, so it is what is read
 // after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
-// colours (`colors`, else takesColors). With `icons` (a terminal that draws sixel images, sixel.js
-// supported()), each id has its source's icon before it.
-export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons = false } = {}) {
+// colours (`colors`, else takesColors). With `icons` (the logos sixel.js logos() picks for a terminal
+// that draws sixel images, true for its 16-pixel ones), each id has its source's icon before it.
+export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false } = {}) {
+  const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
   const coloredOut = colors ?? takesColors(out)
@@ -395,7 +396,7 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     // earns it (the import chains differ per row).
     if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
     // A chain's arrows and `...` dimmed, so the packages in it stand out. An id's blank cells its icon.
-    const iconOf = (row) => (icons ? SOURCE_ICONS[row.source] : undefined)
+    const iconOf = (row) => icons?.[SOURCE_LOGOS[row.source]]
     const paint = (text, column, row) => {
       if (column === 'id' && iconOf(row)) return drawIcon(iconOf(row)) + text.slice(ICON_CELLS)
       if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity.trim()], text)

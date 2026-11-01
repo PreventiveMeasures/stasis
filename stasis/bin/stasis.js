@@ -336,9 +336,10 @@ if (command === '-v' || command === '--version') {
     if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
     throw cause
   }
-  // Each advisory's source as an icon, where the terminal draws sixel images.
-  const { supported } = await import('../src/sixel.js')
-  printAuditReport(report, { icons: await supported() })
+  // Each advisory's source as an icon, where the terminal draws sixel images, sized to its cells.
+  const { capabilities, logos } = await import('../src/sixel.js')
+  const terminal = await capabilities()
+  printAuditReport(report, { icons: terminal.sixel && logos(terminal.cell) })
   process.exitCode = report.rows.length === 0 ? 0 : 1
 } else if (command === 'validate') {
   // Exits 0 where the bundle is valid, 1 where it is invalid, 2 where a file it was to check went
