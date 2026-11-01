@@ -46,9 +46,17 @@ In a terminal the table is fitted to its width: the title, reason, vulnerable
 and installed columns wrap, the widest first, a word kept whole where the
 column can take it (a `--why` chain's further lines indented). Piped or
 written to a file, each row stays on one line. Where the stream takes colours
-(a terminal that has them, or a CI log), severities are coloured (critical
-magenta, high red, moderate yellow, low cyan, unrated dimmed), and so is the
-summary's count of each.
+(a terminal that has them, or a CI log), severities are coloured (malware
+white on red, critical magenta, high red, moderate yellow, low cyan, unrated
+dimmed), and so is the summary's count of each.
+
+An advisory of malware, not a vulnerability, is rated `malware`, above
+critical, whatever its source rates it: one of OSV's records of malicious
+packages (`MAL-...`, its id or one of its aliases), which rate none, or one filed
+under CWE-506 (Embedded Malicious Code), as GitHub files its malware advisories
+(`Embedded malware in ua-parser-js`, which npm's advisories rate high). Those
+rows come first, and the summary counts them first
+(`5 alerts (3 malware, 1 critical, 1 moderate)`).
 
 With `--reason`, the summary says whose packages were scanned
 (`Scanned 12 packages recorded by run: ...`).
