@@ -55,6 +55,21 @@ test('addFile tolerates the listed upstream mismatch: @redis/client dist/package
   }
 })
 
+test('addFile tolerates the listed upstream mismatch: hashids esm/package.json', (t) => {
+  // Every hashids 2.x release ships esm/package.json as a `type` marker that also names itself
+  // `hashids-esm`: the bucket keeps the package root's identity, and the marker's `type` decides the format.
+  const state = new State(root)
+  state.addFile(pathToFileURL(join(root, 'node_modules', 'hashids', 'esm', 'hashids.js')).toString())
+  const module = state.modules.get('node_modules/hashids')
+  t.assert.ok(module)
+  t.assert.equal(module.name, 'hashids')
+  t.assert.equal(module.version, '2.3.0')
+  t.assert.ok(module.files['esm/hashids.js'])
+  t.assert.ok(!state.modules.has('node_modules/hashids/esm'), 'never a bucket of its own')
+  t.assert.equal(module.subpackages, undefined, 'no subpackage: hashids-esm is not hashids/esm')
+  t.assert.equal(state.formats.get('node_modules/hashids/esm/hashids.js'), 'module')
+})
+
 // Next.js compiles ~140 dependencies into dist/compiled/<dir>, each beside a trimmed package.json naming
 // it (most with no version, some under a dir that isn't their name: loader-utils2 is `loader-utils`).
 const NEXT = join(root, 'node_modules', 'next')
