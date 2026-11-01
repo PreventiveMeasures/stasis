@@ -1143,14 +1143,20 @@ export async function validateRepository(plan, { repository = null, commit, dire
   const listing = own && listTree
     ? listTree([...new Set([...plan.own.map((file) => pathIn(directory, file.path)), pathIn(directory, 'package.json')])].filter(inTree)).then(({ entries, cut }) => {
       const listed = listedEntries(entries)
-      return { entries: listed, cut, names: Map.groupBy([...listed.keys()].filter((path) => !listed.get(path).submodule), (path) => posix.dirname(path)) }
+      // The directories it lists, any entry in each: where it was cut short, those alone.
+      const dirs = new Set(entries.map((entry) => posix.dirname(entry.path)))
+      return { entries: listed, cut, dirs, names: Map.groupBy([...listed.keys()].filter((path) => !listed.get(path).submodule), (path) => posix.dirname(path)) }
     })
     : null
   reading?.catch(() => {})
   listing?.catch(() => {})
   const listDir = (dir) => repository.listRepoDir({ sha: commit, ...(dir && { directory: dir }) })
-  const list = listing ? async (dir) => ((await listing).names.get(dir || '.') ?? []).map((path) => posix.basename(path))
-    : async (dir) => (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+  // A directory's files' names: of the listing, where it lists the directory (or is whole); else its own.
+  const list = async (dir) => {
+    const listed = await listing
+    if (listed && (!listed.cut || listed.dirs.has(dir || '.'))) return (listed.names.get(dir || '.') ?? []).map((path) => posix.basename(path))
+    return (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+  }
   // A directory that isn't there, as upstream tells it: one with no files.
   const absent = (error) => /has no directory at/u.test(error?.message ?? '')
   const under = (path) => reading && (directory === '' || path === directory || path.startsWith(`${directory}/`))

@@ -952,11 +952,21 @@ test('validateRepository: own code held to a listing of the commit\'s tree, its 
   t.assert.deepStrictEqual([report.status, report.own, report.lockfiles, 'lockfileError' in report], ['valid', { checked: true, repository: 'org/repo', commit, ref: { branch: 'main' }, directory: 'web' }, ['pnpm-lock.yaml'], false])
   t.assert.deepStrictEqual(asked, [['web/src/main.js', 'web/package.json']], 'its own files\' paths, and its directory\'s')
 
-  // Its tree cut short, the lockfile not listed: own code unverified, the dependencies held to their registry alone.
+  // Its tree cut short: own code unverified; the directories it doesn't list asked for alone, its lockfile found by them.
   const none = async () => ({ entries: [], cut: true })
-  const cut = await validateRepository(plan, where, { listTree: none, strict: false, fetch: upstream() })
-  t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.lockfiles, cut.lockfileError, cut.problems], ['incomplete', true, null, 'no-lockfile', [{ path: 'src/main.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
-  await t.assert.rejects(validateRepository(plan, where, { listTree: none, fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
+  const cut = await validateRepository(plan, { ...where, repository: followingMoves(repoClient(files), 'org/repo') }, { listTree: none, fetch: upstream() })
+  t.assert.deepStrictEqual([cut.status, cut.own.cut, cut.lockfiles, cut.problems], ['incomplete', true, ['pnpm-lock.yaml'], [{ path: 'src/main.js', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
+  // No lockfile: refused, or, `strict` false, the dependencies held to their registry alone, and why.
+  const unlocked = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n' }
+  const listUnlocked = async () => ({ entries: Object.entries(unlocked).map(([path, text]) => ({ path, mode: '100644', type: 'blob', sha: blob(text) })), cut: false })
+  await t.assert.rejects(validateRepository(plan, where, { listTree: listUnlocked, fetch: upstream() }), { name: 'ValidateError', code: 'no-lockfile' })
+  const held = await validateRepository(plan, where, { listTree: listUnlocked, strict: false, fetch: upstream() })
+  t.assert.deepStrictEqual([held.status, held.lockfiles, held.lockfileError], ['valid', null, 'no-lockfile'])
+  // Cut short of the bundle's directory: its files asked for alone, its own lockfile found there, not the root's.
+  const nearer = { 'pnpm-lock.yaml': msLock('.', ''), 'web/pnpm-lock.yaml': msLock('.', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n'), 'web/package.json': '{}\n' }
+  const rootOnly = async () => ({ entries: [{ path: 'pnpm-lock.yaml', mode: '100644', type: 'blob', sha: blob(nearer['pnpm-lock.yaml']) }, { path: 'web', mode: '040000', type: 'tree', sha: blob('') }], cut: true })
+  const near = await validateRepository(plan, { ...where, repository: followingMoves(repoClient(nearer), 'org/repo') }, { listTree: rootOnly, fetch: upstream() })
+  t.assert.deepStrictEqual([near.lockfiles, near.packages.map((pkg) => pkg.status)], [['web/pnpm-lock.yaml'], []])
 
   // A commit of a fork's: its tree not listed, nor its lockfile read.
   asked.length = 0

@@ -61,10 +61,20 @@ export interface Lockfile {
   patches?: string[]
   root?: string
 }
+// A patch pnpm's lockfile names for a version: by its path, or by its hash alone, in a file of one of
+// `names` in a patches directory (locate).
+export type LockedPatch = { hash: string; path: string } | { hash: string; names: string[] }
 export interface Locked {
   lockfiles: string[]
   locks(ecosystem: string): boolean
   lock(ecosystem: string, name: string, version: string): Lock | null | undefined
+  of(name: string, version: string): LockedPatch | null | undefined
+  locate(patch: { hash: string; names?: string[] }): Promise<{ path: string; text: string } | null>
+  installed(dir: string): string | null | undefined
+  aliased(as: string, named: string): boolean | undefined
+  from?: 'repository' | 'local'
+  tree?: (dir: string) => Promise<Map<string, Uint8Array>>
+  read(path: string): Promise<string>
 }
 export function lockedBy(lockfiles: Lockfile[]): Locked
 
