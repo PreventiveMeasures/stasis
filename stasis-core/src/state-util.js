@@ -5,6 +5,7 @@ import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { diskHost } from './host.js'
+import { Lockfile } from './lockfile.js'
 import { isPathWithin } from './util.js'
 
 // Genuine fs readers snapshotted off the namespace before any --fs patch. A plain `import { readFileSync }`
@@ -32,6 +33,23 @@ export function realContained(root, abs) {
 assert.equal(sep, '/', 'Not tested on Windows')
 
 export const sha512integrity = (x) => `sha512-${hash('sha512', x, 'base64')}`
+
+// A bundled file's integrity from its `content` as a bundle stores it: of the bytes it stands for,
+// a 'resource:base64' payload's decoded ones, else its UTF-8 text's.
+export const bundledIntegrity = (content, format) => sha512integrity(format === 'resource:base64' ? Buffer.from(content, 'base64') : content)
+
+// The companion lockfile of `bundle` as it is now (Lockfile.fromBundle's), built on the first call,
+// the same one after: each file's integrity that of the bytes its content stands for
+// (bundledIntegrity), so a file is hashed only once the lockfile is wanted, for a bundle whose
+// content is the bytes read, encoded without loss. Its records are taken now: one the bundle
+// replaces after (a commit pinned onto a module) is not the lockfile's.
+// -> () => Lockfile
+export function deferredLockfile(bundle) {
+  const { config, entries, imports, formats, executable } = bundle
+  const now = { config, entries, modules: new Map(bundle.modules), imports, formats, executable }
+  let lockfile
+  return () => (lockfile ??= Lockfile.fromBundle(now, (file, content) => bundledIntegrity(content, formats.get(file))))
+}
 
 export function readFileSyncMaybe(dir, file, encoding, host = diskHost) {
   let buf

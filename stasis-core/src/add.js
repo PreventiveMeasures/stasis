@@ -7,7 +7,7 @@ import { Lockfile } from './lockfile.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
-import { canonicalizePath, sha512integrity } from './state-util.js'
+import { canonicalizePath, deferredLockfile, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
@@ -317,8 +317,9 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
 // scope): those it doesn't carry already (its own record of a file stands), in its buckets where it
 // has them. `outputs` are the project-relative paths the build writes, never swept in. The files
 // are read through `host`, the disk by default.
-// -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), and
-// `carried`: the files named that `bundle` carries already, the `extra` consumer's too
+// -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), the lockfile
+// built when first read, and `carried`: the files named that `bundle` carries already, the `extra`
+// consumer's too
 export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set(), host = diskHost }) {
   const named = expandExtra(baseDir, patterns, outputs, host).files
   // Bundle#sources builds its Map afresh on each read: once.
@@ -326,10 +327,12 @@ export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs =
   const carried = [...named.keys()].filter((rel) => bundled.has(rel))
   const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
   if (files.size === 0) return { bundle: null, lockfile: null, carried }
-  const { codeFiles, resourceFiles, integrities } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, withIntegrity: true, label: 'extra', host })
+  const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, label: 'extra', host })
   const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
   const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
-  return { bundle: extra, lockfile: bundleToLockfile(extra, integrities), carried }
+  // Hashed from the bundle, which holds the bytes read, once a lockfile is wanted.
+  const lockfile = deferredLockfile(extra)
+  return { bundle: extra, get lockfile() { return lockfile() }, carried }
 }
 
 // GLOB the listed paths, FILTERING the auto-excluded set out of what a sweep finds (see

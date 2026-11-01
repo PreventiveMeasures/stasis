@@ -16,7 +16,7 @@ import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '.
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
-import { readFileSyncMaybe, sha512integrity } from '@exodus/stasis-core/state-util'
+import { deferredLockfile, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -1431,7 +1431,7 @@ function metroInsertedFiles(files, { assets, baseDir, babelled, dynamicImports, 
 // Build a JS/TS Bundle + companion Lockfile via the legacy-field resolver (`--mainFields`/
 // `--metro`). Scanned once per platform; each edge is recorded flat when the platforms that
 // have it agree, or as a `{ platform: target }` map where they diverge. `scope` and `resources`
-// are fieldBuildOptions'. Returns { bundle, lockfile }.
+// are fieldBuildOptions'. Returns { bundle, lockfile: () => Lockfile }, the lockfile built when called.
 async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, entries, mainFields, platforms, conditions = [], metro, metroResolver, babel, babelAliases: aliasesFile, jsx = false, flow = false, typescript = false, tsconfig, scope, resources, define, packageJSON = false, host = diskHost, memo }) {
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
@@ -1758,23 +1758,22 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   if (voided()) throw new Error('buildResolvedJsBundle: this round reads a package not unpacked yet')
   const carryingAt = performance.now()
 
-  // Read each reached file once: bytes for the bundle, integrity for the lockfile. Source is
-  // stored as UTF-8 text, so non-UTF-8 bytes would diverge from the hashed bytes -- reject them.
+  // Read each reached file once, into the bundle as the bytes read, encoded without loss: the
+  // lockfile hashes them from there, once it is wanted (deferredLockfile). Source is
+  // stored as UTF-8 text, which non-UTF-8 bytes would not survive -- reject them.
   const sources = new Map()
-  const integrities = new Map()
-  // Carry `rel`: `content` in the bundle as `format`, the integrity of its bytes `buf` in the lockfile.
-  const put = (rel, content, format, buf) => {
+  // Carry `rel`: `content` in the bundle as `format`.
+  const put = (rel, content, format) => {
     sources.set(rel, content)
     formatsByRel.set(rel, format)
-    integrities.set(rel, sha512integrity(buf))
   }
   // A resource carries bytes, not source: UTF-8 verbatim or base64 when binary, tagged with the
   // byte-derived format (here and in the --metro native capture below).
-  const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource', buf) : put(rel, buf.toString('base64'), 'resource:base64', buf))
+  const putResource = (rel, buf) => (isUtf8(buf) ? put(rel, buf.toString('utf8'), 'resource') : put(rel, buf.toString('base64'), 'resource:base64'))
   // Code carries its source, UTF-8 (`what` it is, refused where it isn't).
   const putCode = (rel, buf, format, what = 'JS bundle source') => {
     if (!isUtf8(buf)) throw new Error(`${what} is not valid UTF-8: ${rel}`)
-    put(rel, buf.toString('utf8'), format, buf)
+    put(rel, buf.toString('utf8'), format)
   }
   const realBase = host.realpath(baseDir)
   // Metro's empty module is carried as the file it is, a code file of Metro's (no format).
@@ -1796,7 +1795,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
-    put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs', Buffer.alloc(0))
+    put(EMPTY_MODULE_PATH, '', metro ? undefined : 'commonjs')
   }
 
   // The package a bundled file is in (findPackageMetadata: its pkgDir and identity, null where no
@@ -1931,7 +1930,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       if (sources.has(rel)) continue
       const buf = readModuleManifest({ baseDir, realBase, rel, host })
       if (!buf) continue
-      put(rel, buf.toString('utf8'), 'json', buf)
+      put(rel, buf.toString('utf8'), 'json')
       // Attributed as the files it serves are, as State#includePackageJson attributes one.
       if (of.some((file) => configReached.has(file))) configReached.add(rel)
       if (of.every((file) => configOnly.has(file))) configOnly.add(rel)
@@ -1978,9 +1977,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // What the configs reach is the bundler's, not the app's: `bundle`, as a Node build's files are.
   const bundle = configReached.size === 0 ? assembled : assembled.withReason('bundle', [...configReached])
 
-  // The companion lockfile mirrors the bundle, swapping file content for its integrity.
+  // The companion lockfile mirrors the bundle, swapping file content for its integrity, once it is wanted.
   stageTimes.carrying += performance.now() - carryingAt
-  return { bundle, lockfile: Lockfile.fromBundle(bundle, (file) => integrities.get(file)) }
+  return { bundle, lockfile: deferredLockfile(bundle) }
 }
 
 // Classify entries into their single shared language and check option applicability; `name` prefixes
@@ -2120,7 +2119,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
 async function buildJs({ mainFields, platforms, metro, metroResolver, babel, babelAliases, innermostRoot, extra, outputsAt, ...options }) {
   if (metro || mainFields !== undefined) {
     const built = await buildResolvedJsBundle({ ...options, mainFields: metro ? METRO_MAIN_FIELDS : mainFields, platforms: metro ? platforms : [null], metro: Boolean(metro), metroResolver: Boolean(metroResolver), babel: Boolean(babel), babelAliases })
-    return { bundle: built.bundle, lockfile: () => built.lockfile, stateBuilt: false, root: resolve(options.cwd) }
+    return { bundle: built.bundle, lockfile: built.lockfile, stateBuilt: false, root: resolve(options.cwd) }
   }
   const state = await buildJsBundle({ ...options, innermostRoot, extra, outputsAt })
   const bundle = state.sourceBundle
@@ -2154,8 +2153,9 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
   // stamps it), `extra`, or both, for one `extra` names that the build carries itself.
   const merged = added.bundle === null ? built.bundle : built.bundle.merge(added.bundle)
   const bundle = added.carried.length === 0 ? merged : merged.withReason('extra', added.carried)
+  // The lockfile of what was added is built when read, as the build's is: not here.
   const { lockfile } = built
-  return { ...built, bundle, ...(lockfile && added.lockfile && { lockfile: () => lockfile().merge(added.lockfile) }) }
+  return { ...built, bundle, ...(lockfile && added.bundle !== null && { lockfile: () => lockfile().merge(added.lockfile) }) }
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
@@ -2234,7 +2234,7 @@ export function checkVfsOptions(name, options) {
 // true; `lazy: false` installs every package, and `lazy: true` is refused where the tree cannot be
 // lazy, or `lazyDependencies` is false. `stats` are deptree's, and `stats.unpacked` the packages
 // unpacked: each one installed, or those a lazy tree unpacked.
-// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle), stats, packageManager, root }
+// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager, root }
 export async function buildVfsBundle(options = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
@@ -2341,7 +2341,10 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
   const unpacked = tree.lazy?.unpacked.size ?? tree.stats.installed ?? tree.stats.dependencies
-  return { bundle, lockfile: lockfile?.(), stats: { ...tree.stats, unpacked }, packageManager, root }
+  // The lockfile is built when first read, the same one after: `stasis github-bundle` and `stasis
+  // bundle --deptree` read it for --lockfile alone.
+  let lock
+  return { bundle, get lockfile() { return (lock ??= lockfile?.()) }, stats: { ...tree.stats, unpacked }, packageManager, root }
 }
 
 // EXODUS_STASIS_DEBUG=1 or true.

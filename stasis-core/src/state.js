@@ -8,7 +8,7 @@ import { Config } from './config.js'
 import { Bundle, mergeRepo } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
-import { canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
+import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, importTargetsEqual, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
@@ -48,9 +48,6 @@ function upsertFormat(map, file, format) {
   const currentFormat = map.get(file)
   map.set(file, currentFormat === undefined ? format : reconcileFormat(format, currentFormat, file))
 }
-
-// A bundled file's integrity as addFile/addFsDir hash it: a 'resource:base64' payload's is its decoded bytes'.
-const bundledIntegrity = (content, format) => sha512integrity(format === 'resource:base64' ? Buffer.from(content, 'base64') : content)
 
 // Loader formats the extension alone decides; `.js`/`.ts` follow the nearest package `type`.
 const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs': 'commonjs', '.mts': 'module-typescript', '.cts': 'commonjs-typescript' }

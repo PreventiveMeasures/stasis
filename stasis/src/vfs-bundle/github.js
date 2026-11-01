@@ -242,7 +242,9 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
   // The Vfs is the repo's tree, or the subtree at `directory`: a layout known, so its root is `''`.
   const at = posix.join(tree.subtree ? tree.directory : '.', posix.relative('/', built.root)).replace(/^\.$/u, '')
   built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) ? { directory: at } : {}) }
-  return { ...built, directory: tree.directory }
+  // Onto buildVfsBundle's own, not a copy, which would read its lockfile, built only when read.
+  built.directory = tree.directory
+  return built
 }
 
 // suggestedEntries of a GitHub repo, `{ github, sha, tag, directory | path, client, packageManager }`,

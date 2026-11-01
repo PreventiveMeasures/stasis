@@ -37,8 +37,10 @@ export function githubBundleFile({ github, directory, commit }) {
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, brotliQuality, client, ...options } = {}) {
   const built = await withNpmToken(home, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
   const { directory } = built
+  // Built for --lockfile alone, before anything is written, as `stasis bundle` builds it.
+  const lockData = lockfile === undefined ? undefined : built.lockfile.serialize()
   const dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
-  if (lockfile !== undefined) writeFile(resolve(cwd, lockfile), built.lockfile.serialize())
+  if (lockData !== undefined) writeFile(resolve(cwd, lockfile), lockData)
   const from = `${options.github}@${built.bundle.repo.commit}${directory ? `/${directory}` : ''}`
   console.warn(unpackedSummary(built.stats))
   console.warn(bundledSummary(built.bundle.sources.size, built.bundle.modules, from, dest))
