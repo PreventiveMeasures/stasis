@@ -608,6 +608,31 @@ package is used as published, while a monorepo's workspace packages, linked in
 through `node_modules`, really live outside it and resolve like the project's
 own files.
 
+A workspace package that names what its `tsc` build writes, which a checkout
+lacks, resolves to the sources it is built from, as tsc maps an output back to
+its input. Where its `main`, an `exports` or `imports` target, or a bare
+subpath into it names a file that is missing under the `outDir` of the
+`tsconfig.json` beside its `package.json` (`extends` followed), the file at the
+same place under its `rootDir` stands in, substituted as above (`./dist/foo.js`
+lands on `./src/foo.ts`):
+
+```json
+{
+  "exports": {
+    ".": { "types": "./src/index.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./foo": { "types": "./src/foo.ts", "import": "./dist/foo.js", "default": "./dist/foo.js" }
+  }
+}
+```
+
+```json
+{ "compilerOptions": { "outDir": "./dist", "rootDir": "./src" } }
+```
+
+Without `rootDir`, the root is the `tsconfig.json`'s directory, as TypeScript 6
+takes it; an older tsc infers it from the files it compiles, so such a project
+sets `rootDir` for this. An output on disk is used as it is.
+
 It is implied without the flag when every entry is TypeScript and their
 relative imports of JS outputs (`./x.js`) are each only on disk as the TS
 source (`./x.ts`), tsc's convention; a project of Node-compatible `.ts` files

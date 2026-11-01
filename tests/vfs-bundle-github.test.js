@@ -261,6 +261,54 @@ test('suggestedEntries maps what resolution misses to its TS source under typesc
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(app), metro: true, platforms: ['ios'], typescript: true }), ['lib/index.ts'])
 })
 
+// A pnpm workspace whose app imports a sibling by the outputs its `tsc` build writes (`dist/`),
+// which the repo holds only the sources of: the `exports` name them, and its tsconfig.json says
+// where they come from.
+const unbuiltSibling = {
+  'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+  'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+  'tsconfig.json': json({ compilerOptions: { strict: true } }),
+  'pnpm-lock.yaml': lockfile('.', 'packages/app', 'packages/dep').replace('  packages/app: {}\n', '  packages/app:\n    dependencies:\n      dep:\n        specifier: workspace:*\n        version: link:../dep\n'),
+  'packages/dep/package.json': json({
+    name: 'dep',
+    version: '1.0.0',
+    type: 'module',
+    exports: {
+      '.': { types: './src/index.ts', import: './dist/index.js', default: './dist/index.js' },
+      './foo': { types: './src/foo.ts', import: './dist/foo.js', default: './dist/foo.js' },
+    },
+  }),
+  'packages/dep/tsconfig.json': json({ compilerOptions: { outDir: './dist', rootDir: './src' } }),
+  'packages/dep/src/index.ts': 'export const x: number = 1\n',
+  'packages/dep/src/foo.ts': 'export const foo: number = 2\n',
+  'packages/app/package.json': json({ name: 'app', version: '1.0.0', type: 'module', dependencies: { dep: 'workspace:*' } }),
+  'packages/app/src/entry.ts': "import { x } from 'dep'\nimport { foo } from 'dep/foo'\nexport const sum: number = x + foo\n",
+}
+
+test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their sources under typescript", async (t) => {
+  const sources = ['packages/app/src/entry.ts', 'packages/dep/src/index.ts', 'packages/dep/src/foo.ts']
+  // Lazy and not, through Node's resolution and the field resolver's, and with an explicit --tsconfig
+  // (whose `paths` alone it names: the layout is still the package's).
+  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }, { metro: true, platforms: ['ios'] }, { tsconfig: 'tsconfig.json' }].map(async (options) => {
+    const { bundle } = await build({ client: fakeClient(unbuiltSibling), entries: ['packages/app/src/entry.ts'], typescript: true, ...options })
+    t.assert.deepStrictEqual([...bundle.sources.keys()], sources, JSON.stringify(options))
+    const [resolutions] = bundle.imports.values()
+    t.assert.deepStrictEqual(Object.fromEntries(resolutions.get('packages/app/src/entry.ts')), { dep: 'packages/dep/src/index.ts', 'dep/foo': 'packages/dep/src/foo.ts' }, JSON.stringify(options))
+  }))
+  const { bundle } = await build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'], typescript: true })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], sources)
+  // Without it, the misses name their sources.
+  await t.assert.rejects(build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'] }), {
+    message: [
+      'JS bundle would be broken at load time:',
+      '  unresolved import dep from src/entry.ts (MODULE_NOT_FOUND; resolves to /packages/dep/src/index.ts under --typescript)',
+      '  unresolved import dep/foo from src/entry.ts (MODULE_NOT_FOUND; resolves to /packages/dep/src/foo.ts under --typescript)',
+    ].join('\n'),
+  })
+  // The package's own entries, as its exports name them.
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(unbuiltSibling), cwd: 'packages/dep', typescript: true }), ['src/index.ts', 'src/foo.ts'])
+})
+
 test("suggestedEntries downloads a directory as buildGitHubBundle does, and names nothing out of it", async (t) => {
   const files = {
     'README.md': 'x\n',

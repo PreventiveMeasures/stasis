@@ -9,7 +9,7 @@ import { extraArtifacts } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
 import { parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
@@ -796,11 +796,14 @@ const cleanConditions = (conditions) => conditions.map((c) => (typeof c === 'str
 
 // --typescript honours tsconfig `paths` aliases: an explicit --tsconfig's for every file (it must
 // exist), else those of the tsconfig.json beside each importing file's package.json
-// (packageTsconfigPaths, the project read as the State reads it, to `env`'s PROJECT_CWD; null
-// matcher = no aliases). Without --typescript they only hint a miss (Scan#typescriptCandidate), so a
-// config that doesn't load is none.
+// (packageTsconfigPaths, the project read as the State reads it, to `env`'s PROJECT_CWD). Either
+// way, each package's own tsconfig.json gives its layout (`outputs`, tsconfigOutputsOf's). Without
+// --typescript they only hint a miss (Scan#typescriptCandidate), so a config that doesn't load is none.
 function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
-  if (typescript && tsconfig !== undefined) return loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
+  if (typescript && tsconfig !== undefined) {
+    const matcher = loadTsconfigPaths(discoverTsconfig(baseDir, tsconfig, host), host)
+    return { matchPaths: (spec) => matcher?.matchPaths(spec) ?? [], outputs: tsconfigOutputsOf({ host }) }
+  }
   return packageTsconfigPaths(baseDir, { host, lenient: !typescript, projectCwd: env.PROJECT_CWD })
 }
 
