@@ -26,12 +26,14 @@ setting an option that needs consent (`babel`, `metro-resolver`, `cargo`,
 | `--why` | Per advisory, the cross-module import chains that pull the package in. See [Import chains](#import-chains---why). |
 | `--why-deep` | Like `--why`, also keeping a chain a shorter listed chain is the tail of. |
 | `--why-full` | Spell every chain out, with no `...` collapse. With `--why-deep`, the complete raw listing. |
-| `--reason=consumer` | Only the packages that consumer (`run`, `metro`, `bundle:metro`, ...) recorded are scanned, counted and asked about; with `--why`, only its chains. A consumer no input records is an error naming those they do. |
+| `--reason=consumer` | Only the packages that consumer (`run`, `metro`, `bundle:metro`, ...) recorded are scanned, counted and asked about; with `--why`, only its chains. npm's malware advisories of every other npm dependency are still told, apart (see [Malware in any dependency](#malware-in-any-dependency)). A consumer no input records is an error naming those they do. |
 | `--repo-advisories` | Also ask each package's GitHub repository for its advisories. Needs `GITHUB_TOKEN`. See [Repository advisories](#repository-advisories---repo-advisories). |
 
-Exits 0 when nothing is flagged and 1 otherwise, so it composes in CI. The
-table goes to stdout; the not-audited packages and then the summary go to
-stderr, so the summary is the last thing printed (here in a 140-column terminal):
+Exits 0 when nothing is flagged and 1 otherwise, npm's malware advisories of a
+dependency outside `--reason` included, so it composes in CI. The table goes to
+stdout; the not-audited packages, then the summary, then any malware npm's
+advisories tell of (see [Malware in any dependency](#malware-in-any-dependency))
+go to stderr (here in a 140-column terminal):
 
 ```
 ┌──────────┬───────────┬─────────────────┬───────────────┬────────┬─────────────────────┬─────────────────────────┬─────────────────────┐
@@ -143,11 +145,27 @@ to `a -> b -> ... -> d`, the hidden part being spelled out by an earlier line;
 pathological graphs, which is reported on a marker line rather than dropped.
 
 `--reason=run` audits only the packages that consumer recorded: no other is
-scanned, counted, listed as not audited, or sent to an advisory source. With
-`--why`, only its chains are shown. A consumer that no input records stops the
+scanned, counted, listed as not audited, or sent to OSV or a repository. The
+other npm packages are asked of npm's registry alone, for malware (see below).
+With `--why`, only its chains are shown. A consumer that no input records stops the
 audit before anything is asked, naming the consumers they do record; a lockfile
 records none. Artifacts without a resolution graph (`imports`) contribute no
 chains.
+
+## Malware in any dependency
+
+Whatever `--reason`, what npm's registry tells of malware in any npm dependency
+is printed apart from the table, after the summary: each advisory a line, its
+package and version, id and title, and the consumers that recorded it. Under
+`--reason`, the npm packages its consumer didn't record are asked of npm's
+registry alone for it, which is fast, where OSV and their repositories are not.
+Any such advisory makes the audit exit 1, an empty table or not.
+
+```
+malware in 2 dependencies, as npm's advisories tell:
+  flatmap-stream 0.1.1  GHSA-9x64-5r7x-2q53  Malicious Package in flatmap-stream  webpack
+  ua-parser-js 0.7.29   GHSA-pjwm-rvh2-c87w  Embedded malware in ua-parser-js     webpack
+```
 
 ## OSV and private packages
 
