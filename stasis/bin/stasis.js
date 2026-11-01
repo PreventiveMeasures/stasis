@@ -330,12 +330,15 @@ if (command === '-v' || command === '--version') {
   let report
   try {
     // --reason audits that consumer's packages alone; one no file records is refused before any is asked about.
-    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github })
+    // OSV is asked about npm packages too, never a private one (upstream checks each name is public).
+    report = await audit(files, { why: Boolean(values.why), whyDeep: Boolean(values['why-deep']), whyFull: Boolean(values['why-full']), reason: values.reason, repoAdvisories, github, osv: true })
   } catch (cause) {
     if (cause instanceof AuditError) fail(`Error: ${cause.message}`)
     throw cause
   }
-  printAuditReport(report)
+  // Each advisory's source as an icon, where the terminal draws sixel images.
+  const { supported } = await import('../src/sixel.js')
+  printAuditReport(report, { icons: await supported() })
   process.exitCode = report.rows.length === 0 ? 0 : 1
 } else if (command === 'validate') {
   // Exits 0 where the bundle is valid, 1 where it is invalid, 2 where a file it was to check went

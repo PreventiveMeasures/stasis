@@ -3,10 +3,11 @@ import { dependencyEcosystem, moduleFileKey, packageRecords, sameGithub } from '
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
-import { DIM, formatTable, painter } from './table.js'
+import { DIM, formatTable, painter, takesColors } from './table.js'
 
 export { formatTable }
 import { parseFile, parseFileWithKind } from './parse.js'
+import { GITHUB, NPM, OSV } from './sixel.js'
 import { collectWhy, invertReason } from './why.js'
 
 // Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates (those
@@ -196,15 +197,9 @@ function reasonIndex(files) {
   return { byPkg, consumers }
 }
 
-// `malware` first: a package that is malware is worse than any vulnerability in one.
+// `malware` first: a package that is malware is worse than any vulnerability in one. An advisory
+// advisories() flags as malware (`malware: true`) is rated so, whatever its source rates it.
 const SEVERITY_ORDER = { malware: 0, critical: 1, high: 2, moderate: 3, low: 4, info: 5, none: 6 }
-
-// Whether an advisory is of malware, not a vulnerability: one of OSV's malicious packages' records
-// (`MAL-...`, its id or among its aliases, as advisories() gives a registry row the ids of OSV's records
-// of it), or one filed under CWE-506, Embedded Malicious Code, as GitHub files its malware advisories
-// (flatmap-stream's "Malicious Package", ua-parser-js's "Embedded malware", which it rates high). Its row's
-// severity is `malware`, whatever its source rates it, or doesn't (OSV's MAL- records have none).
-const isMalware = ({ id, aliases = [], cwe = [] }) => [id, ...aliases].some((each) => each.startsWith('MAL-')) || cwe.includes('CWE-506')
 
 // Consumer display order: bundler plugins (metro, webpack, esbuild, ...) first,
 // then `run`, then `add`, then `extra` (stasis.config.json's). Ties broken alphabetically.
@@ -265,9 +260,10 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
       package: adv.name,
       installed: adv.versions.map((v) => installedCell(adv, v, vendoredByKey)).join(', '),
       vulnerable: adv.range ?? '',
-      severity: isMalware(adv) ? 'malware' : adv.severity ?? '',
+      severity: adv.malware ? 'malware' : adv.severity ?? '',
       title: adv.title ?? '',
       id: adv.id,
+      source: adv.source,
       reason,
     })
   }
@@ -287,8 +283,9 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // A package that cannot be audited is `skipped`, with why (`because`), and asked for nothing.
 // `reason` (--reason) audits only the packages that consumer recorded (collectReasons): no other is
 // counted, listed, or asked about. One no file records is refused (AuditError) before anything is,
-// naming those they do; a lockfile records none.
-export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github } = {}) {
+// naming those they do; a lockfile records none. `osv` asks OSV about npm packages too, those whose
+// name npm's registry serves to anyone; advisories() never sends it a private one.
+export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
@@ -315,12 +312,12 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   }
   let result
   try {
-    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github })
+    result = await advisories(asked.map(({ version, vendoredIn: _in, vendoredOnly: _only, ...pkg }) => ({ ...pkg, versions: [version] })), { repoAdvisories, github, osv })
   } catch (cause) {
     // Refused input or a malformed answer is an assertion that says so itself; a transport or
     // HTTP failure gets the context of which request it was.
     if (cause?.code === 'ERR_ASSERTION') throw cause
-    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(repoAdvisories ? ['GitHub'] : [])])
+    const sources = new Set([...asked.flatMap((pkg) => SOURCES[pkg.ecosystem]), ...(osv && asked.some((pkg) => pkg.ecosystem === 'npm') ? ['OSV'] : []), ...(repoAdvisories ? ['GitHub'] : [])])
     throw new Error(`${[...sources].join('/')} advisories request failed: ${cause.message}`, { cause })
   }
   // `--why` REPLACES the consumer list with per-consumer import paths, so only
@@ -353,20 +350,37 @@ const WRAPPED = ['title', 'reason', 'vulnerable', 'installed']
 
 // `5 alerts (1 critical, 2 high, 1 low, 1 unrated)`: the rows, then each severity present, in the rows'
 // own order (most severe first), so the parts add up; each in its colour, and none in green.
-function alertStats(rows, paint) {
+function alertStats(rows, paint, colored) {
   const count = `${rows.length} alert${rows.length === 1 ? '' : 's'}`
   if (rows.length === 0) return paint(['bold', 'green'], count)
   const bySeverity = Map.groupBy(rows, severityOf)
-  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], `${list.length} ${severity}`)).join(', ')})`
+  return `${paint('bold', count)} (${[...bySeverity].map(([severity, list]) => paint(SEVERITY_TONES[severity], badge(severity, `${list.length} ${severity}`, colored))).join(', ')})`
 }
+
+// Malware as a badge: its colour a space wider on either side, where there is colour.
+const badge = (severity, text, colored) => (severity === 'malware' && colored ? ` ${text} ` : text)
+
+// Where an advisory comes from (upstream's `source`), as sixel.js draws it: npm's registry, a GitHub
+// repository's advisories, or OSV.
+const SOURCE_ICONS = { registry: NPM, repository: GITHUB, osv: OSV }
+// The cells an icon covers: 16 pixels wide, two cells of 8 or more.
+const ICON_CELLS = 2
+// An icon, drawn with the cursor saved and put back, as a terminal may leave it below the image, then
+// moved past the cells it covers, as text written over them would erase it.
+const drawIcon = (icon) => `\x1b7${icon}\x1b8\x1b[${ICON_CELLS}C`
+// Written before a line with an icon: two lines below it, then back up. A terminal moving the cursor
+// below the image then never scrolls, which would put the cursor back a line off.
+const ROOM_BELOW = '\n\n\x1b[2A'
 
 // The advisories as a table on `out`, fitted to `width` (the terminal's, where `out` is one) by wrapping
 // its long columns; on `err`, the packages not audited, then the summary, last, so it is what is read
 // after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
-// colours (`colors`, else takesColors).
-export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined } = {}) {
+// colours (`colors`, else takesColors). With `icons` (a terminal that draws sixel images, sixel.js
+// supported()), each id has its source's icon before it.
+export function printAuditReport({ packages, skipped = [], rows, why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons = false } = {}) {
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
+  const coloredOut = colors ?? takesColors(out)
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
     err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
@@ -380,23 +394,26 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     // cell is just the filter value repeated, so drop the column then; --why still
     // earns it (the import chains differ per row).
     if (rows.some((r) => r.reason) && !(reason && !why)) columns.splice(columns.indexOf('installed') + 1, 0, 'reason')
-    // A chain's arrows and `...` dimmed, so the packages in it stand out.
+    // A chain's arrows and `...` dimmed, so the packages in it stand out. An id's blank cells its icon.
+    const iconOf = (row) => (icons ? SOURCE_ICONS[row.source] : undefined)
     const paint = (text, column, row) => {
-      if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity], text)
+      if (column === 'id' && iconOf(row)) return drawIcon(iconOf(row)) + text.slice(ICON_CELLS)
+      if (column === 'severity') return paintOut(SEVERITY_TONES[row.severity.trim()], text)
       if (column === 'package') return paintOut('bold', text)
       if (column === 'reason' && why) return text.replaceAll(/(?<=^| )(?:->|\.\.\.)(?= |$)/gu, (arrow) => paintOut(DIM, arrow))
       return text
     }
     // Under --why the reason cell is a list of `consumer: path` lines; let it span
     // multiple physical rows instead of collapsing to one.
-    out.write(`${formatTable(rows.map((row) => ({ ...row, severity: severityOf(row) })), columns, {
+    const table = formatTable(rows.map((row) => ({ ...row, severity: badge(severityOf(row), severityOf(row), coloredOut), ...(icons && { id: `${' '.repeat(ICON_CELLS)} ${row.id}` }) })), columns, {
       multiline: why ? ['reason'] : [],
       wrap: WRAPPED,
       width,
       paint,
       paintHeader: (text) => paintOut('bold', text),
       paintFrame: (text) => paintOut(DIM, text),
-    })}\n`)
+    })
+    out.write(`${icons ? table.split('\n').map((line) => (line.includes('\x1bP') ? ROOM_BELOW + line : line)).join('\n') : table}\n`)
   }
   if (skipped.length > 0) {
     const names = skipped.map((pkg) => `${pkg.ecosystem} ${pkg.name}${pkg.version === undefined ? '' : `@${pkg.version}`}`)
@@ -404,5 +421,5 @@ export function printAuditReport({ packages, skipped = [], rows, why = false, re
     const lines = skipped.map((pkg, i) => `  ${names[i].padEnd(pad)}  ${paintErr(DIM, pkg.because)}`)
     err.write(`${rows.length > 0 ? '\n' : ''}${paintErr('yellow', 'Not audited:')}\n${lines.join('\n')}\n`)
   }
-  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr)}\n`)
+  err.write(`${rows.length > 0 || skipped.length > 0 ? '\n' : ''}${scanned}: ${alertStats(rows, paintErr, colors ?? takesColors(err))}\n`)
 }

@@ -12,6 +12,7 @@ import { sha512integrity } from '@exodus/stasis-core/state-util'
 import { AuditError, audit, collectPackages, collectPackagesFromFile, collectReasons, flattenAdvisories, formatTable, printAuditReport } from '../stasis/src/audit.js'
 import { CORRECTIONS, isEvidenceFile } from '../stasis/src/audit-corrections.js'
 import { DIM } from '../stasis/src/table.js'
+import { GITHUB, NPM, OSV } from '../stasis/src/sixel.js'
 import { withTmp } from './tmp.helper.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -435,24 +436,21 @@ test('flattenAdvisories sorts by severity then package', (t) => {
   ])
 })
 
-test('flattenAdvisories rates malware `malware`, above critical: OSV\'s MAL- records, by id or alias, and advisories filed under CWE-506', (t) => {
+test('flattenAdvisories rates `malware`, above critical, what advisories() flags as malware, whatever its source rates it', (t) => {
   const rows = flattenAdvisories([
     found('bad', ['1.0.0'], { severity: 'critical', title: 'a vulnerability' }),
     // OSV's record of a malicious package, which rates none.
-    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined }),
+    found('evil', ['1.0.0'], { source: 'osv', id: 'MAL-2025-20690', title: 'Malicious code in evil (npm)', severity: undefined, malware: true }),
     // GitHub's malware advisory, rated high, as npm's registry has ua-parser-js's.
-    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'] }),
-    // A registry row OSV's MAL- record is of, its id among the row's aliases.
-    found('typo', ['2.0.0'], { id: 'GHSA-1111-2222-3333', title: 'Malicious Package in typo', severity: 'critical', aliases: ['MAL-2022-1234'] }),
-    // Hidden functionality alone is no malware.
+    found('hijacked', ['0.7.29'], { id: 'GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', cwe: ['CWE-506', 'CWE-912'], malware: true }),
     found('backdoor', ['1.0.0'], { severity: 'moderate', title: 'a debug endpoint', cwe: ['CWE-912'] }),
   ])
-  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['malware', 'typo'], ['critical', 'bad'], ['moderate', 'backdoor']])
+  t.assert.deepStrictEqual(rows.map((r) => [r.severity, r.package]), [['malware', 'evil'], ['malware', 'hijacked'], ['critical', 'bad'], ['moderate', 'backdoor']])
 })
 
-test('flattenAdvisories lists the covered versions and carries range, title and id', (t) => {
+test('flattenAdvisories lists the covered versions and carries range, title, id and source', (t) => {
   const rows = flattenAdvisories([found('foo', ['1.0.0', '1.5.0'], { severity: 'high', title: 'x', range: '<2' })])
-  t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', reason: '' }])
+  t.assert.deepStrictEqual(rows, [{ ecosystem: 'npm', package: 'foo', installed: '1.0.0, 1.5.0', vulnerable: '<2', severity: 'high', title: 'x', id: 'GHSA-aaaa-bbbb-cccc', source: 'registry', reason: '' }])
 })
 
 test('flattenAdvisories joins the reasons of the affected versions, sorted', (t) => {
@@ -728,11 +726,40 @@ test('printAuditReport: severities in colour, the header bold and the box dimmed
   t.assert.equal(painted.err, `\nScanned 5 packages: ${styled('bold', '5 alerts')} (${styled(['bold', 'magenta'], '1 critical')}, ${styled(['bold', 'red'], '1 high')}, ${styled('yellow', '1 moderate')}, ${styled('cyan', '1 low')}, ${styled(DIM, '1 unrated')})\n`)
   const malware = { out: '', err: '' }
   printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { malware.out += s } }, err: { write: (s) => { malware.err += s } }, colors: true })
-  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], 'malware')}  ${bar} ${styled('bold', 'evil')} `), malware.out)
-  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], '1 malware')}, ${styled(['bold', 'red'], '1 high')})\n`)
+  // Malware a badge, its colour a space wider on either side, in the table and the summary.
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'white', 'bgRed'], ' malware ')} ${bar} ${styled('bold', 'evil')} `), malware.out)
+  t.assert.ok(malware.out.includes(`${bar} ${styled(['bold', 'red'], 'high')}      ${bar}`), 'the column a space wider for it')
+  t.assert.equal(malware.err, `\nScanned 2 packages: ${styled('bold', '2 alerts')} (${styled(['bold', 'white', 'bgRed'], ' 1 malware ')}, ${styled(['bold', 'red'], '1 high')})\n`)
+  // With no colour, no spaces: they'd only pad the word.
+  const uncoloured = { out: '', err: '' }
+  printAuditReport({ packages: [{}, {}], rows: [row('malware', 'evil'), row('high', 'b')] }, { out: { write: (s) => { uncoloured.out += s } }, err: { write: (s) => { uncoloured.err += s } }, colors: false })
+  t.assert.deepStrictEqual(rowsOf(uncoloured.out).map(([severity]) => severity), ['severity', 'malware', 'high'])
+  t.assert.ok(uncoloured.out.includes('│ malware  │ evil'), uncoloured.out)
+  t.assert.equal(uncoloured.err, '\nScanned 2 packages: 2 alerts (1 malware, 1 high)\n')
   const none = { err: '' }
   printAuditReport({ packages: [{}], rows: [] }, { out: { write() {} }, err: { write: (s) => { none.err += s } }, colors: true })
   t.assert.equal(none.err, `Scanned 1 package: ${styled(['bold', 'green'], '0 alerts')}\n`)
+})
+
+test('printAuditReport: with icons, each id has its source\'s sixel icon drawn before it, over two cells kept blank, and room made below its line', (t) => {
+  const row = (source, id) => ({ ecosystem: 'npm', package: 'foo', installed: '1.0.0', vulnerable: '<2', severity: 'high', title: 't', id, source, reason: '' })
+  const report = { packages: [{}], rows: [row('registry', 'GHSA-1111-1111-1111'), row('repository', 'GHSA-2222-2222-2222'), row('osv', 'MAL-2025-20690'), row('elsewhere', 'X-1')] }
+  const print = (options) => {
+    let out = ''
+    printAuditReport(report, { out: { write: (s) => { out += s } }, err: { write() {} }, colors: false, ...options })
+    return out
+  }
+  const plain = print()
+  t.assert.ok(!plain.includes('\x1bP'), 'none without icons')
+  const drawn = print({ icons: true })
+  for (const [icon, id] of [[NPM, 'GHSA-1111-1111-1111'], [GITHUB, 'GHSA-2222-2222-2222'], [OSV, 'MAL-2025-20690']]) {
+    t.assert.ok(drawn.includes(`\n\n\x1b[2A│ high`) && drawn.includes(`│ \x1b7${icon}\x1b8\x1b[2C ${id}`), id)
+  }
+  // Seen as a terminal shows it: the icon's cells blank, the borders where they are without icons.
+  let shown = drawn.replaceAll('\n\n\x1b[2A', '')
+  for (const icon of [NPM, GITHUB, OSV]) shown = shown.replaceAll(`\x1b7${icon}\x1b8\x1b[2C`, '  ')
+  t.assert.deepStrictEqual(rowsOf(shown).map((cells) => cells.at(-1)), ['id', 'GHSA-1111-1111-1111', 'GHSA-2222-2222-2222', 'MAL-2025-20690', 'X-1'], 'a source with no icon, its cells blank')
+  t.assert.equal(new Set(shown.trimEnd().split('\n').map((line) => line.length)).size, 1, 'every line as wide')
 })
 
 test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted to a terminal\'s width', (t) => {
@@ -1207,6 +1234,51 @@ test('stasis audit --reason=<a consumer no file records> exits as a usage error,
   t.assert.equal(r.stderr, 'Error: --reason=not-present-in-bundle: no file records that consumer; they record webpack, run\nRun \'stasis --help\' for usage.\n')
   t.assert.equal(r.stdout, '')
 }))
+
+// npm's registry: `hijacked`'s malware advisory (CWE-506, rated high), and a HEAD of a name's document
+// answered 200, but 404 for @acme/secret, a private package to a request with no token; OSV: its record
+// of a malicious `evil`, a version npm took down.
+const npmOsvFetch = ({ url, opts }) => {
+  if (opts?.method === 'HEAD') return new Response(null, { status: url.endsWith('/@acme/secret') ? 404 : 200 })
+  if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') {
+    const asked = JSON.parse(opts.body)
+    return json(Object.hasOwn(asked, 'hijacked') ? { hijacked: [{ id: 1, url: 'https://github.com/advisories/GHSA-pjwm-rvh2-c87w', title: 'Embedded malware in hijacked', severity: 'high', vulnerable_versions: '=0.7.29', cwe: ['CWE-506'] }] } : {})
+  }
+  if (url === 'https://api.osv.dev/v1/querybatch') {
+    return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'evil' ? { vulns: [{ id: 'MAL-2099-0001' }] } : {})) })
+  }
+  if (url === 'https://api.osv.dev/v1/vulns/MAL-2099-0001') {
+    return json({ id: 'MAL-2099-0001', summary: 'Malicious code in evil (npm)', affected: [{ package: { ecosystem: 'npm', name: 'evil' } }] })
+  }
+  throw new Error(`unexpected request: ${url}`)
+}
+const OSV_BUNDLE = {
+  modules: Object.fromEntries([['evil', '1.0.0'], ['hijacked', '0.7.29'], ['ok', '2.0.0'], ['@acme/secret', '1.0.0']]
+    .map(([name, version]) => [`node_modules/${name}`, { name, version, files: { 'index.js': '' } }])),
+  formats: {},
+}
+
+test('audit(osv) asks OSV about public npm packages, never a private one, and rates what advisories() flags as malware `malware`', withFetch(
+  npmOsvFetch,
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const bundle = writeBundle(tmp, 'osv.br', OSV_BUNDLE)
+      const report = await audit([bundle], { osv: true })
+      const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
+      t.assert.deepStrictEqual(queries.map(({ package: { name } }) => name).toSorted(), ['evil', 'hijacked', 'ok'])
+      t.assert.ok(!calls.some((call) => call.url.startsWith('https://api.osv.dev/') && `${call.url} ${call.opts?.body ?? ''}`.includes('secret')), 'the private package never named to OSV')
+      t.assert.deepStrictEqual(report.rows.map(({ severity, package: pkg, id }) => [severity, pkg, id]), [['malware', 'evil', 'MAL-2099-0001'], ['malware', 'hijacked', 'GHSA-pjwm-rvh2-c87w']])
+      // Without `osv`: npm's registry alone, its malware rated so all the same.
+      calls.length = 0
+      const registryOnly = await audit([bundle])
+      t.assert.deepStrictEqual(calls.map((call) => call.url), ['https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'])
+      t.assert.deepStrictEqual(registryOnly.rows.map(({ severity, package: pkg }) => [severity, pkg]), [['malware', 'hijacked']])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
 
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
   ({ url }) => {

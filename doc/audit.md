@@ -48,15 +48,16 @@ column can take it (a `--why` chain's further lines indented). Piped or
 written to a file, each row stays on one line. Where the stream takes colours
 (a terminal that has them, or a CI log), severities are coloured (malware
 white on red, critical magenta, high red, moderate yellow, low cyan, unrated
-dimmed), and so is the summary's count of each.
+dimmed), and so is the summary's count of each. Where the terminal draws sixel
+images (it answers a Primary Device Attributes query with sixel graphics among
+what it has), each id has an icon before it for where the advisory comes from:
+npm's registry, a GitHub repository's advisories, or OSV.
 
 An advisory of malware, not a vulnerability, is rated `malware`, above
-critical, whatever its source rates it: one of OSV's records of malicious
-packages (`MAL-...`, its id or one of its aliases), which rate none, or one filed
-under CWE-506 (Embedded Malicious Code), as GitHub files its malware advisories
-(`Embedded malware in ua-parser-js`, which npm's advisories rate high). Those
-rows come first, and the summary counts them first
-(`5 alerts (3 malware, 1 critical, 1 moderate)`).
+critical, whatever its source rates it. `@preventive/upstream` flags it as
+malware: an OSV `MAL-` record (by id or alias), CWE-506 (how GitHub files
+malware), or a title with the word "malware". Those rows come first, and the
+summary counts them first (`5 alerts (3 malware, 1 critical, 1 moderate)`).
 
 With `--reason`, the summary says whose packages were scanned
 (`Scanned 12 packages recorded by run: ...`).
@@ -77,7 +78,7 @@ artifact tags it with (see [file formats](file-formats.md)):
 
 | Ecosystem | Dependencies | Asked |
 | - | - | - |
-| `npm` | `node_modules` packages | npm's advisories |
+| `npm` | `node_modules` packages | npm's advisories, and OSV's for a public package (see [OSV and private packages](#osv-and-private-packages)) |
 | `cargo` | crates vendored from a registry | OSV |
 | `composer` | Composer packages | OSV; a dev version (`dev-main`, `1.x-dev`) is listed as not audited, no database having one |
 | `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: a git dependency's, the one its artifact records, else the one Soldeer's registry names |
@@ -127,6 +128,20 @@ scanned, counted, listed as not audited, or sent to an advisory source. With
 audit before anything is asked, naming the consumers they do record; a lockfile
 records none. Artifacts without a resolution graph (`imports`) contribute no
 chains.
+
+## OSV and private packages
+
+OSV has what npm's advisories lack, above all its records of malicious
+packages (`MAL-...`), which npm takes down rather than lists. An npm package
+is asked of OSV only where its name is public: npm's registry answers a `HEAD`
+for it, sent with no token. A private package, or one only another registry
+has, answers 404 and is asked of npm's registry alone; so is a name the
+registry doesn't answer for. The name decides, not the version, as npm takes
+down malicious versions but keeps their name. A public name is cached for a
+month in the user cache directory (below).
+
+npm's registry is asked about every npm package, private ones included, as
+`npm audit` asks it.
 
 ## Repository advisories (`--repo-advisories`)
 
