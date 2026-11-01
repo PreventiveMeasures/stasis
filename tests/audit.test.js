@@ -785,7 +785,9 @@ test('printAuditReport: a chain\'s arrows dimmed under --why; the table fitted t
   t.assert.equal(fitted({}).split('\n').length, 6, 'a pipe\'s, or a file\'s, unwrapped')
 })
 
-// CLI integration. Without CI, which colours what the CLI prints (a padded malware badge, say).
+// CLI integration. Without CI, which colours what the CLI prints (a padded malware badge, say), and
+// with no GitHub token, whatever the environment's: repositories' advisories are asked by default where
+// there is one.
 const {
   CI: _ci,
   EXODUS_STASIS_LOCK: _l,
@@ -793,6 +795,7 @@ const {
   EXODUS_STASIS_BUNDLE: _b,
   EXODUS_STASIS_BUNDLE_FILE: _bf,
   EXODUS_STASIS_DEBUG: _d,
+  GITHUB_TOKEN: _token,
   ...cleanEnv
 } = process.env
 
@@ -835,7 +838,7 @@ test('audit lists a Composer dev version as not audited, asking nothing for it',
     modules: {},
     formats: {},
   })
-  const r = runCli(['audit', file])
+  const r = runCli(['audit', '--no-repo-advisories', file])
   t.assert.equal(r.status, 0, r.stderr)
   t.assert.equal(r.stderr, 'Not audited:\n  composer acme/tools@1.x-dev  a Composer dev version, which no advisory database lists\n\nScanned 1 package: 0 alerts\n')
 }))
@@ -867,15 +870,32 @@ test("audit --repo-advisories asks GitHub with GITHUB_TOKEN, else with ~/.audit/
   const audited = join(tmp, 'audited')
   mkdirSync(join(audited, '.audit'), { recursive: true })
   writeFileSync(join(audited, '.audit', 'config.json'), JSON.stringify({ token: 'from-audit' }))
-  const { GITHUB_TOKEN: _token, ...env } = cleanEnv
   // `stasis audit --repo-advisories` with `home` as the user's, and `more` in its environment.
   const run = (home, more = {}) => {
-    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', '--repo-advisories', file], { encoding: 'utf-8', env: { ...env, HOME: home, XDG_CACHE_HOME: join(tmp, 'cache'), ...more } })
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', '--repo-advisories', file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: home, XDG_CACHE_HOME: join(tmp, 'cache'), ...more } })
     return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
   }
   t.assert.deepStrictEqual(run(audited), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-audit\nScanned 1 package: 0 alerts\n' })
   t.assert.deepStrictEqual(run(audited, { GITHUB_TOKEN: 'from-env' }), { status: 0, stderr: 'github /repos/o/dep/security-advisories Bearer from-env\nScanned 1 package: 0 alerts\n' }, "GITHUB_TOKEN's first")
   t.assert.deepStrictEqual(run(join(tmp, 'nowhere')), { status: 1, stderr: "Error: --repo-advisories requires a GitHub token in GITHUB_TOKEN\nRun 'stasis --help' for usage.\n" }, 'refused without either, as before')
+}))
+
+test('audit asks repositories for advisories by default where there is a GitHub token, never with --no-repo-advisories', withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, GITHUB_SPY)
+  const file = writeBundle(tmp, 'snapshot.br', { modules: { 'node_modules/dep': { name: 'dep', version: '1.0.0', repo: { github: 'o/dep' }, files: { 'index.js': '' } } }, formats: {} })
+  // `stasis audit ...args` of the bundle, with GITHUB_TOKEN `token` where given, and no ~/.audit/config.json.
+  const run = (args, token) => {
+    const r = spawnSync(process.execPath, [`--import=${pathToFileURL(spy)}`, cli, 'audit', ...args, file], { encoding: 'utf-8', env: { ...cleanEnv, HOME: join(tmp, 'home'), XDG_CACHE_HOME: join(tmp, 'cache'), ...(token && { GITHUB_TOKEN: token }) } })
+    return { status: r.status, stderr: stripVTControlCharacters(r.stderr) }
+  }
+  const asked = 'github /repos/o/dep/security-advisories Bearer t\n'
+  t.assert.deepStrictEqual(run([], 't'), { status: 0, stderr: `${asked}Scanned 1 package: 0 alerts\n` })
+  t.assert.deepStrictEqual(run([]), { status: 0, stderr: 'Repository advisories require GITHUB_TOKEN; continuing without them\nScanned 1 package: 0 alerts\n' }, 'not asked, and said so, without one')
+  t.assert.deepStrictEqual(run(['--no-repo-advisories'], 't'), { status: 0, stderr: 'Scanned 1 package: 0 alerts\n' })
+  t.assert.deepStrictEqual(run(['--no-repo-advisories']), { status: 0, stderr: 'Scanned 1 package: 0 alerts\n' })
+  t.assert.deepStrictEqual(run(['--repo-advisories'], 't'), { status: 0, stderr: `${asked}Scanned 1 package: 0 alerts\n` }, 'as by default')
+  t.assert.deepStrictEqual(run(['--repo-advisories', '--no-repo-advisories'], 't'), { status: 1, stderr: "Error: --repo-advisories and --no-repo-advisories: give one\nRun 'stasis --help' for usage.\n" })
 }))
 
 // A preload answering npm's batch requests with an advisory for each of foo and bar it is asked
@@ -970,13 +990,13 @@ test("audit with no file says the bundle's warnings only where the bundle fails,
   writeFileSync(join(project, 'index.js'), "require('foo')\nmodule.exports = () => require('nope')\n")
   const warning = '[stasis] Bundle has 1 unresolved import(s); they will fall through at load time:\n  require nope from index.js (MODULE_NOT_FOUND)\n'
   t.assert.ok(runSpied(spy, project, ['bundle', `--output=${join(tmp, 'warned.br')}`]).stderr.startsWith(warning), 'stasis bundle warns')
-  const quiet = runSpied(spy, project, ['audit'])
+  const quiet = runSpied(spy, project, ['audit', '--no-repo-advisories'])
   t.assert.equal(quiet.status, 1)
   t.assert.equal(quiet.stderr, 'npm {"bar":["2.0.0"],"foo":["1.0.0"]}\n\nScanned 2 packages: 2 alerts (2 high)\n')
   // A second build, of an entry importing a file that isn't there, fails after the first warned.
   writeFileSync(join(project, 'cli.mjs'), "import 'bar'\nimport './missing.js'\n")
   writeFileSync(join(project, 'stasis.config.json'), JSON.stringify({ entries: { 'index.js': {}, 'cli.mjs': { jsx: true } } }))
-  const failed = runSpied(spy, project, ['audit'])
+  const failed = runSpied(spy, project, ['audit', '--no-repo-advisories'])
   t.assert.equal(failed.status, 1)
   t.assert.equal(failed.stdout, '')
   t.assert.ok(failed.stderr.startsWith(warning), failed.stderr)

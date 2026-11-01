@@ -6,8 +6,8 @@ record. Only installed dependencies are audited; first-party code is never
 sent to a registry.
 
 ```sh
-stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories] path/to/(lockfile|bundle) ...
-stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories]   # stasis.config.json's entries' bundle
+stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories] path/to/(lockfile|bundle) ...
+stasis audit [--why|--why-deep] [--why-full] [--reason=consumer] [--repo-advisories|--no-repo-advisories]   # stasis.config.json's entries' bundle
 ```
 
 With no file, in a directory whose [`stasis.config.json`](file-formats.md#stasisconfigjson)
@@ -33,7 +33,8 @@ finds it) is checked too, for malware alone: see
 | `--why-deep` | Like `--why`, also keeping a chain a shorter listed chain is the tail of. |
 | `--why-full` | Spell every chain out, with no `...` collapse. With `--why-deep`, the complete raw listing. |
 | `--reason=consumer` | Only the packages that consumer (`run`, `metro`, `bundle:metro`, ...) recorded are scanned, counted and asked about; with `--why`, only its chains. npm's malware advisories of every other npm dependency are still told, apart (see [Malware in any dependency](#malware-in-any-dependency)). A consumer no input records is an error naming those they do. |
-| `--repo-advisories` | Also ask each package's GitHub repository for its advisories. Needs `GITHUB_TOKEN`. See [Repository advisories](#repository-advisories---repo-advisories). |
+| `--no-repo-advisories` | Don't ask each package's GitHub repository for its advisories, which is asked by default where `GITHUB_TOKEN` is set. See [Repository advisories](#repository-advisories). |
+| `--repo-advisories` | Ask them, as by default, but fail without `GITHUB_TOKEN` rather than go on without them. |
 
 Exits 0 when nothing is flagged and 1 otherwise, npm's malware advisories of a
 dependency outside `--reason` included, so it composes in CI. The table goes to
@@ -94,7 +95,8 @@ stasis audit stasis.lock.json
 stasis audit --why app.stasis.code.br
 stasis audit --reason=metro   # the Metro build of stasis.config.json's entries
 stasis audit --reason=run --why app.stasis.code.br
-GITHUB_TOKEN=... stasis audit --repo-advisories stasis.lock.json
+GITHUB_TOKEN=... stasis audit stasis.lock.json   # with each repository's advisories too
+stasis audit --no-repo-advisories stasis.lock.json
 ```
 
 ## What is audited
@@ -196,11 +198,16 @@ month in the user cache directory (below).
 npm's registry is asked about every npm package, private ones included, as
 `npm audit` asks it.
 
-## Repository advisories (`--repo-advisories`)
+## Repository advisories
 
-`--repo-advisories` also asks each package's GitHub repository for the
-advisories its maintainers published there, which the databases above carry
-only once GitHub reviews them. It needs a GitHub token in `GITHUB_TOKEN`.
+By default, where `GITHUB_TOKEN` is set, each package's GitHub repository is
+also asked for the advisories its maintainers published there, which the
+databases above carry only once GitHub reviews them: a request a package, which
+GitHub's rate for requests without a token wouldn't last. Without a token they
+are not asked, and a line above the table says so
+(`Repository advisories require GITHUB_TOKEN; continuing without them`).
+`--no-repo-advisories` never asks them, and says nothing; `--repo-advisories`
+fails without a token rather than go on without them.
 
 Each package's repository is the one its artifact records for it (its
 `package.json`'s, or for a Composer package its git source's, see `repo` in

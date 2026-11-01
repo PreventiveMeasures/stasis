@@ -431,16 +431,17 @@ const drawIcon = (icon) => `\x1b7${icon}\x1b8\x1b[${ICON_CELLS}C`
 const ROOM_BELOW = '\n\n\x1b[2A'
 
 // The advisories as a table on `out`, fitted to `width` (the terminal's, where `out` is one) by wrapping
-// its long columns; on `err`, the packages not audited, then the summary, last, so it is what is read
-// after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
+// its long columns, after `notes` on `err` (lines of what the audit leaves out, each in yellow); on
+// `err`, the packages not audited, then the summary, last, so it is what is read after the table. Severities in colour, the header bold and the box dimmed, where each stream takes
 // colours (`colors`, else takesColors). With `icons` (the logos sixel.js logos() picks for a terminal
 // that draws sixel images, true for its 16-pixel ones), each id has its source's icon before it.
-export function printAuditReport({ packages, skipped = [], rows, npmMalware = [], why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false } = {}) {
+export function printAuditReport({ packages, skipped = [], rows, npmMalware = [], why = false, reason = null }, { out = process.stdout, err = process.stderr, colors, width = out.isTTY ? out.columns : undefined, icons: given = false, notes = [] } = {}) {
   const icons = given === true ? logos() : given || null
   const paintOut = painter(out, colors)
   const paintErr = painter(err, colors)
   const coloredOut = colors ?? takesColors(out)
   const coloredErr = colors ?? takesColors(err)
+  for (const note of notes) err.write(`${paintErr('yellow', note)}\n`)
   const scanned = `Scanned ${packages.length} package${packages.length === 1 ? '' : 's'}${reason ? ` recorded by ${reason}` : ''}`
   if (packages.length === 0) {
     err.write(`${scanned}\n${paintErr('yellow', reason ? `No dependencies recorded by ${reason}` : 'No dependencies found in the input files')}\n`)
