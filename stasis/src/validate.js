@@ -941,8 +941,10 @@ export function lockedBy(lockfiles) {
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
     // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`: that version,
-    // or a directory's package of that name, whose files it is held to (locals); undefined for none read.
-    aliased: (as, named) => npm && (npm.aliases.has(`${as}\0${named}`) || Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`))),
+    // or a directory's package of that name, where it locks no other of that version, so that its
+    // files are held to the directory's (locals); undefined for none read.
+    aliased: (as, named) => npm && (npm.aliases.has(`${as}\0${named}`)
+      || (!npm.entries.has(named) && Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`)))),
     from: npm?.from,
     tree: npm?.tree,
     read(path) {

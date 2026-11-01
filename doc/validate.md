@@ -179,7 +179,8 @@ has it:
   location, yarn's (`foo@npm:ms@…`) or pnpm's (`foo: ms@2.1.3`). pnpm's of a
   directory (`foo: lib@file:lib`, as a `file:` override installs one, hoisted
   under the name it overrides) is of the package of that name in the
-  directory, any version: its files are held to the directory's (above).
+  directory, any version its lockfile locks no other of: its files are held to
+  the directory's (above).
 - **pnpm's store**: a copy under `node_modules/.pnpm/<name>@<version>/`
   (its peers or patch after an `_`, a scope's `/` a `+`) is of that name and
   version. One pnpm hashed (a long name, or one with uppercase) tells no
