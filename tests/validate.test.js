@@ -13,7 +13,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, exitCodeOf, installedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -702,6 +702,43 @@ test('repositoryLockfiles: as the build finds each package manager\'s root, pnpm
   files['web/app/Cargo.lock'] = null
   t.assert.deepStrictEqual(await find('cargo'), ['web/app/Cargo.lock'])
 })
+
+test('installedNpmPackages: the registry\'s versions the lockfile installing a directory locks, found as the build finds it, read of the disk', withTmp(async (t, tmp) => {
+  const write = (files) => {
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(tmp, rel)), { recursive: true })
+      // As npm writes its lockfile, which it is read as.
+      writeFileSync(join(tmp, rel), typeof text === 'string' ? text : `${JSON.stringify(text, null, 2)}\n`)
+    }
+  }
+  // npm's, of a workspace: found at its root from the workspace's directory; a git version left out.
+  write({
+    'npm/package.json': { name: 'app', workspaces: ['web'] },
+    'npm/web/package.json': { name: 'web', version: '1.0.0' },
+    'npm/package-lock.json': { name: 'app', lockfileVersion: 3, requires: true, packages: {
+      '': { name: 'app', workspaces: ['web'] },
+      web: { version: '1.0.0', dependencies: { debug: '4.3.4', forked: 'github:acme/forked', ms: '2.1.3' } },
+      'node_modules/web': { resolved: 'web', link: true },
+      'node_modules/ms': lockEntry('ms', '2.1.3', SRI),
+      'node_modules/debug': lockEntry('debug', '4.3.4', SRI, { dependencies: { ms: '2.0.0' } }),
+      'node_modules/debug/node_modules/ms': lockEntry('ms', '2.0.0', SRI),
+      'node_modules/forked': { version: '1.0.0', resolved: `git+ssh://git@github.com/acme/forked.git#${'a'.repeat(40)}` },
+    } },
+  })
+  const npm = await installedNpmPackages(join(tmp, 'npm', 'web'))
+  t.assert.equal(npm.path, join(tmp, 'npm', 'package-lock.json'))
+  t.assert.deepStrictEqual(npm.packages.map(({ name, version }) => `${name}@${version}`).toSorted(), ['debug@4.3.4', 'ms@2.0.0', 'ms@2.1.3'], 'forked, from git, left out')
+  // pnpm's.
+  write({ 'pnpm/package.json': { name: 'app' }, 'pnpm/pnpm-lock.yaml': msLock('.', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n') })
+  t.assert.deepStrictEqual((await installedNpmPackages(join(tmp, 'pnpm'))).packages, [{ name: 'ms', version: '2.1.3' }])
+  // None at or above it.
+  write({ 'none/package.json': { name: 'app' } })
+  const outside = await installedNpmPackages(join(tmp, 'none'))
+  t.assert.ok(outside === null || !outside.path.startsWith(tmp), 'none in the directory or above it, of the project')
+  // Two package managers': refused, as audit tells it.
+  write({ 'both/package.json': { name: 'app' }, 'both/pnpm-lock.yaml': msLock('.', '      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n'), 'both/package-lock.json': { name: 'app', lockfileVersion: 3, packages: { '': { name: 'app' } } } })
+  await t.assert.rejects(installedNpmPackages(join(tmp, 'both')), (error) => error instanceof ValidateError && error.code === 'lockfile-ambiguous' && !error.message.includes('--lockfile'))
+}))
 
 test('lockedBy: pnpm\'s versions from the registry with their integrity, from git (a git resolution, or a git host\'s tarball) alone, or none', (t) => {
   const at = 'a'.repeat(40)

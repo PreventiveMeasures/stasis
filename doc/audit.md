@@ -21,7 +21,11 @@ builds' (`bundle`, `metro` for `bundle:metro` as below, and `extra` for the
 files the config's `extra` adds), which `--reason` takes. Bare `stasis bundle`
 takes no flag, so an entry setting an option that needs consent (`babel`,
 `metro-resolver`, `cargo`, `cargo-target`) is refused here as it is there;
-bundle such entries with `stasis bundle` and audit the file.
+bundle such entries with `stasis bundle` and audit the file. The package
+manager's lockfile installing the directory (`pnpm-lock.yaml`,
+`package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`, found as the build
+finds it) is checked too, for malware alone: see
+[Malware in any dependency](#malware-in-any-dependency).
 
 | Flag | Meaning |
 | - | - |
@@ -165,10 +169,15 @@ is printed apart from the table, after the summary: each advisory a line, its
 package and version, id and title, and the consumers that recorded it. Under
 `--reason`, the npm packages its consumer didn't record are asked of npm's
 registry alone for it, which is fast, where OSV and their repositories are not.
-Any such advisory makes the audit exit 1, an empty table or not.
+With no file, so are the registry's versions the package manager's lockfile
+installs that the bundle doesn't hold (devDependencies, say), deduped with the
+bundle's before anything is asked; such a package is named by the lockfile in
+place of consumers. Where it can't be told which lockfile that is (more than one
+package manager's, or bun's, which isn't read), that is said, and the audit goes
+on. Any such advisory makes the audit exit 1, an empty table or not.
 
 ```
-malware in 2 dependencies, as npm's advisories tell:
+malware in 2 dependencies:
   flatmap-stream 0.1.1  GHSA-9x64-5r7x-2q53  Malicious Package in flatmap-stream  webpack
   ua-parser-js 0.7.29   GHSA-pjwm-rvh2-c87w  Embedded malware in ua-parser-js     webpack
 ```

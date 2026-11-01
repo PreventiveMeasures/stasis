@@ -313,11 +313,13 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // name npm's registry serves to anyone; advisories() never sends it a private one.
 // `npmMalware` is what npm's registry tells of malware in any npm dependency, whatever `reason`: rows as
 // `rows` are, each package's consumers its reason. Under --reason, the npm packages its consumer didn't
-// record are asked of npm's registry alone for it (fast, where OSV and their repositories aren't).
+// record are asked of npm's registry alone for it (fast, where OSV and their repositories aren't), as are
+// those `lockfile` (`{ path, packages }`, validate.js installedNpmPackages', a package manager's) locks that
+// the files don't, deduped with the files' before anything is asked; such a package's reason its file name.
 // Consumers are named as consumerNames names them, across all the files: `bundle:metro` as `metro`
 // where none records `metro`, in the rows, the chains and the `reason` returned, and `reason` may
 // name it either way.
-export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false } = {}) {
+export async function audit(files, { why = false, whyDeep = false, whyFull = false, reason = null, repoAdvisories = false, github, osv = false, lockfile = null } = {}) {
   // --why-deep and --why-full imply --why. Deep keeps every chain instead of the
   // default pruning of chains whose full suffix is already a chain (see
   // collectWhy/dropSuffixed); full spells chains out with no `...` collapse.
@@ -341,9 +343,20 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
     return because === undefined ? [] : [{ ...pkg, because }]
   })
   const asked = packages.filter((pkg) => unaudited(pkg) === undefined)
-  // Under --reason, the npm packages its consumer didn't record, for npm's malware advisories.
+  // Under --reason, the npm packages its consumer didn't record, and those `lockfile` locks alone, for npm's
+  // malware advisories, each once, by keyOf: none asked about already.
   const own = new Set(packages)
-  const others = reason ? all.filter((pkg) => !own.has(pkg) && pkg.ecosystem === 'npm' && unaudited(pkg) === undefined) : []
+  const keyed = (pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]
+  const byKey = new Map((reason ? all.filter((pkg) => !own.has(pkg) && pkg.ecosystem === 'npm' && unaudited(pkg) === undefined) : []).map(keyed))
+  const askedKeys = new Set(asked.map((pkg) => keyed(pkg)[0]))
+  const lockedOnly = new Set()
+  for (const { name, version } of lockfile?.packages ?? []) {
+    const [key, pkg] = keyed({ ecosystem: 'npm', name, version })
+    if (askedKeys.has(key) || byKey.has(key)) continue
+    byKey.set(key, pkg)
+    lockedOnly.add(key)
+  }
+  const others = [...byKey.values()]
   if (asked.length === 0 && others.length === 0) {
     return { packages, skipped, advisories: [], rows: [], npmMalware: [], why, whyDeep, whyFull, reason }
   }
@@ -365,7 +378,9 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
   // npm's registry's malware advisories (`registry` rows, not OSV's records), of every npm dependency.
   const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
-  const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, indexed().byPkg, null, null, vendoredOf([...asked, ...others]))
+  // Their consumers, and the lockfile's name for those it alone locks.
+  const malwareReasons = () => (lockedOnly.size === 0 ? indexed().byPkg : new Map([...indexed().byPkg, ...[...lockedOnly].map((key) => [key, new Set([lockfile.path.split(/[/\\]/u).at(-1)])])]))
+  const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, malwareReasons(), null, null, vendoredOf([...asked, ...others]))
   // `--why` REPLACES the consumer list with per-consumer import paths for npm's
   // advisories, the only ones collectWhy has paths for: another ecosystem's keep
   // their consumers. Restrict the (potentially expensive) path search to the
@@ -481,5 +496,5 @@ function printMalware(rows, err, paint, colored) {
   const pad = (list) => Math.max(...list.map((text) => text.length))
   const [nameWidth, idWidth, titleWidth] = [pad(names), pad(rows.map((row) => row.id)), pad(rows.map((row) => row.title))]
   const lines = rows.map((row, i) => `  ${names[i].padEnd(nameWidth)}  ${row.id.padEnd(idWidth)}  ${row.reason ? `${row.title.padEnd(titleWidth)}  ${paint(DIM, row.reason)}` : row.title}`)
-  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}, as npm's advisories tell:\n${lines.join('\n')}\n`)
+  err.write(`\n${paint(SEVERITY_TONES.malware, badge('malware', 'malware', colored))} in ${packages} dependenc${packages === 1 ? 'y' : 'ies'}:\n${lines.join('\n')}\n`)
 }
