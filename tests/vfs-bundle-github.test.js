@@ -309,6 +309,46 @@ test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their 
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(unbuiltSibling), cwd: 'packages/dep', typescript: true }), ['src/index.ts', 'src/foo.ts'])
 })
 
+// Unbuilt siblings whose outputs a bundler's own fields pick between: rn's `react-native` field
+// beside its `main`, web's `browser` map redirecting one output to another, and plat's extensionless
+// `main`, which Metro completes with a platform suffix first.
+const fieldSiblings = ['plat', 'rn', 'web']
+const unbuiltFieldSiblings = {
+  'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+  'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+  'pnpm-lock.yaml': lockfile('.', 'packages/app', ...fieldSiblings.map((name) => `packages/${name}`)).replace('  packages/app: {}\n', [
+    '  packages/app:', '    dependencies:',
+    ...fieldSiblings.flatMap((name) => [`      ${name}:`, '        specifier: workspace:*', `        version: link:../${name}`]), '',
+  ].join('\n')),
+  'packages/rn/package.json': json({ name: 'rn', version: '1.0.0', main: 'dist/index.js', 'react-native': 'dist/index.native.js' }),
+  'packages/rn/src/index.ts': 'export const r: string = "main"\n',
+  'packages/rn/src/index.native.ts': 'export const r: string = "native"\n',
+  'packages/web/package.json': json({ name: 'web', version: '1.0.0', main: 'dist/a.js', browser: { './dist/a.js': './dist/a.browser.js' } }),
+  'packages/web/src/a.ts': 'export const a: string = "node"\n',
+  'packages/web/src/a.browser.ts': 'export const a: string = "browser"\n',
+  'packages/plat/package.json': json({ name: 'plat', version: '1.0.0', main: 'dist/index' }),
+  'packages/plat/src/index.ts': 'export const p: string = "any"\n',
+  'packages/plat/src/index.ios.ts': 'export const p: string = "ios"\n',
+  ...Object.fromEntries(fieldSiblings.map((name) => [`packages/${name}/tsconfig.json`, json({ compilerOptions: { outDir: 'dist', rootDir: 'src' } })])),
+  'packages/app/package.json': json({ name: 'app', version: '1.0.0', dependencies: Object.fromEntries(fieldSiblings.map((name) => [name, 'workspace:*'])) }),
+  'packages/app/src/entry.ts': "import { r } from 'rn'\nimport { a } from 'web/dist/a.js'\nimport { p } from 'plat'\nexport const v: string = r + a + p\n",
+}
+
+test("buildGitHubBundle maps the output a bundler's own fields pick to its source under typescript, as Metro picks it", async (t) => {
+  const picked = (bundle) => Object.fromEntries([...[...bundle.imports.values()][0].get('packages/app/src/entry.ts')].map(([spec, to]) => [spec, to instanceof Map ? Object.fromEntries(to) : to]))
+  const cases = [
+    // Metro reads react-native, browser and main, each output's platform files first.
+    [{ metro: true, platforms: ['ios', 'android'] }, { rn: 'packages/rn/src/index.native.ts', 'web/dist/a.js': 'packages/web/src/a.browser.ts', plat: { android: 'packages/plat/src/index.ts', ios: 'packages/plat/src/index.ios.ts' } }],
+    [{ mainFields: ['react-native', 'browser', 'main'] }, { rn: 'packages/rn/src/index.native.ts', 'web/dist/a.js': 'packages/web/src/a.browser.ts', plat: 'packages/plat/src/index.ts' }],
+    // Node's resolution reads none of them.
+    [{}, { rn: 'packages/rn/src/index.ts', 'web/dist/a.js': 'packages/web/src/a.ts', plat: 'packages/plat/src/index.ts' }],
+  ]
+  await Promise.all(cases.map(async ([options, expected]) => {
+    const { bundle } = await build({ client: fakeClient(unbuiltFieldSiblings), entries: ['packages/app/src/entry.ts'], typescript: true, ...options })
+    t.assert.deepStrictEqual(picked(bundle), expected, JSON.stringify(options))
+  }))
+})
+
 test("suggestedEntries downloads a directory as buildGitHubBundle does, and names nothing out of it", async (t) => {
   const files = {
     'README.md': 'x\n',

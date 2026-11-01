@@ -1227,9 +1227,10 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
       "import { o } from 'old'",
       "import { d } from 'old/dist/deep.js'",
       "import { n } from 'old/dist/nested'",
+      "import { d as relative } from './packages/old/dist/deep.js'",
       "import { p } from 'plain'",
       "import { b } from 'bare'",
-      'export const v: number = x + foo + o + d + n + p + b',
+      'export const v: number = x + foo + o + d + n + relative + p + b',
       '',
     ].join('\n'),
   })
@@ -1240,6 +1241,7 @@ test("scan typescript:true maps a workspace package's unbuilt outputs to their s
     ['old', 'packages/old/src/index.ts'],
     ['old/dist/deep.js', 'packages/old/src/deep.ts'],
     ['old/dist/nested', 'packages/old/src/nested/index.ts'],
+    ['./packages/old/dist/deep.js', 'packages/old/src/deep.ts'], // however reached
     ['plain', 'packages/plain/src/index.ts'],
   ])
   // Each package's layout read as resolution asks for it, and through the build's matcher.

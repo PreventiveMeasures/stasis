@@ -6,6 +6,7 @@ import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { createMetroResolver, defaults as metroDefaults } from '@preventive/rn/metro-resolver.js'
 import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
+  fromOutputSource,
   inNodeModules,
   isDir,
   isFile,
@@ -13,6 +14,7 @@ import {
   nearestPackage,
   readJson,
   resolveTypescriptFallback,
+  tsconfigOutputsOf,
   typescriptSiblings,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -128,13 +130,17 @@ const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
 // --metro --typescript: `view` (a metroHost over `host`) with tsc's extension substitution, as
 // resolveSourceFile's: a file named for a JS output that is absent (`native.js`) is the first of its TS
-// source siblings on disk (`native.ts`), unless that lies in node_modules by its real path. So Metro's
-// own steps -- the entry its mainFields pick, a browser-map or `exports` target, the path itself --
-// land on the source of a compiled file that exists only as that source.
-function typescriptView(view, host) {
+// source siblings on disk (`native.ts`), unless that lies in node_modules by its real path; else,
+// where it names an output its package's build has not written (`dist/native.js`), the source it is
+// built from, by the resolver's `outputs` (fromOutputSource, manifests by its `read`: `src/native.js`,
+// or its first TS sibling). So Metro's own steps -- the entry its mainFields pick, a browser-map or
+// `exports` target, the path itself, each platform suffix it tries -- land on the source of a
+// compiled file that exists only as that source.
+function typescriptView(view, { outputs, host, read }) {
+  const sibling = (path) => typescriptSiblings(path).find((candidate) => view.isFile(candidate)) ?? null
   const source = (path) => {
-    const pick = typescriptSiblings(path).find((sibling) => view.isFile(sibling))
-    return pick === undefined || inNodeModules(pick, host) ? null : pick
+    const pick = sibling(path) ?? fromOutputSource(path, (input) => (view.isFile(input) ? input : sibling(input)), { outputs, host, read })
+    return pick === null || inNodeModules(pick, host) ? null : pick
   }
   const substituted = (path) => (view.isFile(path) || view.isDirectory(path) ? null : source(path))
   return {
@@ -191,6 +197,11 @@ function resolveSourceFile(base, opts) {
     const hit = tryExt(`.${ext}`)
     if (hit) return hit
   }
+  // --typescript: a base naming an output its package's build has not written (`dist/x.native.js`)
+  // probes the source it is built from (`src/x.native.js`) the same way, its TS siblings and
+  // platform suffixes included (fromOutputSource), once all else missed; a directory there is none
+  // (resolveFileOrDir probes its index, which maps so).
+  if (opts.typescript && !isDir(base, opts.host)) return fromOutputSource(base, (input) => resolveSourceFile(input, { ...opts, outputs: null }), opts)
   return null
 }
 
@@ -224,8 +235,10 @@ function resolveFileOrDir(base, opts) {
 // `metro` resolves as Metro does instead (viaMetro), taking `assetExts` (Metro's defaults, else the
 // project's) as assets; leave it off for the esbuild-parity `--mainFields` path. `typescript` adds
 // tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling; see resolveSourceFile;
-// under `metro`, typescriptView) plus the shared miss fallback (see below), and
-// `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) its tsconfig alias mapping.
+// under `metro`, typescriptView) and the source of an output a workspace package's build has not
+// written (by `typescriptPaths`'s outputs, each package's tsconfig.json layout), plus the shared
+// miss fallback (see below), and `typescriptPaths` (a tsconfig paths matcher; see
+// resolveTypescriptFallback) its tsconfig alias mapping.
 // `host` is the filesystem view (@exodus/stasis-core/host), the real disk by default. `kept`, a Map
 // kept across a lazy tree's rounds, keeps there each resolution that read nothing the tree does not
 // hold yet (untouchedMemo's `across`), for the rounds after.
@@ -243,7 +256,9 @@ export function createFieldResolver({
   kept,
 } = {}) {
   const read = manifestReader(host)
-  const opts = { platform, preferNative, sourceExts, mainFields, typescript, host, read }
+  // --typescript: each package's layout, to map an output its build has not written to its source.
+  const outputs = typescript ? typescriptPaths?.outputs ?? tsconfigOutputsOf({ host }) : null
+  const opts = { platform, preferNative, sourceExts, mainFields, typescript, outputs, host, read }
   // An importer in node_modules gets no --typescript mapping (inNodeModules), wherever its import lands.
   const fromNodeModules = { ...opts, typescript: false }
   // Node answers a builtin name with the builtin itself, so an `exports`-bearing package named like
@@ -262,7 +277,7 @@ export function createFieldResolver({
     const key = `${substituting}\0${conditionNames.join('\0')}`
     if (!metroResolvers.has(key)) {
       const view = metroHost(host, mainFields)
-      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, host) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
+      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, opts) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
     }
     return metroResolvers.get(key)
   }

@@ -610,11 +610,15 @@ own files.
 
 A workspace package that names what its `tsc` build writes, which a checkout
 lacks, resolves to the sources it is built from, as tsc maps an output back to
-its input. Where its `main`, an `exports` or `imports` target, or a bare
-subpath into it names a file that is missing under the `outDir` of the
-`tsconfig.json` beside its `package.json` (`extends` followed), the file at the
-same place under its `rootDir` stands in, substituted as above (`./dist/foo.js`
-lands on `./src/foo.ts`):
+its input. Where a path into it names a file that is missing under the
+`outDir` of the `tsconfig.json` beside its `package.json` (`extends` followed),
+the file at the same place under its `rootDir` stands in, substituted as above
+(`./dist/foo.js` lands on `./src/foo.ts`). That is whichever path resolution
+reaches: its `main`, an `exports` or `imports` target, a bare subpath, a
+relative import, and with `--mainFields` or `--metro` the field the resolver
+picks (`react-native`, `browser`) or a `browser` map's target, each platform
+file Metro tries first included (`./dist/index.ios.js` lands on
+`./src/index.ios.ts` before `./dist/index.js` on `./src/index.ts`):
 
 ```json
 {
