@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { deferredLockfile, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseGeneratePrisma, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1034,6 +1034,8 @@ export const installsDevDependencies = (name, cwd, host) => parseInstallDevDepen
 // Whether the tree laid out from the lockfile for the project `host` holds at `cwd` may be lazy: the
 // `lazyDependencies` of the stasis.config.json there, true without one.
 const lazesDependencies = (name, cwd, host) => parseLazyDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.lazyDependencies)
+// `generatePrisma` of the stasis.config.json there, true without one.
+const generatesPrisma = (name, cwd, host) => parseGeneratePrisma(CONFIG_FILE, readConfigFile(name, cwd, host)?.generatePrisma)
 
 // --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
 // `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
@@ -2203,9 +2205,9 @@ export function checkVfsOptions(name, options) {
   if (options.metroResolver) throw new Error(`${name}: metroResolver is not supported`)
   // The project's Babel config is code, run from the disk.
   if (options.babel) throw new Error(`${name}: babel is not supported`)
-  const { generate = [] } = options
-  if (!Array.isArray(generate) || generate.some((step) => step !== 'prisma')) throw new TypeError(`${name}: generate must be an array of 'prisma'`)
-  if (generate.length > 0 && kind !== 'js') throw new Error(`${name}: --generate is only valid for JS bundles`)
+  const { generate } = options
+  if (generate !== undefined && (!Array.isArray(generate) || generate.some((step) => step !== 'prisma'))) throw new TypeError(`${name}: generate must be an array of 'prisma'`)
+  if (generate?.length > 0 && kind !== 'js') throw new Error(`${name}: --generate is only valid for JS bundles`)
   return kind
 }
 
@@ -2226,7 +2228,9 @@ export function checkVfsOptions(name, options) {
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
 // installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
 // through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
-// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js). `client`, a
+// tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js); without `generate`, those of
+// the projects the entries reach, silently, unless the stasis.config.json in cwd sets
+// `generatePrisma` false; `generate: []`, none. `client`, a
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
@@ -2256,7 +2260,7 @@ export async function buildVfsBundle(options = {}) {
 // configuredBuilds makes, and whether their union's `extra` is the bundle's, as bundleCommand adds
 // it; `env`, what the builds read their settings from (none by default); `outputsAt(root)`, the
 // absolute paths written, which `extra` never takes; and `refuseInstalled`, layOutTree's.
-async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate = [], client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
+async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
   const { checkCache, checkKind, checkLazy, checkTarget, lazyTaken, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
@@ -2286,6 +2290,12 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const lazyDependencies = lazesDependencies(name, cwd, project)
   if (lazy && !lazyDependencies) throw new Error(`${name}: lazy is given, and ${CONFIG_FILE}'s lazyDependencies is false`)
   lazy ??= lazyDependencies && lazyTaken(project, packageManager, cwd)
+  // Each project's Prisma Client: asked for (`generate: ['prisma']`), every project's, strictly; else, of a JS
+  // build of a Vfs, detected where stasis.config.json's `generatePrisma` leaves it: the projects the entries
+  // are in and their workspace dependencies, silently. `generate: []`, or `generatePrisma` false: none.
+  const generatePrisma = generatesPrisma(name, cwd, project)
+  if (generate?.length > 0 && !generatePrisma) throw new Error(`${name}: generate is given, and ${CONFIG_FILE}'s generatePrisma is false`)
+  const prismaGeneration = generate?.includes('prisma') ? 'asked' : generate === undefined && generatePrisma && vfs !== undefined && pm.kind === 'js' ? 'detected' : null
   for (const build of builds) checkKind(name, checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
   // Checked before anything is fetched: an entry out of what the tree installs is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
@@ -2300,11 +2310,29 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // any build, for a lazy tree in rounds of their own (they read the tree's `prisma`), so that each
   // of the build's rounds reads the same project, as what its scans keep across them takes it to.
   let outside = project
-  if (generate.includes('prisma')) {
-    const { generatePrismaClients, withPrismaClients } = await import('../vfs-bundle/prisma.js')
-    const generating = (reads) => generatePrismaClients({ host: treeHost(tree, project, reads), root: tree.root, projects: tree.projects })
-    const outputs = await debugTimed('Generated the Prisma Clients', () => (tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)))
-    if (outputs.length > 0) outside = vfsHost(withPrismaClients(vfs, outputs))
+  if (prismaGeneration !== null) {
+    const prisma = await import('../vfs-bundle/prisma.js')
+    // The projects with a schema (looked for before any `prisma` is read, which a lazy tree fetches once read):
+    // all of them, asked for; else those the entries reach. Nothing done, nor said, where none has one.
+    const withSchema = prisma.schemaProjects(project, tree.root, tree.projects)
+    const strict = prismaGeneration === 'asked'
+    // Reached by the entries alone (cwd's own project, the root's say, only where an entry is in it), each by its
+    // real path, as the scan reaches it, where the project holds it: an installed one is the tree's, no project's.
+    const entryPath = (entry) => {
+      const path = posix.resolve(cwd, entry)
+      try {
+        return project.realpath(path)
+      } catch {
+        return path
+      }
+    }
+    const reached = () => prisma.reachedProjects(project, tree.root, tree.projects, builds.flatMap((build) => build.entries.map(entryPath)))
+    const projects = strict || withSchema.size === 0 ? withSchema : withSchema.intersection(reached())
+    if (projects.size > 0) {
+      const generating = (reads) => prisma.generatePrismaClients({ host: treeHost(tree, project, reads), root: tree.root, projects, strict })
+      const outputs = await debugTimed('Generated the Prisma Clients', () => (tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)))
+      if (outputs.length > 0) outside = vfsHost(prisma.withPrismaClients(vfs, outputs))
+    }
   }
   // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
   // each reading into its `reads`, each build keeping what its scans read across them in a memo of

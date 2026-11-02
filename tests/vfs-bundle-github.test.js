@@ -1307,7 +1307,7 @@ async function githubBundleCli(args, { nodeArgs = [], cwd, env } = {}) {
   return { status, stderr: Buffer.concat(stderr).toString('utf8') }
 }
 
-test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag', async (t) => {
+test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, and --generate or --no-generate', async (t) => {
   const usage = async (args) => {
     const { status, stderr } = await githubBundleCli(args)
     return { status, error: stderr.split('\n')[0] }
@@ -1324,6 +1324,9 @@ test('stasis github-bundle requires the repo, as owner/name[/path] or --github, 
     [['--directory=packages/api', GITHUB, 'a.js'], both],
     [[`--github=${GITHUB}`, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
     [[GITHUB, `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
+    [[GITHUB, '--no-generate', '--generate=prisma', 'a.js'], 'Error: github-bundle takes --generate or --no-generate, not both'],
+    // --no-generate taken alone, and refused for what follows it.
+    [[GITHUB, '--no-generate', `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
   t.assert.deepStrictEqual(results, cases.map(([, error]) => ({ status: 1, error })))

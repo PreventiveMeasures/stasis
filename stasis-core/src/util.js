@@ -116,6 +116,11 @@ export const parseInstallDevDependencies = configFlag('installDevDependencies')
 // (true, the default), or have every package fetched before the build (false).
 export const parseLazyDependencies = configFlag('lazyDependencies')
 
+// stasis.config.json's `generatePrisma`: whether `stasis github-bundle` and @exodus/stasis/vfs-bundle's
+// builds, given no `generate`, write the Prisma Client of each project the entries reach whose schema
+// asks for one, as `prisma generate` would (true, the default), or none (false).
+export const parseGeneratePrisma = configFlag('generatePrisma')
+
 export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11
 
 // `${n}` must round-trip to the input, so non-canonical forms ('5.0', '05', ' 5 ') throw.

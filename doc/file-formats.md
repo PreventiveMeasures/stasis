@@ -37,6 +37,7 @@ it, or take it for another path.
 | `entries` | object of each entry's `stasis bundle` options (see [Entry options](bundle.md#entry-options-stasisconfigjson)) | unset | none |
 | `installDevDependencies` | boolean | `true` | none |
 | `lazyDependencies` | boolean | `true` | none |
+| `generatePrisma` | boolean | `true` | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -175,12 +176,18 @@ pnpm or npm tree; see [Lazy](github-bundle.md#lazy---no-lazy)). The bundle is
 the same either way, but a broken tarball the build never reaches is refused
 with it.
 
+`generatePrisma: false` has `stasis github-bundle` generate no Prisma Client,
+as `--no-generate` does, where it would otherwise generate those of the projects
+the entries reach (see [Prisma](github-bundle.md#prisma)); `--generate=prisma`
+beside it is refused.
+
 Unknown keys are rejected. A key set by both file and env var must match.
-`extra`, `entries`, `installDevDependencies` and `lazyDependencies` are set in the file alone. Only
+`extra`, `entries`, `installDevDependencies`, `lazyDependencies` and `generatePrisma` are set in the file alone. Only
 `scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, `extra`'s effect is the
-files it adds, `installDevDependencies`' the packages a build can reach, and
-`lazyDependencies`' the packages fetched.
+files it adds, `installDevDependencies`' the packages a build can reach,
+`lazyDependencies`' the packages fetched, and `generatePrisma`'s the clients
+generated.
 
 ## `stasis.lock.json`
 
