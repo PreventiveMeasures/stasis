@@ -211,6 +211,13 @@ test('given no generate, an entry reached through a link is the project of the f
   t.assert.ok((await build(vfs, { cwd: '/', entries: ['app/index.ts'], mainFields: ['module', 'main'] })).bundle.sources.has(`${CLIENT}/client.ts`))
 })
 
+test('an entry in an installed dependency, which the project itself doesn\'t hold, is bundled given generate or not', async (t) => {
+  for (const generate of [undefined, ['prisma']]) {
+    const { bundle } = await build(project(workspace()), { cwd: '/packages/b', entries: ['node_modules/@prisma/client/runtime/client.js'], generate })
+    t.assert.ok(bundle.modules.size > 0, `generate: ${JSON.stringify(generate)}`)
+  }
+})
+
 test('two generators writing one output are refused, given generate or not', async (t) => {
   const twice = workspace({ files: { 'packages/b/prisma/schema.prisma': `${schema()}\ngenerator again {\n  provider = "prisma-client"\n  output   = "../src/generated/prisma"\n}\n` } })
   for (const generate of [undefined, ['prisma']]) await t.assert.rejects(build(project(twice), { generate }), /^Error: prisma: \/packages\/b\/src\/generated\/prisma is the output of more than one generator$/u)

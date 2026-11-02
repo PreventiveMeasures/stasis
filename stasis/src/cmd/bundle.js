@@ -2316,10 +2316,18 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     // all of them, asked for; else those the entries reach. Nothing done, nor said, where none has one.
     const withSchema = prisma.schemaProjects(project, tree.root, tree.projects)
     const strict = prismaGeneration === 'asked'
-    // By the entries alone, each by its real path, as the scan reaches it: cwd's own project, the root's say, is
-    // reached only where an entry is in it.
-    const entries = builds.flatMap((build) => build.entries.map((entry) => project.realpath(posix.resolve(cwd, entry))))
-    const projects = strict || withSchema.size === 0 ? withSchema : withSchema.intersection(prisma.reachedProjects(project, tree.root, tree.projects, entries))
+    // Reached by the entries alone (cwd's own project, the root's say, only where an entry is in it), each by its
+    // real path, as the scan reaches it, where the project holds it: an installed one is the tree's, no project's.
+    const entryPath = (entry) => {
+      const path = posix.resolve(cwd, entry)
+      try {
+        return project.realpath(path)
+      } catch {
+        return path
+      }
+    }
+    const reached = () => prisma.reachedProjects(project, tree.root, tree.projects, builds.flatMap((build) => build.entries.map(entryPath)))
+    const projects = strict || withSchema.size === 0 ? withSchema : withSchema.intersection(reached())
     if (projects.size > 0) {
       const generating = (reads) => prisma.generatePrismaClients({ host: treeHost(tree, project, reads), root: tree.root, projects, strict })
       const outputs = await debugTimed('Generated the Prisma Clients', () => (tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)))
