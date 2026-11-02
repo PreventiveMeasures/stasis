@@ -328,21 +328,43 @@ Which projects, and what is said:
 - **By default**, the projects the entries are in, and the workspace packages
   they depend on (by name, in any dependency field), theirs in turn. What can't
   be generated (a generator stasis doesn't run, a Prisma it doesn't generate
-  as, a schema it can't take, the optional peer missing) is silent: an import
-  of what it would write is reported by the scan as any other miss.
+  as, a schema it can't take, the optional peer missing) is silent, unless the
+  bundle reaches it.
 - **`--generate=prisma`** (`generate: ['prisma']`): every project the lockfile
   installs. A project or generator it can't generate for is warned of, and a
   schema it can't take refused, as `prisma generate` refuses it.
 - **`--no-generate`** (`generate: []`), or `stasis.config.json`'s
-  `generatePrisma: false`: none. `--generate=prisma` beside
-  `generatePrisma: false` is refused.
+  `generatePrisma: false`: none. The schemas of the projects the entries reach
+  are still read, without their `prisma`, for what their generators would
+  write. `--generate=prisma` beside `generatePrisma: false` is refused.
 
 Two generators writing one output are refused whichever of these.
 
+Whichever of these, an import of a file a generator would write that isn't
+there fails the bundle, however it is reached: statically, or by `import()` or
+`require()`, which would otherwise only be warned of as failing at run time.
+The failure says why it is missing (with generation off, `generation is off:`
+and what turned it off):
+
+```
+JS bundle would be broken at load time:
+  unresolved dynamic-import ./generated/pothos-types.ts from /src/index.ts (MODULE_NOT_FOUND): /prisma/schema.prisma's generator pothos would write it, but stasis generates the "prisma-client" provider's alone
+```
+
+That is an import whose resolution lands in a generator's `output` (by a
+relative or absolute path, a package's `exports`, `imports` or `main`, or under
+`--typescript` a `tsconfig.json` `paths` alias), or one into the output a
+generator writes with none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client`
+requires) or `@pothos/plugin-prisma/generated` (Pothos's). One into a client
+stasis generated, of a file it doesn't write, fails too. A specifier built at
+run time, or an output named by `env()`, can't be told apart, and is left to
+the scan.
+
 Where a generator stasis doesn't run has its `output` in the repo already, the
 bundle takes what it reaches there as committed, not as `prisma generate` would
-write it, so a copy older than the schema is bundled stale. With
-`--generate=prisma`, the warning names it. Pothos's `prisma-pothos-types` with no `output` is
+write it, so a copy older than the schema is bundled stale. The warning names
+it: by default, where the bundle carries a file of it; with
+`--generate=prisma`, always. Pothos's `prisma-pothos-types` with no `output` is
 never warned of: it writes types alone, into its own package, which no bundle
 needs (unless it sets `generateDatamodel = "true"`, which writes code there
 too).

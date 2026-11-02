@@ -4,7 +4,7 @@ import { posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
-import { hasNodeModulesSegment, isPlainObject } from '@exodus/stasis-core/util'
+import { CODE_EXTENSIONS, hasNodeModulesSegment, isPathWithin, isPlainObject, pathExt, stripTypeDeclaration } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
 import { getParser, literalSpec, syntaxErrors } from '../scan.js'
@@ -229,7 +229,7 @@ function configSchema(file, text) {
 
 // A schema directory is read by Prisma's own loader, over the tree.
 function schemaFilesAt(host, path) {
-  if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
+  if (isFile(path, host)) return schemaTexts(host, path)
   const view = projectView(host, '/')
   return loadGenerator().loadSchemaFiles(path, {
     listDirContents: async (dir) => view.readdir(dir),
@@ -407,18 +407,59 @@ const POTHOS = 'prisma-pothos-types'
 const needsNoOutput = (generator) => generator.provider.value === POTHOS && generator.provider.fromEnvVar === null &&
   generator.output === null && generator.config.generateDatamodel !== 'true'
 
+// Where a generator with no `output` writes, by its provider: into a package, imported by this specifier.
+const DEFAULT_OUTPUTS = { __proto__: null, 'prisma-client-js': '.prisma/client', [POTHOS]: '@pothos/plugin-prisma/generated' }
+
+// The files of the schema at `path` (a file, or a directory of .prisma files, walked as Prisma's loader walks it:
+// through links, by real path), read as text.
+function schemaTexts(host, path) {
+  if (isFile(path, host)) return [[path, host.readFile(path).toString('utf8')]]
+  const seen = new Set()
+  const walk = (dir) => {
+    const real = host.realpath(dir)
+    if (seen.has(real)) return []
+    seen.add(real)
+    return host.readdir(real).map((entry) => entry.name).toSorted().flatMap((name) => {
+      const at = posix.join(real, name)
+      if (isDir(at, host)) return walk(at)
+      return at.endsWith('.prisma') && isFile(at, host) ? [[host.realpath(at), host.readFile(at).toString('utf8')]] : []
+    })
+  }
+  return walk(path)
+}
+
+// The generator blocks of the schema at `path`, as getConfig gives them (name, provider, output, the file declaring
+// it), read without Prisma's parser, which another Prisma's schema needn't satisfy and which needs the optional
+// peer. A schema that can't be read has none.
+function generatorBlocks(host, path) {
+  let files
+  try { files = schemaTexts(host, path) } catch { return [] }
+  return files.flatMap(([file, text]) => [...text.replaceAll(/\/\/.*$/gmu, '').matchAll(/^\s*generator\s+(\w+)\s*\{([^}]*)\}/gmu)].map(([, name, body]) => {
+    const field = (key) => {
+      const found = body.match(new RegExp(`^\\s*${key}\\s*=\\s*(?:"([^"]*)"|env\\(\\s*"([^"]*)"\\s*\\))`, 'mu'))
+      return found === null ? null : { value: found[1] ?? null, fromEnvVar: found[2] ?? null }
+    }
+    return { name, provider: field('provider') ?? { value: null, fromEnvVar: null }, output: field('output'), sourceFilePath: file, config: {} }
+  }))
+}
+
 // Those of `projects` (directories relative to `root`) that may have a schema: a Prisma config, schema.prisma or
 // prisma/schema.prisma there. Looked for before any `prisma` is read, which a lazy tree fetches once read.
 const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
 export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
 
-// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas. Asked for
-// (`strict`), what stasis can't generate is warned of, and a schema it can't take refused, as `prisma generate`
-// refuses it; detected, both are silent, the scan then reporting what is missing. Two generators writing one
-// output are refused either way.
+// An error's message as a reason: without the `prisma: ` a warning has already.
+const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
+
+// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas, and `reasons`, by
+// schema path, why one stasis can't generate for isn't. Asked for (`strict`), what it can't generate is warned of,
+// and a schema it can't take refused, as `prisma generate` refuses it; detected, both are silent but for `reasons`,
+// which expectedOutputs gives where an import reaches an output it lacks. Two generators writing one output are
+// refused either way.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects, strict = true }) {
   const outputs = []
+  const reasons = new Map()
   const say = strict ? (message) => { console.warn(`[stasis] prisma: ${message}`) } : undefined
   const skip = (what, why) => say?.(`not generating ${what}: ${why}`)
   for (const project of [...projects].toSorted()) {
@@ -429,19 +470,21 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
     if (!path) continue
     // Checked before parsing: another Prisma's schema needn't satisfy 7.10.0.
     if (!supported) {
-      skip(`for ${path}`, `stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`}`)
+      reasons.set(path, `stasis generates as Prisma ${PRISMA_VERSIONS.at(-1)} to ${PRISMA_VERSIONS[0]} do, and ${prisma === null ? 'none is installed' : `${prisma.file} is ${prisma.version}`}`)
+      skip(`for ${path}`, reasons.get(path))
       continue
     }
     try {
       outputs.push(...await generateSchema({ host, path, prisma, say, skip }))
     } catch (error) {
       if (strict) throw error
+      reasons.set(path, reasonOf(error))
     }
   }
   const dirs = outputs.map(({ dir }) => dir)
   const twice = dirs.find((dir, i) => dirs.indexOf(dir) !== i)
   if (twice !== undefined) throw new Error(`prisma: ${twice} is the output of more than one generator`)
-  return outputs
+  return { outputs, reasons }
 }
 /* eslint-enable no-await-in-loop */
 
@@ -470,6 +513,66 @@ async function generateSchema({ host, path, prisma, say, skip }) {
     outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
   }
   return outputs
+}
+
+// What each generator of the projects' schemas would write, read from the schemas alone (generatorBlocks), and why
+// it isn't there: `{ path }` (its output) or `{ specifier }` (a default output, in a package), `writer`, and `why`,
+// undefined where it is one of `outputs`, generated. `off`: why none is generated; else a generator stasis doesn't
+// run is skipped, and one it can't generate has its schema's reason (generatePrismaClients' `reasons`).
+export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), off }) {
+  const generated = new Set(outputs.map(({ dir }) => dir))
+  return [...projects].toSorted().flatMap((project) => {
+    let path
+    try {
+      path = projectSchema(host, posix.join(root, project), GENERATOR_VERSION)
+    } catch {
+      return []
+    }
+    return !path ? [] : generatorBlocks(host, path).flatMap((generator) => {
+      const writer = `${path}'s generator ${generator.name}`
+      if (generator.output === null) {
+        const specifier = generator.provider.fromEnvVar === null ? DEFAULT_OUTPUTS[generator.provider.value] : undefined
+        return specifier === undefined ? [] : [{ specifier, writer, why: off ?? SKIPPED }]
+      }
+      if (generator.output.fromEnvVar !== null) return []
+      const output = outputOf(generator, path)
+      return [{ path: output, writer, why: off ?? (!ours(generator) ? SKIPPED : generated.has(output) ? undefined : reasons.get(path) ?? "stasis didn't generate it") }]
+    })
+  })
+}
+
+// A path without the code extension a TypeScript import may leave out, or write as `.js` for a `.ts` file.
+function withoutExtension(path) {
+  const stripped = stripTypeDeclaration(path)
+  const ext = pathExt(stripped)
+  return CODE_EXTENSIONS.has(ext) ? stripped.slice(0, -ext.length - 1) : stripped
+}
+
+// The failure of the scan's unresolved import `u` where it is of a file a generator would write (`expected`,
+// expectedOutputs'): one whose resolution landed in such an output (the scan's `targets`), or one into a default
+// output by its specifier, however it is imported (statically, or by import() or require() at run time) -> why it
+// is missing, or undefined.
+export function generatedMiss(expected) {
+  const outputs = expected.filter(({ path }) => path !== undefined).map((each) => ({ ...each, bare: withoutExtension(each.path) }))
+  const defaults = expected.filter(({ specifier }) => specifier !== undefined)
+  return (u) => {
+    const hit = outputs.find(({ path, bare }) => u.targets?.some((target) => isPathWithin(path, target) || withoutExtension(target) === bare)) ??
+      defaults.find(({ specifier }) => u.spec === specifier || u.spec?.startsWith(`${specifier}/`))
+    if (hit === undefined) return undefined
+    return hit.why === undefined ? `in the output of ${hit.writer}, which writes no such file` : `${hit.writer} would write it, but ${hit.why}`
+  }
+}
+
+// The warnings, detected, for what `bundle` (rooted at `root`) carries of the output of a generator stasis doesn't
+// run (`expected`'s, skipped): it takes it as committed.
+export function committedWarnings(expected, bundle, root) {
+  const skipped = expected.filter(({ path, why }) => path !== undefined && why === SKIPPED && !hasNodeModulesSegment(path))
+  if (skipped.length === 0) return []
+  const files = [...bundle.sources.keys()]
+  return skipped.filter(({ path }) => {
+    const rel = posix.relative(root, path)
+    return bundle.sources.has(rel) || files.some((file) => file.startsWith(`${rel}/`))
+  }).map(({ writer, path }) => `[stasis] prisma: ${notGenerating(writer, SKIPPED, path)}`)
 }
 
 // The projects (`projects`, directories relative to `root`) a build of `paths` (absolute) may import the generated
