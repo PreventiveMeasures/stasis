@@ -5243,6 +5243,65 @@ test('buildBundle --metro takes an extension the project\'s Metro config adds to
   t.assert.ok(!defaults.sources.has('anim/spin@2x.riv'))
 }))
 
+test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json, and assetExts off the Metro config it loads', withTmp(async (t, tmp) => {
+  // rn.config.json (rn-bundle's) adds `mjs` to Metro's sourceExts and 0.75 to its assetResolutions, each
+  // after Metro's defaults; an option of rn-bundle's own (port) is none of Metro's lists. With no
+  // assetExts and no metroConfig false, assetExts are those of the Metro config rn-bundle loads,
+  // metro.config.js's `lottie`: a .riv is a transform's input.
+  jsProject(tmp, { 'index.js': "const spin = require('./anim/spin.riv')\nconst wave = require('./anim/wave.lottie')\nconst util = require('./util')\nconst logo = require('./img/logo.png')\nmodule.exports = [spin, wave, util, logo]\n" }, { name: 'app', version: '0.0.0' })
+  writeTree(tmp, {
+    'rn.config.json': JSON.stringify({ sourceExts: ['mjs'], assetResolutions: [0.75], port: 8082 }),
+    'metro.config.js': "module.exports = { resolver: { assetExts: ['lottie'] } }\n",
+    'config/metro.js': "module.exports = { resolver: { assetExts: ['riv'] } }\n",
+    'anim/spin.riv': 'RIVE',
+    'anim/spin@0.75x.riv': 'RIVE@0.75x',
+    'anim/wave.lottie': 'PK',
+    'img/logo.png': 'PNG',
+    'util.mjs': 'export default 1\n',
+  })
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['riv', 'lottie', 'png'] }
+  const build = async (config) => {
+    writeFileSync(join(tmp, 'rn.config.json'), typeof config === 'string' ? config : JSON.stringify({ sourceExts: ['mjs'], assetResolutions: [0.75], port: 8082, ...config }))
+    const { result, lines } = await captureStderr(() => buildBundle(options))
+    last = result
+    return { edges: Object.fromEntries(result.imports.get('*').get('index.js')), warned: lines.filter((line) => line.includes('rn.config.json')) }
+  }
+  let last
+  // The configs carried with the bundle, as the build's: rn.config.json, and the Metro config it names.
+  const configs = () => ['rn.config.json', 'metro.config.js', 'config/metro.js'].filter((rel) => last.reason.bundle?.includes(rel))
+  const common = { './util': 'util.mjs', './img/logo.png': 'img/logo.png' }
+
+  t.assert.deepStrictEqual(await build({}), { edges: { ...common, './anim/wave.lottie': 'anim/wave.lottie' }, warned: [] })
+  t.assert.deepStrictEqual(configs(), ['rn.config.json', 'metro.config.js'])
+  // Its metroConfig naming another file: that one's, `riv`, an asset at rn.config.json's scales too
+  // (spin.riv and spin@0.75x.riv, Metro's module of the lowest path).
+  t.assert.deepStrictEqual(await build({ metroConfig: 'config/metro.js' }), { edges: { ...common, './anim/spin.riv': 'anim/spin.riv' }, warned: [] })
+  t.assert.deepStrictEqual(configs(), ['rn.config.json', 'metro.config.js', 'config/metro.js'])
+  // metroConfig false: no Metro config is loaded, so Metro's defaults alone.
+  t.assert.deepStrictEqual(await build({ metroConfig: false }), { edges: common, warned: [] })
+  // Its own assetExts: Metro's defaults and them, no Metro config read, whatever metroConfig. At its
+  // scales, spin.riv resolves where only its 0.75x file is.
+  rmSync(join(tmp, 'anim/spin.riv'))
+  t.assert.deepStrictEqual(await build({ assetExts: ['riv'] }), { edges: { ...common, './anim/spin.riv': 'anim/spin@0.75x.riv' }, warned: [] })
+  writeFileSync(join(tmp, 'anim/spin.riv'), 'RIVE')
+  t.assert.deepStrictEqual(await build({ assetExts: [], metroConfig: 'config/metro.js' }), { edges: common, warned: [] })
+
+  // One rn-bundle doesn't take for them is warned of, and read as none: metro.config.js's assetExts, and
+  // Metro's sourceExts, so ./util resolves nowhere.
+  writeFileSync(join(tmp, 'util.js'), 'module.exports = 1\n')
+  const without = { './util': 'util.js', './img/logo.png': 'img/logo.png', './anim/wave.lottie': 'anim/wave.lottie' }
+  for (const [config, why] of [
+    [{ sourceExts: ['svg'] }, 'rn.config.json: svg is in both assetExts and sourceExts, which Metro takes a file of as an asset'],
+    ['{', 'rn.config.json is not valid JSON'],
+    ['[]', 'rn.config.json is not an object of options'],
+    [{ assetExts: ['.riv'] }, 'rn.config.json: assetExts is a list of extensions, each without its dot ("riv"), not [".riv"]'],
+    [{ metroConfig: 1 }, 'rn.config.json: metroConfig is true, false or the path of a Metro config, not 1'],
+  ]) {
+    // eslint-disable-next-line no-await-in-loop -- each build rewrites the one rn.config.json
+    t.assert.deepStrictEqual(await build(config), { edges: without, warned: [`[stasis] ${why}; reading metro.config.js as without it`] })
+  }
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React

@@ -296,6 +296,24 @@ adds to them, read off its source, never run: each string it lists under
 `config.resolver.assetExts.push('riv')`). One the config filters out
 (`assetExts.filter((ext) => ext !== 'svg')`) is still taken as an asset.
 
+Where the project has an `rn.config.json` (the config of
+[`@preventive/rn`](https://github.com/PreventiveMeasures/libraries/tree/main/rn)'s
+`rn-bundle`), Metro's resolver lists are read as `rn-bundle` takes them:
+
+- `assetExts`: Metro's defaults and those `rn.config.json` adds, where it has
+  `assetExts` (`["riv"]`), no Metro config read; Metro's defaults alone where it
+  has `"metroConfig": false`, which loads none; else those the Metro config adds,
+  as above: the file its `metroConfig` names (`"config/metro.js"`), else
+  `metro.config.js`.
+- `sourceExts` and `assetResolutions`: Metro's defaults and what
+  `rn.config.json` adds, after them (`["mjs"]`, `[0.75]`). Of the `sourceExts`,
+  only those of code a bundle carries count (`mjs`, `cjs`, `mts`, `cts`).
+
+An `rn.config.json` that isn't one `rn-bundle` takes for them (not JSON, not an
+object, one of those options of another kind, or an extension added to one of
+`assetExts` and `sourceExts` that the other has) is warned of, and read as
+none: `metro.config.js` gives `assetExts`, as without it.
+
 A resource the app imports that is no asset of Metro's is no module of Metro's,
 which can't resolve it: a Babel plugin consumes it before
 Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
@@ -411,7 +429,9 @@ contributes nothing unless the app's `package.json` lists it.
 
 It bundles the project's Metro and React Native configs too, which the Metro
 plugin's run loads though nothing the app imports reaches them: the
-`metro.config.js` and `react-native.config.js` in the cwd. With `--babel` or
+`metro.config.js` and `react-native.config.js` in the cwd, and the
+`rn.config.json` there with the Metro config its `metroConfig` names, which
+Metro's resolver lists are read off (above). With `--babel` or
 `--babel-aliases`, it bundles the `babel.config.js` there as well. And what
 else the build runs in Node, which neither the app nor the configs import, each
 loaded by a name or path given as a string: React Native's CLI

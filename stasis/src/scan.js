@@ -18,6 +18,8 @@ import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from './flow.js'
 // -- e.g. a package whose React Native entry is src/index.tsx -- is parsed and carried like any .ts.
 const SCRIPT_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 const RESOLVABLE_EXTS = new Set([...SCRIPT_EXTS, '.json'])
+// Whether a file of extension `ext` (`.mjs`) is code a bundle carries as such.
+export const isResolvableExt = (ext) => RESOLVABLE_EXTS.has(ext)
 // The extensions whose name can't tell whether they hold JSX, parsed with JSX enabled only under
 // `jsx` (React Native's JSX-in-.js convention). Excludes the .ts family: TypeScript's `<T>`
 // generics collide with JSX, so tsc/oxc reserve JSX for .tsx — JSX-in-TS belongs in a .tsx file.
