@@ -1332,12 +1332,13 @@ function babelNamedModules(file, host, { anyString = false } = {}) {
 }
 
 // The extensions Metro takes as assets (`resolver.assetExts`), as the project's Metro config gives them:
-// Metro's defaults, and each string its metro.config.js lists among them, read off its source, never
-// run (readLists: `assetExts: [...defaultConfig.resolver.assetExts, 'riv']`,
-// `config.resolver.assetExts.push('riv')`). One it filters out is still taken as one.
-function metroAssetExts(baseDir, host) {
+// Metro's defaults, and each string its Metro config (`file`, from `baseDir`; metro.config.js where not
+// given) lists among them, read off its source, never run (readLists: `assetExts:
+// [...defaultConfig.resolver.assetExts, 'riv']`, `config.resolver.assetExts.push('riv')`). One it filters
+// out is still taken as one. Metro's defaults alone where there's no such file.
+function metroAssetExts(baseDir, host, file = METRO_CONFIG_FILE) {
   const exts = new Set(METRO_ASSET_EXTS)
-  const config = join(baseDir, METRO_CONFIG_FILE)
+  const config = resolve(baseDir, file)
   if (!host.stat(config)?.isFile()) return exts
   readLists(parseModule(config, host), METRO_ASSET_LISTS, (_, node) => {
     const ext = literalSpec(node)
@@ -1350,19 +1351,20 @@ function metroAssetExts(baseDir, host) {
 // assetResolutions has one (`"0.75"`, or 0.75), as rn.config.json takes them.
 const isMetroExt = (value) => typeof value === 'string' && /^[^./\\][^/\\]*$/u.test(value)
 const isMetroScale = (value) => (typeof value === 'number' && Number.isFinite(value) && value > 0) || (typeof value === 'string' && /^\d+(?:\.\d+)?$/u.test(value) && Number(value) > 0)
-const RN_CONFIG_LISTS = {
-  assetExts: [isMetroExt, 'a list of extensions, each without its dot ("riv")'],
-  sourceExts: [isMetroExt, 'a list of extensions, each without its dot ("mjs")'],
-  assetResolutions: [isMetroScale, 'a list of scales ("0.75", or 0.75)'],
+// rn.config.json's options that bear on Metro's resolver lists, as rn-bundle takes them: whether the
+// project's Metro config is loaded (or which file), and what it adds to each list.
+const RN_CONFIG_OPTIONS = {
+  metroConfig: [(value) => typeof value === 'boolean' || (typeof value === 'string' && value !== ''), 'true, false or the path of a Metro config'],
+  assetExts: [(value) => Array.isArray(value) && value.every(isMetroExt), 'a list of extensions, each without its dot ("riv")'],
+  sourceExts: [(value) => Array.isArray(value) && value.every(isMetroExt), 'a list of extensions, each without its dot ("mjs")'],
+  assetResolutions: [(value) => Array.isArray(value) && value.every(isMetroScale), 'a list of scales ("0.75", or 0.75)'],
 }
 
-// Metro's resolver lists as the project's rn.config.json gives them, as rn-bundle takes them: each of
-// assetExts, sourceExts and assetResolutions it has adds to Metro's defaults, after them, each once.
-// Of the sourceExts, those a bundle can carry a file of (scan's isResolvableExt). -> { assetExts (a
-// Set), sourceExts, assetResolutions }, or null where there's no rn.config.json; throws where it gives
-// none: not JSON, not an object, a list of another kind, or an extension added to one of assetExts and
-// sourceExts that the other has (Metro takes a file of it for an asset; rn.config.json removes none).
-function readRnConfigLists(baseDir, host) {
+// The options of the project's rn.config.json that bear on Metro's resolver lists (RN_CONFIG_OPTIONS),
+// those it has; its others are rn-bundle's own. -> them, or null where there's no rn.config.json;
+// throws where it isn't one rn-bundle takes for them: not JSON, not an object, or one of them of
+// another kind.
+function readRnConfig(baseDir, host) {
   const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
   if (text === null) return null
   let config
@@ -1372,31 +1374,53 @@ function readRnConfigLists(baseDir, host) {
     throw new Error(`${RN_CONFIG_FILE} is not valid JSON`, { cause })
   }
   if (!isPlainObject(config)) throw new Error(`${RN_CONFIG_FILE} is not an object of options`)
-  const added = (key, base) => {
-    const [valid, what] = RN_CONFIG_LISTS[key]
-    const more = config[key] ?? []
-    if (!Array.isArray(more) || !more.every(valid)) throw new Error(`${RN_CONFIG_FILE}: ${key} is ${what}, not ${JSON.stringify(more)}`)
-    return [...base, ...more.map(String).filter((each, i, all) => !base.includes(each) && all.indexOf(each) === i)]
+  const options = {}
+  for (const [key, [valid, what]] of Object.entries(RN_CONFIG_OPTIONS)) {
+    if (config[key] === undefined) continue
+    if (!valid(config[key])) throw new Error(`${RN_CONFIG_FILE}: ${key} is ${what}, not ${JSON.stringify(config[key])}`)
+    options[key] = config[key]
   }
-  const assetExts = added('assetExts', [...METRO_ASSET_EXTS])
-  const sourceExts = added('sourceExts', [...SOURCE_EXTS])
-  const both = sourceExts.find((ext) => assetExts.includes(ext))
-  if (both !== undefined) throw new Error(`${RN_CONFIG_FILE}: ${both} is in both assetExts and sourceExts, which Metro takes a file of as an asset`)
-  return { assetExts: new Set(assetExts), sourceExts: sourceExts.filter((ext) => isResolvableExt(`.${ext}`)), assetResolutions: added('assetResolutions', [...METRO_ASSET_RESOLUTIONS]) }
+  return options
 }
 
-// --metro: Metro's resolver lists, as the project gives them: its rn.config.json's (readRnConfigLists),
-// where it has one that gives them, its metro.config.js left unread; else Metro's defaults, and the
-// asset extensions metro.config.js adds (metroAssetExts). One that gives none is warned of, and
-// metro.config.js read as without it. -> { assetExts, sourceExts, assetResolutions }
+// `base`, and what of `more` it has none of, after it, each once, as strings.
+const addedTo = (base, more = []) => [...base, ...more.map(String).filter((each, i, all) => !base.includes(each) && all.indexOf(each) === i)]
+
+// --metro: Metro's resolver lists, as the project gives them, as rn-bundle takes them from its
+// rn.config.json (readRnConfig) and its Metro config, read off its source, never run:
+// - assetExts: Metro's defaults and those rn.config.json adds, where it has assetExts; Metro's defaults
+//   alone where it has metroConfig false (no Metro config is loaded); else those the Metro config
+//   (rn.config.json's metroConfig, where it names one; else metro.config.js) adds (metroAssetExts);
+// - sourceExts and assetResolutions: Metro's defaults and what rn.config.json adds, after them. Of the
+//   sourceExts, those a bundle can carry a file of (scan's isResolvableExt).
+// An rn.config.json that isn't one rn-bundle takes for them, or adds an extension to one of assetExts
+// and sourceExts that the other has (Metro takes a file of it for an asset; rn.config.json removes none),
+// is warned of, and read as none. `configs` are the files the lists come of besides metro.config.js
+// (carried as it is): rn.config.json, where there is one, and the Metro config its metroConfig names.
+// -> { assetExts (a Set), sourceExts, assetResolutions, configs (absolute paths) }
 function metroLists(baseDir, host) {
+  const rnFile = join(baseDir, RN_CONFIG_FILE)
+  const configs = host.stat(rnFile)?.isFile() ? [rnFile] : []
+  let rn = null
   try {
-    const lists = readRnConfigLists(baseDir, host)
-    if (lists !== null) return lists
+    rn = readRnConfig(baseDir, host)
   } catch (error) {
-    console.warn(`[stasis] ${error.message}; reading ${METRO_CONFIG_FILE} instead`)
+    console.warn(`[stasis] ${error.message}; reading ${METRO_CONFIG_FILE} as without it`)
   }
-  return { assetExts: metroAssetExts(baseDir, host), sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS }
+  const withoutRn = () => ({ assetExts: metroAssetExts(baseDir, host), sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs })
+  if (rn === null) return withoutRn()
+  let assetExts
+  if (rn.assetExts !== undefined) assetExts = new Set(addedTo([...METRO_ASSET_EXTS], rn.assetExts))
+  else if (rn.metroConfig === false) assetExts = new Set(METRO_ASSET_EXTS)
+  else assetExts = metroAssetExts(baseDir, host, typeof rn.metroConfig === 'string' ? rn.metroConfig : METRO_CONFIG_FILE)
+  const sourceExts = addedTo([...SOURCE_EXTS], rn.sourceExts)
+  const both = [...(rn.sourceExts ?? []).filter((ext) => assetExts.has(ext)), ...(rn.assetExts ?? []).filter((ext) => sourceExts.includes(ext))][0]
+  if (both !== undefined) {
+    console.warn(`[stasis] ${RN_CONFIG_FILE}: ${both} is in both assetExts and sourceExts, which Metro takes a file of as an asset; reading ${METRO_CONFIG_FILE} as without it`)
+    return withoutRn()
+  }
+  const named = rn.assetExts === undefined && typeof rn.metroConfig === 'string' ? [resolve(baseDir, rn.metroConfig)] : []
+  return { assetExts, sourceExts: sourceExts.filter((ext) => isResolvableExt(`.${ext}`)), assetResolutions: addedTo([...METRO_ASSET_RESOLUTIONS], rn.assetResolutions), configs: [...configs, ...named] }
 }
 
 // How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
@@ -1564,7 +1588,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // (metroLists): the extensions Metro takes as assets, which it resolves by its asset rule, scale
   // variants and all (`assetExts: [...defaultConfig.resolver.assetExts, 'riv']`), those it probes, and
   // the scales of an asset's files.
-  const { assetExts, sourceExts, assetResolutions } = metro ? metroLists(baseDir, host) : { assetExts: METRO_ASSET_EXTS, sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS }
+  const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host) : { assetExts: METRO_ASSET_EXTS, sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs: [] }
   // The resources the app imports that are no asset of Metro's are no module of Metro's, which can't
   // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
@@ -1683,7 +1707,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const configOnly = new Set()
   const configsAt = performance.now()
   if (metro) {
-    const configs = [...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)).filter((abs) => host.stat(abs)?.isFile())
+    // And the files Metro's resolver lists came of (metroLists): rn.config.json, and the Metro config
+    // its metroConfig names, where in the project.
+    const configs = [...new Set([...[...METRO_CONFIG_FILES, ...(babelled ? [BABEL_CONFIG_FILE] : [])].map((rel) => join(baseDir, rel)), ...listConfigs.filter((abs) => relWithin(abs) !== null)])].filter((abs) => host.stat(abs)?.isFile())
     // A METRO_TOOLCHAIN entry's file. -> absolute path, or undefined
     const toolchainFile = ({ name, file, via }) => {
       for (let i = 0; i <= via.length; i++) {
