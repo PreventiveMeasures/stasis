@@ -92,8 +92,8 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/rn':
-        specifier: 1.0.0-alpha.1
-        version: 1.0.0-alpha.1(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
+        specifier: 1.0.0-alpha.4
+        version: 1.0.0-alpha.4(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
       '@preventive/upstream':
         specifier: ^1.5.1
         version: 1.5.1(@noble/hashes@2.4.0)
@@ -763,18 +763,21 @@ packages:
     resolution: {integrity: sha512-naLhjcPE6tb4D4g1I2VBQMzHk7/YwXKi6TV8S8m81mCUQ9MTI4WSSMAHlkpkTXtglxoLzWxzXQyVTToNRYYs9A==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.2.0.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/rn@1.0.0-alpha.1':
-    resolution: {integrity: sha512-c6Y2RkNPwv3FLL8tAjL5QRvACdCFtTvM1Nop//00RBGnAbFRDftxmsNQAJfDsCkCqcHJaI+zejfgioF0tWul/A==, tarball: https://registry.npmjs.org/@preventive/rn/-/rn-1.0.0-alpha.1.tgz}
+  '@preventive/rn@1.0.0-alpha.4':
+    resolution: {integrity: sha512-18Y0H27qNqeAuHAvFh1MZ/Tx2UEcDd7yjjXM6SBuct5Jpm1C7lJhmc2pxJ0WaOhL0TdyG9MCsDS69X7bcRSTiA==, tarball: https://registry.npmjs.org/@preventive/rn/-/rn-1.0.0-alpha.4.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
     peerDependencies:
       esbuild: '>=0.25.0'
       flow-remove-types: '>=2.300.0'
+      metro-transform-plugins: '>=0.81.0'
       oxc-parser: '>=0.152.0'
     peerDependenciesMeta:
       esbuild:
         optional: true
       flow-remove-types:
+        optional: true
+      metro-transform-plugins:
         optional: true
       oxc-parser:
         optional: true
@@ -3307,7 +3310,7 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/rn@1.0.0-alpha.1(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)':
+  '@preventive/rn@1.0.0-alpha.4(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)':
     optionalDependencies:
       esbuild: 0.27.3
       flow-remove-types: 2.322.0
