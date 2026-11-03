@@ -92,8 +92,8 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0(@noble/hashes@2.4.0)
       '@preventive/rn':
-        specifier: 1.0.0-alpha.0
-        version: 1.0.0-alpha.0
+        specifier: 1.0.0-alpha.1
+        version: 1.0.0-alpha.1(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
       '@preventive/upstream':
         specifier: ^1.5.1
         version: 1.5.1(@noble/hashes@2.4.0)
@@ -763,9 +763,21 @@ packages:
     resolution: {integrity: sha512-naLhjcPE6tb4D4g1I2VBQMzHk7/YwXKi6TV8S8m81mCUQ9MTI4WSSMAHlkpkTXtglxoLzWxzXQyVTToNRYYs9A==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.2.0.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/rn@1.0.0-alpha.0':
-    resolution: {integrity: sha512-CN91MLJYqKYAcDjhfUiQdHmprZWRl3RjQPB8M976FqWZ0eaud7MCWTXAEoJhce+KsghCOxTy4iu8NYCmVqe83w==, tarball: https://registry.npmjs.org/@preventive/rn/-/rn-1.0.0-alpha.0.tgz}
+  '@preventive/rn@1.0.0-alpha.1':
+    resolution: {integrity: sha512-c6Y2RkNPwv3FLL8tAjL5QRvACdCFtTvM1Nop//00RBGnAbFRDftxmsNQAJfDsCkCqcHJaI+zejfgioF0tWul/A==, tarball: https://registry.npmjs.org/@preventive/rn/-/rn-1.0.0-alpha.1.tgz}
     engines: {node: '>=24.14.0'}
+    hasBin: true
+    peerDependencies:
+      esbuild: '>=0.25.0'
+      flow-remove-types: '>=2.300.0'
+      oxc-parser: '>=0.152.0'
+    peerDependenciesMeta:
+      esbuild:
+        optional: true
+      flow-remove-types:
+        optional: true
+      oxc-parser:
+        optional: true
 
   '@preventive/upstream@1.5.1':
     resolution: {integrity: sha512-K6Vmy4nUrL9AQgfcvk3mhb0axGtKBI8nT1fcvYb7dt1bwd9DRmmpYJVmjEo6rldSKSDD8UHxogfOSk5TpNl/JQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.5.1.tgz}
@@ -3295,7 +3307,11 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/rn@1.0.0-alpha.0': {}
+  '@preventive/rn@1.0.0-alpha.1(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)':
+    optionalDependencies:
+      esbuild: 0.27.3
+      flow-remove-types: 2.322.0
+      oxc-parser: 0.152.0
 
   '@preventive/upstream@1.5.1(@noble/hashes@2.4.0)':
     dependencies:

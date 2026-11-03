@@ -121,10 +121,11 @@ function manifestReader(host) {
   return (path) => manifests(path, () => readJson(path, host))
 }
 
-// React Native's Metro config defaults: the extensions its resolver probes, in order, and those it
-// takes as assets.
+// React Native's Metro config defaults: the extensions its resolver probes, in order, those it
+// takes as assets, and the scales an asset's files are of.
 export const METRO_SOURCE_EXTS = metroDefaults.sourceExts
 export const METRO_ASSET_EXTS = new Set(metroDefaults.assetExts)
+export const METRO_ASSET_RESOLUTIONS = metroDefaults.assetResolutions
 // The conditions Metro asserts itself, by the kind of import.
 const METRO_OWN_CONDITIONS = new Set(['default', 'import', 'require'])
 
@@ -235,8 +236,9 @@ function resolveFileOrDir(base, opts) {
 // Build a resolver bound to options: `conditions` (a resolveConditions set) gates `exports`
 // packages (delegated to Node's algorithm), `mainFields`/`platform`/`preferNative`/`sourceExts`
 // drive the legacy-field + suffix probing.
-// `metro` resolves as Metro does instead (viaMetro), taking `assetExts` (Metro's defaults, else the
-// project's) as assets; leave it off for the esbuild-parity `--mainFields` path. `typescript` adds
+// `metro` resolves as Metro does instead (viaMetro), taking `assetExts` as assets, at the scales
+// `assetResolutions` (Metro's defaults, else the project's, each); leave it off for the
+// esbuild-parity `--mainFields` path. `typescript` adds
 // tsc's extension substitution (a missing `x.js` probes its `x.ts` sibling) and unbuilt outputs'
 // sources (see resolveSourceFile; under `metro`, typescriptView) plus the shared miss fallback (see
 // below), and `typescriptPaths` (a tsconfig paths matcher, with the packages' layouts; see
@@ -252,6 +254,7 @@ export function createFieldResolver({
   sourceExts = METRO_SOURCE_EXTS,
   metro = false,
   assetExts = METRO_ASSET_EXTS,
+  assetResolutions = METRO_ASSET_RESOLUTIONS,
   typescript = false,
   typescriptPaths = null,
   host = diskHost,
@@ -278,7 +281,7 @@ export function createFieldResolver({
     const key = `${substituting}\0${conditionNames.join('\0')}`
     if (!metroResolvers.has(key)) {
       const view = metroHost(host, mainFields)
-      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, opts) : view, sourceExts, assetExts, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
+      metroResolvers.set(key, createMetroResolver({ host: substituting ? typescriptView(view, opts) : view, sourceExts, assetExts, assetResolutions, mainFields, conditionNames, conditionsByPlatform: {}, preferNativePlatform: preferNative }))
     }
     return metroResolvers.get(key)
   }

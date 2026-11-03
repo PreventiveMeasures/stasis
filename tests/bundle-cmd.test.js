@@ -5243,6 +5243,49 @@ test('buildBundle --metro takes an extension the project\'s Metro config adds to
   t.assert.ok(!defaults.sources.has('anim/spin@2x.riv'))
 }))
 
+test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json where it gives them, leaving metro.config.js unread', withTmp(async (t, tmp) => {
+  // rn.config.json (rn-bundle's) adds `riv` to Metro's assetExts, `mjs` to its sourceExts and 0.75 to
+  // its assetResolutions, each after Metro's defaults; an option of rn-bundle's own (port) is no list of
+  // Metro's. metro.config.js's `lottie` isn't read: a .lottie is a transform's input, as without it.
+  jsProject(tmp, { 'index.js': "const spin = require('./anim/spin.riv')\nconst wave = require('./anim/wave.lottie')\nconst util = require('./util')\nconst logo = require('./img/logo.png')\nmodule.exports = [spin, wave, util, logo]\n" }, { name: 'app', version: '0.0.0' })
+  writeTree(tmp, {
+    'rn.config.json': JSON.stringify({ assetExts: ['riv'], sourceExts: ['mjs'], assetResolutions: [0.75], port: 8082 }),
+    'metro.config.js': "module.exports = { resolver: { assetExts: ['lottie'] } }\n",
+    'anim/spin@0.75x.riv': 'RIVE@0.75x',
+    'anim/wave.lottie': 'PK',
+    'img/logo.png': 'PNG',
+    'util.mjs': 'export default 1\n',
+  })
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['riv', 'lottie', 'png'] }
+  const { result: bundle, lines } = await captureStderr(() => buildBundle(options))
+  t.assert.deepStrictEqual(Object.fromEntries(bundle.imports.get('*').get('index.js')), {
+    './anim/spin.riv': 'anim/spin@0.75x.riv',
+    './util': 'util.mjs',
+    './img/logo.png': 'img/logo.png',
+  })
+  t.assert.ok(bundle.reason['bundle:metro'].includes('anim/wave.lottie'), 'the .lottie is carried, as an input')
+  t.assert.deepStrictEqual(lines.filter((line) => line.includes('rn.config.json')), [])
+
+  // One rn-bundle doesn't take (sourceExts adding svg, an asset of Metro's) gives no lists: it is warned
+  // of, and metro.config.js read as without it.
+  writeFileSync(join(tmp, 'rn.config.json'), JSON.stringify({ sourceExts: ['svg'] }))
+  writeFileSync(join(tmp, 'anim/spin.riv'), 'RIVE')
+  const fallback = await captureStderr(() => buildBundle(options))
+  t.assert.deepStrictEqual(fallback.lines.filter((line) => line.includes('rn.config.json')), [
+    '[stasis] rn.config.json: svg is in both assetExts and sourceExts, which Metro takes a file of as an asset; reading metro.config.js instead',
+  ])
+  // metro.config.js's lottie is an asset now, and riv no longer one: spin.riv a transform's input.
+  const read = fallback.result.imports.get('*').get('index.js')
+  t.assert.deepStrictEqual([read.get('./anim/wave.lottie'), read.get('./anim/spin.riv')], ['anim/wave.lottie', undefined])
+
+  // Not JSON, or a list of another kind: likewise.
+  for (const [text, why] of [['{', 'rn.config.json is not valid JSON'], ['[]', 'rn.config.json is not an object of options'], [JSON.stringify({ assetExts: ['.riv'] }), 'rn.config.json: assetExts is a list of extensions, each without its dot ("riv"), not [".riv"]']]) {
+    writeFileSync(join(tmp, 'rn.config.json'), text)
+    const { lines: warned } = await captureStderr(() => buildBundle(options))
+    t.assert.deepStrictEqual(warned.filter((line) => line.includes('rn.config.json')), [`[stasis] ${why}; reading metro.config.js instead`])
+  }
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React

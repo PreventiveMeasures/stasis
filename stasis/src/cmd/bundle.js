@@ -6,9 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { extraArtifacts } from '@exodus/stasis-core/add'
-import { getParser, importsTypescriptByOutputName, literalSpec, scan, scanCounts } from '../scan.js'
+import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts } from '../scan.js'
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
-import { METRO_ASSET_EXTS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
+import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
@@ -936,8 +936,8 @@ function innermostRootOf(baseDir, files, root, host) {
 // Extensions probed when a resolved target names none, in Metro's default sourceExts order.
 // Limited to what a source bundle can carry (scan's RESOLVABLE_EXTS) so the resolver never
 // resolves a file the bundle would reject; an extensionless `import './Foo'` can land on
-// Foo.jsx/Foo.tsx, as it does under Metro. Like Metro's default, this doesn't track a project's
-// own sourceExts.
+// Foo.jsx/Foo.tsx, as it does under Metro. A project's own sourceExts are taken from its
+// rn.config.json alone (metroLists), never off its Metro config, which is code.
 const SOURCE_EXTS = METRO_SOURCE_EXTS
 // React Native preset mainFields for `--metro` (which also sets the RN conditions + platform suffixes).
 const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
@@ -946,6 +946,8 @@ const METRO_MAIN_FIELDS = ['react-native', 'browser', 'main']
 // imports reaches them: Metro's and the React Native CLI's, and with --babel(-aliases) Babel's.
 const METRO_CONFIG_FILE = 'metro.config.js'
 const METRO_CONFIG_FILES = [METRO_CONFIG_FILE, 'react-native.config.js']
+// @preventive/rn's config of a React Native app's build (rn-bundle's and rn-serve's), in its root.
+const RN_CONFIG_FILE = 'rn.config.json'
 const BABEL_CONFIG_FILE = 'babel.config.js'
 // What else a React Native app's build runs in Node, which neither the app nor the configs import:
 // the CLI that runs Metro and Metro itself, and what they load by a name or path given as a string.
@@ -991,19 +993,21 @@ const BUNDLER_CONDITIONS = ['module']
 // it adds to the bundler base (`import`/`require` + `default`, never Node's `node`; see
 // resolveConditions): --metro asserts the RN conditions (+ browser on web), Metro's own set;
 // --mainFields asserts esbuild's and webpack's `module` (BUNDLER_CONDITIONS) and the user's --conditions.
-// Under --metro, `assetExts` are the extensions Metro takes as assets (its defaults where not given).
-export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, conditions = [], typescript = false, typescriptPaths = null, host = diskHost, kept }) {
+// Under --metro, `assetExts`, `sourceExts` and `assetResolutions` are Metro's resolver lists (its
+// defaults where not given; metroLists).
+export function fieldResolverFor(platform, { mainFields, metro = false, assetExts, sourceExts = SOURCE_EXTS, assetResolutions, conditions = [], typescript = false, typescriptPaths = null, host = diskHost, kept }) {
   const extras = metro ? ['react-native', ...(platform === 'web' ? ['browser'] : [])] : [...new Set([...BUNDLER_CONDITIONS, ...conditions])]
   const fields = metro ? METRO_MAIN_FIELDS : mainFields
   const resolver = createFieldResolver({
     mainFields: fields,
     platform,
     preferNative: platform !== null && platform !== 'web',
-    sourceExts: SOURCE_EXTS,
+    sourceExts,
     conditions: resolveConditions('commonjs', extras),
     // Opt into Metro's package-entry browser-field quirks only on the --metro path.
     metro,
     assetExts,
+    assetResolutions,
     // --typescript: tsc's mapping, inside the field resolver (the scanner's own fallback
     // only backs the built-in resolver). Unreachable under --metro-resolver
     // (classifyEntries rejects the combination -- metro-resolver can't substitute).
@@ -1342,6 +1346,59 @@ function metroAssetExts(baseDir, host) {
   return exts
 }
 
+// An extension as Metro lists one (`riv`: no dot before it, of no directory), and a scale as its
+// assetResolutions has one (`"0.75"`, or 0.75), as rn.config.json takes them.
+const isMetroExt = (value) => typeof value === 'string' && /^[^./\\][^/\\]*$/u.test(value)
+const isMetroScale = (value) => (typeof value === 'number' && Number.isFinite(value) && value > 0) || (typeof value === 'string' && /^\d+(?:\.\d+)?$/u.test(value) && Number(value) > 0)
+const RN_CONFIG_LISTS = {
+  assetExts: [isMetroExt, 'a list of extensions, each without its dot ("riv")'],
+  sourceExts: [isMetroExt, 'a list of extensions, each without its dot ("mjs")'],
+  assetResolutions: [isMetroScale, 'a list of scales ("0.75", or 0.75)'],
+}
+
+// Metro's resolver lists as the project's rn.config.json gives them, as rn-bundle takes them: each of
+// assetExts, sourceExts and assetResolutions it has adds to Metro's defaults, after them, each once.
+// Of the sourceExts, those a bundle can carry a file of (scan's isResolvableExt). -> { assetExts (a
+// Set), sourceExts, assetResolutions }, or null where there's no rn.config.json; throws where it gives
+// none: not JSON, not an object, a list of another kind, or an extension added to one of assetExts and
+// sourceExts that the other has (Metro takes a file of it for an asset; rn.config.json removes none).
+function readRnConfigLists(baseDir, host) {
+  const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
+  if (text === null) return null
+  let config
+  try {
+    config = JSON.parse(text)
+  } catch (cause) {
+    throw new Error(`${RN_CONFIG_FILE} is not valid JSON`, { cause })
+  }
+  if (!isPlainObject(config)) throw new Error(`${RN_CONFIG_FILE} is not an object of options`)
+  const added = (key, base) => {
+    const [valid, what] = RN_CONFIG_LISTS[key]
+    const more = config[key] ?? []
+    if (!Array.isArray(more) || !more.every(valid)) throw new Error(`${RN_CONFIG_FILE}: ${key} is ${what}, not ${JSON.stringify(more)}`)
+    return [...base, ...more.map(String).filter((each, i, all) => !base.includes(each) && all.indexOf(each) === i)]
+  }
+  const assetExts = added('assetExts', [...METRO_ASSET_EXTS])
+  const sourceExts = added('sourceExts', [...SOURCE_EXTS])
+  const both = sourceExts.find((ext) => assetExts.includes(ext))
+  if (both !== undefined) throw new Error(`${RN_CONFIG_FILE}: ${both} is in both assetExts and sourceExts, which Metro takes a file of as an asset`)
+  return { assetExts: new Set(assetExts), sourceExts: sourceExts.filter((ext) => isResolvableExt(`.${ext}`)), assetResolutions: added('assetResolutions', [...METRO_ASSET_RESOLUTIONS]) }
+}
+
+// --metro: Metro's resolver lists, as the project gives them: its rn.config.json's (readRnConfigLists),
+// where it has one that gives them, its metro.config.js left unread; else Metro's defaults, and the
+// asset extensions metro.config.js adds (metroAssetExts). One that gives none is warned of, and
+// metro.config.js read as without it. -> { assetExts, sourceExts, assetResolutions }
+function metroLists(baseDir, host) {
+  try {
+    const lists = readRnConfigLists(baseDir, host)
+    if (lists !== null) return lists
+  } catch (error) {
+    console.warn(`[stasis] ${error.message}; reading ${METRO_CONFIG_FILE} instead`)
+  }
+  return { assetExts: metroAssetExts(baseDir, host), sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS }
+}
+
 // How deep a Babel config's lists nest, as read: arrays of arrays `.flat()` flattens.
 const MAX_LIST_DEPTH = 8
 // The levels `.flat(arg)` flattens: 1 by default, else the number written (Infinity as deep as read).
@@ -1503,10 +1560,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   const babelled = babel || fileAliases !== null
   // The edges each platform's scan left out above the root (withinRoot's leftOut), across platforms.
   const leftOutEdges = []
-  // --metro: the extensions Metro takes as assets, its defaults and those the project's Metro config
-  // adds (metroAssetExts: `assetExts: [...defaultConfig.resolver.assetExts, 'riv']`), which it resolves
-  // by its asset rule, scale variants and all.
-  const assetExts = metro ? metroAssetExts(baseDir, host) : METRO_ASSET_EXTS
+  // --metro: Metro's resolver lists, as the project's rn.config.json gives them, else its Metro config
+  // (metroLists): the extensions Metro takes as assets, which it resolves by its asset rule, scale
+  // variants and all (`assetExts: [...defaultConfig.resolver.assetExts, 'riv']`), those it probes, and
+  // the scales of an asset's files.
+  const { assetExts, sourceExts, assetResolutions } = metro ? metroLists(baseDir, host) : { assetExts: METRO_ASSET_EXTS, sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS }
   // The resources the app imports that are no asset of Metro's are no module of Metro's, which can't
   // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
@@ -1528,18 +1586,18 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   for (const platform of platforms) {
     // What each resolves, kept across a lazy tree's rounds where it read nothing not unpacked yet.
     const keptFor = (label) => (memo ? nestedMap(memo, `${label} ${platform ?? '*'}`) : undefined)
-    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript, typescriptPaths, host, kept: keptFor('resolutions') })
+    const field = fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript, typescriptPaths, host, kept: keptFor('resolutions') })
     const { extras } = field
     // --metro --metro-resolver delegates to the project's own metro-resolver for byte-for-byte Metro
     // fidelity; otherwise the built-in field/suffix resolver reproduces it. metro-resolver derives
     // default/require|import/platform conditions itself, so it takes only the extra `react-native`
     // condition (browser comes from its per-platform map, keyed on `web`).
     const resolver = metroResolver
-      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts: SOURCE_EXTS, mainFields, conditionNames: ['react-native'], assetExts, host })
+      ? createMetroResolver({ projectDir: baseDir, platform, sourceExts, mainFields, conditionNames: ['react-native'], assetExts, assetResolutions, host })
       : field.resolver
     // Without --typescript, the field resolver --typescript would build names the file a miss would
     // land on: a hint in the unresolved report, never an edge (see Scan#typescriptCandidate).
-    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, conditions: scanConditions, typescript: true, typescriptPaths, host, kept: keptFor('typescript resolutions') }).resolver
+    const typescriptResolve = typescript || metroResolver ? null : fieldResolverFor(platform, { mainFields, metro, assetExts, sourceExts, assetResolutions, conditions: scanConditions, typescript: true, typescriptPaths, host, kept: keptFor('typescript resolutions') }).resolver
     // --babel: a specifier the project's babel-plugin-module-resolver rewrites resolves as rewritten,
     // as Metro resolves it after Babel; its edge stays keyed by the specifier the source holds.
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases

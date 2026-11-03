@@ -68,7 +68,7 @@ export function scanResolution(resolution, builtin) {
 // over the disk (@preventive/rn's `metroResolver`). The options are Metro's resolver config, React
 // Native's defaults where left out; Metro only prefers native suffixes off web. Metro carries no Node
 // builtins, so a builtin it fails to resolve (one no browser map remaps) is reported as one.
-export function createMetroResolver({ projectDir, platform, sourceExts, mainFields, conditionNames, conditionsByPlatform, assetExts, host = diskHost } = {}) {
+export function createMetroResolver({ projectDir, platform, sourceExts, mainFields, conditionNames, conditionsByPlatform, assetExts, assetResolutions, host = diskHost } = {}) {
   // It loads the project's metro-resolver, which reads the disk: never off it.
   if (host !== diskHost) throw new Error('createMetroResolver: metro-resolver reads the disk, so it is not supported off disk')
   let metroResolver
@@ -86,6 +86,7 @@ export function createMetroResolver({ projectDir, platform, sourceExts, mainFiel
     host: metroHost(host, mainFields),
     sourceExts,
     assetExts,
+    assetResolutions,
     mainFields,
     conditionNames,
     conditionsByPlatform,

@@ -296,6 +296,18 @@ adds to them, read off its source, never run: each string it lists under
 `config.resolver.assetExts.push('riv')`). One the config filters out
 (`assetExts.filter((ext) => ext !== 'svg')`) is still taken as an asset.
 
+Where the project has an `rn.config.json` (the config of
+[`@preventive/rn`](https://github.com/PreventiveMeasures/libraries/tree/main/rn)'s
+`rn-bundle`), Metro's resolver lists are its instead, and `metro.config.js` is
+not read for them: each of its `assetExts`, `sourceExts` and
+`assetResolutions` adds to Metro's defaults, after them, as `rn-bundle` takes
+it (`{ "assetExts": ["riv"], "sourceExts": ["mjs"], "assetResolutions": [0.75] }`).
+Of the `sourceExts`, only those of code a bundle carries count (`mjs`, `cjs`,
+`mts`, `cts`). An `rn.config.json` that isn't one `rn-bundle` takes for them
+(not JSON, not an object, a list of another kind, or an extension added to
+one of `assetExts` and `sourceExts` that the other has) is warned of, and
+`metro.config.js` is read as without it.
+
 A resource the app imports that is no asset of Metro's is no module of Metro's,
 which can't resolve it: a Babel plugin consumes it before
 Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a
