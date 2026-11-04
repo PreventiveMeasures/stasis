@@ -424,11 +424,10 @@ export function detectRepo(dir, host = diskHost) {
     if (host.stat(dotGit) !== null) {
       const dirs = gitDirs(dotGit, host)
       const github = parseGithubRepository(gitOriginUrl(readText(host, join(dirs.commonDir, 'config'))))
-      if (github) return stripUndefined({ github, ...repoLocation(rel), commit: gitHeadCommit(dirs, host) })
-      return pkg ?? undefined
+      if (!github) return pkg ?? undefined
+      const commit = gitHeadCommit(dirs, host)
+      return { github, ...repoLocation(rel), ...(commit === undefined ? {} : { commit }) }
     }
     if (dirname(cursor) === cursor) return pkg ?? undefined
   }
 }
-
-const stripUndefined = (obj) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))

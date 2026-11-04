@@ -4,7 +4,10 @@ import { pathToFileURL } from 'node:url'
 
 import { createMetroResolver as createRnMetroResolver, defaults } from '@preventive/rn/metro-resolver.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { isTypeDeclaration, stripTypeDeclaration } from '@exodus/stasis-core/util'
+import { isTypeDeclaration } from '@exodus/stasis-core/util'
+
+// A type declaration's runtime stem (`dist/index.d.ts` -> `dist/index`); any other name as it is.
+export const stripTypeDeclaration = (name) => name.replace(/\.d\.[mc]?ts$/iu, '')
 
 // Metro's module resolution is @preventive/rn's (metro-resolver's own steps, over a host), for both
 // `stasis bundle --metro` (resolve-fields.js) and `--metro --metro-resolver` (createMetroResolver

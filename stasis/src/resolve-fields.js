@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { createMetroResolver, defaults as metroDefaults } from '@preventive/rn/metro-resolver.js'
-import { isTypeDeclaration, stripTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
+import { isTypeDeclaration, toPosix } from '@exodus/stasis-core/util'
 import {
   fromOutputSource,
   inNodeModules,
@@ -18,7 +18,7 @@ import {
   typescriptSiblings,
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { metroHost, scanResolution } from './metro-resolver.js'
+import { metroHost, scanResolution, stripTypeDeclaration } from './metro-resolver.js'
 import { createNodeResolver } from './resolve-node.js'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 

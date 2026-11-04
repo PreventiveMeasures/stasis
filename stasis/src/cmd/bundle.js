@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
-import { extraArtifacts } from '@exodus/stasis-core/add'
+import { assembleBundle, expandExtra, validateFiles } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts } from '../scan.js'
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
@@ -16,9 +16,9 @@ import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '.
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
 import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
-import { deferredLockfile, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
+import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseGeneratePrisma, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1031,15 +1031,28 @@ export function readConfigFile(name, cwd, host = diskHost) {
   }
 }
 
-// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` installs
-// devDependencies: the `installDevDependencies` of the stasis.config.json there, true without one.
-export const installsDevDependencies = (name, cwd, host) => parseInstallDevDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.installDevDependencies)
+// The stasis.config.json `key` in `cwd` (read as readConfigFile reads it), true or false, true where
+// it is left out.
+function configFlag(key, name, cwd, host) {
+  const value = readConfigFile(name, cwd, host)?.[key]
+  if (value === undefined) return true
+  if (typeof value !== 'boolean') throw new TypeError(`${CONFIG_FILE}: ${key} must be true or false, got ${JSON.stringify(value)}`)
+  return value
+}
 
-// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` may be lazy: the
-// `lazyDependencies` of the stasis.config.json there, true without one.
-const lazesDependencies = (name, cwd, host) => parseLazyDependencies(CONFIG_FILE, readConfigFile(name, cwd, host)?.lazyDependencies)
-// `generatePrisma` of the stasis.config.json there, true without one.
-const generatesPrisma = (name, cwd, host) => parseGeneratePrisma(CONFIG_FILE, readConfigFile(name, cwd, host)?.generatePrisma)
+// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` installs
+// devDependencies, as a plain install does (`installDevDependencies`, the default), or leaves out what
+// devDependencies alone reach, as `pnpm install --prod`, `npm ci --omit=dev` and `yarn install
+// --production` do.
+export const installsDevDependencies = (name, cwd, host) => configFlag('installDevDependencies', name, cwd, host)
+
+// Whether the tree laid out from the lockfile for the project `host` holds at `cwd` may be lazy
+// (`lazyDependencies`) where the package manager lays one out from the lockfile alone (pnpm, npm),
+// each package fetched once the build reads it, or has every package fetched before the build.
+const lazesDependencies = (name, cwd, host) => configFlag('lazyDependencies', name, cwd, host)
+// Whether a build given no `generate` writes the Prisma Client of each project the entries reach whose
+// schema asks for one, as `prisma generate` would (`generatePrisma`).
+const generatesPrisma = (name, cwd, host) => configFlag('generatePrisma', name, cwd, host)
 
 // --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
 // `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
@@ -2219,6 +2232,42 @@ async function buildJs({ mainFields, platforms, metro, metroResolver, babel, bab
   // Stamp the `bundle` consumer (the static build carries none), unless `extra` added files: then
   // the State attributes each file, to `bundle` or `extra`.
   return { bundle: bundle.reason === undefined ? bundle.withReason('bundle') : bundle, lockfile: () => state.lockfile, stateBuilt: true, root: state.root }
+}
+
+// The companion lockfile of `bundle` as it is now (Lockfile.fromBundle's), built on the first call,
+// the same one after: each file's integrity that of the bytes its content stands for
+// (bundledIntegrity), so a file is hashed only once the lockfile is wanted, for a bundle whose
+// content is the bytes read, encoded without loss. Its records are taken now: one the bundle
+// replaces after (a commit pinned onto a module) is not the lockfile's.
+// -> () => Lockfile
+function deferredLockfile(bundle) {
+  const { config, entries, imports, formats, executable } = bundle
+  const now = { config, entries, modules: new Map(bundle.modules), imports, formats, executable }
+  let lockfile
+  return () => (lockfile ??= Lockfile.fromBundle(now, (file, content) => bundledIntegrity(content, formats.get(file))))
+}
+
+// The files stasis.config.json's `extra` names under `baseDir` (expandExtra), packed as `stasis add`
+// packs them, to merge into `bundle`, one built there without a State (always full scope): those it
+// doesn't carry already (its own record of a file stands), in its buckets where it has them.
+// `outputs` are the project-relative paths the build writes, never swept in. The files are read
+// through `host`.
+// -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), the lockfile
+// built when first read, and `carried`: the files named that `bundle` carries already, the `extra`
+// consumer's too
+function extraArtifacts({ baseDir, patterns, resources, bundle, outputs, host }) {
+  const named = expandExtra(baseDir, patterns, outputs, host).files
+  // Bundle#sources builds its Map afresh on each read: once.
+  const bundled = bundle.sources
+  const carried = [...named.keys()].filter((rel) => bundled.has(rel))
+  const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
+  if (files.size === 0) return { bundle: null, lockfile: null, carried }
+  const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, label: 'extra', host })
+  const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
+  const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
+  // Hashed from the bundle, which holds the bytes read, once a lockfile is wanted.
+  const lockfile = deferredLockfile(extra)
+  return { bundle: extra, get lockfile() { return lockfile() }, carried }
 }
 
 // `built` (buildOfKind's, built in `cwd` without a State, or the union of bundleCommand's `builds` rooted there) with the files the stasis.config.json

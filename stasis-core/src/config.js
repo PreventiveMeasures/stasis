@@ -2,11 +2,9 @@ import assert from 'node:assert/strict'
 
 import { diskHost } from './host.js'
 import { canonicalizePath } from './state-util.js'
-import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseGeneratePrisma, parseInstallDevDependencies, parseLazyDependencies, parseResourcesOption } from './util.js'
+import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseResourcesOption } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
-export const DEFAULT_BUNDLE = 'none'
-export const DEFAULT_SCOPE = 'full'
 
 // Strict, not truthy: a truthiness parse would read 'no'/'off' as *enabling* the toggle.
 const envBool = (name, value) => {
@@ -40,21 +38,21 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-// The trees laid out from the lockfile's flags (`stasis github-bundle`), by how each is parsed.
-const TREE_FLAGS = { __proto__: null, installDevDependencies: parseInstallDevDependencies, lazyDependencies: parseLazyDependencies, generatePrisma: parseGeneratePrisma }
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...Object.keys(TREE_FLAGS)]
+// The trees laid out from the lockfile's flags (`stasis github-bundle`): true or false where set.
+const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS]
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
 // explicitly (flags, env, options), never by a file.
 const CONFIG_FILE_LOCK = 'frozen'
-const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
 
-const assertKnownKeys = (keys, known, what) => {
+export const assertKnownKeys = (keys, known, what) => {
   const unknown = keys.filter((key) => !known.includes(key))
   assert.equal(unknown.length, 0, `Unknown ${what} options: ${unknown.join(', ')}`)
 }
 
-// One option's membership/type rule; the cross-option rules live in #checkInvariants.
-function assertOption(key, value) {
+// One option's membership/type rule; the cross-option rules live in #checkInvariants. Plugins
+// validate their options with it too, without constructing a Config (which has side effects).
+export function assertOption(key, value) {
   const { valid, type } = OPTIONS[key]
   if (valid) assert.ok(valid.has(value), `Invalid ${key}: ${value}`)
   else if (type) assert.equal(typeof value, type, `${key} must be a ${type}`)
@@ -64,28 +62,6 @@ function assertOption(key, value) {
 const assertSame = (key, actual, expected, message) => {
   if (key === 'resources') assert.ok(extSetsEqual(actual, expected), message)
   else assert.equal(actual, expected)
-}
-
-// Plugins validate the same options without constructing a Config (which has side effects).
-export function validatePluginOptions(label, options) {
-  assertKnownKeys(Object.keys(options), PLUGIN_OPTION_KEYS, label)
-  for (const key of PLUGIN_OPTION_KEYS) {
-    if (options[key] === undefined) continue
-    if (key === 'resources') parseResourcesOption(label, options.resources)
-    else assertOption(key, options[key])
-  }
-}
-
-// The active Config is authoritative; options a plugin was given must agree with it.
-export function assertOptionsMatchConfig(config, options) {
-  try {
-    // `resources` is deliberately NOT checked here: it's a Set, coordinated in resolvePluginState.
-    for (const key of PLUGIN_OPTION_KEYS) {
-      if (key !== 'resources' && options[key] !== undefined) assert.equal(config[key === 'bundle' ? 'bundleMode' : key], options[key])
-    }
-  } catch (cause) {
-    throw new Error(`Plugin options conflict with active stasis state: ${cause.message}`, { cause })
-  }
 }
 
 export class Config {
@@ -122,10 +98,10 @@ export class Config {
     const str = (key, fallback) => this.#envValue(key) || explicit[key] || fallback
     const val = (key, fallback) => this.#envValue(key) ?? explicit[key] ?? fallback
     this.#opts = {
-      scope: str('scope', DEFAULT_SCOPE),
+      scope: str('scope', 'full'),
       lock: str('lock', DEFAULT_LOCK),
       lockFile: str('lockFile', undefined),
-      bundle: str('bundle', DEFAULT_BUNDLE),
+      bundle: str('bundle', 'none'),
       bundleFile: str('bundleFile', undefined),
       resourcesBundleFile: str('resourcesBundleFile', undefined),
       debug: val('debug', false),
@@ -218,8 +194,8 @@ export class Config {
       // `stasis bundle`'s, validated there.
       if (key === 'entries') continue
       // A run takes node_modules as installed, but a value github-bundle would refuse is refused here too.
-      if (Object.hasOwn(TREE_FLAGS, key)) {
-        TREE_FLAGS[key]('stasis.config.json', config[key])
+      if (TREE_FLAGS.includes(key)) {
+        if (typeof config[key] !== 'boolean') throw new TypeError(`stasis.config.json: ${key} must be true or false, got ${JSON.stringify(config[key])}`)
         continue
       }
       if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
