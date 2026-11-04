@@ -67,7 +67,7 @@ function extract(bundleFile, output = '.') {
     if (paths.has(path)) throw new Error(`extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content
-    if (format === 'resource:base64') {
+    if (String(format).endsWith(':base64')) {
       // Buffer.from skips invalid characters, so only a canonical encoding is taken.
       bytes = Buffer.from(content, 'base64')
       if (bytes.toString('base64') !== content) throw new Error(`extract: non-canonical base64 for ${path}`)
