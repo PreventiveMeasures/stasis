@@ -96,7 +96,8 @@ test('fromJSON with contents: false keeps every field and file list, and locks c
 
 test('fromJSON with contents: false rejects any file the reader did not take out', (t) => {
   t.assert.throws(() => Bundle.fromJSON(JSON.parse(sampleBundle().serialize()), { contents: false }), /is not a placeholder/)
-  // Shapes where fileKeyAt and fromJSON disagree on which strings are files.
+  // Shapes where fileKeyAt and fromJSON disagree on which strings are files; sources or files that are no object
+  // are refused as such.
   const cases = {
     'v0 modules': v0Of({ sources: { 'node_modules/x/a.js': 42 }, modules: { 'node_modules/x': { name: 'x', version: '1', files: { 'a.js': 'B' } } } }),
     'v0 sources array': v0Of({ sources: ['A'] }),
@@ -108,7 +109,7 @@ test('fromJSON with contents: false rejects any file the reader did not take out
     'v1 number contents': v1Of({ '.': { name: 'a', files: { 'x.js': 42 } } }),
   }
   for (const [label, json] of Object.entries(cases)) {
-    t.assert.throws(() => Bundle.fromJSON(takeOut(json), { contents: false }), /is not a placeholder/, label)
+    t.assert.throws(() => Bundle.fromJSON(takeOut(json), { contents: false }), /is not a placeholder|must be an object/, label)
   }
 })
 
@@ -175,4 +176,19 @@ test('no artifact path holds a \\: refused when written, read or streamed, never
   // Off Windows `\\` is part of a name, so a path holding one is refused rather than re-keyed.
   t.assert.throws(() => toPosix('src/a\\b.js'), /a path holding '\\' is not supported: src\/a\\b\.js/u)
   t.assert.equal(toPosix('src/a/b.js'), 'src/a/b.js')
+})
+
+test('Bundle.parse and Lockfile.parse refuse sources, modules or files that are no object', (t) => {
+  const base = { version: 1, config: { scope: 'full' }, entries: [], sources: {}, modules: {}, formats: {}, imports: {} }
+  const app = { name: 'app', files: { 'a.js': 'sha512-x' } }
+  for (const [name, json] of Object.entries({
+    'sources as an array': { ...base, sources: [app] },
+    'modules as an array': { ...base, modules: [{ ...app, version: '1.0.0' }] },
+    'files as an array': { ...base, sources: { '.': { name: 'app', files: ['x'] } } },
+    'files as a string': { ...base, sources: { '.': { name: 'app', files: 'x' } } },
+  })) {
+    t.assert.throws(() => Bundle.parse(JSON.stringify(json)), /must be an object/, name)
+    t.assert.throws(() => Lockfile.parse(JSON.stringify({ ...json, version: 0 })), /must be an object/, name)
+  }
+  t.assert.throws(() => Bundle.parse(JSON.stringify({ version: 0, config: { scope: 'full' }, sources: 'xy', formats: {}, imports: {} })), /must be an object/)
 })

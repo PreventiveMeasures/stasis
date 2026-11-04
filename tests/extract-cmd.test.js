@@ -1052,3 +1052,22 @@ test('prune still removes a file named in a recorded directory listing if its co
   t.assert.ok(!existsSync(join(tmp, 'node_modules', 'dep', 'locales', 'b.json')))
   t.assert.ok(existsSync(join(tmp, 'node_modules', 'dep', 'locales', 'a.json')))
 }))
+
+test('extractCommand refuses sources or a bucket\'s files that are no object, which would read as files named by index', withTmp((t, tmp) => {
+  const v1 = { version: 1, config: { scope: 'full' }, sources: {}, modules: {}, formats: {}, imports: {} }
+  const v0 = { version: 0, config: { scope: 'full' }, formats: {}, imports: {} }
+  for (const [name, json] of Object.entries({
+    'v1 files as an array': { ...v1, sources: { '.': { name: 'app', files: ['x', 'y'] } } },
+    'v1 files as a string': { ...v1, sources: { '.': { name: 'app', files: 'xy' } } },
+    'v1 dependency files as an array': { ...v1, modules: { 'node_modules/foo': { name: 'foo', version: '1.0.0', files: ['x'] } } },
+    'v1 sources as an array': { ...v1, sources: [{ name: 'app', files: { 'a.js': '1' } }] },
+    'v0 sources as a string': { ...v0, sources: 'xy' },
+    'v0 sources as an array': { ...v0, sources: ['x', 'y'] },
+  })) {
+    const bundlePath = join(tmp, 'bad.code.br')
+    writeRawBundle(bundlePath, json)
+    const outDir = join(tmp, 'out')
+    t.assert.throws(() => extractCommand({ bundleFile: bundlePath, output: outDir }), /not a valid stasis bundle/, name)
+    t.assert.ok(!existsSync(outDir), `${name}: nothing may be written`)
+  }
+}))

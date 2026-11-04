@@ -204,6 +204,8 @@ const carriedDirMetadata = (dir, info, files, what, fields) => fromEntries(Objec
 // `subpackages` are validated, and `files` is null-prototype.
 export function normalizeModule({ name, version, ecosystem, repo, vendored, subpackages, files }, dir, what) {
   assert(ecosystem === undefined || typeof ecosystem === 'string')
+  // An array or a string would read as files named by index ('0', '1'...).
+  if (!isPlainObject(files)) assert(false, `${what}: module '${dir}' files must be an object`)
   files = fromEntries(Object.entries(files))
   return moduleInfo({
     name, version: version ?? undefined, ecosystem,

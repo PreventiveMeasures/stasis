@@ -1,4 +1,4 @@
-import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, assertArtifactPath, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -56,7 +56,7 @@ export class Lockfile {
     const full = json.config.scope === 'full'
     assert(!!json.entries === full)
     assert(!!json.sources === full)
-    assert(json.modules)
+    assert(isPlainObject(json.modules), 'lockfile: modules must be an object')
 
     const modules = new Map()
     for (const [dir, info] of Object.entries(json.modules)) {
@@ -68,6 +68,7 @@ export class Lockfile {
     let entries = new Set()
     if (full) {
       entries = parseEntries(json.entries, 'lockfile')
+      assert(isPlainObject(json.sources), 'lockfile: sources must be an object')
       for (const [dir, info] of Object.entries(json.sources)) {
         assert(!hasNodeModulesSegment(dir))
         // A workspace bucket may omit version (a private/unpublished package.json can lack one).

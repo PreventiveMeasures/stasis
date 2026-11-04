@@ -211,7 +211,7 @@ export class Bundle {
     if (json.version === VERSION) {
       const full = json.config.scope === 'full'
       if (json.modules !== undefined) {
-        assert(typeof json.modules === 'object' && json.modules !== null)
+        assert(isPlainObject(json.modules), 'bundle: modules must be an object')
         for (const [dir, info] of Object.entries(json.modules)) {
           assert(hasNodeModulesSegment(dir))
           assertArtifactPath(dir, 'bundle')
@@ -220,7 +220,7 @@ export class Bundle {
         }
       }
       if (full) {
-        assert(json.sources && typeof json.sources === 'object')
+        assert(isPlainObject(json.sources), 'bundle: sources must be an object')
         for (const [dir, info] of Object.entries(json.sources)) {
           assert(!hasNodeModulesSegment(dir))
           assertArtifactPath(dir, 'bundle')
@@ -235,7 +235,7 @@ export class Bundle {
         assert(json.sources === undefined)
       }
     } else {
-      assert(json.sources)
+      assert(isPlainObject(json.sources), 'bundle: sources must be an object')
       for (const [path, content] of Object.entries(json.sources)) {
         assertArtifactPath(path, 'bundle')
         const { dir, rel, name } = inferModuleDir(path)

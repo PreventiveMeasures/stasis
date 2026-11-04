@@ -415,7 +415,6 @@ test('readBundle with onFile rejects bundles whose streamed files differ from th
       version: 0, config: { scope: 'full' }, formats: {}, imports: {},
       sources: { 'node_modules/x/a.js': 42 }, modules: { 'node_modules/x': { name: 'x', version: '1', files: { 'a.js': 'EVIL' } } },
     }),
-    'array sources': JSON.stringify({ version: 0, config: { scope: 'full' }, formats: {}, imports: {}, sources: ['A'] }),
   }
   for (const [label, text] of Object.entries(cases)) {
     const buf = compressed(text)
@@ -423,6 +422,11 @@ test('readBundle with onFile rejects bundles whose streamed files differ from th
     t.assert.deepStrictEqual([...(await readBundle(buf)).modules], [...whole.modules], `${label}: full mode matches Bundle.parse`)
     await t.assert.rejects(readBundle(buf, { onFile() {} }), /is not a placeholder|outside its file list/, label)
   }
+  // Array sources would read as files named by index: refused whole and streamed alike.
+  const arraySources = compressed(JSON.stringify({ version: 0, config: { scope: 'full' }, formats: {}, imports: {}, sources: ['A'] }))
+  t.assert.throws(() => parseWhole(arraySources), /sources must be an object/)
+  await t.assert.rejects(readBundle(arraySources), /sources must be an object/)
+  await t.assert.rejects(readBundle(arraySources, { onFile() {} }), /sources must be an object/)
 })
 
 test('readBundle rejects a missing file, a non-brotli file, truncation, and bad JSON', withTmp(async (t, tmp) => {
