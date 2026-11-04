@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 
-import { Config, assertOptionsMatchConfig, validatePluginOptions } from '@exodus/stasis-core/config'
+import { Config } from '@exodus/stasis-core/config'
+import { assertOptionsMatchConfig, validatePluginOptions } from '../stasis-plugins/src/plugins.js'
 
 // Save/restore EXODUS_STASIS_* across tests so env-driven tests don't leak.
 const ENV_KEYS = [

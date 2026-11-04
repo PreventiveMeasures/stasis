@@ -1,6 +1,30 @@
-import { hasNodeModulesSegment, moduleFileKey, packageRecords } from '@exodus/stasis-core/util'
+import { entryDirOf, hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
+
+// The packages a module map records, for what looks at each of them (`stasis audit`): every record, as it is,
+// and after a dependency's, each `vendored` copy in it as a record of its own, at the copy's directory in the
+// project (`node_modules/next/dist/compiled/react-is`): its `name` and `version`, its host's `ecosystem`,
+// `vendoredIn` its host's dir, and `files`, those the copy holds (each counted for the deepest entry holding
+// it), relative to that directory. A host keeps all its files, the copies' too: they are shipped as its.
+// File values are carried over as they are (a contents-free bundle's locked ones unread).
+export function* packageRecords(modules) {
+  for (const [dir, record] of modules) {
+    yield [dir, record]
+    if (record.vendored === undefined) continue
+    const held = new Map()
+    for (const rel of Object.keys(record.files)) {
+      const sub = entryDirOf(record.vendored, rel)
+      if (sub === undefined) continue
+      if (!held.has(sub)) held.set(sub, Object.create(null))
+      Object.defineProperty(held.get(sub), rel.slice(sub.length + 1), Object.getOwnPropertyDescriptor(record.files, rel))
+    }
+    for (const [sub, files] of held) {
+      const { name, version } = record.vendored[sub]
+      yield [moduleFileKey(dir, sub), { name, version, ecosystem: record.ecosystem, vendoredIn: dir, files }]
+    }
+  }
+}
 
 // `stasis audit --why` support: from an artifact's resolution graph (`imports`)
 // and its per-consumer provenance (`reason`), explain WHY a vulnerable module is

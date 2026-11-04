@@ -1,4 +1,4 @@
-import { reposAgree, sortPaths } from '@exodus/stasis-core/util'
+import { REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
 // file level. Never reads disk. Comparing across kinds works by reducing every file to the same
@@ -20,6 +20,11 @@ function digestOf(kind, format, value, hash) {
 }
 
 const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
+
+// Whether two records of one dependency agree on its `repo`: an artifact from before the field records
+// none; else every field alike, `github` in any case.
+const reposAgree = (a, b) => a === undefined || b === undefined ||
+  Object.keys(REPO_FIELDS).every((key) => (key === 'github' ? sameGithub(a.github, b.github) : a[key] === b[key]))
 
 // Project an artifact onto a uniform shape: scope + Map<dir, { name, version, ecosystem, repo,
 // files: Map<rel, digest> }>. `input` is { artifact, kind }; `hash` re-hashes bundle bytes only.

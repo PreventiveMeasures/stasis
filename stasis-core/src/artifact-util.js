@@ -74,12 +74,6 @@ export const REPO_FIELDS = {
 // Whether two GitHub `owner/name`s are one: GitHub's names are case-insensitive.
 export const sameGithub = (a, b) => a?.toLowerCase() === b?.toLowerCase()
 
-// Whether two `repo`s name the same place: every field alike, `github` in any case.
-export const sameRepo = (a, b) => Object.keys(REPO_FIELDS).every((key) => (key === 'github' ? sameGithub(a.github, b.github) : a[key] === b[key]))
-
-// Whether two records of one dependency agree on its `repo`: an artifact from before the field records none.
-export const reposAgree = (a, b) => a === undefined || b === undefined || sameRepo(a, b)
-
 // Validate a block against its `fields` (each optional: a check, or a nested block's fields), `what`
 // naming it in errors; canonical, frozen, undefined if empty. Messages are built on failure alone: a
 // dependency's `repo` is checked on every parse and write.
@@ -139,7 +133,7 @@ const DIR_METADATA = {
 }
 
 // The directory of `entries` a bucket file `rel` is in: the deepest one listed that holds it.
-const entryDirOf = (entries, rel) => {
+export const entryDirOf = (entries, rel) => {
   for (let slash = rel.lastIndexOf('/'); slash > 0; slash = rel.lastIndexOf('/', slash - 1)) {
     if (Object.hasOwn(entries, rel.slice(0, slash))) return rel.slice(0, slash)
   }
@@ -204,30 +198,6 @@ export function withMetadataOf(record, other) {
 // a field not in `fields` left out.
 const carriedDirMetadata = (dir, info, files, what, fields) => fromEntries(Object.keys(DIR_METADATA).map((field) =>
   [field, fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, files, [field]: carriedEntries(info[field], files) }, what) : undefined]))
-
-// The packages a module map records, for what looks at each of them (`stasis audit`): every record, as it is,
-// and after a dependency's, each `vendored` copy in it as a record of its own, at the copy's directory in the
-// project (`node_modules/next/dist/compiled/react-is`): its `name` and `version`, its host's `ecosystem`,
-// `vendoredIn` its host's dir, and `files`, those the copy holds (each counted for the deepest entry holding
-// it), relative to that directory. A host keeps all its files, the copies' too: they are shipped as its.
-// File values are carried over as they are (a contents-free bundle's locked ones unread).
-export function* packageRecords(modules) {
-  for (const [dir, record] of modules) {
-    yield [dir, record]
-    if (record.vendored === undefined) continue
-    const held = new Map()
-    for (const rel of Object.keys(record.files)) {
-      const sub = entryDirOf(record.vendored, rel)
-      if (sub === undefined) continue
-      if (!held.has(sub)) held.set(sub, Object.create(null))
-      Object.defineProperty(held.get(sub), rel.slice(sub.length + 1), Object.getOwnPropertyDescriptor(record.files, rel))
-    }
-    for (const [sub, files] of held) {
-      const { name, version } = record.vendored[sub]
-      yield [moduleFileKey(dir, sub), { name, version, ecosystem: record.ecosystem, vendoredIn: dir, files }]
-    }
-  }
-}
 
 // A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
 // into undefined so identity comparisons and JSON round-trips can't split on it), `repo`, `vendored` and

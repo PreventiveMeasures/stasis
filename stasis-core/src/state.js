@@ -1450,11 +1450,6 @@ export class State {
     return narrowExecutable(all, { modules: this.modules, formats, scope: this.config.scope })
   }
 
-  // The executable list ONE bundle declares, narrowed to that half's own buckets and formats.
-  #bundleExecutable(modules, formats) {
-    return narrowExecutable(this.executable, { modules, formats, scope: this.config.scope })
-  }
-
   get lockfile() {
     const formats = this.#mergedFormats()
     return new Lockfile({
@@ -1596,7 +1591,8 @@ export class State {
       modules,
       formats,
       imports,
-      executable: this.#bundleExecutable(modules, formats),
+      // Narrowed to that half's own buckets and formats.
+      executable: narrowExecutable(this.executable, { modules, formats, scope: this.config.scope }),
       reason: this.#bundleReason(contents.keys()),
       repo: this.#repoFor(half),
     })

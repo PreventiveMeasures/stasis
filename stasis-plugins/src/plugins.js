@@ -3,10 +3,35 @@
 
 import assert from 'node:assert/strict'
 
-import { DEFAULT_LOCK, assertOptionsMatchConfig, validatePluginOptions } from '@exodus/stasis-core/config'
+import { DEFAULT_LOCK, assertKnownKeys, assertOption } from '@exodus/stasis-core/config'
 import { ensureStateForLoader, isLoaderInstalled } from '@exodus/stasis-core/hooks'
 import { State } from '@exodus/stasis-core/state'
 import { extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
+
+// The Config options a plugin takes; `lockFile` is not one (the lockfile is always the preload's).
+const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
+
+// A plugin's options, validated as Config validates them, without constructing one (which has side effects).
+export function validatePluginOptions(label, options) {
+  assertKnownKeys(Object.keys(options), PLUGIN_OPTION_KEYS, label)
+  for (const key of PLUGIN_OPTION_KEYS) {
+    if (options[key] === undefined) continue
+    if (key === 'resources') parseResourcesOption(label, options.resources)
+    else assertOption(key, options[key])
+  }
+}
+
+// The active Config is authoritative; options a plugin was given must agree with it.
+export function assertOptionsMatchConfig(config, options) {
+  try {
+    // `resources` is deliberately NOT checked here: it's a Set, coordinated in resolvePluginState.
+    for (const key of PLUGIN_OPTION_KEYS) {
+      if (key !== 'resources' && options[key] !== undefined) assert.equal(config[key === 'bundle' ? 'bundleMode' : key], options[key])
+    }
+  } catch (cause) {
+    throw new Error(`Plugin options conflict with active stasis state: ${cause.message}`, { cause })
+  }
+}
 
 // Decides which State a bundler plugin runs against, given its options and the ambient preload.
 // Returns { state: null, isNoop: true } (inert -- register no hooks) or { state, isNoop: false }.

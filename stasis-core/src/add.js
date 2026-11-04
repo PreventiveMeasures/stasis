@@ -7,7 +7,7 @@ import { Lockfile } from './lockfile.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
-import { canonicalizePath, deferredLockfile, sha512integrity } from './state-util.js'
+import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
@@ -65,7 +65,7 @@ function readAddConfig(baseDir) {
 // `buckets` (dir -> module) are identities to take for a dir over the one found there: those of the
 // bundle the files will merge into, which may name its buckets otherwise (`solidity-bundle`, say).
 // Their package.json files are read through `host`.
-function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map(), host = diskHost } = {}) {
+export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map(), host = diskHost } = {}) {
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
@@ -278,7 +278,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
 // a symlink escaping the root is a security invariant, so it fails closed on the spot. Bytes are
 // hashed only when there's a lockfile to receive the integrities (`withIntegrity`). `label` prefixes the error.
 // Files are read through `host`.
-function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
+export function validateFiles({ baseDir, realBase, files, resources, withIntegrity, label = 'add', host = diskHost }) {
   const codeFiles = new Map()
   const resourceFiles = new Map()
   const integrities = new Map()
@@ -310,29 +310,6 @@ function validateFiles({ baseDir, realBase, files, resources, withIntegrity, lab
   }
   if (missing.length + undeclared.length + nonUtf8.length > 0) throw validationError({ missing, undeclared, nonUtf8 }, label)
   return { codeFiles, resourceFiles, integrities }
-}
-
-// The files stasis.config.json's `extra` names under `baseDir` (expandExtra), packed as `add` packs
-// them, for `stasis bundle` to merge into `bundle`, one built there without a State (always full
-// scope): those it doesn't carry already (its own record of a file stands), in its buckets where it
-// has them. `outputs` are the project-relative paths the build writes, never swept in. The files
-// are read through `host`, the disk by default.
-// -> { bundle, lockfile } of the `extra` consumer (null when there is nothing to add), the lockfile
-// built when first read, and `carried`: the files named that `bundle` carries already, the `extra`
-// consumer's too
-export function extraArtifacts({ baseDir, patterns, resources, bundle, outputs = new Set(), host = diskHost }) {
-  const named = expandExtra(baseDir, patterns, outputs, host).files
-  // Bundle#sources builds its Map afresh on each read: once.
-  const bundled = bundle.sources
-  const carried = [...named.keys()].filter((rel) => bundled.has(rel))
-  const files = new Map([...named].filter(([rel]) => !bundled.has(rel)))
-  if (files.size === 0) return { bundle: null, lockfile: null, carried }
-  const { codeFiles, resourceFiles } = validateFiles({ baseDir, realBase: host.realpath(baseDir), files, resources, label: 'extra', host })
-  const rootPkg = readJson(join(baseDir, 'package.json'), host) ?? {}
-  const extra = assembleBundle(baseDir, new Map([...codeFiles, ...resourceFiles]), rootPkg.name ?? 'workspace', rootPkg.version ?? '0.0.0', undefined, { reason: 'extra', buckets: bundle.modules, host })
-  // Hashed from the bundle, which holds the bytes read, once a lockfile is wanted.
-  const lockfile = deferredLockfile(extra)
-  return { bundle: extra, get lockfile() { return lockfile() }, carried }
 }
 
 // GLOB the listed paths, FILTERING the auto-excluded set out of what a sweep finds (see
