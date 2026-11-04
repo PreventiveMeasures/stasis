@@ -19,12 +19,13 @@ stasis-core extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|no
 | positional | The brotli-compressed `stasis.code.br` bundle to read. |
 
 Without any stasis package installed, the repository's
-[`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) does the same as
-`stasis extract --lock=none`, in one file with only Node's builtins:
+[`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) writes what
+`stasis extract --lock=none` writes, in one file with only Node's builtins:
 `node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/bundle.stasis.code.br`.
-It has no lockfile support, so it takes no `--lock`. It refuses an output dir
-holding a `stasis.lock.json`, or, for a bundle named `<name>.stasis.code.br`,
-a `<name>.stasis.lock.json`, and it never writes that second file either. It is
+It reads only the files, their formats and execute bits, so it checks nothing else
+of the bundle, and it takes v1 bundles only. It has no lockfile support: it refuses
+an output dir holding a `stasis.lock.json`, or, for a `<name>.stasis.code.br`
+bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. It is
 not published in any package.
 
 ## What it writes
