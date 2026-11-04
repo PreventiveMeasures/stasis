@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { diskHost } from './host.js'
+import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
 import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption } from './util.js'
 
@@ -21,7 +22,9 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
 // stasis.config.json only (no env var or option), `entries` is `stasis bundle`'s and
 // `installDevDependencies`, `lazyDependencies`, `generatePrisma` and `lockfiles` the trees laid out
-// from the lockfiles' (`stasis github-bundle`), which a run takes nothing from.
+// from the lockfiles' (`stasis github-bundle`), which a run takes nothing from. The POLICY_KEYS
+// (`allowedPaths`, `disallowedPaths`, `allowedModules`, `disallowedModules`) are file-only too, and
+// every command's: what a run or build may carry.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -40,7 +43,7 @@ const OPTIONS = {
 const OPTION_KEYS = Object.keys(OPTIONS)
 // The trees laid out from the lockfile's flags (`stasis github-bundle`): true or false where set.
 const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
-const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS, 'lockfiles']
+const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
 // The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
 // explicitly (flags, env, options), never by a file.
 const CONFIG_FILE_LOCK = 'frozen'
@@ -111,6 +114,7 @@ export class Config {
       brotliQuality: this.#envValue('brotliQuality') ?? explicit.brotliQuality,
       resources: parseResourcesOption('resources', this.#env.resources !== undefined ? envList(this.#env.resources) : explicit.resources),
       extra: [],
+      policy: null,
     }
     const flush = env.EXODUS_STASIS_SHARD_SIGNAL_FLUSH
     this.#shardSignalFlush = Boolean(flush) && envBool('EXODUS_STASIS_SHARD_SIGNAL_FLUSH', flush)
@@ -191,8 +195,8 @@ export class Config {
     }
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
-      // `stasis bundle`'s, validated there.
-      if (key === 'entries') continue
+      // `stasis bundle`'s, validated there; the policy's, below.
+      if (key === 'entries' || POLICY_KEYS.includes(key)) continue
       // A run takes node_modules as installed, but a value github-bundle would refuse is refused here too.
       if (TREE_FLAGS.includes(key)) {
         if (typeof config[key] !== 'boolean') throw new TypeError(`stasis.config.json: ${key} must be true or false, got ${JSON.stringify(config[key])}`)
@@ -208,6 +212,7 @@ export class Config {
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
       else this.#opts[key] = config[key]
     }
+    this.#opts.policy = parsePolicy('stasis.config.json', config)
     this.#checkInvariants()
 
     try {
@@ -249,6 +254,12 @@ export class Config {
   // stasis.config.json's `extra` patterns, attested beside what a writing run reaches (State#includeExtra). Not serialized.
   get extra() {
     return this.#opts.extra
+  }
+
+  // stasis.config.json's allowedPaths / disallowedPaths / allowedModules / disallowedModules (a
+  // Policy), or null where it sets none: what a run may carry. Not serialized.
+  get policy() {
+    return this.#opts.policy
   }
 
   get debug() {
