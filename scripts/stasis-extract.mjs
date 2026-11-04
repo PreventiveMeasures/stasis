@@ -10,18 +10,25 @@ import { brotliDecompressSync } from 'node:zlib'
 
 const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
+// Not an array or a string, which would read as files named by index.
+const isObject = (x) => typeof x === 'object' && x !== null && !Array.isArray(x)
 
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
   try {
     const { buffer, engine } = brotliDecompressSync(raw, { info: true })
     assert(engine.bytesWritten === raw.length, 'trailing bytes after the brotli stream')
-    const { version, sources, modules, formats = {}, executable = [] } = JSON.parse(buffer.toString('utf8'))
+    const { version, config, sources, modules = {}, formats = {}, executable = [] } = JSON.parse(buffer.toString('utf8'))
     assert(version === 1, `unsupported bundle version ${version}`)
+    // A node_modules-scope bundle carries dependencies alone.
+    assert(config?.scope === 'full' ? isObject(sources) : config?.scope === 'node_modules' && sources === undefined, 'scope must be full, with sources, or node_modules, without')
+    assert(isObject(modules) && Object.keys(modules).every((dir) => dir.split('/').includes('node_modules')), 'modules must be node_modules buckets')
+    assert(isObject(formats) && Object.values(formats).every((format) => typeof format === 'string'), 'formats must map paths to strings')
     assert(Array.isArray(executable), 'executable is not an array')
     const executables = new Set(executable)
     const files = []
-    for (const [dir, { files: bucket }] of [...Object.entries(sources ?? {}), ...Object.entries(modules ?? {})]) {
+    for (const [dir, { files: bucket }] of [...Object.entries(sources ?? {}), ...Object.entries(modules)]) {
+      assert(isObject(bucket), `bucket ${dir} files must be an object`)
       for (const [rel, content] of Object.entries(bucket)) {
         // rel '' is the bucket dir's own listing: keyed by the dir, written at `dir/` (refused unless skipped).
         const path = dir === '.' ? rel : `${dir}/${rel}`
@@ -47,15 +54,15 @@ function extract(bundleFile, output = '.') {
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
-    if (format === 'directory' || String(format).startsWith('stat:')) continue
+    if (format === 'directory' || format?.startsWith('stat:')) continue
     assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.
     assert(!path.includes('\\') && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..'), `extract: invalid bundle path: ${path}`)
-    assert(!/(?:^|\/)stasis\.lock\.json$/iu.test(path) && !locks.includes(path), `extract: the bundle carries a lockfile: ${path}`)
+    assert(!/(?:^|\/)stasis\.lock\.json$/iu.test(path) && !locks.some((lock) => lock.toLowerCase() === path.toLowerCase()), `extract: the bundle carries a lockfile: ${path}`)
     assert(!paths.has(path), `extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content
-    if (String(format).endsWith(':base64')) {
+    if (format?.endsWith(':base64')) {
       // Buffer.from skips invalid characters: require a canonical encoding.
       bytes = Buffer.from(content, 'base64')
       assert(bytes.toString('base64') === content, `extract: non-canonical base64 for ${path}`)

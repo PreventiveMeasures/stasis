@@ -75,6 +75,14 @@ const CASES = {
   'a nested path both file and directory': [v1({ 'new/a': 'x', 'new/a/b': 'y' }), 'refused'],
   'non-string content': [v1({ 'x.js': 42 }), 'refused'],
   'a stasis.lock.json': [v1({ 'sub/STASIS.LOCK.JSON': '{}' }), 'refused'],
+  'a node_modules-scope bundle carrying sources': [{ ...v1({ 'src/a.js': '1' }), config: { scope: 'node_modules' }, modules: dep({ 'i.js': '1' }) }, 'refused'],
+  'no scope': [{ ...v1({ 'a.js': '1' }), config: undefined }, 'refused'],
+  'a dependency bucket outside node_modules': [v1({}, { modules: { src: { name: 's', version: '1.0.0', files: { 'a.js': '1' } } } }), 'refused'],
+  'sources as an array': [{ ...v1({}), sources: [{ name: 'app', files: { 'a.js': '1' } }] }, 'refused'],
+  'files as an array': [{ ...v1({}), sources: { '.': { name: 'app', files: ['x'] } } }, 'refused'],
+  'files as a string': [{ ...v1({}), sources: { '.': { name: 'app', files: 'xy' } } }, 'refused'],
+  'formats as an array': [v1({ '0': 'zero', 'a.js': '1' }, { formats: ['directory'] }), 'refused'],
+  'a format that is no string': [v1({ 'a.js': '1', 'b.js': '2' }, { formats: { 'b.js': ['stat:file'] } }), 'refused'],
 }
 
 for (const [name, [json, outcome]] of Object.entries(CASES)) {
@@ -147,12 +155,14 @@ test('stasis-extract.mjs refuses a stasis.lock.json, or a <name>.stasis.lock.jso
     t.assert.ok(r.stderr.includes(`extract: unexpected ${join(out, lock)}: no lockfile support here`), r.stderr)
     t.assert.deepStrictEqual(readdirSync(out), [lock])
   }
-  // Nor may that bundle write its own.
-  writeBundle(join(tmp, 'app.stasis.code.br'), v1({ 'a.js': 'a\n', 'app.stasis.lock.json': '{}' }))
-  const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'app.stasis.code.br')])
-  t.assert.equal(r.status, 1)
-  t.assert.match(r.stderr, /extract: the bundle carries a lockfile: app\.stasis\.lock\.json/)
-  t.assert.ok(!existsSync(join(tmp, 'out')))
+  // Nor may that bundle write its own, in any case: a case-insensitive disk takes one for the other.
+  for (const lock of ['app.stasis.lock.json', 'APP.Stasis.Lock.JSON']) {
+    writeBundle(join(tmp, 'app.stasis.code.br'), v1({ 'a.js': 'a\n', [lock]: '{}' }))
+    const r = runScript(['-o', join(tmp, 'out'), join(tmp, 'app.stasis.code.br')])
+    t.assert.equal(r.status, 1, lock)
+    t.assert.ok(r.stderr.includes(`extract: the bundle carries a lockfile: ${lock}`), r.stderr)
+    t.assert.ok(!existsSync(join(tmp, 'out')))
+  }
 }))
 
 test('stasis-extract.mjs extracts beside a lockfile of another bundle\'s name', withTmp((t, tmp) => {

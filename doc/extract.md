@@ -22,8 +22,8 @@ Without any stasis package installed, the repository's
 [`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) writes what
 `stasis extract --lock=none` writes, in one file with only Node's builtins:
 `node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/bundle.stasis.code.br`.
-It reads only the files, their formats and execute bits, so it checks nothing else
-of the bundle, and it takes v1 bundles only. It has no lockfile support: it refuses
+It reads only what decides what is written (the scope, the files, their formats and
+execute bits), so it checks nothing else of the bundle, and it takes v1 bundles only. It has no lockfile support: it refuses
 an output dir holding a `stasis.lock.json`, or, for a `<name>.stasis.code.br`
 bundle, a `<name>.stasis.lock.json`, which that bundle may not write either. It is
 not published in any package.
