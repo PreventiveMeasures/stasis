@@ -38,6 +38,10 @@ it, or take it for another path.
 | `installDevDependencies` | boolean | `true` | none |
 | `lazyDependencies` | boolean | `true` | none |
 | `generatePrisma` | boolean | `true` | none |
+| `allowedPaths` | array of paths and glob patterns | unset | none |
+| `disallowedPaths` | array of paths and glob patterns | unset | none |
+| `allowedModules` | array of package names and glob patterns | unset | none |
+| `disallowedModules` | array of package names and glob patterns | unset | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -182,12 +186,83 @@ the entries reach (see [Prisma](github-bundle.md#prisma)); `--generate=prisma`
 beside it is refused.
 
 Unknown keys are rejected. A key set by both file and env var must match.
-`extra`, `entries`, `installDevDependencies`, `lazyDependencies` and `generatePrisma` are set in the file alone. Only
+`extra`, `entries`, `installDevDependencies`, `lazyDependencies`, `generatePrisma` and the four rules below are set in the file alone. Only
 `scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, `extra`'s effect is the
 files it adds, `installDevDependencies`' the packages a build can reach,
-`lazyDependencies`' the packages fetched, and `generatePrisma`'s the clients
-generated.
+`lazyDependencies`' the packages fetched, `generatePrisma`'s the clients
+generated, and the rules' the artifacts refused.
+
+### Allowed and disallowed paths and modules
+
+`allowedPaths`, `disallowedPaths`, `allowedModules` and `disallowedModules`
+restrict what a lockfile or bundle may carry, for every command that builds,
+loads or writes one:
+
+```json
+{
+  "allowedPaths": ["src", "node_modules"],
+  "disallowedPaths": ["**/*.pem", "**/__fixtures__"],
+  "allowedModules": ["@babel/*", "react", "react-dom"],
+  "disallowedModules": ["request"]
+}
+```
+
+- Every path it carries matches one of `allowedPaths`, where that is set, and
+  none of `disallowedPaths`: the project's files and the dependencies' alike
+  (`node_modules/…`, as the artifact spells them, `.pnpm/` and all), the
+  `.stasis/empty-module.js` stasis records for a disabled import, and the
+  directories and stat records a `--fs` capture records.
+- Every dependency it carries (a record of the lockfile's `modules`, of any
+  ecosystem) is named by one of `allowedModules`, where that is set, and by
+  none of `disallowedModules`. A dependency is its record's `name`, its
+  `package.json`'s; a package another vendors (`vendored`) is that one's. The
+  project's own packages (`sources`) are no dependencies.
+- An empty list allows nothing: `"allowedModules": []` allows no dependency.
+
+A path pattern is a path or a glob relative to the directory holding
+`stasis.config.json`, which it may not climb out of; `./` and a trailing `/` are
+ignored, and `.` is that directory itself, so everything. A pattern matches a
+path, or a directory above it: `src` takes in everything under `src/`, as `**/test`
+does every `test` directory. `*` matches any run of characters but `/`, `?` one,
+`[abc]`, `[a-z]` and `[!abc]` one of a class, `**` as a whole segment any number
+of segments, none included (`a/**` matches `a`, `**/b` matches `b`), `{a,b}`
+either, and `\` takes the next character as itself. Unlike `extra`'s, which
+globs as a shell does, these wildcards match dotfiles too, so `.env` doesn't slip
+past `**`. A path is matched as the artifact spells it, never folding case.
+
+A module pattern is a package name, matching that name, or a glob of names,
+matching as a path pattern matches a path, but for a directory above it: `*`
+doesn't cross a scope's `/`, so `@babel/*`, not `*`, takes in `@babel/core`, and
+`**` takes in every name.
+
+The four are rules of their own, as are the four an entry of `entries` sets (see
+[Entry options](bundle.md#entry-options-stasisconfigjson)): each is checked on
+its own, and none overrides another. The config's are held to everything a
+command carries, every entry's build included; an entry's to what its own build
+carries. So a module the config disallows is disallowed whatever an entry allows,
+an entry's `allowedPaths` is met by its own graph, and the config's by the whole
+bundle, `extra` included. Every offender of every rule is named in one error, and
+nothing is written:
+
+- `stasis run` refuses each file as the run reaches it, before it is loaded or
+  read, so its import fails; a run that reaches one writes nothing, even where
+  the program catches the error, as for any refused capture. A lockfile or bundle
+  it loads that records an offender is refused before the entry runs, in every
+  mode that loads one: rebuild it (`--lock=replace`, `--bundle=replace`). So are
+  the bundler plugins' builds, which record through the same State.
+- `stasis bundle` holds what it builds to them, each entry's build to its own,
+  and with `--add`, what the bundle on disk carries already too.
+- `stasis github-bundle` (and `@exodus/stasis/vfs-bundle`, and `stasis bundle
+  --deptree`) holds what it builds to the repository's `stasis.config.json`'s,
+  and its entries' own, as `stasis bundle` does.
+- `stasis add` holds the files it adds to them, and what the bundles and
+  lockfile it adds them to carry already.
+- `stasis audit` with no file holds the bundle it audits to them, as `stasis
+  bundle` would.
+
+In `scope = node_modules`, the project's own files are no paths an artifact
+carries, so no rule refuses them.
 
 ## `stasis.lock.json`
 
