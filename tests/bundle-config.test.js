@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
@@ -80,6 +80,7 @@ test('readConfigEntries refuses what is no entry\'s options', withTmp((t, tmp) =
   refused({ 'index.js': true }, /entries "index\.js" must be an object of stasis bundle options/u)
   refused({ 'index.js': { minify: true } }, /entries "index\.js": unknown option "minify"/u)
   refused({ 'index.js': { output: 'x.br' } }, /output is the bundle's option, not an entry's: pass --output/u)
+  refused({ 'index.js': { 'lockfile-only': true } }, /lockfile-only is the bundle's option, not an entry's: pass --lockfile-only/u)
   refused({ 'index.js': { metro: 'yes' } }, /metro must be true or false/u)
   refused({ 'index.js': { platforms: 3 } }, /platforms must be a string or an array of strings/u)
   refused({ 'index.js': { tsconfig: ['a.json'] } }, /tsconfig must be a string$/u)
@@ -300,6 +301,18 @@ test('CLI: stasis bundle alone bundles the entries stasis.config.json names, eac
   const named = await runCli(['bundle', '--output=named.br', 'index.js', 'cli.js'], tmp)
   t.assert.equal(named.status, 0, named.stderr)
   t.assert.equal(readBundle(join(tmp, 'named.br')).serialize(), bundle.serialize())
+}))
+
+test('CLI: stasis bundle --lockfile-only writes the lockfile of the entries stasis.config.json names alone', withTmp(async (t, tmp) => {
+  project(tmp, { 'index.js': { metro: true, platforms: ['ios', 'android'] }, 'cli.js': { metro: false } })
+  const r = await runCli(['bundle', '--lockfile=only.lock.json', '--lockfile-only'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), 'no bundle written')
+  // The one a build writing the bundle too writes beside it.
+  const beside = await runCli(['bundle', '--lockfile=beside.lock.json'], tmp)
+  t.assert.equal(beside.status, 0, beside.stderr)
+  t.assert.equal(readFileSync(join(tmp, 'only.lock.json'), 'utf8'), readFileSync(join(tmp, 'beside.lock.json'), 'utf8'))
+  t.assert.deepStrictEqual([...Lockfile.parse(readFileSync(join(tmp, 'only.lock.json'), 'utf8')).entries].toSorted(), ['cli.js', 'index.js'])
 }))
 
 test('CLI: stasis bundle refuses a flag for an entry stasis.config.json names', withTmp(async (t, tmp) => {
