@@ -83,6 +83,8 @@ test('no producer ships the project lockfile: run, bundle and add all refuse, wr
     [cli, ['run', '--lock=add', '--bundle=add', '--resources-bundle-file=resources.br', 'src/import.js']],
     [cli, ['bundle', '--output=stasis.code.br', 'src/import.js']],
     [cli, ['bundle', '--lockfile=stasis.lock.json', '--add', '--output=stasis.code.br', 'src/import.js']],
+    // Writing no bundle, it serializes the one the lockfile is of all the same, so is refused where it would be.
+    [cli, ['bundle', '--lockfile=stasis.lock.json', '--lockfile-only', 'src/import.js']],
     [coreCli, ['add', 'stasis.lock.json']],
   ]) {
     if (bin === coreCli && args[0] === 'add') writeFileSync(join(tmp, 'stasis.config.json'), '{}\n')

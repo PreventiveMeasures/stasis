@@ -41,3 +41,17 @@ export function unpackedSummary({ unpacked, installed, dependencies, files, byte
 
 // The summary of a bundle of `count` files in `modules` written from `from` to `dest`.
 export const bundledSummary = (count, modules, from, dest) => `[stasis] Bundled ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
+
+// The summary of --lockfile-only: the lockfile of a bundle of `count` files in `modules`, from `from`, written to `dest`.
+export const lockedSummary = (count, modules, from, dest) => `[stasis] Locked ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
+
+// Why --lockfile-only can't be taken with the bundle's other output options as given (`brotliQuality`
+// parsed or not: only whether it is given counts), or null where it can. It writes the lockfile
+// alone, so it needs one (`lockfile`, its path), and no bundle is written, merged into or compressed.
+export function lockfileOnlyError({ lockfile, output, add = false, brotliQuality }) {
+  if (!lockfile) return '--lockfile-only requires --lockfile=path'
+  if (output !== undefined) return "--lockfile-only can't be combined with --output (no bundle is written)"
+  if (add) return "--lockfile-only can't be combined with --add (no bundle is merged into)"
+  if (brotliQuality !== undefined) return "--lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"
+  return null
+}

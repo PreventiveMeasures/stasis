@@ -43,7 +43,7 @@ import {
   loadComposerPackages,
   loadLaravelProviderFiles,
 } from '../loaders/php.js'
-import { DEFAULT_BUNDLE_FILE, bundledSummary, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
+import { DEFAULT_BUNDLE_FILE, bundledSummary, lockedSummary, lockfileOnlyError, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
 import { withNpmToken } from './tokens.js'
 
 const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
@@ -2556,11 +2556,17 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // from a cache that holds them, held to the lockfile all the same) and nothing is cached: nothing
 // is written but the bundle and the lockfile. A Soldeer git dependency is fetched from GitHub with
 // `env`'s GITHUB_TOKEN where it is set; npm is asked with withNpmToken's token (tokens.js).
-export async function bundleCommand({ cwd = process.cwd(), output, lockfile, brotliQuality, add = false, ...options } = {}) {
+// With `lockfileOnly`, only the `lockfile` is written, the one it writes beside the bundle: the
+// bundle is built, and serialized as for writing, so the lockfile is refused where the bundle
+// would be, and its default path is kept out of `extra` all the same; it is neither compressed nor
+// written. It takes no `output`, `add` or `brotliQuality`.
+export async function bundleCommand({ cwd = process.cwd(), output, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
   // --add has nothing to merge into on stdout (write-only).
   if (add && output === '-') {
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
+  const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, add, brotliQuality }) : null
+  if (lockfileOnlyRefused !== null) throw new Error(`bundleCommand: ${lockfileOnlyRefused}`)
   const built = await buildOfCommand({ ...options, cwd, output, lockfile })
   const { root } = built
   // By default the bundle goes there, where `stasis run --bundle=load` discovers it. In cwd below
@@ -2603,16 +2609,19 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, bro
     }
   }
 
+  // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   const serialized = bundle.serialize()
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
-  const dest = writeBundle(cwd, target, serialized, brotliQuality)
+  const dest = lockfileOnly ? undefined : writeBundle(cwd, target, serialized, brotliQuality)
   if (lockData) writeFile(lockAbs, lockData)
   // The bundle's paths are relative to its root; shown relative to cwd, as `dest` is.
   const fromDir = posix.join(toPosix(relative(resolve(cwd), root)), outermostDir(files, root))
-  // On a merge, report newly-added files alongside the totals; a fresh write keeps the plain line.
-  if (mergedFrom !== undefined) {
+  if (lockfileOnly) {
+    console.warn(lockedSummary(files.length, modules, fromDir, lockfile))
+  } else if (mergedFrom !== undefined) {
+    // On a merge, report newly-added files alongside the totals; a fresh write keeps the plain line.
     const added = files.length - mergedFrom
     console.warn(`[stasis] Added ${added} file${added === 1 ? '' : 's'} (${files.length} total in ${packagesLabel(modules)}) from ${fromDir} to ${dest}`)
   } else {

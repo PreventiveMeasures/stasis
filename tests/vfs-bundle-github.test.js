@@ -1228,6 +1228,32 @@ test('stasis github-bundle writes the bundle and lockfile of the repo at the com
   }
 })
 
+test('stasis github-bundle --lockfile-only writes the lockfile alone, the one it writes beside the bundle', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-lockfile-only-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const warn = t.mock.method(console, 'warn', () => {})
+  const repo = { 'package.json': json({ name: 'p', version: '1.0.0' }), 'pnpm-lock.yaml': lockfile('.'), 'src/a.js': "require('./b.js')\n", 'src/b.js': 'module.exports = 1\n' }
+  const bundle = (options) => githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: fakeClient(repo), entries: ['src/a.js'], ...options })
+  await bundle({ lockfile: 'only.lock.json', lockfileOnly: true })
+  t.assert.deepStrictEqual(await readdir(tmp), ['only.lock.json'], 'no bundle written')
+  t.assert.equal(warn.mock.calls.at(-1).arguments[0], `[stasis] Locked 2 files in 1 package from ${GITHUB}@${SHA} to only.lock.json`)
+  await bundle({ lockfile: 'beside.lock.json', output: 'beside.br' })
+  t.assert.equal(await readFile(join(tmp, 'only.lock.json'), 'utf8'), await readFile(join(tmp, 'beside.lock.json'), 'utf8'))
+  // Refused before anything is fetched.
+  const none = fakeClient({})
+  const refused = [
+    [{}, '--lockfile-only requires --lockfile=path'],
+    [{ lockfile: 'x.json', output: 'x.br' }, "--lockfile-only can't be combined with --output (no bundle is written)"],
+    [{ lockfile: 'x.json', brotliQuality: 3 }, "--lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"],
+  ]
+  await Promise.all(refused.map(([options, message]) => t.assert.rejects(
+    githubBundleCommand({ cwd: tmp, github: GITHUB, sha: SHA, packageManager: 'pnpm', client: none, entries: ['src/a.js'], lockfileOnly: true, ...options }),
+    { message: `githubBundleCommand: ${message}` },
+  )))
+  t.assert.deepStrictEqual(none.calls, [])
+  t.assert.deepStrictEqual((await readdir(tmp)).toSorted(), ['beside.br', 'beside.lock.json', 'only.lock.json'])
+})
+
 test('stasis github-bundle names its output after the repo and commit by default', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-name-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))
@@ -1307,7 +1333,7 @@ async function githubBundleCli(args, { nodeArgs = [], cwd, env } = {}) {
   return { status, stderr: Buffer.concat(stderr).toString('utf8') }
 }
 
-test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, and --generate or --no-generate', async (t) => {
+test('stasis github-bundle requires the repo, as owner/name[/path] or --github, and takes --sha or --tag, --generate or --no-generate, and --lockfile-only with --lockfile alone', async (t) => {
   const usage = async (args) => {
     const { status, stderr } = await githubBundleCli(args)
     return { status, error: stderr.split('\n')[0] }
@@ -1327,6 +1353,9 @@ test('stasis github-bundle requires the repo, as owner/name[/path] or --github, 
     [[GITHUB, '--no-generate', '--generate=prisma', 'a.js'], 'Error: github-bundle takes --generate or --no-generate, not both'],
     // --no-generate taken alone, and refused for what follows it.
     [[GITHUB, '--no-generate', `--sha=${SHA}`, '--tag=v1.0.0', 'a.js'], 'Error: github-bundle takes --sha or --tag, not both'],
+    [[GITHUB, '--lockfile-only', 'a.js'], 'Error: github-bundle: --lockfile-only requires --lockfile=path'],
+    [[GITHUB, '--lockfile=x.json', '--lockfile-only', '--output=x.br', 'a.js'], "Error: github-bundle: --lockfile-only can't be combined with --output (no bundle is written)"],
+    [[GITHUB, '--lockfile=x.json', '--lockfile-only', '--brotli-quality=3', 'a.js'], "Error: github-bundle: --lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"],
   ]
   const results = await Promise.all(cases.map(([args]) => usage(args)))
   t.assert.deepStrictEqual(results, cases.map(([, error]) => ({ status: 1, error })))

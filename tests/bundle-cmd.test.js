@@ -6565,6 +6565,52 @@ cliTest('CLI: bundle --add with --output=- prints usage', async (t) => {
   t.assert.match(r.stderr, /--add cannot be combined with --output=-/)
 })
 
+// --- --lockfile-only: the companion lockfile alone, no bundle ---
+
+cliTest('CLI: bundle --lockfile-only writes the lockfile alone, the one --lockfile writes beside the bundle', withTmp(async (t, tmp) => {
+  writeTree(tmp, {
+    'package.json': { name: 'lockfile-only', version: '1.0.0', type: 'module' },
+    'src/a.js': "import { S } from './shared.js'\nexport const A = S\n",
+    'src/shared.js': 'export const S = 1\n',
+  })
+  const r = await runCli(['bundle', '--lockfile=locks/only.lock.json', '--lockfile-only', 'src/a.js'], { cwd: tmp })
+  t.assert.equal(r.status, 0, `stderr: ${r.stderr}`)
+  t.assert.equal(r.stderr, '[stasis] Locked 2 files in 1 package from src to locks/only.lock.json\n')
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), 'no bundle written')
+  const only = Lockfile.parse(readFileSync(join(tmp, 'locks', 'only.lock.json'), 'utf8'))
+  t.assert.deepStrictEqual(Object.keys(only.modules.get('.').files).toSorted(), ['src/a.js', 'src/shared.js'])
+  // Byte for byte the lockfile a build writing the bundle too writes.
+  const beside = await runCli(['bundle', '--lockfile=beside.lock.json', 'src/a.js'], { cwd: tmp })
+  t.assert.equal(beside.status, 0, `stderr: ${beside.stderr}`)
+  t.assert.ok(existsSync(join(tmp, 'stasis.code.br')))
+  t.assert.equal(readFileSync(join(tmp, 'locks', 'only.lock.json'), 'utf8'), readFileSync(join(tmp, 'beside.lock.json'), 'utf8'))
+}))
+
+cliTest('CLI: bundle --lockfile-only takes --lockfile, and no --output, --add or --brotli-quality, writing nothing', withTmp(async (t, tmp) => {
+  writeTree(tmp, { 'package.json': { name: 'lockfile-only', version: '1.0.0', type: 'module' }, 'a.js': 'export default 1\n' })
+  const output = "--lockfile-only can't be combined with --output (no bundle is written)"
+  const cases = [
+    [['--lockfile-only'], '--lockfile-only requires --lockfile=path'],
+    [['--lockfile=', '--lockfile-only'], '--lockfile-only requires --lockfile=path'],
+    [['--lockfile=l.json', '--lockfile-only', '--output=a.br'], output],
+    [['--lockfile=l.json', '--lockfile-only', '--output=-'], output],
+    [['--lockfile=l.json', '--lockfile-only', '--add'], "--lockfile-only can't be combined with --add (no bundle is merged into)"],
+    [['--lockfile=l.json', '--lockfile-only', '--brotli-quality=3'], "--lockfile-only can't be combined with --brotli-quality (no bundle is compressed)"],
+  ]
+  const results = await Promise.all(cases.map(([args]) => runCli(['bundle', ...args, 'a.js'], { cwd: tmp })))
+  t.assert.deepStrictEqual(results.map((r) => [r.status, r.stdout, r.stderr]), cases.map(([, error]) => [1, '', `Error: ${error}\nRun 'stasis --help' for usage.\n`]))
+  for (const file of ['l.json', 'a.br', 'stasis.code.br']) t.assert.ok(!existsSync(join(tmp, file)), `${file} must not be written`)
+}))
+
+test('bundleCommand lockfileOnly takes a lockfile, and no output, add or brotliQuality, refused before anything is built', async (t) => {
+  // An entry that isn't there: refused before it is looked for.
+  const bundle = (options) => bundleCommand({ cwd: join(fixtures, 'basic'), entries: ['missing.js'], lockfileOnly: true, ...options })
+  await t.assert.rejects(bundle({}), { message: 'bundleCommand: --lockfile-only requires --lockfile=path' })
+  await t.assert.rejects(bundle({ lockfile: 'l.json', output: 'a.br' }), { message: "bundleCommand: --lockfile-only can't be combined with --output (no bundle is written)" })
+  await t.assert.rejects(bundle({ lockfile: 'l.json', add: true }), { message: "bundleCommand: --lockfile-only can't be combined with --add (no bundle is merged into)" })
+  await t.assert.rejects(bundle({ lockfile: 'l.json', brotliQuality: 3 }), { message: "bundleCommand: --lockfile-only can't be combined with --brotli-quality (no bundle is compressed)" })
+})
+
 // --- `reason` provenance: `stasis bundle` attributes its files to `bundle` ---
 //
 // Unlike the runtime (`stasis run`), which drops a single-consumer reason map as

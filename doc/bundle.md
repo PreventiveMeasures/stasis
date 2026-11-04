@@ -7,9 +7,9 @@ counterpart of `stasis run --bundle=add`, for code that can't or shouldn't run
 to be captured (a React Native app, a library's entry points).
 
 ```sh
-stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
-stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
+stasis bundle [--deptree] [--scope=(node_modules|full)] [--conditions=cond1,cond2] [--mainFields=field1,field2] [--jsx] [--flow] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=path/to/aliases.json] --platforms=ios,android [--platforms=web] [--typescript [--tsconfig=path/to/tsconfig.json]] [--resources=ext,ext] [--define=K=V ...] [--package-json] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] path/to/file.(js|ts|jsx|tsx) ...
+stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
 This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
@@ -25,6 +25,7 @@ language: the bundle (and its `--lockfile`) carries them too.
 | `--add` | Merge the fresh build into the bundle already at `--output` instead of replacing it. Not with `--output=-`. |
 | `--deptree` | Lay out the dependencies in memory from the lockfile instead of reading the installed ones, with nothing installed: see [Dependencies from the lockfile](#dependencies-from-the-lockfile---deptree). JS and Solidity. |
 | `--lockfile=path` | Also write a `stasis.lock.json` attesting every bundled file. See [Companion lockfile](#companion-lockfile---lockfile). |
+| `--lockfile-only` | With `--lockfile`: write that lockfile alone, no bundle. Not with `--output`, `--add` or `--brotli-quality`. See [Companion lockfile](#companion-lockfile---lockfile). |
 | `--scope` | `full` (default) or `node_modules`, as `stasis run`'s. `--mainFields`/`--metro` always emit full scope, and refuse any other, given here or set by the cwd's [`stasis.config.json`](file-formats.md#stasisconfigjson) (which `--scope=full` overrides). |
 | `--conditions=a,b` | Extra `exports`/`imports` resolution conditions, on top of Node's (with `--mainFields`, on top of a bundler's). See [Conditions](#conditions). |
 | `--mainFields=a,b` | Legacy package entry fields to honor, in order (e.g. `react-native,browser,main`), incl. the `browser` field's object redirection. |
@@ -74,6 +75,18 @@ with `--bundle=load`, or replay the conditions. Under `--add`, an existing
 lockfile at that path is merged the same way as the bundle; with none there it
 refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
+
+`--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
+`--lockfile` writes beside the bundle. The bundle is built all the same, and
+checked as it would be for writing, so the lockfile is refused wherever the
+bundle would be; only compressing and writing the bundle is skipped. As when it
+is written, the bundle's default path is never taken into
+[`extra`](file-formats.md#stasisconfigjson). With no bundle to write, compress
+or merge into, `--output`, `--add` and `--brotli-quality` are refused with it.
+
+```sh
+stasis bundle --lockfile=stasis.lock.json --lockfile-only src/index.js   # writes stasis.lock.json alone
+```
 
 ## Dependencies from the lockfile (`--deptree`)
 
@@ -147,14 +160,15 @@ taking a value, a string as on the command line, and one taking a list
 (`platforms`, `conditions`, `mainFields`, `resources`, `cargo-features`) an
 array of strings too. `define`, repeated rather than comma-separated, takes an
 array of its `K=V` strings (`["__DEV__=false", "process.env.NODE_ENV=\"production\""]`),
-or one. `output`, `lockfile`, `brotli-quality` and `add` say how
-the bundle is written, not how an entry is built, so they stay flags.
+or one. `output`, `lockfile`, `lockfile-only`, `brotli-quality` and `add` say
+how the bundle is written, not how an entry is built, so they stay flags, as
+`deptree` does.
 
 With it:
 
 - `stasis bundle` alone bundles every entry it names, as `stasis bundle` with
   each of them would.
-- An entry it names is built with its options there, and no flag but those four
+- An entry it names is built with its options there, and no flag but those six
   and the consent below may be given with it: it is set there instead.
 - `babel`, `metro-resolver`, `cargo` and `cargo-target` run a program (the
   project's Babel config, its `metro-resolver`, `cargo` and what its
