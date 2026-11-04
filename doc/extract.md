@@ -18,6 +18,15 @@ stasis-core extract [--output=path/to/dir] [--lock=(frozen|add|replace|ignore|no
 | `--lock=mode` | What extract does with the output dir's `stasis.lock.json`: `frozen`, `add`, `replace`, `ignore` or `none`, see [The lockfile](#the-lockfile---lock). Defaults to `frozen` when the file is there, else `none`. |
 | positional | The brotli-compressed `stasis.code.br` bundle to read. |
 
+Without any stasis package installed, the repository's
+[`scripts/stasis-extract.mjs`](../scripts/stasis-extract.mjs) does the same as
+`stasis extract --lock=none`, in one file with only Node's builtins:
+`node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/bundle.stasis.code.br`.
+It has no lockfile support, so it takes no `--lock`. It refuses an output dir
+holding a `stasis.lock.json`, or, for a bundle named `<name>.stasis.code.br`,
+a `<name>.stasis.lock.json`, and it never writes that second file either. It is
+not published in any package.
+
 ## What it writes
 
 A `scope = full` bundle writes workspace sources under their relative paths
