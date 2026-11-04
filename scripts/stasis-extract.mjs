@@ -2,6 +2,7 @@
 
 // `stasis extract --lock=none` with only Node builtins: v1 bundles, no lockfile support (see doc/extract.md).
 
+import assert from 'node:assert/strict'
 import { chmodSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -14,10 +15,10 @@ function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
   try {
     const { buffer, engine } = brotliDecompressSync(raw, { info: true })
-    if (engine.bytesWritten !== raw.length) throw new Error('trailing bytes after the brotli stream')
+    assert(engine.bytesWritten === raw.length, 'trailing bytes after the brotli stream')
     const { version, sources, modules, formats = {}, executable = [] } = JSON.parse(buffer.toString('utf8'))
-    if (version !== 1) throw new Error(`unsupported bundle version ${version}`)
-    if (!Array.isArray(executable)) throw new Error('executable is not an array')
+    assert(version === 1, `unsupported bundle version ${version}`)
+    assert(Array.isArray(executable), 'executable is not an array')
     const executables = new Set(executable)
     const files = []
     for (const [dir, { files: bucket }] of [...Object.entries(sources ?? {}), ...Object.entries(modules ?? {})]) {
@@ -38,28 +39,26 @@ function extract(bundleFile, output = '.') {
   const bundleAbs = resolve(bundleFile)
   const files = readBundle(bundleAbs)
   const outDir = resolve(output)
-  if (exists(outDir) && !isDir(outDir)) throw new Error(`extract: output dir ${outDir} is not a directory`)
+  assert(!exists(outDir) || isDir(outDir), `extract: output dir ${outDir} is not a directory`)
   const name = /^(.*)\.stasis\.code\.br$/su.exec(basename(bundleAbs))?.[1]
   const locks = name === undefined ? ['stasis.lock.json'] : ['stasis.lock.json', `${name}.stasis.lock.json`]
-  for (const lock of locks) {
-    if (exists(join(outDir, lock))) throw new Error(`extract: unexpected ${join(outDir, lock)}: no lockfile support here, use stasis extract`)
-  }
+  for (const lock of locks) assert(!exists(join(outDir, lock)), `extract: unexpected ${join(outDir, lock)}: no lockfile support here, use stasis extract`)
 
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
     if (format === 'directory' || String(format).startsWith('stat:')) continue
-    if (typeof content !== 'string') throw new Error(`extract: bundle file content is not a string: ${path}`)
+    assert(typeof content === 'string', `extract: bundle file content is not a string: ${path}`)
     // Canonical relative paths only, so every write stays inside outDir.
-    if (path.includes('\\') || path.split('/').some((s) => s === '' || s === '.' || s === '..')) throw new Error(`extract: invalid bundle path: ${path}`)
-    if (/(?:^|\/)stasis\.lock\.json$/iu.test(path) || locks.includes(path)) throw new Error(`extract: the bundle carries a lockfile: ${path}`)
-    if (paths.has(path)) throw new Error(`extract: duplicate bundle path: ${path}`)
+    assert(!path.includes('\\') && path.split('/').every((s) => s !== '' && s !== '.' && s !== '..'), `extract: invalid bundle path: ${path}`)
+    assert(!/(?:^|\/)stasis\.lock\.json$/iu.test(path) && !locks.includes(path), `extract: the bundle carries a lockfile: ${path}`)
+    assert(!paths.has(path), `extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content
     if (String(format).endsWith(':base64')) {
       // Buffer.from skips invalid characters: require a canonical encoding.
       bytes = Buffer.from(content, 'base64')
-      if (bytes.toString('base64') !== content) throw new Error(`extract: non-canonical base64 for ${path}`)
+      assert(bytes.toString('base64') === content, `extract: non-canonical base64 for ${path}`)
     }
     writes.push([path, bytes, exec])
   }
@@ -69,15 +68,13 @@ function extract(bundleFile, output = '.') {
   for (const [path, bytes] of writes) {
     for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
       const dir = path.slice(0, i)
-      if (paths.has(dir)) throw new Error(`extract: bundle path used as both file and directory: ${dir}`)
+      assert(!paths.has(dir), `extract: bundle path used as both file and directory: ${dir}`)
       if (!exists(join(outDir, dir))) break
-      if (!isDir(join(outDir, dir))) throw new Error(`extract: ${dir} is in the way of ${path}: not a directory`)
+      assert(isDir(join(outDir, dir)), `extract: ${dir} is in the way of ${path}: not a directory`)
     }
     const abs = join(outDir, path)
     if (!exists(abs)) continue
-    if (!statSync(abs, { throwIfNoEntry: false })?.isFile() || !readFileSync(abs).equals(Buffer.from(bytes))) {
-      throw new Error(`extract: ${path} is in the way: extract never overwrites`)
-    }
+    assert(statSync(abs, { throwIfNoEntry: false })?.isFile() && readFileSync(abs).equals(Buffer.from(bytes)), `extract: ${path} is in the way: extract never overwrites`)
     inPlace.add(path)
   }
 
