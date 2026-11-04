@@ -21,7 +21,7 @@ const encodedSepRegEx = /%2F|%5C/iu
 const EXPORTS_PATTERN = /^((?:@[^/\\%]+\/)?[^./\\%][^/\\%]*)(\/.*)?$/u
 // cjs/loader.js's character tests: relative requests, directory requests (no file probes), and
 // requests that skip the node_modules lookup.
-const RELATIVE_REQUEST = /^\.\.?(?:\/|$)/u
+export const RELATIVE_REQUEST = /^\.\.?(?:\/|$)/u
 const TRAILING_SLASH = /\/$|(?:^|\/)\.\.?$/u
 const RELATIVE_LOOKUP = /^\.(?:$|[./])/u
 
@@ -152,9 +152,10 @@ export function createNodeResolver(host) {
     const filename = resolve(requestPath, pkg.main)
     const actual = tryFile(filename) || tryExtensions(filename, exts) || tryExtensions(resolve(filename, 'index'), exts) || index()
     if (actual) return actual
+    // `target`: the file the request resolved to, which isn't there (the scan records it, see Scan).
     throw Object.assign(
       codedError('MODULE_NOT_FOUND', `Cannot find module '${filename}'. Please verify that the package.json has a valid "main" entry`),
-      { path: join(requestPath, 'package.json'), requestPath: originalPath },
+      { path: join(requestPath, 'package.json'), requestPath: originalPath, target: filename },
     )
   }
 
@@ -338,7 +339,8 @@ export function createNodeResolver(host) {
     const filename = fileURLToPath(resolved)
     const actual = tryFile(filename)
     if (actual) return actual
-    throw createEsmNotFoundErr(filename, resolve(pkgDir, 'package.json'))
+    // `target`: the file an `exports` or `imports` target resolved to, which isn't there.
+    throw Object.assign(createEsmNotFoundErr(filename, resolve(pkgDir, 'package.json')), { target: filename })
   }
 
   // Self-reference: a request naming the enclosing package, through its `exports`.
