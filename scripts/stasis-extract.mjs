@@ -66,11 +66,11 @@ function extract(bundleFile, output = '.') {
   // Before any write: nothing but directories on the way, and no target but a file already holding its bytes.
   const inPlace = new Set()
   for (const [path, bytes] of writes) {
+    let onDisk = true
     for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
       const dir = path.slice(0, i)
       assert(!paths.has(dir), `extract: bundle path used as both file and directory: ${dir}`)
-      if (!exists(join(outDir, dir))) break
-      assert(isDir(join(outDir, dir)), `extract: ${dir} is in the way of ${path}: not a directory`)
+      if ((onDisk &&= exists(join(outDir, dir)))) assert(isDir(join(outDir, dir)), `extract: ${dir} is in the way of ${path}: not a directory`)
     }
     const abs = join(outDir, path)
     if (!exists(abs)) continue

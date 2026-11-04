@@ -72,6 +72,7 @@ const CASES = {
   'a bucket\'s own path outside a listing': [v1({}, { modules: dep({ '': 'x' }) }), 'refused'],
   'a duplicate path': [v1({ 'node_modules/foo/a.js': '1' }, { modules: dep({ 'a.js': '1' }) }), 'refused'],
   'a path both file and directory': [v1({ bar: 'x', 'bar/baz.js': 'y' }), 'refused'],
+  'a nested path both file and directory': [v1({ 'new/a': 'x', 'new/a/b': 'y' }), 'refused'],
   'non-string content': [v1({ 'x.js': 42 }), 'refused'],
   'a stasis.lock.json': [v1({ 'sub/STASIS.LOCK.JSON': '{}' }), 'refused'],
 }
