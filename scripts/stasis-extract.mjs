@@ -1,14 +1,6 @@
 #!/usr/bin/env node
 
-// `stasis extract --lock=none` in one file, with only Node's builtins (see doc/extract.md):
-//
-//   node scripts/stasis-extract.mjs [--output=path/to/dir] path/to/bundle.stasis.code.br
-//
-// It writes what `stasis extract` writes, and refuses what it refuses for that: unsafe paths, a lockfile in the
-// bundle, and anything already in the way, all checked before the first write. It reads nothing else of the
-// bundle, so checks nothing else. Only v1 bundles. No lockfile support: a stasis.lock.json in the output dir is
-// an error, and so is <name>.stasis.lock.json for a <name>.stasis.code.br bundle, which may not write it either.
-// Not part of any package.
+// `stasis extract --lock=none` with only Node builtins: v1 bundles, no lockfile support (see doc/extract.md).
 
 import { chmodSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -18,8 +10,6 @@ import { brotliDecompressSync } from 'node:zlib'
 const exists = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined
 const isDir = (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
 
-// The bundle's files as [key, path, content, format, executable]: `key` names the file in `formats` and
-// `executable`, and `path` is where it is written.
 function readBundle(bundleAbs) {
   const raw = readFileSync(bundleAbs)
   try {
@@ -32,7 +22,7 @@ function readBundle(bundleAbs) {
     const files = []
     for (const [dir, { files: bucket }] of [...Object.entries(sources ?? {}), ...Object.entries(modules ?? {})]) {
       for (const [rel, content] of Object.entries(bucket)) {
-        // A `rel` of '' is the bucket dir's own listing: keyed by the dir, and written at `dir/`, which is refused.
+        // rel '' is the bucket dir's own listing: keyed by the dir, written at `dir/` (refused unless skipped).
         const path = dir === '.' ? rel : `${dir}/${rel}`
         const key = rel === '' ? dir : path
         files.push([path, content, Object.hasOwn(formats, key) ? formats[key] : undefined, executables.has(key)])
@@ -55,28 +45,26 @@ function extract(bundleFile, output = '.') {
     if (exists(join(outDir, lock))) throw new Error(`extract: unexpected ${join(outDir, lock)}: no lockfile support here, use stasis extract`)
   }
 
-  // The plan: [path, bytes, executable] per file. A directory listing or a stat record is no file to write.
   const writes = []
   const paths = new Set()
   for (const [path, content, format, exec] of files) {
     if (format === 'directory' || String(format).startsWith('stat:')) continue
     if (typeof content !== 'string') throw new Error(`extract: bundle file content is not a string: ${path}`)
-    // Relative, with no empty, '.' or '..' segment and no '\': inside outDir, and written where the bundle says.
+    // Canonical relative paths only, so every write stays inside outDir.
     if (path.includes('\\') || path.split('/').some((s) => s === '' || s === '.' || s === '..')) throw new Error(`extract: invalid bundle path: ${path}`)
     if (/(?:^|\/)stasis\.lock\.json$/iu.test(path) || locks.includes(path)) throw new Error(`extract: the bundle carries a lockfile: ${path}`)
     if (paths.has(path)) throw new Error(`extract: duplicate bundle path: ${path}`)
     paths.add(path)
     let bytes = content
     if (String(format).endsWith(':base64')) {
-      // Buffer.from skips invalid characters, so only a canonical encoding is taken.
+      // Buffer.from skips invalid characters: require a canonical encoding.
       bytes = Buffer.from(content, 'base64')
       if (bytes.toString('base64') !== content) throw new Error(`extract: non-canonical base64 for ${path}`)
     }
     writes.push([path, bytes, exec])
   }
 
-  // Against the plan and the disk: each dir on the way must be one (or missing), and each target missing or a file
-  // (a symlink to one included) already holding its bytes, left in place. Nothing is ever overwritten.
+  // Before any write: nothing but directories on the way, and no target but a file already holding its bytes.
   const inPlace = new Set()
   for (const [path, bytes] of writes) {
     for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) {
@@ -98,10 +86,10 @@ function extract(bundleFile, output = '.') {
     const abs = join(outDir, path)
     if (!inPlace.has(path)) {
       mkdirSync(dirname(abs), { recursive: true })
-      writeFileSync(abs, bytes, { flag: 'wx' }) // exclusive: fails on a file that appeared since the check
+      writeFileSync(abs, bytes, { flag: 'wx' }) // fails if created since the check
     }
-    // Only the execute bit is attested (and Windows shows none), so only it changes: added wherever the file is
-    // readable, the owner's at least, or dropped. setuid/setgid/sticky are cleared. Never through a symlink.
+    // Only the execute bit is attested: set where readable (owner's at least) or dropped, clearing
+    // setuid/setgid/sticky. Never through a symlink.
     const stats = lstatSync(abs)
     if (process.platform === 'win32' || stats.isSymbolicLink()) continue
     const rwx = stats.mode & 0o777
@@ -110,7 +98,7 @@ function extract(bundleFile, output = '.') {
     try {
       chmodSync(abs, want)
     } catch {
-      chmodFailures++ // a filesystem without modes (vfat, exFAT, CIFS)
+      chmodFailures++ // filesystems without modes
     }
   }
   mkdirSync(outDir, { recursive: true })
