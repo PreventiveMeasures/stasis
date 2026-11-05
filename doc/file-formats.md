@@ -266,7 +266,9 @@ doesn't cross a scope's `/`, so `@babel/*`, not `*`, takes in `@babel/core`, and
 `**` takes in every name. Each is in the shape of a name, one segment or a
 scope's two, none of them `.`, `..` or `node_modules`, and holds no `\` or
 space: a path such as `node_modules/evil` would match no name, and refuse
-nothing, so it is refused.
+nothing, so it is refused. Two segments without a scope are a Composer name's
+(`vendor/package`, which may hold a `.`), so `evil/index.js` is taken as one,
+and matches only a package of that name.
 
 The four are rules of their own, as are the four an entry of `entries` sets (see
 [Entry options](bundle.md#entry-options-stasisconfigjson)): each is checked on

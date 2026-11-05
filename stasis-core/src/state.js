@@ -13,6 +13,7 @@ import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, importTargetsEqual, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
+import { linkedPackage } from './policy.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -708,8 +709,9 @@ export class State {
     this.#policy?.assertArtifact({ modules: this.modules, formats: this.formats, config: this.config.values }, { root: this.root, host: this.#host })
   }
 
-  // The file `absolute` (`file` from the root) is a link to, from the root's real path, where it is a link to
-  // another file within it: what the State records under `file` is that file's. Else undefined.
+  // The file `absolute` (`file` from the root) is a link to, where it is a link to another file within the
+  // root: `{ real, pkg }`, its path from the root's real path, and the dependency it is of (linkedPackage()).
+  // What the State records under `file` is that file's. Else undefined.
   #linkTarget(absolute, file) {
     let real
     try {
@@ -720,7 +722,7 @@ export class State {
     if (real === absolute) return undefined
     this.#realRoot ??= this.#host.realpath(this.root)
     const rel = toPosix(relative(this.#realRoot, real)) || '.'
-    return rel === file || relativeEscapes(rel) ? undefined : rel
+    return rel === file || relativeEscapes(rel) ? undefined : { real: rel, pkg: linkedPackage(this.#host, this.#realRoot, rel, file) }
   }
 
   // Throws where the Policy refuses anything a lockfile or bundle construction loaded records, which

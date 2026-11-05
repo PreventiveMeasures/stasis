@@ -208,22 +208,44 @@ function linkedPath(host, root, realRoot, path) {
   return rel === path || rel === '..' || rel.startsWith('../') || isAbsolute(rel) ? undefined : rel
 }
 
-// The real path of each of `paths` that is a link, as linkedPath() finds it, where a `root` (the
-// project's, which `paths` are relative to) and its `host` are given. -> Map<path, real path>
+// The dependency the file `real` (a path from `realRoot`, the project root's real path) is of, where it is
+// in node_modules, reached through the link `via`: `{ dir, name, version, installed, via }`, its name and
+// version its package.json's, read through `host`, and `installed` its directory's (installedAt()), which
+// stands for the name where the package.json names none. Undefined where it is in no node_modules.
+export function linkedPackage(host, realRoot, real, via) {
+  const at = installedAt(real)
+  if (at === undefined) return undefined
+  let manifest
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(host.readFile(resolve(realRoot, at.dir, 'package.json'))))
+  } catch {
+    manifest = null
+  }
+  const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : at.name
+  return { dir: at.dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined, installed: at.name, via }
+}
+
+// The real path of each of `paths` that is a link, as linkedPath() finds it, and the dependency each one
+// into node_modules is of (linkedPackage()), where a `root` (the project's, which `paths` are relative to)
+// and its `host` are given. -> { links: Map<path, real path>, linked: [package] }
 function linksOf(paths, { root, host } = {}) {
   const links = new Map()
-  if (root === undefined || host === undefined) return links
+  const linked = []
+  if (root === undefined || host === undefined) return { links, linked }
   let realRoot
   try {
     realRoot = host.realpath(root)
   } catch {
-    return links
+    return { links, linked }
   }
   for (const path of paths) {
     const real = linkedPath(host, root, realRoot, path)
-    if (real !== undefined) links.set(path, real)
+    if (real === undefined) continue
+    links.set(path, real)
+    const pkg = linkedPackage(host, realRoot, real, path)
+    if (pkg !== undefined && !linked.some(({ dir }) => dir === pkg.dir)) linked.push(pkg)
   }
-  return links
+  return { links, linked }
 }
 
 // The paths an artifact (a Bundle, Lockfile or State: its `modules`, dir -> record, `formats`, file ->
@@ -244,7 +266,10 @@ export function artifactContents({ modules, formats, config }, disk) {
     if (dependencyEcosystem(dir, info.ecosystem) !== undefined) packages.push({ dir, name: info.name, version: info.version ?? undefined, installed: installedAt(dir)?.name })
   }
   for (const file of formats?.keys() ?? []) if (full || hasNodeModulesSegment(file)) paths.add(file)
-  return { paths, packages, links: linksOf(paths, disk) }
+  const { links, linked } = linksOf(paths, disk)
+  // A link into a dependency the artifact records is held to the rules as that record is.
+  for (const pkg of linked) if (!packages.some(({ dir }) => dir === pkg.dir)) packages.push(pkg)
+  return { paths, packages, links }
 }
 
 export class Policy {
@@ -284,10 +309,9 @@ export class Policy {
   // rule. A path is checked as itself and, a link, as the file it links to; a dependency by its
   // package.json's name and the one it is installed under: refused where a disallowing rule matches
   // either, allowed where an allowing rule matches both. A link to a file in node_modules is of the
-  // package installed there too.
+  // package installed there too, among `packages` (linkedPackage()).
   #problems({ paths, packages, links = new Map() }) {
-    const linked = [...links].map(([path, real]) => ({ ...installedAt(real), via: path })).filter(({ dir }) => dir !== undefined)
-    const dependencies = [...packages, ...linked.filter(({ dir }) => !packages.some((pkg) => pkg.dir === dir)).map((pkg) => ({ ...pkg, installed: pkg.name }))]
+    const dependencies = packages
     const problems = []
     for (const [key, patterns] of this.#rules) {
       const allowing = ALLOWING.has(key)
@@ -324,10 +348,12 @@ export class Policy {
   }
 
   // Throws where a rule refuses the path `path`, of the dependency `pkg` (`{ dir, name, version }`;
-  // undefined for the project's own), a link to `real` (a path from the same root) where that is given.
-  assertPath(path, pkg, real) {
+  // undefined for the project's own), a link where `link` is given: `{ real, pkg }`, the file it links to
+  // (a path from the same root) and the dependency that is of (linkedPackage()'s, undefined for none).
+  assertPath(path, pkg, link) {
     const packages = pkg === undefined ? [] : [{ ...pkg, installed: installedAt(pkg.dir)?.name }]
-    this.assert({ paths: [path], packages, links: real === undefined || real === path ? new Map() : new Map([[path, real]]) })
+    if (link?.pkg !== undefined && !packages.some(({ dir }) => dir === link.pkg.dir)) packages.push(link.pkg)
+    this.assert({ paths: [path], packages, links: link === undefined ? new Map() : new Map([[path, link.real]]) })
   }
 }
 
