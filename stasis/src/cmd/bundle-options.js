@@ -1,6 +1,7 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
+import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
 import { isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
@@ -243,11 +244,13 @@ function outputOptions(values, { allJs, allSol }) {
 // An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in
 // parseArgs' shape: `true` for a boolean flag set (`false`, its default, is no flag), a string for one
 // taking a value, which a list flag takes as an array too, and an array of it for a repeatable one
-// (each of a REPEATED_FLAGS one's values, as given).
+// (each of a REPEATED_FLAGS one's values, as given). Its POLICY_KEYS are no flags: readConfigEntries
+// reads them as the entry's Policy.
 function entryFlags(what, options) {
   if (!isPlainObject(options)) throw new Error(`${what} must be an object of stasis bundle options`)
   const values = {}
   for (const [flag, value] of Object.entries(options)) {
+    if (POLICY_KEYS.includes(flag)) continue
     if (OUTPUT_FLAGS.has(flag)) throw new Error(`${what}: ${flag} is the bundle's option, not an entry's: pass --${flag}`)
     if (!Object.hasOwn(BUNDLE_FLAGS, flag)) throw new Error(`${what}: unknown option ${JSON.stringify(flag)}`)
     const { type, multiple } = BUNDLE_FLAGS[flag]
@@ -270,8 +273,9 @@ function entryFlags(what, options) {
 }
 
 // The `entries` of the stasis.config.json in `cwd`: each entry it names, as a path relative to cwd
-// -> { entry: the name as written, values: its options as flags (entryFlags') }. null where there is
-// none.
+// -> { entry: the name as written, values: its options as flags (entryFlags'), policy: the Policy of
+// its allowedPaths, disallowedPaths, allowedModules and disallowedModules, where it sets one, which
+// its build is held to beside the config's own }. null where there is none.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
@@ -282,7 +286,9 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
     const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
     if (key === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     if (named.has(key)) throw new Error(`${what} names the same entry as ${JSON.stringify(named.get(key).entry)}`)
-    named.set(key, { entry, values: entryFlags(what, options) })
+    const values = entryFlags(what, options)
+    const policy = parsePolicy(what, options)
+    named.set(key, { entry, values, ...(policy !== null && { policy }) })
   }
   return named
 }
@@ -326,11 +332,28 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
     } catch (cause) {
       throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)}: ${cause.message}`, { cause })
     }
-    const id = JSON.stringify(options)
-    if (builds.has(id)) builds.get(id).entries.push(entry)
-    else builds.set(id, { entries: [entry], ...options })
+    addToBuild(builds, entry, named[i], options)
   }
-  return { ...output, builds: [...builds.values()] }
+  return { ...output, builds: withPolicies(builds) }
+}
+
+// Into `builds` (id -> build), `entry`, named in stasis.config.json's entries as `named`
+// (readConfigEntries'), built with `options` (buildOptions'): with the entries built with the same
+// options and held to the same Policy, a build of them together, else one of its own.
+function addToBuild(builds, entry, named, options) {
+  const id = JSON.stringify([options, named.policy?.key ?? null])
+  if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [] })
+  const build = builds.get(id)
+  build.entries.push(entry)
+  build.written.push(named.entry)
+  if (named.policy !== undefined) build.policy ??= named.policy
+}
+
+// The builds `addToBuild` made, each held to the Policy its entries set (`policy`, where they set one),
+// whose errors name them all, `prefix` before. -> [build]
+function withPolicies(builds, prefix = '') {
+  return [...builds.values()].map(({ written, policy, ...build }) => (policy === undefined ? build
+    : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${written.map((entry) => JSON.stringify(entry)).join(', ')}`) }))
 }
 
 // buildOptions' options, each by the flag it is given as; and those whose values are a set, in
@@ -400,11 +423,9 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
       const set = comparable(key, built[key]) === comparable(key, DEFAULT_OPTIONS[key]) ? `without --${OPTION_FLAGS[key]}` : `with ${optionText(key, built[key])}`
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
     }
-    const id = JSON.stringify(built)
-    if (builds.has(id)) builds.get(id).entries.push(entry)
-    else builds.set(id, { entries: [entry], ...built })
+    addToBuild(builds, entry, config.get(keys[i]), built)
   }
   const running = given.find((key) => CONSENT_FLAGS.has(OPTION_FLAGS[key]))
   if (running !== undefined) throw new Error(`${name}: ${optionText(running, options[running])} is given, which runs ${CONSENT_FLAGS.get(OPTION_FLAGS[running])}, and nothing of the project runs here`)
-  return { entries, builds: [...builds.values()] }
+  return { entries, builds: withPolicies(builds, `${name}: `) }
 }

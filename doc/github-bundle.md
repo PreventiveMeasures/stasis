@@ -236,6 +236,12 @@ With it:
   refused, whatever the flags: each runs a program (the project's Babel config,
   its `metro-resolver`, `cargo`, `rustc`), and nothing of the repo runs here.
   No flag consents to it, as `stasis bundle`'s do.
+- An entry's `allowedPaths`, `disallowedPaths`, `allowedModules` and
+  `disallowedModules` hold what its build carries, and the
+  `stasis.config.json`'s own the whole bundle, each rule on its own, as
+  [`stasis bundle`](bundle.md#entry-options-stasisconfigjson) holds them (see
+  [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules)).
+  The config's hold a bundle of entries it doesn't name too.
 
 ### A file's project
 
