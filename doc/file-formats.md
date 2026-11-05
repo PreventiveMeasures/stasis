@@ -212,12 +212,24 @@ loads or writes one:
   none of `disallowedPaths`: the project's files and the dependencies' alike
   (`node_modules/…`, as the artifact spells them, `.pnpm/` and all), the
   `.stasis/empty-module.js` stasis records for a disabled import, and the
-  directories and stat records a `--fs` capture records.
+  directories and stat records a `--fs` capture records. A path that is a
+  link, which a file `extra` or `stasis add` names (or sweeps) and a `--fs`
+  read can be, is carried with the bytes of the file it links to, so it is
+  held to the rules as that file too, wherever it is found on disk: allowed
+  where both are, refused where either is (`src/link.js (a link to
+  secrets/key.js)`), and a link to a file in `node_modules` is of the package
+  installed there.
 - Every dependency it carries (a record of the lockfile's `modules`, of any
   ecosystem) is named by one of `allowedModules`, where that is set, and by
-  none of `disallowedModules`. A dependency is its record's `name`, its
-  `package.json`'s; a package another vendors (`vendored`) is that one's. The
-  project's own packages (`sources`) are no dependencies.
+  none of `disallowedModules`. A dependency goes by its record's `name`, its
+  `package.json`'s, and, in `node_modules`, by the directory it is installed
+  in (`node_modules/nice`, or pnpm's `.pnpm/…/node_modules/nice`) too: the
+  name a package gives itself, and the one an alias installs it under
+  (`"nice": "npm:evil@1"`), may differ. It is refused where either matches a
+  `disallowedModules` pattern, and allowed only where both match
+  `allowedModules` ones, so an alias is allowed by allowing both names. A
+  package another vendors (`vendored`) is that one's. The project's own
+  packages (`sources`) are no dependencies.
 - An empty list allows nothing: `"allowedModules": []` allows no dependency.
 
 A path pattern is a path or a glob relative to the directory holding
@@ -234,7 +246,10 @@ past `**`. A path is matched as the artifact spells it, never folding case.
 A module pattern is a package name, matching that name, or a glob of names,
 matching as a path pattern matches a path, but for a directory above it: `*`
 doesn't cross a scope's `/`, so `@babel/*`, not `*`, takes in `@babel/core`, and
-`**` takes in every name.
+`**` takes in every name. Each is in the shape of a name, one segment or a
+scope's two, none of them `.`, `..` or `node_modules`, and holds no `\` or
+space: a path such as `node_modules/evil` would match no name, and refuse
+nothing, so it is refused.
 
 The four are rules of their own, as are the four an entry of `entries` sets (see
 [Entry options](bundle.md#entry-options-stasisconfigjson)): each is checked on
