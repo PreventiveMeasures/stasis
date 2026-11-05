@@ -368,7 +368,8 @@ test('bundleCommand and stasis run hold a dependency to the rules by the name it
   await bundleCommand({ cwd: tmp, entries: ['a.js'] })
 }))
 
-// A project whose src/link.js links to secrets/key.js, and src/dep.js to node_modules/evil's index.js.
+// A project whose src/link.js links to secrets/key.js, src/dep.js to node_modules/evil's index.js, and
+// src/nice.js to node_modules/nice's, whose package.json names it `evil`.
 const linked = (dir, config) => {
   writeTree(dir, {
     'package.json': { name: 'app', version: '1.0.0' },
@@ -377,12 +378,15 @@ const linked = (dir, config) => {
     'secrets/key.js': 'module.exports = "secret"\n',
     'node_modules/evil/package.json': { name: 'evil', version: '1.0.0' },
     'node_modules/evil/index.js': 'module.exports = 1\n',
+    'node_modules/nice/package.json': { name: 'evil', version: '2.0.0' },
+    'node_modules/nice/index.js': 'module.exports = 2\n',
     'stasis.config.json': config,
   })
   if (!existsSync(join(dir, 'src'))) {
     mkdirSync(join(dir, 'src'))
     symlinkSync('../secrets/key.js', join(dir, 'src/link.js'))
     symlinkSync('../node_modules/evil/index.js', join(dir, 'src/dep.js'))
+    symlinkSync('../node_modules/nice/index.js', join(dir, 'src/nice.js'))
   }
 }
 
@@ -390,9 +394,17 @@ test('a file stasis add names or sweeps is held to the rules as the file it link
   linked(tmp, { disallowedPaths: ['secrets'] })
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/link.js'] }), { message: 'stasis.config.json: disallowedPaths refuses src/link.js (a link to secrets/key.js) ("secrets")' })
   linked(tmp, { allowedPaths: ['src', 'a.js'] })
-  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src'] }), { message: 'stasis.config.json: allowedPaths allows none of 2 paths: src/dep.js (a link to node_modules/evil/index.js), src/link.js (a link to secrets/key.js)' })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src'] }), { message: 'stasis.config.json: allowedPaths allows none of 3 paths: src/dep.js (a link to node_modules/evil/index.js), src/link.js (a link to secrets/key.js), src/nice.js (a link to node_modules/nice/index.js)' })
   linked(tmp, { disallowedModules: ['evil'] })
-  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/dep.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil at node_modules/evil (linked from src/dep.js) ("evil")' })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/dep.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil@1.0.0 at node_modules/evil (linked from src/dep.js) ("evil")' })
+  // A link into a package is held to the rules by both its names too: its package.json's, and its directory's.
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/nice.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil@2.0.0 at node_modules/nice (installed as nice) (linked from src/nice.js) ("evil")' })
+  linked(tmp, { allowedModules: ['nice'] })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/nice.js'] }), { message: 'stasis.config.json: allowedModules does not allow evil@2.0.0 at node_modules/nice (installed as nice) (linked from src/nice.js)' })
+  // So does a State, as it records the link.
+  linked(tmp, { disallowedModules: ['evil'] })
+  const state = new State(tmp, { lock: 'add', env: {}, claim: false })
+  t.assert.throws(() => state.addFile(pathToFileURL(join(tmp, 'src/nice.js')).href, { inferFormat: false }), { message: /disallowedModules refuses evil@2\.0\.0 at node_modules\/nice \(installed as nice\) \(linked from src\/nice\.js\)/u })
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
 }))
 
