@@ -2675,8 +2675,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     }
     mergedFrom = existing.sources.size
     bundle = existing.merge(bundle)
-    // What the bundle on disk carries already is written again: held to the config's Policy too.
-    configPolicy('bundleCommand', root)?.assertArtifact(bundle, ` -- recorded in ${target} already`)
+    // What the bundle and lockfile on disk carry already is written again: held to the config's Policy too.
+    const policy = configPolicy('bundleCommand', root)
+    policy?.assertArtifact(bundle, ` -- recorded in ${target} already`)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
     // With none on disk we can't attest the pre-existing bundle's files (their hashes live
     // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
@@ -2690,7 +2691,10 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       } catch (cause) {
         throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
       }
-      lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
+      const merged = existingLock.merge(Lockfile.parse(lockData))
+      // It may record more than the bundle beside it (a broader run's capture): checked on its own, before either is written.
+      policy?.assertArtifact(merged, ` -- recorded in ${lockfile} already`)
+      lockData = merged.serialize()
     }
   }
 

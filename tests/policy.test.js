@@ -215,6 +215,21 @@ test('bundleCommand --add holds what the bundle on disk carries to the config\'s
   await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], add: true }), { message: /^stasis\.config\.json: disallowedModules refuses right@2\.0\.0 at node_modules\/right \("right"\) -- recorded in stasis\.code\.br already$/u })
 }))
 
+test('bundleCommand --add --lockfile holds what the lockfile on disk records to the config\'s rules too, beyond its bundle', withTmp(async (t, tmp) => {
+  project(tmp)
+  await bundleCommand({ cwd: tmp, entries: ['a.js'], lockfile: 'stasis.lock.json' })
+  // A lockfile recording more than the bundle beside it: b.js's graph too.
+  await bundleCommand({ cwd: tmp, entries: ['b.js'], output: 'b.br', lockfile: 'b.lock.json' })
+  const read = (file) => Lockfile.parse(readFileSync(join(tmp, file), 'utf8'))
+  writeFileSync(join(tmp, 'stasis.lock.json'), read('stasis.lock.json').merge(read('b.lock.json')).serialize())
+  const before = readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')
+  writeTree(tmp, { 'stasis.config.json': { disallowedModules: ['right'] } })
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], add: true, lockfile: 'stasis.lock.json' }), {
+    message: /^stasis\.config\.json: disallowedModules refuses right@2\.0\.0 at node_modules\/right \("right"\) -- recorded in stasis\.lock\.json already$/u,
+  })
+  t.assert.equal(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'), before)
+}))
+
 test('readConfigEntries reads an entry\'s rules apart from its flags', withTmp((t, tmp) => {
   project(tmp, { entries: { 'a.js': { jsx: true, allowedModules: ['left'] }, 'b.js': {} } })
   const entries = readConfigEntries(tmp)

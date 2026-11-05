@@ -269,7 +269,8 @@ nothing is written:
   mode that loads one: rebuild it (`--lock=replace`, `--bundle=replace`). So are
   the bundler plugins' builds, which record through the same State.
 - `stasis bundle` holds what it builds to them, each entry's build to its own,
-  and with `--add`, what the bundle on disk carries already too.
+  and with `--add`, what the bundle and the `--lockfile` on disk carry already
+  too, the lockfile on its own, whatever more than the bundle it records.
 - `stasis github-bundle` (and `@exodus/stasis/vfs-bundle`, and `stasis bundle
   --deptree`) holds what it builds to the repository's `stasis.config.json`'s,
   and its entries' own, as `stasis bundle` does.
