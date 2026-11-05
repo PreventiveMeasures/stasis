@@ -104,7 +104,9 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
 // keeps peak memory at one target's bytes rather than every target's at once. What is written is held
 // to `policy` (the config's, or null): the files added, then what the bundle already carries.
 function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy = null) {
-  policy?.assertArtifact(bundle)
+  // Links followed on disk: a file named or swept that links to one the rules refuse is refused.
+  const disk = { root: baseDir, host: diskHost }
+  policy?.assertArtifact(bundle, disk)
   const abs = resolve(baseDir, targetPath)
   let mergedFrom
   if (existsSync(abs)) {
@@ -116,7 +118,7 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy = 
     }
     mergedFrom = tally(existing).files
     bundle = existing.merge(bundle)
-    policy?.assertArtifact(bundle, alreadyIn(targetPath))
+    policy?.assertArtifact(bundle, { hint: alreadyIn(targetPath), ...disk })
   }
   const { files, packages } = tally(bundle)
   return {
@@ -139,7 +141,7 @@ function prepareLockfile(lockPath, lockAdd, policy = null) {
   }
   const before = tally(existing).files
   const merged = existing.merge(lockAdd)
-  policy?.assertArtifact(merged, alreadyIn(LOCK_FILE))
+  policy?.assertArtifact(merged, { hint: alreadyIn(LOCK_FILE), root: dirname(lockPath), host: diskHost })
   const total = tally(merged).files
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }

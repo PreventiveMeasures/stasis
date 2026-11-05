@@ -110,6 +110,8 @@ export class State {
   #policy = null
   // The lockfile and bundles construction loads, `{ artifact, path }`, held to the Policy once it is known.
   #loaded = []
+  // The root's real path, once a link's target is asked for (#linkTarget).
+  #realRoot
 
   // Claimed write-target paths (canonicalized -> label), for cross-State collision detection; a
   // State built with `claim: false`, which never writes (a static build), claims none.
@@ -703,7 +705,22 @@ export class State {
   // Throws where the Policy refuses anything the State records in its attested zone (all of it in
   // full scope, node_modules alone else).
   #assertPolicy() {
-    this.#policy?.assertArtifact({ modules: this.modules, formats: this.formats, config: this.config.values })
+    this.#policy?.assertArtifact({ modules: this.modules, formats: this.formats, config: this.config.values }, { root: this.root, host: this.#host })
+  }
+
+  // The file `absolute` (`file` from the root) is a link to, from the root's real path, where it is a link to
+  // another file within it: what the State records under `file` is that file's. Else undefined.
+  #linkTarget(absolute, file) {
+    let real
+    try {
+      real = this.#host.realpath(absolute)
+    } catch {
+      return undefined
+    }
+    if (real === absolute) return undefined
+    this.#realRoot ??= this.#host.realpath(this.root)
+    const rel = toPosix(relative(this.#realRoot, real)) || '.'
+    return rel === file || relativeEscapes(rel) ? undefined : rel
   }
 
   // Throws where the Policy refuses anything a lockfile or bundle construction loaded records, which
@@ -712,7 +729,7 @@ export class State {
     const loaded = this.#loaded
     this.#loaded = []
     for (const { artifact, path } of this.#policy === null ? [] : loaded) {
-      this.#policy.assertArtifact(artifact, ` -- recorded in ${relative(this.root, resolve(path)) || path}; rebuild it (lock=replace / bundle=replace)`)
+      this.#policy.assertArtifact(artifact, { hint: ` -- recorded in ${relative(this.root, resolve(path)) || path}; rebuild it (lock=replace / bundle=replace)`, root: this.root, host: this.#host })
     }
   }
 
@@ -879,8 +896,9 @@ export class State {
     assert.ok(pkg === 'package.json' || pkg.endsWith('/package.json'))
     const dir = dirname(pkg)
     if (nmRoot) assert.equal(dir, nmRoot)
-    // Refused before it is recorded, as the run reaches it: a dependency by its package.json's name.
-    if (this.#policy !== null && (nmRoot || this.config.full)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined)
+    // Refused before it is recorded, as the run reaches it: a dependency by its package.json's name and its
+    // directory's, a link (an fs read of one, a file `extra` names) as the file it links to too.
+    if (this.#policy !== null && (nmRoot || this.config.full)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined, synthetic ? undefined : this.#linkTarget(absolute, file))
     if (!this.modules.has(dir)) {
       // Tag node_modules buckets `npm`; workspace/top-level buckets carry no ecosystem.
       this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, repo, files: Object.create(null) }))
@@ -1191,7 +1209,7 @@ export class State {
     assert.ok(kind === 'file' || kind === 'directory', `addFsStat: unsupported kind '${kind}'`)
     const file = this.#canonicalFile(url)
     if (this.hashes.has(file) || this.#bundled(file)) return
-    if (this.#policy !== null && (this.config.full || hasNodeModulesSegment(file))) this.#policy.assertPath(file)
+    if (this.#policy !== null && (this.config.full || hasNodeModulesSegment(file))) this.#policy.assertPath(file, undefined, this.#linkTarget(resolve(this.root, file), file))
     upsertFormat(this.formats, file, `stat:${kind}`)
     // Only forward when a stat record actually landed -- upsertFormat may have yielded to a real
     // format, and forwarding THAT would ship an entry mergeShard's stat replay ignores.

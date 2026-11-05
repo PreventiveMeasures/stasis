@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
@@ -315,3 +315,100 @@ test('buildVfsBundle (stasis github-bundle) holds the bundle to the config\'s ru
   const built = await buildVfsBundle({ vfs: vfsOf({ allowedPaths: ['*.js', 'src', 'test'], entries: { 'a.js': { allowedPaths: ['a.js', 'src'] }, 'b.js': { disallowedPaths: ['src'] } } }) })
   t.assert.deepStrictEqual([...built.bundle.sources.keys()].toSorted(), ['a.js', 'b.js', 'src/util.js', 'test/fixture.js'])
 })
+
+test('a module pattern is the shape of a name: one segment, or a scope\'s two', (t) => {
+  for (const pattern of ['left-pad', '@babel/core', '@babel/*', '@scope/**', '**', 'lodash.*', '{left,right}']) parsePolicy('cfg', { disallowedModules: [pattern] })
+  for (const pattern of ['node_modules/evil', './evil', 'a/b/c', 'evil pkg', '{left,node_modules/evil}', '@scope/', '..']) {
+    t.assert.throws(() => parsePolicy('cfg', { disallowedModules: [pattern] }), { message: `cfg: disallowedModules: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")` }, pattern)
+  }
+})
+
+test('a dependency is refused by either name it goes by, and allowed by both', (t) => {
+  // Its package.json names it `left`; installed at node_modules/evil (a package naming itself otherwise, or an alias).
+  const contents = { paths: [], packages: [{ dir: 'node_modules/evil', name: 'left', version: '1.0.0', installed: 'evil' }] }
+  const refuses = (rules) => {
+    try {
+      parsePolicy('cfg', rules).assert(contents)
+      return null
+    } catch (error) {
+      return error.message
+    }
+  }
+  t.assert.equal(refuses({ disallowedModules: ['evil'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("evil")')
+  t.assert.equal(refuses({ disallowedModules: ['left'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("left")')
+  t.assert.equal(refuses({ allowedModules: ['left'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
+  t.assert.equal(refuses({ allowedModules: ['evil'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
+  t.assert.equal(refuses({ allowedModules: ['left', 'evil'] }), null)
+  // pnpm's layout installs it under its name in .pnpm, which is the directory taken.
+  const pnpm = { paths: [], packages: [{ dir: 'node_modules/.pnpm/@scope+evil@1.0.0/node_modules/@scope/evil', name: '@scope/evil', version: '1.0.0', installed: '@scope/evil' }] }
+  t.assert.doesNotThrow(() => parsePolicy('cfg', { allowedModules: ['@scope/*'] }).assert(pnpm))
+})
+
+// A project of a package installed as `evil` whose package.json names it `left`.
+const renamed = (dir, config) => writeTree(dir, {
+  'package.json': { name: 'app', version: '1.0.0' },
+  'a.js': "require('evil')\n",
+  'node_modules/evil/package.json': { name: 'left', version: '1.0.0', main: 'index.js' },
+  'node_modules/evil/index.js': 'module.exports = 1\n',
+  'stasis.config.json': config,
+})
+
+test('bundleCommand and stasis run hold a dependency to the rules by the name it is installed under too', withTmp(async (t, tmp) => {
+  renamed(tmp, { disallowedModules: ['evil'] })
+  const message = 'stasis.config.json: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("evil")'
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'] }), { message })
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], mainFields: ['main'] }), { message })
+  const ran = await runCli(['run', '--lock=add', 'a.js'], tmp)
+  t.assert.notEqual(ran.status, 0)
+  t.assert.ok(ran.stderr.includes(message), ran.stderr)
+  t.assert.ok(!existsSync(join(tmp, 'stasis.lock.json')))
+  renamed(tmp, { allowedModules: ['left'] })
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'] }), { message: 'stasis.config.json: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)' })
+  renamed(tmp, { allowedModules: ['left', 'evil'] })
+  await bundleCommand({ cwd: tmp, entries: ['a.js'] })
+}))
+
+// A project whose src/link.js links to secrets/key.js, and src/dep.js to node_modules/evil's index.js.
+const linked = (dir, config) => {
+  writeTree(dir, {
+    'package.json': { name: 'app', version: '1.0.0' },
+    'a.js': '',
+    'r.js': "require('node:fs').readFileSync(require('node:path').join(__dirname, 'src/link.js'))\n",
+    'secrets/key.js': 'module.exports = "secret"\n',
+    'node_modules/evil/package.json': { name: 'evil', version: '1.0.0' },
+    'node_modules/evil/index.js': 'module.exports = 1\n',
+    'stasis.config.json': config,
+  })
+  if (!existsSync(join(dir, 'src'))) {
+    mkdirSync(join(dir, 'src'))
+    symlinkSync('../secrets/key.js', join(dir, 'src/link.js'))
+    symlinkSync('../node_modules/evil/index.js', join(dir, 'src/dep.js'))
+  }
+}
+
+test('a file stasis add names or sweeps is held to the rules as the file it links to too', withTmp((t, tmp) => {
+  linked(tmp, { disallowedPaths: ['secrets'] })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/link.js'] }), { message: 'stasis.config.json: disallowedPaths refuses src/link.js (a link to secrets/key.js) ("secrets")' })
+  linked(tmp, { allowedPaths: ['src', 'a.js'] })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src'] }), { message: 'stasis.config.json: allowedPaths allows none of 2 paths: src/dep.js (a link to node_modules/evil/index.js), src/link.js (a link to secrets/key.js)' })
+  linked(tmp, { disallowedModules: ['evil'] })
+  t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/dep.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil at node_modules/evil (linked from src/dep.js) ("evil")' })
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
+}))
+
+test('a file extra names, or a run reads, is held to the rules as the file it links to too', withTmp(async (t, tmp) => {
+  linked(tmp, { disallowedPaths: ['secrets'], extra: ['src/link.js'] })
+  const message = 'stasis.config.json: disallowedPaths refuses src/link.js (a link to secrets/key.js) ("secrets")'
+  // Without a State and with one (the extra a run adds, as a State-built bundle does).
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], mainFields: ['main'] }), { message })
+  await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'] }), { message })
+  const extra = await runCli(['run', '--lock=add', 'a.js'], tmp)
+  t.assert.notEqual(extra.status, 0)
+  t.assert.ok(extra.stderr.includes(message), extra.stderr)
+  linked(tmp, { disallowedPaths: ['secrets'] })
+  const read = await runCli(['run', '--bundle=add', '--fs=sync', 'r.js'], tmp)
+  t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), read.stderr)
+  // A State records the link's path, refused as it is recorded.
+  const state = new State(tmp, { lock: 'add', env: {}, claim: false })
+  t.assert.throws(() => state.addFile(pathToFileURL(join(tmp, 'src/link.js')).href, { inferFormat: false }), { message })
+}))
