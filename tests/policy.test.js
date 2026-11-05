@@ -326,7 +326,7 @@ test('a module pattern is the shape of a name: one segment, or a scope\'s two', 
 test('a dependency is refused by either name it goes by, and allowed by both', (t) => {
   // Its package.json names it `left`; installed at node_modules/evil (a package naming itself otherwise, or an alias).
   const contents = { paths: [], packages: [{ dir: 'node_modules/evil', name: 'left', version: '1.0.0', installed: 'evil' }] }
-  const refuses = (rules) => {
+  const refusal = (rules) => {
     try {
       parsePolicy('cfg', rules).assert(contents)
       return null
@@ -334,11 +334,11 @@ test('a dependency is refused by either name it goes by, and allowed by both', (
       return error.message
     }
   }
-  t.assert.equal(refuses({ disallowedModules: ['evil'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("evil")')
-  t.assert.equal(refuses({ disallowedModules: ['left'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("left")')
-  t.assert.equal(refuses({ allowedModules: ['left'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
-  t.assert.equal(refuses({ allowedModules: ['evil'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
-  t.assert.equal(refuses({ allowedModules: ['left', 'evil'] }), null)
+  t.assert.equal(refusal({ disallowedModules: ['evil'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("evil")')
+  t.assert.equal(refusal({ disallowedModules: ['left'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("left")')
+  t.assert.equal(refusal({ allowedModules: ['left'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
+  t.assert.equal(refusal({ allowedModules: ['evil'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
+  t.assert.equal(refusal({ allowedModules: ['left', 'evil'] }), null)
   // pnpm's layout installs it under its name in .pnpm, which is the directory taken.
   const pnpm = { paths: [], packages: [{ dir: 'node_modules/.pnpm/@scope+evil@1.0.0/node_modules/@scope/evil', name: '@scope/evil', version: '1.0.0', installed: '@scope/evil' }] }
   t.assert.doesNotThrow(() => parsePolicy('cfg', { allowedModules: ['@scope/*'] }).assert(pnpm))
