@@ -112,13 +112,6 @@ export function buildBashTree(sources) {
   return { sources, resolutions, missing }
 }
 
-// A script's text. One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
-async function readScript(baseDir, relPath) {
-  const bytes = await readFile(join(baseDir, relPath))
-  if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
-  return bytes.toString('utf8')
-}
-
 // Walk from `entries` following resolved refs, reading each script once; a ref
 // missing on disk warns and is skipped without aborting the walk.
 export async function collectBashFilesFromDisk(baseDir, entries) {
@@ -132,7 +125,10 @@ export async function collectBashFilesFromDisk(baseDir, entries) {
       toLoad.map(async (relPath) => {
         try {
           assertRealPathWithinBase(realBase, baseDir, relPath)
-          return [relPath, await readScript(baseDir, relPath)]
+          const bytes = await readFile(join(baseDir, relPath))
+          // One that isn't UTF-8 is refused rather than carried with U+FFFD in it.
+          if (!isUtf8(bytes)) throw new Error(`Shell script is not valid UTF-8: ${relPath}`)
+          return [relPath, bytes.toString('utf8')]
         } catch (err) {
           if (err.code === 'ENOENT') {
             console.warn(`[loader.bash] Missing file: ${relPath}`)

@@ -94,9 +94,10 @@ export function scopeManifestOf(rel, pkgDir, exists) {
 // package as the record's `vendored` would list it, `{ [dir]: { name, version? } }` (vendoredPackageOf);
 // so is one in a subpackage (isSubpackage), its package.json walked past, as `subpackages`.
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
+  const options = { strict, check, host }
+  const read = (rel) => readPackageJson(baseDir, rel, options)
   const nm = splitNodeModulesPath(toPosix(fileRelPath))
   if (nm !== null && inAnyVendorDir(nm.rel)) {
-    const read = (rel) => readPackageJson(baseDir, rel, { strict, check, host })
     const pkg = read(`${nm.dir}/package.json`)
     const vendorDir = pkg?.name && pkg.version ? vendorDirOf(pkg.name, nm.rel) : undefined
     const { below, vendored } = vendorDir === undefined ? {} : vendoredPackageOf(nm.rel, vendorDir, (sub) => read(`${nm.dir}/${sub}/package.json`))
@@ -111,9 +112,9 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
-    const pkg = readPackageJson(baseDir, toPosix(join(dir, 'package.json')), { strict, check, host })
+    const pkg = read(toPosix(join(dir, 'package.json')))
     const inNodeModules = hasNodeModulesSegment(toPosix(dir))
-    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, toPosix(dir), pkg.name, { strict, check, host }) : undefined
+    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, toPosix(dir), pkg.name, options) : undefined
     if (sub !== undefined) {
       if (nearest) subpackages = { [sub]: { name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
       nearest = false
@@ -126,7 +127,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...(own === undefined ? {} : { subpackages: own }) }
     }
-    if (dir === '.' || dir === '/' || dir === '' || dirname(dir) === dir) return null
+    if (dirname(dir) === dir) return null // '.' and a filesystem root are their own dirname
   }
 }
 

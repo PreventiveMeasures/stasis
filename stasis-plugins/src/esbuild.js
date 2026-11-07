@@ -1,10 +1,9 @@
-import { isUtf8 } from 'node:buffer'
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
+import { assertCodeUtf8, attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route esbuild's reads through the capture hook.
@@ -186,6 +185,7 @@ export class StasisEsbuild {
 
   setup = ({ onResolve, onLoad, onStart, onEnd, resolve, initialOptions, esbuild }) => {
     if (!this.#state) return  // noop plugin
+    const emptyModuleURL = pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
 
     // Watch/rebuild capture is unsupported: dedupe is keyed by PATH not content, so a rebuild with
     // changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Rebuilds re-fire
@@ -238,8 +238,7 @@ export class StasisEsbuild {
         ;({ url } = attested)
       }
       const format = this.#state.getFormat(url)
-      const isEmpty = url === pathToFileURL(resolvePath(this.#state.root, EMPTY_MODULE_PATH)).toString()
-      const kind = isEmpty ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
+      const kind = url === emptyModuleURL ? 'empty' : Bundle.isResourceFormat(format) ? 'resource' : 'code'
       return { path: fileURLToPath(url), namespace: 'file', pluginData: { isEntry, kind } }
     })
 
@@ -321,26 +320,15 @@ export class StasisEsbuild {
       }
 
       const source = await realReadFile(path)
-
-      if (kind === 'resource') {
-        // Mark as a resource (State picks 'resource' vs 'resource:base64' from bytes). Return no
-        // contents/loader: emission is esbuild's job via the build's own `loader` config.
-        if (!this.#seen.has(path)) {
-          this.#seen.add(path)
-          this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, resource: true, reason: 'esbuild' })
-        }
-        return undefined
-      }
-
-      // Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
-      assert.ok(isUtf8(source), `StasisEsbuild: code-classified file has non-UTF-8 bytes: ${path}`)
-
+      const resource = kind === 'resource'
+      if (!resource) assertCodeUtf8('StasisEsbuild', path, source)
       if (!this.#seen.has(path)) {
         this.#seen.add(path)
-        this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, reason: 'esbuild' })
+        // A resource is marked as one (State picks 'resource' vs 'resource:base64' from bytes).
+        this.#state.addFile(pathToFileURL(path).toString(), { source, isEntry: pluginData?.isEntry, resource, reason: 'esbuild' })
       }
-
-      return { contents: source, loader: this.#loaderFor(path) }
+      // A resource gets no contents/loader: emission is esbuild's job via the build's own `loader` config.
+      return resource ? undefined : { contents: source, loader: this.#loaderFor(path) }
     })
   }
 }

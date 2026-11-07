@@ -2,11 +2,12 @@
 // drives, given its options and the ambient preload.
 
 import assert from 'node:assert/strict'
+import { isUtf8 } from 'node:buffer'
 
 import { DEFAULT_LOCK, assertKnownKeys, assertOption } from '@exodus/stasis-core/config'
 import { ensureStateForLoader, isLoaderInstalled } from '@exodus/stasis-core/hooks'
 import { State } from '@exodus/stasis-core/state'
-import { extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
+import { classifyExtension, extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
 
 // The Config options a plugin takes; `lockFile` is not one (the lockfile is always the preload's).
 const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
@@ -176,6 +177,19 @@ export function resolvePluginState(label, options, cwd) {
 // neither bundles as code nor is allowed as a resource.
 export const unsupportedExtension = (label, what) =>
   `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
+
+// A file's kind (code|resource) as the plugin classifies it, or a throw naming it as `what` for an
+// extension it neither bundles as code nor is allowed as a resource.
+export function classifyOrThrow(label, path, resources, what = `'${path}'`) {
+  const kind = classifyExtension(path, resources)
+  if (kind === 'unknown') throw new Error(unsupportedExtension(label, what))
+  return kind
+}
+
+// Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
+export function assertCodeUtf8(label, path, source) {
+  assert.ok(isUtf8(source), `${label}: code-classified file has non-UTF-8 bytes: ${path}`)
+}
 
 // `state.getImport(parentURL, specifier, options)`, or undefined where the bundle attests no such edge:
 // at a successful capture that's an EXTERNAL (never recorded as an edge), the bundler's to resolve as

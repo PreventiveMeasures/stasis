@@ -83,17 +83,18 @@ export function parseExtraOption(label, extra) {
   if (!Array.isArray(extra)) {
     throw new TypeError(`${label}: extra must be an array of paths or glob patterns`)
   }
+  const pattern = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
   for (const entry of extra) {
     if (typeof entry !== 'string' || entry === '') {
       throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
     }
     if (entry === '!') throw new Error(`${label}: extra entry '!' needs a pattern to exclude (e.g. '!ios/Pods')`)
-    if (relativeEscapes(normalize(entry.startsWith('!') ? entry.slice(1) : entry))) {
+    if (relativeEscapes(normalize(pattern(entry)))) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }
   // Compared as expandExtra matches: no `./`, no trailing `/`.
-  const names = (entry) => posix.normalize(entry.startsWith('!') ? entry.slice(1) : entry).replace(/\/+$/u, '') === CONFIG_FILE_NAME
+  const names = (entry) => posix.normalize(pattern(entry)).replace(/\/+$/u, '') === CONFIG_FILE_NAME
   return extra.some(names) ? [...extra] : [...extra, CONFIG_FILE_NAME]
 }
 

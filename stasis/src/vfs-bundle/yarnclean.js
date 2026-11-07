@@ -14,7 +14,7 @@ import { loadMinimatch } from './glob.js'
 export const YARNCLEAN = '.yarnclean'
 
 // The lines ignoreLinesToRegex takes for patterns: no comment, blank line or bare `!`.
-const patternLines = (lines) => lines.filter((line) => !(line === '' || line === '!' || line[0] === '#' || /^\s+$/u.test(line)))
+const patternLines = (lines) => lines.filter((line) => !(line === '!' || line[0] === '#' || /^\s*$/u.test(line)))
 
 // ignoreLinesToRegex's filter of a line, with the expressions matchesFilter matches by: `regex`, of
 // its trimmed spelling as micromatch's makeRe makes one for Yarn, dotfiles and all, case aside, and

@@ -288,7 +288,6 @@ export class State {
       // Root-SELECTION signals: a config, a lockfile, or only the DEFAULT <rootDir>/stasis.code.br
       // (see explicitBundlePath; an explicit bundleFile is still loaded via `sources`).
       if (config === null && lockProbe === null && (explicitBundlePath || sources === null)) continue
-      if (loaded) throw new Error('Stasis config already loaded')
       loaded = true
       this.root = rootDir
 
@@ -640,8 +639,7 @@ export class State {
   }
 
   static get preload() {
-    for (const state of liveStates()) if (state.isPreload) return state
-    return undefined
+    return liveStates().values().find((state) => state.isPreload)
   }
 
   // Public so State.preload works across copies.
@@ -707,6 +705,17 @@ export class State {
     assert.ok(!relativeEscapes(file))
     // The project root is keyed '.', never '' -- mixing the two desyncs write from read.
     return file === '' ? '.' : file
+  }
+
+  // The file: URL of the project-relative `file`.
+  #urlOf(file) {
+    return pathToFileURL(resolve(this.root, file)).toString()
+  }
+
+  // Whether `file` is in this State's bundle contents (a source's text, a resource's payload or a
+  // directory listing), as opposed to known by a stat record or a seeded hash alone.
+  #bundled(file) {
+    return this.sources.has(file) || this.resources.has(file)
   }
 
   #canonical(url) {
@@ -884,7 +893,7 @@ export class State {
   // Record the empty module a disabled import resolves to (EMPTY_MODULE_PATH, the file `stasis bundle`
   // emits for a `browser` field `false`), attested like any file but never read from disk. -> its URL
   addEmptyModule({ reason = 'run' } = {}) {
-    const url = pathToFileURL(resolve(this.root, EMPTY_MODULE_PATH)).toString()
+    const url = this.#urlOf(EMPTY_MODULE_PATH)
     this.#addFile(url, { source: '', format: 'commonjs', inferFormat: false, reason }, { synthetic: true })
     return url
   }
@@ -1095,10 +1104,19 @@ export class State {
     if (this.config.bundle) for (const file of captured) this.#recordReason('extra', file)
   }
 
+  // The lockfile's and the code bundle's paths: as configured, else the defaults at the root.
+  get #lockPath() {
+    return this.config.lockFile || join(this.root, FILE_LOCK)
+  }
+
+  get #bundlePath() {
+    return this.config.bundleFile || join(this.root, FILE_CODE)
+  }
+
   // The artifacts write() writes: the lockfile (never a sidecar's) and the bundle(s), as configured.
   #writeTargets() {
-    const lock = this.config.writeLockfile && !this.#parent ? [this.config.lockFile || join(this.root, FILE_LOCK)] : []
-    const bundles = this.config.writeBundle ? [this.config.bundleFile || join(this.root, FILE_CODE), this.config.resourcesBundleFile] : []
+    const lock = this.config.writeLockfile && !this.#parent ? [this.#lockPath] : []
+    const bundles = this.config.writeBundle ? [this.#bundlePath, this.config.resourcesBundleFile] : []
     return [...lock, ...bundles].filter((file) => file !== undefined)
   }
 
@@ -1136,7 +1154,7 @@ export class State {
   addFsStat(url, kind) {
     assert.ok(kind === 'file' || kind === 'directory', `addFsStat: unsupported kind '${kind}'`)
     const file = this.#canonicalFile(url)
-    if (this.hashes.has(file) || this.sources.has(file) || this.resources.has(file)) return
+    if (this.hashes.has(file) || this.#bundled(file)) return
     upsertFormat(this.formats, file, `stat:${kind}`)
     // Only forward when a stat record actually landed -- upsertFormat may have yielded to a real
     // format, and forwarding THAT would ship an entry mergeShard's stat replay ignores.
@@ -1183,7 +1201,7 @@ export class State {
     if (file === undefined) return undefined
     const format = this.formats.get(file)
     if (format === 'directory') return 'directory'
-    if (this.sources.has(file) || this.resources.has(file) || format === 'stat:file') return 'file'
+    if (this.#bundled(file) || format === 'stat:file') return 'file'
     if (format === 'stat:directory' || this.#impliedDirs().has(file)) return 'directory'
     return undefined
   }
@@ -1191,7 +1209,7 @@ export class State {
   // True when the bundle carries actual BYTE content for `url` (not a directory/stat-only record).
   hasFsFileContent(url) {
     const file = this.#canonicalFileMaybe(url)
-    return file !== undefined && this.formats.get(file) !== 'directory' && (this.sources.has(file) || this.resources.has(file))
+    return file !== undefined && this.formats.get(file) !== 'directory' && this.#bundled(file)
   }
 
   // --fs <-> bundler-plugin coordination: CAPTURE skips a read a write-mode sidecar already attests,
@@ -1199,8 +1217,7 @@ export class State {
   attestedBySidecar(url) {
     // hasFsFileContent, not getFsStat: over-skipping on an implied dir or stat-only record would
     // leave a real read unattested.
-    for (const s of this.#sidecars) if (s.hasFsFileContent(url)) return true
-    return false
+    return this.#sidecars.values().some((s) => s.hasFsFileContent(url))
   }
 
   // getFs* over this State first, then its load-mode sidecars. Only #readSidecars -- write-mode
@@ -1368,7 +1385,7 @@ export class State {
       }
       file = file.get(platform)
     }
-    return { url: pathToFileURL(resolve(this.root, file)).toString(), format: this.#loaderFormat(file) }
+    return { url: this.#urlOf(file), format: this.#loaderFormat(file) }
   }
 
   // Resolve a CJS require() target to a bundled absolute path, or undefined to defer to Node (the
@@ -1660,7 +1677,7 @@ export class State {
       // A require()d native addon never passes the load hook and is deliberately not captured
       // (non-deterministic across installs, like the rest of NATIVE_ARTIFACT_EXTS).
       if (isNativeArtifact(file)) continue
-      const url = pathToFileURL(resolve(this.root, file)).toString()
+      const url = this.#urlOf(file)
       if (!inScope(this, url)) continue
       this.addFile(url, { reason: 'run' })
     }
@@ -1676,8 +1693,7 @@ export class State {
       for (const [specifier, resolvedURL] of specs) {
         const file = this.#canonicalFileMaybe(resolvedURL)
         if (file === undefined) continue
-        const bundled = this.sources.has(file) || this.resources.has(file)
-        if (!bundled && !inScope(this, resolvedURL)) continue
+        if (!this.#bundled(file) && !inScope(this, resolvedURL)) continue
         const spec = this.#canonicalSpecifier(parentURL, specifier)
         const recorded = this.imports.values().some((byParent) => byParent.get(parent)?.get(spec) !== undefined)
         if (!recorded) this.addImport(parentURL, specifier, resolvedURL, { conditions: this.#requireConditions ?? '*' })
@@ -1694,7 +1710,6 @@ export class State {
     // Gather first: addFile mutates this.modules, so don't addFile while iterating it.
     const realRoot = this.#host.realpath(this.root)
     const claims = this.#reasonClaims()
-    const bundled = (rel) => this.sources.has(rel) || this.resources.has(rel)
     const found = new Map()
     const exists = (rel) => found.get(rel) ?? found.set(rel, packageJSONStat(this.#host, resolve(this.root, rel))?.isFile() ?? false).get(rel)
     // A manifest's bytes and parsed fields, or null where it's gone or malformed (skipped).
@@ -1720,11 +1735,11 @@ export class State {
       const files = Object.keys(module.files).map((f) => moduleFileKey(dir, f))
       const scopes = new Map([[own, files]])
       for (const file of files) {
-        const nearest = bundled(file) ? scopeManifestOf(file, dir, exists) : undefined
+        const nearest = this.#bundled(file) ? scopeManifestOf(file, dir, exists) : undefined
         if (nearest !== undefined) (scopes.get(nearest) ?? scopes.set(nearest, []).get(nearest)).push(file)
       }
       for (const [rel, of] of scopes) {
-        if (bundled(rel)) continue // already in this bundle
+        if (this.#bundled(rel)) continue // already in this bundle
         const buf = rel === own ? manifest.buf : read(rel)?.buf
         if (buf === undefined) continue
         // The manifest rides along BECAUSE some consumer bundled its files, so it inherits every
@@ -1737,17 +1752,22 @@ export class State {
       }
     }
     for (const { rel, buf, consumers } of toAdd) {
-      this.addFile(pathToFileURL(resolve(this.root, rel)).toString(), { source: buf, reason: null })
+      this.addFile(this.#urlOf(rel), { source: buf, reason: null })
       for (const who of consumers) this.#recordReason(who, rel)
     }
   }
 
-  write() {
-    // BEFORE the stasis-core BFS: a resolve-only edge to a stasis-core submodule is added only here,
-    // and the BFS must see it to seed the file's bytes, else the bundle ships a dangling edge.
+  // Everything the live hooks missed, before an artifact or a shard is taken. The native resolutions
+  // go BEFORE the stasis-core BFS: a resolve-only edge to a stasis-core submodule is added only
+  // there, and the BFS must see it to seed the file's bytes, else the bundle ships a dangling edge.
+  #backfill() {
     this.#backfillObservedResolutions()
     this.#backfillExecutedFiles()
     this.#backfillBeforeWrite()
+  }
+
+  write() {
+    this.#backfill()
     // Only when writing (a frozen run verifies what it reached, not `extra`); a sidecar loads no config.
     if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
     // AFTER the backfills and `extra`, so buckets they create are covered too.
@@ -1756,7 +1776,7 @@ export class State {
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
     const lockText = this.config.writeLockfile && !this.#parent ? this.lockData : null
-    const sourcesPath = this.config.bundleFile || join(this.root, FILE_CODE)
+    const sourcesPath = this.#bundlePath
     // Each bundle written, [path, text]: the code bundle, with the resources too unless they are split
     // into resourcesBundleFile. hasContent gates each so an empty one is dropped under bundle=replace.
     const bundles = !this.config.writeBundle ? [] : this.config.resourcesBundleFile
@@ -1765,7 +1785,7 @@ export class State {
       : [[sourcesPath, this.#bundleText(this.sources.size > 0 || this.resources.size > 0, () => this.sourceData)]]
 
     if (lockText !== null && lockText !== this.#lastLockData) {
-      const lockPath = this.config.lockFile || join(this.root, FILE_LOCK)
+      const lockPath = this.#lockPath
       mkdirSync(dirname(lockPath), { recursive: true })
       writeFileSync(lockPath, lockText)
       this.#lastLockData = lockText
@@ -1776,9 +1796,7 @@ export class State {
   // Snapshot of what THIS process observed, for a forked child to hand back to the root. Content is
   // omitted -- the root re-reads bytes from disk.
   shardSnapshot() {
-    this.#backfillObservedResolutions()
-    this.#backfillExecutedFiles()
-    this.#backfillBeforeWrite()
+    this.#backfill()
     // Only what THIS process observed, never the seeded baseline (shard-size bloat). Entries are
     // dropped: a child's "entry" is its fork target, not a root's.
     const files = []
@@ -1829,7 +1847,7 @@ export class State {
           // Range-check FIRST so a child-forged `..` key can't make us list it.
           if (!isPathWithin(this.root, absolute)) continue
           this.addFsDir(url, readdirSync(absolute))
-        } else if (format === 'resource' || format === 'resource:base64') {
+        } else if (Bundle.isResourceFormat(format)) {
           // Let addFile re-derive the exact resource tag from the re-read bytes rather than trusting
           // the shard's and risking a mismatch.
           this.addFile(url, { resource: true })
@@ -1877,9 +1895,9 @@ export class State {
       }
       const cond = condStr === '*' ? '*' : condStr.split(', ')
       for (const [parent, specs] of byParent) {
-        const parentURL = pathToFileURL(resolve(this.root, parent)).toString()
+        const parentURL = this.#urlOf(parent)
         for (const [specifier, file] of specs) {
-          const url = pathToFileURL(resolve(this.root, file)).toString()
+          const url = this.#urlOf(file)
           // Same best-effort stance as addFile above.
           try { this.addImport(parentURL, specifier, url, { conditions: cond, importAttributes }) } catch { /* skipped */ }
         }
@@ -1936,7 +1954,7 @@ export class State {
       // reason 'run': Node evaluated these before registerHooks could observe it (that blindness is
       // why this backfill exists), so they're run-loaded modules like any other. A consumer-less
       // record can't be sorted by provenance downstream (app code vs toolchain).
-      this.addFile(pathToFileURL(resolve(this.root, file)).toString(), { reason: 'run' })
+      this.addFile(this.#urlOf(file), { reason: 'run' })
     }
 
     // Seeded from the missing files + every stasis-core file already in sources, to walk their
@@ -1947,10 +1965,10 @@ export class State {
       const file = queue.shift()
       if (processed.has(file)) continue
       processed.add(file)
-      if (!this.sources.has(file) && !this.resources.has(file)) stasisAddFile(file)
+      if (!this.#bundled(file)) stasisAddFile(file)
       const source = this.sources.get(file)
       if (typeof source !== 'string') continue
-      const baseURL = pathToFileURL(resolve(this.root, file)).toString()
+      const baseURL = this.#urlOf(file)
       const recordEdge = (specifier) => {
         const targetURL = new URL(specifier, baseURL).toString()
         const targetAbsolute = fileURLToPath(targetURL)
@@ -1975,8 +1993,8 @@ export class State {
       for (const [, specifiers] of byParent) {
         for (const [, file] of specifiers) {
           if (typeof file !== 'string' || missing.has(file)) continue
-          if (this.hashes.has(file) || this.sources.has(file) || this.resources.has(file)) continue
-          const url = pathToFileURL(resolve(this.root, file)).toString()
+          if (this.hashes.has(file) || this.#bundled(file)) continue
+          const url = this.#urlOf(file)
           if (!inScope(this, url)) continue
           missing.add(file)
         }

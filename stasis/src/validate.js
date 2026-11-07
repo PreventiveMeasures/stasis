@@ -187,7 +187,7 @@ export function fetchFailure(error) {
 
 // Whether `text` is the patch `hash` names, as pnpm hashes one: of its text with its CRLFs as LFs, a
 // sha256 in hex from pnpm 10, an md5 in base32 before; or as it is.
-const patchHashes = (text) => new Set([...new Set([text.replaceAll('\r\n', '\n'), text])]
+const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text]
   .flatMap((read) => [sha256(read), toBase32(createHash('md5').update(read).digest(), { padding: false }).toLowerCase()]))
 export const isPatchOf = (text, hash) => patchHashes(text).has(hash)
 
@@ -402,7 +402,8 @@ export function patchedFiles(files, patch) {
   return next
 }
 
-const equal = (a, b) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b)
+const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+const equal = (a, b) => asBuffer(a).equals(b)
 // Formats a CR before each line's end changes the meaning of: a binary's bytes, which no checkout
 // converts, a shell script's commands and an env file's values, each its last word's own.
 const CR_CHANGES = new Set(['resource:base64', 'shell', 'env'])
@@ -410,7 +411,7 @@ const CR_CHANGES = new Set(['resource:base64', 'shell', 'env'])
 // line's end a CRLF, as git converts a text file whole. Else undefined.
 function checkedOutAsLf(bytes, format) {
   if (CR_CHANGES.has(format)) return undefined
-  const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1')
+  const text = asBuffer(bytes).toString('latin1')
   return text.includes('\r\n') && !/(?<!\r)\n/u.test(text) ? Buffer.from(text.replaceAll('\r\n', '\n'), 'latin1') : undefined
 }
 const packageKey = ({ ecosystem, name, version }) => `${ecosystem}:${name}@${version}`
@@ -672,10 +673,11 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
   })
 
   let read
+  let skipped
   const found = new Map()
   try {
     read = await own
-    const skipped = 'reason' in read
+    skipped = 'reason' in read
     // The submodules' paths, worked out where a file is not in the tree.
     let submodules
     const inSubmodule = (path) => (submodules ??= [...read.entries].filter(([, entry]) => entry.submodule).map(([at]) => `${at}/`)).some((prefix) => path.startsWith(prefix))
@@ -686,7 +688,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
         counts[read.reason === 'skipped' ? 'skipped' : 'unverified']++
         continue
       }
-      const path = read.directory ? `${read.directory}/${file.path}` : file.path
+      const path = pathIn(read.directory, file.path)
       const entry = read.entries.get(path)
       const verdict = (kind, reason) => {
         if (kind === 'matched') counts.matched++
@@ -716,8 +718,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
   }
   await fetching
 
-  const skipped = 'reason' in read
-  const patchesChecked = skipped && read.entries ? [...plan.own].filter((file) => plan.patches.has(file.path)).length : 0
+  const patchesChecked = skipped && read.entries ? plan.own.filter((file) => plan.patches.has(file.path)).length : 0
   return {
     validatedAt: now(),
     status: counts.differs + counts.unexpected + counts.lockFailures + counts.misplaced > 0 ? 'invalid' : counts.unverified > 0 ? 'incomplete' : 'valid',
@@ -742,7 +743,7 @@ export async function repositoryFiles(client, { github, commit, directory = '' }
   const tree = await client.getRepoTreeId({ repo: github, sha: commit, ...(directory && { directory }) })
   const tarball = await client.getRepoTreeTarball({ repo: github, tree, symlinksAbove: directory ? directory.split('/').length - 1 : 0 })
   const entries = new Map()
-  for (const [path, value] of await tarballFiles(tarball)) entries.set(directory ? `${directory}/${path}` : path, value instanceof Uint8Array ? { data: value } : value)
+  for (const [path, value] of await tarballFiles(tarball)) entries.set(pathIn(directory, path), value instanceof Uint8Array ? { data: value } : value)
   return entries
 }
 
@@ -922,7 +923,7 @@ export function lockedBy(lockfiles) {
       return { hash, names: [...new Set([...selectors.map((selector) => `${selector.replace('/', '__')}.patch`), pnpmPatchName(name, version)])] }
     },
     async locate({ hash, names = [] }) {
-      for (const path of npm.patchDirs.flatMap((dir) => names.map((name) => (dir ? `${dir}/${name}` : name)))) {
+      for (const path of npm.patchDirs.flatMap((dir) => names.map((name) => pathIn(dir, name)))) {
         let text
         try {
           // eslint-disable-next-line no-await-in-loop -- the first of them that is there
@@ -938,7 +939,7 @@ export function lockedBy(lockfiles) {
     // undefined where its lockfile locks no location (pnpm's, yarn's) or links it to a directory.
     installed(dir) {
       if (npm?.locations === undefined) return undefined
-      const location = npm.root ? `${npm.root}/${dir}` : dir
+      const location = pathIn(npm.root, dir)
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
     // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`: that version,

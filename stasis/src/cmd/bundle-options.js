@@ -63,6 +63,15 @@ const CONSENT_FLAGS = new Map([
 // A flag as given: `--name`, or `--name=value` for one taking a value.
 const flagText = (name, value) => (value === true ? `--${name}` : `--${name}=${value}`)
 
+// A list flag's value (comma-separated) as its names, trimmed: undefined where none is given, and a
+// usage error (`error`) for one naming none.
+function listFlag(value, error) {
+  if (value === undefined) return undefined
+  const list = value.split(',').map((s) => s.trim()).filter(Boolean)
+  if (list.length === 0) throw new Error(error)
+  return list
+}
+
 // `entry` as a path relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
   const rel = relative(resolve(cwd), resolve(cwd, entry))
@@ -130,12 +139,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   // --conditions: extra exports/imports resolution conditions merged onto Node's defaults;
   // they don't honour legacy `mainFields` or platform suffixes (see --mainFields).
   if (values.conditions !== undefined && !allJs) throw new Error('--conditions is only valid for JS bundles')
-  const conditions = values.conditions === undefined
-    ? []
-    : values.conditions.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.conditions !== undefined && conditions.length === 0) {
-    throw new Error('--conditions must list at least one condition name (e.g. --conditions=react-native,browser)')
-  }
+  const conditions = listFlag(values.conditions, '--conditions must list at least one condition name (e.g. --conditions=react-native,browser)') ?? []
   // --metro: resolve like Metro/RN (its own conditions + mainFields, platform suffixes per
   // --platforms target). --platforms is repeatable and/or comma-separated; the values union.
   // It turns on --jsx and --flow, as Metro's Babel parses JSX and Flow in every file (and defines what
@@ -154,12 +158,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.tsconfig !== undefined && !typescript) throw new Error('--tsconfig is only valid with --typescript')
   // --mainFields: legacy package entry fields (e.g. react-native,browser,main) for the non-exports resolver.
   if (values.mainFields !== undefined && !allJs) throw new Error('--mainFields is only valid for JS bundles')
-  const mainFields = values.mainFields === undefined
-    ? undefined
-    : values.mainFields.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.mainFields !== undefined && mainFields.length === 0) {
-    throw new Error('--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
-  }
+  const mainFields = listFlag(values.mainFields, '--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
   // --metro-resolver: resolve through the project's own metro-resolver instead of the built-in
   // approximation. Only meaningful alongside --metro (enforced below and in classifyEntries).
   const metroResolver = Boolean(values['metro-resolver'])
@@ -182,12 +181,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   // (e.g. --resources=png,svg). They're carried as resources instead of failing "can't carry" --
   // for graphs that aren't fully loadable in JS (Metro consumes such assets). JS-only.
   if (values.resources !== undefined && !allJs) throw new Error('--resources is only valid for JS bundles')
-  const resources = values.resources === undefined
-    ? undefined
-    : values.resources.split(',').map((s) => s.trim()).filter(Boolean)
-  if (values.resources !== undefined && resources.length === 0) {
-    throw new Error('--resources must list at least one extension or filename (e.g. --resources=png,svg)')
-  }
+  const resources = listFlag(values.resources, '--resources must list at least one extension or filename (e.g. --resources=png,svg)')
   parseResourcesOption('--resources', resources) // validate early for a clean usage error (code exts / bad chars rejected)
   if (metro) {
     if (conditions.length > 0) throw new Error("--conditions can't be combined with --metro (it sets its own conditions)")

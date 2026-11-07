@@ -83,22 +83,37 @@ function unaudited({ ecosystem, version, vendoredIn }) {
 export function collectPackagesFromFile(file) {
   const out = []
   const { kind, artifact } = parseFileWithKind(file)
-  for (const [dir, { name, version, ecosystem: tagged, repo, files, vendoredIn }] of packageRecords(artifact.modules)) {
-    const ecosystem = dependencyEcosystem(dir, tagged)
-    // First-party code is never sent to a public registry (leaks names, adds noise).
-    if (ecosystem === undefined) continue
-    if (!name || (!version && vendoredIn === undefined)) continue
-    if (!Object.keys(files).some((rel) => isEvidenceFile(name, version ?? null, rel, ecosystem))) continue
-    if (vendoredIn !== undefined) {
-      const host = artifact.modules.get(vendoredIn)
-      out.push({ ecosystem, name, version: version === undefined ? undefined : versionOf(ecosystem, version), vendoredIn: `${host.name}@${host.version}` })
+  for (const { name, version, ecosystem, repo, files, host, isEvidence } of auditedRecords(artifact.modules)) {
+    if (!Object.keys(files).some(isEvidence)) continue
+    if (host !== undefined) {
+      out.push({ ecosystem, name, version, vendoredIn: host })
       continue
     }
     let github = ecosystem === 'github' ? undefined : repo?.github
     if (github === undefined && ecosystem === 'npm' && kind === 'bundle') github = manifestRepo(files['package.json'])
-    out.push({ ecosystem, name, version: versionOf(ecosystem, version), ...(github === undefined ? {} : { github }) })
+    out.push({ ecosystem, name, version, ...(github === undefined ? {} : { github }) })
   }
   return out
+}
+
+// Each dependency packageRecords lists of `modules` that the audit may count, as collectPackagesFromFile
+// and reasonIndex take one: never first-party code, which is never sent to a public registry (leaks
+// names, adds noise), nor one with no name, or no version unless a dependency ships it. Its `version`
+// as audited (versionOf), undefined for a copy with none; its `host`'s `name@version`, where a
+// dependency ships it; and whether a file of it, by its path in it, is evidence its real code is
+// present (`isEvidence`, audit-corrections.js).
+function* auditedRecords(modules) {
+  for (const [dir, { name, version, ecosystem: tagged, repo, files, vendoredIn }] of packageRecords(modules)) {
+    const ecosystem = dependencyEcosystem(dir, tagged)
+    if (ecosystem === undefined || !name || (!version && vendoredIn === undefined)) continue
+    const host = vendoredIn === undefined ? undefined : modules.get(vendoredIn)
+    yield {
+      dir, name, ecosystem, repo, files,
+      version: version === undefined ? undefined : versionOf(ecosystem, version),
+      host: host === undefined ? undefined : `${host.name}@${host.version}`,
+      isEvidence: (rel) => isEvidenceFile(name, version ?? null, rel, ecosystem),
+    }
+  }
 }
 
 // The GitHub repository a bundled package.json's text names (packageRepo), or undefined where it
@@ -174,13 +189,10 @@ function reasonIndex(files) {
     if (!fileReasons) continue
     for (const [consumer, list] of Object.entries(artifact.reason)) if (Array.isArray(list)) consumers.add(consumer)
     const fileToPkgs = new Map()
-    for (const [dir, { name, version, ecosystem: tagged, files: modFiles, vendoredIn }] of packageRecords(artifact.modules)) {
-      const ecosystem = dependencyEcosystem(dir, tagged)
-      if (ecosystem === undefined || !name || (!version && vendoredIn === undefined)) continue
-      const host = vendoredIn === undefined ? undefined : artifact.modules.get(vendoredIn)
-      const key = packageKey(ecosystem, name, version === undefined ? undefined : versionOf(ecosystem, version), host && `${host.name}@${host.version}`)
+    for (const { dir, name, version, ecosystem, files: modFiles, host, isEvidence } of auditedRecords(artifact.modules)) {
+      const key = packageKey(ecosystem, name, version, host)
       for (const rel of Object.keys(modFiles)) {
-        if (!isEvidenceFile(name, version ?? null, rel, ecosystem)) continue
+        if (!isEvidence(rel)) continue
         const f = moduleFileKey(dir, rel)
         if (!fileToPkgs.has(f)) fileToPkgs.set(f, [])
         fileToPkgs.get(f).push(key)

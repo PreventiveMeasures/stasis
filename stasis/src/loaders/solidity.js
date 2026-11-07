@@ -199,11 +199,6 @@ export function applyRemappings(name, fromFile, remappings) {
   return posix.normalize(best.target + name.slice(best.prefix.length)).replace(/^\.\//u, '')
 }
 
-// A relative import (first segment `.` or `..`) as solc resolves it: against the importing file's
-// directory. Null when it climbs above the root: solc clamps there (`../../B.sol` from `src/A.sol`
-// is `B.sol`), but an import reaching out of the project is refused rather than redirected.
-const resolveRelativeImport = (specifier, fromFile) => applyToDir(fromFile, specifier.split('/'))
-
 // `<baseDir>/<spec>` when a real file sits there, as a clean project-relative path.
 function projectFile(baseDir, spec, host) {
   if (isAbsolute(spec)) return null
@@ -248,7 +243,10 @@ function nodeModulesFile(baseDir, spec, fromFile, host) {
 // it names no file). See resolveSolImport.
 function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [], ownership, host = diskHost } = {}) {
   const relativeImport = isDotRelative(specifier)
-  const name = relativeImport ? resolveRelativeImport(specifier, fromFile) : specifier
+  // A relative import (first segment `.` or `..`) resolves as solc does: against the importing
+  // file's directory. Null when it climbs above the root: solc clamps there (`../../B.sol` from
+  // `src/A.sol` is `B.sol`), but an import reaching out of the project is refused, not redirected.
+  const name = relativeImport ? applyToDir(fromFile, specifier.split('/')) : specifier
   if (name === null) return { reason: 'it climbs above the project root' }
   let path = applyRemappings(name, fromFile, remappings)
   if (path === null && relativeImport) path = name

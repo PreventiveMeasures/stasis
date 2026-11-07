@@ -420,7 +420,7 @@ export const schemaProjects = (host, root, projects) => new Set([...projects].fi
 export async function generatePrismaClients({ host, root, projects, strict = true }) {
   const outputs = []
   const say = strict ? (message) => { console.warn(`[stasis] prisma: ${message}`) } : undefined
-  const skip = (what, why) => say?.(`not generating ${what}: ${why}`)
+  const skip = (what, why) => say?.(notGenerating(what, why))
   for (const project of [...projects].toSorted()) {
     const dir = posix.join(root, project)
     const prisma = installedPrisma(host, dir)

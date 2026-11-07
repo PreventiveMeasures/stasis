@@ -92,9 +92,11 @@ function maskNonCode(code, keepStrings) {
   return out
 }
 
-// Blank comments/heredocs, keep string literals (include paths live in strings).
-function maskCommentsAndHeredocs(content) {
-  return maskNonCode(content, true)
+// A file's code with comments/heredocs blanked and string literals kept (include paths live in
+// strings), and those literals: what the include and path-literal scans read.
+function maskedPhp(content) {
+  const code = maskNonCode(content, true)
+  return { code, strings: stringLiterals(code) }
 }
 
 // Scan string literals -> { start, end, value, quote } with PHP single-quote
@@ -226,10 +228,7 @@ function parseArgPath(code, start, strings) {
 // Scan `require`/`include` statements, classifying each as a concrete `file` or
 // -- when the path is dynamic but has a static directory prefix -- a `dir` whose
 // `.php` files are all bundled (any could be the runtime target).
-function scanIncludes(content) {
-  const code = maskCommentsAndHeredocs(content)
-  const strings = stringLiterals(code)
-
+function scanIncludes({ code, strings }) {
   const out = []
   for (const m of code.matchAll(PHP_INCLUDE_KEYWORD_RE)) {
     if (inString(strings, m.index)) continue
@@ -256,10 +255,7 @@ function scanIncludes(content) {
 // Dir-anchored static `.php` path literals anywhere in the file (not just after
 // `require`) -- frameworks pass these to code that require()s them internally.
 // Best-effort: bundled only if they resolve to an existing file.
-function scanPathLiterals(content) {
-  const code = maskCommentsAndHeredocs(content)
-  const strings = stringLiterals(code)
-
+function scanPathLiterals({ code, strings }) {
   const out = []
   // Dir-anchored literals: `__DIR__ . '/x.php'` (resolve against the file).
   for (const m of code.matchAll(PHP_DIR_ANCHOR_FIND_RE)) {
@@ -286,25 +282,20 @@ const includeSpecs = (includes, kind) => includes.filter((e) => e.kind === kind)
 
 // Statically-resolvable include specifiers (concrete files). See scanIncludes.
 export function extractPhpImports(content) {
-  return includeSpecs(scanIncludes(content), 'file')
+  return includeSpecs(scanIncludes(maskedPhp(content)), 'file')
 }
 
 // Directory specifiers for dynamic includes; every `.php` file directly inside is
 // a candidate target.
 export function extractPhpImportDirs(content) {
-  return includeSpecs(scanIncludes(content), 'dir')
+  return includeSpecs(scanIncludes(maskedPhp(content)), 'dir')
 }
 
 // `.php` path literals used outside a `require` -- dir-anchored (`anchor: 'file'`)
 // or via a Laravel path helper (`anchor: 'root'`). De-duplicated; best-effort.
+const pathRefs = (masked) => [...new Map(scanPathLiterals(masked).map((ref) => [`${ref.anchor}:${ref.spec}`, ref])).values()]
 export function extractPhpPathRefs(content) {
-  const seen = new Set()
-  return scanPathLiterals(content).filter(({ spec, anchor }) => {
-    const key = `${anchor}:${spec}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  return pathRefs(maskedPhp(content))
 }
 
 const isFileOnDisk = (baseDir, rel) => isFile(join(baseDir, rel))
@@ -322,22 +313,27 @@ function projectRel(baseDir, abs) {
   return relativeEscapes(rel) ? null : rel
 }
 
-// Resolve a directory specifier to an existing baseDir-relative dir, or null.
-// `./`/`../` resolve against the including file; a bare spec tries file- then
-// project-relative.
-export function resolvePhpDir(spec, fromFile, baseDir) {
+// Resolve a PHP specifier to a baseDir-relative POSIX path. `./`/`../` resolve against the
+// including file (escaping the root -> null; existence unchecked); a bare specifier tries one
+// next to the includer, then project-root-relative, the first that is `present`. Absolute
+// specifiers are rejected. Returns null when nothing resolves. One holding `\` throws (see
+// refuseBackslash).
+function resolvePhpSpec(spec, fromFile, baseDir, present) {
   refuseBackslash(spec, fromFile)
-  if (isDotRelative(spec)) {
-    const rel = applyToDir(fromFile, spec.split('/'))
-    return rel !== null && isDirOnDisk(baseDir, rel) ? rel : null
-  }
-  if (baseDir && !isAbsolute(spec)) {
-    const fileRel = applyToDir(fromFile, spec.split('/'))
-    if (fileRel && isDirOnDisk(baseDir, fileRel)) return fileRel
-    const projRel = projectRel(baseDir, resolve(baseDir, spec))
-    if (projRel && isDirOnDisk(baseDir, projRel)) return projRel
-  }
-  return null
+  if (isDotRelative(spec)) return applyToDir(fromFile, spec.split('/'))
+  if (!baseDir || isAbsolute(spec)) return null
+  const fileRel = applyToDir(fromFile, spec.split('/'))
+  if (fileRel && present(fileRel)) return fileRel
+  const projRel = projectRel(baseDir, resolve(baseDir, spec))
+  return projRel && present(projRel) ? projRel : null
+}
+
+// Resolve a directory specifier to an existing baseDir-relative dir, or null (resolvePhpSpec; a
+// `./`/`../` one is checked here, a bare one already was).
+export function resolvePhpDir(spec, fromFile, baseDir) {
+  const present = (rel) => isDirOnDisk(baseDir, rel)
+  const rel = resolvePhpSpec(spec, fromFile, baseDir, present)
+  return rel !== null && (!isDotRelative(spec) || present(rel)) ? rel : null
 }
 
 // The `.php` files directly in `dir` (baseDir-relative). Non-recursive: recursing
@@ -352,26 +348,10 @@ function listPhpFiles(baseDir, dir) {
   }
 }
 
-// Resolve a PHP include specifier to a baseDir-relative POSIX path. `./`/`../`
-// resolve against the including file (escaping the root -> null); a bare specifier
-// tries a file next to the includer, then project-root-relative. Absolute
-// specifiers are rejected. Returns null when nothing resolves. One holding `\` throws
-// (see refuseBackslash).
+// Resolve a PHP include specifier to a baseDir-relative POSIX path (resolvePhpSpec: a bare
+// specifier must name a file on disk).
 export function resolvePhpImport(specifier, fromFile, { baseDir } = {}) {
-  refuseBackslash(specifier, fromFile)
-  if (isDotRelative(specifier)) {
-    return applyToDir(fromFile, specifier.split('/'))
-  }
-
-  if (baseDir && !isAbsolute(specifier)) {
-    const fileRel = applyToDir(fromFile, specifier.split('/'))
-    if (fileRel && isFileOnDisk(baseDir, fileRel)) return fileRel
-
-    const projRel = projectRel(baseDir, resolve(baseDir, specifier))
-    if (projRel && isFileOnDisk(baseDir, projRel)) return projRel
-  }
-
-  return null
+  return resolvePhpSpec(specifier, fromFile, baseDir, (rel) => isFileOnDisk(baseDir, rel))
 }
 
 // Normalise a project-root-relative autoload path to POSIX baseDir-relative, or
@@ -599,12 +579,7 @@ export function loadComposerAutoload(baseDir) {
   const mergeDirs = (map, prefix, dirs) => map.set(prefix, [...new Set([...(map.get(prefix) ?? []), ...dirs])])
   const addPrefixDirs = (map, prefix, paths) => {
     const list = Array.isArray(paths) ? paths : [paths]
-    const dirs = []
-    for (const p of list) {
-      const rel = normalizeProjectRel(baseDir, String(p))
-      if (rel !== null) dirs.push(rel)
-    }
-    mergeDirs(map, prefix, dirs)
+    mergeDirs(map, prefix, list.map((p) => normalizeProjectRel(baseDir, String(p))).filter((rel) => rel !== null))
   }
 
   // Root composer.json autoload (+ dev). PSR-4 keys keep their trailing '\'.
@@ -714,9 +689,8 @@ function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
       const known = installed.byDir.get(dir) ?? installed.byName.get(cj.name)
       return { pkgDir: dir, name: cj.name, version: known?.version ?? cj.version ?? fallbackVersion, repo: known?.repo }
     }
-    if (dir === '.' || dir === '/' || dir === '') return null
     const parent = dirname(dir)
-    if (parent === dir) return null
+    if (parent === dir) return null // `.` or `/`: no composer.json above
     dir = parent
   }
 }
@@ -789,12 +763,6 @@ const RESERVED = new Set([
   'endif', 'endswitch', 'endwhile', 'endfor',
 ])
 
-// Blank heredocs, comments AND string literals (unlike maskCommentsAndHeredocs,
-// which keeps strings) so class-reference scans don't trip over text inside them.
-function stripPhp(content) {
-  return maskNonCode(content, false)
-}
-
 // Add the FQCN for a class reference `raw` given namespace `ns` and the `use`-alias
 // map, mirroring PHP name resolution: leading `\` = fully-qualified; a first
 // segment matching an alias expands through it; else relative to `ns`.
@@ -849,7 +817,9 @@ function firstDeclPos(stripped) {
 // file in (new/extends/implements/instanceof/catch/`Foo::bar`/attributes/type
 // hints/FQNs, plus in-body `use Trait;`).
 export function phpClassDependencies(content) {
-  const stripped = stripPhp(content)
+  // Blank heredocs, comments AND string literals (unlike maskCommentsAndHeredocs,
+  // which keeps strings) so class-reference scans don't trip over text inside them.
+  const stripped = maskNonCode(content, false)
   const nsMatch = stripped.match(/\bnamespace\s+([\w\\]+)/u)
   const ns = nsMatch ? nsMatch[1].replace(/^\\+|\\+$/gu, '') : ''
   const set = new Set()
@@ -989,7 +959,8 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       if (!entry) continue
       const [relPath, content] = entry
       sources.set(relPath, content)
-      const includes = scanIncludes(content)
+      const masked = maskedPhp(content)
+      const includes = scanIncludes(masked)
       for (const spec of includeSpecs(includes, 'file')) {
         const resolved = resolvePhpImport(spec, relPath, { baseDir })
         if (resolved) {
@@ -1009,7 +980,7 @@ export async function collectPhpFilesFromDisk(baseDir, entries, { autoload = nul
       }
       // `.php` path literals outside a require (route/config files passed to a
       // framework). Best-effort: bundle only if they resolve to an existing file.
-      for (const { spec, anchor } of extractPhpPathRefs(content)) {
+      for (const { spec, anchor } of pathRefs(masked)) {
         const resolved = anchor === 'root'
           ? normalizeProjectRel(baseDir, spec)
           : resolvePhpImport(spec, relPath, { baseDir })
