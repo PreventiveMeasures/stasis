@@ -18,15 +18,7 @@ const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 // Infer an artifact's ecosystem from its loader formats: PHP bundles map to Composer, everything
 // else to npm. Used for untagged (first-party) buckets and as the fallback for legacy artifacts
 // predating the per-dependency `ecosystem` field.
-function detectEcosystem(artifact) {
-  const formats = artifact.formats
-  if (formats && typeof formats.values === 'function') {
-    for (const format of formats.values()) {
-      if (format === 'php') return 'composer'
-    }
-  }
-  return 'npm'
-}
+const detectEcosystem = (artifact) => ([...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm')
 
 // Legacy scope classification (pre-`ecosystem` artifacts): non-`node_modules` dirs are first-party,
 // except in a Composer bundle where vendor packages live outside `node_modules`. `node_modules` is
@@ -158,33 +150,24 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
   const ordered = primary ? [primary, ...rest] : components
   const ids = new Map(ordered.map((c, i) => [c, `SPDXRef-Package-${i}`]))
 
-  const packages = ordered.map((c) => ({
-    SPDXID: ids.get(c),
+  // The SPDX package of `c` (a component, or one vendored) as `id`, `purpose` its primaryPackagePurpose,
+  // `extra` fields after its version.
+  const spdxPackage = (id, c, purpose, extra = {}) => ({
+    SPDXID: id,
     name: c.name,
     // SPDX versionInfo is optional; omit it for a versionless workspace package.
     ...(c.version == null ? {} : { versionInfo: c.version }),
+    ...extra,
     downloadLocation: 'NOASSERTION',
     filesAnalyzed: false,
     ...(c.purl && {
       externalRefs: [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: c.purl }],
     }),
-    primaryPackagePurpose: c.scope === 'workspace' ? 'APPLICATION' : 'LIBRARY',
-  }))
+    primaryPackagePurpose: purpose,
+  })
+  const packages = ordered.map((c) => spdxPackage(ids.get(c), c, c.scope === 'workspace' ? 'APPLICATION' : 'LIBRARY'))
   const vendored = ordered.flatMap((c) => (c.vendored ?? []).map((v, i) => ({ host: c, v, id: `${ids.get(c)}-Vendored-${i}` })))
-  for (const { v, id } of vendored) {
-    packages.push({
-      SPDXID: id,
-      name: v.name,
-      ...(v.version == null ? {} : { versionInfo: v.version }),
-      packageFileName: v.dir,
-      downloadLocation: 'NOASSERTION',
-      filesAnalyzed: false,
-      ...(v.purl && {
-        externalRefs: [{ referenceCategory: 'PACKAGE-MANAGER', referenceType: 'purl', referenceLocator: v.purl }],
-      }),
-      primaryPackagePurpose: 'LIBRARY',
-    })
-  }
+  for (const { v, id } of vendored) packages.push(spdxPackage(id, v, 'LIBRARY', { packageFileName: v.dir }))
 
   const relationships = []
   if (primary) {
@@ -228,33 +211,25 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
 // there the location of its one occurrence.
 export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
-  const toComponent = (c) => {
+  // `c` (a component, or one vendored) as a CycloneDX component of `type`, `ref` its bom-ref, `tail` after its purl.
+  const component = (c, type, ref, tail) => {
     const { group, name } = splitName(c.ecosystem, c.name)
     return {
-      type: c.scope === 'workspace' ? 'application' : 'library',
-      'bom-ref': bomRef(c),
+      type,
+      'bom-ref': ref,
       ...(group && { group }),
       name,
       // CycloneDX 1.5 `version` is optional; omit it for a versionless workspace package.
       ...(c.version == null ? {} : { version: c.version }),
       ...(c.purl && { purl: c.purl }),
-      ...(c.vendored && { components: c.vendored.map((v) => toVendoredComponent(c, v)) }),
+      ...tail,
     }
   }
+  const toComponent = (c) => component(c, c.scope === 'workspace' ? 'application' : 'library', bomRef(c),
+    c.vendored && { components: c.vendored.map((v) => toVendoredComponent(c, v)) })
   // Its bom-ref the host's with the directory as a purl subpath: two copies of one package (Next.js
   // has loader-utils2 and loader-utils3, both `loader-utils`) stay apart.
-  const toVendoredComponent = (host, v) => {
-    const { group, name } = splitName(v.ecosystem, v.name)
-    return {
-      type: 'library',
-      'bom-ref': `${bomRef(host)}#${v.dir}`,
-      ...(group && { group }),
-      name,
-      ...(v.version == null ? {} : { version: v.version }),
-      ...(v.purl && { purl: v.purl }),
-      evidence: { occurrences: [{ location: v.dir }] },
-    }
-  }
+  const toVendoredComponent = (host, v) => component(v, 'library', `${bomRef(host)}#${v.dir}`, { evidence: { occurrences: [{ location: v.dir }] } })
 
   const doc = {
     bomFormat: 'CycloneDX',

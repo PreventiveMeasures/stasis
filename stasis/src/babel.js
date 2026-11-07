@@ -177,7 +177,7 @@ export function createBabelAliases({ projectDir, platform }) {
   // project installs none.
   let projectPlugin
   try {
-    projectPlugin = require(createRequire(join(projectDir, 'noop.js')).resolve('babel-plugin-module-resolver'))
+    projectPlugin = createRequire(join(projectDir, 'noop.js'))('babel-plugin-module-resolver')
   } catch {
     projectPlugin = null
   }

@@ -121,9 +121,6 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
   }
 }
 
-// Companion Lockfile: the bundle's shape with each file's content swapped for its on-disk integrity, so `--lock=frozen` matches.
-const bundleToLockfile = (bundle, integrities) => Lockfile.fromBundle(bundle, (file) => integrities.get(file))
-
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
 // prepareBundleFile so a conflict here doesn't leave the bundles updated.
 function prepareLockfile(lockPath, lockAdd) {
@@ -366,10 +363,11 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
     planTarget(bundleFile, new Map([...codeFiles, ...resourceFiles]), kind)
   }
 
-  // One lockfile attests both split targets, so merge in every packed file's integrity (code + resources together).
+  // One lockfile attests both split targets, so merge in every packed file's integrity (code + resources
+  // together): the bundle's shape with each file's content swapped for its on-disk integrity, so `--lock=frozen` matches.
   if (hasLock) {
     const allFiles = new Map([...codeFiles, ...resourceFiles])
-    const lockAdd = bundleToLockfile(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), integrities)
+    const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
     const { write, counts } = prepareLockfile(lockPath, lockAdd)
     writes.push(write)
     summary.push(`+${counts.added} (${counts.total} total) -> ${LOCK_FILE}`)

@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
-import { isUtf8 } from 'node:buffer'
 import { existsSync } from 'node:fs'
 import { isBuiltin } from 'node:module'
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
+import { assertCodeUtf8, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
 import { inScope, realReadFile } from '@exodus/stasis-core/state-util'
 import { classifyExtension, isPathWithin } from '@exodus/stasis-core/util'
+
+// Whether a module id (or importer) names a file on disk by its absolute path, as opposed to a
+// sibling plugin's virtual module (\0-prefixed or relative) or no importer at all (an entry).
+const isDiskId = (id) => Boolean(id) && isAbsolute(id) && !id.startsWith('\0')
 
 // Rollup chains resolveId/load hooks first-non-null-wins, so put this plugin FIRST in `plugins`:
 // listed later, a sibling resolver (node-resolve, commonjs) answers before stasis sees the edge --
@@ -47,10 +50,10 @@ export class StasisRollup {
     // bound to its PluginContext (whose resolve/getModuleInfo the hooks need), so instance state
     // has to arrive via the closure instead.
     const plugin = this
-    this.resolveId = async function (source, importer, opts) {
+    this.resolveId = function (source, importer, opts) {
       return plugin.#resolveId(this, source, importer, opts)
     }
-    this.load = async function (id) {
+    this.load = function (id) {
       return plugin.#load(this, id)
     }
 
@@ -142,14 +145,6 @@ export class StasisRollup {
     return false
   }
 
-  #classifyOrThrow(id) {
-    const kind = classifyExtension(id, this.#resources)
-    if (kind === 'unknown') {
-      throw new Error(unsupportedExtension('StasisRollup', `'${id}'`))
-    }
-    return kind
-  }
-
   #inRoot(path) {
     return isPathWithin(this.#state.root, path)
   }
@@ -172,14 +167,11 @@ export class StasisRollup {
         // point, so the load hook asserts from the graph's authoritative isEntry instead -- and a
         // probe that never loads is never asserted.
         if (source.startsWith('file:')) return { id: fileURLToPath(source) }
-        const base = importer && isAbsolute(importer) && !importer.startsWith('\0')
-          ? dirname(importer)
-          : process.cwd()
+        const base = isDiskId(importer) ? dirname(importer) : process.cwd()
         return { id: resolvePath(base, source) }
       }
       // A missing, virtual, or out-of-root importer was never the bundle's responsibility -- defer to rollup.
-      if (!importer || importer.startsWith('\0') || !isAbsolute(importer)) return null
-      if (!this.#inRoot(importer)) return null
+      if (!isDiskId(importer) || !this.#inRoot(importer)) return null
       const parentURL = pathToFileURL(importer).toString()
       this.#assertPersistableAttributes(attrs)
       // Forward import attributes (`with { type: 'json' }`) so plugin-capture round-trips to
@@ -208,14 +200,14 @@ export class StasisRollup {
     const { id } = resolution
     // Skip virtual modules (\0-prefixed or otherwise not an on-disk file); a suffixed variant of
     // an on-disk file refuses inside the check rather than slipping through unattested.
-    if (id.startsWith('\0') || !isAbsolute(id) || !this.#existsOrRefuseSuffixed(id)) return resolution
-    this.#classifyOrThrow(id)
+    if (!isDiskId(id) || !this.#existsOrRefuseSuffixed(id)) return resolution
+    classifyOrThrow('StasisRollup', id, this.#resources)
 
     // Record the edge for BOTH code and resource targets, but never for entries (matching the
     // loader) and never for an out-of-root importer (not the project's graph; load mode defers
     // those parents the same way). Entries are flagged from the graph in buildEnd instead of
     // trusting opts.isEntry -- see the constructor comment.
-    if (!isEntry && importer && isAbsolute(importer) && !importer.startsWith('\0') && this.#inRoot(importer)) {
+    if (!isEntry && isDiskId(importer) && this.#inRoot(importer)) {
       this.#assertPersistableAttributes(attrs)
       if (!this.#inRoot(id)) {
         throw new Error(
@@ -233,7 +225,7 @@ export class StasisRollup {
     // In scope = full (everything under state.root) or node_modules-only per scope; ids other
     // plugins resolved land here too, so the gate can't rely on our own resolveId alone.
     if (this.#state.config.loadBundle) {
-      if (id.startsWith('\0') || !isAbsolute(id)) return null
+      if (!isDiskId(id)) return null
       if (!this.#inRoot(id)) return null // out of the project root -- not ours
       const url = pathToFileURL(id).toString()
       // Entries are asserted here from the graph's authoritative isEntry (known before load runs):
@@ -251,7 +243,7 @@ export class StasisRollup {
     // resolver may have minted ids our resolveId never saw). One read doubles as the existence
     // check: ENOENT defers -- unless the id is a suffixed variant of an on-disk file, which
     // refuses -- and any other read error is real.
-    if (id.startsWith('\0') || !isAbsolute(id)) return null
+    if (!isDiskId(id)) return null
     let source
     try {
       source = await realReadFile(id)
@@ -260,33 +252,20 @@ export class StasisRollup {
       this.#refuseSuffixedOnDisk(id)
       return null
     }
-    const kind = this.#classifyOrThrow(id)
+    const resource = classifyOrThrow('StasisRollup', id, this.#resources) === 'resource'
     if (!this.#inRoot(id)) {
       throw new Error(`StasisRollup: module is outside the project root and can't be attested: ${id}`)
     }
-    const url = pathToFileURL(id).toString()
-
-    if (kind === 'resource') {
-      // Mark as a resource (State picks 'resource' vs 'resource:base64' from bytes). Return null:
-      // loading it into the graph is the user's asset plugin's job.
-      if (!this.#seen.has(id)) {
-        this.#seen.add(id)
-        this.#state.addFile(url, { source, resource: true, reason: 'rollup' })
-      }
-      return null
-    }
-
-    // Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
-    assert.ok(isUtf8(source), `StasisRollup: code-classified file has non-UTF-8 bytes: ${id}`)
-
+    if (!resource) assertCodeUtf8('StasisRollup', id, source)
     if (!this.#seen.has(id)) {
       this.#seen.add(id)
-      this.#state.addFile(url, { source, reason: 'rollup' })
+      // A resource is marked as one (State picks 'resource' vs 'resource:base64' from bytes).
+      this.#state.addFile(pathToFileURL(id).toString(), { source, resource, reason: 'rollup' })
     }
-
-    // Return the attested bytes so the build consumes exactly what was recorded (transform hooks
+    // A resource returns null: loading it into the graph is the user's asset plugin's job. Code
+    // returns the attested bytes so the build consumes exactly what was recorded (transform hooks
     // still run after, symmetrically with load mode).
-    return source.toString('utf8')
+    return resource ? null : source.toString('utf8')
   }
 
   // Capture epilogue (see the constructor comment): flag real entries from the completed graph,

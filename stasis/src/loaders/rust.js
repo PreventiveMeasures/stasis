@@ -524,10 +524,7 @@ export function scanRustItems(content, { features = null, maybeFeatures = null, 
   // may be another directory than where the outer one is); `depth`, the inline modules around
   // its definition, which a `mod` its body declares is not in where it is invoked.
   const defs = []
-  const innermostEntry = (at) => {
-    while (defs.length > 0 && defs.at(-1).end < at) defs.pop()
-    return defs.at(-1)
-  }
+  const innermostEntry = (at) => openBlocks(defs, at).at(-1)
   const innermostDef = (at) => innermostEntry(at)?.macro ?? templateMacro
 
   // Whether the token at `at` sits in a `macro_rules!` body: a template, expanded where the
@@ -772,9 +769,9 @@ export function scanRustItems(content, { features = null, maybeFeatures = null, 
             if (pathQualified) pathInvocations.add(word)
             else {
               invocations.add(word)
-              ;(calls.get(word) ?? calls.set(word, []).get(word)).push(i)
+              cached(calls, word, () => []).push(i)
             }
-            ;(callSites.get(word) ?? callSites.set(word, []).get(word)).push({ offset: i, inlinePath: inlinePath(), inlineDirs: stack.map((s) => s.dir) })
+            cached(callSites, word, () => []).push({ offset: i, inlinePath: inlinePath(), inlineDirs: stack.map((s) => s.dir) })
           }
           if (INCLUDE_MACROS.has(word)) {
             const text = code.slice(open + 1, close)
@@ -1446,7 +1443,7 @@ function leafSet(leaves, sets) {
   const uniq = new Map()
   for (const l of leaves) uniq.set(leafKey(l), l)
   const key = [...uniq.keys()].toSorted().join('|')
-  return sets.get(key) ?? sets.set(key, { leaves: [...uniq.values()], key }).get(key)
+  return cached(sets, key, () => ({ leaves: [...uniq.values()], key }))
 }
 // A union is asked for again and again along a closure (a glob's leaves with each candidate's): kept
 // on the first set, by the second's key.
@@ -1454,7 +1451,7 @@ const unionLeaves = (a, b, sets) => {
   if (a.key === '') return b
   if (b.key === '' || b.key === a.key) return a
   const unions = (a.unions ??= new Map())
-  return unions.get(b.key) ?? unions.set(b.key, leafSet([...a.leaves, ...b.leaves], sets)).get(b.key)
+  return cached(unions, b.key, () => leafSet([...a.leaves, ...b.leaves], sets))
 }
 // The leaves holding when either of two sets does (a module two glob paths reach): an `any` of
 // the two -- of their alternatives, when one is an `any` leaf already.
@@ -1831,7 +1828,7 @@ function providedAll(root, at, name, seeing, ctx) {
 function closureIndex(closure) {
   if (closure.index === undefined) {
     closure.index = new Map()
-    closure.forEach((e, i) => (closure.index.get(e.module) ?? closure.index.set(e.module, []).get(e.module)).push(i))
+    closure.forEach((e, i) => cached(closure.index, e.module, () => []).push(i))
   }
   return closure.index
 }
@@ -2282,7 +2279,7 @@ function opaqueGlobsOf(root, ctx) {
       for (const im of of.globs) {
         if (NON_CRATE_LEADS.has(im.segments[0])) continue
         const source = globSource(im, root, ctx)
-        if (source === null || source.kind === 'crate') (index.get(module) ?? index.set(module, []).get(module)).push({ im, source })
+        if (source === null || source.kind === 'crate') cached(index, module, () => []).push({ im, source })
       }
     }
     return index
@@ -2379,7 +2376,7 @@ function resolvePathRef(ref, file, bindings, ctx) {
 // `map`: root → name → Set<module>, noting `module` under (root, name).
 const note = (map, root, name, module) => {
   const byName = nestedMap(map, root)
-  ;(byName.get(name) ?? byName.set(name, new Set()).get(name)).add(module)
+  cached(byName, name, () => new Set()).add(module)
 }
 
 // Bundle import keys can't contain '/'; a cfg predicate practically never does, but fail safe.
@@ -2405,8 +2402,8 @@ function effectiveInvokers(name, invokers, templateCalls, seen = new Set()) {
 // name: a `$crate::m!` resolves where the macro is invoked as surely as `m!`), and what its
 // `macro_rules!` templates call, for effectiveInvokers.
 function noteMacroCalls(invokers, templateCalls, path, items) {
-  for (const name of [...items.invocations, ...items.pathInvocations ?? []]) (invokers.get(name) ?? invokers.set(name, new Set()).get(name)).add(path)
-  for (const m of items.macros) for (const name of [...m.calls, ...m.pathCalls ?? []]) (templateCalls.get(m.name) ?? templateCalls.set(m.name, new Set()).get(m.name)).add(name)
+  for (const name of [...items.invocations, ...items.pathInvocations ?? []]) cached(invokers, name, () => new Set()).add(path)
+  for (const m of items.macros) for (const name of [...m.calls, ...m.pathCalls ?? []]) cached(templateCalls, m.name, () => new Set()).add(name)
 }
 // The files in effect invoking macro `name` where a `mod` its template declares is declared: of
 // `from`'s package (`packageOf`: file → package) -- a macro of the same name elsewhere is likely
@@ -2433,7 +2430,7 @@ function hostedCopies(decl, items, templateCalls) {
 const templatesLessMemo = new Map()
 const templatesLess = (own) => {
   const key = [...own].toSorted().join()
-  return templatesLessMemo.get(key) ?? templatesLessMemo.set(key, new Set([...TEMPLATE_MACROS].filter((name) => !own.has(name)))).get(key)
+  return cached(templatesLessMemo, key, () => new Set([...TEMPLATE_MACROS].filter((name) => !own.has(name))))
 }
 
 // The compile units a file is compiled as (see cargo.js unitKey): what `units` recorded, else
@@ -2562,7 +2559,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       const hosts = hostsOf(decl.template, path, invokers, templateCalls, exported ? null : packageOf)
       if (hosts.length === 0) continue
       hostedAway.add(decl)
-      for (const f of hosts) for (const copy of hostedCopies(decl, scanned.get(f), templateCalls)) (hosted.get(f) ?? hosted.set(f, []).get(f)).push({ ...copy, definedIn: path })
+      for (const f of hosts) for (const copy of hostedCopies(decl, scanned.get(f), templateCalls)) cached(hosted, f, () => []).push({ ...copy, definedIn: path })
     }
   }
   const modsOf = (path) => [...scanned.get(path).mods.filter((d) => !hostedAway.has(d)), ...(hosted.get(path) ?? [])]
@@ -2604,7 +2601,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     for (const m of items.macros) {
       if (m.includes.length === 0) continue
       for (const f of effectiveInvokers(m.name, invokers, templateCalls)) {
-        const list = includeEdges.get(f) ?? includeEdges.set(f, []).get(f)
+        const list = cached(includeEdges, f, () => [])
         for (const inc of m.includes) list.push({ ...inc, conditional: true })
       }
     }
@@ -2641,7 +2638,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
         for (let k = 2; keyed.has(key) && keyed.get(key) !== t.file; k++) key = `${base}#${k}`
         if (!keyed.has(key)) keyed.set(key, t.file)
         const via = decl.definedIn === undefined ? undefined : [...cfgsHere.values()].flatMap((m) => m.get(decl.definedIn) ?? [])
-        ;(byFile.get(t.file) ?? byFile.set(t.file, []).get(t.file)).push({ cfg, macro: decl.macro, via })
+        cached(byFile, t.file, () => []).push({ cfg, macro: decl.macro, via })
       }
     }
     // A single file is a flat string -- also when every cfg names the same file (libc's `mod
@@ -2680,14 +2677,14 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   const askerSets = new Map() // per leaf set, build and settable cfgs: what every asker of those shares
   const ids = new WeakMap()
   let nextId = 0
-  const idOf = (object) => ids.get(object) ?? ids.set(object, nextId++).get(object)
+  const idOf = (object) => cached(ids, object, () => nextId++)
   // With a file's platform known, its cfgs hold for the file: a `unix` asker never takes a
   // `windows` candidate, a `target_os = "linux"` one prefers the `any(android, linux, …)` branch
   // (see compatible). The platform is the target's for code compiled for it, the host's for a
   // build script (known only when the target is the host); a file compiled for both platforms
   // asks under the cfgs they share, which the loader knows only when they are one.
   const platformLeaves = new Map() // cfg set -> its leaf set
-  const leavesOfCfgs = (cfgs) => platformLeaves.get(cfgs) ?? platformLeaves.set(cfgs, leafSet([...cfgs].flatMap(cfgLeaves).filter((l) => TARGET_CFG_KEYS.has(l.key)), leafSets)).get(cfgs)
+  const leavesOfCfgs = (cfgs) => cached(platformLeaves, cfgs, () => leafSet([...cfgs].flatMap(cfgLeaves).filter((l) => TARGET_CFG_KEYS.has(l.key)), leafSets))
   const platformCfgsOf = (path) => {
     const each = new Set([...unitsOf(units, path)].map((u) => ctx?.platformOf(u)?.cfgs ?? null))
     return each.size === 1 ? [...each][0] : null
@@ -2706,7 +2703,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     const build = buildOf(path, ctx, units)
     const settable = ctx?.cfgsSetFor(path) ?? null
     const sharedKey = `${set.key}\0${idOf(build)}\0${settable === null ? '' : idOf(settable)}`
-    const shared = askerSets.get(sharedKey) ?? askerSets.set(sharedKey, { keys: new Set(set.leaves.map(leafKey)), compat: new Map(), sure: new Map(), doubt: new Map(), dead: new Map(), texts: new Map(), build, deadHere: deadUnder(set.leaves, build), contradictory: cfgExclusive(set.leaves, set.leaves), custom: customFor(settable) }).get(sharedKey)
+    const shared = cached(askerSets, sharedKey, () => ({ keys: new Set(set.leaves.map(leafKey)), compat: new Map(), sure: new Map(), doubt: new Map(), dead: new Map(), texts: new Map(), build, deadHere: deadUnder(set.leaves, build), contradictory: cfgExclusive(set.leaves, set.leaves), custom: customFor(settable) }))
     f.asker = { file: path, set, ...shared }
   }
   // Per crate root, each module's child modules by name (every module's parent is in its tree).
@@ -2717,7 +2714,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       const cut = modulePath.lastIndexOf('::')
       if (cut === -1) continue
       const parent = modulePath.slice(0, cut)
-      ;(byParent.get(parent) ?? byParent.set(parent, new Set()).get(parent)).add(modulePath.slice(cut + 2))
+      cached(byParent, parent, () => new Set()).add(modulePath.slice(cut + 2))
     }
     children.set(root, byParent)
   }
@@ -2726,7 +2723,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
   const moduleFiles = new Map()
   for (const [path, f] of files) {
     const byModule = nestedMap(moduleFiles, f.root)
-    ;(byModule.get(f.modulePath) ?? byModule.set(f.modulePath, []).get(f.modulePath)).push(path)
+    cached(byModule, f.modulePath, () => []).push(path)
   }
   // Per crate root, what a path may continue along where a segment names no module: the imports
   // of each module (by module path: `named` by the name each binds, and `globs`; each with the
@@ -2774,16 +2771,16 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       if (im.template === true) continue
       const modulePath = [here.modulePath, ...im.inlinePath].join('::')
       const byModule = nestedMap(imports, here.root)
-      const of = byModule.get(modulePath) ?? byModule.set(modulePath, { named: new Map(), globs: [] }).get(modulePath)
+      const of = cached(byModule, modulePath, () => ({ named: new Map(), globs: [] }))
       const entry = { ...im, file: path, module: modulePath, scopeDepth: scopeDepthOf(im.vis, modulePath), leaves: itemLeaves(here, im, path) }
       if (im.glob) of.globs.push(entry)
-      else if (im.binding !== null) (of.named.get(im.binding) ?? of.named.set(im.binding, []).get(im.binding)).push(entry)
+      else if (im.binding !== null) cached(of.named, im.binding, () => []).push(entry)
     }
     for (const d of items.defined) {
       const modulePath = [here.modulePath, ...d.inlinePath].join('::')
       const byModule = nestedMap(defined, here.root)
       const names = nestedMap(byModule, modulePath)
-      ;(names.get(d.name) ?? names.set(d.name, []).get(d.name)).push({ file: path, scopeDepth: scopeDepthOf(d.vis, modulePath), ns: d.ns, leaves: itemLeaves(here, d, path) })
+      cached(names, d.name, () => []).push({ file: path, scopeDepth: scopeDepthOf(d.vis, modulePath), ns: d.ns, leaves: itemLeaves(here, d, path) })
     }
     const scopes = nestedMap(modScope, here.root)
     const specMap = resolutions.get(path)
@@ -2796,7 +2793,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       const mountedFiles = filesOf(target).filter((f) => f !== path)
       const mount = { parent: path, offset: decl.offset, at: decl.at }
       for (const f of mountedFiles) if (!mounts.has(f)) mounts.set(f, mount)
-      if (decl.macroUse && mountedFiles.length > 0) (macroUseMods.get(mount.parent) ?? macroUseMods.set(mount.parent, []).get(mount.parent)).push({ offset: mount.offset, at: mount.at, files: mountedFiles })
+      if (decl.macroUse && mountedFiles.length > 0) cached(macroUseMods, mount.parent, () => []).push({ offset: mount.offset, at: mount.at, files: mountedFiles })
     }
     for (const [spec, target] of specMap) {
       if (spec.startsWith('include ') && !mounts.has(target) && target !== path) mounts.set(target, { parent: path, offset: Infinity, at: Infinity })
@@ -2811,7 +2808,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
       const byName = nestedMap(macros, here.root)
       if (!byName.has(m.name)) byName.set(m.name, path)
       const defs = nestedMap(exportedMacros, here.root)
-      ;(defs.get(m.name) ?? defs.set(m.name, []).get(m.name)).push({ file: path, leaves: itemLeaves(here, m, path) })
+      cached(defs, m.name, () => []).push({ file: path, leaves: itemLeaves(here, m, path) })
     }
     if (here.modulePath === 'crate') {
       const prelude = nestedMap(externPrelude, here.root)
@@ -2946,7 +2943,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
         if (file && ctx) {
           const want = new Set([...unitsOf(units, path)].map((u) => ctx.unitOfCrate(file, u)))
           const have = sources.has(file) ? unitsOf(units, file) : new Set()
-          if (!want.isSubsetOf(have)) for (const u of want) (wanted.get(file) ?? wanted.set(file, new Set()).get(file)).add(u)
+          if (!want.isSubsetOf(have)) for (const u of want) cached(wanted, file, () => new Set()).add(u)
         } else if (file && !sources.has(file)) wanted.set(file, DEFAULT_UNITS)
       }
       add(`use ${name}`, target, alternatives)
@@ -3216,10 +3213,10 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       const items = scanFor(relPath, content)
       const { mods, refs, externCrates, bindings, includes, macros } = items
       const pkg = packageOf(relPath)
-      if (items.skipped.size > 0) (skippedIn.get(pkg) ?? skippedIn.set(pkg, new Set()).get(pkg)).add(relPath)
+      if (items.skipped.size > 0) cached(skippedIn, pkg, () => new Set()).add(relPath)
       for (const m of macros) {
         if (!TEMPLATE_MACROS.has(m.name)) continue
-        const own = ownTemplates.get(pkg) ?? ownTemplates.set(pkg, new Set()).get(pkg)
+        const own = cached(ownTemplates, pkg, () => new Set())
         if (own.has(m.name)) continue
         own.add(m.name)
         for (const f of skippedIn.get(pkg) ?? []) if (f !== relPath) handle(f, sources.get(f))
@@ -3238,7 +3235,7 @@ export async function collectRustFilesFromDisk(baseDir, entries, { cargo = null,
       for (const inc of includes) includeFrom(inc, relPath)
       for (const m of macros) {
         if (m.includes.length === 0) continue
-        const list = templateIncludes.get(m.name) ?? templateIncludes.set(m.name, []).get(m.name)
+        const list = cached(templateIncludes, m.name, () => [])
         for (const inc of m.includes) if (!list.some((x) => x.kind === inc.kind && x.path === inc.path && x.base === inc.base)) list.push(inc)
       }
       noteMacroCalls(invokers, templateCalls, relPath, items)

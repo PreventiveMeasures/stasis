@@ -39,16 +39,22 @@ export function nearest(cwd, holds) {
 // Whether a directory holds a file of one of `names`.
 export const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
 
+// Whether `dir` holds a package: a package.json naming one, or unreadable, which is one all the same;
+// one with no name is a `type` marker, its files the package's above.
+function holdsPackage(host, dir) {
+  if (!isFile(join(dir, 'package.json'), host)) return false
+  const json = readJson(join(dir, 'package.json'), host)
+  return json === null || json.name !== undefined
+}
+
 // The directory of the package cwd is in that is none of `projects` (their directories from
 // `root`), or null: the nearest package.json with a name between cwd and `root`, one without being a
 // `type` marker.
 function outsider(host, root, cwd, projects) {
   for (let dir = cwd; dir !== root; dir = dirname(dir)) {
-    const file = join(dir, 'package.json')
-    if (!isFile(file, host)) continue
+    if (!isFile(join(dir, 'package.json'), host)) continue
     if (projects.has(relative(root, dir))) return null
-    const json = readJson(file, host) // unreadable, a package all the same
-    if (json === null || json.name !== undefined) return dir
+    if (holdsPackage(host, dir)) return dir
   }
   return null
 }
@@ -143,14 +149,6 @@ function yarn1Root(host, cwd) {
   return nearest(cwd, holding(host, 'yarn.lock'))
 }
 
-// Whether `dir` holds a package: a package.json naming one, or unreadable, which is one all the same;
-// one with no name is a `type` marker, its files the package's above.
-function holdsPackage(host, dir) {
-  if (!isFile(join(dir, 'package.json'), host)) return false
-  const json = readJson(join(dir, 'package.json'), host)
-  return json === null || json.name !== undefined
-}
-
 // The first directory above `dir` whose workspaces, as npm's glob finds them on `os`, take it, as npm
 // finds its local prefix; else null. npm takes a falsy declaration for none, and fails on any other
 // but a sequence of globs, or yarn's `{ packages: [...] }` of them.
@@ -180,7 +178,7 @@ function npmRoot(host, cwd, os) {
     }
     if (dirname(dir) === dir) break
   }
-  return nearest(cwd, (dir) => holding(host, 'package-lock.json')(dir) && holding(host, 'package.json')(dir))
+  return nearest(cwd, (dir) => isFile(join(dir, 'package-lock.json'), host) && isFile(join(dir, 'package.json'), host))
 }
 
 // npm's host: the machine's, but a libc npm finds only as glibc or musl, and none where it finds
@@ -189,6 +187,10 @@ const npmHost = (npm, given) => {
   const { libc, ...host } = target(given)
   return { npm, ...host, ...(libc === 'glibc' || libc === 'musl' ? { libc } : {}) }
 }
+
+// Whether a directory holding yarn's or npm's lockfile is installed from by itself: a package.json
+// above may declare it a workspace.
+const aloneWithoutManifestAbove = async (names, above) => !(await above()).some((dir) => dir.includes('package.json'))
 
 // What each package manager reproduced installs from: the kind of bundle it installs for; its
 // lockfile; the name a root package.json's packageManager pins it by, where one does; the version
@@ -219,8 +221,7 @@ const PACKAGE_MANAGERS = {
     pin: 'yarn',
     version: '1.22.22',
     root: yarn1Root,
-    // A package.json above may declare it a workspace.
-    alone: async (names, above) => !(await above()).some((dir) => dir.includes('package.json')),
+    alone: aloneWithoutManifestAbove,
     projects: (view) => findYarn1Workspaces({ project: view }),
     installs: 'node_modules',
     build: (view, yarn, file, given) => {
@@ -234,8 +235,7 @@ const PACKAGE_MANAGERS = {
     // npm reads no packageManager, so nothing pins it.
     version: '11.21.0',
     root: npmRoot,
-    // A package.json above may declare it a workspace.
-    alone: async (names, above) => !(await above()).some((dir) => dir.includes('package.json')),
+    alone: aloneWithoutManifestAbove,
     projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
     installs: 'node_modules',
     lazy: true,
@@ -292,7 +292,6 @@ export function treeHost(tree, project, reads) {
   }
   return host
 }
-
 
 // Refused where `packageManager` lays out no tree from the lockfile alone, which `lazy` would have.
 export function checkLazy(name, packageManager) {
@@ -553,19 +552,12 @@ export function pinCommits(bundle, root, { root: from, installed }) {
 // fs.Stats#mode carries the file type above the permission bits a Vfs stat holds.
 const TYPE_BITS = { file: constants.S_IFREG, directory: constants.S_IFDIR, symlink: constants.S_IFLNK }
 
-const statsFor = (st) => ({
-  isFile: () => st.type === 'file',
-  isDirectory: () => st.type === 'directory',
-  isSymbolicLink: () => st.type === 'symlink',
-  mode: TYPE_BITS[st.type] | st.mode,
-})
+// fs.Stats' and fs.Dirent's type predicates, of a Vfs node's `type`.
+const typePredicates = (type) => ({ isFile: () => type === 'file', isDirectory: () => type === 'directory', isSymbolicLink: () => type === 'symlink' })
 
-const dirent = (name, type) => ({
-  name,
-  isFile: () => type === 'file',
-  isDirectory: () => type === 'directory',
-  isSymbolicLink: () => type === 'symlink',
-})
+const statsFor = (st) => ({ ...typePredicates(st.type), mode: TYPE_BITS[st.type] | st.mode })
+
+const dirent = (name, type) => ({ name, ...typePredicates(type) })
 
 // A view over the Vfs's bytes, never a copy.
 const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)

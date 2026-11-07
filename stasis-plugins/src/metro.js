@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { Buffer, isUtf8 } from 'node:buffer'
+import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { resolvePluginState, unsupportedExtension } from './plugins.js'
+import { assertCodeUtf8, classifyOrThrow, resolvePluginState } from './plugins.js'
 import { AUTO_INCLUDES, FILE_STAT, RN_CORE_INCLUDE_FILES, bundleDirHost, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
@@ -65,11 +65,7 @@ function loadReactNativeConfig(projectDir) {
   }
   // Run the child as vanilla Node: strip stasis's env and any inherited loader, else it joins
   // this capture nondeterministically or aborts on a config it can't satisfy.
-  const env = { ...process.env }
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('EXODUS_STASIS_')) delete env[key]
-  }
-  delete env.NODE_OPTIONS
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EXODUS_STASIS_') && key !== 'NODE_OPTIONS'))
   const res = spawnSync(process.execPath, [cliPath, 'config'], {
     cwd: projectDir,
     encoding: 'utf8',
@@ -429,10 +425,7 @@ export class StasisMetro {
       const modPath = diskPath(module)
       if (modPath === undefined) continue
 
-      const kind = classifyExtension(modPath, this.#resources)
-      if (kind === 'unknown') {
-        throw new Error(unsupportedExtension('StasisMetro', `'${modPath}'`))
-      }
+      const kind = classifyOrThrow('StasisMetro', modPath, this.#resources)
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
 
@@ -442,10 +435,7 @@ export class StasisMetro {
       // Read from disk, not module.getSource() -- addFile re-reads disk and asserts byte-equality.
       // Real reader (state-util.js): a --fs-patched readFileSync would re-record the graph into the preload.
       const source = realReadFileSync(modPath)
-      // Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
-      if (kind === 'code') {
-        assert.ok(isUtf8(source), `StasisMetro: code-classified file has non-UTF-8 bytes: ${modPath}`)
-      }
+      if (kind === 'code') assertCodeUtf8('StasisMetro', modPath, source)
       // No format for a code file: Metro transforms it from source, so Node's module/commonjs isn't
       // what runs. But the one its name alone gives it (.json, .mjs, .cjs: nodeExtFormat), as Node
       // loads it too, which a --fs read of it records besides (a resource still takes its
@@ -487,11 +477,7 @@ export class StasisMetro {
       const read = resolve(dirname(modPath), specifier)
       const file = diskHost.stat(read)?.isFile() ? this.#realWithin(read) : null
       if (file === null) continue
-      const kind = classifyExtension(file, this.#resources)
-      if (kind === 'code') continue
-      if (kind === 'unknown') {
-        throw new Error(unsupportedExtension('StasisMetro', `'${file}', which a Babel plugin inlines into '${modPath}'`))
-      }
+      if (classifyOrThrow('StasisMetro', file, this.#resources, `'${file}', which a Babel plugin inlines into '${modPath}'`) === 'code') continue
       yield { file, read }
     }
   }

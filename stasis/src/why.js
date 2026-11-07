@@ -72,6 +72,13 @@ const PATH_CAP = 2000
 // still prefixed with its own reason.
 const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
 
+// `map`'s value at `key`, set to `make()` where it has none.
+function upsert(map, key, make) {
+  let value = map.get(key)
+  if (value === undefined) map.set(key, (value = make()))
+  return value
+}
+
 // Index one parsed artifact: map every project-relative file to its owning module
 // dir, record each dir's package identity + whether it's a node_modules dep, and
 // keep each dir's EVIDENCE file list (for the target's-own-reason lookup).
@@ -132,11 +139,7 @@ function fileEdges(imports) {
 // Intra-module edges and edges into a src module are dropped.
 function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
   const graphs = new Map()
-  const graphFor = (bucket) => {
-    let g = graphs.get(bucket)
-    if (g === undefined) graphs.set(bucket, (g = { adjRev: new Map(), srcImporters: new Map() }))
-    return g
-  }
+  const graphFor = (bucket) => upsert(graphs, bucket, () => ({ adjRev: new Map(), srcImporters: new Map() }))
   for (const [pf, tf] of edges) {
     const pd = fileToDir.get(pf)
     const td = fileToDir.get(tf)
@@ -154,9 +157,7 @@ function bucketGraphs(edges, fileToDir, dirInfo, fileReasons) {
     const dep = dirInfo.get(pd).dep
     for (const bucket of buckets) {
       const map = dep ? graphFor(bucket).adjRev : graphFor(bucket).srcImporters
-      let set = map.get(td)
-      if (set === undefined) map.set(td, (set = new Set()))
-      set.add(dep ? pd : pf)
+      upsert(map, td, () => new Set()).add(dep ? pd : pf)
     }
   }
   return graphs
@@ -170,11 +171,7 @@ export function invertReason(reason, name = (consumer) => consumer) {
   const byFile = new Map()
   for (const [consumer, list] of Object.entries(reason)) {
     if (!Array.isArray(list)) continue
-    for (const f of list) {
-      let set = byFile.get(f)
-      if (set === undefined) byFile.set(f, (set = new Set()))
-      set.add(name(consumer))
-    }
+    for (const f of list) upsert(byFile, f, () => new Set()).add(name(consumer))
   }
   return byFile
 }
@@ -375,14 +372,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
   // key -> reason bucket ('' = unattributed) -> Map(chainKey -> node-name array)
   const acc = new Map()
   const truncatedKeys = new Set()
-  const bucketChains = (key, bucket) => {
-    let buckets = acc.get(key)
-    if (buckets === undefined) acc.set(key, (buckets = new Map()))
-    let chains = buckets.get(bucket)
-    if (chains === undefined) buckets.set(bucket, (chains = new Map()))
-    return chains
-  }
-  const addChain = (key, bucket, nodes) => bucketChains(key, bucket).set(chainKey(nodes), nodes)
+  const addChain = (key, bucket, nodes) => upsert(upsert(acc, key, () => new Map()), bucket, () => new Map()).set(chainKey(nodes), nodes)
 
   const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 
@@ -406,9 +396,7 @@ export function collectWhy(files, targetKeys, reasonFilter = null, { deep = fals
       if (!info.dep || !info.name || !info.version) continue
       const key = `${info.name}@${info.version}`
       if (targetKeys && !targetKeys.has(key)) continue
-      let arr = dirsByKey.get(key)
-      if (arr === undefined) dirsByKey.set(key, (arr = []))
-      arr.push(dir)
+      upsert(dirsByKey, key, () => []).push(dir)
     }
     if (dirsByKey.size === 0) continue
 

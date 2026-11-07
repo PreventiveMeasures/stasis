@@ -99,20 +99,25 @@ const PROJECT_FILES = { js: ['package.json'], sol: ['foundry.toml', 'soldeer.tom
 // A symlink's mode in a git tree.
 const SYMLINK = '120000'
 
+// `list`'s listings of `dirs`, or null where one is no plain directory in git (a symlink, or under
+// one); the root's failure is GitHub's.
+async function listingsOf(list, dirs) {
+  try {
+    return await Promise.all(dirs.map(list))
+  } catch {
+    await list(undefined)
+    return null
+  }
+}
+
 // `path` in the repo, by `list`'s listings, as `{ directory, entry }`: a file (no symlink) is an
 // entry of the nearest directory at or above it holding one of PROJECT_FILES of its kind, the repo's
 // root (undefined) where none does, and a path from there; anything else, or what the listings can't
 // tell (a symlink on the way), is the directory, with no entry.
 async function splitPath(list, path) {
   const above = ancestorsOf(path)
-  let listings
-  try {
-    listings = await Promise.all(above.map(list))
-  } catch {
-    // No plain directory in git (a symlink, or under one); the root's failure is GitHub's.
-    await list(undefined)
-    return { directory: path }
-  }
+  const listings = await listingsOf(list, above)
+  if (listings === null) return { directory: path }
   const name = posix.basename(path)
   if (!listings[0].some((entry) => entry.path === name && entry.type === 'blob' && entry.mode !== SYMLINK)) return { directory: path }
   const files = PROJECT_FILES[path.endsWith('.sol') ? 'sol' : 'js']
@@ -134,14 +139,8 @@ function lister(client, { github, sha }) {
 // the directories above it list, which is then the only one that may install it; refused where
 // none does; undefined where more than one does, or the listings can't tell, for the tree to tell.
 async function listedPackageManager(list, { directory, where }) {
-  let listings
-  try {
-    listings = await Promise.all((directory ? [directory, ...ancestorsOf(directory)] : [undefined]).map(list))
-  } catch {
-    // No plain directory in git (a symlink, or under one); the root's failure is GitHub's.
-    await list(undefined)
-    return undefined
-  }
+  const listings = await listingsOf(list, directory ? [directory, ...ancestorsOf(directory)] : [undefined])
+  if (listings === null) return undefined
   const listed = lockfilesListed(listings)
   if (listed.length === 0) throw noLockfile(where, posix.resolve('/', directory || '.'))
   return listed.length === 1 ? listed[0] : undefined
@@ -159,9 +158,10 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   }
   if (!lockfilesListed([listing]).includes(packageManager)) return null
   const above = ancestorsOf(directory)
+  const aboveNames = () => Promise.all(above.map(names))
   // Installed from a root above it (a workspace's), it is built from there.
-  if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), () => Promise.all(above.map(names))))) return null
-  if (packageManagerOf('buildGitHubBundle', packageManager).kind === 'js' && (await Promise.all(above.map(names))).some((dir) => dir.includes(YARNCLEAN))) return null
+  if (!(await installedAlone(packageManager, listing.map((entry) => entry.path), aboveNames))) return null
+  if (packageManagerOf('buildGitHubBundle', packageManager).kind === 'js' && (await aboveNames()).some((dir) => dir.includes(YARNCLEAN))) return null
   // Its tree id, as the listing above it holds it, held to that directory's own.
   const tree = (await list(above[0])).find((entry) => entry.path === posix.basename(directory) && entry.type === 'tree')?.sha
   const files = tree === undefined ? null : await treeFiles(client, { github, tree, directory, where })

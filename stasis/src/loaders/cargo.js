@@ -77,7 +77,7 @@ const DEP_FEATURE_RE = /^([^/?]+)(\?)?\/(.+)$/u
 
 // `--features a,b pkg/c` (cargo's syntax: repeatable, comma- or space-separated) → the list of names.
 export function parseFeatureList(values) {
-  return [...new Set(values.flatMap((s) => s.split(/[\s,]+/u)).map((s) => s.trim()).filter(Boolean))]
+  return [...new Set(values.flatMap((s) => s.split(/[\s,]+/u)).filter(Boolean))]
 }
 
 // Whether a source file belongs to a test or bench target of the package at `pkgDir` (`tests/*.rs`,
@@ -122,9 +122,7 @@ function manifestOf(text, doc, file, workspace) {
   const build = table(doc.package ?? doc.project)?.build
   const deps = new Map()
   for (const d of pkg?.dependencies ?? []) {
-    const key = normName(d.name)
-    if (!deps.has(key)) deps.set(key, { key, name: d.name, kinds: new Map() })
-    deps.get(key).kinds.set(d.target === undefined ? d.kind : `${d.kind}@${d.target}`, {
+    cached(deps, normName(d.name), () => ({ key: normName(d.name), name: d.name, kinds: new Map() })).kinds.set(d.target === undefined ? d.kind : `${d.kind}@${d.target}`, {
       kind: d.kind,
       target: d.target ?? null,
       version: d.version ?? null,
@@ -428,7 +426,7 @@ function vendorDirOf(baseDir, configs, { quiet = false } = {}) {
   for (const config of configs) {
     for (const [name, fields] of Object.entries(isTomlTable(config.doc.source) ? config.doc.source : {})) {
       if (!isTomlTable(fields)) continue
-      const s = sources.get(name) ?? sources.set(name, { replaceWith: null, directory: null }).get(name)
+      const s = cached(sources, name, () => ({ replaceWith: null, directory: null }))
       if (s.replaceWith === null && typeof fields['replace-with'] === 'string') s.replaceWith = fields['replace-with']
       if (s.directory === null && typeof fields.directory === 'string') s.directory = { path: fields.directory, config }
     }
@@ -513,6 +511,8 @@ const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArr
 
 // A source URL as cargo compares them: no trailing `/` or `.git`, the scheme and host lowercased.
 const canonicalUrl = (url) => url.trim().replace(/\/+$/u, '').replace(/\.git$/u, '').replace(/^([a-z][\w+.-]*:\/\/)([^/]*)/iu, (m) => m.toLowerCase())
+// The predicate of a `cfg(…)` platform spec (a target table's key); undefined for a triple.
+const cfgPredicate = (spec) => /^cfg\((.*)\)$/su.exec(spec)?.[1]
 // crates.io's index, as a `[patch.<url>]` may name it.
 const CRATES_IO_INDEXES = new Set(['https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io'].map(canonicalUrl))
 
@@ -757,10 +757,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         if (!m?.package) continue
         const sums = checksumOf(m.dir)
         const entry = { version: version(m), dir: m.dir, git: sums?.git ?? null }
-        for (const [index, key] of [[vendorIndex.byName, normName(m.package.name)], [vendorIndex.byLib, libName(m)]]) {
-          if (!index.has(key)) index.set(key, [])
-          index.get(key).push(entry)
-        }
+        for (const [index, key] of [[vendorIndex.byName, normName(m.package.name)], [vendorIndex.byLib, libName(m)]]) cached(index, key, () => []).push(entry)
       }
     }
     return vendorIndex
@@ -839,9 +836,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         const parsed = readNamed(file, () => parseCargoLock(text))
         const byId = new Map()
         for (const [key, p] of Object.entries(parsed.packages)) {
-          const id = `${normName(p.name)} ${p.version}`
-          if (!byId.has(id)) byId.set(id, [])
-          byId.get(id).push(key)
+          cached(byId, `${normName(p.name)} ${p.version}`, () => []).push(key)
         }
         lock = { file, lock: parsed, byId }
       }
@@ -1032,8 +1027,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     if (spec === null || spec === undefined) return 'yes'
     const info = platformInfo(platform)
     if (info === null) return 'maybe'
-    const cfg = /^cfg\((.*)\)$/u.exec(spec)
-    const holds = cfg ? evalCfg(cfg[1], { target: info.cfgs }) : spec === info.triple
+    const cfg = cfgPredicate(spec)
+    const holds = cfg === undefined ? spec === info.triple : evalCfg(cfg, { target: info.cfgs })
     return holds === true ? 'yes' : (holds === false ? 'no' : 'maybe')
   }
   // A package in a context, as the resolutions key it: resolver 1's one context is `target`'s.
@@ -1054,7 +1049,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     let undecided = false
     const decided = (on) => retarget(graph, (spec) => {
       const at = (platform) => {
-        if (tableOn(spec, platform) !== 'maybe') return /^cfg\((.*)\)$/su.exec(spec)?.[1] ?? `${MARK_NAME} = "${spec}"`
+        if (tableOn(spec, platform) !== 'maybe') return cfgPredicate(spec) ?? `${MARK_NAME} = "${spec}"`
         undecided = true
         return String(on)
       }
@@ -1141,9 +1136,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (unbuilt || !(key in resolved.result)) continue
       warnDep(m, request)
       if (!standIn) continue
-      const id = `${m.dir}\0${normName(d.name)}`
-      if (!lacking.has(id)) lacking.set(id, { dir: m.dir, key: normName(d.name), name: d.name, kinds: new Set() })
-      lacking.get(id).kinds.add(d.kind)
+      cached(lacking, `${m.dir}\0${normName(d.name)}`, () => ({ dir: m.dir, key: normName(d.name), name: d.name, kinds: new Set() })).kinds.add(d.kind)
     }
     return { resolved, lacking }
   }
@@ -1286,9 +1279,10 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (sums !== null) vendor[name] = { manifest: tableOf(sub).text, checksum: sums.text }
     }
     for (const [key, p] of Object.entries(lk.lock.packages)) {
-      if (p.source === undefined && !dirOf.has(key)) return notExact(`${lk.file} locks the path package ${p.name} ${p.version}, which isn't in-tree`)
-      if (p.source !== undefined && !held.has(`${p.name} ${p.version}`)) return notExact(`${p.name} ${p.version} is locked but not vendored`)
-      if (p.source !== undefined && !held.get(`${p.name} ${p.version}`)) return notExact(`the vendored copy of ${p.name} ${p.version} has no .cargo-checksum.json`)
+      const id = `${p.name} ${p.version}`
+      if (p.source === undefined && !dirOf.has(key)) return notExact(`${lk.file} locks the path package ${id}, which isn't in-tree`)
+      if (p.source !== undefined && !held.has(id)) return notExact(`${id} is locked but not vendored`)
+      if (p.source !== undefined && !held.get(id)) return notExact(`the vendored copy of ${id} has no .cargo-checksum.json`)
     }
     const copies = readNamed(lk.file, () => readCargoVendor(lk.lock, vendor))
     const manifestsByKey = Object.create(null)
@@ -1440,7 +1434,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const plats = role === 'build' ? ['host'] : platforms
       for (const r of own.length === 0 && any ? all : own) {
         const on = r.target ?? null
-        const key = `${role === 'build' && roles.length > 1 ? 'build-script ' : ''}${on === null ? '*' : (/^cfg\((.*)\)$/su.exec(on)?.[1] ?? on)}`
+        const key = `${role === 'build' && roles.length > 1 ? 'build-script ' : ''}${on === null ? '*' : (cfgPredicate(on) ?? on)}`
         if (seen.has(key) || !plats.some((p) => tableOn(on, r.kind === 'build' ? 'host' : p) !== 'no')) continue
         const t = find(r)
         if (t === null) continue
@@ -1684,8 +1678,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     featureResolution(context = 'target') {
       const out = new Map()
       const prefix = nodeKey(context, '')
-      for (const node of ensureResolved().all.keys()) {
-        if (node.startsWith(prefix)) out.set(node.slice(prefix.length), { on: ensureResolved().sure.get(node) ?? NO_FEATURES, maybe: maybeOf(node) ?? NO_FEATURES })
+      const { sure, all } = ensureResolved()
+      for (const node of all.keys()) {
+        if (node.startsWith(prefix)) out.set(node.slice(prefix.length), { on: sure.get(node) ?? NO_FEATURES, maybe: maybeOf(node) ?? NO_FEATURES })
       }
       return out
     },

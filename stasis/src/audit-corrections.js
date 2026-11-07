@@ -58,13 +58,8 @@ export const CORRECTIONS = Object.freeze([
 // Is `rel` (a file path relative to the module dir) audit-irrelevant for
 // `name@version` of `ecosystem`? Unknown or unparsable versions are never
 // corrected (fail closed: the package stays audited).
-function isCorrectedFile(name, version, rel, ecosystem) {
-  for (const correction of CORRECTIONS) {
-    if (correction.ecosystem !== ecosystem || correction.name !== name || correction.file !== rel) continue
-    if (valid(version) && satisfies(version, correction.range)) return true
-  }
-  return false
-}
+const isCorrectedFile = (name, version, rel, ecosystem) => CORRECTIONS.some((correction) => correction.ecosystem === ecosystem && correction.name === name
+  && correction.file === rel && valid(version) && satisfies(version, correction.range))
 
 // A manifest (top-level or nested) is never code: the resolution graph records
 // resolver/metadata reads of `package.json` as edges (react-native scans sibling
@@ -75,14 +70,15 @@ function isCorrectedFile(name, version, rel, ecosystem) {
 // it with (a registry's copy, a git checkout's, or one whose source isn't known),
 // its composer.json, a Solidity dependency's foundry.toml and remappings.
 const CARGO_MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', '.cargo-checksum.json'])
+const FOUNDRY_MANIFESTS = new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml'])
 const MANIFESTS = {
   npm: new Set(['package.json']),
   cargo: CARGO_MANIFESTS,
   'cargo-git': CARGO_MANIFESTS,
   'cargo-unknown': CARGO_MANIFESTS,
   composer: new Set(['composer.json', 'composer.lock']),
-  soldeer: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
-  github: new Set(['package.json', 'foundry.toml', 'remappings.txt', 'soldeer.toml']),
+  soldeer: FOUNDRY_MANIFESTS,
+  github: FOUNDRY_MANIFESTS,
 }
 const isManifest = (rel, ecosystem) => MANIFESTS[ecosystem]?.has(rel.slice(rel.lastIndexOf('/') + 1)) ?? false
 

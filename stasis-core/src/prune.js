@@ -247,7 +247,8 @@ function* walkFiles(nmRoots, ctx) {
 }
 
 function pruneEmptyDirs(dir, stopAt) {
-  while (dir.startsWith(stopAt) && dir !== stopAt && existsSync(dir)) {
+  // A dir already gone reads as a readdir failure, which ends the climb like any other.
+  while (dir.startsWith(stopAt) && dir !== stopAt) {
     let entries
     try {
       entries = readdirSync(dir)

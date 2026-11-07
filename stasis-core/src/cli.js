@@ -24,6 +24,7 @@ const RUN_OPTIONS = {
   'brotli-quality': { type: 'string' },
 }
 // `--fs` is taken only as `--fs=<mode>`: a bare `--fs` is refused rather than given the program as its mode.
+const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
 const RUN_VALUE_FLAGS = ['--bundle', '--bundle-file', '--resources-bundle-file', '--lock', '--import', '--resources', '--brotli-quality']
 
 // `run`'s options, and the caller's own `options` (boolean ones), shifted off the front of `argv`,
@@ -33,7 +34,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   const values = parseLeadingOptions(argv, { ...RUN_OPTIONS, ...options }, { valueFlags: RUN_VALUE_FLAGS, onError: fail })
   if (argv.length === 0) fail('Nothing to run: no path to file given')
   const { lock, bundle } = values
-  if (!['none', 'ignore', 'add', 'replace', 'frozen'].includes(lock)) fail('Error: invalid --lock value')
+  if (!LOCK_MODES.has(lock)) fail('Error: invalid --lock value')
   const bundleFile = values['bundle-file'] ? resolve(values['bundle-file']) : ''
   const resourcesBundleFile = values['resources-bundle-file'] ? resolve(values['resources-bundle-file']) : ''
   if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) fail('Error: invalid --bundle value')
@@ -138,7 +139,7 @@ export async function extractCli(argv, { label, fail }) {
   if (argv.length === 0) fail('Nothing to extract: no bundle file given')
   if (argv.length > 1) fail('Error: extract takes exactly one bundle file')
   // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
-  if (values.lock !== undefined && !['frozen', 'add', 'replace', 'ignore', 'none'].includes(values.lock)) fail('Error: invalid --lock value')
+  if (values.lock !== undefined && !LOCK_MODES.has(values.lock)) fail('Error: invalid --lock value')
   const { extractCommand } = await import('./extract.js')
   extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: label })
 }

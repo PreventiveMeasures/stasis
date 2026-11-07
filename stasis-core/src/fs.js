@@ -47,17 +47,17 @@ function dirCaptureNames(root, abs, names) {
   return names.filter((name) => !isStasisArtifactName(name))
 }
 
+// The encoding an fs reader's `options` argument names: the string itself, or its `encoding`.
+const encodingOf = (options) => (typeof options === 'string' ? options : options?.encoding)
+
 // Apply readFileSync's encoding arg to raw bytes; Buffer.toString matches fs's ERR_UNKNOWN_ENCODING.
 function decode(buf, options) {
-  const encoding = typeof options === 'string' ? options : options?.encoding
+  const encoding = encodingOf(options)
   return encoding == null ? buf : buf.toString(encoding)
 }
 
 // Honour realpath's `encoding` arg for the synthetic answer when a bundle-served path is gone from disk.
-function encodeRealpath(abs, options) {
-  const encoding = typeof options === 'string' ? options : options?.encoding
-  return encoding === 'buffer' ? Buffer.from(abs) : abs
-}
+const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buffer.from(abs) : abs)
 
 // NON-EXISTENT under --fs (a faithful ENOENT from every reader, listings included, in both modes):
 // source-map sidecars (`*.map`, so a captured build replays byte-identically; opt out via `map` in
@@ -68,9 +68,10 @@ function isSkippedFsPath(state, abs) {
   return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)
 }
 
-// A faithful Node-shaped ENOENT, indistinguishable from a real absent file.
+// A faithful Node-shaped ENOENT, indistinguishable from a real absent file. String() spells a
+// Buffer path as its UTF-8 text and a URL as its href.
 function enoent(syscall, path) {
-  const p = typeof path === 'string' ? path : Buffer.isBuffer(path) ? path.toString() : String(path)
+  const p = String(path)
   return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`), { code: 'ENOENT', errno: -2, syscall, path: p })
 }
 
