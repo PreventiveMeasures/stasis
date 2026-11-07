@@ -9,6 +9,7 @@ import { createRequire } from 'node:module'
 import { stripVTControlCharacters, styleText } from 'node:util'
 import { brotliCompressSync } from 'node:zlib'
 
+import { toBase32 } from '@exodus/bytes/base32.js'
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
@@ -161,6 +162,9 @@ test('validateBundle: a version its lockfile patches is held to that patch, of t
   const other = '0'.repeat(64)
   t.assert.deepStrictEqual(await fromRepository({ hash: other, path: 'web/patches/ms.patch' }), { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid',
     patch: { hash: other, path: 'web/patches/ms.patch', from: 'repository', error: 'patch-mismatch' } }, 'one not of the hash it locks refused, its files held to those published')
+  // pnpm 9's, an MD5 in base32, is not taken: pnpm 9 is not supported.
+  const md5 = toBase32(createHash('md5').update(MS_PATCH).digest(), { padding: false }).toLowerCase()
+  t.assert.equal((await fromRepository({ hash: md5, path: 'web/patches/ms.patch' })).patch.error, 'patch-mismatch')
   const missing = sha256('another patch')
   t.assert.deepStrictEqual((await packagesOf({ hash: missing }))[0], { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid', patch: { hash: missing, error: 'patch-not-found' } },
     'pnpm 11\'s, named by its hash alone, of no file the bundle holds')
@@ -289,7 +293,7 @@ test('validateBundle: each npm copy held to where Node resolves it: the name its
   t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@2.1.3_react@18.2.0/node_modules/ms'), valid)
   t.assert.deepStrictEqual(await told('node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg', { name: '@scope/pkg', version: '1.0.0' }), valid)
   t.assert.deepStrictEqual(await told('node_modules/.pnpm/ms@file+vendor+ms/node_modules/ms'), valid, 'a version no registry\'s: held to its lockfile alone')
-  t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@2.0.0_${'a'.repeat(26)}/node_modules/ms`), valid, 'one pnpm hashed: its version not told')
+  t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@2.0.0_${'0123456789abcdef'.repeat(2)}/node_modules/ms`), valid, 'one pnpm hashed: its version not told')
   t.assert.deepStrictEqual(await told(`node_modules/.pnpm/ms@1.0.0-beta.123_${'0a'.repeat(16)}/node_modules/ms`, { version: '1.0.0-beta.1234567890' }), valid, 'one pnpm 10 cut short, its hash hex')
   const misplaced = (at) => ['invalid', [['invalid', 'misplaced', at]]]
   const others = ['node_modules/.pnpm/ms@2.0.0/node_modules/ms', 'node_modules/.pnpm/debug@2.1.3/node_modules/ms', 'node_modules/.pnpm/ms@2.1.3/node_modules/debug']

@@ -1,7 +1,6 @@
 import { hash } from 'node:crypto'
 import { dirname, join, relative, resolve } from 'node:path'
 
-import { toBase32 } from '@exodus/bytes/base32.js'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -83,26 +82,20 @@ function yarnRecord(dir, host) {
 // What npm and yarn leave in a node_modules they lay out, and the reader of each one's record.
 const LAYOUTS = [['.package-lock.json', npmRecord], ['.yarn-integrity', yarnRecord]]
 
-// The names pnpm 9 to 12 may give snapshot `key`'s directory in node_modules/.pnpm, as its
-// depPathToFilename (@pnpm/dependency-path) spells them: each character a path can't hold made `+`,
-// `#` too from pnpm 10, and a peer's parentheses `_`; where that is too long or has a capital, cut
-// short before `_` and a hash of it, 26 base32 of an MD5 for pnpm 9, 32 hex of a SHA-256 from pnpm 10,
-// of which the hash alone is kept, as where it is cut depends on the install's
-// virtualStoreDirMaxLength.
-const STORE_NAMES = [
-  [/[\\/:*?"<>|]/gu, (name) => toBase32(hash('md5', name, 'buffer'), { padding: false }).toLowerCase()],
-  [/[\\/:*?"<>|#]/gu, (name) => hash('sha256', name).slice(0, 32)],
-]
-const storeNames = (key) => STORE_NAMES.flatMap(([unsafe, digest]) => {
-  let name = key.replace(unsafe, '+')
+// The names pnpm 10 to 12 may give snapshot `key`'s directory in node_modules/.pnpm, as its
+// depPathToFilename (@pnpm/dependency-path) spells them: each character a path can't hold, and `#`,
+// made `+`, and a peer's parentheses `_`; where that is too long or has a capital, cut short before
+// `_` and 32 hex of a SHA-256 of it, of which the hash alone is kept, as where it is cut depends on
+// the install's virtualStoreDirMaxLength.
+const storeNames = (key) => {
+  let name = key.replace(/[\\/:*?"<>|#]/gu, '+')
   if (name.includes('(')) name = name.replace(/\)$/u, '').replace(/\)\(|\(|\)/gu, '_')
-  return [name, `_${digest(name)}`]
-})
-// The hash pnpm ends a store directory's name with where it cuts a long one short: pnpm 10's hex,
-// or the base32 of those before.
-export const STORE_HASH = /_(?:[\da-f]{32}|[a-z2-7]{26})$/u
+  return [name, `_${hash('sha256', name).slice(0, 32)}`]
+}
+// The hash pnpm ends a store directory's name with where it cuts a long one short.
+export const STORE_HASH = /_[\da-f]{32}$/u
 
-// pnpm's: lock.yaml in `store`, a node_modules/.pnpm, the lockfile of what pnpm 9 to 12 installed
+// pnpm's: lock.yaml in `store`, a node_modules/.pnpm, the lockfile of what pnpm 10 to 12 installed
 // there, by the directory there each snapshot is in. A git dependency's resolution is the repository
 // and commit, or GitHub's tarball of the commit, and the package's `path` in it (`#path:`) where it is
 // not at the root.

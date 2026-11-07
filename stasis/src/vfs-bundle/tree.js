@@ -18,7 +18,7 @@ import { YARNCLEAN, yarnclean } from './yarnclean.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
 // A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm
-// install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 9, 10, 11 or 12,
+// install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 10, 11 or 12,
 // `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, `npm ci --ignore-scripts` with
 // npm 10.9 or 11, or `soldeer install` its dependencies folder with Soldeer 0.12, and the host that
 // reads the project through them; without devDependencies, as `pnpm install --prod`, `yarn install
@@ -194,7 +194,8 @@ const aloneWithoutManifestAbove = async (names, above) => !(await above()).some(
 
 // What each package manager reproduced installs from: the kind of bundle it installs for; its
 // lockfile; the name a root package.json's packageManager pins it by, where one does; the version
-// reproduced where nothing pins one; the directory it installs cwd from, which holds the lockfile
+// reproduced where nothing pins one, and the oldest major stasis builds with, where it refuses some
+// deptree reproduces (`from`); the directory it installs cwd from, which holds the lockfile
 // (for the os given, where that changes it); whether a directory holding the lockfile is installed
 // from by itself, by the names in it and in each directory above it (`above()`, as listings); the
 // projects it finds in a view of that directory, for the machine given; the directory it installs
@@ -207,6 +208,7 @@ const PACKAGE_MANAGERS = {
     lockfile: 'pnpm-lock.yaml',
     pin: 'pnpm',
     version: '10.33.4',
+    from: 10,
     // pnpm installs from the workspace's root, whatever pnpm-lock.yaml is nearer.
     root: (host, cwd) => nearest(cwd, holding(host, 'pnpm-workspace.yaml')) ?? nearest(cwd, holding(host, 'pnpm-lock.yaml')),
     alone: async (names, above) => !(await above()).some((dir) => dir.includes('pnpm-workspace.yaml')),
@@ -415,8 +417,15 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const file = join(found, pm.lockfile)
   if (!isFile(file, project)) throw new Error(`no ${pm.lockfile} found in ${found}, where ${cwd} is installed from`)
   const pinned = pm.pin === undefined ? undefined : readJson(join(found, 'package.json'), project)?.packageManager
+  const pinnedVersion = String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined
   // Left out, deptree takes the one packageManager pins, and refuses another package manager.
   const version = packageManagerVersion ?? (pinned === undefined ? pm.version : undefined)
+  // One older than stasis builds with refused, given or pinned, before deptree is asked.
+  const taken = version ?? pinnedVersion
+  if (Number(/^(\d+)\./u.exec(taken ?? '')?.[1]) < pm.from) {
+    const where = packageManagerVersion === undefined ? `${join(found, 'package.json')}: packageManager` : 'packageManagerVersion'
+    throw new Error(`${where}: ${packageManager} "${taken}" is not supported: only ${packageManager} ${pm.from} and later are`)
+  }
   const view = projectView(project, found)
   const projects = new Set(pm.projects(view, version, { os, cpu, libc }))
   const other = pm.kind === 'js' ? outsider(project, found, cwd, projects) : null
@@ -443,7 +452,7 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
     stats: built.stats,
     installed: built.installed,
     packageManager,
-    packageManagerVersion: version ?? (String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined),
+    packageManagerVersion: version ?? pinnedVersion,
     ...lazy ? lazyTree(built, cleanAll) : {},
   }
 }
