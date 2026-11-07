@@ -21,7 +21,7 @@ stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) 
 | `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
-| `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does. |
+| `--package-manager` | `pnpm`, `yarn1`, `npm`, or `soldeer` (for `.sol` entries). Default: the one whose lockfile installs the directory, where only one's does; or, where its `stasis.config.json` names them, one tree of each of its [`lockfiles`](#several-lockfiles-lockfiles), with which it is refused. |
 | `--package-manager-version` | With `--package-manager` only: the version whose layout to reproduce. Otherwise the root `package.json`'s `packageManager` pin, else pnpm 10.33.4, yarn 1.22.22, npm 11.21.0 (which no `packageManager` pins) or Soldeer 0.12.0. |
 | `--no-lazy` | Fetch and unpack every package the tree installs before the build. Without it, a pnpm or npm tree is lazy: only the packages the build reads are fetched and unpacked. See [Lazy](#lazy---no-lazy). |
 | `--generate=prisma` / `--no-generate` | Generate every project's Prisma Client first, saying what can't be generated; or none. Without either, those of the projects the entries reach are generated, silently. See [Prisma](#prisma). |
@@ -73,6 +73,49 @@ Each dependency's `repo` records that commit beside the GitHub repository its
 fetched from, at its root, and the lockfile's `rev` (see
 [file formats](file-formats.md)). Like everything in `repo`, it is the
 publisher's word, held to no repository.
+
+### Several lockfiles (`lockfiles`)
+
+Where the `stasis.config.json` in the directory bundled names its
+`lockfiles`, no lockfile is detected: a tree is laid out of each one it names,
+by the package manager its name says (`pnpm-lock.yaml` pnpm, `yarn.lock` yarn
+1, `package-lock.json` npm, `soldeer.lock` Soldeer), and the build reads the
+project through all of them at once. So a project of its own in a
+subdirectory, with its own lockfile, has its dependencies too, and JS and
+Solidity entries are bundled together, each built of the tree that installs
+it:
+
+```json
+{ "lockfiles": ["pnpm-lock.yaml", "tools/package-lock.json", "contracts/soldeer.lock"] }
+```
+
+- Each path is from the directory holding the config, and may climb to a
+  workspace root's (`../../pnpm-lock.yaml`), not out of the repo.
+- Each is laid out from its own directory, which has to be the one its
+  package manager installs from there, or, where the directory bundled is in
+  it, the one it installs that directory from: a `pnpm-lock.yaml` in a
+  workspace member, which pnpm installs from the workspace's root, is refused.
+- No two may install the same directory, nor one inside another's: a
+  `pnpm-lock.yaml` and a `package-lock.json` beside it, or a lockfile of a
+  project another's workspace holds, are refused. Every refusal comes before
+  anything is fetched.
+- One alone is the one detection would find, without detecting it: so it
+  chooses between lockfiles of two package managers that both install the
+  directory, which detection refuses.
+- `--package-manager` is refused: the config names them. `--package-manager-version`
+  with it: each tree reproduces the version its own root `package.json` pins,
+  else the default.
+- Each tree is [lazy](#lazy---no-lazy) where it can be, a yarn 1 or Soldeer one
+  installed whole; `--no-lazy` installs each whole. A lazy build unpacks a
+  package of each tree as the build reads it.
+- A directory whose config names them is built from the whole repo, as a
+  lockfile may be outside it.
+- A lockfile no tree is laid out of (a `Podfile.lock`, say) is refused.
+  Without `lockfiles`, the one lockfile is detected as above.
+
+Without [entries](#entries) given, those its `entries` names are taken, and
+where it names none, those of the kind its lockfiles' package managers
+build: where they build JS and Solidity both, none.
 
 ### devDependencies (`installDevDependencies`)
 
@@ -402,8 +445,16 @@ To generate none for a repo, whoever bundles it:
 - `buildGitHubBundle` takes `path` in place of `directory`, as the command
   takes `owner/name/path`: a directory, or a file (see
   [A file's project](#a-files-project)). It returns the `directory` it bundled
-  beside `buildVfsBundle`'s `bundle`, `lockfile`, `stats`, `packageManager` and
-  `root`.
+  beside `buildVfsBundle`'s `bundle`, `lockfile`, `stats`, `packageManager`,
+  `packageManagers` and `root`: `packageManagers` the package manager of each
+  tree laid out, and `packageManager` the one, undefined where
+  `stasis.config.json`'s [`lockfiles`](#several-lockfiles-lockfiles) lay out
+  several. `stats` add up each tree's.
+- `buildGitHubBundle` and `buildVfsBundle` lay out a tree of each lockfile
+  `stasis.config.json` names in its `lockfiles`, as the command does (see
+  [Several lockfiles](#several-lockfiles-lockfiles)), and refuse a
+  `packageManager` given with it. `loadNodeModules` takes none of them, and
+  detects the one lockfile.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`: of a `path` to
   a file, that file.

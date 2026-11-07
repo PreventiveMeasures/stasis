@@ -123,19 +123,30 @@ export const KINDS = {
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
 }
 
+// The KINDS entry of what `packageManagers` build, where they build one kind; else undefined, for
+// configured entries alone to tell (defaultEntries).
+export function kindOf(name, packageManagers) {
+  const kinds = new Set(packageManagers.map((pm) => packageManagerOf(name, pm).kind))
+  return kinds.size === 1 ? KINDS[[...kinds][0]] : undefined
+}
+
 const EMPTY = vfsHost(new Vfs())
 
 // What a stasis.config.json's empty `entries` says of the directory holding it.
 const CONFIGURED_NONE = 'has a stasis.config.json whose entries name none'
+// What one whose lockfiles are of JS and Solidity projects both, and which names no entries, says.
+const MIXED_NONE = "has a stasis.config.json whose lockfiles lay out JS and Solidity trees, and no entries naming which to bundle"
 
 // -> { entries, none }: the entries a build of the project in `dir` (read through `host`) takes
 // where none are given, as paths from `dir`, and what having none says of `dir`. Those its
 // stasis.config.json's `entries` names, checked with `options` as the build checks them
 // (configuredBuilds), where it has `entries`, whatever it names; else those of `kind` (KINDS'),
-// with `options` then checked on their own, as the build checks them, which nothing completes.
+// with `options` then checked on their own, as the build checks them, which nothing completes. With
+// no `kind` (its stasis.config.json's lockfiles of JS and Solidity projects both), none.
 export function defaultEntries(name, host, dir, kind, options) {
   const configured = configuredBuilds(name, { cwd: dir, host, options })
   if (configured !== null) return { entries: configured.entries, none: CONFIGURED_NONE }
+  if (kind === undefined) return { entries: [], none: MIXED_NONE }
   checkVfsOptions(name, { ...options, entries: [kind.standIn], cwd: '/', host: EMPTY, fetched: false })
   return { entries: kind.entries(host, dir, options), none: kind.none }
 }

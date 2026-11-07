@@ -18,7 +18,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
@@ -1047,6 +1047,10 @@ const lazesDependencies = (name, cwd, host) => configFlag('lazyDependencies', na
 // Whether a build given no `generate` writes the Prisma Client of each project the entries reach whose
 // schema asks for one, as `prisma generate` would (`generatePrisma`).
 const generatesPrisma = (name, cwd, host) => configFlag('generatePrisma', name, cwd, host)
+
+// The lockfiles the stasis.config.json in `cwd` names (`lockfiles`, as parseLockfilesOption has them),
+// a tree laid out of each in place of the one detected; undefined where it names none.
+export const configuredLockfiles = (name, cwd, host) => parseLockfilesOption(`${name === undefined ? '' : `${name}: `}${CONFIG_FILE}`, readConfigFile(name, cwd, host)?.lockfiles)
 
 // --babel-aliases: the alias map of the JSON file `file` (a path from `baseDir`, in the project, read through
 // `host`), babel-plugin-module-resolver's `alias` option as data: each alias to the string it maps to.
@@ -2326,7 +2330,10 @@ export function checkVfsOptions(name, options) {
 // `repo`, the informational `{ github, directory, commit }`,
 // is the Bundle's, over what is detected in the Vfs as `stasis bundle` detects it on disk. `os`,
 // `cpu` and `libc` are loadNodeModules'. Without a `packageManager`, it is the one whose lockfile
-// installs cwd, where only one's does. `innermostRoot` is buildJsBundle's, for a JS bundle built
+// installs cwd, where only one's does; but where the stasis.config.json in cwd names its
+// `lockfiles`, none is detected, and a `packageManager` given is refused: a tree is laid out of each,
+// all read as one (vfs-bundle/tree.js's layOutTrees), each build's entries built of the tree of
+// their kind, and `packageManagers` are theirs. `innermostRoot` is buildJsBundle's, for a JS bundle built
 // through a State. `generate: ['prisma']` writes each project's Prisma Client into the laid-out
 // tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js); without `generate`, those of
 // the projects the entries reach, silently, unless the stasis.config.json in cwd sets
@@ -2344,8 +2351,8 @@ export function checkVfsOptions(name, options) {
 // is lazy where it can be (lazyTaken) and the stasis.config.json in cwd leaves `lazyDependencies`
 // true; `lazy: false` installs every package, and `lazy: true` is refused where the tree cannot be
 // lazy, or `lazyDependencies` is false. `stats` are deptree's, and `stats.unpacked` the packages
-// unpacked: each one installed, or those a lazy tree unpacked.
-// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager, root }
+// unpacked: each one installed, or those a lazy tree unpacked, of every tree.
+// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager (undefined for several), packageManagers, root }
 export async function buildVfsBundle(options = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
@@ -2361,7 +2368,7 @@ export async function buildVfsBundle(options = {}) {
 // it; `env`, what the builds read their settings from (none by default); `outputsAt(root)`, the
 // absolute paths written, which `extra` never takes; and `refuseInstalled`, layOutTree's.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, lazyTaken, loadTree, packageManagerFor, packageManagerOf, pinCommits, treeHost, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { checkCache, checkKind, checkLazy, checkTarget, checkVersion, lazyTaken, loadTree, loadTrees, lockfilesManagers, packageManagerFor, packageManagerOf, pinCommits, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
@@ -2371,9 +2378,15 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   if (repo !== undefined) repo = new Bundle({ repo }).repo
   // A real path, as every file the scan reaches is.
   cwd = project.realpath(posix.resolve('/', cwd))
-  packageManager = packageManagerFor(name, project, cwd, { packageManager, packageManagerVersion, os })
-  const pm = packageManagerOf(name, packageManager)
-  if (lazy) checkLazy(name, packageManager)
+  // Where stasis.config.json names its `lockfiles`, a tree of each is laid out, and none is detected
+  // (layOutTrees); else the one of `packageManager`, or the one detected.
+  const lockfiles = configuredLockfiles(name, cwd, project)
+  if (lockfiles !== undefined && packageManager !== undefined) throw new Error(`${name}: packageManager is given, and ${CONFIG_FILE}'s lockfiles names the lockfiles to lay out`)
+  checkVersion(name, { packageManager, packageManagerVersion })
+  const packageManagers = lockfiles === undefined ? [packageManagerFor(name, project, cwd, { packageManager, packageManagerVersion, os })] : lockfilesManagers(name, lockfiles)
+  packageManager = lockfiles === undefined || packageManagers.length === 1 ? packageManagers[0] : undefined
+  const pms = packageManagers.map((one) => packageManagerOf(name, one))
+  if (lazy) for (const one of new Set(packageManagers)) checkLazy(name, one)
   // The entries stasis.config.json's `entries` names, every one where none are given, each built
   // with its options there, which the options given agree with (configuredBuilds); else built with
   // the options given. Each build is checked with the options it is built with. With the builds its
@@ -2389,22 +2402,35 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // Lazy where the tree can be, unless stasis.config.json's `lazyDependencies` or `lazy` says not.
   const lazyDependencies = lazesDependencies(name, cwd, project)
   if (lazy && !lazyDependencies) throw new Error(`${name}: lazy is given, and ${CONFIG_FILE}'s lazyDependencies is false`)
-  lazy ??= lazyDependencies && lazyTaken(project, packageManager, cwd)
+  // Of each tree, by its package manager and the directory it is laid out from.
+  const lazyOf = (one, from) => lazy ?? (lazyDependencies && lazyTaken(project, one, from))
   // Each project's Prisma Client: asked for (`generate: ['prisma']`), every project's, strictly; else, of a JS
   // build of a Vfs, detected where stasis.config.json's `generatePrisma` leaves it: the projects the entries
   // are in and their workspace dependencies, silently. `generate: []`, or `generatePrisma` false: none.
   const generatePrisma = generatesPrisma(name, cwd, project)
   if (generate?.length > 0 && !generatePrisma) throw new Error(`${name}: generate is given, and ${CONFIG_FILE}'s generatePrisma is false`)
-  const prismaGeneration = generate?.includes('prisma') ? 'asked' : generate === undefined && generatePrisma && vfs !== undefined && pm.kind === 'js' ? 'detected' : null
-  for (const build of builds) checkKind(name, checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project }), [packageManager])
-  // Checked before anything is fetched: an entry out of what the tree installs is in the project
+  const prismaGeneration = generate?.includes('prisma') ? 'asked' : generate === undefined && generatePrisma && vfs !== undefined && pms.some((pm) => pm.kind === 'js') ? 'detected' : null
+  // Each build's kind, one a tree's package manager builds.
+  const kinds = builds.map((build) => {
+    const kind = checkVfsOptions(name, { ...build, lockfile: options.lockfile, generate, cwd, host: project })
+    checkKind(name, kind, packageManagers)
+    return kind
+  })
+  // Checked before anything is fetched: an entry out of what the trees install is in the project
   // already. (A Solidity entry that is no .sol file is a directory, skipped where it is missing.)
-  for (const entry of builds.flatMap((build) => build.entries)) {
-    const abs = posix.resolve(cwd, entry)
-    if (pm.kind === 'sol' && !abs.endsWith('.sol')) continue
-    if (!posix.relative(cwd, abs).split('/').includes(pm.installs) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
+  const installs = new Set(pms.map((pm) => pm.installs))
+  for (const [i, build] of builds.entries()) {
+    for (const entry of build.entries) {
+      const abs = posix.resolve(cwd, entry)
+      if (kinds[i] === 'sol' && !abs.endsWith('.sol')) continue
+      if (!posix.relative(cwd, abs).split('/').some((part) => installs.has(part)) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
+    }
   }
-  const tree = await debugTimed(lazy ? 'Laid out the tree' : 'Installed the tree', () => loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, client, cache, lazy, installDevDependencies, refuseInstalled }))
+  const given = { project, cwd, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }
+  const lazyTree = lockfiles === undefined && lazyOf(packageManager, cwd)
+  const tree = lockfiles === undefined
+    ? await debugTimed(lazyTree ? 'Laid out the tree' : 'Installed the tree', () => loadTree({ ...given, packageManager, packageManagerVersion, lazy: lazyTree }))
+    : await debugTimed('Laid out the trees', () => loadTrees({ ...given, name, lockfiles, lazy: lazyOf }))
   const { inRounds } = await import('../vfs-bundle/lazy.js')
   // The project the builds read: with the Prisma Clients `generate` writes, generated once before
   // any build, for a lazy tree in rounds of their own (they read the tree's `prisma`), so that each
@@ -2449,7 +2475,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       let built
       try {
         // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-        built = pm.kind === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i] })
+        built = kinds[i] === 'sol' ? { bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i] })
       } catch (error) {
         if (reads === undefined || reads.asked.size === 0) throw error
         voided ??= { error }
@@ -2475,11 +2501,11 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const { bundle, lockfile, root } = built
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
-  const unpacked = tree.lazy?.unpacked.size ?? tree.stats.installed ?? tree.stats.dependencies
+  const unpacked = unpackedOf(tree)
   // The lockfile is built when first read, the same one after: `stasis github-bundle` and `stasis
   // bundle --deptree` read it for --lockfile alone.
   let lock
-  return { bundle, get lockfile() { return (lock ??= lockfile?.()) }, stats: { ...tree.stats, unpacked }, packageManager, root }
+  return { bundle, get lockfile() { return (lock ??= lockfile?.()) }, stats: { ...tree.stats, unpacked }, packageManager, packageManagers, root }
 }
 
 // EXODUS_STASIS_DEBUG=1 or true.
@@ -2681,7 +2707,8 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     const [{ createClient }, { detectPackageManager }] = await Promise.all([import('@preventive/upstream/github.js'), import('../vfs-bundle/tree.js')])
     const built = await withNpmToken(home, () => buildFromLockfile('bundleCommand', diskHost, {
       cwd: resolve(cwd),
-      packageManager: detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }),
+      // Where stasis.config.json names its lockfiles, a tree of each, none detected.
+      packageManager: configuredLockfiles('bundleCommand', resolve(cwd), diskHost) === undefined ? detectPackageManager('bundleCommand', diskHost, resolve(cwd), { why: '--deptree lays out the dependencies from a lockfile' }) : undefined,
       lockfile,
       cache: false,
       lazy: false,
