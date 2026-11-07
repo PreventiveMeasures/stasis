@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:pa
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-util'
+import { isPlainObject } from '@exodus/stasis-core/util'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 
 // Node's CommonJS resolution (`createRequire(parent).resolve(spec, { conditions })`) over a
@@ -109,7 +110,7 @@ export function createNodeResolver(host) {
     } catch (cause) {
       return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}: ${cause.message}`)
     }
-    if (data === null || typeof data !== 'object' || Array.isArray(data)) return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}.`)
+    if (!isPlainObject(data)) return codedError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}.`)
     const string = (value) => (typeof value === 'string' ? value : undefined)
     // Node keeps `exports` and `imports` only as a string, an array or an object.
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)

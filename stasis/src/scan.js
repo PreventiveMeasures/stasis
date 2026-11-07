@@ -4,7 +4,7 @@ import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
 import { classifyExtension, classifyFormat, isTypeDeclaration, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
-import { inNodeModules, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { inNodeModules, isFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
@@ -164,7 +164,7 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
     }
   }
   // tsc's pick, the first TS source on disk, as the resolver maps it: none where it lies in node_modules.
-  const isSource = (file) => !isTypeDeclaration(file) && (host.stat(file)?.isFile() ?? false)
+  const isSource = (file) => !isTypeDeclaration(file) && isFile(file, host)
   const mapsTo = (target) => {
     const pick = typescriptSiblings(target).find(isSource)
     return pick !== undefined && !inNodeModules(pick, host)

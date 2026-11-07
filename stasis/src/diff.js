@@ -203,7 +203,6 @@ export function hasDifferences(diff) {
   return n > 0
 }
 
-const KIND_LABEL = { lockfile: 'lockfile', bundle: 'bundle' }
 const plural = (n) => (n === 1 ? '' : 's')
 const ident = ({ name, version }) => (name ? (version ? `${name}@${version}` : name) : '')
 
@@ -230,7 +229,6 @@ const moduleLine = (mark, x) => {
 
 // `parent  'specifier'` — an edge is identified by importer + specifier (conditions folded away).
 const edgeLabel = (e) => `${e.parent}  '${e.specifier}'`
-const targetList = (files) => files.join(', ')
 
 // Render the `--stat` summary (module + file change lists with counts, plus import-edge changes
 // when present); reports what changed, not the text. `labels` is { left, right, leftKind, rightKind }.
@@ -238,7 +236,7 @@ const targetList = (files) => files.join(', ')
 export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftKind, rightKind } = {}) {
   const { modules: m, files: f, executable: ex, imports: im, scope } = diff
   const lines = ['stasis diff --stat']
-  const label = (kind) => (kind ? `${KIND_LABEL[kind]}, ` : '')
+  const label = (kind) => (kind ? `${kind}, ` : '')
   lines.push(`  ${REMOVED} ${left} (${label(leftKind)}scope=${scope.left})`)
   lines.push(`  ${ADDED} ${right} (${label(rightKind)}scope=${scope.right})`)
   if (scope.left !== scope.right) {
@@ -277,9 +275,9 @@ export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftK
       lines.push(`Imports: ${which} resolutions; skipping import diff`)
     } else {
       lines.push(`Imports: ${im.added.length} added, ${im.removed.length} removed, ${im.changed.length} changed`)
-      for (const e of im.removed) lines.push(`  ${REMOVED} ${edgeLabel(e)} -> ${targetList(e.from)}`)
-      for (const e of im.added) lines.push(`  ${ADDED} ${edgeLabel(e)} -> ${targetList(e.to)}`)
-      for (const e of im.changed) lines.push(`  ${CHANGED} ${edgeLabel(e)}  ${targetList(e.from)} -> ${targetList(e.to)}`)
+      for (const e of im.removed) lines.push(`  ${REMOVED} ${edgeLabel(e)} -> ${e.from.join(', ')}`)
+      for (const e of im.added) lines.push(`  ${ADDED} ${edgeLabel(e)} -> ${e.to.join(', ')}`)
+      for (const e of im.changed) lines.push(`  ${CHANGED} ${edgeLabel(e)}  ${e.from.join(', ')} -> ${e.to.join(', ')}`)
     }
   }
 

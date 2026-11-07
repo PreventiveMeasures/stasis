@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { toPosix } from '@exodus/stasis-core/util'
+import { isPlainObject, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -269,13 +269,12 @@ function configEntryOptions(state, entry) {
   }
   const entries = config?.entries
   if (entries === undefined) return null
-  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
-  if (!isObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
+  if (!isPlainObject(entries)) throw new Error(`stasis build: the artifact's ${CONFIG_FILE}: entries must be an object`)
   const name = Object.keys(entries).find((key) => toPosix(relative(state.root, resolve(state.root, key))) === entry)
   if (name === undefined) return null
   const what = `the artifact's ${CONFIG_FILE}: entries ${JSON.stringify(name)}`
   const options = entries[name]
-  if (!isObject(options)) throw new Error(`stasis build: ${what} must be an object of options`)
+  if (!isPlainObject(options)) throw new Error(`stasis build: ${what} must be an object of options`)
   for (const flag of ['jsx', 'flow', 'metro']) {
     if (options[flag] !== undefined && typeof options[flag] !== 'boolean') throw new Error(`stasis build: ${what}: ${flag} must be true or false`)
   }

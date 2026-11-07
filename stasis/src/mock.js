@@ -48,8 +48,7 @@ const denyFnAsync = (label) => function () { return Promise.reject(blocked(label
 // class-shaped exports (PascalCase): `new Class()` returning a Promise yields the Promise as the
 // constructed value, so classes sync-throw to give a clean error in both `new` and call form.
 const isClassName = (key) => /^[A-Z]/.test(key)
-const denyModuleSurface = (specifier, mod, opts = {}) => {
-  const { prefix = specifier, async: isAsync = specifier.endsWith('/promises') } = opts
+const denyModuleSurface = (prefix, mod, isAsync = prefix.endsWith('/promises')) => {
   for (const key of Object.getOwnPropertyNames(mod)) {
     const value = mod[key]
     if (typeof value === 'function') {
@@ -61,7 +60,7 @@ const denyModuleSurface = (specifier, mod, opts = {}) => {
         try { mod[key] = impl } catch { /* frozen: leave as-is */ }
       }
     } else if (key === 'promises' && value && typeof value === 'object') {
-      denyModuleSurface(specifier, value, { prefix: `${prefix}.promises`, async: true })
+      denyModuleSurface(`${prefix}.promises`, value, true)
     }
   }
 }
@@ -116,7 +115,7 @@ for (const name of PROCESS_DENY) {
 }
 
 // process.report.writeReport writes a diagnostic JSON file to disk; deny it too.
-if (process.report && typeof process.report.writeReport === 'function') {
+if (typeof process.report?.writeReport === 'function') {
   mock.method(process.report, 'writeReport', denyFn('process.report.writeReport()'))
 }
 

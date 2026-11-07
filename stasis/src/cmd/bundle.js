@@ -561,7 +561,7 @@ export async function buildRustBundle({ cwd = process.cwd(), entries, cargo = fa
   // EXODUS_STASIS_DEBUG=1: show the feature resolution the cfg decisions came from, per package and
   // context, so the replay, cargo's resolver and `cargo metadata` (which unifies dev/build deps
   // like resolver 1) can be compared.
-  if (process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true') {
+  if (debugging()) {
     const mode = { cargo: "cargo's resolver", metadata: 'cargo metadata', replay: 'manifest replay' }[resolution.mode]
     for (const context of ['target', 'host']) {
       const resolved = [...cargoCtx.resolvedFeatures(context)].toSorted(([a], [b]) => (a < b ? -1 : 1))
@@ -666,13 +666,13 @@ function describeUnresolved(u, show) {
 // uncatchable; one below a require()/dynamic-import() boundary is catchable.
 const STATIC_KINDS = new Set(['import', 'export-from'])
 
-// The files the entries link eagerly, through static edges alone.
-function eagerlyLinked(scanner) {
-  const linked = new Set(scanner.entries)
-  const walk = [...scanner.entries]
-  while (walk.length > 0) {
-    for (const e of scanner.files.get(walk.shift())?.edges ?? []) {
-      if (STATIC_KINDS.has(e.kind) && e.child && !linked.has(e.child)) {
+// The files `roots` link, themselves included, through the edges `follows(edge)` takes.
+function linkedThrough(scanner, roots, follows) {
+  const linked = new Set(roots)
+  const walk = [...linked]
+  for (let i = 0; i < walk.length; i++) {
+    for (const e of scanner.files.get(walk[i])?.edges ?? []) {
+      if (e.child && !linked.has(e.child) && follows(e)) {
         linked.add(e.child)
         walk.push(e.child)
       }
@@ -680,6 +680,9 @@ function eagerlyLinked(scanner) {
   }
   return linked
 }
+
+// The files the entries link eagerly, through static edges alone.
+const eagerlyLinked = (scanner) => linkedThrough(scanner, scanner.entries, (e) => STATIC_KINDS.has(e.kind))
 
 // The scan within the project root (`within(url)`), since a bundle can't carry a file outside it.
 // One the entries link eagerly is returned in `outside`, for the caller to refuse. One reached
@@ -689,16 +692,7 @@ function eagerlyLinked(scanner) {
 function withinRoot(scanner, within) {
   const outside = [...eagerlyLinked(scanner)].filter((url) => scanner.files.has(url) && !within(url))
   if (outside.length > 0) return { scanner, outside, leftOut: [] }
-  const kept = new Set([...scanner.entries].filter((url) => scanner.files.has(url)))
-  const walk = [...kept]
-  while (walk.length > 0) {
-    for (const e of scanner.files.get(walk.shift())?.edges ?? []) {
-      if (e.child && scanner.files.has(e.child) && !kept.has(e.child) && within(e.child)) {
-        kept.add(e.child)
-        walk.push(e.child)
-      }
-    }
-  }
+  const kept = linkedThrough(scanner, [...scanner.entries].filter((url) => scanner.files.has(url)), (e) => scanner.files.has(e.child) && within(e.child))
   if (kept.size === scanner.files.size) return { scanner, outside, leftOut: [] }
   const leftOut = []
   const files = new Map()
@@ -2111,30 +2105,18 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   if (manifests && kind !== 'sol') {
     throw new Error(`${name}: --manifests is only valid for .sol bundles`)
   }
+  // Refuse each of the options `given` that is on, for the `only` (`what`) bundles alone, in order.
+  const onlyFor = (only, what, given) => {
+    if (kind === only) return
+    for (const [flag, on] of Object.entries(given)) if (on) throw new Error(`${name}: --${flag} is only valid for ${what} bundles`)
+  }
   // --cargo runs `cargo metadata` for the Rust feature/dependency resolution and the --cargo-*
   // flags steer that resolution; nothing else reads Cargo.
-  if (kind !== 'rust') {
-    const given = { cargo, 'cargo-features': Array.isArray(cargoFeatures) && cargoFeatures.length > 0, 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests }
-    for (const [flag, on] of Object.entries(given)) if (on) throw new Error(`${name}: --${flag} is only valid for Rust bundles`)
-  }
-  if (scope !== undefined && kind !== 'js') {
-    throw new Error(`${name}: --scope is only valid for JS bundles`)
-  }
-  if (lockfile !== undefined && kind !== 'js') {
-    throw new Error(`${name}: --lockfile is only valid for JS bundles`)
-  }
-  // Reject --conditions for non-JS: their resolvers don't consult exports/imports conditions, so it would silently do nothing.
-  if (Array.isArray(conditions) && conditions.length > 0 && kind !== 'js') {
-    throw new Error(`${name}: --conditions is only valid for JS bundles`)
-  }
-  // --flow strips Flow type syntax before the JS parser; the non-JS loaders never parse with oxc.
-  if (flow && kind !== 'js') {
-    throw new Error(`${name}: --flow is only valid for JS bundles`)
-  }
-  // --typescript maps JS-output specifiers to their on-disk TS sources; only the JS resolvers do it.
-  if (typescript && kind !== 'js') {
-    throw new Error(`${name}: --typescript is only valid for JS bundles`)
-  }
+  onlyFor('rust', 'Rust', { cargo, 'cargo-features': Array.isArray(cargoFeatures) && cargoFeatures.length > 0, 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests })
+  // --conditions: the non-JS resolvers don't consult exports/imports conditions, so it would silently
+  // do nothing. --flow strips Flow type syntax before the JS parser; the non-JS loaders never parse
+  // with oxc. --typescript maps JS-output specifiers to their on-disk TS sources; only the JS resolvers do it.
+  onlyFor('js', 'JS', { scope: scope !== undefined, lockfile: lockfile !== undefined, conditions: Array.isArray(conditions) && conditions.length > 0, flow, typescript })
   // --tsconfig names the config whose `paths` aliases --typescript honours; meaningless without it.
   if (tsconfig !== undefined && !typescript && !partial) {
     throw new Error(`${name}: --tsconfig is only valid with --typescript`)
@@ -2146,27 +2128,12 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
     if (kind !== 'js') throw new Error(`${name}: --resources is only valid for JS bundles`)
     parseResourcesOption(name, resources)
   }
-  // --mainFields and --metro/--platforms are legacy-/platform-resolution knobs; JS-only.
-  if (mainFields !== undefined && kind !== 'js') {
-    throw new Error(`${name}: --mainFields is only valid for JS bundles`)
-  }
-  // --jsx toggles the scanner's JSX parsing for the .js family (.jsx/.tsx need no flag); only JS
-  // entries are scanned.
-  if (jsx && kind !== 'js') {
-    throw new Error(`${name}: --jsx is only valid for JS bundles`)
-  }
-  // --define folds the globals it gives in the JS scan's branch tests; no other language is scanned for them.
-  if (parseDefine(name, define).size > 0 && kind !== 'js') {
-    throw new Error(`${name}: --define is only valid for JS bundles`)
-  }
-  // --package-json folds each bundled module's npm package.json in; JS-only (the sol/php/bash/rust
-  // bucketizers group by their own ecosystems' manifests, not an npm package.json).
-  if (packageJSON && kind !== 'js') {
-    throw new Error(`${name}: --package-json is only valid for JS bundles`)
-  }
-  if ((metro || (Array.isArray(platforms) && platforms.length > 0)) && kind !== 'js') {
-    throw new Error(`${name}: --metro is only valid for JS bundles`)
-  }
+  // --mainFields and --metro/--platforms are legacy-/platform-resolution knobs; --jsx toggles the
+  // scanner's JSX parsing for the .js family (.jsx/.tsx need no flag), and only JS entries are scanned;
+  // --define folds the globals it gives in the JS scan's branch tests; --package-json folds each bundled
+  // module's npm package.json in (the sol/php/bash/rust bucketizers group by their own ecosystems'
+  // manifests, not an npm package.json). `define` is parsed (checked) whatever the kind.
+  onlyFor('js', 'JS', { mainFields: mainFields !== undefined, jsx, define: parseDefine(name, define).size > 0, 'package-json': packageJSON, metro: metro || (Array.isArray(platforms) && platforms.length > 0) })
   // --metro presets conditions + mainFields + platform suffixes, so it can't combine with
   // explicit --conditions/--mainFields and requires --platforms; --platforms is meaningless without it.
   if (metro) {

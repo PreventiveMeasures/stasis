@@ -1,14 +1,11 @@
-import assert from 'node:assert/strict'
-import { isUtf8 } from 'node:buffer'
 import { existsSync } from 'node:fs'
 import { createRequire, isBuiltin } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { attestedImport, resolvePluginState, unsupportedExtension } from './plugins.js'
+import { assertCodeUtf8, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 import { realReadFileSync, servedByBundle } from '@exodus/stasis-core/state-util'
-import { classifyExtension } from '@exodus/stasis-core/util'
 
 // CJS require anchored here, used only to locate the PROJECT's babel-plugin-module-resolver below.
 const require = createRequire(import.meta.url)
@@ -252,10 +249,7 @@ export class StasisWebpack {
         const filePath = cd.resourceResolveData?.path
         if (!filePath || !path.isAbsolute(filePath) || !existsSync(filePath)) return
 
-        const kind = classifyExtension(filePath, this.#resources)
-        if (kind === 'unknown') {
-          throw new Error(unsupportedExtension('StasisWebpack', `'${filePath}'`))
-        }
+        const kind = classifyOrThrow('StasisWebpack', filePath, this.#resources)
 
         const url = pathToFileURL(filePath).toString()
         // Issuer attribution, most reliable first: (1) beforeResolve WeakMap (dodges the webpack 4
@@ -284,10 +278,7 @@ export class StasisWebpack {
           this.#seen.add(filePath)
           // Real reader (state-util.js): plugin bookkeeping, must not be re-recorded under --fs.
           const source = realReadFileSync(filePath)
-          // Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
-          if (kind === 'code') {
-            assert.ok(isUtf8(source), `StasisWebpack: code-classified file has non-UTF-8 bytes: ${filePath}`)
-          }
+          if (kind === 'code') assertCodeUtf8('StasisWebpack', filePath, source)
           this.#state.addFile(url, { source, isEntry, resource: kind === 'resource', reason: 'webpack' })
         }
       })
