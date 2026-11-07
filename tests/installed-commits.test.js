@@ -172,13 +172,13 @@ test("pnpm: its copy of the lockfile names a git dependency's repository, commit
   }
 }))
 
-test('pnpm: the directories pnpm 9 installs in, its `#` kept and an MD5 in base32 where hashed, are not read: pnpm 9 is not supported', withTmp(async (t, dir) => {
+test("pnpm: pnpm 9's store directories are not read", withTmp(async (t, dir) => {
   writePnpmProject(dir, [
     { name: 'dep', key: `dep@git+https://git@github.com:o/dep.git#${SHA.dep}`, store: `dep@git+https+++git@github.com+o+dep.git#${SHA.dep}`, resolution: `{commit: ${SHA.dep}, repo: 'git@github.com:o/dep.git', type: git}`, pkg: { repository: 'github:o/dep' } },
     xtend(`xtend@git+https+++git@github.com+Raynos+xtend.git#${XTEND}_566luz3wrwstne6n4ddwqdopme`),
   ])
   const repos = await bundled(dir, 'state')
-  t.assert.deepStrictEqual(repos[`node_modules/.pnpm/dep@git+https+++git@github.com+o+dep.git#${SHA.dep}/node_modules/dep`], { github: 'o/dep' }, 'as its package.json has it')
+  t.assert.deepStrictEqual(repos[`node_modules/.pnpm/dep@git+https+++git@github.com+o+dep.git#${SHA.dep}/node_modules/dep`], { github: 'o/dep' })
   t.assert.equal(repos[`node_modules/.pnpm/xtend@git+https+++git@github.com+Raynos+xtend.git#${XTEND}_566luz3wrwstne6n4ddwqdopme/node_modules/xtend`], undefined)
 }))
 

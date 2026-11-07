@@ -46,7 +46,7 @@ with scripts off:
 
 | `--package-manager` | Lays out as | Versions reproduced |
 | - | - | - |
-| `pnpm` | `pnpm install --frozen-lockfile --ignore-scripts` | pnpm 10, 11 or 12 (an older one given or pinned is refused) |
+| `pnpm` | `pnpm install --frozen-lockfile --ignore-scripts` | pnpm 10, 11 or 12 |
 | `yarn1` | `yarn install --frozen-lockfile --ignore-scripts` | yarn 1.22 |
 | `npm` | `npm ci --ignore-scripts` | npm 10.9.3 to 10.9.9, or 11.11.1 to 11.21.0 |
 | `soldeer` | `soldeer install` | Soldeer 0.12 |

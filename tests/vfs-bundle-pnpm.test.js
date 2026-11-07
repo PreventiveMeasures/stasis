@@ -45,8 +45,7 @@ test('pnpm: lays out, into a Vfs of its own, the lockfile of cwd or the nearest 
   t.assert.equal((await load({ vfs: project(files), packageManagerVersion: '11.28.2' })).packageManagerVersion, '11.28.2')
   // A pnpm other than the one it pins is what deptree refuses, as pnpm would switch to that one.
   await t.assert.rejects(load({ vfs: project(files), packageManagerVersion: '10.33.4' }), /packageManager: the project is installed by pnpm 11\.28\.2/u)
-  // pnpm 10 on: pnpm 9, which deptree reproduces too, and anything older are refused, pinned or given,
-  // before deptree is asked.
+  // pnpm 10 on.
   for (const pinned of ['9.15.0', '9.15.9+sha512.abc', '8.15.9']) {
     files['package.json'] = { name: 'p', version: '1.0.0', packageManager: `pnpm@${pinned}` }
     // eslint-disable-next-line no-await-in-loop -- one pin at a time

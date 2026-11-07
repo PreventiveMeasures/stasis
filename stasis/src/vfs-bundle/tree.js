@@ -194,10 +194,9 @@ const aloneWithoutManifestAbove = async (names, above) => !(await above()).some(
 
 // What each package manager reproduced installs from: the kind of bundle it installs for; its
 // lockfile; the name a root package.json's packageManager pins it by, where one does; the version
-// reproduced where nothing pins one, and the oldest major stasis builds with, where it refuses some
-// deptree reproduces (`from`); the directory it installs cwd from, which holds the lockfile
-// (for the os given, where that changes it); whether a directory holding the lockfile is installed
-// from by itself, by the names in it and in each directory above it (`above()`, as listings); the
+// reproduced where nothing pins one, and the oldest major taken (`from`); the directory it installs
+// cwd from, which holds the lockfile (for the os given, where that changes it); whether a directory
+// holding the lockfile is installed from by itself, by the names in it and in each directory above it (`above()`, as listings); the
 // projects it finds in a view of that directory, for the machine given; the directory it installs
 // in each, and any it hides, as another package manager's; whether it lays out a tree from the
 // lockfile alone, which may then be lazy; and the tree, without what devDependencies alone reach
@@ -420,7 +419,6 @@ async function layOutTree({ project, packageManager, cwd, packageManagerVersion,
   const pinnedVersion = String(pinned).startsWith(`${pm.pin}@`) ? /^[^@]+@([^+]+)/u.exec(pinned)[1] : undefined
   // Left out, deptree takes the one packageManager pins, and refuses another package manager.
   const version = packageManagerVersion ?? (pinned === undefined ? pm.version : undefined)
-  // One older than stasis builds with refused, given or pinned, before deptree is asked.
   const taken = version ?? pinnedVersion
   if (Number(/^(\d+)\./u.exec(taken ?? '')?.[1]) < pm.from) {
     const where = packageManagerVersion === undefined ? `${join(found, 'package.json')}: packageManager` : 'packageManagerVersion'

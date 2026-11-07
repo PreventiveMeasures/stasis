@@ -162,7 +162,6 @@ test('validateBundle: a version its lockfile patches is held to that patch, of t
   const other = '0'.repeat(64)
   t.assert.deepStrictEqual(await fromRepository({ hash: other, path: 'web/patches/ms.patch' }), { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid',
     patch: { hash: other, path: 'web/patches/ms.patch', from: 'repository', error: 'patch-mismatch' } }, 'one not of the hash it locks refused, its files held to those published')
-  // pnpm 9's, an MD5 in base32, is not taken: pnpm 9 is not supported.
   const md5 = toBase32(createHash('md5').update(MS_PATCH).digest(), { padding: false }).toLowerCase()
   t.assert.equal((await fromRepository({ hash: md5, path: 'web/patches/ms.patch' })).patch.error, 'patch-mismatch')
   const missing = sha256('another patch')
