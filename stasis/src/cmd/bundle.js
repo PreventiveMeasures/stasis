@@ -10,7 +10,7 @@ import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec,
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
 import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
-import { createMetroResolver } from '../metro-resolver.js'
+import { createMetroResolver, metroHost } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
@@ -23,6 +23,7 @@ import { diskHost } from '@exodus/stasis-core/host'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
+import { globRegExp, isPathGlob, packagesOf, restrictionsOf } from '@preventive/rn/src/restrictions.js'
 import {
   SOLIDITY_PACKAGE_MANIFESTS,
   SOLIDITY_ROOT_MANIFESTS,
@@ -1367,11 +1368,17 @@ const RN_CONFIG_OPTIONS = {
   assetResolutions: [(value) => Array.isArray(value) && value.every(isMetroScale), 'a list of scales ("0.75", or 0.75)'],
 }
 
-// The options of the project's rn.config.json that bear on Metro's resolver lists (RN_CONFIG_OPTIONS),
-// those it has; its others are rn-bundle's own. -> them, or null where there's no rn.config.json;
-// throws where it isn't one rn-bundle takes for them: not JSON, not an object, or one of them of
-// another kind.
-function readRnConfig(baseDir, host) {
+// rn.config.json's restrictions of the files a build takes (@preventive/rn's restrictions.js), as
+// rn-bundle takes them: globs of their paths from the project root, a directory's files too, and of the
+// names of the packages they are of.
+const isPackageGlob = (value) => typeof value === 'string' && /^(?:@[^/]+\/[^/]+|[^@/.][^/]*)$/u.test(value) && !value.includes('\\') && globRegExp(value) !== null
+const PATH_GLOBS = [(value) => Array.isArray(value) && value.every((glob) => typeof glob === 'string' && isPathGlob(glob)), 'a list of globs of paths from the project root, each a directory\'s files too ("src", "src/**/*.js", "node_modules")']
+const PACKAGE_GLOBS = [(value) => Array.isArray(value) && value.every(isPackageGlob), 'a list of globs of packages\' names ("react-native", "@react-native/*")']
+const RN_CONFIG_RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH_GLOBS, allowedModules: PACKAGE_GLOBS, disallowedModules: PACKAGE_GLOBS }
+
+// The project's rn.config.json, parsed. -> it, or null where there's none; throws where it is not JSON,
+// or not an object.
+function parseRnConfig(baseDir, host) {
   const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
   if (text === null) return null
   let config
@@ -1381,13 +1388,71 @@ function readRnConfig(baseDir, host) {
     throw new Error(`${RN_CONFIG_FILE} is not valid JSON`, { cause })
   }
   if (!isPlainObject(config)) throw new Error(`${RN_CONFIG_FILE} is not an object of options`)
-  const options = {}
-  for (const [key, [valid, what]] of Object.entries(RN_CONFIG_OPTIONS)) {
+  return config
+}
+
+// The options of the project's rn.config.json that bear on Metro's resolver lists (RN_CONFIG_OPTIONS),
+// those it has; its others are rn-bundle's own. -> them, or null where there's no rn.config.json;
+// throws where it isn't one rn-bundle takes for them: not JSON, not an object, or one of them of
+// another kind.
+function readRnConfig(baseDir, host) {
+  const config = parseRnConfig(baseDir, host)
+  return config === null ? null : rnOptions(config, RN_CONFIG_OPTIONS)
+}
+
+// Of `config`, rn.config.json's, each of `options` it has; throws on one of another kind.
+function rnOptions(config, options) {
+  const taken = {}
+  for (const [key, [valid, what]] of Object.entries(options)) {
     if (config[key] === undefined) continue
     if (!valid(config[key])) throw new Error(`${RN_CONFIG_FILE}: ${key} is ${what}, not ${JSON.stringify(config[key])}`)
-    options[key] = config[key]
+    taken[key] = config[key]
   }
-  return options
+  return taken
+}
+
+// --metro: the project's rn.config.json's restrictions (allowedPaths, disallowedPaths, allowedModules
+// and disallowedModules) of the files the app's Metro build takes, as rn-bundle holds a build to them
+// (@preventive/rn's restrictionsOf): each rule on its own, a path a file's real path from the project
+// root, a module the name of the package it is of. -> (path, module) => the errors of each rule the file
+// breaks, or null where it sets none. One of them of another kind fails the bundle, as rn-bundle's
+// build fails: read as none, it would let through what the project forbids. An rn.config.json that is
+// not JSON, or not an object, is warned of where Metro's resolver lists are read (metroLists), and read
+// as none here too.
+function metroRestrictions(baseDir, host) {
+  let config
+  try {
+    config = parseRnConfig(baseDir, host)
+  } catch {
+    return null
+  }
+  if (config === null) return null
+  let restrictions
+  try {
+    restrictions = rnOptions(config, RN_CONFIG_RESTRICTIONS)
+  } catch (cause) {
+    throw new Error(`stasis bundle: ${cause.message}`, { cause })
+  }
+  return restrictionsOf(restrictions, baseDir)
+}
+
+// What rn.config.json's restrictions (`restrict`, metroRestrictions') say of `files` (absolute paths), each
+// by its real path and the package it is of, read through `host`: nothing where each keeps to them, else
+// throws with each error, as rn-bundle refuses to build such an app.
+const SHOWN_RESTRICTED = 20
+function refuseRestricted(files, restrict, host) {
+  const packageOf = packagesOf(metroHost(host))
+  const real = (file) => {
+    try {
+      return host.realpath(file)
+    } catch {
+      return file
+    }
+  }
+  const errors = [...new Set([...files].map(real).flatMap((file) => restrict(file, packageOf(file))))].toSorted()
+  if (errors.length === 0) return
+  const shown = errors.length > SHOWN_RESTRICTED ? [...errors.slice(0, SHOWN_RESTRICTED), `... and ${errors.length - SHOWN_RESTRICTED} more`] : errors
+  throw new Error(`stasis bundle: the --metro build takes what ${RN_CONFIG_FILE} forbids:\n  ${shown.join('\n  ')}`)
 }
 
 // `base`, and what of `more` it has none of, after it, each once, as strings.
@@ -1596,6 +1661,10 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // variants and all (`assetExts: [...defaultConfig.resolver.assetExts, 'riv']`), those it probes, and
   // the scales of an asset's files.
   const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host) : { assetExts: METRO_ASSET_EXTS, sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs: [] }
+  // --metro: and rn.config.json's restrictions of the files the app's Metro build takes (metroRestrictions),
+  // checked of the files of its graph on every platform (metroTaken), once it is done.
+  const restrict = metro ? metroRestrictions(baseDir, host) : null
+  const metroTaken = new Set()
   // The resources the app imports that are no asset of Metro's are no module of Metro's, which can't
   // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
   // (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the Metro plugin records it
@@ -1684,13 +1753,20 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const added = [...new Set([...metroInsertedFiles(code, { assets, baseDir, babelled, dynamicImports, jsx, resolver: aliased(resolver), platformResolver: resolver, conditions: required, host, kept }), ...scales])]
         .filter((file) => !scanner.files.has(pathToFileURL(file).toString()) && relWithin(file) !== null)
       stageTimes.metro += performance.now() - metroAt
-      if (added.length > 0) staged('scan', () => absorb(added))
+      const more = added.length > 0 ? staged('scan', () => absorb(added)) : null
+      // The files of the app's Metro graph, which rn.config.json's restrictions are of: what the scans of
+      // its entries and of Metro's additions reached, its assets' files among them, but a transform's
+      // input, which a Babel plugin reads, no module of Metro's.
+      for (const [url, info] of [...scanner.files, ...(more?.files ?? [])]) {
+        if (!isTransformInput(pathOf(url), info)) metroTaken.add(pathOf(url))
+      }
     }
   }
 
   // One platform leaving out an edge another resolves within the root is a split too: collapsed
   // below, the edge would serve that platform the other's file in its place.
   if (!voided()) refuseSplit(leftOutEdges.filter((e) => edges.get(toRel(pathOf(e.parentURL)))?.has(e.spec)), baseDir)
+  if (restrict !== null && !voided()) refuseRestricted(metroTaken, restrict, host)
 
   // --metro: and the project's configs a React Native build loads, though nothing the app imports
   // reaches them: Metro's and the React Native CLI's, and with --babel or --babel-aliases the Babel

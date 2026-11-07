@@ -328,6 +328,28 @@ object, one of those options of another kind, or an extension added to one of
 `assetExts` and `sourceExts` that the other has) is warned of, and read as
 none: `metro.config.js` gives `assetExts`, as without it.
 
+Its restrictions hold the app's Metro build to them as `rn-bundle` holds its
+build: `allowedPaths` and `disallowedPaths`, globs of files' paths from the
+project root (`"src"`, a directory's files too; `"src/**/*.js"`), and
+`allowedModules` and `disallowedModules`, globs of the names of the packages
+files are of (`"react-native"`, `"@react-native/*"`), a package by the name its
+`package.json` has, whatever it is installed under (an npm alias), and a file
+of the project by the project's. Each rule is checked on its own, of each file
+of the app's Metro graph on every platform by its real path: what the entries
+reach, what Metro and Babel add, and each file of an asset. The configs and the
+toolchain carried beside it, the native build inputs and a transform's input
+(a `.po` a Babel plugin inlines) are no part of it. A file that breaks one fails
+the bundle, naming each file and the rule it breaks:
+
+```
+stasis bundle: the --metro build takes what rn.config.json forbids:
+  node_modules/nice/index.js is of evil, which matches "evil" of rn.config.json's disallowedModules
+```
+
+One of them of another kind fails the bundle too, as `rn-bundle`'s build fails:
+read as none, it would let through what it forbids. Without `--metro`, none
+applies.
+
 A resource the app imports that is no asset of Metro's is no module of Metro's,
 which can't resolve it: a Babel plugin consumes it before
 Metro collects dependencies, as `@exodus/i18n`'s `plugin-inline-po` reads a

@@ -5302,6 +5302,51 @@ test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json, and
   }
 }))
 
+test('buildBundle --metro holds the app\'s Metro graph to rn.config.json\'s restrictions, as rn-bundle does', withTmp(async (t, tmp) => {
+  // The app's own file, a dependency, an npm alias ("nice": "npm:evil@1", installed as nice, its
+  // package.json naming evil), an asset at two scales, and a .po a Babel plugin inlines; metro.config.js
+  // requires `tooling`, a config's, not the app's.
+  jsProject(tmp, { 'index.js': "require('./src/a')\nrequire('dep')\nrequire('nice')\nrequire('./img/logo.png')\nrequire('./messages.po')\n" }, { name: 'app', version: '0.0.0' })
+  writeTree(tmp, {
+    'src/a.js': 'module.exports = 1\n',
+    'img/logo.png': 'PNG',
+    'img/logo@2x.png': 'PNG@2x',
+    'messages.po': 'msgid "Hello"\nmsgstr "Hallo"\n',
+    'metro.config.js': "require('tooling')\nmodule.exports = {}\n",
+    ...pkgFiles('node_modules/dep', 'dep', 'index.js', 'module.exports = 2\n'),
+    ...pkgFiles('node_modules/tooling', 'tooling', 'index.js', 'module.exports = 3\n'),
+    'node_modules/nice/package.json': JSON.stringify({ name: 'evil', version: '1.0.0', main: 'index.js' }),
+    'node_modules/nice/index.js': 'module.exports = 4\n',
+  })
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['png', 'po'] }
+  const refusal = async (config, given = options) => {
+    writeFileSync(join(tmp, 'rn.config.json'), JSON.stringify(config))
+    return buildBundle(given).then(() => null, (error) => error.message)
+  }
+  const forbids = (...errors) => `stasis bundle: the --metro build takes what rn.config.json forbids:\n  ${errors.join('\n  ')}`
+
+  // A config's files and a transform's input are no part of the app's Metro build.
+  t.assert.equal(await refusal({ disallowedModules: ['tooling'], disallowedPaths: ['messages.po'] }), null)
+  // A path glob takes a directory's files too; an asset's files are each taken, its other scales too.
+  t.assert.equal(await refusal({ disallowedPaths: ['src'] }), forbids('src/a.js matches "src" of rn.config.json\'s disallowedPaths'))
+  t.assert.equal(await refusal({ disallowedPaths: ['img/*@2x.png'] }), forbids('img/logo@2x.png matches "img/*@2x.png" of rn.config.json\'s disallowedPaths'))
+  t.assert.equal(await refusal({ allowedPaths: ['index.js', 'node_modules'] }), forbids(
+    'img/logo.png matches none of rn.config.json\'s allowedPaths',
+    'img/logo@2x.png matches none of rn.config.json\'s allowedPaths',
+    'src/a.js matches none of rn.config.json\'s allowedPaths',
+  ))
+  // A package by the name its package.json has, under whatever name it is installed; the app's own
+  // files are of the app.
+  t.assert.equal(await refusal({ disallowedModules: ['evil'] }), forbids('node_modules/nice/index.js is of evil, which matches "evil" of rn.config.json\'s disallowedModules'))
+  t.assert.equal(await refusal({ allowedModules: ['app', 'dep'] }), forbids('node_modules/nice/index.js is of evil, which matches none of rn.config.json\'s allowedModules'))
+  t.assert.equal(await refusal({ allowedModules: ['app', 'dep', 'e*'] }), null)
+
+  // Without --metro, no React Native build is made: no restriction applies.
+  t.assert.equal(await refusal({ disallowedPaths: ['src'] }, { cwd: tmp, entries: ['index.js'], mainFields: ['main'], resources: ['png', 'po'] }), null)
+  // One of another kind fails the bundle: read as none, it would let through what it forbids.
+  t.assert.match(await refusal({ disallowedPaths: ['/etc'] }), /^stasis bundle: rn\.config\.json: disallowedPaths is a list of globs of paths from the project root, each a directory's files too \("src", "src\/\*\*\/\*\.js", "node_modules"\), not \["\/etc"\]$/u)
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React
