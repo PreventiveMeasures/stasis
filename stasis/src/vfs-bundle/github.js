@@ -7,8 +7,8 @@ import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle, configuredLockfiles, debugTimed } from '../cmd/bundle.js'
-import { KINDS, checkAhead, defaultEntries, kindOf } from './entries.js'
-import { checkCache, checkTarget, detectPackageManager, installedAlone, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
+import { checkAhead, defaultEntries } from './entries.js'
+import { checkCache, checkTarget, detectPackageManager, installedAlone, listsFile, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
 const CONFIG_FILE = 'stasis.config.json'
@@ -145,7 +145,7 @@ function lister(client, { github, sha }) {
 async function listedPackageManager(list, { directory, where }) {
   const listings = await listingsOf(list, directory ? [directory, ...ancestorsOf(directory)] : [undefined])
   if (listings === null) return { listed: undefined, configured: false }
-  const configured = listings[0].some((entry) => entry.path === CONFIG_FILE && entry.type === 'blob')
+  const configured = listsFile(listings[0], CONFIG_FILE)
   const listed = lockfilesListed(listings)
   if (listed.length === 0 && !configured) throw noLockfile(where, posix.resolve('/', directory || '.'))
   return { listed: listed.length === 1 ? listed[0] : undefined, configured }
@@ -179,9 +179,9 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
 // `packageManager` if given, else the one the listings tell, before the tree is fetched, else the
 // tree; `options` are checked for it once it is known. Where the directory's stasis.config.json
 // names its `lockfiles`, a tree is laid out of each and none is told: the whole repo, which they may
-// climb to; and `kind` the one their package managers build, undefined where they build both. A
-// `path` is the `directory`, or a file in it which is an entry ahead of `options.entries` (splitPath).
-// -> { vfs, host, cwd, subtree, sha, where, packageManager, kind, directory, entries }
+// climb to; `packageManagers` those of the trees. A `path` is the `directory`, or a file in it which is
+// an entry ahead of `options.entries` (splitPath).
+// -> { vfs, host, cwd, subtree, sha, where, packageManager, packageManagers, directory, entries }
 async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
   checkRepo(name, { github, sha, tag, directory, path })
@@ -198,36 +198,36 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
     }
   }
   let found = packageManager
-  // A stasis.config.json in the directory may name the lockfiles in place of the one told: the tree tells.
-  let configured = false
+  // The one `options` were checked for: none told by the listings of a directory whose
+  // stasis.config.json may name the lockfiles in its place, which the tree tells.
+  let checked = packageManager
   if (found === undefined) {
-    ({ listed: found, configured } = await listedPackageManager(list, { directory, where }))
-    if (found !== undefined && !configured) checkAhead(name, found, options)
+    const told = await listedPackageManager(list, { directory, where })
+    found = told.listed
+    if (found !== undefined && !told.configured) {
+      checkAhead(name, found, options)
+      checked = found
+    }
+  }
+  const open = (files, at) => {
+    const vfs = vfsFromEntries(files)
+    return { vfs, host: vfsHost(vfs), cwd: posix.resolve('/', at) }
   }
   let subtree = directory && found !== undefined ? await subtreeEntries(client, list, { github, directory, packageManager: found, where }) : null
-  let vfs = vfsFromEntries(subtree ?? await repoFiles(client, { github, sha, where }))
-  let host = vfsHost(vfs)
-  let cwd = posix.resolve('/', subtree ? '.' : directory ?? '.')
-  // Its lockfiles may climb out of the directory: the whole repo.
-  let lockfiles = configuredLockfiles(where, cwd, host)
+  let opened = open(subtree ?? await repoFiles(client, { github, sha, where }), subtree ? '.' : directory ?? '.')
+  // Lockfiles it names may climb out of the directory: the whole repo, which holds the same config there.
+  const lockfiles = configuredLockfiles(where, opened.cwd, opened.host)
   if (lockfiles !== undefined && subtree !== null) {
     subtree = null
-    vfs = vfsFromEntries(await repoFiles(client, { github, sha, where }))
-    host = vfsHost(vfs)
-    cwd = posix.resolve('/', directory ?? '.')
-    lockfiles = configuredLockfiles(where, cwd, host)
+    opened = open(await repoFiles(client, { github, sha, where }), directory)
   }
-  if (lockfiles !== undefined) {
-    // The build refuses a package manager given; none is detected.
-    const kind = kindOf(name, packageManager === undefined ? lockfilesManagers(where, lockfiles) : [packageManager])
-    return { vfs, host, cwd, subtree, sha, where, packageManager, kind, directory, entries: options.entries }
+  if (lockfiles === undefined && packageManager === undefined) {
+    found = detectPackageManager(where, opened.host, opened.cwd, { os: options.os })
+    if (found !== checked) checkAhead(name, found, options)
   }
-  if (packageManager === undefined) {
-    const detected = detectPackageManager(where, host, cwd, { os: options.os })
-    if (detected !== found || configured) checkAhead(name, detected, options)
-    found = detected
-  }
-  return { vfs, host, cwd, subtree, sha, where, packageManager: found, kind: KINDS[packageManagerOf(name, found).kind], directory, entries: options.entries }
+  // With lockfiles, none detected: a package manager given is the build's to refuse.
+  const packageManagers = lockfiles === undefined || packageManager !== undefined ? [found] : lockfilesManagers(where, lockfiles)
+  return { ...opened, subtree, sha, where, packageManager: lockfiles === undefined ? found : packageManager, packageManagers, directory, entries: options.entries }
 }
 
 // A GitHub repo at a full commit, or the one `tag` names, the default branch's head without either,
@@ -256,7 +256,7 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
   let { entries } = tree
   if (entries === undefined) {
     // As suggestedEntries suggests them, from the tree at hand.
-    const suggested = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.kind, options)
+    const suggested = defaultEntries('buildGitHubBundle', tree.host, tree.cwd, tree.packageManagers, options)
     entries = suggested.entries
     if (entries.length === 0) throw new Error(`${tree.where}: no entries given, and ${tree.directory || 'the repo root'} ${suggested.none}`)
   }
@@ -274,5 +274,5 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
 // as buildGitHubBundle downloads it: a `path` to a file, that file.
 export async function suggestedRepoEntries(repo, resolution) {
   const tree = await repoTree('suggestedEntries', repo, resolution)
-  return tree.entries ?? defaultEntries('suggestedEntries', tree.host, tree.cwd, tree.kind, resolution).entries
+  return tree.entries ?? defaultEntries('suggestedEntries', tree.host, tree.cwd, tree.packageManagers, resolution).entries
 }

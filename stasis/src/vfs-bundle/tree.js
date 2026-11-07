@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, isPathWithin, isPlainObject } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -272,22 +272,15 @@ export async function loadTree(options) {
   return tree.lazy === undefined ? { ...tree, host: treeHost(tree, options.project) } : tree
 }
 
-// layOutTrees' tree of the `lockfiles` stasis.config.json names, `options` as it takes them, with the
-// host as loadTree's: the trees' as one where there are several (forestOf).
-export async function loadTrees(options) {
-  const tree = await layOutTrees(options)
-  return tree.lazy === undefined ? Object.assign(tree, { host: treeHost(tree, options.project) }) : tree
-}
-
 // The host reading `project`, a host of the project's Vfs, through `tree` (layOutTree's): the tree
 // serves what the package manager installs, and any file it writes beside it at the root. A lazy
 // tree is read as lazyView reads it, into the round's `reads`, caching nothing it reads of a package
 // not unpacked yet: each such read reaches it, so that what a file's scan reads tells whether it
 // touched one. Its `probing(fn)` is `fn()`, its reads taken as probes of what files a package holds
-// (lazyView), which read none of its code.
-// The trees as one (forestOf) are read alike, by what they install and hide.
+// (lazyView), which read none of its code. The trees as one (forestOf) are read alike, by what they
+// install and hide.
 export function treeHost(tree, project, reads) {
-  const { installs, hides } = tree.trees === undefined ? { installs: installsOf(tree), hides: PACKAGE_MANAGERS[tree.packageManager].hides } : tree
+  const { installs, hides } = tree.trees === undefined ? { installs: installsOf(tree), hides: hiding(PACKAGE_MANAGERS[tree.packageManager].hides) } : tree
   if (tree.lazy === undefined) return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides })
   const host = vfsHost(lazyView(tree.vfs, { ...tree.lazy, reads }), { root: tree.root, outside: project, installs, hides, touches: () => reads.touches, retouch: () => reads.touches++ })
   host.probing = (fn) => {
@@ -351,14 +344,14 @@ export function detectPackageManager(name, host, cwd, { names = PACKAGE_MANAGER_
 }
 
 // That none of the lockfiles of `names` installs `place`, saying `why` one is looked for.
-export const noLockfile = (name, place, names = PACKAGE_MANAGER_NAMES, why = NOT_GIVEN) => new Error(`${name}: ${why}, and none of ${names.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')} installs ${place}`)
+export const noLockfile = (name, place, names = PACKAGE_MANAGER_NAMES, why = NOT_GIVEN) => new Error(`${name}: ${why}, and none of ${names.map(lockfileOf).join(', ')} installs ${place}`)
 
-// Whether a directory's listing (listRepoDir's) holds `packageManager`'s lockfile.
-const listsLockfile = (listing, packageManager) => listing.some((entry) => entry.path === PACKAGE_MANAGERS[packageManager].lockfile && entry.type === 'blob')
+// Whether a directory's listing (listRepoDir's) holds a file named `name`.
+export const listsFile = (listing, name) => listing.some((entry) => entry.path === name && entry.type === 'blob')
 
 // The package managers whose lockfile `listings` (a directory's and those above it) hold, which are
 // the only ones that may install that directory.
-export const lockfilesListed = (listings) => PACKAGE_MANAGER_NAMES.filter((pm) => listings.some((listing) => listsLockfile(listing, pm)))
+export const lockfilesListed = (listings) => PACKAGE_MANAGER_NAMES.filter((pm) => listings.some((listing) => listsFile(listing, lockfileOf(pm))))
 
 // A `packageManagerVersion` is one of the package manager given, never of one detected.
 export function checkVersion(name, { packageManager, packageManagerVersion }) {
@@ -366,10 +359,10 @@ export function checkVersion(name, { packageManager, packageManagerVersion }) {
 }
 
 // The package manager of `names` the project `host` reads is built with at `cwd`: `packageManager`
-// if given, else the one detected for `os`.
-export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os }, names = PACKAGE_MANAGER_NAMES) {
+// if given, else the one detected for `os`, a refusal saying `why` it is.
+export function packageManagerFor(name, host, cwd, { packageManager, packageManagerVersion, os, why }, names = PACKAGE_MANAGER_NAMES) {
   checkVersion(name, { packageManager, packageManagerVersion })
-  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os })
+  if (packageManager === undefined) return detectPackageManager(name, host, cwd, { names, os, why })
   packageManagerOf(name, packageManager, names)
   return packageManager
 }
@@ -419,16 +412,11 @@ export function checkVfs(name, vfs) {
 const layOutTree = (options) => buildTree(planTree(options))
 
 // What layOutTree checks and finds before anything is fetched, `options` as it takes them: the
-// directory `packageManager` installs cwd from, its lockfile there, the version reproduced, the
-// projects it finds and the .yarnclean that cleans their node_modules. With `named`, `{ path, file }`,
-// a lockfile stasis.config.json's `lockfiles` names (by its path there, and the real path of its
-// file), refused where the package manager installs cwd from another.
-function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, lazy = false, refuseInstalled = false, named, ...options }) {
+// directory `packageManager` installs cwd from (`found`, its real path `root`), its lockfile there,
+// the version reproduced, the projects it finds and the .yarnclean that cleans their node_modules.
+function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, lazy = false, refuseInstalled = false, ...options }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
-  if (named !== undefined && (found === null || join(found, pm.lockfile) !== named.file)) {
-    throw new Error(`${CONFIG_FILE}'s lockfiles names ${named.path}, but ${packageManager} installs ${cwd} from ${found === null ? `no ${pm.lockfile}` : join(found, pm.lockfile)}`)
-  }
   if (found === null) throw new Error(`no ${pm.lockfile} found in ${cwd} or any parent directory`)
   const file = join(found, pm.lockfile)
   if (!isFile(file, project)) throw new Error(`no ${pm.lockfile} found in ${found}, where ${cwd} is installed from`)
@@ -448,11 +436,11 @@ function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
-  return { ...options, project, packageManager, pm, os, cpu, libc, lazy, found, file, pinned, version, view, projects, clean }
+  return { ...options, project, packageManager, pm, os, cpu, libc, lazy, found, root: project.realpath(found), file, pinned, version, view, projects, clean }
 }
 
 // layOutTree's tree, of planTree's plan.
-async function buildTree({ project, packageManager, pm, os, cpu, libc, client, cache, lazy, installDevDependencies = true, found, file, pinned, version, view, projects, clean }) {
+async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, lazy, installDevDependencies = true, root, file, pinned, version, view, projects, clean }) {
   const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy, production: !installDevDependencies })
   // Each project's node_modules, cleaned as `yarn autoclean` would clean it, whatever installs it.
   const cleanAll = () => {
@@ -460,7 +448,7 @@ async function buildTree({ project, packageManager, pm, os, cpu, libc, client, c
   }
   cleanAll()
   return {
-    root: project.realpath(found),
+    root,
     vfs: built.vfs,
     projects,
     stats: built.stats,
@@ -476,44 +464,66 @@ async function buildTree({ project, packageManager, pm, os, cpu, libc, client, c
 // Soldeer's; refused for any other, which no tree is laid out of.
 export function lockfilesManagers(name, lockfiles) {
   return lockfiles.map((path) => {
-    const found = PACKAGE_MANAGER_NAMES.find((pm) => PACKAGE_MANAGERS[pm].lockfile === posix.basename(path))
-    if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map((pm) => PACKAGE_MANAGERS[pm].lockfile).join(', ')}, the lockfiles a tree is laid out from`)
+    const found = PACKAGE_MANAGER_NAMES.find((pm) => lockfileOf(pm) === posix.basename(path))
+    if (found === undefined) throw new Error(`${name}: ${CONFIG_FILE}'s lockfiles names ${path}, which is none of ${PACKAGE_MANAGER_NAMES.map(lockfileOf).join(', ')}, the lockfiles a tree is laid out from`)
     return found
   })
 }
 
-// Of `lockfiles` (stasis.config.json's in `cwd`, a real path, by their paths from there), one tree
-// each, as layOutTree lays out the one it finds, by the package manager its name says
-// (lockfilesManagers): from its directory, which has to be the one the package manager installs from
-// there, or from cwd where cwd is in it, where it has to install cwd. Its `lazy` is `lazy(packageManager,
-// dir)`'s, of the directory it is laid out from. Refused before anything is fetched where two would
-// install the same directory (a project's node_modules, say), or one inside another's. `name`
-// prefixes a refusal of a lockfile's name. -> the one tree, or the trees as one (forestOf)
-async function layOutTrees({ name, project, cwd, lockfiles, lazy, ...options }) {
+// The trees layOutTrees lays out of `lockfiles` (stasis.config.json's in `cwd`, a real path, by
+// their paths from there), each `{ packageManager, cwd, path }`: by the package manager its name says
+// (lockfilesManagers), from its directory, which has to be the one that package manager installs
+// from there for `os`; or from cwd where cwd is in it, which it then has to install. Refused where
+// one climbs out of the root or is not there. `name` prefixes a refusal of a lockfile's name.
+export function lockfileSpecs(name, project, cwd, lockfiles, os) {
   const managers = lockfilesManagers(name, lockfiles)
-  const plans = lockfiles.map((path, i) => {
-    // Normalized (parseLockfilesOption), its `..` lead it: none past `/`, which resolve would stop at.
-    if (path.split('/').filter((part) => part === '..').length > cwd.split('/').filter(Boolean).length) throw new Error(`${CONFIG_FILE}'s lockfiles names ${path}, which climbs out of ${cwd}'s root`)
+  return lockfiles.map((path, i) => {
+    // resolve would stop at `/`.
+    if (posixPathEscapes(posix.join(cwd.slice(1), path))) throw new Error(`${CONFIG_FILE}'s lockfiles names ${path}, which climbs out of ${cwd}'s root`)
     const file = resolve(cwd, path)
     if (!isFile(file, project)) throw new Error(`${CONFIG_FILE}'s lockfiles names ${path}, which is no file in ${cwd}`)
     const dir = project.realpath(dirname(file))
     const from = isPathWithin(dir, cwd) ? cwd : dir
-    return planTree({ ...options, project, packageManager: managers[i], cwd: from, lazy: lazy(managers[i], from), named: { path, file: join(dir, basename(file)) } })
+    const pm = PACKAGE_MANAGERS[managers[i]]
+    const found = pm.root(project, from, os)
+    if (found !== dir) throw new Error(`${CONFIG_FILE}'s lockfiles names ${path}, but ${managers[i]} installs ${from} from ${found === null ? `no ${pm.lockfile}` : join(found, pm.lockfile)}`)
+    return { packageManager: managers[i], cwd: from, path }
   })
-  // What each installs, by its real path, and the lockfile that does.
-  const claimed = []
-  for (const [i, plan] of plans.entries()) {
-    for (const dir of plan.projects) {
-      const at = join(project.realpath(plan.found), dir, plan.pm.installs)
-      const clash = claimed.find((other) => isPathWithin(other.at, at) || isPathWithin(at, other.at))
-      if (clash !== undefined) throw new Error(`${CONFIG_FILE}'s lockfiles names ${clash.path} and ${lockfiles[i]}, which both install ${isPathWithin(clash.at, at) ? clash.at : at}`)
-      claimed.push({ at, path: lockfiles[i] })
+}
+
+// One tree of each of `specs`, `{ packageManager, cwd, packageManagerVersion, lazy, path }`
+// (lockfileSpecs', or the one detected), as layOutTree lays out one with the rest of `options`, all at
+// once, the first refusal thrown, in their order, once every one is done. -> the one tree, or the trees
+// as one (forestOf). Refused before anything is fetched where two would install the same directory
+// (a project's node_modules, say), or one inside another's, by the `path`s stasis.config.json names.
+export async function layOutTrees({ specs, ...options }) {
+  const plans = specs.map((spec) => planTree({ ...options, ...spec }))
+  // What each plan installs, by its real path, and each directory above one, the one it is above.
+  const claimed = new Map()
+  const above = new Map()
+  for (const plan of plans) {
+    const dirs = [...plan.projects].map((dir) => join(plan.root, dir, plan.pm.installs))
+    for (const at of dirs) {
+      // As [the one claimed, the outer of the two].
+      let clash = above.has(at) ? [above.get(at), at] : undefined
+      for (let dir = at; clash === undefined; dir = dirname(dir)) {
+        if (claimed.has(dir)) clash = [dir, dir]
+        if (dir === dirname(dir)) break
+      }
+      if (clash !== undefined) throw new Error(`${CONFIG_FILE}'s lockfiles names ${claimed.get(clash[0]).path} and ${plan.path}, which both install ${clash[1]}`)
+    }
+    for (const at of dirs) {
+      claimed.set(at, plan)
+      for (let dir = dirname(at); !above.has(dir); dir = dirname(dir)) {
+        above.set(dir, at)
+        if (dir === dirname(dir)) break
+      }
     }
   }
-  const trees = []
-  // eslint-disable-next-line no-await-in-loop -- one tree at a time, in the order the config names them
-  for (const plan of plans) trees.push(await buildTree(plan))
-  return trees.length === 1 ? trees[0] : forestOf(trees)
+  const built = await Promise.allSettled(plans.map(buildTree))
+  const failed = built.find(({ status }) => status === 'rejected')
+  if (failed !== undefined) throw failed.reason
+  return built.length === 1 ? built[0].value : forestOf(built.map(({ value }) => value))
 }
 
 // What `tree` (layOutTree's) installs, by their paths from its root: each project's node_modules (or
@@ -524,26 +534,25 @@ function installsOf(tree) {
   return [...[...tree.projects].map((dir) => join(dir, pm.installs)), ...files]
 }
 
-// The Vfs of `members`, each `{ at, vfs, installs }`, its root's path from the Vfs's `/` ('' for the
-// same), its Vfs and what it installs, by their paths from its root: a path at or under one of what one
-// installs is that one's, read in its Vfs, and any other is none. As vfsHost reads a tree's Vfs
-// (lstat, readlink, readFile and readdir), and lazyView wraps one.
-function mountedVfs(members) {
-  const owners = new Map()
-  for (const member of members) {
-    for (const path of member.installs) owners.set(posix.join(member.at, path), member)
-  }
-  const route = (p) => {
-    const rel = p.slice(1)
-    for (let at = rel.indexOf('/'); ; at = rel.indexOf('/', at + 1)) {
-      const member = owners.get(at === -1 ? rel : rel.slice(0, at))
-      if (member !== undefined) return [member.vfs, member.at === '' ? p : `/${rel.slice(member.at.length + 1)}`]
+// What a package manager's `hides` (PACKAGE_MANAGERS') hides, as vfsHost takes it: a path from its
+// tree's root with a directory of that name in it; undefined for none.
+const hiding = (name) => (name === undefined ? undefined : (rel) => rel.split('/').includes(name))
+
+// The Vfs of the trees whose members `owners` holds by what each installs, by its path from the Vfs's
+// `/`: a path at or under one is that member's tree's, read in its Vfs by its path from the tree's
+// root (`prefix` its root's path, '' or ending in `/`), and any other is none. As vfsHost reads a
+// tree's Vfs (lstat, readlink, readFile and readdir), and lazyView wraps one.
+function mountedVfs(owners) {
+  const ownerOf = (p) => {
+    for (let at = p.indexOf('/', 1); ; at = p.indexOf('/', at + 1)) {
+      const member = owners.get(at === -1 ? p.slice(1) : p.slice(1, at))
+      if (member !== undefined) return member
       if (at === -1) throw stackless(() => new VfsError('ENOENT', p))
     }
   }
   const read = (method) => (p) => {
-    const [vfs, path] = route(p)
-    return vfs[method](path)
+    const member = ownerOf(p)
+    return member.tree.vfs[method](p.slice(member.prefix.length))
   }
   return { lstat: read('lstat'), readlink: read('readlink'), readFile: read('readFile'), readdir: read('readdir') }
 }
@@ -577,24 +586,33 @@ function forestOf(trees) {
   let root = trees[0].root
   while (!trees.every((tree) => isPathWithin(root, tree.root))) root = dirname(root)
   const members = trees.map((tree) => {
-    const at = toPosixRel(root, tree.root)
-    return { tree, at, vfs: tree.vfs, installs: installsOf(tree), hides: PACKAGE_MANAGERS[tree.packageManager].hides }
+    const at = posix.relative(root, tree.root)
+    return { tree, at, prefix: at === '' ? '' : `${at}/`, installs: installsOf(tree), hides: hiding(PACKAGE_MANAGERS[tree.packageManager].hides) }
   })
-  const installs = members.flatMap((member) => member.installs.map((path) => posix.join(member.at, path)))
-  for (const [i, path] of installs.entries()) {
-    const clash = installs.find((other, j) => j !== i && (other === path || other.startsWith(`${path}/`)))
-    if (clash !== undefined) throw new Error(`${CONFIG_FILE}'s lockfiles lay out trees which both install ${posix.join(root, clash)}`)
+  // Each path installed, by its path from the root, and the member installing it. The plans' installs
+  // are checked apart already, but for the files a tree writes at its root.
+  const owners = new Map()
+  for (const member of members) {
+    for (const path of member.installs) {
+      const at = `${member.prefix}${path}`
+      if (owners.has(at)) throw new Error(`${CONFIG_FILE}'s lockfiles lay out trees which both install ${posix.join(root, at)}`)
+      owners.set(at, member)
+    }
   }
-  const within = (member, rel) => member.at === '' || rel === member.at || rel.startsWith(`${member.at}/`)
-  const hides = (rel) => {
-    const around = members.filter((member) => within(member, rel))
-    if (around.length === 0) return hasNodeModulesSegment(rel) && !members.some((member) => member.at.startsWith(`${rel}/`))
-    return around.some((member) => member.hides !== undefined && (member.at === '' ? rel : rel.slice(member.at.length + 1)).split('/').includes(member.hides))
+  const within = (member, rel) => rel === member.at || rel.startsWith(member.prefix)
+  // What a tree's own rule hides; and out of every tree's root (none at the forest's), a node_modules
+  // but on the way toward one, each directory above a tree's root.
+  const hiders = members.filter((member) => member.hides !== undefined)
+  const rooted = members.some((member) => member.at === '')
+  const toward = new Set(members.flatMap(({ at }) => at.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
+  const hides = rooted && hiders.length === 0 ? undefined : (rel) => {
+    if (!rooted && !members.some((member) => within(member, rel))) return hasNodeModulesSegment(rel) && !toward.has(rel)
+    return hiders.some((member) => within(member, rel) && member.hides(rel.slice(member.prefix.length)))
   }
   const forest = {
     root,
-    vfs: mountedVfs(members),
-    installs,
+    vfs: mountedVfs(owners),
+    installs: [...owners.keys()],
     hides,
     projects: new Set(members.filter(({ tree }) => PACKAGE_MANAGERS[tree.packageManager].kind === 'js').flatMap((member) => [...member.tree.projects].map((dir) => posix.join(member.at, dir)))),
     // As they are when read: a lazy tree's counts grow as it unpacks.
@@ -602,32 +620,28 @@ function forestOf(trees) {
       return statsOf(trees)
     },
     get installed() {
-      return members.flatMap((member) => member.tree.installed.map((pkg) => ({ ...pkg, path: posix.join(member.at, pkg.path) })))
+      return members.flatMap((member) => member.tree.installed.map((pkg) => ({ ...pkg, path: `${member.prefix}${pkg.path}` })))
     },
     trees,
   }
   const lazy = members.filter(({ tree }) => tree.lazy !== undefined)
   if (lazy.length === 0) return forest
-  // Each lazy tree's packages by their paths in the forest's Vfs, and each's tree and path in its own.
-  const mount = (member, dir) => (member.at === '' ? dir : `/${member.at}${dir}`)
-  const owners = new Map(lazy.flatMap((member) => [...member.tree.lazy.roots].map((dir) => [mount(member, dir), [member, dir]])))
+  // Each lazy tree's packages by their paths in the forest's Vfs, and each's member and path in its own.
+  const packages = new Map(lazy.flatMap((member) => [...member.tree.lazy.roots].map((dir) => [`/${member.prefix}${dir.slice(1)}`, [member, dir]])))
   const unpacked = {
     has(dir) {
-      const [member, own] = owners.get(dir)
+      const [member, own] = packages.get(dir)
       return member.tree.lazy.unpacked.has(own)
-    },
-    get size() {
-      return lazy.reduce((sum, member) => sum + member.tree.lazy.unpacked.size, 0)
     },
   }
   // Onto the forest itself, whose `installed` is read as it is when read.
   return Object.assign(forest, {
-    lazy: { roots: new Set(owners.keys()), unpacked },
+    lazy: { roots: new Set(packages.keys()), unpacked },
     // Each tree's asked for by its own; the first refusal thrown once every one is done, as one tree's.
     async unpack(asked, read = asked) {
       const by = new Map()
       for (const dir of asked) {
-        const [member, own] = owners.get(dir)
+        const [member, own] = packages.get(dir)
         if (!by.has(member)) by.set(member, { asked: new Set(), read: new Set() })
         by.get(member).asked.add(own)
         if (read.has(dir)) by.get(member).read.add(own)
@@ -638,9 +652,6 @@ function forestOf(trees) {
     },
   })
 }
-
-// `path`'s path from `base`, POSIX, '' for the same.
-const toPosixRel = (base, path) => relative(base, path).split(sep).join('/')
 
 // A package name, as a directory of node_modules holds it: one name, or a scope and one.
 const PACKAGE_NAME = /^(?:@[^/@.][^/]*\/)?[^/@.][^/]*$/u
@@ -787,9 +798,8 @@ const OUTSIDE = 'outside'
 // A `host` (@exodus/stasis-core/host) over `vfs`. Alone, every path is the Vfs's. With `root`, a
 // real path, and `outside`, a host of the rest, the Vfs's `/` stands for `root`, holding the tree
 // the package manager lays out there: each of the paths it `installs` (from `root`) is served from
-// the Vfs only, whatever `outside` holds there; a directory named `hides` anywhere (or, `hides` a
-// function, a path from `root` it says is hidden), and any node_modules out of `root`, is none; and
-// everything else comes from `outside`. Symlinks cross
+// the Vfs only, whatever `outside` holds there; a path from `root` that `hides(path)` says is hidden
+// (hiding's), and any node_modules out of `root`, is none; and everything else comes from `outside`. Symlinks cross
 // between the two both ways, so realpaths are walked here one link at a time, and a path is read as
 // the OS reads one: a `..` after a link leads up from where the link leads, never textually (Node's
 // own resolution, `findPackageJSON` and `resolve`, normalizes its paths first, as Node does). A
@@ -802,7 +812,6 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
   if (sep !== '/') throw new Error('The Vfs host is POSIX-only')
   const disk = outside ?? null
   const installed = new Set(installs)
-  const hidden = typeof hides === 'function' ? hides : (rel) => hides !== undefined && rel.split('/').includes(hides)
   // Paths here are absolute and normal.
   const prefix = disk === null || root === '/' ? '/' : `${root}/`
   // The root and the directories above it, whatever their names.
@@ -815,7 +824,7 @@ export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true
       if (installed.has(rel.slice(0, at))) return TREE
     }
     if (installed.has(rel)) return TREE
-    return hidden(rel) ? NONE : OUTSIDE
+    return hides?.(rel) ? NONE : OUTSIDE
   }
   // The names of the installed paths in each directory holding one.
   const installedIn = new Map()

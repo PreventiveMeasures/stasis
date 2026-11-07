@@ -118,16 +118,9 @@ function solidityEntries(host, dir) {
 
 // By the kind of bundle a package manager builds: an entry its options are checked over before
 // there are any, the entries the build takes where none are given, and what having none says.
-export const KINDS = {
+const KINDS = {
   js: { standIn: 'index.js', entries: packageEntries, none: 'has no package.json naming a JS entry point there' },
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
-}
-
-// The KINDS entry of what `packageManagers` build, where they build one kind; else undefined, for
-// configured entries alone to tell (defaultEntries).
-export function kindOf(name, packageManagers) {
-  const kinds = new Set(packageManagers.map((pm) => packageManagerOf(name, pm).kind))
-  return kinds.size === 1 ? KINDS[[...kinds][0]] : undefined
 }
 
 const EMPTY = vfsHost(new Vfs())
@@ -140,13 +133,15 @@ const MIXED_NONE = "has a stasis.config.json whose lockfiles lay out JS and Soli
 // -> { entries, none }: the entries a build of the project in `dir` (read through `host`) takes
 // where none are given, as paths from `dir`, and what having none says of `dir`. Those its
 // stasis.config.json's `entries` names, checked with `options` as the build checks them
-// (configuredBuilds), where it has `entries`, whatever it names; else those of `kind` (KINDS'),
-// with `options` then checked on their own, as the build checks them, which nothing completes. With
-// no `kind` (its stasis.config.json's lockfiles of JS and Solidity projects both), none.
-export function defaultEntries(name, host, dir, kind, options) {
+// (configuredBuilds), where it has `entries`, whatever it names; else those of the kind
+// `packageManagers` (its trees') build (KINDS'), with `options` then checked on their own, as the
+// build checks them, which nothing completes; none where they build JS and Solidity bundles both.
+export function defaultEntries(name, host, dir, packageManagers, options) {
   const configured = configuredBuilds(name, { cwd: dir, host, options })
   if (configured !== null) return { entries: configured.entries, none: CONFIGURED_NONE }
-  if (kind === undefined) return { entries: [], none: MIXED_NONE }
+  const kinds = new Set(packageManagers.map((pm) => packageManagerOf(name, pm).kind))
+  if (kinds.size > 1) return { entries: [], none: MIXED_NONE }
+  const kind = KINDS[[...kinds][0]]
   checkVfsOptions(name, { ...options, entries: [kind.standIn], cwd: '/', host: EMPTY, fetched: false })
   return { entries: kind.entries(host, dir, options), none: kind.none }
 }

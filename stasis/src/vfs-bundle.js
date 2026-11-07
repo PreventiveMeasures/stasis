@@ -2,7 +2,7 @@ import { posix } from 'node:path'
 
 import { Vfs } from '@preventive/vfs'
 import { configuredLockfiles, installsDevDependencies } from './cmd/bundle.js'
-import { KINDS, checkAhead, defaultEntries, kindOf } from './vfs-bundle/entries.js'
+import { checkAhead, defaultEntries } from './vfs-bundle/entries.js'
 import { suggestedRepoEntries } from './vfs-bundle/github.js'
 import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, lockfilesManagers, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
 
@@ -89,11 +89,9 @@ export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditi
   const host = vfsHost(vfs)
   const at = posix.resolve('/', cwd)
   // As the build lays them out: a tree of each lockfile stasis.config.json names, none detected.
-  const lockfiles = packageManager === undefined ? configuredLockfiles('suggestedEntries', at, host) : undefined
-  if (lockfiles !== undefined) {
-    checkAhead('suggestedEntries', undefined, resolution)
-    return defaultEntries('suggestedEntries', host, at, kindOf('suggestedEntries', lockfilesManagers('suggestedEntries', lockfiles)), resolution).entries
-  }
-  const pm = checkAhead('suggestedEntries', packageManager ?? detectPackageManager('suggestedEntries', host, at, { os }), resolution)
-  return defaultEntries('suggestedEntries', host, at, KINDS[pm.kind], resolution).entries
+  const name = 'suggestedEntries'
+  const lockfiles = packageManager === undefined ? configuredLockfiles(name, at, host) : undefined
+  const one = lockfiles === undefined ? packageManager ?? detectPackageManager(name, host, at, { os }) : undefined
+  checkAhead(name, one, resolution)
+  return defaultEntries(name, host, at, lockfiles === undefined ? [one] : lockfilesManagers(name, lockfiles), resolution).entries
 }

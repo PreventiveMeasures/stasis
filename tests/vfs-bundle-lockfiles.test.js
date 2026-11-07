@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
@@ -9,8 +9,8 @@ import { pack } from '@preventive/archive/tar.js'
 import { Config } from '@exodus/stasis-core/config'
 import { parseLockfilesOption } from '@exodus/stasis-core/util'
 import { buildCommandBundle } from '../stasis/src/cmd/bundle.js'
-import { Vfs, buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
-import { fakeClient, json, lockfile } from './vfs-bundle-github.helper.js'
+import { buildGitHubBundle, buildVfsBundle, suggestedEntries } from '../stasis/src/vfs-bundle.js'
+import { fakeClient, json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 // stasis.config.json's `lockfiles`: the lockfiles a project's dependencies are laid out from, a tree
@@ -67,14 +67,8 @@ const npmLock = (root, names) => {
 const manifest = (name, names = []) => json({ name, version: '1.0.0', ...names.length > 0 ? { dependencies: Object.fromEntries(names.map((dep) => [dep, '1.0.0'])) } : {} })
 const SOLDEER = { 'foundry.toml': '[profile.default]\nlibs = ["dependencies"]\n\n[dependencies]\n', 'soldeer.lock': 'dependencies = []\n' }
 
-const vfsOf = (files) => {
-  const vfs = new Vfs()
-  for (const [path, text] of Object.entries(files)) {
-    vfs.mkdir(posix.dirname(`/${path}`), { recursive: true })
-    vfs.writeFile(`/${path}`, text)
-  }
-  return vfs
-}
+// `files` moved under the directory `dir`.
+const under = (dir, files) => Object.fromEntries(Object.entries(files).map(([path, text]) => [`${dir}/${path}`, text]))
 
 // The root project, installed by pnpm, and tools/, by npm from its own lockfile, which no lockfile
 // the root's detection finds installs.
@@ -147,7 +141,7 @@ test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and 
     'package.json': manifest('p', ['used']),
     'pnpm-lock.yaml': pnpmLock({ '.': ['used'] }),
     'src/a.js': "require('used')\n",
-    ...Object.fromEntries(Object.entries(SOLDEER).map(([path, text]) => [`contracts/${path}`, text])),
+    ...under('contracts', SOLDEER),
     'contracts/src/A.sol': 'pragma solidity ^0.8.0;\ncontract A {}\n',
   }
   // Built apart, as entries with other options are, their bundles merged.
@@ -196,9 +190,9 @@ test("buildVfsBundle refuses stasis.config.json's lockfiles a tree can't be laid
   const workspace = {
     'package.json': manifest('root'),
     'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
-    'pnpm-lock.yaml': pnpmLock({ '.': [], 'packages/q': [] }),
+    'pnpm-lock.yaml': lockfile('.', 'packages/q'),
     'packages/q/package.json': manifest('q'),
-    'packages/q/pnpm-lock.yaml': pnpmLock({ '.': [] }),
+    'packages/q/pnpm-lock.yaml': lockfile('.'),
     'src/a.js': '',
   }
   await refused(configured(workspace, { lockfiles: ['pnpm-lock.yaml', 'packages/q/pnpm-lock.yaml'] }), {}, /^Error: stasis\.config\.json's lockfiles names packages\/q\/pnpm-lock\.yaml, but pnpm installs \/packages\/q from \/pnpm-lock\.yaml$/u)
@@ -208,7 +202,7 @@ test("buildVfsBundle refuses stasis.config.json's lockfiles a tree can't be laid
   // A package manager given, which the lockfiles name in its place.
   await refused(configured(TWO, { lockfiles: LOCKFILES }), { packageManager: 'pnpm' }, /^Error: buildVfsBundle: packageManager is given, and stasis\.config\.json's lockfiles names the lockfiles to lay out$/u)
   // lazy, which a Soldeer tree can't be.
-  await refused(configured({ ...TWO, ...Object.fromEntries(Object.entries(SOLDEER).map(([path, text]) => [`contracts/${path}`, text])) }, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'] }), { lazy: true }, /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; soldeer's is not$/u)
+  await refused(configured({ ...TWO, ...under('contracts', SOLDEER) }, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'] }), { lazy: true }, /^Error: buildVfsBundle: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; soldeer's is not$/u)
   // Malformed.
   await refused(configured(TWO, { lockfiles: [] }), {}, /^TypeError: buildVfsBundle: stasis\.config\.json: lockfiles must be a non-empty array of paths$/u)
 })
@@ -222,7 +216,7 @@ test("buildGitHubBundle lays out a tree of each lockfile stasis.config.json name
   t.assert.deepStrictEqual(built.packageManagers, ['pnpm', 'npm'])
   t.assert.deepStrictEqual(client.calls.map(([method]) => method), ['listRepoDir', 'getRepoTarball'])
   // A directory that stands alone is downloaded alone, and then, its lockfiles named, the whole repo they may climb out of.
-  const nested = fakeClient({ 'README.md': 'x\n', ...Object.fromEntries(Object.entries(files).map(([path, text]) => [`apps/x/${path}`, text])) })
+  const nested = fakeClient({ 'README.md': 'x\n', ...under('apps/x', files) })
   const alone = await buildGitHubBundle({ github: GITHUB, sha: SHA, client: nested, directory: 'apps/x', cache: store() })
   t.assert.deepStrictEqual([...alone.bundle.sources.keys()].toSorted(), [...built.bundle.sources.keys()].toSorted())
   t.assert.deepStrictEqual({ ...alone.bundle.repo }, { github: GITHUB, directory: 'apps/x', commit: SHA })
