@@ -2709,7 +2709,11 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
 
   let { bundle } = built
-  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
+  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others): written by add and
+  // replace, which takes --lockfile, as a run writes it; never by frozen, ignore or none.
+  const mode = built.held?.lock
+  if (mode === 'replace' && lockfile === undefined) throw new Error(`bundleCommand: lock = replace rewrites ${relative(resolve(cwd), built.held.at)}: give --lockfile`)
+  if (lockfile !== undefined && ['frozen', 'ignore', 'none'].includes(mode)) throw new Error(`bundleCommand: --lockfile: lock = ${mode} writes no lockfile`)
   let lockData = lockfile ? built.held?.lockfile()?.serialize() : undefined
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
@@ -2772,13 +2776,14 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 }
 
 // A build's lockfile held to the one `lockfile` names, else its project's (heldToLockfile): `{ at,
-// lockfile, hold }`, that one's path, what to write, and `hold(other)` holding another lockfile to it.
+// lock, lockfile, hold }`, that one's path, the lock mode, what to write, and `hold(other)` holding
+// another lockfile to it.
 function heldOf({ lockfile: built, root }, { cwd, env, lockfile }) {
   if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, 'stasis.lock.json')
   const hold = (other) => heldToLockfile(other, at, relative(resolve(cwd), at), lock)
-  return { at, lockfile: hold(built), hold }
+  return { at, lock, lockfile: hold(built), hold }
 }
 
 // The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE, of a run
@@ -2790,14 +2795,15 @@ function lockModeOf(root, env = process.env, host = diskHost) {
   return { lock: config.lock, file: config.lockFile && resolve(root, config.lockFile) }
 }
 
-// The lockfile `built()` gives held to the one at `lockAbs` by `mode`. In add it is merged into it,
-// which must agree on all both record, execute bits too; in frozen that one must be there, agree, and
-// attest every entry, file, format and import built, and none is written; otherwise it isn't read.
-// -> () => the Lockfile to write, or null.
+// The lockfile `built()` gives held to the one at `lockAbs` by `mode`, as a run holds itself to one.
+// In add it is merged into it, which must agree on all both record, execute bits too; in frozen that
+// one must be there, agree, and attest every entry, file, format and import built; in none, it must
+// not be there; in replace and ignore, it isn't read. -> () => the Lockfile to write, or null.
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   const frozen = mode === 'frozen'
-  const text = frozen || mode === 'add' ? readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host) : null
+  const text = frozen || mode === 'add' || mode === 'none' ? readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host) : null
   if (frozen && text === null) throw new Error(`${label} isn't there, and lock = frozen holds the build to it`)
+  if (mode === 'none' && text !== null) throw new Error(`${label} is there, which lock = none refuses`)
   if (text === null) return built
   let lock
   try {

@@ -372,7 +372,7 @@ A JS build is held to the `stasis.lock.json` the repository commits at its
 root, as [`stasis bundle`](bundle.md#companion-lockfile---lockfile) holds one
 to the one there: by `EXODUS_STASIS_LOCK`, else `frozen` where its
 `stasis.config.json` pins it, else `add`, what it builds must agree with what
-the lockfile records; `ignore` or `replace` reads none.
+the lockfile records; `ignore` or `replace` reads none, and `none` refuses one.
 
 ## Prisma
 

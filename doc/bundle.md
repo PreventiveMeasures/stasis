@@ -87,8 +87,10 @@ mode the project's runs take (`EXODUS_STASIS_LOCK`, or `frozen` where its
 | Mode | Behavior |
 | - | - |
 | `add` | What it builds must agree with what the lockfile records, each file and module among it; `--lockfile` writes the two merged: what is new is recorded, nothing recorded changes. |
-| `frozen` | As `add`, and the lockfile must be there and attest every entry, file, format and import it builds; none is written. |
-| `replace`, `ignore`, `none` | The lockfile there is not read; `--lockfile` writes the one built. |
+| `frozen` | As `add`, and the lockfile must be there and attest every entry, file, format and import it builds; `--lockfile` is refused. |
+| `replace` | The lockfile there is not read; `--lockfile`, which it requires, writes the one built. |
+| `ignore` | The lockfile there is neither read nor written; `--lockfile` is refused. |
+| `none` | There must be no lockfile there; `--lockfile` is refused. |
 
 Under `--add`, the bundle already there is held to it too.
 
