@@ -113,8 +113,9 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const pkg = read(toPosix(join(dir, 'package.json')))
-    const inNodeModules = hasNodeModulesSegment(toPosix(dir))
-    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, toPosix(dir), pkg.name, options) : undefined
+    const posixDir = toPosix(dir)
+    const inNodeModules = hasNodeModulesSegment(posixDir)
+    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, posixDir, pkg.name, options) : undefined
     if (sub !== undefined) {
       if (nearest) subpackages = { [sub]: { name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
       nearest = false
@@ -123,7 +124,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     if (pkg?.name) nearest = false
     if (pkg?.name && (pkg.version || !inNodeModules)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
-      const own = toPosix(dir) === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
+      const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...(own === undefined ? {} : { subpackages: own }) }
     }

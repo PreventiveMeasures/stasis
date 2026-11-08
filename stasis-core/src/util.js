@@ -93,10 +93,12 @@ export function parseExtraOption(label, extra) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }
-  // Compared as expandExtra matches: no `./`, no trailing `/`.
-  const names = (entry) => posix.normalize(pattern(entry)).replace(/\/+$/u, '') === CONFIG_FILE_NAME
+  const names = (entry) => extraPattern(entry) === CONFIG_FILE_NAME
   return extra.some(names) ? [...extra] : [...extra, CONFIG_FILE_NAME]
 }
+
+// An `extra` entry's pattern, `!` dropped, as expandExtra matches it: no `./`, no trailing `/`.
+export const extraPattern = (entry) => posix.normalize(entry.startsWith('!') ? entry.slice(1) : entry).replace(/\/+$/u, '')
 
 // stasis.config.json's `lockfiles`: the lockfiles the project's dependencies are laid out from, in
 // place of the one detected (a tree laid out of each), as POSIX paths from the directory holding the
@@ -162,9 +164,12 @@ export function parseLeadingOptions(argv, options, { valueFlags = [], onError } 
 export function classifyExtension(filePath, resources) {
   const format = classifyFormat(filePath)
   if (format === null || NODE_FORMATS.has(format)) return 'code'
-  if (resources.has(pathExt(filePath) || basename(filePath).toLowerCase())) return 'resource'
+  if (inResources(filePath, resources)) return 'resource'
   return 'unknown'
 }
+
+// Whether `resources` (parseResourcesOption's) lists `path`'s extension, or its name where it has none.
+export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase())
 
 // Compiled/prebuilt artifacts, non-deterministic across installs, so the native capture skips them
 // entirely. Matched on a file OR directory name (an Apple `*.framework`/`*.xcodeproj` bundle dir).

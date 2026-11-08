@@ -23,9 +23,9 @@ const RUN_OPTIONS = {
   resources: { type: 'string' },
   'brotli-quality': { type: 'string' },
 }
-// `--fs` is taken only as `--fs=<mode>`: a bare `--fs` is refused rather than given the program as its mode.
 const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
-const RUN_VALUE_FLAGS = ['--bundle', '--bundle-file', '--resources-bundle-file', '--lock', '--import', '--resources', '--brotli-quality']
+// `--fs` is taken only as `--fs=<mode>`: a bare `--fs` is refused rather than given the program as its mode.
+const RUN_VALUE_FLAGS = valueFlagsOf(RUN_OPTIONS).filter((flag) => flag !== '--fs')
 
 // `run`'s options, and the caller's own `options` (boolean ones), shifted off the front of `argv`,
 // which keeps the program and its arguments; checked, a usage error being `fail(message)`'s (which

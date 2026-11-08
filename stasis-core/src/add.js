@@ -1,6 +1,6 @@
 import { isUtf8 } from 'node:buffer'
 import * as fs from 'node:fs'
-import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
+import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
@@ -9,7 +9,7 @@ import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, sta
 import { diskHost } from './host.js'
 import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { assertRealPathWithinBase, classifyFormat, extraPattern, fileInBucket, hasNodeModulesSegment, inResources, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
 // these at write (outputMatcher), which must read the real disk, not be captured as the program's
@@ -22,10 +22,10 @@ const LOCK_FILE = 'stasis.lock.json'
 // A `.js`/`.ts` follows its package `type` (LIMITATION: none falls back to commonjs -- use `.mjs`/`.cjs`
 // or set `type` when the module system matters). Any other name is classifyFormat's call: a format,
 // null for a JS-family file (`.jsx`/`.tsx`: source attested with no loader format, as the runtime
-// records one), undefined when unrecognized. Its package.json is read through `host`.
-function sourceFormat(absFile, content, host) {
+// records one), undefined when unrecognized. Its package.json is read through `host`, and `kept` (packageType's).
+function sourceFormat(absFile, content, host, kept) {
   const ext = extname(absFile).toLowerCase()
-  if (ext === '.js' || ext === '.ts') return `${packageType(absFile, host) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
+  if (ext === '.js' || ext === '.ts') return `${packageType(absFile, host, kept) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
   return classifyFormat(absFile, { content })
 }
 
@@ -211,7 +211,7 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
     }
     // Sorted so the sweep is deterministic regardless of readdir order: artifact bytes are
     // canonicalized by serialize() either way, but multi-file diagnostics keep a stable order.
-    for (const [file, match, fileStats] of found.toSorted(([a], [b]) => sortPaths(a, b))) {
+    for (const [file, match, fileStats] of sortedByPath(found, ([path]) => path)) {
       // Node's glob holds `exclude` to its `**` alone: a file below the directory swept still
       // matches the `*` after it (a directory it takes is never walked).
       if (exclude?.(file)) continue
@@ -225,7 +225,7 @@ function expandDirectories(baseDir, rels, outputs, { keepNamedOutputs = true, ex
   return { files, excluded }
 }
 
-const listPaths = (rels) => [...rels].toSorted(sortPaths).join(', ')
+const listPaths = (rels) => sortedByPath(rels).join(', ')
 
 // One error for every file validation rejected, so a directory sweep names all of them at once
 // instead of one per re-run. A lone offender keeps its exact standalone message. `label` prefixes it.
@@ -259,8 +259,7 @@ export function validationError({ missing, undeclared, nonUtf8 }, label) {
 // `baseDir` is read through `host`, globbed and matched as Node globs and matches the disk
 // (fs.globSync, path.matchesGlob), whichever host's it is.
 export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
-  // Normalized as the paths they're matched against are: no `./`, no trailing `/`.
-  const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map((pattern) => posix.normalize(pattern.slice(1)).replace(/\/+$/u, ''))
+  const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map(extraPattern)
   // Each path once: a walk asks of it, a sweep again, and a named path of every directory above it,
   // where the disk's path.matchesGlob parses each pattern anew.
   const excluded = new Map()
@@ -270,7 +269,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
   }
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
     const matches = globPaths(host, pattern, baseDir, baseDir, exclude)
-    return matches.length === 0 ? [pattern] : matches.toSorted(sortPaths)
+    return matches.length === 0 ? [pattern] : sortedByPath(matches)
   })
   return expandDirectories(baseDir, normalizeEntries(entries, baseDir), outputs, { keepNamedOutputs: false, exclude, host })
 }
@@ -288,6 +287,9 @@ export function validateFiles({ baseDir, realBase, files, resources, withIntegri
   const missing = []
   const undeclared = []
   const nonUtf8 = []
+  // Each package.json's `type` read once, not once per file under it.
+  const types = new Map()
+  const kept = (path, read) => (types.has(path) ? types.get(path) : types.set(path, read()).get(path))
   for (const [rel, stats] of files) {
     if (stats === undefined) {
       missing.push(rel)
@@ -298,13 +300,13 @@ export function validateFiles({ baseDir, realBase, files, resources, withIntegri
     const abs = join(baseDir, rel)
     const buf = host.readFile(abs)
     if (withIntegrity) integrities.set(rel, sha512integrity(buf))
-    const format = sourceFormat(abs, buf, host)
+    const format = sourceFormat(abs, buf, host, kept)
     // A binary plist can't be stored as the UTF-8 string its 'xml' format implies, so it is NOT source: it falls through to the resource branch (opaque base64).
     if (format !== undefined && !isBinaryPlist(rel, buf)) {
       // Source is stored as a UTF-8 string, so non-UTF-8 bytes would lossily diverge from the file on disk.
       if (isUtf8(buf)) codeFiles.set(rel, { content: buf.toString('utf8'), format, executable })
       else nonUtf8.push({ rel, format })
-    } else if (resources.has(pathExt(rel) || basename(rel).toLowerCase())) {
+    } else if (inResources(rel, resources)) {
       const utf8 = isUtf8(buf)
       resourceFiles.set(rel, { content: utf8 ? buf.toString('utf8') : buf.toString('base64'), format: utf8 ? 'resource' : 'resource:base64', executable })
     } else {

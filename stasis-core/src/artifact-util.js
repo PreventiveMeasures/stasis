@@ -328,7 +328,11 @@ export const sortedByPath = (items, keyOf = (item) => item) => Array.from(items,
 
 const entryKey = ([key]) => key
 
-export const isPlainObject = (x) => x && [null, Object.prototype].includes(Object.getPrototypeOf(x))
+export function isPlainObject(x) {
+  if (!x) return false
+  const proto = Object.getPrototypeOf(x)
+  return proto === null || proto === Object.prototype
+}
 
 export const fromEntries = (entries) => Object.setPrototypeOf(Object.fromEntries(entries), null)
 
@@ -536,24 +540,23 @@ export function mergeImportMaps(a, b, label) {
   return out
 }
 
+// A weak 'stat:*' yields to a real format; two real formats or a stat kind flip are fatal.
+export function upsertFormat(map, file, format) {
+  const currentFormat = map.get(file)
+  map.set(file, currentFormat === undefined ? format : reconcileFormat(format, currentFormat, file))
+}
+
 export function mergeFormatMaps(a, b, label) {
   const out = new Map()
-  const absorb = (formats) => {
+  for (const formats of [a, b]) {
     for (const [file, format] of formats) {
-      const currentFormat = out.get(file)
-      if (currentFormat === undefined) {
-        out.set(file, format)
-        continue
-      }
       try {
-        out.set(file, reconcileFormat(format, currentFormat, file))
+        upsertFormat(out, file, format)
       } catch (cause) {
         throw new Error(`${label}: ${cause.message}`, { cause })
       }
     }
   }
-  absorb(a)
-  absorb(b)
   return out
 }
 
@@ -625,8 +628,7 @@ export function mergeModuleMaps(a, b, label) {
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
       // `repo`, `vendored` and `subpackages` are metadata, held to nothing: either side's, where only one records it, else `a`'s.
-      const merged = withMetadataOf(existing, info)
-      if (merged !== existing) out.set(dir, merged)
+      out.set(dir, withMetadataOf(existing, info))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)
@@ -651,7 +653,7 @@ export function mergeModuleMaps(a, b, label) {
 
 // A full path SEGMENT, NOT a bare substring (`foo_node_modules/dep` is a source dir, not a bucket).
 export function hasNodeModulesSegment(path) {
-  return path.split('/').includes('node_modules')
+  return path === 'node_modules' || path.startsWith('node_modules/') || path.endsWith('/node_modules') || path.includes('/node_modules/')
 }
 
 // Deepest segment-aligned `node_modules/` marker, or -1: `lastIndexOf` alone would also match a bare

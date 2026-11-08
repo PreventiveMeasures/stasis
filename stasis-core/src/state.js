@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, importTargetsEqual, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -19,7 +19,7 @@ import corePackage from './package.cjs'
 
 // Destructure off the namespace: captures the real fns at eval time, so writes survive --mock's
 // syncBuiltinESMExports() remock of node:fs.
-const { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } = fs
+const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
 const FILE_LOCK = 'stasis.lock.json'
@@ -44,11 +44,8 @@ function readPackageJSON(host, pkgAbsolute) {
   return json
 }
 
-// A weak 'stat:*' yields to a real format; two real formats or a stat kind flip are fatal.
-function upsertFormat(map, file, format) {
-  const currentFormat = map.get(file)
-  map.set(file, currentFormat === undefined ? format : reconcileFormat(format, currentFormat, file))
-}
+// A Map of Maps, copied as deep as it nests.
+const cloneMaps = (map) => new Map(Array.from(map, ([key, value]) => [key, value instanceof Map ? cloneMaps(value) : value]))
 
 // Loader formats the extension alone decides; `.js`/`.ts` follow the nearest package `type`.
 const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs': 'commonjs', '.mts': 'module-typescript', '.cts': 'commonjs-typescript' }
@@ -225,22 +222,15 @@ export class State {
         const sourcesPath = this.config.bundleFile
         const sources = this.#readMaybe(sourcesPath)
         if (sources && !this.config.replaceBundle) {
-          const bundle = parseBundleBytes(sources)
-          // v0 bundle has no per-file formats or import map -- serving one via a sidecar widens trust.
-          assert.equal(bundle.version, Bundle.VERSION,
-            `stasis sidecar requires a v1 bundle; ${sourcesPath} is v${bundle.version}. ` +
-            `Re-bundle with the current stasis or \`bundle=replace\` against a v0-free starting point.`)
-          assert.equal(bundle.config.scope, this.config.scope)
-          this.#assertLoaded(bundle, sourcesPath)
+          const bundle = this.#parseServedBundle(sources, sourcesPath, 'stasis sidecar',
+            'Re-bundle with the current stasis or `bundle=replace` against a v0-free starting point.')
           // Cross-checked against the parent's lockfile, or absorbed if none (shared hashes/entries/
           // modules mean those writes propagate to the parent).
-          this.#absorbCodeBundle(bundle, this.#lockfileLoaded)
+          this.#absorbCodeBundle(bundle)
         }
-        this.#absorbResourcesBundleFile(this.#lockfileLoaded)
+        this.#absorbResourcesBundleFile()
       }
-      if (this.config.frozenBundle) {
-        assert.ok(this.#bundleSources !== null, 'No bundle, but attempting to run in frozen bundle mode')
-      }
+      if (this.config.frozenBundle) this.#freezeBundle()
       // Register AFTER every fallible step so a throw leaves no dead reference. Frozen sidecars
       // join neither registry (--fs neither captures nor serves in frozen-bundle mode).
       if (this.config.writeBundle) parentState.registerSidecar(this)
@@ -278,7 +268,6 @@ export class State {
     assert.ok(this.root, `stasis: no package.json found at or above ${resolve(root)}; run stasis from within a project`)
 
     let loaded = false
-    let lockfileLoaded = false
     // Explicit lockFile: suppress the per-rootDir probe so a stale project-root lockfile can't
     // shadow it; substituted below.
     const explicitLockPath = this.config.lockFile
@@ -302,7 +291,7 @@ export class State {
         // false: a static build checks the whole bundle itself, every offender at once.
         if (checkPolicy) this.#policy = this.config.policy
         // stasis.config.json may set a `bundleFile` the probe couldn't see -- re-resolve and re-read.
-        const configuredPath = this.config.bundleFile || join(rootDir, FILE_CODE)
+        const configuredPath = this.#bundlePath
         if (configuredPath !== sourcesPath) {
           sourcesPath = configuredPath
           sources = this.#readMaybe(sourcesPath)
@@ -310,8 +299,8 @@ export class State {
       }
 
       const lock = explicitLockPath ? this.#readMaybe(explicitLockPath, 'utf-8') : lockProbe
-      lockfileLoaded = this.#absorbLockfile(lock, explicitLockPath || join(rootDir, FILE_LOCK))
-      this.#loadBundleArtifacts(sources, sourcesPath, lockfileLoaded)
+      this.#absorbLockfile(lock, this.#lockPath)
+      this.#loadBundleArtifacts(sources, sourcesPath)
 
       // Innermost matching rootDir wins (per-dir opt-in); without this break an outer root
       // re-detects a rootDir-independent bundleFile and trips `loaded`.
@@ -321,17 +310,17 @@ export class State {
     // Explicit lockfile but no discovery indicator: the loop never ran, so absorb here against
     // `this.root` (outermost) so the run still has attestation.
     if (!loaded && explicitLockPath) {
-      lockfileLoaded = this.#absorbLockfile(this.#readMaybe(explicitLockPath, 'utf-8'), explicitLockPath)
+      this.#absorbLockfile(this.#readMaybe(explicitLockPath, 'utf-8'), explicitLockPath)
     }
 
     // Explicit bundleFile suppressed as a root signal above: load against `this.root` (outermost).
     if (!loaded && (explicitBundlePath || this.config.resourcesBundleFile)) {
-      this.#loadBundleArtifacts(explicitBundlePath ? this.#readMaybe(explicitBundlePath) : null, explicitBundlePath, lockfileLoaded)
+      this.#loadBundleArtifacts(explicitBundlePath ? this.#readMaybe(explicitBundlePath) : null, explicitBundlePath)
     }
 
     // Post-loop: with no stasis files the loop never runs, and a frozen run must fail closed.
-    if (this.config.frozen) assert.ok(lockfileLoaded, 'No lockfile, but attempting to run in frozen mode')
-    if (this.config.frozenBundle) assert.ok(this.#bundleSources !== null, 'No bundle, but attempting to run in frozen bundle mode')
+    if (this.config.frozen) assert.ok(this.#lockfileLoaded, 'No lockfile, but attempting to run in frozen mode')
+    if (this.config.frozenBundle) this.#freezeBundle()
 
     // Claim write targets so no other live State (any copy) silently targets the same file.
     if (this.config.writeBundle) {
@@ -361,13 +350,13 @@ export class State {
     this.#preloadRoot = preloadRoot
   }
 
-  // Absorb a lockfile's attestation; returns whether it was actually absorbed. Lockfile.parse
-  // requires both imports and formats, so an absorbed lockfile always attests them.
+  // Absorb a lockfile's attestation (#lockfileLoaded). Lockfile.parse requires both imports and formats,
+  // so an absorbed lockfile always attests them.
   #absorbLockfile(lock, lockPath) {
     if (lock && !this.config.useLockfile && !this.config.ignoreLockfile) {
       throw new Error(`Unexpected ${lockPath} with config.lock = 'none'`)
     }
-    if (!lock || !this.config.useLockfile || this.config.replaceLockfile) return false
+    if (!lock || !this.config.useLockfile || this.config.replaceLockfile) return
     const lockfile = Lockfile.parse(lock)
     if (this.config.frozen) assert.equal(lockfile.config.scope, this.config.scope)
     this.#assertLoaded(lockfile, lockPath)
@@ -380,7 +369,7 @@ export class State {
     if (includeSources) this.entries = lockfile.entries
 
     for (const [dir, { files }] of this.modules) {
-      for (const [name, hash] of Object.entries(files)) noupsert(this.hashes, join(dir, name), hash)
+      for (const [name, hash] of Object.entries(files)) noupsert(this.hashes, moduleFileKey(dir, name), hash)
     }
     this.#lockImports = lockfile.imports
     this.#lockFormats = lockfile.formats
@@ -388,7 +377,6 @@ export class State {
     // a stale exec bit.
     this.#absorbExecutable(lockfile)
     this.#lockfileLoaded = true
-    return true
   }
 
   // An on-disk bundle is read in under add/load/frozen; replace starts over.
@@ -398,47 +386,50 @@ export class State {
 
   // Gate and load the bundle artifacts for a committed root; `sources` may be null (no bundle, or
   // resources-only).
-  #loadBundleArtifacts(sources, sourcesPath, lockfileLoaded) {
+  #loadBundleArtifacts(sources, sourcesPath) {
     if (sources && this.config.bundleMode === 'none') {
       throw new Error(`Unexpected ${sourcesPath} with config.bundle = 'none'`)
     }
     // A frozen bundle is self-attesting, so it needs no sibling lockfile and is exempt here.
-    if (sources && !lockfileLoaded && this.config.useLockfile && !this.config.replaceLockfile && !this.config.frozenBundle) {
+    if (sources && !this.#lockfileLoaded && this.config.useLockfile && !this.config.replaceLockfile && !this.config.frozenBundle) {
       throw new Error('stasis.lock.json missing, can not use sources')
     }
-    if (sources && this.#absorbsBundles) this.#loadCodeBundle(sources, sourcesPath, lockfileLoaded)
-    this.#absorbResourcesBundleFile(lockfileLoaded)
+    if (sources && this.#absorbsBundles) this.#loadCodeBundle(sources, sourcesPath)
+    this.#absorbResourcesBundleFile()
   }
 
   // The resources half of a split layout, when configured and present on disk.
-  #absorbResourcesBundleFile(lockfileLoaded) {
+  #absorbResourcesBundleFile() {
     const resourcesPath = this.config.resourcesBundleFile
     const resourcesData = resourcesPath ? this.#readMaybe(resourcesPath) : null
-    if (resourcesData && this.#absorbsBundles) this.#absorbResourcesBundle(resourcesData, { lockfileLoaded, resourcesPath })
+    if (resourcesData && this.#absorbsBundles) this.#absorbResourcesBundle(resourcesData, resourcesPath)
   }
 
-  #loadCodeBundle(sources, sourcesPath, lockfileLoaded) {
-    const bundle = parseBundleBytes(sources)
-    // Bundle.parse accepts v0 for offline tooling; the runtime refuses it -- v0 has no per-file
-    // formats or import map, so serving one widens the trust boundary.
-    assert.equal(bundle.version, Bundle.VERSION,
-      `stasis run requires a v1 bundle; ${sourcesPath} is v${bundle.version}. ` +
-      `Re-bundle with the current stasis (\`stasis bundle\`) or \`stasis run --bundle=replace\` ` +
-      `against a v0-free starting point to upgrade.`)
+  // A code bundle the runtime serves, parsed: Bundle.parse accepts v0 for offline tooling, but v0 has no
+  // per-file formats or import map, so serving one widens the trust boundary.
+  #parseServedBundle(bytes, path, runner, remedy) {
+    const bundle = parseBundleBytes(bytes)
+    assert.equal(bundle.version, Bundle.VERSION, `${runner} requires a v1 bundle; ${path} is v${bundle.version}. ${remedy}`)
     assert.equal(bundle.config.scope, this.config.scope)
-    this.#assertLoaded(bundle, sourcesPath)
+    this.#assertLoaded(bundle, path)
+    return bundle
+  }
+
+  #loadCodeBundle(sources, sourcesPath) {
+    const bundle = this.#parseServedBundle(sources, sourcesPath, 'stasis run',
+      'Re-bundle with the current stasis (`stasis bundle`) or `stasis run --bundle=replace` against a v0-free starting point to upgrade.')
     // assertEntry short-circuits on an empty set, so a runnable full-scope code bundle must declare
     // an entry here -- else any bundled file could run as the root. Add-only bundles have none.
     assert.ok(!this.config.full || bundle.entries.size > 0 || !bundle.hasCode,
       `${sourcesPath}: a full-scope bundle carrying code must declare an entry to run ` +
       `(an add-only attestation has none; run a bundle built by \`stasis bundle\`/\`stasis run\`)`)
-    this.#absorbCodeBundle(bundle, lockfileLoaded)
+    this.#absorbCodeBundle(bundle)
   }
 
   // Take a parsed code bundle (unified, or the code half) as the live maps, cross-checked against
   // the loaded lockfile, and snapshot it when it is the frozen attestation.
-  #absorbCodeBundle(bundle, lockfileLoaded) {
-    this.#mergeBundleMetadata(bundle, { lockfileLoaded })
+  #absorbCodeBundle(bundle) {
+    this.#mergeBundleMetadata(bundle)
     for (const [file, content] of bundle.sources) {
       if (Bundle.isResourceFormat(bundle.formats.get(file))) this.resources.set(file, content)
       else this.sources.set(file, content)
@@ -448,20 +439,22 @@ export class State {
     this.#absorbExecutable(bundle)
     this.#seedReasonFromBundle(bundle)
     this.#absorbRepo('code', bundle)
-    if (this.config.frozenBundle) {
-      // Snapshot before addFile/addImport mutate the live maps; imports is deep-cloned because
-      // this.imports shares bundle.imports's nested Maps.
-      this.#bundleSources = new Set(this.sources.keys())
-      this.#bundleResources = new Set(this.resources.keys())
-      this.#bundleImports = objectToMaps(fileMapToObject(bundle.imports))
-      this.#bundleFormats = new Map(bundle.formats)
-    }
+  }
+
+  // A frozen bundle's attestation, once its halves are absorbed: snapshotted before addFile/addImport
+  // mutate the live maps, imports deep (this.imports shares the bundle's nested Maps).
+  #freezeBundle() {
+    assert.ok(this.#absorbedRepos.size > 0, 'No bundle, but attempting to run in frozen bundle mode')
+    this.#bundleSources = new Set(this.sources.keys())
+    this.#bundleResources = new Set(this.resources.keys())
+    this.#bundleImports = cloneMaps(this.imports)
+    this.#bundleFormats = new Map(this.formats)
   }
 
   // Cross-check bundle metadata (entries/modules) against the loaded lockfile, or absorb it as
   // source of truth when none. v0 buckets carry no version, so unverifiable entries are skipped.
-  #mergeBundleMetadata(bundle, { lockfileLoaded }) {
-    if (lockfileLoaded) {
+  #mergeBundleMetadata(bundle) {
+    if (this.#lockfileLoaded) {
       if (bundle.entries.size > 0) {
         assert.deepStrictEqual([...bundle.entries].toSorted(), [...this.entries].toSorted(), 'bundle/lockfile entries mismatch')
       }
@@ -475,39 +468,34 @@ export class State {
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
         // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to be written again.
-        const withMetadata = withMetadataOf(lockModule, info)
-        if (withMetadata !== lockModule) this.modules.set(dir, withMetadata)
+        this.modules.set(dir, withMetadataOf(lockModule, info))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
       }
       // Hashes alone don't stop a redirect to a different hash-valid file, so every edge the bundle
       // could serve must match the lockfile's attested target (a lockfile superset is fine).
-      if (this.#lockImports !== null) {
-        for (const [conditions, byParent] of bundle.imports) {
-          for (const [parent, specifiers] of byParent) {
-            for (const [specifier, file] of specifiers) {
-              this.#assertAttestedResolution(this.#lockImports, conditions, parent, specifier, file, { what: 'bundle', source: 'lockfile' })
-            }
+      for (const [conditions, byParent] of bundle.imports) {
+        for (const [parent, specifiers] of byParent) {
+          for (const [specifier, file] of specifiers) {
+            this.#assertAttestedResolution(this.#lockImports, conditions, parent, specifier, file, { what: 'bundle', source: 'lockfile' })
           }
         }
       }
       // A format flip changes how hash-valid bytes parse (module<->commonjs) without touching a
       // hash, so every bundle format must match the lockfile's; unattested is fatal.
-      if (this.#lockFormats !== null) {
-        for (const [file, format] of bundle.formats) {
-          this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'bundle', source: 'lockfile' })
-        }
-        // Inverse: a lockfile-tagged resource MUST be tagged in the bundle too, else omitting the
-        // tag routes the base64 payload through this.sources (code) to the loader.
-        for (const [dir, { files }] of bundle.modules) {
-          for (const rel of Object.keys(files)) {
-            const file = moduleFileKey(dir, rel)
-            const lockFormat = this.#lockFormats.get(file)
-            if (!Bundle.isResourceFormat(lockFormat)) continue
-            assert.equal(bundle.formats.get(file), lockFormat,
-              `bundle file ${file} must declare format='${lockFormat}' to match the lockfile`)
-          }
+      for (const [file, format] of bundle.formats) {
+        this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'bundle', source: 'lockfile' })
+      }
+      // Inverse: a lockfile-tagged resource MUST be tagged in the bundle too, else omitting the
+      // tag routes the base64 payload through this.sources (code) to the loader.
+      for (const [dir, { files }] of bundle.modules) {
+        for (const rel of Object.keys(files)) {
+          const file = moduleFileKey(dir, rel)
+          const lockFormat = this.#lockFormats.get(file)
+          if (!Bundle.isResourceFormat(lockFormat)) continue
+          assert.equal(bundle.formats.get(file), lockFormat,
+            `bundle file ${file} must declare format='${lockFormat}' to match the lockfile`)
         }
       }
     } else {
@@ -525,8 +513,7 @@ export class State {
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
           // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
-          const withMetadata = withMetadataOf(existing, info)
-          if (withMetadata !== existing) this.modules.set(dir, withMetadata)
+          this.modules.set(dir, withMetadataOf(existing, info))
         }
         // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
         // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't
@@ -546,7 +533,7 @@ export class State {
 
   // Load the resources half of a split-bundle layout: ONLY resource-format files, unioned into the
   // bundleFile state.
-  #absorbResourcesBundle(resourcesData, { lockfileLoaded, resourcesPath }) {
+  #absorbResourcesBundle(resourcesData, resourcesPath) {
     const bundle = parseBundleBytes(resourcesData)
     this.#assertLoaded(bundle, resourcesPath)
     assert.equal(bundle.version, Bundle.VERSION,
@@ -560,7 +547,7 @@ export class State {
       assert.ok(Bundle.isResourceFormat(format),
         `resources bundle ${resourcesPath} declares non-resource format='${format}' for ${file}`)
     }
-    this.#mergeBundleMetadata(bundle, { lockfileLoaded })
+    this.#mergeBundleMetadata(bundle)
     for (const [file, content] of bundle.sources) this.resources.set(file, content)
     // Union formats: the two halves' file sets must be disjoint.
     for (const [file, format] of bundle.formats) {
@@ -572,16 +559,6 @@ export class State {
     this.#absorbExecutable(bundle)
     this.#seedReasonFromBundle(bundle)
     this.#absorbRepo('resources', bundle)
-    if (this.config.frozenBundle) {
-      // Extend the frozen snapshot, init lazily: resources-only deployments are legal, so
-      // bundleFile may not have populated these.
-      this.#bundleResources ??= new Set()
-      this.#bundleFormats ??= new Map()
-      this.#bundleImports ??= objectToMaps(fileMapToObject(this.imports))
-      this.#bundleSources ??= new Set(this.sources.keys())
-      for (const f of bundle.sources.keys()) this.#bundleResources.add(f)
-      for (const [f, fmt] of bundle.formats) this.#bundleFormats.set(f, fmt)
-    }
   }
 
   // Union (never replace) an absorbed artifact's `executable` list into the live set: a lockfile
@@ -592,7 +569,7 @@ export class State {
 
   // Verify one resolution edge against an attestation map: exact conditions key first, else accept
   // only if every condition set agrees on one target. Unknown edges fatal unless tolerateUnknown.
-  #assertAttestedResolution(attestation, conditions, parent, specifier, file, { what, source = 'lockfile', tolerateUnknown = false, targetPlatform }) {
+  #assertAttestedResolution(attestation, conditions, parent, specifier, file, { what, source, tolerateUnknown = false, targetPlatform }) {
     const edge = `'${specifier}' from ${parent} (${conditions})`
     let attested = attestation.get(conditions)?.get(parent)?.get(specifier)
     if (attested === undefined) {
@@ -628,14 +605,14 @@ export class State {
     if (this.config.frozen && this.#lockFormats !== null) {
       this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'observed', source: 'lockfile' })
     }
-    if (this.config.frozenBundle && this.#bundleFormats !== null) {
+    if (this.config.frozenBundle) {
       this.#assertAttestedFormat(this.#bundleFormats, file, format, { what: 'observed', source: 'frozen bundle' })
     }
   }
 
   // Verify one file's loader format. Callers only pass files that must be attested, so an
   // unattested file means a forged/extra entry -- fatal.
-  #assertAttestedFormat(attestation, file, format, { what, source = 'lockfile' }) {
+  #assertAttestedFormat(attestation, file, format, { what, source }) {
     const attested = attestation.get(file)
     assert.ok(attested !== undefined, `${what} format for ${file} is not attested by the ${source}`)
     assert.equal(format, attested, `${what} format for ${file} mismatches the ${source}`)
@@ -747,10 +724,13 @@ export class State {
     return this.sources.has(file) || this.resources.has(file)
   }
 
+  // { url, absolute, file }: `file` the project-relative key (this.relative's), undefined outside the root.
   #canonical(url) {
     let result = this.#canonicalCache.get(url)
     if (result === undefined) {
       result = this.#canonicalUncached(url)
+      const file = relative(this.root, result.absolute)
+      result.file = relativeEscapes(file) ? undefined : file === '' ? '.' : file
       this.#canonicalCache.set(url, result)
     }
     return result
@@ -774,14 +754,16 @@ export class State {
     return { url: pathToFileURL(real).toString(), absolute: real }
   }
 
+  // Throws, as this.relative, for a URL outside the project root.
   #canonicalFile(url) {
-    return this.relative(this.#canonical(url).absolute)
+    const { absolute, file } = this.#canonical(url)
+    return file ?? this.relative(absolute)
   }
 
   // #canonicalFile, or undefined for a URL outside the project root (the shims then pass through).
   #canonicalFileMaybe(url) {
     try {
-      return this.#canonicalFile(url)
+      return this.#canonical(url).file
     } catch {
       return undefined
     }
@@ -814,7 +796,7 @@ export class State {
   #locateModule(url, { directory = false, synthetic = false } = {}) {
     // Canonicalize first: a linked-in workspace source is recorded under its real path (a source).
     const { absolute } = this.#canonical(url)
-    const file = this.relative(absolute)
+    const file = this.#canonicalFile(url)
     if (synthetic) {
       assert.ok(this.#host.stat(absolute) === null, `the reserved path ${file} is needed for a synthetic empty module, but the project has a real file there`)
     } else {
@@ -830,12 +812,12 @@ export class State {
 
     // findPackageJSON may land on a `{"type":"module"}` sub-bucket marker lacking name/version.
     const { dir: nmRoot, rel: nmRel } = splitNodeModulesPath(file) ?? {}
-    let pkgAbsolute, name, version, repo, vendored, subpackage
+    // rootPkg: a dependency's package.json, whose repo is read only where a record lacks one.
+    let pkgAbsolute, rootPkg, name, version, vendored, subpackage
     if (nmRoot) {
       pkgAbsolute = resolve(this.root, nmRoot, 'package.json')
-      const rootPkg = pkgAbsolute === closestPkgAbsolute ? closestPkg : readPackageJSON(this.#host, pkgAbsolute)
+      rootPkg = pkgAbsolute === closestPkgAbsolute ? closestPkg : readPackageJSON(this.#host, pkgAbsolute)
       ;({ name, version } = rootPkg)
-      repo = packageRepo(rootPkg)
       assert.ok(name, `Missing name in ${this.relative(pkgAbsolute)}`)
       assert.ok(version, `Missing version in ${this.relative(pkgAbsolute)}`)
       // A package.json in a package vendored into this one (bundle-util's vendor dirs) names that
@@ -878,7 +860,7 @@ export class State {
     if (this.#policy !== null && (nmRoot || this.config.full) && !this.hashes.has(file)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined, synthetic ? undefined : this.#links(file))
     if (!this.modules.has(dir)) {
       // Tag node_modules buckets `npm`; workspace/top-level buckets carry no ecosystem.
-      this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, repo, files: Object.create(null) }))
+      this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, repo: rootPkg && packageRepo(rootPkg), files: Object.create(null) }))
     }
     const module = this.modules.get(dir)
     if (module.name !== name || module.version !== version) {
@@ -890,7 +872,8 @@ export class State {
         `'${module.name}@${module.version ?? '(none)'}', package.json has '${name}@${version ?? '(none)'}'${hint}`)
     }
     // A dependency's repo is metadata, its package.json's, held to nothing: a record with none gets it.
-    if (module.repo === undefined && repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
+    const repo = module.repo === undefined && rootPkg ? packageRepo(rootPkg) : undefined
+    if (repo !== undefined) this.modules.set(dir, moduleInfo({ ...module, repo }))
 
     return { absolute, file, dir, module: this.modules.get(dir), closestType, vendored, subpackage }
   }
@@ -999,7 +982,7 @@ export class State {
     }
 
     if (isEntry) this.entries.add(file)
-    const integrity = sha512integrity(source)
+    const integrity = sha512integrity(buf)
     noupsert(this.hashes, file, integrity)
     this.#filesCapturedThisRun.add(file)
     if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it; skip when the channel is off
@@ -1015,7 +998,7 @@ export class State {
     const rel = relative(dir, file)
     assert.ok(!relativeEscapes(rel))
 
-    const inAttestedZone = hasNodeModulesSegment(dir) || this.config.full
+    const inAttestedZone = this.config.full || hasNodeModulesSegment(dir)
     if (inAttestedZone) this.#assertFrozenAttests('File', file, module, rel, asResource ? this.#bundleResources : this.#bundleSources, format)
 
     // Catch a format flip on already-attested bytes here; at write()'s #mergedFormats it would
@@ -1087,7 +1070,7 @@ export class State {
   #readFileOptions(path, source, resources = this.config.resources) {
     const format = classifyFormat(path, { content: source })
     if (format !== undefined && !isBinaryPlist(path, source)) return { format: format ?? undefined, inferFormat: false }
-    if (resources.has(pathExt(path) || basename(path).toLowerCase())) return { resource: true }
+    if (inResources(path, resources)) return { resource: true }
     return null
   }
 
@@ -1168,7 +1151,7 @@ export class State {
     const rel = relative(dir, file)
     assert.ok(!relativeEscapes(rel))
 
-    if (hasNodeModulesSegment(dir) || this.config.full) this.#assertFrozenAttests('Directory', file, module, rel, this.#bundleResources, format)
+    if (this.config.full || hasNodeModulesSegment(dir)) this.#assertFrozenAttests('Directory', file, module, rel, this.#bundleResources, format)
 
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
@@ -1359,7 +1342,7 @@ export class State {
     if (this.config.frozen && this.#lockImports !== null) {
       this.#assertAttestedResolution(this.#lockImports, key, parent, specifier, file, { what: 'observed', source: 'lockfile', tolerateUnknown })
     }
-    if (this.config.frozenBundle && this.#bundleImports !== null) {
+    if (this.config.frozenBundle) {
       this.#assertAttestedResolution(this.#bundleImports, key, parent, specifier, file, { what: 'observed', source: 'frozen bundle', tolerateUnknown })
     }
 
@@ -1587,18 +1570,17 @@ export class State {
     return claims
   }
 
-  // The bundle's informational `reason` map, restricted to `bundledFiles`; only when >1 consumer
+  // The bundle's informational `reason` map, restricted to the files of `contents`; only when >1 consumer
   // contributed. Never attested.
-  #bundleReason(bundledFiles) {
-    const inBundle = bundledFiles instanceof Set ? bundledFiles : new Set(bundledFiles)
+  #bundleReason(contents) {
     const claims = this.#reasonClaims()
 
     const reason = {}
     // Sort keys and file lists: the JSON must be byte-reproducible regardless of record order, else
     // #emitBundle's compare-and-skip sees spurious diffs.
     for (const who of [...claims.keys()].toSorted()) {
-      const files = [...claims.get(who)].filter((file) => inBundle.has(file))
-      if (files.length > 0) reason[who] = files.toSorted(sortPaths)
+      const files = [...claims.get(who)].filter((file) => contents.has(file))
+      if (files.length > 0) reason[who] = sortedByPath(files)
     }
     return Object.keys(reason).length > 1 ? reason : undefined
   }
@@ -1645,7 +1627,7 @@ export class State {
       imports,
       // Narrowed to that half's own buckets and formats.
       executable: narrowExecutable(this.executable, { modules, formats, scope: this.config.scope }),
-      reason: this.#bundleReason(contents.keys()),
+      reason: this.#bundleReason(contents),
       repo: this.#repoFor(half),
     })
   }
@@ -1881,7 +1863,7 @@ export class State {
         if (format === 'directory') {
           // Range-check FIRST so a child-forged `..` key can't make us list it.
           if (!isPathWithin(this.root, absolute)) continue
-          this.addFsDir(url, readdirSync(absolute))
+          this.addFsDir(url, this.#host.readdir(absolute).map((entry) => entry.name))
         } else if (Bundle.isResourceFormat(format)) {
           // Let addFile re-derive the exact resource tag from the re-read bytes rather than trusting
           // the shard's and risking a mismatch.
@@ -1906,12 +1888,10 @@ export class State {
       const absolute = resolve(this.root, file)
       if (!isPathWithin(this.root, absolute)) continue
       try {
-        // statSync, NOT lstatSync: the child's capture followed symlinks, so this reproduces the kind
-        // a legitimate shard carries where lstatSync would report the link and drop it.
-        const stats = statSync(absolute)
-        const kind = stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : null
-        // statSync follows links: a symlink pointing OUT must not attest an external kind under an
-        // in-root key.
+        // A stat, NOT an lstat: the child's capture followed symlinks, so this reproduces the kind a
+        // legitimate shard carries; a symlink pointing OUT must not attest an external kind in-root.
+        const stats = this.#host.stat(absolute)
+        const kind = stats?.isDirectory() ? 'directory' : stats?.isFile() ? 'file' : null
         if (kind === null || !realContained(this.root, absolute)) continue
         this.addFsStat(pathToFileURL(absolute).toString(), kind)
       } catch {
@@ -1965,14 +1945,11 @@ export class State {
   // module the resolve hook records the edge but the load hook never fires. The BFS below is scoped
   // to the stasis-core src shape.
   #backfillBeforeWrite() {
-    const missing = this.#collectMissingImportedFiles()
-    if (missing.size === 0) return
-
     const isStasisCoreFile = (file) => STASIS_CORE_FILE_RE.test(`/${file}`)
 
     // Only stasis-core files are reconstructed; everything else stays a resolution attested without
     // bytes (the load-time getFile gate, not this pass, enforces the trust boundary).
-    const stasisCoreMissing = [...missing].filter((file) => isStasisCoreFile(file))
+    const stasisCoreMissing = [...this.#collectMissingImportedFiles()].filter(isStasisCoreFile)
     if (stasisCoreMissing.length === 0) return
 
     const preloadRel = this.#preloadRoot ? relative(this.root, this.#preloadRoot) : null
@@ -2009,7 +1986,7 @@ export class State {
         const targetAbsolute = fileURLToPath(targetURL)
         let targetFile
         try { targetFile = this.relative(targetAbsolute) } catch { return }
-        if (!isStasisCoreFile(targetFile) || !existsSync(targetAbsolute)) return
+        if (!isStasisCoreFile(targetFile) || !this.#exists(targetAbsolute)) return
         queue.push(targetFile)
         this.addImport(baseURL, specifier, targetURL, { conditions: PRELOAD_CONDITIONS })
       }

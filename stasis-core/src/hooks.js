@@ -351,19 +351,19 @@ function initStateFromPackage(url) {
 function load(url, context, nextLoad) {
   assert.equal(typeof url, 'string')
 
-  // Runner-infrastructure passthrough (see entryUnresolved): a preload's module graph loads
-  // before the entry (or lazily after, from an infra parent). Stash the raw result so a later
-  // app-graph edge can promote the module with the exact bytes that executed.
-  if ((entryUnresolved || infraUrls.has(url)) && !url.startsWith('node:')) {
-    infraUrls.add(url)
-    const result = loadCounted(nextLoad, url, context)
-    if (!infraSources.has(url)) infraSources.set(url, { source: result.source, format: result.format })
-    return result
-  }
-
   if (url.startsWith('node:')) {
     const result = nextLoad(url, context)
     assert.equal(result.format, 'builtin')
+    return result
+  }
+
+  // Runner-infrastructure passthrough (see entryUnresolved): a preload's module graph loads
+  // before the entry (or lazily after, from an infra parent). Stash the raw result so a later
+  // app-graph edge can promote the module with the exact bytes that executed.
+  if (entryUnresolved || infraUrls.has(url)) {
+    infraUrls.add(url)
+    const result = loadCounted(nextLoad, url, context)
+    if (!infraSources.has(url)) infraSources.set(url, { source: result.source, format: result.format })
     return result
   }
 
@@ -410,19 +410,20 @@ function load(url, context, nextLoad) {
 // skipping it would ship a dangling edge a frozen replay never verifies. addFile re-verifies the
 // stashed bytes against disk (and against the lockfile/bundle in frozen modes), and the module's
 // own remembered resolutions replay transitively so its dependencies aren't dangling either.
+// One resolved but never loaded is only dropped: a live load would capture it.
 function promoteInfraUrl(url, { isEntry = false } = {}) {
   if (!infraUrls.delete(url)) return
   const stashed = infraSources.get(url)
+  if (stashed === undefined) return
   infraSources.delete(url)
   // Same disk fallback as the live load path: Node's CJS loader may return source=null.
-  const source = stashed?.source ?? readFileSync(fileURLToPath(url))
-  recording(() => state.addFile(url, { source, format: stashed?.format ?? undefined, isEntry }))
+  const source = stashed.source ?? readFileSync(fileURLToPath(url))
+  recording(() => state.addFile(url, { source, format: stashed.format ?? undefined, isEntry }))
   const edges = infraEdges.get(url)
   infraEdges.delete(url)
   for (const [specifier, edge] of edges ?? []) {
     recording(() => state.addImport(url, specifier, edge.url, edge.context))
-    if (infraSources.has(edge.url)) promoteInfraUrl(edge.url)
-    else infraUrls.delete(edge.url) // resolved but never loaded: a live load would capture it
+    promoteInfraUrl(edge.url)
   }
 }
 
@@ -492,18 +493,18 @@ function resolve(specifier, context, nextResolve) {
     if (!state.config.full && !(parentURL && state.inNodeModules(parentURL))) return nextResolve(specifier)
     // A bare specifier with a parent resolves from the recorded import map; otherwise skip
     // nextResolve so the entry needn't be on disk.
+    let url
+    let format
     if (parentURL && !specifier.startsWith('file:')) {
-      const { url, format } = state.getImport(parentURL, specifier, { conditions, importAttributes })
-      // Friendlier error at resolve time; the load gate is the load-bearing one.
-      if (format != null && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
-      assertInfraMatchesBundle(url)
-      return { url, format, importAttributes: undefined, shortCircuit: true }
+      ({ url, format } = state.getImport(parentURL, specifier, { conditions, importAttributes }))
+    } else {
+      url = specifier.startsWith('file:') ? specifier : pathToFileURL(resolvePath(process.cwd(), specifier)).toString()
+      // A forked child's main module isn't a declared CLI entry, so skip assertEntry (getFile still
+      // fails closed on anything unattested).
+      if (!parentURL && state.config.full && !forkedChild) state.assertEntry(url)
+      format = state.getFormat(url)
     }
-    const url = specifier.startsWith('file:') ? specifier : pathToFileURL(resolvePath(process.cwd(), specifier)).toString()
-    // A forked child's main module isn't a declared CLI entry, so skip assertEntry (getFile still
-    // fails closed on anything unattested).
-    if (!parentURL && state.config.full && !forkedChild) state.assertEntry(url)
-    const format = state.getFormat(url)
+    // Friendlier error at resolve time; the load gate is the load-bearing one.
     if (format != null && !NODE_FORMATS.has(format)) refuseNonNodeFormat(format, url)
     assertInfraMatchesBundle(url)
     return { url, format, importAttributes: undefined, shortCircuit: true }
@@ -611,8 +612,7 @@ function patchCjsResolution() {
       // A require() executes its target: remember it so write() can attest/verify anything the
       // load hook never saw, and fold in a module the preload phase already executed.
       state.observeExecution(resolvedUrl)
-      if (infraSources.has(resolvedUrl)) promoteInfraUrl(resolvedUrl)
-      else infraUrls.delete(resolvedUrl)
+      promoteInfraUrl(resolvedUrl)
     }
     const result = originalLoad.call(this, request, parent, ...rest)
     // Under --bundle=load, an attested source the load hook never served just executed from DISK

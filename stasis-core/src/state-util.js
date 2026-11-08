@@ -47,11 +47,8 @@ export function readFileSyncMaybe(dir, file, encoding, host = diskHost) {
 }
 
 export function noupsert(map, key, value) {
-  if (map.has(key)) {
-    assert.deepStrictEqual(map.get(key), value, `Conflict for ${JSON.stringify(key)}`)
-  } else {
-    map.set(key, value)
-  }
+  if (!map.has(key)) map.set(key, value)
+  else if (!Object.is(map.get(key), value)) assert.deepStrictEqual(map.get(key), value, `Conflict for ${JSON.stringify(key)}`)
 }
 
 // Canonicalize for write-target collision detection: the host's realpath catches symlink aliases resolve() would miss; lexical fallback for not-yet-written targets.

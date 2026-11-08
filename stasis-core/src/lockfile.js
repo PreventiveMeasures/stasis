@@ -85,9 +85,7 @@ export class Lockfile {
     const imports = parseImports(json.imports)
     const formats = parseFormats(json.formats)
     // Every executable must be a file this lockfile attests.
-    const executable = json.executable === undefined
-      ? new Set()
-      : parseExecutable(json.executable, { what: 'lockfile', files: flatKeys, formats, scope: json.config.scope })
+    const executable = parseExecutable(json.executable, { what: 'lockfile', files: flatKeys, formats, scope: json.config.scope })
 
     return new Lockfile({ config: json.config, entries, modules, imports, formats, executable })
   }
