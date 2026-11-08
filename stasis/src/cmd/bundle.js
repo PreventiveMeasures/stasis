@@ -2773,6 +2773,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     } catch (cause) {
       throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
     }
+    refuseOtherRoot(existing, `the bundle at ${target}`, root, { cwd, at: outAbs })
     // What the bundle and lockfile on disk carry is written again, so held to the config's Policy too.
     const policy = parsePolicy(CONFIG_FILE, readConfigFile('bundleCommand', root))
     const links = linksOn(root)
@@ -2798,11 +2799,22 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
         } catch (cause) {
           throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
         }
+        refuseOtherRoot(existingLock, `the lockfile at ${lockfile}`, root, { cwd, at: lockAbs })
         // It may record more than the bundle beside it (a broader run's capture).
         policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
       }
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
+  } else if (add && lockData && existsSync(lockAbs)) {
+    // No bundle at the target to add to, but a lockfile at --lockfile: one rooted elsewhere attests a
+    // bundle at that root (the default target is the root's), which this build would leave as it is,
+    // writing its own apart and its lockfile over that one's. One that can't be read is replaced, as
+    // it always was.
+    let existingLock
+    try {
+      existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
+    } catch { /* replaced */ }
+    if (existingLock !== undefined) refuseOtherRoot(existingLock, `the lockfile at ${lockfile}`, root, { cwd, at: lockAbs })
   }
 
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
@@ -2901,6 +2913,48 @@ function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost })
   } catch (cause) {
     throw new Error(`${label} (lock = frozen): ${cause.message}`, { cause })
   }
+}
+
+// The directory the paths of `artifact` (a Bundle or Lockfile) are relative to, of `candidates` (in
+// order): the first holding each workspace package it records, as a State there would find it (a
+// package.json of the name it records, where it records a name) with each of its entries; where it
+// records no workspace package, each npm dependency (a package.json of its name). undefined where it
+// records none of these, or no candidate holds them all (one removed since, say).
+function artifactRootOf(artifact, candidates, host = diskHost) {
+  const named = [...artifact.modules].filter(([, info]) => typeof info.name === 'string')
+  const workspace = named.filter(([dir]) => !hasNodeModulesSegment(dir))
+  const packages = workspace.length > 0 ? workspace : named.filter(([, info]) => info.ecosystem === 'npm')
+  if (packages.length === 0) return undefined
+  const entries = workspace.length > 0 ? [...artifact.entries ?? []] : []
+  const holds = (dir) => packages.every(([pkg, { name }]) => readPackageJson(dir, moduleFileKey(pkg, 'package.json'), { host })?.name === name) &&
+    entries.every((entry) => host.stat(join(dir, entry))?.isFile() === true)
+  return candidates.find(holds)
+}
+
+// Each directory from `dir` up to the filesystem root, `dir` first.
+function* dirsUpFrom(dir) {
+  for (let at = dir; ; at = dirname(at)) {
+    yield at
+    if (dirname(at) === at) return
+  }
+}
+
+// Refuse, under --add, to add the build rooted at `root` to `artifact`, the existing bundle or
+// lockfile at `at` (`what`, for the message), where its paths are relative to another directory: of
+// the build's root, then each directory from `cwd` up, then each from the artifact's own up, the
+// first holding what it records (artifactRootOf). Merged, its records and the build's would be keyed
+// apart, never held to each other; a lockfile left for a bundle written elsewhere would be replaced.
+// A lockfile the build before wrote in the nested package it was run in, its paths relative to the
+// project above, roots the next build in that package (STASIS_ROOT_FILES), say. One whose root
+// can't be told is added to as ever.
+function refuseOtherRoot(artifact, what, root, { cwd, at }) {
+  const baseDir = resolve(cwd)
+  const theirs = artifactRootOf(artifact, [...new Set([root, ...dirsUpFrom(baseDir), ...dirsUpFrom(dirname(at))])])
+  if (theirs === undefined || theirs === root) return
+  const shown = (dir) => relative(baseDir, dir) || '.'
+  const markers = STASIS_ROOT_FILES.filter((name) => existsSync(join(root, name)))
+  const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')})`
+  throw new Error(`bundleCommand: --add can't add to ${what}: its paths are relative to ${shown(theirs)} and this build's to ${shown(root)}${rootedBy}; rebuild it without --add`)
 }
 
 // The bundle bundleCommand writes of its options (but `brotliQuality` and `add`, which say how it is
