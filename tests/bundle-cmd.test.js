@@ -5302,6 +5302,46 @@ test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json, and
   }
 }))
 
+test('buildBundle --metro holds the app\'s Metro graph to rn.config.json\'s restrictions, as rn-bundle does', withTmp(async (t, tmp) => {
+  // An npm alias ("nice": "npm:evil@1") is installed as nice but named evil; ./gone, mapped false, is
+  // Metro's empty module; the .po is a transform's input and metro.config.js's `tooling` a config's.
+  jsProject(tmp, { 'index.js': "require('./src/a')\nrequire('dep')\nrequire('nice')\nrequire('./gone')\nrequire('./img/logo.png')\nrequire('./messages.po')\n" }, { name: 'app', version: '0.0.0', 'react-native': { './gone.js': false } })
+  writeTree(tmp, {
+    'src/a.js': 'module.exports = 1\n',
+    'img/logo.png': 'PNG',
+    'img/logo@2x.png': 'PNG@2x',
+    'messages.po': 'msgid "Hello"\nmsgstr "Hallo"\n',
+    'metro.config.js': "require('tooling')\nmodule.exports = {}\n",
+    ...pkgFiles('node_modules/dep', 'dep', 'index.js', 'module.exports = 2\n'),
+    ...pkgFiles('node_modules/tooling', 'tooling', 'index.js', 'module.exports = 3\n'),
+    ...pkgFiles('node_modules/metro-runtime', 'metro-runtime', 'src/modules/empty-module.js', "'use strict'\n"),
+    'node_modules/nice/package.json': JSON.stringify({ name: 'evil', version: '1.0.0', main: 'index.js' }),
+    'node_modules/nice/index.js': 'module.exports = 4\n',
+  })
+  const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['png', 'po'] }
+  const refusal = async (config, given = options) => {
+    writeFileSync(join(tmp, 'rn.config.json'), JSON.stringify(config))
+    return buildBundle(given).then(() => null, (error) => error.message)
+  }
+  const forbids = (...errors) => `stasis bundle: the --metro build takes what rn.config.json forbids:\n${errors.map((error) => `  ${error}`).join('\n')}`
+
+  t.assert.equal(await refusal({ disallowedModules: ['tooling'], disallowedPaths: ['messages.po'] }), null)
+  // Each file of an asset, its other scales too, and Metro's empty module.
+  t.assert.equal(await refusal({ allowedPaths: ['index.js', 'node_modules/dep', 'node_modules/nice'] }), forbids(
+    'img/logo.png matches none of rn.config.json\'s allowedPaths',
+    'img/logo@2x.png matches none of rn.config.json\'s allowedPaths',
+    'node_modules/metro-runtime/src/modules/empty-module.js matches none of rn.config.json\'s allowedPaths',
+    'src/a.js matches none of rn.config.json\'s allowedPaths',
+  ))
+  // A package by its package.json's name; the app's own files are the app's.
+  t.assert.equal(await refusal({ disallowedModules: ['evil'] }), forbids('node_modules/nice/index.js is of evil, which matches "evil" of rn.config.json\'s disallowedModules'))
+  t.assert.equal(await refusal({ allowedModules: ['app', 'dep', 'e*', 'metro-runtime'] }), null)
+
+  // Without --metro, none applies; one of another kind fails the bundle, as rn-bundle's build fails.
+  t.assert.equal(await refusal({ disallowedPaths: ['src'] }, { cwd: tmp, entries: ['index.js'], mainFields: ['main'], resources: ['png', 'po'] }), null)
+  t.assert.equal(await refusal({ disallowedPaths: ['/etc'] }), 'rn.config.json: disallowedPaths is a list of globs of paths from the project root, each a directory\'s files too ("src", "src/**/*.js", "node_modules"), not ["/etc"]')
+}))
+
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {
   // Metro builds `require('./img/logo.png')` into a module of its own,
   // `module.exports = require('react-native/Libraries/Image/AssetRegistry').registerAsset({...})`, React
