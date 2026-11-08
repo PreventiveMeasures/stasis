@@ -137,22 +137,26 @@ test("buildVfsBundle detects the one lockfile without stasis.config.json's lockf
 })
 
 test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and a Soldeer one", async (t) => {
+  // A Foundry project at the JS project's root, its remapped dependency installed by Soldeer's tree.
   const files = {
     'package.json': manifest('p', ['used']),
     'pnpm-lock.yaml': pnpmLock({ '.': ['used'] }),
     'src/a.js': "require('used')\n",
-    ...under('contracts', SOLDEER),
-    'contracts/src/A.sol': 'pragma solidity ^0.8.0;\ncontract A {}\n',
+    ...SOLDEER,
+    'remappings.txt': 'dep/=lib/dep/\n',
+    'lib/dep/D.sol': 'pragma solidity ^0.8.0;\ncontract D {}\n',
+    'src/A.sol': 'pragma solidity ^0.8.0;\nimport "dep/D.sol";\ncontract A {}\n',
   }
   // Built apart, as entries of other languages are, their options the same, and their bundles merged.
-  const entries = { 'src/a.js': {}, 'contracts/src/A.sol': {} }
-  const lockfiles = ['pnpm-lock.yaml', 'contracts/soldeer.lock']
+  const entries = { 'src/a.js': {}, 'src/A.sol': {} }
+  const lockfiles = ['pnpm-lock.yaml', 'soldeer.lock']
   const build = (config) => buildVfsBundle({ vfs: vfsOf(configured(files, config)), cache: store() })
-  // Detected, pnpm's alone, which builds no Solidity bundle.
-  await t.assert.rejects(build({ entries }), /^Error: buildVfsBundle: only JS bundles are built with pnpm$/u)
+  // Detected, neither: both install the root.
+  await t.assert.rejects(build({ entries }), /^Error: buildVfsBundle: no packageManager given, and more than one lockfile installs \/: \/pnpm-lock\.yaml \(pnpm\), \/soldeer\.lock \(soldeer\)$/u)
   const built = await build({ lockfiles, entries })
-  t.assert.deepStrictEqual([...built.bundle.entries].toSorted(), ['contracts/src/A.sol', 'src/a.js'])
+  t.assert.deepStrictEqual([...built.bundle.entries].toSorted(), ['src/A.sol', 'src/a.js'])
   t.assert.ok(built.bundle.sources.has('node_modules/.pnpm/used@1.0.0/node_modules/used/index.js'))
+  t.assert.ok(built.bundle.sources.has('lib/dep/D.sol'), 'by the remapping at the root')
   t.assert.deepStrictEqual(built.packageManagers, ['pnpm', 'soldeer'])
   // No lockfile, a Solidity build having none, whichever build comes first.
   t.assert.equal(built.lockfile, undefined)
@@ -160,7 +164,15 @@ test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and 
   t.assert.equal((await build({ lockfiles, entries: reversed })).lockfile, undefined)
   // Without entries, none are taken: which kind is not the lockfiles' to say.
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles })) }), [])
-  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles, entries })) }), ['src/a.js', 'contracts/src/A.sol'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles, entries })) }), ['src/a.js', 'src/A.sol'])
+  // A Soldeer project below the root: its remappings are not the root's, which the .sol entries are
+  // built from, so they are refused, naming where to bundle them from; JS entries alone are not.
+  const nested = { ...TWO, ...under('contracts', SOLDEER), 'contracts/src/A.sol': files['src/A.sol'] }
+  const cache = store()
+  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configured(nested, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries: { 'src/a.js': {}, 'contracts/src/A.sol': {} } })), cache }), /^Error: buildVfsBundle: contracts\/src\/A\.sol is built from \/, which reads no foundry\.toml or remappings of the Soldeer project stasis\.config\.json's lockfiles names in \/contracts \(contracts\/soldeer\.lock\): bundle its \.sol entries from \/contracts$/u)
+  t.assert.deepStrictEqual(cache.calls, [], 'refused before anything is fetched')
+  const js = await buildVfsBundle({ vfs: vfsOf(configured(nested, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries: { 'src/a.js': {} } })), cache: store() })
+  t.assert.deepStrictEqual([...js.bundle.entries], ['src/a.js'])
 })
 
 test("buildVfsBundle takes a lockfile stasis.config.json names above it, its workspace root's, as the one detected", async (t) => {

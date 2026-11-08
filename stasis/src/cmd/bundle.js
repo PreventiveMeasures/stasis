@@ -2433,6 +2433,13 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       if (!posix.relative(cwd, abs).split('/').some((part) => installs.has(part)) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
     }
   }
+  // A Solidity build reads the foundry.toml and remappings at cwd alone, so one of a Soldeer project
+  // laid out from another directory would miss them: refused, before anything is fetched.
+  const sol = kinds.indexOf('sol')
+  const elsewhere = specs.find((spec, i) => pms[i].kind === 'sol' && spec.cwd !== cwd)
+  if (sol !== -1 && elsewhere !== undefined) {
+    throw new Error(`${name}: ${builds[sol].entries[0]} is built from ${cwd}, which reads no foundry.toml or remappings of the Soldeer project ${CONFIG_FILE}'s lockfiles names in ${elsewhere.cwd} (${elsewhere.path}): bundle its .sol entries from ${elsewhere.cwd}`)
+  }
   const laidOut = specs.length > 1 ? 'Laid out the trees' : specs[0].lazy ? 'Laid out the tree' : 'Installed the tree'
   const tree = await debugTimed(laidOut, () => layOutTrees({ project, specs, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }))
   const { inRounds } = await import('../vfs-bundle/lazy.js')
