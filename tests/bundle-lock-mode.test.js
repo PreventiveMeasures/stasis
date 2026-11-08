@@ -149,6 +149,34 @@ test('stasis bundle in lock = frozen loads the bundle beside the lockfile whatev
   await t.assert.rejects(buildBundle({ cwd: dir, entries: ['index.js'], env }), /^Error: stasis\.lock\.json \(lock = frozen\): bundle format for index\.js is not attested by the lockfile$/u)
 }))
 
+test('stasis bundle in lock = frozen loads the bundle where the build is rooted, whatever a package above configures', withTmp(async (t, dir) => {
+  mkdirSync(join(dir, '.git'))
+  writeJson(join(dir, 'package.json'), { name: 'outer', version: '1.0.0' })
+  const inner = join(dir, 'inner')
+  mkdirSync(inner)
+  project(inner)
+  // Rooted there by its lockfile alone.
+  writeFileSync(join(inner, 'stasis.config.json'), '{}\n')
+  await build(inner, { lockfile: 'stasis.lock.json' })
+  rmSync(join(inner, 'stasis.config.json'))
+  writeJson(join(dir, 'stasis.config.json'), { scope: 'node_modules' })
+  await build(inner, { lock: 'frozen' })
+}))
+
+test('stasis bundle --add --lockfile in lock = replace reads no lockfile there, and writes one of the bundle merged', withTmp(async (t, dir) => {
+  project(dir)
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  writeFileSync(lockPath, 'not a lockfile\n')
+  await build(dir, { add: true, lockfile: 'stasis.lock.json', lock: 'replace' })
+  const written = readJson(lockPath)
+  t.assert.deepStrictEqual([Object.keys(written.sources['.'].files).toSorted(), written.entries.toSorted()], [['index.js', 'more.js'], ['index.js', 'more.js']])
+  rmSync(lockPath)
+  await build(dir, { add: true, lockfile: 'stasis.lock.json', lock: 'replace' })
+  t.assert.deepStrictEqual(readJson(lockPath).entries.toSorted(), ['index.js', 'more.js'])
+}))
+
 test('stasis bundle takes a relative EXODUS_STASIS_LOCK_FILE of the working directory, as a run does', withTmp(async (t, dir) => {
   project(dir)
   const sub = join(dir, 'sub')

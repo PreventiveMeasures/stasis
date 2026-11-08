@@ -2740,21 +2740,26 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     // What it carries already is held to the lockfile too.
     built.held?.hold(deferredLockfile(existing))
     bundle = existing.merge(bundle)
-    // Keep the companion lockfile consistent with the merged bundle: union an existing one.
-    // With none on disk we can't attest the pre-existing bundle's files (their hashes live
-    // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
+    // Keep the companion lockfile consistent with the merged bundle: union an existing one, or in
+    // replace, which reads none, the bundle there recorded anew.
     if (lockData) {
-      if (!existsSync(lockAbs)) {
-        throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockfile}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
-      }
       let existingLock
-      try {
-        existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
-      } catch (cause) {
-        throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
+      if (mode === 'replace') {
+        existingLock = deferredLockfile(existing)()
+      } else {
+        // With none on disk we can't attest the pre-existing bundle's files (their hashes live
+        // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
+        if (!existsSync(lockAbs)) {
+          throw new Error(`bundleCommand: --add can't write a complete lockfile at ${lockfile}: the bundle at ${target} already carries files a fresh lockfile wouldn't attest, and there's no existing lockfile to merge into. Write --lockfile alongside the bundle from the first build, or drop --lockfile.`)
+        }
+        try {
+          existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
+        } catch (cause) {
+          throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
+        }
+        // It may record more than the bundle beside it (a broader run's capture).
+        policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
       }
-      // It may record more than the bundle beside it (a broader run's capture).
-      policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
   }
@@ -2850,7 +2855,8 @@ function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost })
   }
   const served = { ...host, readFile }
   try {
-    new State(root, { lock: 'frozen', lockFile: lockAbs, bundle: 'load', bundleFile: at, scope, host: served, claim: false, env: {} }) // eslint-disable-line no-new -- its constructor is the check
+    // Rooted where the build is, as a run finding the lockfile there is: given explicitly, it roots nothing.
+    new State(root, { lock: 'frozen', lockFile: lockAbs, bundle: 'load', bundleFile: at, scope, host: served, claim: false, env: { PROJECT_CWD: root } }) // eslint-disable-line no-new -- its constructor is the check
   } catch (cause) {
     throw new Error(`${label} (lock = frozen): ${cause.message}`, { cause })
   }
