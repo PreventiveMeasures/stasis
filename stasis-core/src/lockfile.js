@@ -1,4 +1,4 @@
-import { assert, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -125,6 +125,16 @@ export class Lockfile {
       // `other` (the incoming, newer lockfile) wins for the files it records -- see mergeExecutableSets.
       executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
     })
+  }
+
+  // merge, refusing a file both record whose execute bit `other` gives otherwise (merge lets `other`'s win).
+  mergeAgreeing(other, label = 'lockfile merge') {
+    const merged = this.merge(other, label)
+    const recorded = moduleFileKeys(this.modules, { scope: this.config.scope })
+    for (const file of moduleFileKeys(other.modules, { scope: other.config.scope })) {
+      if (recorded.has(file) && this.executable.has(file) !== other.executable.has(file)) throw new Error(`${label}: ${file}'s execute bit differs`)
+    }
+    return merged
   }
 }
 

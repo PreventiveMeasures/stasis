@@ -144,7 +144,7 @@ test('buildVfsBundle holds its build to the stasis.lock.json the project holds, 
   await t.assert.rejects(build({ 'stasis.lock.json': other }, { lock: 'none' }), /^Error: stasis\.lock\.json is there, which lock = none refuses$/u)
   await build({}, { lock: 'none' })
   await t.assert.rejects(build({ 'stasis.config.json': json({ lock: 'frozen' }) }), /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
-  await t.assert.rejects(build({}, { lock: 'sometimes' }), /^TypeError: buildVfsBundle: lock must be one of/u)
+  await t.assert.rejects(build({}, { lock: 'sometimes' }), /Invalid lock: sometimes$/u)
   // A Solidity build, of no lockfile, is held to none.
   const sol = { ...SOLDEER, 'src/A.sol': 'pragma solidity ^0.8.0;\ncontract A {}\n' }
   const solidity = (more, options) => buildVfsBundle({ vfs: vfsOf({ ...sol, ...more }), entries: ['src/A.sol'], cache: store(), ...options })

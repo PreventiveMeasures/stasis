@@ -368,11 +368,9 @@ A lazy tree unpacks the packages the build reads, and deptree may fetch a few
 more than it unpacks (see [Lazy](#lazy---no-lazy)); any other unpacks every
 package installed.
 
-A JS build is held to the `stasis.lock.json` the repository commits at its
-root, as [`stasis bundle`](bundle.md#companion-lockfile---lockfile) holds one
-to the one there: by `EXODUS_STASIS_LOCK`, else `frozen` where its
-`stasis.config.json` pins it, else `add`, what it builds must agree with what
-the lockfile records; `ignore` or `replace` reads none, and `none` refuses one.
+A JS build is held to the `stasis.lock.json` at the repository's root by its
+lock mode, as [`stasis bundle`](bundle.md#companion-lockfile---lockfile) holds
+one.
 
 ## Prisma
 
@@ -456,9 +454,8 @@ To generate none for a repo, whoever bundles it:
 - `buildGitHubBundle` and `buildVfsBundle` add the files
   `stasis.config.json`'s `extra` names, as the command does (see
   [Extra files](#extra-files)), and hold the build to the project's
-  `stasis.lock.json` by `lock`, a lock mode (`frozen` where its
-  `stasis.config.json` pins it, else `add`, left out), as the command does
-  (see [Output](#output)).
+  `stasis.lock.json` by the lock mode `lock`, as the command does by
+  `EXODUS_STASIS_LOCK` (see [Output](#output)).
 - All three lay out the tree without devDependencies where the
   `stasis.config.json` in `cwd` (`directory`) sets `installDevDependencies` to
   `false`, as the command does (see

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliCompressSync, constants as zlibConstants } from 'node:zlib'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
-import { Config } from '@exodus/stasis-core/config'
+import { Config, assertOption } from '@exodus/stasis-core/config'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { assembleBundle, expandExtra, validateFiles } from '@exodus/stasis-core/add'
 import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts } from '../scan.js'
@@ -1021,6 +1021,7 @@ export function fieldResolverFor(platform, { mainFields, metro = false, assetExt
 }
 
 const CONFIG_FILE = 'stasis.config.json'
+const LOCK_FILE = 'stasis.lock.json'
 
 // The stasis.config.json in `cwd`, parsed; null where there is none. `name`, if any, prefixes errors.
 export function readConfigFile(name, cwd, host = diskHost) {
@@ -2413,16 +2414,17 @@ export function checkVfsOptions(name, options) {
 export async function buildVfsBundle({ lock, ...options } = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
-  if (lock !== undefined && !LOCK_MODES.has(lock)) throw new TypeError(`buildVfsBundle: lock must be one of ${[...LOCK_MODES].join(', ')}, got ${JSON.stringify(lock)}`)
+  if (lock !== undefined) assertOption('lock', lock)
   const host = vfsHost(options.vfs)
   const built = await buildFromLockfile('buildVfsBundle', host, options)
-  const { lock: mode, file } = lockModeOf(built.root, lock === undefined ? {} : { EXODUS_STASIS_LOCK: lock }, host)
-  const at = file ?? posix.join(built.root, 'stasis.lock.json')
-  heldToLockfile(() => built.lockfile, at, posix.relative('/', at), mode, host)
-  if (mode === 'frozen' && built.lockfile !== undefined) loadsBeside(built.bundle.serialize(), { at: posix.join(built.root, DEFAULT_BUNDLE_FILE), lockAbs: at, label: posix.relative('/', at), root: built.root, scope: built.bundle.config.scope, host })
+  const mode = lockModeOf(built.root, { EXODUS_STASIS_LOCK: lock }, host).lock
+  const at = posix.join(built.root, LOCK_FILE)
+  const label = posix.relative('/', at)
+  if (heldToLockfile(() => built.lockfile, at, label, mode, host) !== undefined && mode === 'frozen') {
+    loadsBeside(built.bundle.serialize(), { at: posix.join(built.root, DEFAULT_BUNDLE_FILE), lockAbs: at, label, root: built.root, scope: built.bundle.config.scope, host })
+  }
   return built
 }
-const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
 
 // buildVfsBundle's build, `name`'s, of the project `project` (a host, @exodus/stasis-core/host)
 // reads: of a Vfs, which `vfs` is (for `generate` alone), or of the disk, for `stasis bundle
@@ -2671,7 +2673,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
   const root = built.root ?? resolve(cwd)
   assertPolicies('buildBundle', { bundle: built.bundle, root })
-  heldOf({ ...built, root }, { cwd, env })?.loads(built.bundle)
+  heldOf(built.lockfile, root, { cwd, env })?.loads(built.bundle)
   return built.bundle
 }
 
@@ -2712,16 +2714,15 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   const target = output ?? relative(resolve(cwd), join(root, DEFAULT_BUNDLE_FILE))
 
   let { bundle } = built
-  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others): written by add and
-  // replace, which takes --lockfile, as a run writes it; never by frozen, ignore or none.
+  // Only a JS bundle has a lockfile (classifyEntries refuses one for the others).
   const mode = built.held?.lock
-  if (mode === 'replace' && lockfile === undefined) throw new Error(`bundleCommand: lock = replace rewrites ${relative(resolve(cwd), built.held.at)}: give --lockfile`)
+  if (mode === 'replace' && lockfile === undefined) throw new Error(`bundleCommand: lock = replace rewrites ${built.held.label}: give --lockfile`)
   if (lockfile !== undefined && ['frozen', 'ignore', 'none'].includes(mode)) throw new Error(`bundleCommand: --lockfile: lock = ${mode} writes no lockfile`)
-  let lockData = lockfile ? built.held?.lockfile()?.serialize() : undefined
+  let lockData = lockfile ? built.held.lockfile().serialize() : undefined
 
   // --add: union the fresh build into the existing on-disk bundle; a conflicting file throws. Skipped when nothing is on disk.
   const outAbs = target === '-' ? undefined : resolve(cwd, target)
-  const lockAbs = lockData ? built.held.at : undefined
+  const lockAbs = lockData ? resolve(cwd, lockfile) : undefined
   // Files the pre-existing bundle carried; undefined when no merge happened (the summary's merged sentinel).
   let mergedFrom
   if (add && existsSync(outAbs)) {
@@ -2779,42 +2780,44 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   }
 }
 
-// A build's lockfile held to the one `lockfile` names, else its project's (heldToLockfile): `{ at,
-// lock, lockfile, hold, loads }`, that one's path, the lock mode, what to write, `hold(other)` holding
-// another lockfile to it, and `loads(bundle)` the bundle, under frozen, which writes no lockfile.
-function heldOf({ lockfile: built, root }, { cwd, env, lockfile }) {
+// The lockfile `built()` gives held to the one `lockfile` names, else its project's, by the lock mode
+// of the project's runs (heldToLockfile): `{ lock, label, lockfile, hold, loads }`, `lockfile()` the
+// one to write, `hold(other)` holding another to it, and `loads(bundle)` that, under frozen, the bundle
+// loads beside it.
+function heldOf(built, root, { cwd, env, lockfile }) {
   if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
-  const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, 'stasis.lock.json')
+  const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, LOCK_FILE)
   const label = relative(resolve(cwd), at)
   const hold = (other) => heldToLockfile(other, at, label, lock)
+  const fresh = hold(built)
   const loads = (bundle, { text, at: bundleAt = join(root, DEFAULT_BUNDLE_FILE) } = {}) => {
     if (lock === 'frozen') loadsBeside(text ?? bundle.serialize(), { at: bundleAt, lockAbs: at, label, root, scope: bundle.config.scope })
   }
-  return { at, lock, lockfile: hold(built), hold, loads }
+  return { lock, label, lockfile: () => fresh ?? built(), hold, loads }
 }
 
 // The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE, of a run
 // that writes a bundle, as a build does.
 function lockModeOf(root, env = process.env, host = diskHost) {
   const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
-  const text = readFileSyncMaybe(root, 'stasis.config.json', 'utf-8', host)
+  const text = readFileSyncMaybe(root, CONFIG_FILE, 'utf-8', host)
   if (text !== null) config.loadConfig(text)
   // A relative one of the working directory's, as a run reads it.
   return { lock: config.lock, file: config.lockFile && resolve(config.lockFile) }
 }
 
-// The lockfile `built()` gives held to the one at `lockAbs` by `mode`, as a run holds itself to one.
-// In add it must agree with it on all both record, execute bits too; in frozen that one must be there,
-// agree, and attest every file built (the bundle loading beside it, loadsBeside); in none, it must not
-// be there; in replace and ignore, it isn't read. -> () => the Lockfile to write, or null.
+// The lockfile `built()` gives held to the one at `lockAbs` by `mode`: in add, agreeing with it on all
+// both record (Lockfile.mergeAgreeing); in frozen, that too, and it must be there and attest every file
+// built; in none, it must not be there. -> what built() gave, where it was called.
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
-  const frozen = mode === 'frozen'
-  const text = frozen || mode === 'add' || mode === 'none' ? readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host) : null
-  // Built where it is held; a build of none (a Solidity one) is held to nothing.
-  const fresh = frozen || text !== null ? built() : undefined
-  if (fresh === undefined) return built
-  if (frozen && text === null) throw new Error(`${label} isn't there, and lock = frozen holds the build to it`)
+  if (mode !== 'add' && mode !== 'frozen' && mode !== 'none') return undefined
+  const text = readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host)
+  if (text === null && mode !== 'frozen') return undefined
+  // A build of none (a Solidity one) is held to nothing.
+  const fresh = built()
+  if (fresh === undefined) return undefined
+  if (text === null) throw new Error(`${label} isn't there, and lock = frozen holds the build to it`)
   if (mode === 'none') throw new Error(`${label} is there, which lock = none refuses`)
   let lock
   try {
@@ -2822,20 +2825,19 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   } catch (cause) {
     throw new Error(`${label}: not a valid stasis lockfile`, { cause })
   }
-  lock.merge(fresh, label)
-  const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
-  for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
-    if (recorded.has(file) && lock.executable.has(file) !== fresh.executable.has(file)) throw new Error(`${label}: ${file}'s execute bit differs`)
-    if (frozen && !recorded.has(file)) throw new Error(`${label} (lock = frozen) doesn't attest ${file}`)
+  lock.mergeAgreeing(fresh, label)
+  if (mode === 'frozen') {
+    const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
+    for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
+      if (!recorded.has(file)) throw new Error(`${label} (lock = frozen) doesn't attest ${file}`)
+    }
   }
-  // The lockfile written is the build's, which attests the bundle beside it; --add merges both.
-  if (!frozen) return built
-  return () => null
+  return fresh
 }
 
 // That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis
-// run --lock=frozen --bundle=load` loads them: a State of those modes, of `root`, through `host`
-// serving the bundle there, and stasis.config.json without the bundle paths a run would read instead.
+// run --lock=frozen --bundle=load` loads them, through `host`; stasis.config.json is read without the
+// bundle paths a run would read instead.
 function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost }) {
   // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
   const bytes = brotliCompressSync(text, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
@@ -2843,12 +2845,8 @@ function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost })
     if (path === at) return bytes
     const data = host.readFile(path)
     if (basename(path) !== CONFIG_FILE) return data
-    try {
-      const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
-      return Buffer.from(JSON.stringify(config))
-    } catch {
-      return data
-    }
+    const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
+    return Buffer.from(JSON.stringify(config))
   }
   const served = { ...host, readFile }
   try {
@@ -2870,7 +2868,7 @@ export async function buildCommandBundle(options = {}) {
 // bundleCommand's bundle, and its lockfile (`lockfile()`, a JS bundle's), built as it builds them from
 // its options (but `brotliQuality` and `add`, which say how they are written) and not written, with
 // the root their paths are relative to. `output` and `lockfile` are where it would write them, which
-// `extra` never takes in. -> { bundle, lockfile: () => Lockfile, root }
+// `extra` never takes in. -> { bundle, lockfile: () => Lockfile, root, held (heldOf's) }
 async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, entries, mappingFile, manifests = false, output, scope, lockfile, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false, builds, deptree = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   if (builds !== undefined) {
@@ -2925,5 +2923,5 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     }
     assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })
   }
-  return { ...union, root, held: heldOf({ ...union, root }, { cwd, env, lockfile }) }
+  return { ...union, root, held: heldOf(union.lockfile, root, { cwd, env, lockfile }) }
 }
