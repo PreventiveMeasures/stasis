@@ -373,6 +373,56 @@ test('CLI: stasis bundle builds an entry stasis.config.json sets metro for, or -
   t.assert.deepStrictEqual(files('flags.br'), ['b.js', 'index.js'])
 }))
 
+// A JS project with a Foundry one at its root: src/A.sol imports dep/D.sol by remappings.txt.
+const mixed = (dir, config) => writeTree(dir, {
+  'package.json': { name: 'app', version: '1.0.0' },
+  'src/a.js': "require('./b.js')\n",
+  'src/b.js': '',
+  'foundry.toml': '[profile.default]\nlibs = ["dependencies"]\n\n[dependencies]\n',
+  'remappings.txt': 'dep/=lib/dep/\n',
+  'lib/dep/D.sol': 'pragma solidity ^0.8.0;\ncontract D {}\n',
+  'src/A.sol': 'pragma solidity ^0.8.0;\nimport "dep/D.sol";\ncontract A {}\n',
+  ...(config === undefined ? {} : { 'stasis.config.json': config }),
+})
+
+test('bundlePlan builds JS and Solidity entries apart, a build of each language, their flags valid for each', withTmp((t, tmp) => {
+  mixed(tmp)
+  const plan = bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol', 'src'], values: { output: 'x.br' } })
+  t.assert.equal(plan.entries, undefined)
+  t.assert.equal(plan.output, 'x.br')
+  t.assert.deepStrictEqual(plan.builds.map((build) => build.entries), [['src/a.js'], ['src/A.sol', 'src']], 'a directory entry is Solidity')
+  t.assert.deepStrictEqual(bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol'], values: { deptree: true } }).deptree, true)
+  // A flag of one language alone, or a lockfile, which no Solidity bundle has: refused.
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol'], values: { conditions: 'x' } }), { message: "--conditions is only valid for JS bundles, and src/A.sol is not of one: give the JS and .sol entries' options apart, in stasis.config.json's entries" })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol'], values: { lockfile: 'l.json' } }), { message: '--lockfile is only valid for JS bundles' })
+  // Other languages together still not.
+  writeTree(tmp, { 'x.php': '<?php\n' })
+  t.assert.throws(() => bundlePlan({ cwd: tmp, entries: ['src/a.js', 'x.php'], values: {} }), /^Error: bundle entries must all be \.sol, .* or be \.js\/.* and \.sol together$/u)
+  // stasis.config.json's entries of both, with the same options: one build of each all the same.
+  mixed(tmp, { entries: { 'src/a.js': {}, 'src/A.sol': {} } })
+  t.assert.deepStrictEqual(bundlePlan({ cwd: tmp, entries: ['src/a.js', 'src/A.sol'], values: {}, config: readConfigEntries(tmp) }).builds.map((build) => build.entries), [['src/a.js'], ['src/A.sol']])
+}))
+
+test('CLI: stasis bundle bundles JS and Solidity entries together, each as its own bundle would, given or named in stasis.config.json', withTmp(async (t, tmp) => {
+  mixed(tmp)
+  const r = await runCli(['bundle', '--output=both.br', 'src/a.js', 'src/A.sol'], tmp)
+  t.assert.equal(r.status, 0, r.stderr)
+  const both = readBundle(join(tmp, 'both.br'))
+  t.assert.deepStrictEqual([...both.entries].toSorted(), ['src/A.sol', 'src/a.js'])
+  t.assert.deepStrictEqual([...both.sources.keys()].toSorted(), ['lib/dep/D.sol', 'src/A.sol', 'src/a.js', 'src/b.js'], 'D.sol by the remapping')
+  // Each language's files as its own bundle has them.
+  for (const [entry, out] of [['src/a.js', 'js.br'], ['src/A.sol', 'sol.br']]) {
+    // eslint-disable-next-line no-await-in-loop -- one bundle at a time
+    t.assert.equal((await runCli(['bundle', `--output=${out}`, entry], tmp)).status, 0)
+    for (const [path, content] of readBundle(join(tmp, out)).sources) t.assert.equal(both.sources.get(path), content, path)
+  }
+  // stasis.config.json's entries, bare: the same bundle.
+  mixed(tmp, { entries: { 'src/a.js': {}, 'src/A.sol': {} } })
+  const bare = await runCli(['bundle', '--output=bare.br'], tmp)
+  t.assert.equal(bare.status, 0, bare.stderr)
+  t.assert.deepStrictEqual([...readBundle(join(tmp, 'bare.br')).sources.keys()].toSorted(), [...both.sources.keys()].toSorted())
+}))
+
 test('readConfigEntries reads an entry\'s define as the --define flags it gives, each one whole', withTmp((t, tmp) => {
   writeTree(tmp, {
     'stasis.config.json': {

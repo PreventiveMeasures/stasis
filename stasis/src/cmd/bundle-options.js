@@ -79,22 +79,26 @@ function entryKey(cwd, entry) {
   return relativeEscapes(rel) ? null : toPosix(rel) || '.'
 }
 
+const JS_ENTRY = /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u
+
 // The language `entries` share, one bundle being built from one: which of them they all are in, as
-// the project in `cwd`, read through `host`, holds them.
+// the project in `cwd`, read through `host`, holds them; or `jsAndSol`, JS and Solidity entries
+// together, each language's built apart and their bundles merged (bundlePlan).
 function entriesLanguage(entries, cwd, host = diskHost) {
-  const dirError = directoryEntryError(entries, cwd, host)
+  // Beside JS entries, a directory one is of the Solidity ones (bundlePlan builds them apart).
+  const others = entries.filter((f) => !JS_ENTRY.test(f))
+  const dirError = directoryEntryError(others.length > 0 && others.length < entries.length ? others : entries, cwd, host)
   if (dirError !== null) throw new Error(dirError)
   const lang = {
     allSol: entries.every((f) => isSolidityEntry(f, cwd, host)),
     allPhp: entries.every((f) => f.endsWith('.php')),
-    allJs: entries.every((f) => /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u.test(f)),
+    allJs: entries.every((f) => JS_ENTRY.test(f)),
     allBash: entries.every((f) => /\.(?:sh|bash)$/u.test(f)),
     allRust: entries.every((f) => f.endsWith('.rs')),
   }
-  if (!Object.values(lang).some(Boolean)) {
-    throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs')
-  }
-  return lang
+  if (Object.values(lang).some(Boolean)) return lang
+  if (entries.every((f) => JS_ENTRY.test(f) || isSolidityEntry(f, cwd, host))) return { ...lang, jsAndSol: true }
+  throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
 }
 
 // bundleCommand's options for building `entries` (in `lang`, entriesLanguage's) from the parsed
@@ -214,12 +218,12 @@ function buildOptions(values, { allSol, allJs, allRust }) {
 const DISK_RUN_FLAGS = ['babel', 'metro-resolver']
 
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
-function outputOptions(values, { allJs, allSol }) {
+function outputOptions(values, { allJs, allSol, jsAndSol = false }) {
   if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
   // --deptree: the dependencies laid out in memory from the lockfile (pnpm, yarn 1, npm or Soldeer's),
   // never read from disk, which holds none.
   const deptree = Boolean(values.deptree)
-  if (deptree && !allJs && !allSol) throw new Error('--deptree is only valid for JS and .sol bundles')
+  if (deptree && !allJs && !allSol && !jsAndSol) throw new Error('--deptree is only valid for JS and .sol bundles')
   for (const flag of deptree ? DISK_RUN_FLAGS : []) {
     if (values[flag]) throw new Error(`--${flag} can't be combined with --deptree (it runs ${CONSENT_FLAGS.get(flag)} from disk, where --deptree installs nothing)`)
   }
@@ -296,7 +300,19 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   const output = outputOptions(values, lang)
   const keys = entries.map((entry) => entryKey(cwd, entry))
   const configured = config === null ? [] : entries.filter((_, i) => config.has(keys[i]))
-  if (configured.length === 0) return { ...output, entries, ...buildOptions(values, lang) }
+  if (configured.length === 0 && !lang.jsAndSol) return { ...output, entries, ...buildOptions(values, lang) }
+  // JS and Solidity entries, with the flags: each language's a build, the flags valid for each; one of
+  // a language alone refused, which stasis.config.json's entries give its entries instead.
+  if (configured.length === 0) {
+    const parts = [...Map.groupBy(entries, (entry) => (JS_ENTRY.test(entry) ? 'js' : 'sol')).values()]
+    return { ...output, builds: parts.map((part) => {
+      try {
+        return { entries: part, ...buildOptions(values, entriesLanguage(part, cwd)) }
+      } catch (cause) {
+        throw new Error(`${cause.message}, and ${part[0]} is not of one: give the JS and .sol entries' options apart, in ${CONFIG_FILE}'s entries`, { cause })
+      }
+    }) }
+  }
   const unnamed = entries.find((_, i) => !config.has(keys[i]))
   if (unnamed !== undefined) {
     throw new Error(`${CONFIG_FILE}'s entries name ${configured[0]} but not ${unnamed}: bundle either the entries it names or others, not both`)
@@ -319,12 +335,15 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
       throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)} sets ${consent.slice(2)}, which runs ${CONSENT_FLAGS.get(unconsented)}: pass ${consent} to allow it`)
     }
     let options
+    let language
     try {
-      options = buildOptions(flags, entriesLanguage([entry], cwd))
+      language = entriesLanguage([entry], cwd)
+      options = buildOptions(flags, language)
     } catch (cause) {
       throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)}: ${cause.message}`, { cause })
     }
-    addToBuild(builds, entry, named[i], options)
+    // Entries of another language are built apart, whatever their options: a build's are of one.
+    addToBuild(builds, entry, named[i], options, language)
   }
   return { ...output, builds: withPolicies(builds) }
 }
