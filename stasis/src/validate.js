@@ -900,8 +900,9 @@ export function lockedBy(lockfiles) {
     all.push(one)
   }
   const npms = by.get('npm') ?? []
-  // Of an npm lockfile `at` the bundle's root or above it, every copy; of one below, those under it.
-  const above = (at) => at === '' || at === '..' || at.startsWith('../')
+  // Of an npm lockfile `at` the bundle's root or above it (`..` alone), every copy; of one below, those
+  // under it; of one beside it (`../tools`), none, as no path of the bundle climbs out of its root.
+  const above = (at) => at === '' || at.split('/').every((part) => part === '..')
   const depth = (at) => (at === '' ? 0 : above(at) ? -at.split('/').length : at.split('/').length)
   // The npm lockfile installing the copy at the bundle's `dir`, the innermost holding it, and the
   // copy's location in it.
@@ -957,10 +958,12 @@ export function lockedBy(lockfiles) {
       return null
     },
     // The version the npm lockfile installing the bundle's `dir` installs there (`<name>@<version>`),
-    // null for none, undefined where it locks no location (pnpm's, yarn's) or links it to a directory.
+    // null for none, as where none of them holds `dir`; undefined where it locks no location (pnpm's,
+    // yarn's) or links it to a directory, or none is read.
     installed(dir) {
       const npm = installing(dir)
-      if (npm?.locations === undefined) return undefined
+      if (npm === undefined) return npms.length > 0 ? null : undefined
+      if (npm.locations === undefined) return undefined
       const location = locationIn(npm, dir)
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },

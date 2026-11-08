@@ -1110,6 +1110,14 @@ const toolsLock = `${JSON.stringify({ name: 'tools', version: '1.0.0', lockfileV
   'node_modules/ms': lockEntry('ms', '2.1.3', SRI),
 } }, null, 2)}\n`
 
+// The root's package-lock.json of a workspace apps/web, which it installs ms@2.1.3 in.
+const appsLock = `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+  '': { name: 'app', version: '1.0.0', workspaces: ['apps/web'] },
+  'apps/web': { version: '1.0.0', dependencies: { ms: '2.1.3' } },
+  'node_modules/web': { resolved: 'apps/web', link: true },
+  'apps/web/node_modules/ms': lockEntry('ms', '2.1.3', SRI),
+} }, null, 2)}\n`
+
 test('lockedBy: several lockfiles of one ecosystem, each where it is (`at`): a copy where the innermost holding it installs it, a version as any of them locks it; two at one place refused', async (t) => {
   const told = async (dir, locked) => {
     const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }]]) }).serialize()))
@@ -1131,6 +1139,16 @@ test('lockedBy: several lockfiles of one ecosystem, each where it is (`at`): a c
   t.assert.deepStrictEqual(both.lock('npm', 'ms', '2.0.0'), { from: 'registry', integrity: OTHER_SRI })
   t.assert.deepStrictEqual(both.lock('npm', 'ms', '9.9.9'), null)
   t.assert.throws(() => lockedBy([{ path: 'package-lock.json', text: npmLock('') }, { path: 'tools/package-lock.json', text: toolsLock }]), (error) => error instanceof ValidateError && error.code === 'lockfile-ambiguous')
+  // tools/'s alone: node_modules/ms is installed by none of them, whatever version they lock.
+  const tools = lockedBy([{ path: 'tools/package-lock.json', text: toolsLock, from: 'repository', root: '..', at: 'tools' }])
+  t.assert.deepStrictEqual(await told('node_modules/ms', tools), ['invalid', [['invalid', 'misplaced', 'node_modules/ms']]])
+  // Of a bundle in apps/web: apps/tools/'s, beside it, holds none of its copies, though listed first and as
+  // far from it as the root's, which installs them.
+  const beside = lockedBy([
+    { path: 'apps/tools/package-lock.json', text: toolsLock, from: 'repository', root: '../web', at: '../tools' },
+    { path: 'package-lock.json', text: appsLock, from: 'repository', root: 'apps/web', at: '../..' },
+  ])
+  t.assert.deepStrictEqual(await told('node_modules/ms', beside), ['valid', []])
 })
 
 test("validate: the dependencies held to the lockfiles the repository's stasis.config.json names, in place of the one found; one validate doesn't read passed over", withTmp(async (t, tmp) => {
