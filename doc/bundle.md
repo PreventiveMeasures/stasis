@@ -203,7 +203,8 @@ With it:
 - The entries given are all named there, or none is, the two never mixed. Where
   none is, whatever else it names, they are built with the flags exactly as
   without it.
-- Entries with different options are built apart, and their bundles merged as
+- Entries with different options, or of different languages (JS and `.sol`),
+  are built apart, and their bundles merged as
   `--add` merges (a file both carry with different content fails) into one,
   whose paths must be relative to the same root. So one bundle may hold a
   Metro build's files, attributed to the `bundle:metro` consumer, and a Node
@@ -867,8 +868,20 @@ there does the same without the flag, for every JS build.
 
 `stasis bundle` also builds Solidity, PHP, Bash and Rust bundles, from `.sol`,
 `.php`, `.sh`/`.bash` and `.rs` entries, all the entries of one invocation in
-one language. How each is resolved and what the bundle carries is in
+one language, but JS and Solidity ones, which may be given together. How each
+is resolved and what the bundle carries is in
 [file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust).
+
+JS and Solidity entries given together (`stasis bundle src/index.js src/Token.sol`,
+or named in `stasis.config.json`'s [entries](#entry-options-stasisconfigjson))
+are built apart, each language's as its own bundle would be, and their bundles
+merged into one, whose paths must be relative to the same root (the JS
+project's, at the cwd). A directory entry beside them is Solidity's. A flag is
+taken for each of them, so one of a language alone (`--conditions`,
+`--mapping`) is refused: give their options apart in `stasis.config.json`'s
+entries. `--lockfile` is refused, as a Solidity bundle has none; `--deptree`
+lays out both trees where `stasis.config.json`'s
+[`lockfiles`](github-bundle.md#several-lockfiles-lockfiles) names them.
 
 ```sh
 stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...

@@ -1458,7 +1458,8 @@ cliTest('CLI: bundle takes Solidity directory entries and --manifests, and extra
 
 cliTest('CLI: bundle rejects a directory entry mixed with non-Solidity entries, and --manifests for JS', async (t) => {
   const cwd = join(fixtures, 'foundry-project')
-  let r = await runCli(['bundle', 'src', 'a.js'], { cwd })
+  // Beside JS entries, a directory one is of the Solidity ones (see bundle-config.test.js).
+  let r = await runCli(['bundle', 'src', 'a.php'], { cwd })
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /directory entry is only supported for Solidity bundles/u)
   r = await runCli(['bundle', 'nope', 'a.js'], { cwd })
@@ -1515,8 +1516,8 @@ cliTest('CLI: bundle rejects an arg with an unsupported extension', async (t) =>
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
 
-cliTest('CLI: bundle rejects mixing .sol and .js entries', async (t) => {
-  const r = await runCli(['bundle', 'a.sol', 'b.js'])
+cliTest('CLI: bundle rejects mixing .sol and .php entries', async (t) => {
+  const r = await runCli(['bundle', 'a.sol', 'b.php'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /bundle entries must all be \.sol/)
 })
@@ -2038,8 +2039,8 @@ cliTest('CLI: bundle allows mixing .ts and .js entries (both are JS-family)', wi
   t.assert.equal(parsed.formats.get('b.js'), 'module')
 }))
 
-cliTest('CLI: bundle rejects mixing .sol and .ts entries', async (t) => {
-  const r = await runCli(['bundle', 'a.sol', 'b.ts'])
+cliTest('CLI: bundle rejects mixing .sh and .ts entries', async (t) => {
+  const r = await runCli(['bundle', 'a.sh', 'b.ts'])
   t.assert.equal(r.status, 1)
   t.assert.match(r.stderr, /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts/)
 })

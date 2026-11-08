@@ -817,7 +817,9 @@ const meta = await readBundle('app.stasis.code.br', {
 ### Source-language bundles (Solidity / PHP / Bash / Rust)
 
 `stasis bundle` dispatches on the entry file extension (no mixing within one
-invocation; a directory entry is Solidity's, see below):
+invocation, but JS and Solidity entries, each built apart and their bundles
+merged, see [bundle](bundle.md#other-languages); a directory entry is
+Solidity's, see below):
 
 | Extension(s) | Language | How the graph is found | `format` / `imports` key |
 | --- | --- | --- | --- |
