@@ -383,12 +383,13 @@ if (command === '-v' || command === '--version') {
   const { setCacheDir } = await import('@preventive/upstream/npm.js')
   setCacheDir(userCacheDir())
   const { AuditError, audit, printAuditReport } = await import('../src/audit.js')
-  // With no file, the package manager's lockfile installing the project too: its packages the bundle
-  // doesn't hold checked for malware (npm's registry alone), it being found or refused told, not failed.
+  // With no file, the package manager's lockfile installing the project too, or each JS one its
+  // stasis.config.json names in its `lockfiles`: their packages the bundle doesn't hold checked for
+  // malware (npm's registry alone), their being found or refused told, not failed.
   let lockfile = null
   if (plan !== undefined) {
     try {
-      lockfile = await (await import('../src/validate.js')).installedNpmPackages(plan.cwd)
+      lockfile = await (await import('../src/validate.js')).lockedNpmPackages(plan.cwd)
     } catch (cause) {
       console.error(`Lockfile not checked for malware: ${cause.message}`)
     }

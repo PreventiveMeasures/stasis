@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, isStatFormat, moduleFileKey, parseLockfilesOption } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -865,21 +865,27 @@ function readLockfile(name, read) {
   return { entries, locals, aliases, ...(locations && { locations, links, importers }) }
 }
 
-// What `lockfiles` lock, as validateBundle takes it (`locked`), one of each ecosystem: each `{ path,
-// text, from, read, tree, patches }`, its path (as it is told), what it is read of (`repository`, or
-// `local`), `read(path)` reading a file by a path as it is (a pnpm patch's, by the lockfile's
-// directory and the path it names), each read once, `tree(dir)` the files of a directory of the
-// repository by their paths in it, where the repository is read, and `patches` the directories a
-// patch it names by its hash alone (pnpm 11's) is looked for in, in turn, beside the lockfile's
-// directory where none is given: `locate(lock)` finds it, the file there of pnpm's name for it and of
-// that hash. Their paths (`lockfiles`), and whether one locks an ecosystem's packages
-// (`locks(ecosystem)`), told too.
+// What `lockfiles` lock, as validateBundle takes it (`locked`): each `{ path, text, from, read, tree,
+// patches, root, at }`, its path (as it is told), what it is read of (`repository`, or `local`),
+// `read(path)` reading a file by a path as it is (a pnpm patch's, by the lockfile's directory and the
+// path it names), each read once, `tree(dir)` the files of a directory of the repository by their
+// paths in it, where the repository is read, and `patches` the directories a patch it names by its
+// hash alone (pnpm 11's) is looked for in, in turn, beside the lockfile's directory where none is
+// given: `locate(lock)` finds it, the file there of pnpm's name for it and of that hash. `root` is the
+// bundle's directory's path from the lockfile's, and `at` the lockfile's directory's from the bundle's
+// (`''`, the default, for the same): several of one ecosystem are taken where each is at another
+// (stasis.config.json's `lockfiles`), a copy installed where the innermost holding it says, and a
+// version locked as every one of them locks it. Their paths (`lockfiles`), and whether one locks an
+// ecosystem's packages (`locks(ecosystem)`), told too.
 export function lockedBy(lockfiles) {
   const by = new Map()
-  for (const { path, text, from, read, tree, patches, root = '' } of lockfiles) {
+  const all = []
+  for (const { path, text, from, read, tree, patches, root = '', at = '' } of lockfiles) {
     const ecosystem = LOCKFILES.get(posix.basename(path))
     if (ecosystem === undefined) throw new ValidateError('lockfile-unsupported', `${path}: not a lockfile validate reads (${[...LOCKFILES.keys()].join(', ')})`)
-    if (by.has(ecosystem)) throw new ValidateError('lockfile-ambiguous', `${by.get(ecosystem).path} and ${path} both lock ${ecosystem} packages: give one`)
+    const same = by.get(ecosystem) ?? []
+    const other = same.find((one) => one.at === at)
+    if (other !== undefined) throw new ValidateError('lockfile-ambiguous', `${other.path} and ${path} both lock ${ecosystem} packages: give one`)
     let locks
     try {
       locks = readLockfile(posix.basename(path), text)
@@ -889,39 +895,56 @@ export function lockedBy(lockfiles) {
     // The bundle's root by its path from the lockfile's directory, where npm's locks each location
     // from there: on disk, the one of its importers it names, else the lockfile's own directory.
     const within = locks.importers === undefined || from !== 'local' || locks.importers.has(root) ? root : ''
-    by.set(ecosystem, { ...locks, path, from, read, tree, root: within, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] })
+    const one = { ...locks, path, from, read, tree, root: within, at, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
+    by.set(ecosystem, [...same, one])
+    all.push(one)
   }
-  const npm = by.get('npm')
+  const npms = by.get('npm') ?? []
+  // Of an npm lockfile `at` the bundle's root or above it, every copy; of one below, those under it.
+  const above = (at) => at === '' || at === '..' || at.startsWith('../')
+  const depth = (at) => (at === '' ? 0 : above(at) ? -at.split('/').length : at.split('/').length)
+  // The npm lockfile installing the copy at the bundle's `dir`, the innermost holding it, and the
+  // copy's location in it.
+  const installing = (dir) => npms.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
+  const locationIn = (one, dir) => (above(one.at) ? pathIn(one.root, dir) : dir.slice(one.at.length + 1))
+  const fromRoot = (dir) => (dir === '.' ? '' : dir)
   const reads = new Map()
   return {
-    lockfiles: [...by.values()].map(({ path }) => path),
+    lockfiles: all.map(({ path }) => path),
     locks: (ecosystem) => by.has(ecosystem),
     lock(ecosystem, name, version) {
-      const entries = by.get(ecosystem)?.entries
-      if (entries === undefined) return undefined
-      const locks = entries.get(`${name}@${version}`)
-      if (locks === undefined) {
+      const same = by.get(ecosystem)
+      if (same === undefined) return undefined
+      const locks = same.flatMap(({ entries }) => entries.get(`${name}@${version}`) ?? [])
+      if (locks.length === 0) {
         // One of the project's directories, by its path from the repository's root, '' the root.
-        const { locals, path } = by.get(ecosystem)
-        const dirs = locals?.get(name)
-        const fromRoot = (dir) => (dir === '.' ? '' : dir)
-        return dirs ? { from: 'local', directories: [...dirs].map((dir) => fromRoot(posix.join(posix.dirname(path), dir))) } : null
+        const dirs = same.flatMap(({ locals, path }) => [...(locals?.get(name) ?? [])].map((dir) => fromRoot(posix.join(posix.dirname(path), dir))))
+        return dirs.length > 0 ? { from: 'local', directories: [...new Set(dirs)] } : null
       }
       const integrities = new Set(locks.filter((entry) => entry.from === 'registry').map((entry) => entry.integrity))
       if (integrities.size === 0) return { from: locks.every((entry) => entry.from === 'git') ? 'git' : 'elsewhere' }
       return integrities.size === 1 ? { from: 'registry', integrity: [...integrities][0] } : { from: 'registry', conflict: true }
     },
+    // The patch a pnpm lockfile locks the version with, the first that patches it; null where they lock
+    // it with none, undefined where none of them locks it (or none is pnpm's).
     of(name, version) {
-      if (npm?.patches === undefined) return undefined
-      const hash = npm.patches.hashes.get(`${name}@${version}`)
-      if (hash == null) return hash
-      const { path, selectors = [] } = npm.patches.paths.get(hash) ?? {}
-      if (path) return { hash, path: posix.join(posix.dirname(npm.path), path) }
-      // The names pnpm gives its file, by each selector naming it and by the version it patches.
-      return { hash, names: [...new Set([...selectors.map((selector) => `${selector.replace('/', '__')}.patch`), pnpmPatchName(name, version)])] }
+      let found
+      for (const npm of npms) {
+        const hash = npm.patches?.hashes.get(`${name}@${version}`)
+        if (hash === undefined) continue
+        if (hash === null) {
+          found = null
+          continue
+        }
+        const { path, selectors = [] } = npm.patches.paths.get(hash) ?? {}
+        if (path) return { hash, path: posix.join(posix.dirname(npm.path), path) }
+        // The names pnpm gives its file, by each selector naming it and by the version it patches.
+        return { hash, names: [...new Set([...selectors.map((selector) => `${selector.replace('/', '__')}.patch`), pnpmPatchName(name, version)])] }
+      }
+      return found
     },
     async locate({ hash, names = [] }) {
-      for (const path of npm.patchDirs.flatMap((dir) => names.map((name) => pathIn(dir, name)))) {
+      for (const path of [...new Set(npms.flatMap((npm) => npm.patchDirs))].flatMap((dir) => names.map((name) => pathIn(dir, name)))) {
         let text
         try {
           // eslint-disable-next-line no-await-in-loop -- the first of them that is there
@@ -933,25 +956,55 @@ export function lockedBy(lockfiles) {
       }
       return null
     },
-    // The version an npm lockfile installs at the bundle's `dir` (`<name>@<version>`), null for none,
-    // undefined where its lockfile locks no location (pnpm's, yarn's) or links it to a directory.
+    // The version the npm lockfile installing the bundle's `dir` installs there (`<name>@<version>`),
+    // null for none, undefined where it locks no location (pnpm's, yarn's) or links it to a directory.
     installed(dir) {
+      const npm = installing(dir)
       if (npm?.locations === undefined) return undefined
-      const location = pathIn(npm.root, dir)
+      const location = locationIn(npm, dir)
       return npm.links.has(location) ? undefined : npm.locations.get(location) ?? null
     },
-    // Whether the npm lockfile installs `named` (`<name>@<version>`) under the name `as`: that version,
+    // Whether an npm lockfile installs `named` (`<name>@<version>`) under the name `as`: that version,
     // or a directory's package of that name, where it locks no other of that version, so that its
     // files are held to the directory's (locals); undefined for none read.
-    aliased: (as, named) => npm && (npm.aliases.has(`${as}\0${named}`)
-      || (!npm.entries.has(named) && Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`)))),
-    from: npm?.from,
-    tree: npm?.tree,
+    aliased: (as, named) => (npms.length === 0 ? undefined : npms.some((npm) => npm.aliases.has(`${as}\0${named}`)
+      || (!npm.entries.has(named) && Boolean(npm.directoryAliases?.has(`${as}\0${named.slice(0, named.lastIndexOf('@'))}`))))),
+    from: npms[0]?.from,
+    tree: npms[0]?.tree,
     read(path) {
-      if (!reads.has(path)) reads.set(path, Promise.resolve().then(() => npm.read(path)))
+      if (!reads.has(path)) reads.set(path, Promise.resolve().then(() => npms[0].read(path)))
       return reads.get(path)
     },
   }
+}
+
+const CONFIG_FILE = 'stasis.config.json'
+
+// The lockfiles the stasis.config.json in `directory` of a repository names in its `lockfiles`, by
+// their paths from the repository's root, which the build lays out a tree of each of, in place of
+// the one it finds; undefined where it names none, or there is none. `list(dir)` and `read(path)` as
+// repositoryLockfiles takes them. Refused (ValidateError) where it can't be read, or one is outside
+// the repository.
+export async function configuredLockfiles({ directory = '', list, read }) {
+  if (!(await list(directory)).includes(CONFIG_FILE)) return undefined
+  const path = pathIn(directory, CONFIG_FILE)
+  let config
+  try {
+    config = JSON.parse(await read(path))
+  } catch (error) {
+    throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
+  }
+  let named
+  try {
+    named = parseLockfilesOption(path, config?.lockfiles)
+  } catch (error) {
+    throw new ValidateError('lockfile-unreadable', error.message)
+  }
+  return named?.map((one) => {
+    const at = posix.normalize(pathIn(directory, one))
+    if (at === '..' || at.startsWith('../')) throw new ValidateError('lockfile-unreadable', `${path}: lockfiles names ${one}, which is outside the repository`)
+    return at
+  })
 }
 
 // The lockfiles that install `directory` of a repository, for the packages of `ecosystems`, as
@@ -1048,17 +1101,60 @@ export async function installedNpmPackages(dir) {
     throw new ValidateError(error.code, error.message.replace(/[:;] give --lockfile=path.*$/su, '').replace("which validate doesn't read", "which isn't read"))
   }
   const [{ path, text }] = found
+  return { path: at(path), packages: registryPackages(text, at(path)) }
+}
+
+// The npm packages the lockfile `text` read of `path` (by its name, npm's, pnpm's or yarn's) locks of
+// a registry, each `{ name, version }` once.
+function registryPackages(text, path) {
   let locks
   try {
     locks = readLockfile(posix.basename(path), text)
   } catch (error) {
-    throw new ValidateError('lockfile-unreadable', `${at(path)}: ${error.message}`)
+    throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
   }
-  const packages = [...locks.entries].filter(([, entries]) => entries.some((entry) => entry.from === 'registry')).map(([key]) => {
+  return [...locks.entries].filter(([, entries]) => entries.some((entry) => entry.from === 'registry')).map(([key]) => {
     const split = key.lastIndexOf('@')
     return { name: key.slice(0, split), version: key.slice(split + 1) }
   })
-  return { path: at(path), packages }
+}
+
+// The npm packages each lockfile installing `dir` (an absolute path) locks of a registry, as
+// installedNpmPackages has them (`{ path, packages }`) with `name`, how it is named: where the
+// stasis.config.json in `dir` names its `lockfiles`, of each of them that is npm's, pnpm's or yarn's
+// (a soldeer.lock or Cargo.lock locks no npm package), by its path there; else of the one
+// installedNpmPackages finds, by its name, none where it finds none. Refused (ValidateError) as
+// installedNpmPackages is, and where the config or a lockfile it names can't be read.
+export async function lockedNpmPackages(dir) {
+  const configPath = join(dir, CONFIG_FILE)
+  let named
+  let text
+  try {
+    text = await readFile(configPath, 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new ValidateError('lockfile-unreadable', `${configPath}: ${error.message}`)
+  }
+  if (text !== undefined) {
+    try {
+      named = parseLockfilesOption(configPath, JSON.parse(text)?.lockfiles)
+    } catch (error) {
+      throw new ValidateError('lockfile-unreadable', error instanceof SyntaxError ? `${configPath}: ${error.message}` : error.message)
+    }
+  }
+  if (named === undefined) {
+    const one = await installedNpmPackages(dir)
+    return one === null ? [] : [{ ...one, name: posix.basename(one.path.split(sep).join('/')) }]
+  }
+  return Promise.all(named.filter((rel) => LOCKFILES.get(posix.basename(rel)) === 'npm').map(async (rel) => {
+    const path = join(dir, ...rel.split('/'))
+    let lock
+    try {
+      lock = await readFile(path, 'utf8')
+    } catch (error) {
+      throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
+    }
+    return { path, name: rel, packages: registryPackages(lock, path) }
+  }))
 }
 
 // GitHub's redirects for a repository renamed or transferred.
@@ -1197,11 +1293,18 @@ export async function validateRepository(plan, { repository = null, commit, dire
   reading?.catch(() => {})
   listing?.catch(() => {})
   const listDir = (dir) => repository.listRepoDir({ sha: commit, ...(dir && { directory: dir }) })
-  // A directory's files' names: of the listing, where it lists the directory (or is whole); else its own.
-  const list = async (dir) => {
-    const listed = await listing
-    if (listed && (!listed.cut || listed.dirs.has(dir || '.'))) return (listed.names.get(dir || '.') ?? []).map((path) => posix.basename(path))
-    return (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+  // A directory's files' names: of the listing, where it lists the directory (or is whole); else its
+  // own, each read once.
+  const names = new Map()
+  const list = (dir) => {
+    if (!names.has(dir)) {
+      names.set(dir, (async () => {
+        const listed = await listing
+        if (listed && (!listed.cut || listed.dirs.has(dir || '.'))) return (listed.names.get(dir || '.') ?? []).map((path) => posix.basename(path))
+        return (await listDir(dir)).filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+      })())
+    }
+    return names.get(dir)
   }
   // A directory that isn't there, as upstream tells it: one with no files.
   const absent = (error) => /has no directory at/u.test(error?.message ?? '')
@@ -1242,16 +1345,34 @@ export async function validateRepository(plan, { repository = null, commit, dire
   }
   let locked = null
   let lockfileError
+  // A lockfile of the repository, `path` from its root, as lockedBy takes it: where it is from the
+  // bundle's directory and that from it; a patch it names by its hash alone looked for in the project's
+  // patches directory, then the root's (beside the lockfile first, of one stasis.config.json names).
+  const ofRepository = (path, besides = []) => ({
+    from: 'repository', read: readRepository, tree, root: posix.relative(posix.dirname(path), directory), at: posix.relative(directory, posix.dirname(path)),
+    patches: [...new Set([...besides, pathIn(directory, 'patches'), 'patches'])],
+  })
   try {
+    // Where its stasis.config.json names its `lockfiles`, those validate reads (npm's, pnpm's, yarn's,
+    // cargo's), none found; a soldeer.lock, whose packages none is held to, passed over.
+    const configured = lockfile === true && ecosystems.size > 0 ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
+    const readOf = async (path) => {
+      try {
+        return await readRepository(path)
+      } catch (error) {
+        throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
+      }
+    }
     const files = lockfile === false ? null : ecosystems.size === 0 ? [] : lockfile !== true ? lockfile
-      : (await repositoryLockfiles({ directory, ecosystems, list, read: readRepository })).map((one) => ({
-        ...one, from: 'repository', read: readRepository, tree, root: posix.relative(posix.dirname(one.path), directory),
-        // A patch the lockfile names by its hash alone, looked for in the project's patches directory, then the root's.
-        patches: [...new Set([pathIn(directory, 'patches'), 'patches'])],
-      }))
+      : configured !== undefined
+        ? await Promise.all(configured.filter((path) => LOCKFILES.has(posix.basename(path))).map(async (path) => ({ path, text: await readOf(path), ...ofRepository(path, [pathIn(posix.dirname(path) === '.' ? '' : posix.dirname(path), 'patches')]) })))
+        : (await repositoryLockfiles({ directory, ecosystems, list, read: readRepository })).map((one) => ({ ...one, ...ofRepository(one.path) }))
     const held = files && lockedBy(files)
     for (const ecosystem of held ? ecosystems : []) {
-      if (!held.locks(ecosystem)) throw new ValidateError('no-lockfile', `no lockfile given locks its ${ecosystem} packages: give it with --lockfile=path, or --no-lockfile to hold them to their registry alone`)
+      if (held.locks(ecosystem)) continue
+      throw new ValidateError('no-lockfile', configured === undefined
+        ? `no lockfile given locks its ${ecosystem} packages: give it with --lockfile=path, or --no-lockfile to hold them to their registry alone`
+        : `none of the lockfiles ${pathIn(directory, CONFIG_FILE)} names locks its ${ecosystem} packages: give one with --lockfile=path, or --no-lockfile to hold them to their registry alone`)
     }
     locked = held
   } catch (error) {

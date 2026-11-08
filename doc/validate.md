@@ -145,6 +145,18 @@ as cargo finds it: one further up is another project's. Lockfiles of two
 package managers installing it, a `bun.lock`, or none is refused: give one with
 `--lockfile`. One that can't be read (yarn 2's, say) is refused too.
 
+Where the repository's `stasis.config.json` in the bundle's directory names its
+[`lockfiles`](github-bundle.md#several-lockfiles-lockfiles), none is found: the
+dependencies are held to those it names, as the build lays out a tree of each,
+of the repository at the commit. Several of one ecosystem are taken (a root
+`pnpm-lock.yaml` and `tools/package-lock.json`, say): each npm copy is held to
+where the innermost of them holding it installs it, and each version is
+locked as any of them locks it. One validate doesn't read (a `soldeer.lock`) is
+passed over, its packages left unverified as ever. One that is not there, or
+outside the repository, is refused, as is a config naming none that locks the
+bundle's npm packages or crates. `--lockfile` and `--no-lockfile` take their
+place all the same.
+
 Each npm version or crate the bundle holds must be one its lockfile locks:
 
 - **Of its registry** (npm's or a mirror's tarball of it, crates.io): fetched
@@ -274,7 +286,9 @@ with their types (`src/validate.d.ts`):
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
 | `historyOf(repository, commit, { maxCompared, deadline })` | The ref of `repository` (`followingMoves`'s) that has `commit` in its history, `{ branch }` or `{ tag }`, null for none: its default branch, a tag or a branch at it, then its other branches, `maxCompared` (100) at most and none past `deadline`; where one left uncompared might have it, a `ValidateError` (`history-unread`). |
-| `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's (`''`, the default, for the same). |
+| `lockedBy(lockfiles)` | `locked`, of lockfiles' paths and texts, each with `root`, the bundle's directory's path from the lockfile's, and `at`, the lockfile's directory's path from the bundle's (`''`, the default, for the same): several of one ecosystem where each is `at` another, a copy installed where the innermost holding it says, a version locked as any of them locks it. |
+| `configuredLockfiles({ directory, list, read })` | The lockfiles the repository's `stasis.config.json` in `directory` names, by their paths from its root, undefined for none. |
+| `lockedNpmPackages(dir)` | The registry's npm versions each lockfile installing a directory on disk locks, `[{ path, name, packages }]`: of those its `stasis.config.json` names, else of the one found (`stasis audit`'s, with no file). |
 | `repositoryLockfiles({ directory, ecosystems, list, read })` | The repository's lockfiles that install `directory`, as `lockedBy` takes them. |
 | `repositoryFiles`, `fetchPackage`, `fetchFailure`, `tarballFiles`, `gitBlobId`, `parsePatch`, `patchedFiles`, `isPatchOf` | The pieces those use. |
 

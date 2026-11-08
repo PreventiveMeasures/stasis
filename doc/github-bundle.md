@@ -119,6 +119,10 @@ it:
   none of them is built from the directory holding the config.
 - A lockfile no tree is laid out of (a `Podfile.lock`, say) is refused.
   Without `lockfiles`, the one lockfile is detected as above.
+- [`stasis validate`](validate.md#lockfiles) holds the bundle's dependencies to
+  them, of the repository at the commit, in place of the one it finds, and
+  [`stasis audit`](audit.md#malware-in-any-dependency) with no file checks each
+  JS one's packages for malware.
 
 Without [entries](#entries) given, those its `entries` names are taken, and
 where it names none, those of the kind its lockfiles' package managers
