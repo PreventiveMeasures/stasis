@@ -275,7 +275,7 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
 // out as buildGitHubBundle downloads it and lays them out for one of that directory, which a bundle of
 // one below it names too. Their paths (`dir`, and the `schema`'s) from `directory`, as the bundle's are;
 // none of an output outside it, which no bundle holds.
-export async function repoPrismaClients({ github, sha, directory = '', client }) {
+export async function repoPrismaClients({ github, sha, directory, client }) {
   const tree = await repoTree('repoPrismaClients', { github, sha, directory: directory || undefined, client }, {})
   const outputs = await prismaClientsOf({ vfs: tree.vfs, cwd: tree.cwd, packageManager: tree.packageManager, client })
   const from = (path) => posix.relative(tree.cwd, path)

@@ -694,7 +694,8 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
   try {
     read = await own
     skipped = 'reason' in read
-    const mismatch = (file, kind, reason) => (generated && !skipped ? unmatched.push({ file, kind, reason }) : verdict(file, kind, reason))
+    // A patch, which no client generates, told at once.
+    const mismatch = (file, kind, reason) => (generated && !skipped && !plan.patches.has(file.path) ? unmatched.push({ file, kind, reason }) : verdict(file, kind, reason))
     // The submodules' paths, worked out where a file is not in the tree.
     let submodules
     const inSubmodule = (path) => (submodules ??= [...read.entries].filter(([, entry]) => entry.submodule).map(([at]) => `${at}/`)).some((prefix) => path.startsWith(prefix))
@@ -707,12 +708,11 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       }
       const path = pathIn(read.directory, file.path)
       const entry = read.entries.get(path)
-      if (entry === undefined || entry.submodule) {
-        // One at a path no tree can have is no file left unlisted.
-        const reason = entry?.submodule || inSubmodule(path) ? 'submodule' : read.cut && inTree(path) ? 'tree-cut' : undefined
-        if (reason === 'submodule') verdict(file, 'unexpected', reason)
-        else mismatch(file, reason === 'tree-cut' ? 'unverified' : 'unexpected', reason)
-      } else if (entry.symlink !== undefined) verdict(file, 'differs', 'symlink')
+      // One at a path no tree can have is no file left unlisted.
+      if (entry?.submodule || (entry === undefined && inSubmodule(path))) verdict(file, 'unexpected', 'submodule')
+      else if (entry === undefined && read.cut && inTree(path)) mismatch(file, 'unverified', 'tree-cut')
+      else if (entry === undefined) mismatch(file, 'unexpected')
+      else if (entry.symlink !== undefined) verdict(file, 'differs', 'symlink')
       else {
         const bytes = file.bytes()
         const same = (candidate) => (entry.data === undefined ? gitBlobId(candidate) === entry.sha : equal(candidate, entry.data))
@@ -720,20 +720,20 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
         else {
           // As a checkout with CRLF line endings writes it, of the file the repository has with LFs.
           const lf = checkedOutAsLf(bytes, file.format)
-          const crlf = lf !== undefined && same(lf)
-          if (crlf) counts.eol++
-          if (crlf) verdict(file, 'matched')
-          else mismatch(file, 'differs')
+          if (lf !== undefined && same(lf)) {
+            counts.eol++
+            verdict(file, 'matched')
+          } else mismatch(file, 'differs')
         }
       }
     }
+    // Told before the clients are generated: checking a package's patch the bundle holds awaits it.
+    checked(found)
     if (unmatched.length > 0) {
-      let clients = []
-      try {
-        clients = await generated()
-      } catch (error) {
+      const clients = await Promise.try(generated).catch((error) => {
         generatedError = error.message
-      }
+        return []
+      })
       generatedClients = heldToClients(unmatched, clients, verdict)
       counts.generated = generatedClients.reduce((sum, client) => sum + client.files.length, 0)
     }
@@ -760,8 +760,8 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
 
 // A generated file's bytes: a client's text, or its .wasm.
 const bytesOf = (content) => (typeof content === 'string' ? utf8.encode(content) : content)
-// Whether `path` is in the output `dir` of a client, '' the bundle's root.
-const isIn = (path, dir) => dir === '' || path.startsWith(`${dir}/`)
+// `path` from the output `dir` of a client ('' the bundle's root), undefined where it is not in it.
+const relIn = (dir, path) => (dir === '' ? path : path.startsWith(`${dir}/`) ? path.slice(dir.length + 1) : undefined)
 
 // Each of `unmatched` (`{ file, kind, reason }`, what it is told otherwise) held to the clients its path is in
 // the output of, of `clients` (`{ dir, files, schema, generator, prisma }`, by their paths from the bundle's
@@ -773,16 +773,16 @@ const isIn = (path, dir) => dir === '' || path.startsWith(`${dir}/`)
 function heldToClients(unmatched, clients, verdict) {
   const listed = new Map()
   for (const { file, kind, reason } of unmatched) {
-    // The innermost first, as an output inside another's is its own client's.
-    const outputs = clients.filter((client) => isIn(file.path, client.dir)).toSorted((a, b) => b.dir.length - a.dir.length)
-    const rel = (client) => (client.dir === '' ? file.path : file.path.slice(client.dir.length + 1))
-    const bytes = outputs.length > 0 ? file.bytes() : undefined
-    const by = outputs.find((client) => client.files.has(rel(client)) && equal(bytes, bytesOf(client.files.get(rel(client)))))
+    // The clients it is in the output of, with its path there; those of them generating a file there.
+    const outputs = clients.map((client) => ({ client, rel: relIn(client.dir, file.path) })).filter(({ rel }) => rel !== undefined)
+    const generating = outputs.filter(({ client, rel }) => client.files.has(rel))
+    const bytes = generating.length > 0 ? file.bytes() : undefined
+    const by = generating.find(({ client, rel }) => equal(bytes, bytesOf(client.files.get(rel))))?.client
     if (by) {
       verdict(file, 'matched')
       if (!listed.has(by)) listed.set(by, { output: by.dir, schema: by.schema, generator: by.generator, prisma: by.prisma, files: [] })
       listed.get(by).files.push(file.path)
-    } else if (outputs.some((client) => client.files.has(rel(client))) && kind !== 'unverified') verdict(file, 'differs', 'generated')
+    } else if (generating.length > 0 && kind !== 'unverified') verdict(file, 'differs', 'generated')
     else verdict(file, kind, reason ?? (outputs.length > 0 && kind === 'unexpected' ? 'not-generated' : undefined))
   }
   return [...listed.values()].map((client) => ({ ...client, files: client.files.toSorted() })).toSorted(byText((client) => client.output))

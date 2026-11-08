@@ -136,9 +136,10 @@ code the repository doesn't hold as bundled (a file it hasn't, or has
 otherwise) is held to the clients the repository's schemas generate at the
 commit, generated as `stasis github-bundle` generates them for a bundle of its
 directory: the repository read whole where that directory doesn't stand alone,
-its trees laid out from its lockfiles, and every project's schema generated,
-apart, with the `prisma` its lockfile installs, fetched (it alone, and what the
-generator reads), as the bundle's was. A file in a client's output is:
+its trees laid out from its lockfiles (nothing laid out where no project they
+install has a schema), and every project's schema generated with the `prisma`
+its lockfile installs, fetched (it alone, and what the generator reads), as the
+bundle's was. A file in a client's output is:
 
 - **generated** where it is that client's file, byte for byte: counted as it
   should be, and listed with the client;
@@ -151,10 +152,13 @@ A file in no client's output is told as before, and a file the repository holds
 is held to it alone, generated or not: a bundle of a committed client is
 checked as own code, and generates none. The clients are generated only where
 some own file isn't the repository's, and whatever the repository's
-`stasis.config.json` says of `generatePrisma`: what is checked is that a file
-is what its schema generates, not that a bundle would have generated it. An
-edge runtime's client is held to the query compiler of the `prisma` its
-lockfile installs, which it copies.
+`stasis.config.json` says of `generatePrisma` and `installDevDependencies` (its
+trees are laid out with their devDependencies, as a build in a directory below
+it, whose config may say otherwise, lays them out): what is checked is that a
+file is what its schema generates, not that a bundle would have generated it.
+An output two generators write is held to each. An edge runtime's client is
+held to the query compiler of the `prisma` its lockfile installs, which it
+copies.
 
 Generating needs the optional `@prisma/client-generator-ts` 7.10.0 peer
 dependency, as `github-bundle` does. Where the clients can't be generated (the

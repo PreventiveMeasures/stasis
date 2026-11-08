@@ -2425,51 +2425,44 @@ async function treeSpecs(name, project, cwd, { packageManager, packageManagerVer
   return lockfileSpecs(name, project, cwd, lockfiles, os)
 }
 
-// Each of `specs` (treeSpecs') lazy where its tree can be (`lazyTaken`, tree.js's), unless
-// stasis.config.json's `lazyDependencies` or `lazy` says not.
-function layLazily(name, project, cwd, specs, lazy, lazyTaken) {
+// Each of `specs` (treeSpecs') lazy where its tree can be, unless stasis.config.json's `lazyDependencies`
+// or `lazy` says not.
+async function layLazily(name, project, cwd, specs, lazy) {
+  const { lazyTaken } = await import('../vfs-bundle/tree.js')
   const lazyDependencies = lazesDependencies(name, cwd, project)
   if (lazy && !lazyDependencies) throw new Error(`${name}: lazy is given, and ${CONFIG_FILE}'s lazyDependencies is false`)
   for (const spec of specs) spec.lazy = lazy ?? (lazyDependencies && lazyTaken(project, spec.packageManager, spec.cwd))
 }
 
-// The Prisma Clients of `projects` (generatePrismaClients' outputs, `strict` as it takes it), read through
+// The Prisma Clients generatePrismaClients generates (`options` its but for `host` and `root`), read through
 // `tree` (layOutTrees') over `project`: for a lazy tree, in rounds of their own, which fetch the `prisma`
 // they read.
-async function prismaOutputs(tree, project, projects, strict) {
+async function prismaOutputs(tree, project, options) {
   const [{ generatePrismaClients }, { treeHost }, { inRounds }] = await Promise.all([import('../vfs-bundle/prisma.js'), import('../vfs-bundle/tree.js'), import('../vfs-bundle/lazy.js')])
-  const generating = (reads) => generatePrismaClients({ host: treeHost(tree, project, reads), root: tree.root, projects, strict })
+  const generating = (reads) => generatePrismaClients({ ...options, host: treeHost(tree, project, reads), root: tree.root })
   return tree.unpack === undefined ? generating() : inRounds(generating, tree.unpack)
 }
 
 // The Prisma Clients the schemas of the project held in `vfs` generate, as buildVfsBundle generates
 // them for a build at `cwd` (`generate: ['prisma']`, every project's), its trees laid out as it lays
-// them out, lazily where they can be: each project's apart, none of one it can't generate for, nor of
-// one two of whose generators write one output; generatePrismaClients' outputs, `{ dir, files, schema,
-// generator, prisma }` each. Refused where the optional generator stasis generates with is missing,
-// where any project has a schema. `client` and `cache` are buildVfsBundle's.
+// them out, lazily where they can be, but with their devDependencies whatever stasis.config.json says
+// (as a build in a directory below it, whose config may say otherwise, lays them out): none of a
+// project it can't generate for, and each of an output two generators write; generatePrismaClients'
+// outputs, `{ dir, files, schema, generator, prisma }` each. Nothing laid out where no project the trees
+// install has a schema; refused where one has, and the optional generator stasis generates with is
+// missing. `client` and `cache` are buildVfsBundle's.
 export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, cache } = {}) {
   const name = 'prismaClientsOf'
-  const { layOutTrees, lazyTaken, packageManagerOf, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { layOutTrees, packageManagerOf, plannedTrees, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { loadGenerator, schemaProjects } = await import('../vfs-bundle/prisma.js')
   const project = vfsHost(vfs)
   cwd = project.realpath(posix.resolve('/', cwd))
   const specs = (await treeSpecs(name, project, cwd, { packageManager })).filter((spec) => packageManagerOf(name, spec.packageManager).kind === 'js')
-  if (specs.length === 0) return []
-  layLazily(name, project, cwd, specs, undefined, lazyTaken)
-  const tree = await layOutTrees({ project, specs, client, cache, installDevDependencies: installsDevDependencies(name, cwd, project) })
-  const { requireGenerator, schemaProjects } = await import('../vfs-bundle/prisma.js')
-  const projects = [...schemaProjects(project, tree.root, tree.projects)].toSorted()
-  if (projects.length > 0) requireGenerator()
-  const outputs = []
-  for (const one of projects) {
-    try {
-      // eslint-disable-next-line no-await-in-loop -- one project at a time, a lazy tree's rounds each its own
-      outputs.push(...await prismaOutputs(tree, project, new Set([one]), false))
-    } catch {
-      // Two of its generators write one output, which `prisma generate` refuses: none of its clients.
-    }
-  }
-  return outputs
+  await layLazily(name, project, cwd, specs)
+  if (!plannedTrees({ project, specs }).some(({ root, projects }) => schemaProjects(project, root, projects).size > 0)) return []
+  loadGenerator()
+  const tree = await layOutTrees({ project, specs, client, cache, installDevDependencies: true })
+  return prismaOutputs(tree, project, { projects: schemaProjects(project, tree.root, tree.projects), strict: false, shared: true })
 }
 
 // buildVfsBundle's build, `name`'s, of the project `project` (a host, @exodus/stasis-core/host)
@@ -2482,7 +2475,7 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
 // absolute paths written, which `extra` never takes; `refuseInstalled`, layOutTree's; and `why` the
 // package manager is detected, as a refusal to detect one says.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, lazyTaken, packageManagerOf, pinCommits, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinCommits, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
@@ -2508,7 +2501,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // rooted above cwd, where it reads the config there).
   if (parseExtraOption(CONFIG_FILE, readConfigFile(name, cwd, project)?.extra).some((pattern) => !pattern.startsWith('!'))) checkGlob()
   const installDevDependencies = installsDevDependencies(name, cwd, project)
-  layLazily(name, project, cwd, specs, lazy, lazyTaken)
+  await layLazily(name, project, cwd, specs, lazy)
   // Each project's Prisma Client: asked for (`generate: ['prisma']`), every project's, strictly; else, of a JS
   // build of a Vfs, detected where stasis.config.json's `generatePrisma` leaves it: the projects the entries
   // are in and their workspace dependencies, silently. `generate: []`, or `generatePrisma` false: none.
@@ -2573,7 +2566,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     const reached = () => prisma.reachedProjects(project, tree.root, tree.projects, builds.flatMap((build) => build.entries.map(entryPath)))
     const projects = strict || withSchema.size === 0 ? withSchema : withSchema.intersection(reached())
     if (projects.size > 0) {
-      const outputs = await debugTimed('Generated the Prisma Clients', () => prismaOutputs(tree, project, projects, strict))
+      const outputs = await debugTimed('Generated the Prisma Clients', () => prismaOutputs(tree, project, { projects, strict }))
       if (outputs.length > 0) outside = vfsHost(prisma.withPrismaClients(vfs, outputs))
     }
   }
