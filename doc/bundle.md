@@ -17,7 +17,10 @@ and Rust bundles, see [Other languages](#other-languages).
 
 Files the graph never reaches, but which are to be bundled anyway, are named in
 `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson), for every
-language: the bundle (and its `--lockfile`) carries them too.
+language: the bundle (and its `--lockfile`) carries them too. Its `allowedPaths`,
+`disallowedPaths`, `allowedModules` and `disallowedModules` restrict what the bundle
+may carry, every offender named and nothing written, see
+[Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules).
 
 | Flag | Meaning |
 | - | - |
@@ -156,6 +159,19 @@ directory, and its value the flags building it, named as they are without the
 }
 ```
 
+An entry's options may also restrict what its build carries, beside what the
+config's own restrict (see below):
+
+```json
+{
+  "disallowedModules": ["request"],
+  "entries": {
+    "src/worker.js": { "allowedPaths": ["src/worker", "node_modules"], "allowedModules": ["@exodus/bytes"] },
+    "src/index.js": { "disallowedPaths": ["src/worker"] }
+  }
+}
+```
+
 `stasis build` reads an entry's `jsx`, `flow`, `define` and `metro`/`platforms`
 from the config a bundle carries (see [build](build.md#entry-options-stasisconfigjson)).
 
@@ -195,6 +211,13 @@ With it:
 - The config's `extra` is the bundle's, not an entry's: added once, to the
   builds' union however many there are, by the config's own `resources` (an
   entry's `resources` is its graph's alone).
+- An entry may set `allowedPaths`, `disallowedPaths`, `allowedModules` and
+  `disallowedModules`, as the config does at its top level (see
+  [Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules)):
+  they are no flags, and hold what its own build carries, its graph without the
+  config's `extra`, beside the config's own, none overriding another. Entries
+  with the same options and the same rules are built together, and an error of
+  their rules names them all.
 
 `stasis run` takes nothing from it. `stasis github-bundle` takes it too, but
 runs nothing: see its [Entries](github-bundle.md#entries).
@@ -889,7 +912,9 @@ stasis add path/to/(file|dir) ...
 no dependency resolution, where a file the import graph never reaches has to
 be attested anyway. It takes no options: the bundle files and the resource
 allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
-`resources`, `brotliQuality`, all optional; the file itself is required). A
+`resources`, `brotliQuality`, all optional; the file itself is required), and
+what it adds is held to its [allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules),
+as what the bundles and lockfile it adds to carry already is. A
 `stasis.lock.json` is updated only when one already exists. It also ships on
 the core CLI as `stasis-core add`.
 

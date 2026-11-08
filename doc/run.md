@@ -19,6 +19,13 @@ Files the run never loads, but which are to be attested anyway, are named in
 `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson): a run that
 writes a lockfile or bundle (`add` or `replace`) adds them.
 
+Its `allowedPaths`, `disallowedPaths`, `allowedModules` and `disallowedModules`
+restrict what the run may load, read and record: a file one refuses fails its
+import or read as the run reaches it, and the run then writes nothing, even where
+the program catches the error. A lockfile or bundle the run loads that records
+one is refused before the entry runs. See
+[Allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules).
+
 Everything after the options goes to node as is: the entry and its arguments.
 The exit code is the entry's, or 128 plus the signal's number where a signal
 killed it. The effective configuration is printed to stderr first.

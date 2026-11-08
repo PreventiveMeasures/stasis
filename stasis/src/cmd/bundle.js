@@ -20,6 +20,7 @@ import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-u
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
+import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
@@ -849,8 +850,8 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // addImport replays the edge map; serialize emits the runtime loader's v1 layout.
   // bundle:'replace' skips reading any on-disk stasis.code.br (bundle:'add' would leak stale
   // entries); lock:'ignore' tolerates a pre-existing lockfile without consuming it; and it is never
-  // written, so it claims no write target.
-  const stateOptions = { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, claim: false }
+  // written, so it claims no write target, nor checks the Policy (assertPolicies checks the whole bundle).
+  const stateOptions = { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
   // A root holding a stasis file is the project's own choice, whose config the build takes.
   if (innermostRoot && !STASIS_ROOT_FILES.some((file) => host.stat(join(state.root, file)) !== null)) {
@@ -1026,6 +1027,15 @@ export function readConfigFile(name, cwd, host = diskHost) {
   } catch (cause) {
     throw new Error(`${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`, { cause })
   }
+}
+
+// Holds each of `builds` (as built, `builts[i]`) to its entries' Policy, and the whole `bundle` (`extra`
+// included) to that of the stasis.config.json at `root`, read through `host`; links are followed through
+// `files`, the host the builds read.
+function assertPolicies(name, { builds = [], builts = [], bundle, root, host = diskHost, files = host, label = CONFIG_FILE }) {
+  const links = linksOn(root, files)
+  for (const [i, build] of builds.entries()) build.policy?.assertArtifact(builts[i].bundle, { links })
+  parsePolicy(label, readConfigFile(name, root, host))?.assertArtifact(bundle, { links })
 }
 
 // The stasis.config.json `key` in `cwd` (read as readConfigFile reads it), true or false, true where
@@ -2559,13 +2569,15 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
     // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
     // took it. Never one of the files written (none, into a Vfs).
-    return { root, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { outputs: outputsAt(root), resources: bundleExtra ? undefined : builds[0].resources, host, name }) : union }
+    return { root, builts, host, ...bundleExtra || !builts[0].stateBuilt ? withExtra(union, root, { outputs: outputsAt(root), resources: bundleExtra ? undefined : builds[0].resources, host, name }) : union }
   }
   const since = counts()
   const built = tree.unpack === undefined
     ? await debugTimed('Built', () => attempt(), () => builtSince(since))
     : await inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack])
   const { bundle, lockfile, root } = built
+  // After the lazy rounds, so only the full tree's build is checked.
+  assertPolicies(name, { builds, builts: built.builts, bundle, root, host: project, files: built.host, label: `${name}: ${CONFIG_FILE}` })
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
   const unpacked = unpackedOf(tree)
@@ -2644,7 +2656,9 @@ function reportedRounds(attempt, unpack) {
 // are left out (see define.js).
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
-  return (await buildOfKind(classifyEntries('buildBundle', options), options)).bundle
+  const built = await buildOfKind(classifyEntries('buildBundle', options), options)
+  assertPolicies('buildBundle', { bundle: built.bundle, root: built.root ?? resolve(cwd) })
+  return built.bundle
 }
 
 // Run `stasis bundle`: build a brotli-compressed bundle and write it to `output`
@@ -2699,6 +2713,10 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     } catch (cause) {
       throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
     }
+    // What the bundle and lockfile on disk carry is written again, so held to the config's Policy too.
+    const policy = parsePolicy(CONFIG_FILE, readConfigFile('bundleCommand', root))
+    const links = linksOn(root)
+    policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
@@ -2714,6 +2732,8 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       } catch (cause) {
         throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
       }
+      // It may record more than the bundle beside it (a broader run's capture).
+      policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
   }
@@ -2802,6 +2822,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
       if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
       union = withExtras
     }
+    assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })
   }
   return { ...union, root }
 }

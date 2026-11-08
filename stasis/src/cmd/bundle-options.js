@@ -1,6 +1,7 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
+import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
 import { isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
@@ -242,6 +243,7 @@ function entryFlags(what, options) {
   if (!isPlainObject(options)) throw new Error(`${what} must be an object of stasis bundle options`)
   const values = {}
   for (const [flag, value] of Object.entries(options)) {
+    if (POLICY_KEYS.includes(flag)) continue // the entry's Policy (readConfigEntries)
     if (OUTPUT_FLAGS.has(flag)) throw new Error(`${what}: ${flag} is the bundle's option, not an entry's: pass --${flag}`)
     if (!Object.hasOwn(BUNDLE_FLAGS, flag)) throw new Error(`${what}: unknown option ${JSON.stringify(flag)}`)
     const { type, multiple } = BUNDLE_FLAGS[flag]
@@ -264,8 +266,8 @@ function entryFlags(what, options) {
 }
 
 // The `entries` of the stasis.config.json in `cwd`: each entry it names, as a path relative to cwd
-// -> { entry: the name as written, values: its options as flags (entryFlags') }. null where there is
-// none.
+// -> { entry: the name as written, values: its options as flags (entryFlags'), policy?: its own Policy,
+// held beside the config's }. null where there is none.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
@@ -276,7 +278,9 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
     const key = isAbsolute(entry) ? null : entryKey(cwd, entry)
     if (key === null) throw new Error(`${what}: an entry must be a path relative to the directory of ${CONFIG_FILE}, within it`)
     if (named.has(key)) throw new Error(`${what} names the same entry as ${JSON.stringify(named.get(key).entry)}`)
-    named.set(key, { entry, values: entryFlags(what, options) })
+    const values = entryFlags(what, options)
+    const policy = parsePolicy(what, options)
+    named.set(key, { entry, values, ...(policy !== null && { policy }) })
   }
   return named
 }
@@ -320,11 +324,27 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
     } catch (cause) {
       throw new Error(`${CONFIG_FILE}: entries ${JSON.stringify(name)}: ${cause.message}`, { cause })
     }
-    const id = JSON.stringify(options)
-    if (builds.has(id)) builds.get(id).entries.push(entry)
-    else builds.set(id, { entries: [entry], ...options })
+    addToBuild(builds, entry, named[i], options)
   }
-  return { ...output, builds: [...builds.values()] }
+  return { ...output, builds: withPolicies(builds) }
+}
+
+// Adds `entry` (`named`, readConfigEntries') to the build in `builds` with the same language, options and
+// Policy, or starts one.
+function addToBuild(builds, entry, named, options, language) {
+  const id = JSON.stringify([language, options, named.policy?.key])
+  // The same Policy for each entry of a build, by `id`: the first one's, relabelled by withPolicies.
+  if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [], policy: named.policy })
+  const build = builds.get(id)
+  build.entries.push(entry)
+  build.written.push(named.entry)
+}
+
+// The builds `addToBuild` made, each held to the Policy its entries set (`policy`, where they set one),
+// whose errors name them all, `prefix` before. -> [build]
+function withPolicies(builds, prefix = '') {
+  return [...builds.values()].map(({ written, policy, ...build }) => (policy === undefined ? build
+    : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${written.map((entry) => JSON.stringify(entry)).join(', ')}`) }))
 }
 
 // buildOptions' options, each by the flag it is given as; and those whose values are a set, in
@@ -383,7 +403,8 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
   const given = Object.keys(OPTION_FLAGS).filter((key) => options[key] !== undefined && comparable(key, options[key]) !== comparable(key, DEFAULT_OPTIONS[key]))
   const builds = new Map()
   for (const [i, entry] of entries.entries()) {
-    const { entry: written, values } = config.get(keys[i])
+    const named = config.get(keys[i])
+    const { entry: written, values } = named
     const what = `${name}: ${CONFIG_FILE}: entries ${JSON.stringify(written)}`
     const running = [...CONSENT_FLAGS.keys()].find((flag) => values[flag] !== undefined)
     if (running !== undefined) throw new Error(`${what} sets ${running}, which runs ${CONSENT_FLAGS.get(running)}, and nothing of the project runs here`)
@@ -396,11 +417,9 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
     }
     // Entries of another language are built apart, whatever their options: a build's are of one.
-    const id = JSON.stringify([language, built])
-    if (builds.has(id)) builds.get(id).entries.push(entry)
-    else builds.set(id, { entries: [entry], ...built })
+    addToBuild(builds, entry, named, built, language)
   }
   const running = given.find((key) => CONSENT_FLAGS.has(OPTION_FLAGS[key]))
   if (running !== undefined) throw new Error(`${name}: ${optionText(running, options[running])} is given, which runs ${CONSENT_FLAGS.get(OPTION_FLAGS[running])}, and nothing of the project runs here`)
-  return { entries, builds: [...builds.values()] }
+  return { entries, builds: withPolicies(builds, `${name}: `) }
 }

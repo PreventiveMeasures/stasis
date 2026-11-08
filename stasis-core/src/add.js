@@ -7,6 +7,7 @@ import { Lockfile } from './lockfile.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
+import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
@@ -58,7 +59,7 @@ function readAddConfig(baseDir) {
     canonicalizePath(resolve(baseDir, bundleFile)) === canonicalizePath(resolve(baseDir, resourcesBundleFile))) {
     throw new Error(`${CONFIG_FILE}: bundleFile and resourcesBundleFile must name distinct paths (both resolve to ${resolve(baseDir, bundleFile)})`)
   }
-  return { bundleFile, resourcesBundleFile, resources, brotliQuality: cfg.brotliQuality }
+  return { bundleFile, resourcesBundleFile, resources, brotliQuality: cfg.brotliQuality, policy: parsePolicy(CONFIG_FILE, cfg) }
 }
 
 // Assemble a Bundle bucketed per package.json. `add` records NO entries -- its files are attested, not entry points -- so nothing in an add bundle is runnable via `--bundle=load`.
@@ -97,8 +98,10 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
 // Merge add-if-missing into any existing bundle (divergent bytes for an attested path throw -- see
 // mergeModuleMaps), returning the write as a thunk so every target's conflicts surface before the
 // first byte lands and an aborted `add` leaves the project untouched. Serializing INSIDE the thunk
-// keeps peak memory at one target's bytes rather than every target's at once.
-function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
+// keeps peak memory at one target's bytes rather than every target's at once. `check` (the config's
+// Policy, or null) sees the files added, then what the bundle already carries.
+function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check) {
+  check?.(bundle)
   const abs = resolve(baseDir, targetPath)
   let mergedFrom
   if (existsSync(abs)) {
@@ -108,6 +111,7 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
     } catch (cause) {
       throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
     }
+    check?.(existing, recordedIn(targetPath))
     mergedFrom = tally(existing).files
     bundle = existing.merge(bundle)
   }
@@ -122,14 +126,16 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality) {
 }
 
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
-// prepareBundleFile so a conflict here doesn't leave the bundles updated.
-function prepareLockfile(lockPath, lockAdd) {
+// prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
+// records: the files added were checked as the bundles'.
+function prepareLockfile(lockPath, lockAdd, check) {
   let existing
   try {
     existing = Lockfile.parse(readFileSync(lockPath, 'utf8'))
   } catch (cause) {
     throw new Error(`add: failed to read the existing ${LOCK_FILE}`, { cause })
   }
+  check?.(existing, recordedIn(LOCK_FILE))
   const before = tally(existing).files
   const merged = existing.merge(lockAdd)
   const total = tally(merged).files
@@ -318,7 +324,9 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   }
   const baseDir = resolve(cwd)
   const realBase = realpathSync(baseDir)
-  const { bundleFile, resourcesBundleFile, resources, brotliQuality } = readAddConfig(baseDir)
+  const { bundleFile, resourcesBundleFile, resources, brotliQuality, policy } = readAddConfig(baseDir)
+  const links = linksOn(baseDir)
+  const check = policy && ((artifact, hint) => policy.assertArtifact(artifact, { hint, links }))
 
   const rootPkg = readJson(join(baseDir, 'package.json')) ?? {}
   const workspaceName = rootPkg.name ?? 'workspace'
@@ -351,7 +359,7 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const repo = detectRepo(baseDir)
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
-    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality)
+    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality, check)
     writes.push(write)
     summary.push(`+${counts.added} ${kind} (${counts.total} total) -> ${counts.path}`)
   }
@@ -368,7 +376,7 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   if (hasLock) {
     const allFiles = new Map([...codeFiles, ...resourceFiles])
     const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
-    const { write, counts } = prepareLockfile(lockPath, lockAdd)
+    const { write, counts } = prepareLockfile(lockPath, lockAdd, check)
     writes.push(write)
     summary.push(`+${counts.added} (${counts.total} total) -> ${LOCK_FILE}`)
   }
