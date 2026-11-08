@@ -114,25 +114,13 @@ let aborted = false
 let loadingModule = 0
 // True until the first non-builtin load hook fires (entry detection).
 let entryUnseen = true
-// True until the first parent-less resolution -- the CLI entry. Extra preloads (`stasis run
-// --import tsx`) resolve against a DIRECTORY parent (the cwd URL, '/'-terminated -- never a
-// loadable module) and load BEFORE it: they are runner infrastructure like stasis's own loader.
-// Capturing them would misfile the first preload as the entry (initState from ITS package root)
-// and pollute the artifact with toolchain files; gating them would break --bundle=load (the
-// preload itself must keep loading from disk). Any OTHER pre-entry parent (an [eval] wrapper's
-// import) falls through to the normal path and fails closed on assert.ok(state), like a run
-// without preloads.
+// True until the first parent-less resolution, the CLI entry. Preloads (`stasis run --import tsx`) resolve
+// from a DIRECTORY parent (the cwd URL) before it: runner infrastructure, neither captured (it would misfile
+// the entry and add toolchain files) nor gated (a preload must load from disk under --bundle=load).
 let entryUnresolved = true
-// The runner-infrastructure module graph: every URL the preload phase resolved or loaded, plus
-// its post-entry descendants (a transformer lazy-loading a plugin). Members pass both hooks
-// through unobserved -- but NOT unforgotten:
-// - infraSources stashes each infra load's raw {source, format} and infraEdges its outgoing
-//   resolutions, so that when the APP graph reaches an infra module (its load hook can never
-//   re-fire -- the module instance is cached) it is PROMOTED into the capture with the exact
-//   bytes that executed, its own edges replayed transitively. Without promotion the artifact
-//   would ship a dangling edge and a frozen replay would never verify the file.
-// - under --bundle=load, an app edge landing on an infra URL means the cached disk-loaded
-//   instance shadows the attested bundle bytes: allowed only when they are identical.
+// The runner-infrastructure graph: every URL the preload phase resolved or loaded, plus its post-entry
+// descendants. Members pass both hooks unobserved, but their raw loads (infraSources) and edges (infraEdges)
+// are kept for when the app graph reaches one: see promoteInfraUrl and assertInfraMatchesBundle.
 const infraUrls = new Set()
 const infraSources = new Map()
 const infraEdges = new Map()
@@ -325,10 +313,9 @@ function initState(root) {
   // there sees strictly more. A process that never reaches `exit` writes nothing.
   process.on('exit', save)
 
-  // config.shardSignalFlush (opt-in): flush the shard when a capturing CHILD is ended by SIGTERM
-  // (jest-worker's forceExit bypasses `exit`), then re-deliver the signal -- unless user code owns
-  // SIGTERM, then only flush. `userOwnedSigterm` is snapshotted at registration: a `once` that
-  // already ran is invisible to listenerCount. Must fit forceExit's 500ms window.
+  // config.shardSignalFlush (opt-in): flush a capturing CHILD's shard on SIGTERM (jest-worker's forceExit
+  // bypasses `exit`), then re-deliver it unless user code owns SIGTERM (snapshotted at registration: a
+  // `once` that already ran is invisible to listenerCount). Must fit forceExit's 500ms window.
   if (isChildProcess && shardForwardingEnabled() && state.config.shardSignalFlush) {
     const userOwnedSigterm = process.listenerCount('SIGTERM') > 0
     process.once('SIGTERM', () => {
@@ -371,10 +358,9 @@ function load(url, context, nextLoad) {
     // node_modules scope serves only nm deps; gate on inNodeModules(), not a raw substring (symlinks).
     if (!inScope(state, url)) return nextLoad(url, context)
     const { source, format } = state.getFile(url)
-    // Cross-check format only when the resolve chain set it; the formats map is itself attested
-    // against the lockfile at construction. A transforming preload (`stasis run --import tsx`)
-    // legitimately asks for an attested '-typescript' file as its post-erasure family -- serve
-    // the chain's view then (the transformer above us turns the raw source into it).
+    // Cross-check format only when the resolve chain set it (the formats map is attested at construction).
+    // A transforming preload (`--import tsx`) asks for an attested '-typescript' file as its post-erasure
+    // family: serve the chain's view then (the transformer above us turns the raw source into it).
     let serveFormat = format
     if (context.format != null) {
       if (context.format === erasedTypeScriptFormat(format)) serveFormat = context.format
@@ -405,12 +391,9 @@ function load(url, context, nextLoad) {
   return result
 }
 
-// Fold a runner-infrastructure module into the capture: an app-graph edge reached a module the
-// preload phase already executed, so its load hook can never re-fire (the instance is cached) and
-// skipping it would ship a dangling edge a frozen replay never verifies. addFile re-verifies the
-// stashed bytes against disk (and against the lockfile/bundle in frozen modes), and the module's
-// own remembered resolutions replay transitively so its dependencies aren't dangling either.
-// One resolved but never loaded is only dropped: a live load would capture it.
+// Fold a runner-infrastructure module into the capture: the app graph reached a module the preload phase
+// already executed, whose load hook can't re-fire (cached), so skipping it ships a dangling edge. addFile
+// re-verifies the stashed bytes and its edges replay transitively; one never loaded is left to a live load.
 function promoteInfraUrl(url, { isEntry = false } = {}) {
   if (!infraUrls.delete(url)) return
   const stashed = infraSources.get(url)
@@ -445,13 +428,9 @@ function assertInfraMatchesBundle(url) {
 }
 
 function resolve(specifier, context, nextResolve) {
-  // Runner-infrastructure passthrough (see entryUnresolved): a preload's graph resolves from a
-  // DIRECTORY parent (the cwd URL Node uses for each `--import` specifier -- a directory is never
-  // a loadable module, so this cannot shadow an app parent) or from a module already tracked as
-  // infrastructure. The first parent-less resolution is still the entry, and any other pre-entry
-  // parent (an [eval] wrapper's import) falls through to fail closed below. Each passed-through
-  // edge is remembered -- not recorded -- so promoteInfraUrl can replay it if the app graph
-  // reaches this module later.
+  // Runner-infrastructure passthrough (see entryUnresolved): a preload's graph resolves from a DIRECTORY
+  // parent (never a loadable module, so it can't shadow an app parent) or an infra module; any other
+  // pre-entry parent ([eval]'s import) fails closed below. Edges are remembered for promoteInfraUrl, not recorded.
   const infraParent = context.parentURL !== undefined
     && (infraUrls.has(context.parentURL) || (entryUnresolved && context.parentURL.endsWith('/')))
   if (infraParent) {
@@ -576,9 +555,8 @@ function patchCjsResolution() {
         }
       } else if (isAbsolute(request)) {
         // NO parent, absolute request: Node's ESM<->CJS interop re-enters the CJS loader with hooks
-        // SKIPPED, so this shim is the only interception point. hasFsFileContent (not a dir/stat
-        // record) keeps a listing or payload-free stat from hijacking resolution. Node 24.14-24.17
-        // re-resolve here every commonjs-sync eval; the no-parent shape survives on >=24.18 too.
+        // SKIPPED, so only this shim intercepts. hasFsFileContent keeps a listing or stat record from
+        // hijacking resolution. Node 24.14-24.17 hit this every commonjs-sync eval; >=24.18 still can.
         const url = pathToFileURL(request).toString()
         if (inScope(state, url) && state.hasFsFileContent(url)) {
           assertInfraMatchesBundle(url)
@@ -594,12 +572,9 @@ function patchCjsResolution() {
     return resolved
   }
 
-  // Module._load's cache fast path can skip _resolveFilename, so a second require() of the same
-  // target goes unrecorded: force it through the PROPERTY (our shim) to observe the edge. This is
-  // also the one spot that sees every ACTUAL CJS execution, hook-served or not, so it anchors the
-  // executed-file reconciliation for transplanted require.extensions handlers (a transforming
-  // preload's CJS pipeline, e.g. `--import tsx` compiling .ts, reads and compiles files itself --
-  // the load hook chain never fires for them).
+  // Module._load's cache fast path can skip _resolveFilename, so force a repeat require() through our shim
+  // to observe the edge. It is also the one spot seeing every ACTUAL CJS execution, hook-served or not, so it
+  // catches transplanted require.extensions handlers (`--import tsx` compiling .ts) the load hooks never see.
   const originalLoad = Module._load
   Module._load = function (request, parent, ...rest) {
     let resolvedUrl

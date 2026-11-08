@@ -1,8 +1,6 @@
-// The commands both CLIs take, `stasis-core` and `stasis`, from their arguments: `add`, `extract` and
-// `prune` whole, and `run` in steps, so `stasis run` can add its own options on top -- its options
-// parsed and checked, the config the loader reads set in the environment, and the program run under
-// the loader. Each names itself `label` (the CLI's name) and leaves a usage error to `fail(message)`,
-// which exits.
+// The commands both CLIs (`stasis-core`, `stasis`) take: `add`, `extract` and `prune` whole, and `run` in
+// steps so `stasis run` can add its own options (parse and check, set the loader's config in the env, run
+// under the loader). Each takes `label` (the CLI's name) and leaves a usage error to `fail(message)`, which exits.
 
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -28,8 +26,7 @@ const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
 const RUN_VALUE_FLAGS = valueFlagsOf(RUN_OPTIONS).filter((flag) => flag !== '--fs')
 
 // `run`'s options, and the caller's own `options` (boolean ones), shifted off the front of `argv`,
-// which keeps the program and its arguments; checked, a usage error being `fail(message)`'s (which
-// exits). -> the run: `values` as parsed, and the config they set.
+// which keeps the program and its arguments; checked. -> `values` as parsed, and the config they set.
 export function parseRunOptions(argv, { options = {}, fail }) {
   const values = parseLeadingOptions(argv, { ...RUN_OPTIONS, ...options }, { valueFlags: RUN_VALUE_FLAGS, onError: fail })
   if (argv.length === 0) fail('Nothing to run: no path to file given')
@@ -103,15 +100,13 @@ export function setRunEnv(label, run, extra = {}) {
   setEnv('EXODUS_STASIS_CHILD_PROCESS', childProcess)
   setEnv('EXODUS_STASIS_FS', fs)
   setEnv('EXODUS_STASIS_RESOURCES', resources)
-  // Only set when given: an unconditional setEnv('') would reject an ambient EXODUS_STASIS_BROTLI_QUALITY as a conflict.
+  // Only when given: an unconditional setEnv('') would reject an ambient EXODUS_STASIS_BROTLI_QUALITY.
   if (brotliQuality !== undefined) setEnv('EXODUS_STASIS_BROTLI_QUALITY', String(brotliQuality))
 }
 
-// Runs the program `argv` in a node taking `nodeArgs`, then `--import`ing `loader` (a URL) and the
-// run's `imports`. Those preloads ride after the loader, so they evaluate under its hooks; their
-// module graphs pass through uncaptured unless the app graph reaches them -- then they're promoted
-// into the capture (see hooks.js). Exits as the program does: its code, or 128+signo when a signal
-// killed it (the shell's convention) instead of the implicit 0.
+// Runs `argv` in a node taking `nodeArgs`, then `--import`ing `loader` (a URL) and the run's `imports`,
+// which evaluate under its hooks: their graphs pass uncaptured unless the app's reaches them (hooks.js).
+// Exits as the program does: its code, or 128+signo when a signal killed it (the shell's convention).
 export async function runProgram(argv, { nodeArgs = [], loader, imports }) {
   const args = [...nodeArgs, '--import', loader, ...imports.flatMap((specifier) => ['--import', specifier]), ...argv]
   const child = spawn(process.execPath, args, { stdio: 'inherit' })

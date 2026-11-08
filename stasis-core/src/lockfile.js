@@ -16,11 +16,13 @@ export class Lockfile {
   config
   entries
   modules
-  // conditions -> parent -> specifier -> resolved file. A Map from parse; null only on in-memory constructs that don't attest it.
+  // conditions -> parent -> specifier -> resolved file. A Map from parse; null only on in-memory
+  // constructs that don't attest it.
   imports
   // file -> format string. Same Map/null rule as imports.
   formats
-  // Project-relative paths of attested files carrying a POSIX execute bit, for `stasis extract`. Files only, never a `directory`.
+  // Project-relative paths of attested files carrying a POSIX execute bit, for `stasis extract`. Files
+  // only, never a `directory`.
   executable
 
   constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable } = {}) {
@@ -33,10 +35,9 @@ export class Lockfile {
     this.executable = executable ?? new Set()
   }
 
-  // The companion lockfile of `bundle`: its shape, each file's content swapped for its integrity,
-  // `integrityOf(file, content)` of its project-relative path. Imports and formats carry across, else
-  // the lockfile is bytes-only and a frozen run skips those cross-checks; the file set is the bundle's,
-  // so its executable list attests it as-is.
+  // The companion lockfile of `bundle`: its shape, each file's content swapped for `integrityOf(file,
+  // content)`. Imports and formats carry across, else a frozen run would skip those cross-checks; the file
+  // set is the bundle's, so its executable list attests as-is.
   static fromBundle(bundle, integrityOf) {
     const modules = new Map()
     for (const [dir, m] of bundle.modules) {
@@ -110,7 +111,8 @@ export class Lockfile {
     return JSON.stringify(store, undefined, 2) + '\n'
   }
 
-  // Strict union of two Lockfiles (returns a NEW one): buckets must agree, and a file in both must carry the identical hash (fail closed).
+  // Strict union of two Lockfiles (returns a NEW one): buckets must agree, and a file in both must carry
+  // the identical hash (fail closed).
   merge(other) {
     assert(this.config.scope === other.config.scope,
       `lockfile merge: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)

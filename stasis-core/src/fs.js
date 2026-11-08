@@ -1,8 +1,6 @@
-// `stasis run --fs=sync|async`: monkey-patch the fs readers (readFileSync/readdirSync/lstat/stat
-// + existence/realpath probes; under =async their callback + fs.promises counterparts) to capture a
-// program's explicit reads into the bundle (bundle=add|replace) or serve them from it (bundle=load).
-// SECURITY INVARIANT: only paths whose REAL path (symlinks resolved) stays inside the project root are
-// captured/served; anything else falls through to the real fs and is never attested.
+// `stasis run --fs=sync|async`: patch the fs readers and probes (=async: their callback and fs.promises forms
+// too) to capture a program's reads into the bundle (bundle=add|replace) or serve them from it (bundle=load).
+// SECURITY INVARIANT: a path whose REAL path leaves the project root falls through to the real fs, never attested.
 
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { resolve } from 'node:path'
@@ -14,10 +12,9 @@ import { isDotEnvFile, isPathWithin, isStasisArtifactName } from './util.js'
 const require = createRequire(import.meta.url)
 const fs = require('node:fs')
 
-// Snapshot the real fns while still genuine builtins; the hooks call THESE, never patched `fs.*`, so
-// there's no recursion and capture/containment always see real bytes/paths. fs.promises IS
-// node:fs/promises (same object). The legacy callback fs.exists is deliberately NOT reassigned
-// (wrapping would clobber its util.promisify.custom); it still answers via the patched fs.access.
+// Snapshot the real fns while still genuine builtins: the hooks call THESE, so there's no recursion and
+// capture/containment see real bytes. fs.promises IS node:fs/promises. Callback fs.exists is NOT patched
+// (wrapping would clobber its util.promisify.custom); it answers via the patched fs.access.
 const {
   readdirSync: realReaddirSync, lstatSync: realLstatSync, statSync: realStatSync, realpathSync: realRealpathSync,
   existsSync: realExistsSync, accessSync: realAccessSync,
@@ -47,7 +44,6 @@ function dirCaptureNames(root, abs, names) {
   return names.filter((name) => !isStasisArtifactName(name))
 }
 
-// The encoding an fs reader's `options` argument names: the string itself, or its `encoding`.
 const encodingOf = (options) => (typeof options === 'string' ? options : options?.encoding)
 
 // Apply readFileSync's encoding arg to raw bytes; Buffer.toString matches fs's ERR_UNKNOWN_ENCODING.
@@ -59,10 +55,9 @@ function decode(buf, options) {
 // Honour realpath's `encoding` arg for the synthetic answer when a bundle-served path is gone from disk.
 const encodeRealpath = (abs, options) => (encodingOf(options) === 'buffer' ? Buffer.from(abs) : abs)
 
-// NON-EXISTENT under --fs (a faithful ENOENT from every reader, listings included, in both modes):
-// source-map sidecars (`*.map`, so a captured build replays byte-identically; opt out via `map` in
-// resources) and `.env`/`.env.*` (an automated capture can never bake a secret in; no opt-in). The
-// ONE way either serves at load is bundle membership (an explicit `stasis add .env`).
+// NON-EXISTENT under --fs (ENOENT from every reader, listings too): `*.map` sidecars (so a captured build
+// replays byte-identically; opt out via `map` in resources) and `.env`/`.env.*` (a capture never bakes in a
+// secret; no opt-in). Either serves at load only as a bundle member (an explicit `stasis add .env`).
 function isSkippedFsPath(state, abs) {
   const skipped = (abs.toLowerCase().endsWith('.map') && !state.config.resources?.has('map')) || isDotEnvFile(abs)
   return skipped && !(state.config.loadBundle && state.getFsStatFamily(pathToFileURL(abs).toString()) !== undefined)

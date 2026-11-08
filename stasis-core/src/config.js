@@ -18,11 +18,8 @@ const envBool = (name, value) => {
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
 // Every option: its env var, how the env string parses (strings pass through) and, for a non-string
-// option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only (never from
-// stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
-// stasis.config.json only (no env var or option), `entries` is `stasis bundle`'s and
-// `installDevDependencies`, `lazyDependencies`, `generatePrisma` and `lockfiles` the trees laid out
-// from the lockfiles' (`stasis github-bundle`), which a run takes nothing from.
+// option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only; a file's `lock` is
+// CONFIG_FILE_LOCK. File-only: `extra`, and `entries`, TREE_FLAGS and `lockfiles`, which a run takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -249,7 +246,8 @@ export class Config {
     return this.#opts.resources
   }
 
-  // stasis.config.json's `extra` patterns, attested beside what a writing run reaches (State#includeExtra). Not serialized.
+  // stasis.config.json's `extra` patterns, attested beside what a writing run reaches (State#includeExtra).
+  // Not serialized.
   get extra() {
     return this.#opts.extra
   }

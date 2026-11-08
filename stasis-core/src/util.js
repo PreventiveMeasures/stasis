@@ -73,11 +73,9 @@ export function parseResourcesOption(label, resources) {
 
 const CONFIG_FILE_NAME = 'stasis.config.json'
 
-// stasis.config.json's `extra`: paths, directories and glob patterns relative to the project root,
-// taken as `stasis add` takes its arguments, and `!`-prefixed ones excluding what they match
-// (expandExtra). Each must stay within the root. A config that sets it names itself too, unless
-// an entry names it already or `!stasis.config.json` leaves it out (another exclusion matching it
-// still does, at expansion): the files it adds travel with the config that adds them.
+// stasis.config.json's `extra`: root-relative paths, dirs and globs taken as `stasis add` takes its arguments,
+// `!` ones excluding their matches (expandExtra). The config adds itself, so its files travel with it, unless
+// an entry names it (`!stasis.config.json` too); another `!` pattern matching it still excludes it at expansion.
 export function parseExtraOption(label, extra) {
   if (extra === undefined) return []
   if (!Array.isArray(extra)) {
@@ -100,10 +98,9 @@ export function parseExtraOption(label, extra) {
 // An `extra` entry's pattern, `!` dropped, as expandExtra matches it: no `./`, no trailing `/`.
 export const extraPattern = (entry) => posix.normalize(entry.startsWith('!') ? entry.slice(1) : entry).replace(/\/+$/u, '')
 
-// stasis.config.json's `lockfiles`: the lockfiles the project's dependencies are laid out from, in
-// place of the one detected (a tree laid out of each), as POSIX paths from the directory holding the
-// config, a `../` climbing to a workspace root's. Normalized; undefined where the config sets none.
-// Which lockfiles a tree is laid out from is the tree's to say (@exodus/stasis's vfs-bundle/tree.js).
+// stasis.config.json's `lockfiles`: those the dependencies are laid out from in place of the one detected (a
+// tree of each), POSIX paths from the config's dir (`../` may climb to a workspace root's); undefined where
+// unset. Which lockfiles a tree uses is the tree's to say (@exodus/stasis's vfs-bundle/tree.js).
 export function parseLockfilesOption(label, lockfiles) {
   if (lockfiles === undefined) return undefined
   if (!Array.isArray(lockfiles) || lockfiles.length === 0) {
@@ -297,11 +294,9 @@ export function isAutoExcludedDir(name) {
   return AUTO_EXCLUDED_DIRS.has(base) || isAppleSliceDir(base)
 }
 
-// Files a sweep drops: type declarations (types only, erased at runtime), the `.env` family (secrets),
-// stasis's own outputs (they'd attest themselves), and everything the native capture excludes as
-// non-build-input noise (docs/legal, editor/lint/CI config, `*.map`/`*.js.flow` sidecars, logs).
-// A path can only reach this via a glob -- an EXPLICITLY named one is added as asked (`add .env` still
-// captures), which is also the only way to attest a file this set covers.
+// Files a sweep drops: type declarations (erased at runtime), the `.env` family (secrets), stasis's own outputs
+// (they'd attest themselves) and the native capture's non-build-input noise (isExcludedNativeFile). Only a
+// glob reaches this: a path NAMED is added as asked (`add .env` captures), the only way to attest one of these.
 export function isAutoExcludedFile(name) {
   return isTypeDeclaration(name) || isDotEnvFile(name) || isStasisArtifactName(name) || isExcludedNativeFile(name)
 }

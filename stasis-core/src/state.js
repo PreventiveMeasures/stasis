@@ -52,10 +52,9 @@ const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs'
 // With no `type`, Node decides .js/.ts by syntax detection: either variant is possible, the first is the default.
 const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts': ['commonjs-typescript', 'module-typescript'] }
 
-// Nested package.json files known to disagree with their package root's name/version because of
-// upstream packaging, exempt from #locateModule's consistency check. Matched as a segment-aligned
-// suffix of the project-relative path, so hoisted, nested and .pnpm-store copies all match.
-// Maintained list: add only a confirmed upstream false positive, with its reason.
+// Nested package.json files that upstream packaging leaves disagreeing with their package root's name/version,
+// exempt from #locateModule's check; matched as a segment-aligned suffix, so hoisted, nested and .pnpm copies
+// all match. Maintained list: add only a confirmed upstream false positive, with its reason.
 const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
   'node_modules/@redis/client/dist/package.json', // stale build-time copy
   'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
@@ -148,10 +147,9 @@ export class State {
   // shim: require.resolve()/CJS require()s bypassing the resolve hook.
   #observedResolutions = new Map()
 
-  // Files a require() actually EXECUTED (from the Module._load shim) -- unlike a resolve-only
-  // edge, an executed file with no captured bytes is a hole in the attestation, so write()
-  // backfills it from disk (a transplanted require.extensions handler, e.g. a transforming
-  // preload's CJS TypeScript pipeline, loads files without ever hitting the load hook).
+  // Files a require() actually EXECUTED (the Module._load shim): unlike a resolve-only edge, one with no
+  // captured bytes is an attestation hole, so write() backfills it from disk (a transplanted
+  // require.extensions handler, e.g. tsx's CJS pipeline, loads files without the load hook).
   #executedFiles = new Set()
 
   // Files whose BYTES this run captured via addFile. Distinct from this.hashes, which also
@@ -167,10 +165,10 @@ export class State {
   // statically parses files under it to recover edges the resolve hook never observed.
   #preloadRoot = null
 
-  // Per-artifact "last serialized" caches (the bundles' by path): write() skips brotli + writeFileSync on unchanged text.
+  // Per-artifact "last serialized" caches (the bundles' by path): write() skips brotli + writeFileSync
+  // on unchanged text.
   #lastLockData = null
   #lastBundleText = new Map()
-  // Lazy `{ value: detectRepo(this.root, this.#host) }`.
   #detectedRepoCache
   // Half ('code' | 'resources') -> `repo` of the bundle absorbed there for adding to.
   #absorbedRepos = new Map()
@@ -180,10 +178,9 @@ export class State {
   // result is shared -- never mutate it.
   #canonicalCache = new Map()
 
-  // Options: `preload` (the unique preload State), `parent` (run as a sidecar sharing the parent's
-  // hashes/entries/modules, with its own sources/formats/imports/resources and bundle) and
-  // `skipDiscovery` (a caller-populated in-memory State, NO filesystem discovery; read-only modes
-  // only). All other keys forward to Config.
+  // Options: `preload` (the unique preload State), `parent` (a sidecar sharing the parent's hashes/entries/
+  // modules, with its own sources, formats, imports, resources and bundle) and `skipDiscovery` (a caller-
+  // populated in-memory State, NO filesystem discovery; read-only modes only). The rest go to Config.
   constructor(root, options = {}) {
     const { preload: isPreload = false, parent: parentState, preloadRoot, skipDiscovery = false, host = diskHost, env = process.env, claim = true, checkPolicy = true, ...configOptions } = options
     this.config = new Config({ ...configOptions, env, host })
@@ -339,7 +336,6 @@ export class State {
     return this.#host.stat(p) !== null
   }
 
-  // The file at `path` through the host, or null when there is none.
   #readMaybe(path, encoding) {
     return readFileSyncMaybe(dirname(path), basename(path), encoding, this.#host)
   }
@@ -467,7 +463,8 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to be written again.
+        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to
+        // be written again.
         this.modules.set(dir, withMetadataOf(lockModule, info))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
@@ -588,19 +585,17 @@ export class State {
       attested = attested.get(targetPlatform)
       assert.ok(attested !== undefined, `${what} resolution ${edge} is not attested for platform '${targetPlatform}' by the ${source}`)
     }
-    // A per-platform edge is a Map<platform, target>, compared structurally.
     assert.ok(importTargetsEqual(file, attested), `${what} resolution ${edge} mismatches the ${source}`)
   }
 
   // A frozen lockfile's and frozen bundle's checks of a `noun` ('File', or a 'Directory' listing) this
-  // run records, in the zone they attest (node_modules, or all in full scope): each attests it, as
-  // `module`'s `rel` and among the bundle's `bundled` (its sources or resources), and its `format`,
-  // where it has one. This closes the attested set; the bytes are checked by the caller's noupsert.
-  // `type` is usually not hash-attested, so a format flip would recategorize a hash-valid file
-  // (commonjs<->module) with no hash mismatch.
+  // run records in the zone they attest: each must attest it (as `module`'s `rel`, among `bundled`) and its
+  // `format`. This closes the attested set; the caller's noupsert checks the bytes.
   #assertFrozenAttests(noun, file, module, rel, bundled, format) {
     if (this.config.frozen) assert.ok(Object.hasOwn(module.files, rel), `${noun} not attested by the frozen lockfile: ${file}`)
     if (this.config.frozenBundle) assert.ok(bundled?.has(file), `${noun} not attested by the frozen bundle: ${file}`)
+    // `type` is usually not hash-attested, so a format flip would recategorize a hash-valid file
+    // (commonjs<->module) with no hash mismatch.
     if (format == null) return
     if (this.config.frozen && this.#lockFormats !== null) {
       this.#assertAttestedFormat(this.#lockFormats, file, format, { what: 'observed', source: 'lockfile' })
@@ -713,7 +708,6 @@ export class State {
     return file === '' ? '.' : file
   }
 
-  // The file: URL of the project-relative `file`.
   #urlOf(file) {
     return pathToFileURL(resolve(this.root, file)).toString()
   }
@@ -886,11 +880,9 @@ export class State {
     }
   }
 
-  // The subpackage (isSubpackage) of the package `name` at `nmRoot` that its file `nmRel` is in: the nearest
-  // package.json above the file with a name, past `{"type":"module"}` markers (namedManifestOf), walked by
-  // the file's own path, not the real one findPackageJSON resolves through a symlinked install -> { dir, name,
-  // version? }, or undefined. Looked for only where the closest package.json, `closest`, is such a marker or
-  // names a subpath.
+  // The subpackage (isSubpackage) of package `name` at `nmRoot` that its file `nmRel` is in: the nearest named
+  // package.json above it (namedManifestOf), walked by the file's own path, not findPackageJSON's real one
+  // through a symlinked install. Looked for only where `closest` is a `{"type":"module"}` marker or names a subpath.
   #subpackageOf(nmRoot, nmRel, closest, name) {
     if (closest.name !== undefined && !(typeof closest.name === 'string' && closest.name.startsWith(`${name}/`))) return undefined
     const found = namedManifestOf(nmRel, this.#manifestsBelow(nmRoot))
@@ -951,10 +943,9 @@ export class State {
         const known = this.formats.get(file) ?? this.#parent?.formats.get(file)
         format = variants?.includes(known) ? known : variants?.[0]
       } else if (ext === '.ts' && (format === 'commonjs' || format === 'module')) {
-        // No `type`, but a transforming preload reported this .ts as its post-erasure family:
-        // attest the on-disk '-typescript' variant, keeping same-stack replays self-consistent.
-        // Stacks can still honestly disagree about a no-`type` .ts (tsx defaults to commonjs,
-        // Node syntax-detects) -- that rightly surfaces as a format flip, not silently here.
+        // No `type`, but a transforming preload reported this .ts as its post-erasure family: attest the
+        // on-disk '-typescript' variant. Stacks can still honestly disagree on a no-`type` .ts (tsx defaults
+        // to commonjs, Node syntax-detects): that rightly surfaces as a format flip, not silently here.
         format = `${format}-typescript`
       }
     }
@@ -985,7 +976,7 @@ export class State {
     const integrity = sha512integrity(buf)
     noupsert(this.hashes, file, integrity)
     this.#filesCapturedThisRun.add(file)
-    if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it; skip when the channel is off
+    if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it
     // Provenance for the bundle's `reason` field (null = the caller attributes it, see includePackageJson).
     if (this.config.bundle && reason !== null) {
       this.#recordReason(reason, file)
@@ -1030,9 +1021,8 @@ export class State {
     if (!synthetic) this.#recordExecutable(file, absolute)
   }
 
-  // Observe `file` on disk and record or refute its execute bit; disk wins over whatever a lockfile/
-  // bundle seeded, but only a real observation refutes (`undefined` and Windows mean "unknowable").
-  // A record touches only this State; a REFUTATION must reach the whole family, else
+  // Record or refute `file`'s execute bit from disk, which wins over a seeded lockfile/bundle; only a real
+  // observation refutes (`undefined`, Windows: unknowable). A REFUTATION must reach the whole family, else
   // #mergedExecutable's union resurrects the bit from a sibling's seeded entry.
   #recordExecutable(file, absolute) {
     const executable = observeExecutable(absolute, this.#host)
@@ -1074,12 +1064,9 @@ export class State {
     return null
   }
 
-  // Attest the files stasis.config.json's `extra` names (expandExtra: paths, directories and globs,
-  // as `stasis add` takes them, swept through the State's host) beside what the run reached, each
-  // carried as an fs read is (#readFileOptions) unless the run captured it itself, whose record
-  // stands. The whole set is validated before a file is added, every offender named at once.
-  // `outputs` are the paths written, never taken in: by default the ones write() writes. `resources`
-  // is the allowlist, the config's by default.
+  // Attest the files stasis.config.json's `extra` names (expandExtra, through the State's host) beside what
+  // the run reached, each carried as an fs read is (#readFileOptions) unless the run captured it itself.
+  // The whole set is validated first, naming every offender at once; `outputs` (write()'s targets) never go in.
   includeExtra({ outputs = this.#writeTargets(), resources = this.config.resources } = {}) {
     if (this.config.extra.length === 0) return
     // Resolved as write() writes them: a relative one from the cwd.
@@ -1118,7 +1105,6 @@ export class State {
     if (this.config.bundle) for (const file of captured) this.#recordReason('extra', file)
   }
 
-  // The lockfile's and the code bundle's paths: as configured, else the defaults at the root.
   get #lockPath() {
     return this.config.lockFile || join(this.root, FILE_LOCK)
   }
@@ -1146,7 +1132,7 @@ export class State {
     const format = 'directory'
     const integrity = sha512integrity(content)
     noupsert(this.hashes, file, integrity)
-    if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it; skip when the channel is off
+    if (this.config.childProcess) this.#observed.add(file) // only a child's shardSnapshot reads it
     if (this.config.bundle) this.#recordReason('run', file)
     const rel = relative(dir, file)
     assert.ok(!relativeEscapes(rel))
@@ -1354,10 +1340,9 @@ export class State {
     }
   }
 
-  // Under bundle=load, verify a resolution a bundler made on its own (Metro resolves the app's
-  // imports itself, where the loader and the esbuild/webpack plugins take them from the bundle): it
-  // must be the edge the bundle attests, for `platform` where the edge is per-platform. Unknown
-  // edges are tolerated only where addImport tolerates them, for workspace parents in nm scope.
+  // Under bundle=load, verify a resolution a bundler made itself (Metro resolves the app's imports; the
+  // loader and esbuild/webpack plugins take them from the bundle): it must be the attested edge, for
+  // `platform` where per-platform. Unknown edges are tolerated only where addImport tolerates them.
   assertImport(parentURL, specifier, url, { conditions = '*', importAttributes, platform: targetPlatform } = {}) {
     assert.ok(this.config.loadBundle, 'assertImport checks a resolution against a loaded bundle (bundle=load)')
     if (conditions !== '*') assert.ok(Array.isArray(conditions))
@@ -1406,21 +1391,17 @@ export class State {
     return { url: this.#urlOf(file), format: this.#loaderFormat(file) }
   }
 
-  // Resolve a CJS require() target to a bundled absolute path, or undefined to defer to Node (the
-  // hooks.js CJS shim needs this: registerHooks can't intercept Module._resolveFilename). Matches
-  // under the buckets related to `conditions`: every one, except that where conditions decide the
-  // resolution (readsConditions), a key of the other context (see resolutionContext) is another
-  // resolution, never served. Node asks an edge under its own context's set on every version and
-  // code path, the rest varying by flag alone (--conditions, --no-addons, require(esm) off); a
-  // relative edge resolves alike under either, as a capture's replay can ask it (tsx's CJS lane does).
-  // Divergent buckets are settled by those of the lookup's context where they agree -- a
-  // --conditions build's require() and import() targets, each under a key plain node never asks --
-  // else defer.
+  // A CJS require() target as a bundled absolute path, or undefined to defer to Node: the hooks.js CJS shim
+  // needs it, as registerHooks can't intercept Module._resolveFilename. Every conditions bucket matches,
+  // but where conditions decide (readsConditions), the other context's keys are another resolution.
   resolveBundled(parentURL, specifier, { conditions = '*' } = {}) {
     const parent = this.#canonicalFileMaybe(parentURL)
     if (parent === undefined) return undefined
     const spec = this.#canonicalSpecifier(parentURL, specifier)
     const context = resolutionContext(conditions)
+    // Node asks an edge under its own context's set on every version and path, the rest varying by flag
+    // alone (--conditions, --no-addons, require(esm) off); a relative edge resolves alike under either, as
+    // a capture's replay can ask it (tsx's CJS lane does).
     const contextual = context !== null && readsConditions(spec)
     const matches = new Set()
     const ownContext = new Set()
@@ -1432,6 +1413,8 @@ export class State {
       matches.add(file)
       if (context !== null && keyContext === context) ownContext.add(file)
     }
+    // Divergent buckets are settled by the lookup's own context where those agree (a --conditions build's
+    // require() and import() targets, each under a key plain node never asks), else defer.
     const candidates = matches.size === 1 ? matches : ownContext
     if (candidates.size !== 1) return undefined
     const [only] = candidates
@@ -1536,12 +1519,8 @@ export class State {
     }
   }
 
-  // Consumer -> the files it claims: #reasonFiles, less what run merely fs-READ after a plugin
-  // attached on a plugin's behalf (never its own: #runOwn). That is a file a plugin also bundles,
-  // which is the plugin's. A package.json fs-read after a plugin attached, of a package a plugin
-  // bundles, is one a bundler reads to resolve (Metro's resolver does) but never bundles itself:
-  // it is that plugin's too, and stays run's only where run has its own claim on it or claims
-  // another file of the package. `extra` names files and bundles none, so it is no plugin here.
+  // Consumer -> the files it claims: #reasonFiles, less what run merely fs-READ after a plugin attached
+  // (never its own: #runOwn) that a plugin also bundles. `extra` bundles nothing, so it is no plugin here.
   #reasonClaims() {
     const pluginFiles = new Set()
     for (const [who, recorded] of this.#reasonFiles) {
@@ -1554,6 +1533,9 @@ export class State {
     }
     const run = claims.get('run')
     if (run === undefined || pluginFiles.size === 0 || this.#fsReadPostPlugin.size === 0) return claims
+    // A package.json fs-read post-plugin, of a package a plugin bundles, is one a bundler reads to resolve
+    // (Metro's does) but never bundles: it is that plugin's too, and stays run's only where run has its own
+    // claim on it or on another file of the package.
     for (const [dir, module] of this.modules) {
       const rels = Object.keys(module.files)
       const read = new Set(rels.filter((rel) => basename(rel) === 'package.json').map((rel) => moduleFileKey(dir, rel)).filter((file) => this.#fsReadPostPlugin.has(file) && !pluginFiles.has(file)))
@@ -1647,10 +1629,9 @@ export class State {
     return this.sourceBundle.serialize()
   }
 
-  // Split-bundle counterparts to sourceBundle/sourceData: the code half owns entries/imports + code
-  // formats (stat records too: they aren't resource formats, so the resources half's shape check
-  // would reject them), the resources half owns resource formats + bytes. Both declare per-dir
-  // module identity so each file verifies alone.
+  // Split-bundle counterparts to sourceBundle: the code half owns entries/imports and code formats (stat
+  // records too: the resources half's shape check would reject them), the resources half resource formats
+  // and bytes. Both declare per-dir module identity so each file verifies alone.
   get codeBundle() {
     const codeFormats = new Map([...this.#formatsForBundle()].filter(([, format]) => !Bundle.isResourceFormat(format)))
     return this.#bundle('code', this.sources, codeFormats)
@@ -1681,11 +1662,9 @@ export class State {
     return file !== undefined && this.sources.has(file)
   }
 
-  // Attest every executed-but-never-captured file from disk. A resolve-only edge stays byte-less
-  // by design (see #backfillBeforeWrite), but an EXECUTED file the load hook never saw is a hole:
-  // leaving it silent would ship an artifact that misses code the run provably evaluated, and a
-  // frozen replay would never verify it. addFile re-checks bytes against the lockfile/bundle in
-  // frozen modes, so tampering still fails the run -- at write time, but loudly.
+  // Attest every executed-but-never-captured file from disk: a resolve-only edge stays byte-less by design
+  // (#backfillBeforeWrite), but an EXECUTED file the load hook never saw is a hole a frozen replay would
+  // never verify. addFile re-checks bytes in frozen modes, so tampering still fails -- at write time, loudly.
   #backfillExecutedFiles() {
     for (const file of this.#executedFiles) {
       // "Captured this run", NOT this.hashes: a lockfile-seeded hash must still be VERIFIED
@@ -1718,11 +1697,9 @@ export class State {
     }
   }
 
-  // Add every bundled module's `<dir>/package.json` (config.packageJSON) even if the run never
-  // reached it, so a load/prune can read each dependency's manifest, and the nearer one a bundled
-  // file of it has (scopeManifestOf: a `{"type":"module"}` marker such as `esm/package.json`), which
-  // Node and Metro's resolver read for the file. The skip keys on bundle membership, NOT this.hashes
-  // (which also holds lockfile-absorbed entries and is shared by reference across sidecars).
+  // Add every bundled module's `<dir>/package.json` (config.packageJSON), reached or not, for a load/prune to
+  // read, and a bundled file's nearer one (scopeManifestOf: an `esm/package.json` marker) Node and Metro read.
+  // Skips key on bundle membership, NOT this.hashes (it holds lockfile entries and is shared with sidecars).
   includePackageJson() {
     // Gather first: addFile mutates this.modules, so don't addFile while iterating it.
     const realRoot = this.#host.realpath(this.root)
@@ -1759,11 +1736,9 @@ export class State {
         if (this.#bundled(rel)) continue // already in this bundle
         const buf = rel === own ? manifest.buf : read(rel)?.buf
         if (buf === undefined) continue
-        // The manifest rides along BECAUSE some consumer bundled its files, so it inherits every
-        // consumer that claims one (#reasonClaims: not run for a file it merely fs-read for a
-        // plugin) -- nothing observed the manifest itself, but an unattributed file can't be
-        // sorted by provenance downstream. Derived BEFORE the adds below, so one fold's manifest
-        // can't count as another bucket's consumer evidence.
+        // The manifest rides along BECAUSE a consumer bundled its files, so it inherits each that claims one
+        // (#reasonClaims), else it couldn't be sorted by provenance downstream. Derived BEFORE the adds
+        // below, so one fold's manifest can't count as another bucket's consumer evidence.
         const consumers = [...claims].filter(([, claimed]) => of.some((file) => claimed.has(file))).map(([who]) => who)
         toAdd.push({ rel, buf, consumers })
       }
@@ -1842,13 +1817,11 @@ export class State {
     // Defense-in-depth: cross-scope is signature-rejected upstream, but a mismatch here means a
     // malformed/foreign shard -- refuse.
     assert.equal(shard.scope, this.config.scope, `shard scope "${shard.scope}" != root scope "${this.config.scope}"`)
-    // An in-root shard KEY may resolve (through a symlink) OUTSIDE the root on THIS disk, so every
-    // replay re-checks real-path containment (realContained), the boundary fs.js enforces on live --fs reads.
-    // Files first, then edges. Merged files are NEVER marked entries -- a child's "entry" is its
-    // fork-target main, not a root entry.
+    // An in-root shard KEY may resolve (through a symlink) OUTSIDE the root on THIS disk, so every replay
+    // re-checks real-path containment (realContained), as fs.js does on live --fs reads. Merged files are
+    // NEVER entries: a child's "entry" is its fork-target main.
     for (const file of shard.files) {
       const absolute = resolve(this.root, file)
-      // Skip a key whose on-disk path escapes the root through a symlink.
       if (!realContained(this.root, absolute)) continue
       // ABOVE the already-attested fast path below: a child that re-read a file and found no bit
       // refutes it by OMISSION, so every file the shard RECORDS needs an observation. Re-derived
