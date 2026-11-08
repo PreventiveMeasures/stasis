@@ -81,8 +81,8 @@ function fileId(path) {
   return stats && `${stats.dev}:${stats.ino}`
 }
 
-// Whether the bytes for `file` are already at `abs`, so it is left as it is; throws for anything else there. Extract
-// never overwrites a file with other bytes, nor the bundle it reads, under its own name or another (a symlink, a hard link).
+// Whether the bytes for `file` are already at `abs`, so it is left as it is; throws for anything else there.
+// Extract never overwrites a file with other bytes, nor the bundle it reads, under any name (symlink, hard link).
 function alreadyInPlace(abs, file, content, bundleId) {
   const stats = statSync(abs, { throwIfNoEntry: false, bigint: true })
   if (stats === undefined) {
@@ -132,14 +132,16 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   if (lock === 'none' && lockPresent) {
     throw new Error(`extract: unexpected ${lockAbs} with --lock=none (frozen checks the bundle against it, add merges the bundle into it, replace replaces it, ignore leaves it alone)`)
   }
-  // ignore neither reads nor writes the lockfile; a v0 bundle derives none, so it has nothing to check against one, add or replace one with.
+  // ignore neither reads nor writes the lockfile; a v0 bundle derives none, so it has nothing to check
+  // against one, add or replace one with.
   if (lockPresent && !withLockfile && lock !== 'ignore') {
     throw new Error(`extract: a legacy v0 bundle can not ${{ frozen: 'be checked against', add: 'be added to', replace: 'replace' }[lock]} ${lockAbs}`)
   }
   const merging = lock === 'add' && lockPresent
 
   // Plan-first: every target is validated inside outDir before any write; walk modules, not the last-wins
-  // `sources` getter. Containment is lexical -- symlinks are followed, so untrusted bundles need a fresh dir (doc/extract.md).
+  // `sources` getter. Containment is lexical -- symlinks are followed, so untrusted bundles need a fresh
+  // dir (doc/extract.md).
   const writes = []
   const targets = new Set()
   let executables = 0
@@ -204,8 +206,9 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
     if (alreadyInPlace(abs, file, content, bundleId)) inPlace.add(abs)
   }
 
-  // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600 target)
-  // and setuid/setgid/sticky are cleared. Applied to every extracted file, one already in place too; skipped for v0, which attests no modes.
+  // Only the execute bit is attested, so only it is touched -- rw bits stay as written (never widen a 0600
+  // target) and setuid/setgid/sticky are cleared. Applied to every extracted file, one already in place too;
+  // skipped for v0, which attests no modes.
   const withModes = withLockfile && canObserveExecuteBits()
   let chmodFailures = 0
   const applyMode = (abs, exec) => {

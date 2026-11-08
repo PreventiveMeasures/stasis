@@ -63,10 +63,9 @@ const lockModule = (dir, { files, ...info }) => {
   return { ...info, files: Object.freeze(locked) }
 }
 
-// Union of the informational `reason` maps in canonical form: consumers sorted, each file list
-// deduped and path-sorted. Canonical even when only one side is given, so a fresh withReason()
-// stamp or a parsed artifact can't leak discovery/record order into the map (state's
-// #bundleReason sorts the same way). A non-array list (unvalidated -- informational) is dropped.
+// Union of the informational `reason` maps, canonical even from one side (consumers sorted, file lists
+// deduped and path-sorted, as state's #bundleReason), so a withReason() stamp or a parsed artifact can't
+// leak discovery order. A non-array list (unvalidated -- informational) is dropped.
 const mergeReason = (a, b) => {
   if (a === undefined && b === undefined) return undefined
   // Accumulated in a Map: on a plain object a '__proto__' consumer key would hit the prototype.
@@ -82,7 +81,6 @@ const mergeReason = (a, b) => {
   return fromEntries([...merged.keys()].toSorted().map((c) => [c, fileSetToObject(merged.get(c))]))
 }
 
-// Validate one `repo` field without throwing.
 export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) && REPO_FIELDS[key](value)
 
 // `repo` of a bundle plus one added to it: only agreeing fields survive, and none if `github` differs.
@@ -109,7 +107,8 @@ const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecos
   return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
 }))
 
-// JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize always writes v1.
+// JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize
+// always writes v1.
 export class Bundle {
   static VERSION = VERSION
 
@@ -119,7 +118,8 @@ export class Bundle {
   modules
   formats
   imports
-  // Project-relative paths of bundled files carrying a POSIX execute bit, for `stasis extract`. Files only, never a `directory`.
+  // Project-relative paths of bundled files carrying a POSIX execute bit, for `stasis extract`. Files
+  // only, never a `directory`.
   executable
   // Informational only, NOT attested -- never consulted for verification.
   reason
@@ -168,7 +168,8 @@ export class Bundle {
     return format === 'resource' || format === 'resource:base64' || format === 'directory'
   }
 
-  // True if any bundled file is non-resource; a full-scope code bundle must declare an entry to be runnable (State#absorbCodeBundle).
+  // True if any bundled file is non-resource; a full-scope code bundle must declare an entry to be
+  // runnable (State#absorbCodeBundle).
   get hasCode() {
     for (const [dir, { files }] of this.modules) {
       for (const rel of Object.keys(files)) {
@@ -228,7 +229,8 @@ export class Bundle {
           assert(info?.name && info.files)
           modules.set(dir, normalizeModule(info, dir, 'bundle'))
         }
-        // Empty entries are valid (`stasis add` attests files without making them entry points); state.assertEntry fails closed on an empty set.
+        // Empty entries are valid (`stasis add` attests files without making them entry points);
+        // state.assertEntry fails closed on an empty set.
         if (json.entries !== undefined) entries = parseEntries(json.entries, 'bundle')
       } else {
         assert(json.entries === undefined)
@@ -247,7 +249,8 @@ export class Bundle {
       }
     }
 
-    // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and the `sources` getter would serve either payload.
+    // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and
+    // the `sources` getter would serve either payload.
     const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
     assertNoLockfile(flatKeys.keys())
     assertPayloadFree(formats, flatKeys, 'bundle')
@@ -262,7 +265,8 @@ export class Bundle {
       modules,
       formats,
       imports,
-      // Every executable must be a file this bundle carries. A v0 `executable` is ignored: with no per-file `formats` it could point `extract` at any path to chmod +x.
+      // Every executable must be a file this bundle carries. A v0 `executable` is ignored: with no
+      // per-file `formats` it could point `extract` at any path to chmod +x.
       executable: json.version === VERSION
         ? parseExecutable(json.executable, { what: 'bundle', files: flatKeys, formats, scope: json.config.scope })
         : new Set(),

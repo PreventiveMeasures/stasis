@@ -25,11 +25,9 @@ export function packageType(file, host = diskHost, kept = (path, read) => read()
   })
 }
 
-// Directories where a package keeps copies of OTHER packages, each under a package.json of its own,
-// by the host package's name (so any install layout or alias matches), package-relative. A package.json
-// below one is a vendored package's: it names that package, not its host, so a file it covers is its
-// host's (State#locateModule holds it to nothing), listed under that package in the host record's
-// `vendored`. Maintained list: add only a confirmed upstream vendoring layout, with its reason.
+// Package-relative dirs, by host package name (so any layout or alias matches), holding copies of OTHER
+// packages: a file there is its host's (State#locateModule holds the copy's package.json to nothing), listed
+// in the record's `vendored`. Maintained list: add only a confirmed upstream layout, with its reason.
 const VENDOR_DIRS = {
   __proto__: null,
   next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
@@ -42,11 +40,9 @@ const inAnyVendorDir = (rel) => VENDOR_DIR_LIST.some((dir) => rel.startsWith(`${
 // The vendor dir of the package named `name` that its file `rel` (package-relative, POSIX) is below, or undefined.
 export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
 
-// The package vendored under `vendorDir` (package-relative) that a file `rel` of its host is in: walking
-// up from the file, while below the vendor dir, the first package.json with a `name`, which `read(dir)`
-// gives (null where there is none) -> `vendored` { dir, name, version? }, undefined where none has a name
-// or its name is no package string (a version that is none is left out). `below`: whether any package.json
-// there covers the file at all.
+// The package vendored under `vendorDir` that host file `rel` is in: walking up while below it, the first
+// package.json with a `name` (`read(dir)`, null where none) -> `vendored` { dir, name, version? }, undefined
+// if none or its name is no package string. `below`: whether any package.json there covers the file at all.
 export function vendoredPackageOf(rel, vendorDir, read) {
   let below = false
   for (let dir = posix.dirname(rel); dir.startsWith(`${vendorDir}/`); dir = posix.dirname(dir)) {
@@ -71,11 +67,9 @@ export function namedManifestOf(rel, read) {
   return undefined
 }
 
-// The package.json nearest above a file `rel` of the package at `pkgDir` (both project-relative,
-// POSIX), short of the package's own: a `{"type":"module"}` marker such as `esm/package.json`, or a
-// subpackage's or vendored package's, which Node takes the file's `type` from and Metro's resolver
-// (getPackageForModule) the file's fields. `exists(rel)` says whether one is there -> its rel, or
-// undefined where the package's own is the nearest.
+// The package.json nearest above `rel`, short of its package's own at `pkgDir` (both project-relative):
+// a `{"type":"module"}` marker (`esm/package.json`), a subpackage's or a vendored one's, which Node takes the
+// file's `type` from and Metro's getPackageForModule its fields. undefined where the package's own is nearest.
 export function scopeManifestOf(rel, pkgDir, exists) {
   if (pkgDir !== '.' && !rel.startsWith(`${pkgDir}/`)) return undefined
   for (let dir = posix.dirname(rel); dir !== pkgDir && dir !== '.'; dir = posix.dirname(dir)) {
@@ -84,19 +78,15 @@ export function scopeManifestOf(rel, pkgDir, exists) {
   return undefined
 }
 
-// Nearest package.json (walking up) that identifies a bucket; pkgDir is relative to baseDir ("."
-// at the root). Inside node_modules both name and version are required; a workspace package
-// outside node_modules may omit version (the name alone claims the bucket, matching
-// State#locateModule), and a node_modules one's `ecosystem` (npm) and `repo`, where its `repository`
-// names a GitHub one (packageRepo). Null if none. A malformed one is walked past, or with `strict` throws
-// (its files would otherwise land in the parent package); `check`, `host`: see readPackageJson.
-// A file in a vendored package (vendorDirOf) is its host's, as State#locateModule has it, with the
-// package as the record's `vendored` would list it, `{ [dir]: { name, version? } }` (vendoredPackageOf);
-// so is one in a subpackage (isSubpackage), its package.json walked past, as `subpackages`.
+// The nearest package.json up from a file that identifies a bucket (pkgDir relative to baseDir, "." at the
+// root), else null: in node_modules it needs name and version; outside, a name alone, as State#locateModule.
+// A malformed one is walked past, or with `strict` throws (its files would otherwise land in the parent's).
 export function findPackageMetadata(baseDir, fileRelPath, { strict = false, check, host = diskHost } = {}) {
   const options = { strict, check, host }
   const read = (rel) => readPackageJson(baseDir, rel, options)
   const nm = splitNodeModulesPath(toPosix(fileRelPath))
+  // A file in a vendored package (vendorDirOf) is its host's, as State#locateModule has it, with the
+  // package as the record's `vendored` lists it (vendoredPackageOf).
   if (nm !== null && inAnyVendorDir(nm.rel)) {
     const pkg = read(`${nm.dir}/package.json`)
     const vendorDir = pkg?.name && pkg.version ? vendorDirOf(pkg.name, nm.rel) : undefined
@@ -107,14 +97,15 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
       return { pkgDir: nm.dir, name: pkg.name, version: pkg.version, ecosystem: 'npm', ...(repo === undefined ? {} : { repo }), ...(vendored === undefined ? {} : { vendored: { [sub]: identity } }) }
     }
   }
-  // The subpackage the file is in, where its nearest package.json with a name (past `{"type":"module"}`
-  // markers, as namedManifestOf walks) is one's, as the record's `subpackages` would list it.
+  // A file in a subpackage is its host's too, that package.json walked past: the nearest one with a name
+  // (past `{"type":"module"}` markers, as namedManifestOf walks), listed as `subpackages` would list it.
   let subpackages
   let nearest = true
   for (let dir = dirname(fileRelPath); ; dir = dirname(dir)) {
     const pkg = read(toPosix(join(dir, 'package.json')))
-    const inNodeModules = hasNodeModulesSegment(toPosix(dir))
-    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, toPosix(dir), pkg.name, options) : undefined
+    const posixDir = toPosix(dir)
+    const inNodeModules = hasNodeModulesSegment(posixDir)
+    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, posixDir, pkg.name, options) : undefined
     if (sub !== undefined) {
       if (nearest) subpackages = { [sub]: { name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
       nearest = false
@@ -123,7 +114,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     if (pkg?.name) nearest = false
     if (pkg?.name && (pkg.version || !inNodeModules)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
-      const own = toPosix(dir) === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
+      const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...(own === undefined ? {} : { subpackages: own }) }
     }
@@ -167,10 +158,9 @@ export function lexists(p, host) {
   }
 }
 
-// Why `file` can't be read, where `host.stat` gave null, or null when nothing is there (a missing
-// path, one through a file, a link to nothing). host.stat answers null for any failure, as Node's
-// module lookup does; real stat tells them apart: a link loop, a directory that may not be searched
-// or a name too long is something there that can't be read, and a read meets the same error.
+// Why `file` can't be read where `host.stat` gave null, or null when nothing is there (missing, through a
+// file, a dangling link). host.stat answers null for any failure, as Node's module lookup does; a link loop,
+// an unsearchable directory or a too-long name is something there that can't be read.
 function readFailure(host, file) {
   try {
     host.readFile(file)
@@ -206,9 +196,8 @@ export function packageJSONStat(host, file) {
   throw Object.assign(new Error(`Cannot read package config ${file}: ${cause.code ?? cause.message}.`, { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
 }
 
-// `file`'s bytes, read through `host`, or null when there's no file (a directory counts as none).
-// It's read only when it's a regular file: a FIFO, a socket, a device or a link to one
-// (`/dev/stdin`) throws, naming it `label`, rather than stalling or reading the process's input, and
+// `file`'s bytes, or null when there's no file (a directory counts as none). A FIFO, a socket, a device or a
+// link to one (`/dev/stdin`) throws, naming it `label`, rather than stalling or reading the process's input;
 // so does one there that can't be read (statStrict).
 export function readRegularFileOrNull(file, label, host = diskHost) {
   const stat = statStrict(host, file, label)
@@ -217,13 +206,9 @@ export function readRegularFileOrNull(file, label, host = diskHost) {
   return host.readFile(file)
 }
 
-// The package.json at `rel` (under `baseDir`), parsed (a leading byte-order mark skipped, as npm
-// and Node skip it), read through `host`; null when there's none (a directory counts as none), or
-// when it doesn't parse, isn't a regular file or can't be read -- unless `strict`, then that throws
-// (only nothing there is no package.json, as Node reads one: statStrict), saying where
-// with the parser's line and column but never its message, which quotes the text (a file that isn't
-// JSON may be anything, a secret included). `check(rel)`, when given, sees the path before it is
-// read, and may throw to refuse it.
+// The package.json at `rel`, parsed (past a BOM, as npm and Node), or null when there's none or it can't be
+// read, isn't a regular file or doesn't parse -- unless `strict`: then only nothing there is null (statStrict,
+// as Node reads one) and the rest throws. `check(rel)` sees the path before it is read, and may refuse it.
 export function readPackageJson(baseDir, rel, { strict = false, check, host = diskHost } = {}) {
   const file = join(baseDir, rel)
   const stat = strict ? statStrict(host, file, rel) : host.stat(file)
@@ -244,7 +229,7 @@ export function readPackageJson(baseDir, rel, { strict = false, check, host = di
 }
 
 // JSON.parse, throwing where the text breaks (the parser's line and column) but never the parser's
-// message, which quotes the text.
+// message, which quotes the text (a file that isn't JSON may be anything, a secret included).
 function parseJson(text, rel) {
   try {
     return JSON.parse(text)
@@ -284,11 +269,9 @@ export function readJson(file, host = diskHost) {
   }
 }
 
-// `owner/name` from a package.json `repository` (GitHub URL or shorthand), else null. A `#committish`
-// npm lets it name is no part of the repo; a URL's userinfo holds only what RFC 3986 allows there, so
-// a `?` or `\` ending the authority early (`https://evil.example?@github.com/a/b`) isn't GitHub's. An
-// scp-like `git@github.com:owner/name` is taken behind an `ssh://` too (`git+ssh://git@github.com:o/n`),
-// as package.json files spell it. The host is GitHub's with a `www.` too, which is stripped.
+// `owner/name` from a package.json `repository` URL or shorthand (`www.`, `#committish` ignored), else null.
+// Userinfo holds only what RFC 3986 allows: a `?` or `\` ending the authority early isn't GitHub's
+// (`https://evil.example?@github.com/a/b`). scp-like `git@github.com:o/n` is taken behind `ssh://` too.
 export function parseGithubRepository(url) {
   if (typeof url !== 'string') return null
   const match = /^(?:github:|(?:git\+)?(?:(?:https?|ssh|git):\/\/(?:[\w.~%!$&'()*+,;=:-]*@)?(?:www\.)?github\.com(?::\d+)?\/|ssh:\/\/(?:[\w.~%!$&'()*+,;=-]*@)?(?:www\.)?github\.com:|(?:[^@/:]+@)?(?:www\.)?github\.com:))?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/iu.exec(url.trim().replace(/#.*$/su, ''))
@@ -328,17 +311,14 @@ export function githubHomepageDirectory(homepage, github) {
   }
 }
 
-// `{ directory }` where it is a valid one, else `{}`.
 const repoLocation = (directory) => (isValidRepoField('directory', directory) ? { directory } : {})
 
 // Whether a declared path is the repository's root: nothing but empty and `.` parts (`./`, `/.`).
 const isRootPath = (path) => path.replaceAll('\\', '/').split('/').every((part) => part === '' || part === '.')
 
-// A package.json's declared `base` (its `repository.directory`) joined with `rel` as a `repoLocation`;
-// `{}` where none is declared (unknown, not the root), or where `base` has a `..` part, whatever it
-// would come to (`a/..` is no claim on the root). Its empty and `.` parts are dropped, and one that
-// comes to the root (`''`, `.`, `./`, `/`, `/.`) is the root, `''`. Windows users write `base` with
-// `\`: metadata, not a name on disk, so its `\` is taken for a separator.
+// A package.json's `repository.directory` (`base`) joined with `rel` as a repoLocation; `{}` where none is
+// declared (unknown, not the root) or `base` has a `..` part (`a/..` is no claim on the root). Its `\` is a
+// separator: Windows users write it so, and it is metadata, not a name on disk.
 const declaredLocation = (base, rel) => {
   if (typeof base !== 'string') return {}
   const path = base.replaceAll('\\', '/')
@@ -400,10 +380,9 @@ function declaredRepo(json, rel) {
   return { github, ...declaredLocation(base, rel) }
 }
 
-// A dependency's `repo`, from its parsed package.json: the repository it names (declaredRepo), at the
-// commit its `gitHead` names where that is a full one. npm publish writes `gitHead` into the
-// registry's version document alone, but lerna writes it into the published package.json too, and
-// npm keeps one a package.json has, so the two agree. Undefined where it names no GitHub repository.
+// A dependency's `repo` from its package.json (declaredRepo), at the full commit its `gitHead` names. npm
+// publish writes `gitHead` only to the registry's version document, but lerna writes it into package.json
+// too and npm keeps it, so the two agree.
 export function packageRepo(json) {
   const repo = declaredRepo(json, '')
   return repo !== undefined && isValidRepoField('commit', json.gitHead) ? { ...repo, commit: json.gitHead } : repo

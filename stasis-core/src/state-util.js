@@ -8,7 +8,7 @@ import { diskHost } from './host.js'
 import { isPathWithin } from './util.js'
 
 // Genuine fs readers snapshotted off the namespace before any --fs patch. A plain `import { readFileSync }`
-// won't do: --fs monkey-patches fs then syncBuiltinESMExports() rebinds named imports, so snapshotting dodges that.
+// won't do: --fs patches fs, then syncBuiltinESMExports() rebinds named imports to the patched fns.
 export const realReadFileSync = fs.readFileSync
 export const realReadFile = fs.promises.readFile
 const realRealpathSync = fs.realpathSync
@@ -47,14 +47,12 @@ export function readFileSyncMaybe(dir, file, encoding, host = diskHost) {
 }
 
 export function noupsert(map, key, value) {
-  if (map.has(key)) {
-    assert.deepStrictEqual(map.get(key), value, `Conflict for ${JSON.stringify(key)}`)
-  } else {
-    map.set(key, value)
-  }
+  if (!map.has(key)) map.set(key, value)
+  else if (!Object.is(map.get(key), value)) assert.deepStrictEqual(map.get(key), value, `Conflict for ${JSON.stringify(key)}`)
 }
 
-// Canonicalize for write-target collision detection: the host's realpath catches symlink aliases resolve() would miss; lexical fallback for not-yet-written targets.
+// Canonicalize for write-target collision detection: the host's realpath catches symlink aliases
+// resolve() would miss; lexical fallback for not-yet-written targets.
 export function canonicalizePath(p, host = diskHost) {
   const abs = resolve(p)
   try {
