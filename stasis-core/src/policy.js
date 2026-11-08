@@ -15,19 +15,8 @@ const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
 
-// The index of the `]` closing the class the `[` at `at` opens, or -1: a `]` right after `[` or `[!` is a member.
-function classEnd(text, at) {
-  let i = at + 1
-  if (text[i] === '!' || text[i] === '^') i++
-  if (text[i] === ']') i++
-  return text.indexOf(']', i)
-}
-
-// A class's members (between `[`/`[!` and `]`) as a RegExp class body: `-` between two members a range.
-const classSource = (body) => body.replaceAll(/[[\]^]/gu, '\\$&')
-
-// Whether each brace is of a balanced `{...}` holding a `,` of its own, none after a `$`: the lists Node's
-// glob expands as this matcher does (it takes `{a}` and `${a,b}` as themselves, and expands `{{a,b}}`).
+// Whether each brace is of a balanced `{...}` holding a `,` of its own, none after a `$`: a list, as Node's
+// glob reads one too (it takes `{a}` and `${a,b}` as themselves, and expands `{{a,b}}` within).
 function bracesListed(pattern) {
   const listed = []
   for (let i = 0; i < pattern.length; i++) {
@@ -44,52 +33,39 @@ function bracesListed(pattern) {
   return listed.length === 0
 }
 
-const EXTGLOB = ['an extglob such as `@(a|b)`', 'use `{a,b}`']
-const POSIX_CLASS = ['a POSIX class such as `[[:digit:]]`', 'use `[0-9]`']
-
-// What of `pattern` Node's glob (fs.globSync, path.matchesGlob) reads otherwise than this matcher would, as
-// [what, what to write instead], or null: its braces, which Node expands before reading the rest, and `\`.
-function unsupportedSyntax(pattern) {
-  if (pattern.includes('\\')) return ['a `\\` (Node\'s glob takes it for a `/`)', 'match a special character with a class, as `[*]`']
+// What of `pattern` reads two ways, as text here and otherwise to Node's glob (fs.globSync, path.matchesGlob),
+// as [what, what to write instead], or null. Braces come first: Node expands them before reading the rest.
+function conflictingRead(pattern) {
+  if (pattern.includes('\\')) return ['a `\\` (to Node\'s glob a `/`)', 'match one with `?`']
+  if (/[[\]]/u.test(pattern)) return ['a `[` or `]` (to Node\'s glob a class: `[id]` is one `i` or `d`)', 'match one with `?`']
   if (/\{[^,{}]*\.\.[^,{}]*\}/u.test(pattern)) return ['a range such as `{1..3}`', 'list it, as `{1,2,3}`']
   if (!bracesListed(pattern)) return ['a `{` or `}` of no list such as `{a,b}`', 'match one with `?`']
   return null
 }
 
-// The same of a brace-free alternative, a name at a time as Node reads one: an extglob outside a class
-// (`[!()]` is a class), or a POSIX class.
-function unsupportedInNames(alternative) {
-  for (const name of alternative.split('/')) {
-    for (let i = 0; i < name.length; i++) {
-      const close = name[i] === '[' ? classEnd(name, i) : -1
-      if (close !== -1) {
-        if (/\[[.:=]/u.test(name.slice(i + 1, close))) return POSIX_CLASS
-        i = close
-      } else if ('!*+?@'.includes(name[i]) && name[i + 1] === '(') {
-        return EXTGLOB
-      }
-    }
-  }
+// The same of a brace-free alternative: an extglob, or a `**` within a name (to Node's glob a `*`).
+function conflictingReadOf(alternative) {
+  if (/[!*+?@]\(/u.test(alternative)) return ['an extglob such as `@(a|b)`', 'use `{a,b}`']
+  if (alternative.split('/').some((name) => name !== '**' && name.includes('**'))) return ['a `**` within a name', 'use `*`, or `**` as a whole name']
   return null
 }
 
-// `pattern`'s brace-free alternatives (expandBraces), refusing what Node's glob reads otherwise.
+// `pattern`'s brace-free alternatives (expandBraces), refusing one that reads two ways.
 function alternativesOf(label, pattern) {
   const refuse = ([what, instead]) => {
     throw new Error(`${label}: ${JSON.stringify(pattern)} holds ${what}, which is not supported: ${instead}`)
   }
-  const found = unsupportedSyntax(pattern)
+  const found = conflictingRead(pattern)
   if (found !== null) refuse(found)
   const alternatives = expandBraces(label, pattern)
   for (const alternative of alternatives) {
-    const inNames = unsupportedInNames(alternative)
-    if (inNames !== null) refuse(inNames)
+    const inAlternative = conflictingReadOf(alternative)
+    if (inAlternative !== null) refuse(inAlternative)
   }
   return alternatives
 }
 
-// The first outermost `{...}` -> [start, alternatives, end], or null. Braces are lists (bracesListed), and,
-// as to Node's glob, a `{` or `,` in a class is no less one.
+// The first outermost `{...}` -> [start, alternatives, end], or null (bracesListed: each holds a `,`).
 function firstAlternation(pattern) {
   let depth = 0
   let open
@@ -130,31 +106,9 @@ function expandBraces(label, pattern) {
 
 const escapeRegExp = (text) => text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, '\\$&')
 
-// One `/`-free segment as a RegExp source: `*`, `?` and `[...]`. Wildcards match dotfiles too, so `.env`
-// doesn't slip past `**`.
-function segmentSource(segment) {
-  let out = ''
-  for (let i = 0; i < segment.length; i++) {
-    const c = segment[i]
-    const close = c === '[' ? classEnd(segment, i) : -1
-    if (c === '*') {
-      out += '[^/]*'
-      while (segment[i + 1] === '*') i++
-    } else if (c === '?') {
-      out += '[^/]'
-    } else if (close !== -1) {
-      let body = segment.slice(i + 1, close)
-      const negated = body[0] === '!' || body[0] === '^'
-      if (negated) body = body.slice(1)
-      // Never a `/`, whatever range the class spans (`[.-0]` holds one).
-      out += negated ? `[^/${classSource(body)}]` : `(?!/)[${classSource(body)}]`
-      i = close
-    } else {
-      out += escapeRegExp(c)
-    }
-  }
-  return out
-}
+// One `/`-free name as a RegExp source: `*` any run of characters, `?` one. Both match a dotfile's too, so
+// `.env` doesn't slip past `**`.
+const segmentSource = (segment) => segment.replaceAll(/[*?]|[^*?]+/gu, (part) => (part === '*' ? '[^/]*' : part === '?' ? '[^/]' : escapeRegExp(part)))
 
 // A brace-free pattern as a RegExp source, a `**` segment any number of segments, none included
 // (`a/**` matches `a`, `**/b` matches `b`).
@@ -175,13 +129,7 @@ function patternSource(pattern) {
 }
 
 // `s`: a name may hold a line break, which `.*` (`**`, a directory's paths) must match too.
-function compile(label, pattern, alternatives, suffix = '') {
-  try {
-    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'su')
-  } catch (cause) {
-    throw new Error(`${label}: ${JSON.stringify(pattern)} is not a valid pattern`, { cause })
-  }
-}
+const compile = (alternatives, suffix = '') => new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'su')
 
 // A path pattern within the config's directory (`./` and a trailing `/` ignored). It matches a path or a
 // directory above it (`src` takes in src/**); `.` matches everything, and the root's own `--fs` listing
@@ -192,7 +140,7 @@ function pathPattern(label, pattern) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
   }
   if (alternatives.includes('.')) return { pattern, test: () => true }
-  const regex = compile(label, pattern, alternatives, '(?:/.*)?')
+  const regex = compile(alternatives, '(?:/.*)?')
   const matchesRoot = alternatives.some((alternative) => alternative.split('/').every((segment) => segment === '**'))
   return { pattern, test: (path) => (path === '.' ? matchesRoot : regex.test(path)) }
 }
@@ -204,10 +152,10 @@ function modulePattern(label, pattern) {
   const alternatives = alternativesOf(label, pattern)
   const named = (alternative) => {
     const segments = alternative.split('/')
-    return segments.length <= 2 && !/[\\\s]/u.test(alternative) && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
+    return segments.length <= 2 && !/\s/u.test(alternative) && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
   }
   if (!alternatives.every(named)) throw new Error(`${label}: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")`)
-  const regex = compile(label, pattern, alternatives)
+  const regex = compile(alternatives)
   return { pattern, test: (name) => name === pattern || regex.test(name) }
 }
 

@@ -88,23 +88,16 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   t.assert.ok(matches('a/**/b', 'a/x/y/b/c.js'))
   t.assert.ok(matches('{src,lib}/x', 'lib/x/y.js'))
   t.assert.ok(!matches('{src,lib}/x', 'test/x/y.js'))
-  t.assert.ok(matches('x/[!q]?.md', 'x/ab.md'))
-  t.assert.ok(!matches('x/[!q]?.md', 'x/qb.md'))
-  t.assert.ok(matches('a[*]b', 'a*b'))
-  t.assert.ok(!matches('a[*]b', 'axb'))
+  t.assert.ok(matches('x/?b.md', 'x/ab.md'))
+  t.assert.ok(!matches('x/?b.md', 'x/aab.md'))
+  t.assert.ok(matches('a?b', 'a*b'))
   t.assert.ok(matches('node_modules/.pnpm/**/left', 'node_modules/.pnpm/left@1.0.0/node_modules/left/index.js'))
   // A name may hold a line break, which `**` and a directory's paths take in too.
   for (const pattern of ['secrets', 'secrets/**', '**', '**/*.js', 'secrets/*']) t.assert.ok(matches(pattern, 'secrets/key\n.js'), pattern)
   t.assert.ok(matches('a/**/b', 'a/x\ny/b'))
-  // A class is one character of a name, never a `/`, whatever range it spans.
-  t.assert.ok(matches('secret[.-0]key.js', 'secret.key.js'))
-  t.assert.ok(!matches('secret[.-0]key.js', 'secret/key.js'))
-  t.assert.ok(!matches('a[!x]b', 'a/b'))
-  // A `-` first or last in a class is itself, as is a `]` right after `[` or `[!`.
-  t.assert.ok(matches('secret[az-].js', 'secret-.js'))
-  t.assert.ok(!matches('secret[az-].js', 'secretm.js'))
-  t.assert.ok(matches('x[]]y', 'x]y'))
-  t.assert.ok(!matches('x[!]]y', 'x]y'))
+  // `?` is one character of a name, never a `/`; `(`, `)`, `+`, `@` and `!` are themselves.
+  t.assert.ok(!matches('a?b', 'a/b'))
+  t.assert.ok(matches('app/(group)/+page@!.js', 'app/(group)/+page@!.js'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))
@@ -134,33 +127,28 @@ test('parsePolicy refuses what is no list of patterns within the config\'s direc
   refused({ allowedPaths: ['../x'] }, /^cfg: allowedPaths: "\.\.\/x" must be a path or pattern within the directory of stasis\.config\.json$/u)
   refused({ disallowedPaths: ['/etc'] }, /must be a path or pattern within/u)
   refused({ disallowedPaths: ['{a,..}/x'] }, /must be a path or pattern within/u)
-  refused({ allowedPaths: ['[z-a]'] }, /^cfg: allowedPaths: "\[z-a\]" is not a valid pattern$/u)
   refused({ allowedPaths: ['{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}{o,p}{q,r}'] }, /expands to more than 256 patterns/u)
 })
 
-test('parsePolicy refuses glob syntax Node\'s glob reads but this matcher doesn\'t, rather than match nothing', (t) => {
+test('parsePolicy refuses a pattern that reads two ways, as text and to Node\'s glob, rather than guess', (t) => {
   const refused = (key, pattern, what) => t.assert.throws(() => parsePolicy('cfg', { [key]: [pattern] }), { message: new RegExp(`^cfg: ${key}: ${RegExp.escape(JSON.stringify(pattern))} holds ${what}.*, which is not supported: `, 'u') }, pattern)
   for (const pattern of ['src\\a.js', 'a\\*b']) refused('disallowedPaths', pattern, 'a `\\\\`')
+  for (const pattern of ['app/[id].tsx', 'x/[!q]?.md', 'a[[:digit:]]', 'x]y', '[{,}]']) refused('disallowedPaths', pattern, 'a `\\[` or `\\]`')
+  refused('allowedModules', '@scope/[ab]*', 'a `\\[` or `\\]`')
   for (const pattern of ['@(a|b).js', 'src/+(a).js', '!(a)', 'x/?(a)', '*(a).js']) refused('disallowedPaths', pattern, 'an extglob')
   refused('disallowedModules', '@(left|right)', 'an extglob')
-  for (const pattern of ['a[[:digit:]]', '[[.a.]]', '[[=a=]]', '[]x[:alpha:]]']) refused('allowedPaths', pattern, 'a POSIX class')
   for (const pattern of ['v{1..3}', '{a..c}.js', 'x/{a,{01..10}}', 'v{1..5..2}']) refused('allowedPaths', pattern, 'a range')
   refused('allowedModules', 'left-{1..3}', 'a range')
-  for (const pattern of ['{a}', 'x${a,b}', '{{a,b}}', 'a{b', 'a}b', '{a,b}}', '[{]']) refused('allowedPaths', pattern, 'a `\\{` or `\\}` of no list')
-  // A brace with a `,` is a list, its `..` none; a lone `(` or `[:` in no class is itself.
-  // So is one braces form: Node's glob expands them first (`{@,x}(a)` is `@(a)` or `x(a)`).
+  for (const pattern of ['{a}', 'x${a,b}', '{{a,b}}', 'a{b', 'a}b', '{a,b}}']) refused('allowedPaths', pattern, 'a `\\{` or `\\}` of no list')
+  for (const pattern of ['a**', '**b/c', 'src/a**/b', 'a/***/b', 'x{**,y}']) refused('allowedPaths', pattern, 'a `\\*\\*` within a name')
+  // Node's glob expands braces first, so they may form an extglob: `{@,x}(a)` is `@(a)` or `x(a)`.
   for (const pattern of ['{@,x}(a)', '@{,x}(a)', 'x/{a,b@}{(c),d}']) refused('disallowedPaths', pattern, 'an extglob')
-  for (const pattern of ['{1..3,4}', 'a(1).js', '(group)/page.js', 'a:[:b]', '{a,{b,c}}', 'a@/(b)']) parsePolicy('cfg', { allowedPaths: [pattern] })
-  // A class is no extglob, whatever it holds.
-  t.assert.ok(refuses('disallowedPaths', ['[!()]secret'], 'xsecret'))
-  t.assert.ok(!refuses('disallowedPaths', ['[!()]secret'], '(secret'))
-  t.assert.ok(refuses('disallowedPaths', ['file[?()].js'], 'file?.js'))
-  t.assert.ok(refuses('disallowedPaths', ['[]@(a)]'], '@'))
-  // As Node's glob, an empty alternative is dropped, and braces expand before a class is read.
+  // A brace with a `,` is a list, its `..` none; a lone `(` is itself.
+  for (const pattern of ['{1..3,4}', 'a(1).js', '(group)/page.js', '{a,{b,c}}', 'a@/(b)', '{**,x}/y']) parsePolicy('cfg', { allowedPaths: [pattern] })
+  // As Node's glob, an empty alternative is dropped.
   t.assert.ok(!refuses('allowedPaths', ['{src,}'], 'src/a.js'))
   t.assert.ok(refuses('allowedPaths', ['{src,}'], 'lib/a.js'))
   t.assert.throws(() => parsePolicy('cfg', { allowedPaths: ['{,}'] }), { message: 'cfg: allowedPaths: "{,}" expands to no pattern' })
-  t.assert.ok(refuses('disallowedPaths', ['x[{,}]y'], 'x[]y'))
 })
 
 test('a Policy names every offender of every rule at once', (t) => {
