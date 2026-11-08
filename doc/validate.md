@@ -122,6 +122,8 @@ Composer packages, Soldeer packages, GitHub repos (Foundry's `lib/`) and crates
 vendored from git, or with no `.cargo-checksum.json`, have no package upstream
 fetches by name and version: their files are left unverified, as are those of a
 version that couldn't be fetched (`not published`, `its registry refused it`).
+A Composer or Soldeer package is held to the `composer.lock` or `soldeer.lock`
+in the bundle's directory, where one is there: a version it doesn't lock fails.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
@@ -216,8 +218,8 @@ of the repository at the commit. Several of one ecosystem are taken (a root
 `pnpm-lock.yaml` and `tools/package-lock.json`, say): each copy is held to
 the innermost of them holding it alone, as it alone installs it: where it
 installs it, whether it locks the version, and its patch. A copy none holds
-fails. One validate doesn't read (a `soldeer.lock`) is
-passed over, its packages left unverified as ever. One that is not there, or
+fails. A `composer.lock` or `soldeer.lock` among them holds its packages, as
+one beside the bundle does (above). One that is not there, or
 outside the repository, is refused, as is a config naming none that locks the
 bundle's npm packages or crates. `--lockfile` and `--no-lockfile` take their
 place all the same.

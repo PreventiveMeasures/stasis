@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { AssertionError } from 'node:assert'
 import { createHash } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -529,6 +529,37 @@ test('validateBundle: a vendored crate\'s .cargo-checksum.json, which no crate h
   t.assert.deepStrictEqual(await run(checksumOf(listed, 'e'.repeat(64))), differs, 'another crate\'s')
   t.assert.deepStrictEqual(await run('not json'), differs)
 })
+
+const COMPOSER_LOCK = readFileSync(fileURLToPath(new URL('fixtures/php-bundle/composer-lock/composer.lock', import.meta.url)), 'utf8')
+
+test('validateBundle: a Composer or Soldeer package held to the composer.lock or soldeer.lock that locks its version, its files unverified', async (t) => {
+  const of = (dir, info) => validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { version: '1.0.0', files: { 'a.txt': 'a\n' }, ...info }]]) }).serialize()))
+  const run = async (plan, locked) => (await validateBundle(plan, { reason: 'skipped' }, { locked })).packages.map(({ status, reason }) => [status, reason])
+  const composer = lockedBy([{ path: 'composer.lock', text: COMPOSER_LOCK }])
+  const lib = (version) => of('vendor/acme/lib', { name: 'acme/lib', version, ecosystem: 'composer' })
+  t.assert.deepStrictEqual(await run(lib('1.4.2'), composer), [['unverified', 'unsupported']])
+  t.assert.deepStrictEqual(await run(lib('9.9.9'), composer), [['invalid', 'not-locked']])
+  t.assert.deepStrictEqual(await run(lib('9.9.9'), null), [['unverified', 'unsupported']], 'with none read, as before')
+  const soldeer = lockedBy([{ path: 'soldeer.lock', text: `[[dependencies]]\nname = "zipped"\nversion = "1.0.0"\nurl = "https://soldeer.example/zipped.zip"\nchecksum = "${'c'.repeat(64)}"\nintegrity = "${'0'.repeat(64)}"\n` }])
+  t.assert.deepStrictEqual(await run(of('dependencies/zipped-1.0.0', { name: 'zipped', ecosystem: 'soldeer' }), soldeer), [['unverified', 'unsupported']])
+  t.assert.deepStrictEqual(await run(of('dependencies/other-1.0.0', { name: 'other', ecosystem: 'soldeer' }), soldeer), [['invalid', 'not-locked']])
+})
+
+test("validate: a Composer package held to the composer.lock beside the bundle's directory", withTmp(async (t, tmp) => {
+  const file = join(tmp, 'app.stasis.code.br')
+  const bundle = (version) => writeBundle(file, { repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([
+    ['vendor/acme/lib', { name: 'acme/lib', version, ecosystem: 'composer', files: { 'a.txt': 'a\n' } }],
+  ]) })
+  const run = async (files) => {
+    const report = await validate(file, { client: repoClient(files), own: false, fetch: upstream() })
+    return [report.status, report.lockfiles, report.packages.map(({ status, reason }) => [status, reason])]
+  }
+  bundle('9.9.9')
+  t.assert.deepStrictEqual(await run({ 'web/composer.lock': COMPOSER_LOCK }), ['invalid', ['web/composer.lock'], [['invalid', 'not-locked']]])
+  t.assert.deepStrictEqual(await run({ 'composer.lock': COMPOSER_LOCK, 'web/index.php': '<?php\n' }), ['incomplete', [], [['unverified', 'unsupported']]], 'one elsewhere than beside it: none read')
+  bundle('1.4.2')
+  t.assert.deepStrictEqual(await run({ 'web/composer.lock': COMPOSER_LOCK }), ['incomplete', ['web/composer.lock'], [['unverified', 'unsupported']]])
+}))
 
 test('tarballFiles and fetchPackage: a package\'s files as upstream fetches its tarball, held to its integrity, its top directory left out', async (t) => {
   const tgz = await compress(pack([{ name: 'package/index.js', data: bytes('x') }, { name: 'package/lib/', type: 'directory' }, { name: 'package/lib/a.js', data: bytes('a') }]), 'gzip')
@@ -1153,7 +1184,7 @@ test('lockedBy: several lockfiles of one ecosystem, each where it is (`at`): a c
   t.assert.deepStrictEqual(await told('node_modules/ms', beside), ['valid', []])
 })
 
-test("validate: the dependencies held to the lockfiles the repository's stasis.config.json names, in place of the one found; one validate doesn't read passed over", withTmp(async (t, tmp) => {
+test("validate: the dependencies held to the lockfiles the repository's stasis.config.json names, in place of the one found, a soldeer.lock among them", withTmp(async (t, tmp) => {
   const files = {
     'package.json': '{"name":"app","version":"1.0.0"}\n',
     'package-lock.json': npmLock(''),
@@ -1170,7 +1201,7 @@ test("validate: the dependencies held to the lockfiles the repository's stasis.c
   ]) })
   const config = (lockfiles) => ({ 'stasis.config.json': `${JSON.stringify({ lockfiles })}\n` })
   const report = await validate(file, { client: repoClient({ ...files, ...config(['package-lock.json', 'tools/package-lock.json', 'contracts/soldeer.lock']) }), fetch: upstream() })
-  t.assert.deepStrictEqual([report.status, report.lockfiles, report.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])], ['valid', ['package-lock.json', 'tools/package-lock.json'], []])
+  t.assert.deepStrictEqual([report.status, report.lockfiles, report.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])], ['valid', ['package-lock.json', 'tools/package-lock.json', 'contracts/soldeer.lock'], []])
   // Found, the root's alone: tools/'s copy is none it installs.
   const found = await validate(file, { client: repoClient(files), fetch: upstream() })
   t.assert.deepStrictEqual([found.status, found.lockfiles, found.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])], ['invalid', ['package-lock.json'], [['misplaced', 'tools/node_modules/ms']]])
