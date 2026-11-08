@@ -98,6 +98,34 @@ export function parseExtraOption(label, extra) {
   return extra.some(names) ? [...extra] : [...extra, CONFIG_FILE_NAME]
 }
 
+// stasis.config.json's `lockfiles`: the lockfiles the project's dependencies are laid out from, in
+// place of the one detected (a tree laid out of each), as POSIX paths from the directory holding the
+// config, a `../` climbing to a workspace root's. Normalized; undefined where the config sets none.
+// Which lockfiles a tree is laid out from is the tree's to say (@exodus/stasis's vfs-bundle/tree.js).
+export function parseLockfilesOption(label, lockfiles) {
+  if (lockfiles === undefined) return undefined
+  if (!Array.isArray(lockfiles) || lockfiles.length === 0) {
+    throw new TypeError(`${label}: lockfiles must be a non-empty array of paths`)
+  }
+  const out = []
+  for (const entry of lockfiles) {
+    if (typeof entry !== 'string' || entry === '') {
+      throw new TypeError(`${label}: lockfiles entry must be a non-empty string, got ${JSON.stringify(entry)}`)
+    }
+    // As every artifact path: `/`-separated, a `\` being no separator but part of a name.
+    if (entry.includes('\\') || posix.isAbsolute(entry)) {
+      throw new Error(`${label}: lockfiles entry '${entry}' must be a POSIX path relative to the directory holding ${CONFIG_FILE_NAME}`)
+    }
+    const path = posix.normalize(entry)
+    if (path.endsWith('/') || path === '.' || path === '..' || path.endsWith('/..')) {
+      throw new Error(`${label}: lockfiles entry '${entry}' must name a file`)
+    }
+    if (out.includes(path)) throw new Error(`${label}: lockfiles names ${path} twice`)
+    out.push(path)
+  }
+  return out
+}
+
 export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11
 
 // `${n}` must round-trip to the input, so non-canonical forms ('5.0', '05', ' 5 ') throw.

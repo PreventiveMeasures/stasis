@@ -1,15 +1,16 @@
 import { posix } from 'node:path'
 
 import { Vfs } from '@preventive/vfs'
-import { installsDevDependencies } from './cmd/bundle.js'
-import { KINDS, checkAhead, defaultEntries } from './vfs-bundle/entries.js'
+import { configuredLockfiles, installsDevDependencies } from './cmd/bundle.js'
+import { checkAhead, defaultEntries } from './vfs-bundle/entries.js'
 import { suggestedRepoEntries } from './vfs-bundle/github.js'
-import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
+import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, lockfilesManagers, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
 
 // @exodus/stasis/vfs-bundle: static bundles from a project's lockfile alone, through the
 // dependencies its package manager would install (`packageManager`: 'pnpm', pnpm 10, 11 or 12;
 // 'yarn1', yarn 1.22; 'npm', npm 10.9 or 11; or 'soldeer', Soldeer 0.12; without one, the one whose
-// lockfile installs the project, where only one's does), over the project held in a Vfs, which is
+// lockfile installs the project, where only one's does, or one of each of the `lockfiles` its
+// stasis.config.json names, laid out as one), over the project held in a Vfs, which is
 // only read. The tree is laid out by @preventive/deptree into a Vfs of its own, and nothing is read
 // from disk or written there but the tarballs and zips: fetched from registry.npmjs.org and
 // Soldeer's registry, or read from npm's cache or ~/.audit's where one holds them, every copy held
@@ -68,7 +69,9 @@ export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageM
 // -> the entries buildGitHubBundle takes where none are given, as paths from the project's
 // directory: those its stasis.config.json's `entries` names, where it has `entries` (none of an
 // empty one), checked with the options as the build checks them; else of the kind its package
-// manager builds: `packageManager` if given, else the one detected as the build detects it. For
+// manager builds: `packageManager` if given, else the one detected as the build detects it, or
+// where its stasis.config.json names its `lockfiles`, the one their package managers build (none
+// where they build JS and Solidity bundles both, but those its `entries` names). For
 // pnpm and yarn 1, the entry points its package.json names, resolved as the build resolves them
 // with the same `conditions`, `mainFields`, `metro`, `platforms` and `typescript` (packageEntries);
 // for Soldeer, its .sol entry points by name and layout (solidityEntries). The options are checked
@@ -85,6 +88,10 @@ export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditi
   checkVfs('suggestedEntries', vfs)
   const host = vfsHost(vfs)
   const at = posix.resolve('/', cwd)
-  const pm = checkAhead('suggestedEntries', packageManager ?? detectPackageManager('suggestedEntries', host, at, { os }), resolution)
-  return defaultEntries('suggestedEntries', host, at, KINDS[pm.kind], resolution).entries
+  // As the build lays them out: a tree of each lockfile stasis.config.json names, none detected.
+  const name = 'suggestedEntries'
+  const lockfiles = packageManager === undefined ? configuredLockfiles(name, at, host) : undefined
+  const one = lockfiles === undefined ? packageManager ?? detectPackageManager(name, host, at, { os }) : undefined
+  checkAhead(name, one, resolution)
+  return defaultEntries(name, host, at, lockfiles === undefined ? [one] : lockfilesManagers(name, lockfiles), resolution).entries
 }

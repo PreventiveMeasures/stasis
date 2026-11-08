@@ -118,7 +118,7 @@ function solidityEntries(host, dir) {
 
 // By the kind of bundle a package manager builds: an entry its options are checked over before
 // there are any, the entries the build takes where none are given, and what having none says.
-export const KINDS = {
+const KINDS = {
   js: { standIn: 'index.js', entries: packageEntries, none: 'has no package.json naming a JS entry point there' },
   sol: { standIn: 'index.sol', entries: solidityEntries, none: 'has no .sol entry point directly in it, under contracts/, or under its source directory' },
 }
@@ -127,15 +127,21 @@ const EMPTY = vfsHost(new Vfs())
 
 // What a stasis.config.json's empty `entries` says of the directory holding it.
 const CONFIGURED_NONE = 'has a stasis.config.json whose entries name none'
+// What one whose lockfiles are of JS and Solidity projects both, and which names no entries, says.
+const MIXED_NONE = "has a stasis.config.json whose lockfiles lay out JS and Solidity trees, and no entries naming which to bundle"
 
 // -> { entries, none }: the entries a build of the project in `dir` (read through `host`) takes
 // where none are given, as paths from `dir`, and what having none says of `dir`. Those its
 // stasis.config.json's `entries` names, checked with `options` as the build checks them
-// (configuredBuilds), where it has `entries`, whatever it names; else those of `kind` (KINDS'),
-// with `options` then checked on their own, as the build checks them, which nothing completes.
-export function defaultEntries(name, host, dir, kind, options) {
+// (configuredBuilds), where it has `entries`, whatever it names; else those of the kind
+// `packageManagers` (its trees') build (KINDS'), with `options` then checked on their own, as the
+// build checks them, which nothing completes; none where they build JS and Solidity bundles both.
+export function defaultEntries(name, host, dir, packageManagers, options) {
   const configured = configuredBuilds(name, { cwd: dir, host, options })
   if (configured !== null) return { entries: configured.entries, none: CONFIGURED_NONE }
+  const kinds = new Set(packageManagers.map((pm) => packageManagerOf(name, pm).kind))
+  if (kinds.size > 1) return { entries: [], none: MIXED_NONE }
+  const kind = KINDS[[...kinds][0]]
   checkVfsOptions(name, { ...options, entries: [kind.standIn], cwd: '/', host: EMPTY, fetched: false })
   return { entries: kind.entries(host, dir, options), none: kind.none }
 }

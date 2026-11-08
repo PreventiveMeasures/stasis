@@ -38,6 +38,7 @@ it, or take it for another path.
 | `installDevDependencies` | boolean | `true` | none |
 | `lazyDependencies` | boolean | `true` | none |
 | `generatePrisma` | boolean | `true` | none |
+| `lockfiles` | array of lockfile paths (see [Several lockfiles](github-bundle.md#several-lockfiles-lockfiles)) | unset: the one detected | none |
 
 A file can pin the lockfile `frozen`, and set no other mode: every other `lock`
 mode, and every `bundle` mode, is given explicitly (`--lock`/`--bundle`,
@@ -181,13 +182,29 @@ as `--no-generate` does, where it would otherwise generate those of the projects
 the entries reach (see [Prisma](github-bundle.md#prisma)); `--generate=prisma`
 beside it is refused.
 
+`lockfiles` names the lockfiles stasis lays out the trees of itself, in place
+of the one it detects: one tree of each, read as one, so that a project in a
+subdirectory with a lockfile of its own, or a Soldeer project beside a JS one,
+has its dependencies too. Each is a path from the directory holding the
+config, which may climb (`../../pnpm-lock.yaml`), and a `pnpm-lock.yaml`,
+`yarn.lock`, `package-lock.json` or `soldeer.lock`, which `stasis github-bundle`
+and `stasis bundle --deptree` check as they lay it out (see
+[Several lockfiles](github-bundle.md#several-lockfiles-lockfiles)):
+
+```json
+{ "lockfiles": ["pnpm-lock.yaml", "soldeer.lock", "tools/package-lock.json"] }
+```
+
+`stasis run` takes nothing from it, of any name, but refuses one that is no
+non-empty array of paths. Without it, the one lockfile is detected, as ever.
+
 Unknown keys are rejected. A key set by both file and env var must match.
-`extra`, `entries`, `installDevDependencies`, `lazyDependencies` and `generatePrisma` are set in the file alone. Only
+`extra`, `entries`, `installDevDependencies`, `lazyDependencies`, `generatePrisma` and `lockfiles` are set in the file alone. Only
 `scope` is persisted into the lockfile/bundle `config` block; `debug`, `childProcess`, `packageJSON`, `fs`, and
 `brotliQuality` are run-time flags, not attested, `extra`'s effect is the
 files it adds, `installDevDependencies`' the packages a build can reach,
-`lazyDependencies`' the packages fetched, and `generatePrisma`'s the clients
-generated.
+`lazyDependencies`' the packages fetched, `generatePrisma`'s the clients
+generated, and `lockfiles`' the trees laid out.
 
 ## `stasis.lock.json`
 

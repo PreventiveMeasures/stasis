@@ -108,7 +108,10 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
   `package-lock.json` and `soldeer.lock` that installs the cwd, as
   `github-bundle` detects it. With none, or more than one, it refuses; a
   lockfile of the other kind of bundle (a `soldeer.lock` for JS entries) is
-  refused too.
+  refused too. Where the cwd's `stasis.config.json` names its `lockfiles`,
+  none is detected: a tree is laid out of each, as `github-bundle` lays them
+  out (see [Several lockfiles](github-bundle.md#several-lockfiles-lockfiles)).
+  Nothing may be installed where any of them installs.
 - Nothing may be installed: where the tree installs (each of the lockfile's
   projects' `node_modules`, or Soldeer's `dependencies` folder) the project has
   to hold nothing, not even a link, or it refuses. Every refusal comes before
@@ -127,7 +130,8 @@ stasis bundle --deptree --lockfile=stasis.lock.json src/index.js
   written any other way (`${NPM_TOKEN}`, quoted, with spaces), is not read; an
   `~/.npmrc` that is not valid UTF-8 is refused.
 - The project's `stasis.config.json` is taken as without the flag, its
-  `entries` and `extra`; and as `github-bundle` takes it, its
+  `entries` and `extra`; and as `github-bundle` takes it, its `lockfiles` the
+  trees laid out, and its
   `installDevDependencies` lays out the tree without devDependencies (see
   [devDependencies](github-bundle.md#devdependencies-installdevdependencies)),
   as a [`.yarnclean`](github-bundle.md#yarnclean) cleans it. `--deptree` is
