@@ -2475,15 +2475,22 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       if (!posix.relative(cwd, abs).split('/').some((part) => installs.has(part)) && project.stat(abs) === null) throw new Error(`entry not found: ${abs}`)
     }
   }
-  // Each Solidity build's entries are built from the root of the Soldeer project holding them, the
-  // innermost of those the trees lay out, as `stasis bundle` builds them from there, reading the
-  // foundry.toml and remappings there: apart by project, each part's bundle then put under its root
-  // (solidityFrom). Any other build, and the entries of no such project, from cwd.
-  const solRoots = specs.filter((_, i) => pms[i].kind === 'sol').map((spec) => spec.cwd)
-  const projectOf = (entry) => solRoots.filter((dir) => isPathWithin(dir, posix.resolve(cwd, entry))).reduce((inner, dir) => (isPathWithin(inner, dir) ? dir : inner), cwd)
-  const parts = builds.flatMap((build, i) => (kinds[i] === 'sol'
-    ? [...Map.groupBy(build.entries, projectOf)].map(([from, entries]) => ({ build: { ...build, entries }, kind: 'sol', from }))
-    : [{ build, kind: kinds[i], from: cwd }]))
+  // A Solidity build's bundles: one, built from cwd, but where a Soldeer project the trees lay out is
+  // below it. Then its .sol files (its directory entries expanded, through `args.host`, as the build
+  // expands them) are each built from the root of the project holding it, the innermost, as `stasis
+  // bundle` builds them from there, reading the foundry.toml and remappings there: apart by project,
+  // each one's bundle put under its root (solidityFrom). Files of no such project, from cwd.
+  const solRoots = specs.filter((spec, i) => pms[i].kind === 'sol' && spec.cwd !== cwd).map((spec) => spec.cwd)
+  const projectOf = (file) => solRoots.filter((dir) => isPathWithin(dir, posix.resolve(cwd, file))).reduce((inner, dir) => (isPathWithin(inner, dir) ? dir : inner), cwd)
+  const solidityBuilt = async (build, args) => {
+    if (solRoots.length === 0) return [{ bundle: await buildSolidityBundle({ ...build, ...args }), root: cwd }]
+    const out = []
+    for (const [from, entries] of Map.groupBy(expandSolidityEntries(cwd, normalizeEntries(build.entries, cwd), args.host), projectOf)) {
+      // eslint-disable-next-line no-await-in-loop -- one project at a time, in the order its warnings read
+      out.push({ bundle: await solidityFrom({ ...build, entries }, from, args), root: cwd })
+    }
+    return out
+  }
   const laidOut = specs.length > 1 ? 'Laid out the trees' : specs[0].lazy ? 'Laid out the tree' : 'Installed the tree'
   const tree = await debugTimed(laidOut, () => layOutTrees({ project, specs, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }))
   const { inRounds } = await import('../vfs-bundle/lazy.js')
@@ -2518,7 +2525,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
   // each reading into its `reads`, each build keeping what its scans read across them in a memo of
   // its own.
-  const memos = tree.unpack === undefined ? undefined : parts.map(() => new Map())
+  const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
   const attempt = async (reads) => {
     const host = treeHost(tree, outside, reads)
     const args = { cwd, host, env }
@@ -2526,24 +2533,29 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     // A build of a round that asked for a package already is void, whatever it threw: the builds
     // after it are run all the same, for all else they ask for, and the round is set aside after.
     let voided
-    for (const [i, { build, kind, from }] of parts.entries()) {
+    // The build each of `builts` is of.
+    const ofBuilds = []
+    for (const [i, build] of builds.entries()) {
       let built
       try {
         // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-        built = kind === 'sol' ? { bundle: await solidityFrom(build, from, args), root: cwd } : await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i] })
+        built = kinds[i] === 'sol' ? await solidityBuilt(build, args) : [await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i] })]
       } catch (error) {
         if (reads === undefined || reads.asked.size === 0) throw error
         voided ??= { error }
         continue
       }
-      // Rooted at cwd, where `stasis bundle` detects its repo.
-      if (repo === undefined && !built.stateBuilt) built.bundle.repo ??= detectRepo(cwd, host)
-      builts.push(built)
+      for (const one of built) {
+        // Rooted at cwd, where `stasis bundle` detects its repo.
+        if (repo === undefined && !one.stateBuilt) one.bundle.repo ??= detectRepo(cwd, host)
+        builts.push(one)
+        ofBuilds.push(build)
+      }
     }
     if (voided !== undefined) throw voided.error
     // Merged as bundleCommand merges its builds.
     const { root } = builts[0]
-    const union = unionOfBuilds(name, parts.map((part) => part.build), builts, builts.map((built) => built.root))
+    const union = unionOfBuilds(name, ofBuilds, builts, builts.map((built) => built.root))
     // Once: to the union, by the allowlist of the stasis.config.json at the root, as bundleCommand adds
     // it; else to the one build given, by its `resources`, as buildOfKind adds it, unless its State
     // took it. Never one of the files written (none, into a Vfs).

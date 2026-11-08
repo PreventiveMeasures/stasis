@@ -190,6 +190,11 @@ test("buildVfsBundle builds the .sol entries of a Soldeer project below the root
   const imported = (parent) => [...built.bundle.imports.values()].map((byParent) => byParent.get(parent)?.get('dep/D.sol')).find(Boolean)
   t.assert.equal(imported('contracts/src/A.sol'), 'contracts/lib/one/D.sol', "by contracts/'s remapping")
   t.assert.equal(imported('vault/src/A.sol'), 'vault/lib/two/D.sol', "by vault/'s")
+  // A directory entry holding both, its .sol files each built by the project holding it.
+  const whole = await buildVfsBundle({ vfs: vfsOf(configured(files, { lockfiles, entries: { 'src/a.js': {}, '.': {} } })), cache: store() })
+  const wholeImported = (parent) => [...whole.bundle.imports.values()].map((byParent) => byParent.get(parent)?.get('dep/D.sol')).find(Boolean)
+  t.assert.equal(wholeImported('contracts/src/A.sol'), 'contracts/lib/one/D.sol')
+  t.assert.equal(wholeImported('vault/src/A.sol'), 'vault/lib/two/D.sol')
   // Each project's part is the bundle its own build from its directory gives, put under it.
   for (const dir of ['contracts', 'vault']) {
     // eslint-disable-next-line no-await-in-loop -- one build at a time
