@@ -7,7 +7,7 @@ import { Lockfile } from './lockfile.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, statStrict } from './bundle-util.js'
 import { diskHost } from './host.js'
-import { parsePolicy } from './policy.js'
+import { parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
 import { assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, pathExt, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
@@ -62,9 +62,6 @@ function readAddConfig(baseDir) {
   return { bundleFile, resourcesBundleFile, resources, brotliQuality: cfg.brotliQuality, policy: parsePolicy(CONFIG_FILE, cfg) }
 }
 
-// What a target already records that `policy` refuses, said after the refusal.
-const alreadyIn = (target) => ` -- recorded in ${target} already`
-
 // Assemble a Bundle bucketed per package.json. `add` records NO entries -- its files are attested, not entry points -- so nothing in an add bundle is runnable via `--bundle=load`.
 // `buckets` (dir -> module) are identities to take for a dir over the one found there: those of the
 // bundle the files will merge into, which may name its buckets otherwise (`solidity-bundle`, say).
@@ -103,7 +100,7 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
 // first byte lands and an aborted `add` leaves the project untouched. Serializing INSIDE the thunk
 // keeps peak memory at one target's bytes rather than every target's at once. What is written is held
 // to `policy` (the config's, or null): the files added, then what the bundle already carries.
-function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy = null) {
+function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy) {
   // Links followed on disk: a file named or swept that links to one the rules refuse is refused.
   const disk = { root: baseDir, host: diskHost }
   policy?.assertArtifact(bundle, disk)
@@ -116,9 +113,9 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy = 
     } catch (cause) {
       throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
     }
+    policy?.assertArtifact(existing, { hint: recordedIn(targetPath), ...disk })
     mergedFrom = tally(existing).files
     bundle = existing.merge(bundle)
-    policy?.assertArtifact(bundle, { hint: alreadyIn(targetPath), ...disk })
   }
   const { files, packages } = tally(bundle)
   return {
@@ -131,17 +128,18 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, policy = 
 }
 
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
-// prepareBundleFile so a conflict here doesn't leave the bundles updated; held to `policy` as it holds the bundle.
-function prepareLockfile(lockPath, lockAdd, policy = null) {
+// prepareBundleFile so a conflict here doesn't leave the bundles updated; what it records already held to
+// `policy`, as prepareBundleFile holds the bundle (the files added are the bundles' own, held there).
+function prepareLockfile(lockPath, lockAdd, policy) {
   let existing
   try {
     existing = Lockfile.parse(readFileSync(lockPath, 'utf8'))
   } catch (cause) {
     throw new Error(`add: failed to read the existing ${LOCK_FILE}`, { cause })
   }
+  policy?.assertArtifact(existing, { hint: recordedIn(LOCK_FILE), root: dirname(lockPath), host: diskHost })
   const before = tally(existing).files
   const merged = existing.merge(lockAdd)
-  policy?.assertArtifact(merged, { hint: alreadyIn(LOCK_FILE), root: dirname(lockPath), host: diskHost })
   const total = tally(merged).files
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }

@@ -336,11 +336,11 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
 // options and held to the same Policy, a build of them together, else one of its own.
 function addToBuild(builds, entry, named, options, language) {
   const id = JSON.stringify([language, options, named.policy?.key ?? null])
-  if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [] })
+  // The same Policy for each entry of a build, by `id`: the first one's, relabelled by withPolicies.
+  if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [], policy: named.policy })
   const build = builds.get(id)
   build.entries.push(entry)
   build.written.push(named.entry)
-  if (named.policy !== undefined) build.policy ??= named.policy
 }
 
 // The builds `addToBuild` made, each held to the Policy its entries set (`policy`, where they set one),
@@ -406,7 +406,8 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
   const given = Object.keys(OPTION_FLAGS).filter((key) => options[key] !== undefined && comparable(key, options[key]) !== comparable(key, DEFAULT_OPTIONS[key]))
   const builds = new Map()
   for (const [i, entry] of entries.entries()) {
-    const { entry: written, values } = config.get(keys[i])
+    const named = config.get(keys[i])
+    const { entry: written, values } = named
     const what = `${name}: ${CONFIG_FILE}: entries ${JSON.stringify(written)}`
     const running = [...CONSENT_FLAGS.keys()].find((flag) => values[flag] !== undefined)
     if (running !== undefined) throw new Error(`${what} sets ${running}, which runs ${CONSENT_FLAGS.get(running)}, and nothing of the project runs here`)
@@ -419,7 +420,7 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
     }
     // Entries of another language are built apart, whatever their options: a build's are of one.
-    addToBuild(builds, entry, config.get(keys[i]), built, language)
+    addToBuild(builds, entry, named, built, language)
   }
   const running = given.find((key) => CONSENT_FLAGS.has(OPTION_FLAGS[key]))
   if (running !== undefined) throw new Error(`${name}: ${optionText(running, options[running])} is given, which runs ${CONSENT_FLAGS.get(OPTION_FLAGS[running])}, and nothing of the project runs here`)

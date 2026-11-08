@@ -1,6 +1,8 @@
-import { isAbsolute, posix, relative, resolve } from 'node:path'
+import { posix, relative, resolve } from 'node:path'
 
-import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKey, sortPaths } from './artifact-util.js'
+import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKeys, posixPathEscapes, sortedByPath, splitNodeModulesPath } from './artifact-util.js'
+import { readJson } from './bundle-util.js'
+import { relativeEscapes, toPosix } from './util.js'
 
 // stasis.config.json's restrictions on what an artifact carries, each a list of patterns: every path
 // it carries matching one of `allowedPaths` (where set) and none of `disallowedPaths`, every
@@ -23,14 +25,15 @@ function classEnd(text, at) {
   let i = at + 1
   if (text[i] === '!' || text[i] === '^') i++
   if (text[i] === ']') i++
-  const close = text.indexOf(']', i)
-  return close === -1 ? -1 : close
+  return text.indexOf(']', i)
 }
 
-// The first `{...}` of `pattern` holding a `,` at its own depth -> [start, [alternative...], end], or
-// null where none does (a brace without one is itself).
+// The first outermost `{...}` of `pattern` holding a `,` of its own (not a nested brace's) -> [start,
+// [alternative...], end], or null where none does (a brace without one is itself).
 function firstAlternation(pattern) {
-  const stack = []
+  let depth = 0
+  let open
+  let commas
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i]
     if (c === '\\') {
@@ -39,15 +42,12 @@ function firstAlternation(pattern) {
       const close = classEnd(pattern, i)
       if (close !== -1) i = close
     } else if (c === '{') {
-      stack.push({ open: i, commas: [] })
-    } else if (c === ',' && stack.length > 0) {
-      stack.at(-1).commas.push(i)
-    } else if (c === '}' && stack.length > 0) {
-      const { open, commas } = stack.pop()
-      if (stack.length === 0 && commas.length > 0) {
-        const bounds = [open, ...commas, i]
-        return [open, bounds.slice(1).map((end, k) => pattern.slice(bounds[k] + 1, end)), i]
-      }
+      if (depth++ === 0) [open, commas] = [i, []]
+    } else if (c === ',' && depth === 1) {
+      commas.push(i)
+    } else if (c === '}' && depth > 0 && --depth === 0 && commas.length > 0) {
+      const bounds = [open, ...commas, i]
+      return [open, bounds.slice(1).map((end, k) => pattern.slice(bounds[k] + 1, end)), i]
     }
   }
   return null
@@ -80,6 +80,7 @@ function segmentSource(segment) {
   let out = ''
   for (let i = 0; i < segment.length; i++) {
     const c = segment[i]
+    const close = c === '[' ? classEnd(segment, i) : -1
     if (c === '\\' && i + 1 < segment.length) {
       out += escapeRegExp(segment[++i])
     } else if (c === '*') {
@@ -87,8 +88,7 @@ function segmentSource(segment) {
       while (segment[i + 1] === '*') i++
     } else if (c === '?') {
       out += '[^/]'
-    } else if (c === '[' && classEnd(segment, i) !== -1) {
-      const close = classEnd(segment, i)
+    } else if (close !== -1) {
       let body = segment.slice(i + 1, close)
       const negated = body[0] === '!' || body[0] === '^'
       if (negated) body = body.slice(1)
@@ -119,10 +119,11 @@ function patternSource(pattern) {
   return out
 }
 
-// `alternatives` (brace-free patterns) as one RegExp of what any of them matches, its errors `pattern`'s.
-function compile(label, pattern, alternatives) {
+// `alternatives` (brace-free patterns) as one RegExp of what any of them matches, followed by `suffix` (a
+// RegExp source), its errors `pattern`'s.
+function compile(label, pattern, alternatives, suffix = '') {
   try {
-    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})$`, 'u')
+    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'u')
   } catch (cause) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} is not a valid pattern`, { cause })
   }
@@ -135,23 +136,14 @@ function compile(label, pattern, alternatives) {
 // own listing (a `--fs` capture of it, spelled `.`) is matched by `.` and `**` alone.
 function pathPattern(label, pattern) {
   const alternatives = expandBraces(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
-  if (alternatives.some((alternative) => alternative.startsWith('/') || alternative.split('/').includes('..'))) {
+  if (alternatives.some(posixPathEscapes)) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
   }
   if (alternatives.includes('.')) return { pattern, test: () => true }
-  const regex = compile(label, pattern, alternatives)
+  // The path, or a directory above it: the pattern matching what comes before a `/` of it.
+  const regex = compile(label, pattern, alternatives, '(?:/.*)?')
   const matchesRoot = alternatives.some((alternative) => alternative.split('/').every((segment) => segment === '**'))
-  return {
-    pattern,
-    test(path) {
-      if (path === '.') return matchesRoot
-      if (regex.test(path)) return true
-      for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/', slash - 1)) {
-        if (regex.test(path.slice(0, slash))) return true
-      }
-      return false
-    },
-  }
+  return { pattern, test: (path) => (path === '.' ? matchesRoot : regex.test(path)) }
 }
 
 // A module pattern: a package's name (`left-pad`, `@babel/core`), or a pattern of names (`@babel/*`),
@@ -169,106 +161,89 @@ function modulePattern(label, pattern) {
   return { pattern, test: (name) => name === pattern || regex.test(name) }
 }
 
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-
 const listed = (items) => {
   const shown = items.slice(0, MAX_LISTED).join(', ')
   return items.length > MAX_LISTED ? `${shown}, and ${items.length - MAX_LISTED} more` : shown
 }
 
-// The package a path is in by its innermost node_modules directory, as the package manager installed it
-// there: `{ dir, name }` (`name` the directory's, a scope's two segments), or undefined where it is in none.
-export function installedAt(path) {
-  const segments = path.split('/')
-  const at = segments.lastIndexOf('node_modules')
-  if (at === -1 || at === segments.length - 1) return undefined
-  const length = segments[at + 1].startsWith('@') && at + 2 < segments.length ? 2 : 1
-  return { dir: segments.slice(0, at + 1 + length).join('/'), name: segments.slice(at + 1, at + 1 + length).join('/') }
-}
+// The name a dependency recorded at `dir` is installed under: its node_modules directory's (a scope's two
+// segments), as the package manager installed it; undefined for one in none.
+const installedName = (dir) => splitNodeModulesPath(`${dir}/package.json`)?.name
 
 // A dependency as an error names it: by its package.json's name, and the one it is installed under
 // where that is another (an alias, or a package naming itself otherwise), or the link it is reached by.
-const packageText = ({ dir, name, version, installed, via }) => `${name}${version === undefined ? '' : `@${version}`} at ${dir}` +
-  `${installed === undefined || installed === name ? '' : ` (installed as ${installed})`}${via === undefined ? '' : ` (linked from ${via})`}`
+const packageText = ({ dir, name, version, via }) => {
+  const installed = installedName(dir)
+  return `${name}${version === undefined ? '' : `@${version}`} at ${dir}` +
+    `${installed === undefined || installed === name ? '' : ` (installed as ${installed})`}${via === undefined ? '' : ` (linked from ${via})`}`
+}
 
 // A path as an error names it, with the file it links to where it is a link.
 const pathText = (path, real) => (real === undefined ? path : `${path} (a link to ${real})`)
 
-// `path`'s real path through `host`, from `realRoot` (the project root's), where that is another path
-// within it; undefined where it is the same, out of it, or none (a file a loaded artifact records, gone
-// from disk).
-function linkedPath(host, root, realRoot, path) {
+// What follows a refusal of what an artifact already on disk records, at `path`.
+export const recordedIn = (path) => ` -- recorded in ${path} already`
+
+// The file `path` (from `root`, read through `host`) is a link to: its path from `realRoot`, the root's real
+// path, where it is a link to another file within the root; undefined where it is no link, links out of
+// the root, or is gone (a file a loaded artifact records, not on disk).
+export function linkOf(host, root, realRoot, path) {
+  const absolute = resolve(root, path)
   let real
   try {
-    real = host.realpath(resolve(root, path))
+    real = host.realpath(absolute)
   } catch {
     return undefined
   }
-  const rel = relative(realRoot, real).replaceAll('\\', '/') || '.'
-  return rel === path || rel === '..' || rel.startsWith('../') || isAbsolute(rel) ? undefined : rel
+  if (real === absolute) return undefined
+  const rel = toPosix(relative(realRoot, real)) || '.'
+  return rel === path || relativeEscapes(rel) ? undefined : rel
 }
 
 // The dependency the file `real` (a path from `realRoot`, the project root's real path) is of, where it is
-// in node_modules, reached through the link `via`: `{ dir, name, version, installed, via }`, its name and
-// version its package.json's, read through `host`, and `installed` its directory's (installedAt()), which
-// stands for the name where the package.json names none. Undefined where it is in no node_modules.
+// in node_modules, reached through the link `via`: `{ dir, name, version, via }`, its name and version its
+// package.json's, read through `host`, its name else the one it is installed under. Undefined where it is in
+// no node_modules.
 export function linkedPackage(host, realRoot, real, via) {
-  const at = installedAt(real)
-  if (at === undefined) return undefined
-  let manifest
-  try {
-    manifest = JSON.parse(new TextDecoder().decode(host.readFile(resolve(realRoot, at.dir, 'package.json'))))
-  } catch {
-    manifest = null
-  }
-  const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : at.name
-  return { dir: at.dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined, installed: at.name, via }
-}
-
-// The real path of each of `paths` that is a link, as linkedPath() finds it, and the dependency each one
-// into node_modules is of (linkedPackage()), where a `root` (the project's, which `paths` are relative to)
-// and its `host` are given. -> { links: Map<path, real path>, linked: [package] }
-function linksOf(paths, { root, host } = {}) {
-  const links = new Map()
-  const linked = []
-  if (root === undefined || host === undefined) return { links, linked }
-  let realRoot
-  try {
-    realRoot = host.realpath(root)
-  } catch {
-    return { links, linked }
-  }
-  for (const path of paths) {
-    const real = linkedPath(host, root, realRoot, path)
-    if (real === undefined) continue
-    links.set(path, real)
-    const pkg = linkedPackage(host, realRoot, real, path)
-    if (pkg !== undefined && !linked.some(({ dir }) => dir === pkg.dir)) linked.push(pkg)
-  }
-  return { links, linked }
+  const dir = splitNodeModulesPath(real)?.dir
+  if (dir === undefined) return undefined
+  const manifest = readJson(resolve(realRoot, dir, 'package.json'), host)
+  const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
+  return { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined, via }
 }
 
 // The paths an artifact (a Bundle, Lockfile or State: its `modules`, dir -> record, `formats`, file ->
 // format, null where it holds none, and `config`, whose `scope` says what it records) carries, the
-// dependencies it does, each one holding a file, and the real path of each path that is a link, found on
-// `disk` (`{ root, host }`: the project root its paths are relative to, and the host reading it), where
-// given: `{ paths: Set<path>, packages: [{ dir, name, version, installed }], links: Map<path, real
-// path> }`, `installed` the name a dependency in node_modules is installed under (installedAt()). A
-// node_modules-scope one carries what is in node_modules alone, whatever else it holds in memory.
-export function artifactContents({ modules, formats, config }, disk) {
-  const full = (config?.scope ?? 'full') === 'full'
-  const paths = new Set()
+// dependencies it does, each one holding a file, and the real path of each path that is a link, found
+// through `host` from `root`, the project root its paths are relative to: `{ paths: Set<path>, packages:
+// [{ dir, name, version, via? }], links: Map<path, real path> }`. A node_modules-scope one carries what is
+// in node_modules alone, whatever else it holds in memory. A link into a dependency is of that one too.
+function artifactContents({ modules, formats, config }, { root, host }) {
+  const scope = config?.scope ?? 'full'
+  const inScope = (path) => scope === 'full' || hasNodeModulesSegment(path)
+  const paths = moduleFileKeys(modules, { scope })
+  for (const file of formats?.keys() ?? []) if (inScope(file)) paths.add(file)
   const packages = []
   for (const [dir, info] of modules) {
-    const files = Object.keys(info.files)
-    if (files.length === 0 || (!full && !hasNodeModulesSegment(dir))) continue
-    for (const rel of files) paths.add(moduleFileKey(dir, rel))
-    if (dependencyEcosystem(dir, info.ecosystem) !== undefined) packages.push({ dir, name: info.name, version: info.version ?? undefined, installed: installedAt(dir)?.name })
+    if (Object.keys(info.files).length > 0 && inScope(dir) && dependencyEcosystem(dir, info.ecosystem) !== undefined) {
+      packages.push({ dir, name: info.name, version: info.version ?? undefined })
+    }
   }
-  for (const file of formats?.keys() ?? []) if (full || hasNodeModulesSegment(file)) paths.add(file)
-  const { links, linked } = linksOf(paths, disk)
-  // A link into a dependency the artifact records is held to the rules as that record is.
-  for (const pkg of linked) if (!packages.some(({ dir }) => dir === pkg.dir)) packages.push(pkg)
+  const links = new Map()
+  let realRoot
+  try {
+    realRoot = host.realpath(root)
+  } catch {
+    return { paths, packages, links }
+  }
+  for (const path of paths) {
+    const real = linkOf(host, root, realRoot, path)
+    if (real === undefined) continue
+    links.set(path, real)
+    // Its package.json read once, for the first link into a dependency the artifact records none of.
+    const dir = splitNodeModulesPath(real)?.dir
+    if (dir !== undefined && !packages.some((pkg) => pkg.dir === dir)) packages.push(linkedPackage(host, realRoot, real, path))
+  }
   return { paths, packages, links }
 }
 
@@ -277,11 +252,11 @@ export class Policy {
   label
   // key -> [{ pattern, test }], of each rule set.
   #rules = new Map()
-  #given
+  // The rules as given, each list deduped and sorted.
+  #given = {}
 
   constructor(label, config) {
     this.label = label
-    const given = {}
     for (const key of POLICY_KEYS) {
       const patterns = config[key]
       if (patterns === undefined) continue
@@ -290,9 +265,8 @@ export class Policy {
       }
       const compileOne = PATH_KEYS.has(key) ? pathPattern : modulePattern
       this.#rules.set(key, patterns.map((pattern) => compileOne(`${label}: ${key}`, pattern)))
-      given[key] = [...new Set(patterns)].toSorted()
+      this.#given[key] = [...new Set(patterns)].toSorted()
     }
-    this.#given = given
   }
 
   // The rules as given, in one canonical string: two Policies with the same are the same Policy.
@@ -306,30 +280,29 @@ export class Policy {
   }
 
   // Each rule's offenders among `paths`, `packages` and `links` (artifactContents'), as one problem a
-  // rule. A path is checked as itself and, a link, as the file it links to; a dependency by its
-  // package.json's name and the one it is installed under: refused where a disallowing rule matches
-  // either, allowed where an allowing rule matches both. A link to a file in node_modules is of the
-  // package installed there too, among `packages` (linkedPackage()).
+  // rule, a path rule's in path order. A path is checked as itself and, a link, as the file it links to; a
+  // dependency by its package.json's name and the one it is installed under: refused where a disallowing
+  // rule matches either, allowed where an allowing rule matches both.
   #problems({ paths, packages, links = new Map() }) {
-    const dependencies = packages
     const problems = []
     for (const [key, patterns] of this.#rules) {
       const allowing = ALLOWING.has(key)
       const isPath = PATH_KEYS.has(key)
-      const items = isPath ? [...paths].toSorted(sortPaths) : dependencies
+      // Each offender, and after it the pattern refusing it: none for an allowing rule.
       const offenders = []
-      for (const item of items) {
-        const names = isPath ? [item, links.get(item)] : [item.name, item.installed]
-        const matches = [...new Set(names.filter((name) => name !== undefined))].map((name) => patterns.find(({ test }) => test(name)))
-        const text = isPath ? pathText(item, links.get(item)) : packageText(item)
-        if (allowing && matches.includes(undefined)) offenders.push(text)
+      for (const item of isPath ? paths : packages) {
+        const names = isPath ? [item, links.get(item)] : [item.name, installedName(item.dir)]
+        const matches = names.filter((name) => name !== undefined).map((name) => patterns.find(({ test }) => test(name)))
         const match = matches.find((found) => found !== undefined)
-        if (!allowing && match !== undefined) offenders.push(`${text} (${JSON.stringify(match.pattern)})`)
+        if (allowing ? matches.includes(undefined) : match !== undefined) offenders.push({ item, by: allowing ? '' : ` (${JSON.stringify(match.pattern)})` })
       }
       if (offenders.length === 0) continue
-      const what = isPath ? 'path' : 'package'
-      if (allowing) problems.push(offenders.length === 1 ? `${key} does not allow ${offenders[0]}` : `${key} allows none of ${plural(offenders.length, what)}: ${listed(offenders)}`)
-      else problems.push(`${key} refuses ${offenders.length === 1 ? offenders[0] : `${plural(offenders.length, what)}: ${listed(offenders)}`}`)
+      const texts = isPath
+        ? sortedByPath(offenders, ({ item }) => item).map(({ item, by }) => `${pathText(item, links.get(item))}${by}`)
+        : offenders.map(({ item, by }) => `${packageText(item)}${by}`)
+      const many = `${texts.length} ${isPath ? 'paths' : 'packages'}: ${listed(texts)}`
+      if (allowing) problems.push(texts.length === 1 ? `${key} does not allow ${texts[0]}` : `${key} allows none of ${many}`)
+      else problems.push(`${key} refuses ${texts.length === 1 ? texts[0] : many}`)
     }
     return problems
   }
@@ -342,17 +315,17 @@ export class Policy {
   }
 
   // Throws where `artifact` (artifactContents' argument) carries anything a rule refuses, its links
-  // followed on `disk` where it is given; `hint` follows.
-  assertArtifact(artifact, { hint, ...disk } = {}) {
-    this.assert(artifactContents(artifact, disk), hint)
+  // followed through `host` from `root`; `hint` follows.
+  assertArtifact(artifact, { hint, root, host }) {
+    this.assert(artifactContents(artifact, { root, host }), hint)
   }
 
   // Throws where a rule refuses the path `path`, of the dependency `pkg` (`{ dir, name, version }`;
   // undefined for the project's own), a link where `link` is given: `{ real, pkg }`, the file it links to
   // (a path from the same root) and the dependency that is of (linkedPackage()'s, undefined for none).
   assertPath(path, pkg, link) {
-    const packages = pkg === undefined ? [] : [{ ...pkg, installed: installedAt(pkg.dir)?.name }]
-    if (link?.pkg !== undefined && !packages.some(({ dir }) => dir === link.pkg.dir)) packages.push(link.pkg)
+    const packages = pkg === undefined ? [] : [pkg]
+    if (link?.pkg !== undefined && link.pkg.dir !== pkg?.dir) packages.push(link.pkg)
     this.assert({ paths: [path], packages, links: link === undefined ? new Map() : new Map([[path, link.real]]) })
   }
 }

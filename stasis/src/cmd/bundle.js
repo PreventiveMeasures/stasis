@@ -20,7 +20,7 @@ import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-u
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { parsePolicy } from '@exodus/stasis-core/policy'
+import { parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
@@ -1042,7 +1042,7 @@ const configPolicy = (name, cwd, host, label = CONFIG_FILE) => parsePolicy(label
 // config refuses is refused in every entry's build, and what an entry's refuses, in its own. Each path
 // that is a link, found through `files` (the host reading what the builds read, `host` by default), is
 // held to them as the file it links to too.
-function assertPolicies(name, { builds, builts, bundle, root, host = diskHost, files = host, label }) {
+function assertPolicies(name, { builds = [], builts = [], bundle, root, host = diskHost, files = host, label }) {
   const disk = { root, host: files }
   for (const [i, build] of builds.entries()) build.policy?.assertArtifact(builts[i].bundle, disk)
   configPolicy(name, root, host, label)?.assertArtifact(bundle, disk)
@@ -2620,7 +2620,7 @@ function reportedRounds(attempt, unpack) {
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
-  assertPolicies('buildBundle', { builds: [], builts: [], bundle: built.bundle, root: built.root ?? resolve(cwd) })
+  assertPolicies('buildBundle', { bundle: built.bundle, root: built.root ?? resolve(cwd) })
   return built.bundle
 }
 
@@ -2676,11 +2676,12 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     } catch (cause) {
       throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
     }
+    // What the bundle and lockfile on disk carry already is written again: held to the config's Policy too
+    // (the fresh build's own files were, by buildOfCommand).
+    const policy = configPolicy('bundleCommand', root)
+    policy?.assertArtifact(existing, { hint: recordedIn(target), root, host: diskHost })
     mergedFrom = existing.sources.size
     bundle = existing.merge(bundle)
-    // What the bundle and lockfile on disk carry already is written again: held to the config's Policy too.
-    const policy = configPolicy('bundleCommand', root)
-    policy?.assertArtifact(bundle, { hint: ` -- recorded in ${target} already`, root, host: diskHost })
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
     // With none on disk we can't attest the pre-existing bundle's files (their hashes live
     // only in that missing lockfile), so refuse rather than write an under-attesting lockfile.
@@ -2694,10 +2695,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       } catch (cause) {
         throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
       }
-      const merged = existingLock.merge(Lockfile.parse(lockData))
       // It may record more than the bundle beside it (a broader run's capture): checked on its own, before either is written.
-      policy?.assertArtifact(merged, { hint: ` -- recorded in ${lockfile} already`, root, host: diskHost })
-      lockData = merged.serialize()
+      policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), root, host: diskHost })
+      lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
   }
 

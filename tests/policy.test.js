@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -14,8 +14,8 @@ import { parsePolicy } from '@exodus/stasis-core/policy'
 import { State } from '@exodus/stasis-core/state'
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { bundlePlan, readConfigEntries } from '../stasis/src/cmd/bundle-options.js'
-import { Vfs, buildVfsBundle } from '../stasis/src/vfs-bundle.js'
-import { json, lockfile } from './vfs-bundle-github.helper.js'
+import { buildVfsBundle } from '../stasis/src/vfs-bundle.js'
+import { json, lockfile, vfsOf } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
 
 // stasis.config.json's allowedPaths / disallowedPaths / allowedModules / disallowedModules, at its
@@ -31,6 +31,9 @@ const writeTree = (dir, files) => {
 }
 
 const readBundle = (path) => Bundle.parse(brotliDecompressSync(readFileSync(path)).toString('utf8'))
+const readLock = (dir, file = 'stasis.lock.json') => Lockfile.parse(readFileSync(join(dir, file), 'utf8'))
+// The file URL of `rel` in `dir`, as a State takes it.
+const urlOf = (dir, rel) => pathToFileURL(join(dir, rel)).href
 
 const runCli = async (args, cwd) => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EXODUS_STASIS_')))
@@ -145,7 +148,7 @@ test('Config takes the four rules from stasis.config.json alone', (t) => {
 
 test('State refuses a path or dependency its config refuses as it records it, and at write', withTmp((t, tmp) => {
   project(tmp, { disallowedModules: ['right'], disallowedPaths: ['test'] })
-  const url = (rel) => pathToFileURL(join(tmp, rel)).href
+  const url = (rel) => urlOf(tmp, rel)
   const state = new State(tmp, { lock: 'add', env: {}, claim: false })
   state.addFile(url('a.js'))
   state.addFile(url('node_modules/left/index.js'))
@@ -153,7 +156,7 @@ test('State refuses a path or dependency its config refuses as it records it, an
   t.assert.throws(() => state.addFile(url('test/fixture.js')), { message: 'stasis.config.json: disallowedPaths refuses test/fixture.js ("test")' })
   t.assert.throws(() => state.addFsStat(url('test/fixture.js'), 'file'), /disallowedPaths refuses test\/fixture\.js/u)
   state.write()
-  const lock = Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8'))
+  const lock = readLock(tmp)
   t.assert.deepStrictEqual([...lock.modules.keys()].toSorted(), ['.', 'node_modules/left'])
   // A run checks no path of the project's own in node_modules scope, which it doesn't record.
   const scoped = new State(tmp, { lock: 'ignore', bundle: 'add', scope: 'node_modules', env: {}, claim: false })
@@ -162,7 +165,7 @@ test('State refuses a path or dependency its config refuses as it records it, an
 
 test('State refuses a lockfile or bundle it loads that records what its config refuses', withTmp((t, tmp) => {
   project(tmp)
-  const url = (rel) => pathToFileURL(join(tmp, rel)).href
+  const url = (rel) => urlOf(tmp, rel)
   const writer = new State(tmp, { lock: 'add', bundle: 'add', env: {}, claim: false })
   writer.addFile(url('a.js'), { isEntry: true })
   writer.addFile(url('node_modules/right/index.js'))
@@ -184,7 +187,7 @@ test('CLI: stasis run refuses to load a dependency its config refuses, and write
   t.assert.ok(!existsSync(join(tmp, 'stasis.lock.json')))
   const ran = await runCli(['run', '--lock=add', 'a.js'], tmp)
   t.assert.equal(ran.status, 0, ran.stderr)
-  t.assert.deepStrictEqual([...Lockfile.parse(readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')).modules.keys()].toSorted(), ['.', 'node_modules/left'])
+  t.assert.deepStrictEqual([...readLock(tmp).modules.keys()].toSorted(), ['.', 'node_modules/left'])
 }))
 
 test('CLI: stasis add refuses a file its config refuses, before anything is written', withTmp((t, tmp) => {
@@ -220,8 +223,7 @@ test('bundleCommand --add --lockfile holds what the lockfile on disk records to 
   await bundleCommand({ cwd: tmp, entries: ['a.js'], lockfile: 'stasis.lock.json' })
   // A lockfile recording more than the bundle beside it: b.js's graph too.
   await bundleCommand({ cwd: tmp, entries: ['b.js'], output: 'b.br', lockfile: 'b.lock.json' })
-  const read = (file) => Lockfile.parse(readFileSync(join(tmp, file), 'utf8'))
-  writeFileSync(join(tmp, 'stasis.lock.json'), read('stasis.lock.json').merge(read('b.lock.json')).serialize())
+  writeFileSync(join(tmp, 'stasis.lock.json'), readLock(tmp).merge(readLock(tmp, 'b.lock.json')).serialize())
   const before = readFileSync(join(tmp, 'stasis.lock.json'), 'utf8')
   writeTree(tmp, { 'stasis.config.json': { disallowedModules: ['right'] } })
   await t.assert.rejects(bundleCommand({ cwd: tmp, entries: ['a.js'], add: true, lockfile: 'stasis.lock.json' }), {
@@ -289,30 +291,22 @@ test('CLI: stasis bundle alone holds the entries stasis.config.json names to the
 }))
 
 test('buildVfsBundle (stasis github-bundle) holds the bundle to the config\'s rules and each entry\'s', async (t) => {
-  const vfsOf = (config) => {
-    const vfs = new Vfs()
-    const files = {
-      'package.json': json({ name: 'p', version: '1.0.0' }),
-      'pnpm-lock.yaml': lockfile('.'),
-      'a.js': "require('./src/util.js')\n",
-      'b.js': "require('./test/fixture.js')\n",
-      'src/util.js': '',
-      'test/fixture.js': '',
-      'stasis.config.json': json(config),
-    }
-    for (const [path, text] of Object.entries(files)) {
-      vfs.mkdir(posix.dirname(`/${path}`), { recursive: true })
-      vfs.writeFile(`/${path}`, text)
-    }
-    return vfs
-  }
-  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf({ disallowedPaths: ['test'] }), entries: ['b.js'] }), {
+  const projectOf = (config) => vfsOf({
+    'package.json': json({ name: 'p', version: '1.0.0' }),
+    'pnpm-lock.yaml': lockfile('.'),
+    'a.js': "require('./src/util.js')\n",
+    'b.js': "require('./test/fixture.js')\n",
+    'src/util.js': '',
+    'test/fixture.js': '',
+    'stasis.config.json': json(config),
+  })
+  await t.assert.rejects(buildVfsBundle({ vfs: projectOf({ disallowedPaths: ['test'] }), entries: ['b.js'] }), {
     message: 'buildVfsBundle: stasis.config.json: disallowedPaths refuses test/fixture.js ("test")',
   })
-  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf({ entries: { 'a.js': {}, 'b.js': { allowedPaths: ['b.js', 'src'] } } }) }), {
+  await t.assert.rejects(buildVfsBundle({ vfs: projectOf({ entries: { 'a.js': {}, 'b.js': { allowedPaths: ['b.js', 'src'] } } }) }), {
     message: 'buildVfsBundle: stasis.config.json: entries "b.js": allowedPaths does not allow test/fixture.js',
   })
-  const built = await buildVfsBundle({ vfs: vfsOf({ allowedPaths: ['*.js', 'src', 'test'], entries: { 'a.js': { allowedPaths: ['a.js', 'src'] }, 'b.js': { disallowedPaths: ['src'] } } }) })
+  const built = await buildVfsBundle({ vfs: projectOf({ allowedPaths: ['*.js', 'src', 'test'], entries: { 'a.js': { allowedPaths: ['a.js', 'src'] }, 'b.js': { disallowedPaths: ['src'] } } }) })
   t.assert.deepStrictEqual([...built.bundle.sources.keys()].toSorted(), ['a.js', 'b.js', 'src/util.js', 'test/fixture.js'])
 })
 
@@ -325,7 +319,7 @@ test('a module pattern is the shape of a name: one segment, or a scope\'s two', 
 
 test('a dependency is refused by either name it goes by, and allowed by both', (t) => {
   // Its package.json names it `left`; installed at node_modules/evil (a package naming itself otherwise, or an alias).
-  const contents = { paths: [], packages: [{ dir: 'node_modules/evil', name: 'left', version: '1.0.0', installed: 'evil' }] }
+  const contents = { paths: [], packages: [{ dir: 'node_modules/evil', name: 'left', version: '1.0.0' }] }
   const refusal = (rules) => {
     try {
       parsePolicy('cfg', rules).assert(contents)
@@ -340,7 +334,7 @@ test('a dependency is refused by either name it goes by, and allowed by both', (
   t.assert.equal(refusal({ allowedModules: ['evil'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')
   t.assert.equal(refusal({ allowedModules: ['left', 'evil'] }), null)
   // pnpm's layout installs it under its name in .pnpm, which is the directory taken.
-  const pnpm = { paths: [], packages: [{ dir: 'node_modules/.pnpm/@scope+evil@1.0.0/node_modules/@scope/evil', name: '@scope/evil', version: '1.0.0', installed: '@scope/evil' }] }
+  const pnpm = { paths: [], packages: [{ dir: 'node_modules/.pnpm/@scope+evil@1.0.0/node_modules/@scope/evil', name: '@scope/evil', version: '1.0.0' }] }
   t.assert.doesNotThrow(() => parsePolicy('cfg', { allowedModules: ['@scope/*'] }).assert(pnpm))
 })
 
@@ -369,7 +363,8 @@ test('bundleCommand and stasis run hold a dependency to the rules by the name it
 }))
 
 // A project whose src/link.js links to secrets/key.js, src/dep.js to node_modules/evil's index.js, and
-// src/nice.js to node_modules/nice's, whose package.json names it `evil`.
+// src/nice.js to node_modules/nice's, whose package.json names it `evil`; `configure` rewrites its config.
+const configure = (dir, config) => writeTree(dir, { 'stasis.config.json': config })
 const linked = (dir, config) => {
   writeTree(dir, {
     'package.json': { name: 'app', version: '1.0.0' },
@@ -382,29 +377,27 @@ const linked = (dir, config) => {
     'node_modules/nice/index.js': 'module.exports = 2\n',
     'stasis.config.json': config,
   })
-  if (!existsSync(join(dir, 'src'))) {
-    mkdirSync(join(dir, 'src'))
-    symlinkSync('../secrets/key.js', join(dir, 'src/link.js'))
-    symlinkSync('../node_modules/evil/index.js', join(dir, 'src/dep.js'))
-    symlinkSync('../node_modules/nice/index.js', join(dir, 'src/nice.js'))
-  }
+  mkdirSync(join(dir, 'src'))
+  symlinkSync('../secrets/key.js', join(dir, 'src/link.js'))
+  symlinkSync('../node_modules/evil/index.js', join(dir, 'src/dep.js'))
+  symlinkSync('../node_modules/nice/index.js', join(dir, 'src/nice.js'))
 }
 
 test('a file stasis add names or sweeps is held to the rules as the file it links to too', withTmp((t, tmp) => {
   linked(tmp, { disallowedPaths: ['secrets'] })
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/link.js'] }), { message: 'stasis.config.json: disallowedPaths refuses src/link.js (a link to secrets/key.js) ("secrets")' })
-  linked(tmp, { allowedPaths: ['src', 'a.js'] })
+  configure(tmp, { allowedPaths: ['src', 'a.js'] })
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src'] }), { message: 'stasis.config.json: allowedPaths allows none of 3 paths: src/dep.js (a link to node_modules/evil/index.js), src/link.js (a link to secrets/key.js), src/nice.js (a link to node_modules/nice/index.js)' })
-  linked(tmp, { disallowedModules: ['evil'] })
+  configure(tmp, { disallowedModules: ['evil'] })
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/dep.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil@1.0.0 at node_modules/evil (linked from src/dep.js) ("evil")' })
   // A link into a package is held to the rules by both its names too: its package.json's, and its directory's.
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/nice.js'] }), { message: 'stasis.config.json: disallowedModules refuses evil@2.0.0 at node_modules/nice (installed as nice) (linked from src/nice.js) ("evil")' })
-  linked(tmp, { allowedModules: ['nice'] })
+  configure(tmp, { allowedModules: ['nice'] })
   t.assert.throws(() => addCommand({ cwd: tmp, entries: ['src/nice.js'] }), { message: 'stasis.config.json: allowedModules does not allow evil@2.0.0 at node_modules/nice (installed as nice) (linked from src/nice.js)' })
   // So does a State, as it records the link.
-  linked(tmp, { disallowedModules: ['evil'] })
+  configure(tmp, { disallowedModules: ['evil'] })
   const state = new State(tmp, { lock: 'add', env: {}, claim: false })
-  t.assert.throws(() => state.addFile(pathToFileURL(join(tmp, 'src/nice.js')).href, { inferFormat: false }), { message: /disallowedModules refuses evil@2\.0\.0 at node_modules\/nice \(installed as nice\) \(linked from src\/nice\.js\)/u })
+  t.assert.throws(() => state.addFile(urlOf(tmp, 'src/nice.js'), { inferFormat: false }), { message: /disallowedModules refuses evil@2\.0\.0 at node_modules\/nice \(installed as nice\) \(linked from src\/nice\.js\)/u })
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')))
 }))
 
@@ -417,10 +410,10 @@ test('a file extra names, or a run reads, is held to the rules as the file it li
   const extra = await runCli(['run', '--lock=add', 'a.js'], tmp)
   t.assert.notEqual(extra.status, 0)
   t.assert.ok(extra.stderr.includes(message), extra.stderr)
-  linked(tmp, { disallowedPaths: ['secrets'] })
+  configure(tmp, { disallowedPaths: ['secrets'] })
   const read = await runCli(['run', '--bundle=add', '--fs=sync', 'r.js'], tmp)
   t.assert.ok(!existsSync(join(tmp, 'stasis.code.br')), read.stderr)
   // A State records the link's path, refused as it is recorded.
   const state = new State(tmp, { lock: 'add', env: {}, claim: false })
-  t.assert.throws(() => state.addFile(pathToFileURL(join(tmp, 'src/link.js')).href, { inferFormat: false }), { message })
+  t.assert.throws(() => state.addFile(urlOf(tmp, 'src/link.js'), { inferFormat: false }), { message })
 }))

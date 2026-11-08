@@ -13,7 +13,7 @@ import { compressBundleText, parseBundleBytes } from './brotli.js'
 import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, fileMapToObject, hasNodeModulesSegment, importTargetsEqual, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, objectToMaps, observeExecutable, pathExt, reconcileFormat, relativeEscapes, sortPaths, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
-import { linkedPackage } from './policy.js'
+import { linkOf, linkedPackage } from './policy.js'
 import { diskHost } from './host.js'
 import corePackage from './package.cjs'
 
@@ -219,7 +219,7 @@ export class State {
       this.#lockImports = inherited.lockImports
       this.#lockFormats = inherited.lockFormats
       this.#lockfileLoaded = inherited.lockfileLoaded
-      this.#policy = inherited.policy ?? null
+      this.#policy = inherited.policy
       assert.ok(this.config.bundleFile, 'sidecar State requires bundleFile')
       // Only writing States claim, so two write-intent States can't silently target the same file.
       if (this.config.writeBundle) {
@@ -703,26 +703,23 @@ export class State {
     }
   }
 
-  // Throws where the Policy refuses anything the State records in its attested zone (all of it in
-  // full scope, node_modules alone else).
-  #assertPolicy() {
-    this.#policy?.assertArtifact({ modules: this.modules, formats: this.formats, config: this.config.values }, { root: this.root, host: this.#host })
+  // Throws where the Policy refuses a path the State records in its attested zone (all of it in full
+  // scope, node_modules alone else) that neither a live check nor a loaded artifact's has seen: every file
+  // with a hash was one or the other (#locateModule, #assertLoaded), so what is left is a format recorded
+  // for a path never read (a resolve-only target's, a stat record's).
+  #assertUnchecked() {
+    if (this.#policy === null) return
+    const formats = new Map([...this.formats].filter(([file]) => !this.hashes.has(file)))
+    this.#policy.assertArtifact({ modules: new Map(), formats, config: this.config.values }, { root: this.root, host: this.#host })
   }
 
-  // The file `absolute` (`file` from the root) is a link to, where it is a link to another file within the
-  // root: `{ real, pkg }`, its path from the root's real path, and the dependency it is of (linkedPackage()).
-  // What the State records under `file` is that file's. Else undefined.
-  #linkTarget(absolute, file) {
-    let real
-    try {
-      real = this.#host.realpath(absolute)
-    } catch {
-      return undefined
-    }
-    if (real === absolute) return undefined
+  // The file `file` (from the root) is a link to, where it is a link to another file within the root (linkOf()):
+  // `{ real, pkg }`, its path from the root's real path, and the dependency it is of (linkedPackage()). What the
+  // State records under `file` is that file's. Else undefined.
+  #linkTarget(file) {
     this.#realRoot ??= this.#host.realpath(this.root)
-    const rel = toPosix(relative(this.#realRoot, real)) || '.'
-    return rel === file || relativeEscapes(rel) ? undefined : { real: rel, pkg: linkedPackage(this.#host, this.#realRoot, rel, file) }
+    const real = linkOf(this.#host, this.root, this.#realRoot, file)
+    return real === undefined ? undefined : { real, pkg: linkedPackage(this.#host, this.#realRoot, real, file) }
   }
 
   // Throws where the Policy refuses anything a lockfile or bundle construction loaded records, which
@@ -730,7 +727,8 @@ export class State {
   #assertLoaded() {
     const loaded = this.#loaded
     this.#loaded = []
-    for (const { artifact, path } of this.#policy === null ? [] : loaded) {
+    if (this.#policy === null) return
+    for (const { artifact, path } of loaded) {
       this.#policy.assertArtifact(artifact, { hint: ` -- recorded in ${relative(this.root, resolve(path)) || path}; rebuild it (lock=replace / bundle=replace)`, root: this.root, host: this.#host })
     }
   }
@@ -900,7 +898,8 @@ export class State {
     if (nmRoot) assert.equal(dir, nmRoot)
     // Refused before it is recorded, as the run reaches it: a dependency by its package.json's name and its
     // directory's, a link (an fs read of one, a file `extra` names) as the file it links to too.
-    if (this.#policy !== null && (nmRoot || this.config.full)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined, synthetic ? undefined : this.#linkTarget(absolute, file))
+    // A file with a hash was checked when it was recorded, or loaded (#assertLoaded): each is checked once.
+    if (this.#policy !== null && (nmRoot || this.config.full) && !this.hashes.has(file)) this.#policy.assertPath(file, nmRoot ? { dir, name, version } : undefined, synthetic ? undefined : this.#linkTarget(file))
     if (!this.modules.has(dir)) {
       // Tag node_modules buckets `npm`; workspace/top-level buckets carry no ecosystem.
       this.modules.set(dir, moduleInfo({ name, version, ecosystem: nmRoot ? 'npm' : undefined, repo, files: Object.create(null) }))
@@ -1211,7 +1210,7 @@ export class State {
     assert.ok(kind === 'file' || kind === 'directory', `addFsStat: unsupported kind '${kind}'`)
     const file = this.#canonicalFile(url)
     if (this.hashes.has(file) || this.#bundled(file)) return
-    if (this.#policy !== null && (this.config.full || hasNodeModulesSegment(file))) this.#policy.assertPath(file, undefined, this.#linkTarget(resolve(this.root, file), file))
+    if (this.#policy !== null && (this.config.full || hasNodeModulesSegment(file)) && !this.formats.has(file)) this.#policy.assertPath(file, undefined, this.#linkTarget(file))
     upsertFormat(this.formats, file, `stat:${kind}`)
     // Only forward when a stat record actually landed -- upsertFormat may have yielded to a real
     // format, and forwarding THAT would ship an entry mergeShard's stat replay ignores.
@@ -1830,7 +1829,7 @@ export class State {
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
     // Whatever recorded it, nothing the Policy refuses is written (nor verified as attested).
-    this.#assertPolicy()
+    this.#assertUnchecked()
 
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
