@@ -2802,17 +2802,17 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   const frozen = mode === 'frozen'
   const text = frozen || mode === 'add' || mode === 'none' ? readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host) : null
+  // Built where it is held; a build of none (a Solidity one) is held to nothing.
+  const fresh = frozen || text !== null ? built() : undefined
+  if (fresh === undefined) return built
   if (frozen && text === null) throw new Error(`${label} isn't there, and lock = frozen holds the build to it`)
-  if (mode === 'none' && text !== null) throw new Error(`${label} is there, which lock = none refuses`)
-  if (text === null) return built
+  if (mode === 'none') throw new Error(`${label} is there, which lock = none refuses`)
   let lock
   try {
     lock = Lockfile.parse(text)
   } catch (cause) {
     throw new Error(`${label}: not a valid stasis lockfile`, { cause })
   }
-  const fresh = built()
-  if (fresh === undefined) return built
   lock.merge(fresh, label)
   const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
   for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
