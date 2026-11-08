@@ -192,7 +192,7 @@ and `stasis bundle --deptree` check as they lay it out (see
 [Several lockfiles](github-bundle.md#several-lockfiles-lockfiles)):
 
 ```json
-{ "lockfiles": ["pnpm-lock.yaml", "soldeer.lock", "tools/package-lock.json"] }
+{ "lockfiles": ["pnpm-lock.yaml", "tools/package-lock.json", "contracts/soldeer.lock"] }
 ```
 
 `stasis run` takes nothing from it, of any name, but refuses one that is no
