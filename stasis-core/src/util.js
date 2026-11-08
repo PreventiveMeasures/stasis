@@ -1,5 +1,5 @@
 import { isUtf8 } from 'node:buffer'
-import { basename, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
+import { basename, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
@@ -18,8 +18,9 @@ const NODE_EXT_FORMATS = new Map([
 const JS_UNRESOLVED_EXTS = new Set(['js', 'ts', 'jsx', 'tsx'])
 export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESOLVED_EXTS])
 // The format the name of the file `path` alone gives it, as Node loads it: .json, .mjs, .cjs, .mts and
-// .cts are each one format whatever the file holds or its package declares. -> undefined for any other
-export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(pathExt(path))
+// .cts are each one format whatever the file holds or its package declares, spelled as Node spells them
+// (by extname: `Foo.MJS` and a `.mjs` dotfile are none, which require loads as commonjs). -> undefined else
+export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(extname(path).slice(1))
 
 export function pathExt(filePath) {
   const m = /\.([^./\\]+)$/.exec(filePath)
@@ -316,8 +317,9 @@ export function classifyFormat(name, { content } = {}) {
   const byName = nameFormat(name)
   if (byName !== undefined) return byName
   const ext = pathExt(name)
-  if (JS_UNRESOLVED_EXTS.has(ext)) return null
-  const byExt = NODE_EXT_FORMATS.get(ext) ?? CODE_EXT_FORMATS.get(ext)
+  // JS-family code: a Node extension gives its format only as Node spells it (nodeExtFormat), else the loader decides.
+  if (CODE_EXTENSIONS.has(ext)) return nodeExtFormat(name) ?? null
+  const byExt = CODE_EXT_FORMATS.get(ext)
   if (byExt !== undefined) return byExt
   if (ext === '' && isShellShebang(content)) return 'shell'
   return undefined
