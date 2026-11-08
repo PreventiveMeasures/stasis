@@ -1,6 +1,7 @@
 import { test } from 'node:test'
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync } from 'node:zlib'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
@@ -72,6 +73,16 @@ test("npm: the hidden lockfile's `resolved` names a git dependency's repository 
     t.assert.equal(repos['node_modules/short'], undefined, `${label}: an abbreviated commit, none`)
     t.assert.equal(repos['node_modules/stale'], undefined, `${label}: a record of another version, none`)
   }
+}))
+
+test('a Solidity bundle records its npm git dependencies at their commits, as a JS bundle does', withTmp(async (t, dir) => {
+  cpSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'solidity-bundle', 'with-node-modules'), dir, { recursive: true })
+  writeJson(join(dir, 'node_modules', '.package-lock.json'), { name: 'my-app', version: '0.1.0', lockfileVersion: 3, requires: true, packages: {
+    'node_modules/foo': { version: '1.2.3', resolved: `git+ssh://git@github.com/o/foo.git#${SHA.dep}` },
+  } })
+  await bundleCommand({ cwd: dir, entries: ['src/A.sol'], mappingFile: 'remappings.txt', output: 'out.br' })
+  const { modules } = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'out.br'))).toString('utf8'))
+  t.assert.deepStrictEqual(modules['node_modules/foo'].repo, { github: 'o/foo', directory: '', commit: SHA.dep })
 }))
 
 // As yarn 1 writes them: yarn.lock's header, and .yarn-integrity's resolution of each pattern.

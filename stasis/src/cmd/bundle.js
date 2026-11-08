@@ -2296,22 +2296,24 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
-// stasis.config.json's `extra` names: a JS bundle's git dependencies at the commits their package
-// managers' records name (pinInstalledCommits). `outputsAt(root)` are the absolute paths the build
+// stasis.config.json's `extra` names: its git dependencies at the commits their package managers'
+// records name (pinInstalledCommits), whatever its kind (a Solidity import out of node_modules is one). `outputsAt(root)` are the absolute paths the build
 // writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
-  if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
-  if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
-  if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
-  if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
-  let built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
-  if (!built.stateBuilt) built = withExtraOf(built, resources)
-  pinInstalledCommits(built.bundle, built.root)
-  return built
+  const pinned = (built) => {
+    pinInstalledCommits(built.bundle, built.root ?? resolve(cwd))
+    return built
+  }
+  if (kind === 'sol') return pinned(withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }))
+  if (kind === 'php') return pinned(withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) }))
+  if (kind === 'bash') return pinned(withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) }))
+  if (kind === 'rust') return pinned(withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }))
+  const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
+  return pinned(built.stateBuilt ? built : withExtraOf(built, resources))
 }
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and

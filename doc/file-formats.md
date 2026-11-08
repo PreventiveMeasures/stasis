@@ -523,7 +523,8 @@ than ship it, and reading one is refused as well.
     of the registry's version document of it, fetched beside its tarball and
     held to the lockfile's integrity, over its `package.json`'s, and only
     beside a `github` its `package.json` names.
-  - A JS build from disk (`stasis bundle`, `buildBundle`) records a git
+  - A build from disk (`stasis bundle`, `buildBundle`), of any kind (a
+    Solidity import out of `node_modules` is an npm package too), records a git
     dependency's, read off what the package manager that laid out its
     `node_modules` left there: npm's (7 and later) hidden lockfile,
     `node_modules/.package-lock.json`, by the package's location, where it
