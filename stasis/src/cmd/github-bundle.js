@@ -34,12 +34,12 @@ export function githubBundleFile({ github, directory, commit }) {
 // where given; then it says how many packages it unpacked, and what it bundled. With `lockfileOnly`,
 // only the `lockfile` is written, as `stasis bundle --lockfile-only` writes it (bundleCommand's): it
 // takes no `output` or `brotliQuality`, and is refused before anything is fetched.
-// GitHub is asked with githubToken's token, `env`'s GITHUB_TOKEN where it is set, nothing else of
-// `env` being read; npm, with withNpmToken's (tokens.js).
+// GitHub is asked with githubToken's token, `env`'s GITHUB_TOKEN where it is set, and the lock mode is
+// its EXODUS_STASIS_LOCK, nothing else of `env` being read; npm, with withNpmToken's (tokens.js).
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
   const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, brotliQuality }) : null
   if (lockfileOnlyRefused !== null) throw new Error(`githubBundleCommand: ${lockfileOnlyRefused}`)
-  const built = await withNpmToken(home, () => buildGitHubBundle({ ...options, lockfile, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
+  const built = await withNpmToken(home, () => buildGitHubBundle({ ...options, lockfile, lock: env.EXODUS_STASIS_LOCK || undefined, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
   const { directory } = built
   // Built for --lockfile alone, before anything is written, as `stasis bundle` builds it.
   const lockData = lockfile === undefined ? undefined : built.lockfile.serialize()

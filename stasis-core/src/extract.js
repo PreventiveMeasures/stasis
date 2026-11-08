@@ -5,7 +5,7 @@ import { parseBundleBytes } from './brotli.js'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, moduleFileKeys, relativeEscapes } from './util.js'
+import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, relativeEscapes } from './util.js'
 
 const FILE_LOCK = 'stasis.lock.json'
 const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
@@ -55,24 +55,15 @@ function assertLockfileMatches(lockAbs, derived) {
 }
 
 // lock=add: the derived lockfile is merged into the one in the output dir, which must agree with it on all
-// both record -- Lockfile.merge refuses any other conflict -- so what is new is recorded and nothing recorded changes,
-// save a payload-free stat:* record, which content of the same kind upgrades as a run's lock=add does.
+// both record, execute bits too (Lockfile.mergeAgreeing), so what is new is recorded and nothing recorded
+// changes, save a payload-free stat:* record, which content of the same kind upgrades as a run's lock=add does.
 function addToLockfile(lockAbs, derived) {
   const lock = readLockfile(lockAbs)
-  let merged
   try {
-    merged = lock.merge(derived)
+    return lock.mergeAgreeing(derived)
   } catch (cause) {
     throw new Error(`extract: --lock=add: the bundle conflicts with ${lockAbs}: ${cause.message}`, { cause })
   }
-  // merge lets the incoming side's execute bits win, which here would change a recorded one.
-  const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
-  for (const file of moduleFileKeys(derived.modules, { scope: derived.config.scope })) {
-    if (recorded.has(file) && lock.executable.has(file) !== derived.executable.has(file)) {
-      throw new Error(`extract: --lock=add: the bundle conflicts with ${lockAbs}: ${file}'s execute bit differs`)
-    }
-  }
-  return merged
 }
 
 // A file's device and inode (as bigints: a number can round a large Windows file id), undefined when there's none.

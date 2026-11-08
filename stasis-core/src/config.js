@@ -66,12 +66,14 @@ export class Config {
   #env
   #host
   #explicit
+  #ownLock
   #opts
   #shardSignalFlush
 
   // Env and options must agree when both are set; #explicit is kept so a later loadConfig can't override them.
+  // `ownLock`: a build's, which takes no lock mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
   constructor(options = {}) {
-    const { env = process.env, host = diskHost, ...rest } = options
+    const { env = process.env, host = diskHost, ownLock = false, ...rest } = options
     assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')
     // An empty-string path/mode option is unset, as its resolution below treats it; #explicit must
     // agree, or loadConfig would refuse a stasis.config.json for not matching a phantom override.
@@ -80,7 +82,8 @@ export class Config {
     this.#host = host
     this.#explicit = explicit
     // An env var set to '' counts as unset.
-    this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, env[OPTIONS[key].env] || undefined]))
+    this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, (ownLock && (key === 'lock' || key === 'lockFile')) ? undefined : env[OPTIONS[key].env] || undefined]))
+    this.#ownLock = ownLock
 
     try {
       for (const key of OPTION_KEYS) {
@@ -205,7 +208,7 @@ export class Config {
       else if (key === 'extra') this.#opts.extra = parseExtraOption('stasis.config.json', config.extra)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
-      else this.#opts[key] = config[key]
+      else if (key !== 'lock' || !this.#ownLock) this.#opts[key] = config[key]
     }
     this.#opts.policy = parsePolicy('stasis.config.json', config)
     this.#checkInvariants()
