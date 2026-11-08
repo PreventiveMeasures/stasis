@@ -86,7 +86,9 @@ function segmentSource(segment) {
       let body = segment.slice(i + 1, close)
       const negated = body[0] === '!' || body[0] === '^'
       if (negated) body = body.slice(1)
-      out += `[${negated ? '^/' : ''}${body.replaceAll(/[[\\\]^]/gu, '\\$&')}]`
+      // Never a `/`, whatever range the class spans (`[.-0]` holds one).
+      const members = body.replaceAll(/[[\\\]^]/gu, '\\$&')
+      out += negated ? `[^/${members}]` : `(?!/)[${members}]`
       i = close
     } else {
       out += escapeRegExp(c)

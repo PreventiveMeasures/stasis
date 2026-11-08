@@ -96,6 +96,10 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   // A name may hold a line break, which `**` and a directory's paths take in too.
   for (const pattern of ['secrets', 'secrets/**', '**', '**/*.js', 'secrets/*']) t.assert.ok(matches(pattern, 'secrets/key\n.js'), pattern)
   t.assert.ok(matches('a/**/b', 'a/x\ny/b'))
+  // A class is one character of a name, never a `/`, whatever range it spans.
+  t.assert.ok(matches('secret[.-0]key.js', 'secret.key.js'))
+  t.assert.ok(!matches('secret[.-0]key.js', 'secret/key.js'))
+  t.assert.ok(!matches('a[!x]b', 'a/b'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))
