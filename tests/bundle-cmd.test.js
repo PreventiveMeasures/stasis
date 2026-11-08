@@ -5262,34 +5262,30 @@ test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json, and
   const options = { cwd: tmp, entries: ['index.js'], metro: true, platforms: ['ios'], resources: ['riv', 'lottie', 'png'] }
   const build = async (config) => {
     writeFileSync(join(tmp, 'rn.config.json'), typeof config === 'string' ? config : JSON.stringify({ sourceExts: ['mjs'], assetResolutions: [0.75], port: 8082, ...config }))
-    const { result, lines } = await captureStderr(() => buildBundle(options))
-    last = result
-    return { edges: Object.fromEntries(result.imports.get('*').get('index.js')), warned: lines.filter((line) => line.includes('rn.config.json')) }
+    last = await buildBundle(options)
+    return Object.fromEntries(last.imports.get('*').get('index.js'))
   }
   let last
   // The configs carried with the bundle, as the build's: rn.config.json, and the Metro config it names.
   const configs = () => ['rn.config.json', 'metro.config.js', 'config/metro.js'].filter((rel) => last.reason.bundle?.includes(rel))
   const common = { './util': 'util.mjs', './img/logo.png': 'img/logo.png' }
 
-  t.assert.deepStrictEqual(await build({}), { edges: { ...common, './anim/wave.lottie': 'anim/wave.lottie' }, warned: [] })
+  t.assert.deepStrictEqual(await build({}), { ...common, './anim/wave.lottie': 'anim/wave.lottie' })
   t.assert.deepStrictEqual(configs(), ['rn.config.json', 'metro.config.js'])
   // Its metroConfig naming another file: that one's, `riv`, an asset at rn.config.json's scales too
   // (spin.riv and spin@0.75x.riv, Metro's module of the lowest path).
-  t.assert.deepStrictEqual(await build({ metroConfig: 'config/metro.js' }), { edges: { ...common, './anim/spin.riv': 'anim/spin.riv' }, warned: [] })
+  t.assert.deepStrictEqual(await build({ metroConfig: 'config/metro.js' }), { ...common, './anim/spin.riv': 'anim/spin.riv' })
   t.assert.deepStrictEqual(configs(), ['rn.config.json', 'metro.config.js', 'config/metro.js'])
   // metroConfig false: no Metro config is loaded, so Metro's defaults alone.
-  t.assert.deepStrictEqual(await build({ metroConfig: false }), { edges: common, warned: [] })
+  t.assert.deepStrictEqual(await build({ metroConfig: false }), common)
   // Its own assetExts: Metro's defaults and them, no Metro config read, whatever metroConfig. At its
   // scales, spin.riv resolves where only its 0.75x file is.
   rmSync(join(tmp, 'anim/spin.riv'))
-  t.assert.deepStrictEqual(await build({ assetExts: ['riv'] }), { edges: { ...common, './anim/spin.riv': 'anim/spin@0.75x.riv' }, warned: [] })
+  t.assert.deepStrictEqual(await build({ assetExts: ['riv'] }), { ...common, './anim/spin.riv': 'anim/spin@0.75x.riv' })
   writeFileSync(join(tmp, 'anim/spin.riv'), 'RIVE')
-  t.assert.deepStrictEqual(await build({ assetExts: [], metroConfig: 'config/metro.js' }), { edges: common, warned: [] })
+  t.assert.deepStrictEqual(await build({ assetExts: [], metroConfig: 'config/metro.js' }), common)
 
-  // One rn-bundle doesn't take for them is warned of, and read as none: metro.config.js's assetExts, and
-  // Metro's sourceExts, so ./util resolves nowhere.
-  writeFileSync(join(tmp, 'util.js'), 'module.exports = 1\n')
-  const without = { './util': 'util.js', './img/logo.png': 'img/logo.png', './anim/wave.lottie': 'anim/wave.lottie' }
+  // One rn-bundle refuses fails the bundle, as rn-bundle's build fails.
   for (const [config, why] of [
     [{ sourceExts: ['svg'] }, 'rn.config.json: svg is in both assetExts and sourceExts, which Metro takes a file of as an asset'],
     ['{', 'rn.config.json is not valid JSON'],
@@ -5298,7 +5294,7 @@ test('buildBundle --metro takes Metro\'s resolver lists from rn.config.json, and
     [{ metroConfig: 1 }, 'rn.config.json: metroConfig is true, false or the path of a Metro config, not 1'],
   ]) {
     // eslint-disable-next-line no-await-in-loop -- each build rewrites the one rn.config.json
-    t.assert.deepStrictEqual(await build(config), { edges: without, warned: [`[stasis] ${why}; reading metro.config.js as without it`] })
+    await t.assert.rejects(build(config), { message: why })
   }
 }))
 
@@ -5333,13 +5329,21 @@ test('buildBundle --metro holds the app\'s Metro graph to rn.config.json\'s rest
     'node_modules/metro-runtime/src/modules/empty-module.js matches none of rn.config.json\'s allowedPaths',
     'src/a.js matches none of rn.config.json\'s allowedPaths',
   ))
-  // A package by its package.json's name; the app's own files are the app's.
+  // A package by its package.json's name and the one it is installed under; the app's files are the app's.
   t.assert.equal(await refusal({ disallowedModules: ['evil'] }), forbids('node_modules/nice/index.js is of evil, which matches "evil" of rn.config.json\'s disallowedModules'))
-  t.assert.equal(await refusal({ allowedModules: ['app', 'dep', 'e*', 'metro-runtime'] }), null)
+  t.assert.equal(await refusal({ allowedModules: ['app', 'dep', 'e*', 'metro-runtime'] }), forbids('node_modules/nice/index.js is installed as nice (of evil), which matches none of rn.config.json\'s allowedModules'))
+  t.assert.equal(await refusal({ allowedModules: ['app', 'dep', 'evil', 'nice', 'metro-runtime'] }), null)
+  // A release build's: the top level's and production's, added together, never development's.
+  t.assert.equal(await refusal({ disallowedPaths: ['src'], production: { disallowedPaths: ['img/logo@2x.png'] }, development: { disallowedModules: ['dep'] } }), forbids(
+    'img/logo@2x.png matches "img/logo@2x.png" of rn.config.json\'s production.disallowedPaths',
+    'src/a.js matches "src" of rn.config.json\'s disallowedPaths',
+  ))
 
   // Without --metro, none applies; one of another kind fails the bundle, as rn-bundle's build fails.
   t.assert.equal(await refusal({ disallowedPaths: ['src'] }, { cwd: tmp, entries: ['index.js'], mainFields: ['main'], resources: ['png', 'po'] }), null)
   t.assert.equal(await refusal({ disallowedPaths: ['/etc'] }), 'rn.config.json: disallowedPaths is a list of globs of paths from the project root, each a directory\'s files too ("src", "src/**/*.js", "node_modules"), not ["/etc"]')
+  t.assert.equal(await refusal({ development: { allowedModules: ['./x'] } }), 'rn.config.json: development.allowedModules is a list of globs of packages\' names ("react-native", "@react-native/*"), not ["./x"]')
+  t.assert.equal(await refusal({ production: 5 }), 'rn.config.json: production is an object of options, not 5')
 }))
 
 test('buildBundle --metro carries the asset registry the module Metro builds of an asset requires, though the source imports none', withTmp(async (t, tmp) => {

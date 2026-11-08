@@ -1369,51 +1369,56 @@ const isPackageGlob = (value) => typeof value === 'string' && /^(?:@[^/]+\/[^/]+
 const PACKAGE_GLOBS = [listOf(isPackageGlob), 'a list of globs of packages\' names ("react-native", "@react-native/*")']
 const RN_CONFIG_RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH_GLOBS, allowedModules: PACKAGE_GLOBS, disallowedModules: PACKAGE_GLOBS }
 
-// The project's rn.config.json, or null where there's none, or (warned of) where it isn't a JSON object.
+// The project's rn.config.json, or null where there's none; throws where it isn't a JSON object, as
+// rn-bundle refuses to build.
 function readRnConfig(baseDir, host) {
   const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
   if (text === null) return null
   let config
   try {
     config = JSON.parse(text)
-  } catch {
-    config = undefined
+  } catch (cause) {
+    throw new Error(`${RN_CONFIG_FILE} is not valid JSON`, { cause })
   }
-  if (isPlainObject(config)) return config
-  console.warn(`[stasis] ${RN_CONFIG_FILE} is not ${config === undefined ? 'valid JSON' : 'an object of options'}; reading ${METRO_CONFIG_FILE} as without it`)
-  return null
+  if (!isPlainObject(config)) throw new Error(`${RN_CONFIG_FILE} is not an object of options`)
+  return config
 }
 
-// Each of `options` that rn.config.json's `config` has; throws on one of another kind.
-function rnOptions(config, options) {
+// Each of `options` that `config` (rn.config.json's, or its section `prefix`'s) has; throws on one of
+// another kind.
+function rnOptions(config, options, prefix = '') {
   const taken = {}
   for (const [key, [valid, what]] of Object.entries(options)) {
     if (config[key] === undefined) continue
-    if (!valid(config[key])) throw new Error(`${RN_CONFIG_FILE}: ${key} is ${what}, not ${JSON.stringify(config[key])}`)
+    if (!valid(config[key])) throw new Error(`${RN_CONFIG_FILE}: ${prefix}${key} is ${what}, not ${JSON.stringify(config[key])}`)
     taken[key] = config[key]
   }
   return taken
 }
 
-// --metro: Metro's resolver lists as rn-bundle takes them from rn.config.json (`config`) and the Metro
-// config it loads, unless rn.config.json has assetExts or metroConfig false. One it can't take is warned
-// of and read as none. `configs` are the files the lists came of, to carry.
-function metroLists(baseDir, host, config) {
-  let rn = {}
-  try {
-    if (config !== null) rn = rnOptions(config, RN_CONFIG_LISTS)
-  } catch (error) {
-    console.warn(`[stasis] ${error.message}; reading ${METRO_CONFIG_FILE} as without it`)
+// rn.config.json's restrictions, the top level's and each build section's, which restrictionsOf adds to
+// them for its build.
+function rnRestrictions(config) {
+  const restrictions = rnOptions(config, RN_CONFIG_RESTRICTIONS)
+  for (const mode of ['development', 'production']) {
+    if (config[mode] === undefined) continue
+    if (!isPlainObject(config[mode])) throw new Error(`${RN_CONFIG_FILE}: ${mode} is an object of options, not ${JSON.stringify(config[mode])}`)
+    restrictions[mode] = rnOptions(config[mode], RN_CONFIG_RESTRICTIONS, `${mode}.`)
   }
+  return restrictions
+}
+
+// --metro: Metro's resolver lists as rn-bundle takes them from rn.config.json (`config`) and the Metro
+// config it loads, unless rn.config.json has assetExts or metroConfig false. `configs` are the files the
+// lists came of, to carry.
+function metroLists(baseDir, host, config) {
+  const rn = config === null ? {} : rnOptions(config, RN_CONFIG_LISTS)
   const metroFile = rn.assetExts !== undefined || rn.metroConfig === false ? null : typeof rn.metroConfig === 'string' ? rn.metroConfig : METRO_CONFIG_FILE
   const assetExts = metroFile === null ? new Set(addedTo(METRO_ASSET_EXTS, rn.assetExts ?? [])) : metroAssetExts(baseDir, host, metroFile)
   const sourceExts = addedTo(SOURCE_EXTS, rn.sourceExts ?? [])
   // Metro takes a file of an extension in both for an asset, and rn.config.json removes none.
   const both = rn.sourceExts?.find((ext) => assetExts.has(ext)) ?? rn.assetExts?.find((ext) => sourceExts.includes(ext))
-  if (both !== undefined) {
-    console.warn(`[stasis] ${RN_CONFIG_FILE}: ${both} is in both assetExts and sourceExts, which Metro takes a file of as an asset; reading ${METRO_CONFIG_FILE} as without it`)
-    return metroLists(baseDir, host, null)
-  }
+  if (both !== undefined) throw new Error(`${RN_CONFIG_FILE}: ${both} is in both assetExts and sourceExts, which Metro takes a file of as an asset`)
   return {
     assetExts,
     sourceExts: sourceExts.filter((ext) => isResolvableExt(`.${ext}`)),
@@ -1595,7 +1600,8 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
   // graph (metroTaken), by their paths from the real project root, the files being real paths.
   const rnConfig = metro ? readRnConfig(baseDir, host) : null
   const { assetExts, sourceExts, assetResolutions, configs: listConfigs } = metro ? metroLists(baseDir, host, rnConfig) : { assetExts: METRO_ASSET_EXTS, sourceExts: SOURCE_EXTS, assetResolutions: METRO_ASSET_RESOLUTIONS, configs: [] }
-  const restrict = rnConfig === null ? null : restrictionsOf(rnOptions(rnConfig, RN_CONFIG_RESTRICTIONS), host.realpath(baseDir))
+  // A --metro bundle builds as a release build does, so production's restrictions apply, not development's.
+  const restrict = rnConfig === null ? null : restrictionsOf(rnRestrictions(rnConfig), host.realpath(baseDir), false)
   const metroTaken = new Set()
   // The resources the app imports that are no asset of Metro's are no module of Metro's, which can't
   // resolve one: one reaches the build only as a transform's input, read and inlined by a Babel plugin
