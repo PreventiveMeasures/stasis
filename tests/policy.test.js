@@ -148,7 +148,14 @@ test('parsePolicy refuses glob syntax Node\'s glob reads but this matcher doesn\
   refused('allowedModules', 'left-{1..3}', 'a range')
   for (const pattern of ['{a}', 'x${a,b}', '{{a,b}}', 'a{b', 'a}b', '{a,b}}', '[{]']) refused('allowedPaths', pattern, 'a `\\{` or `\\}` of no list')
   // A brace with a `,` is a list, its `..` none; a lone `(` or `[:` in no class is itself.
-  for (const pattern of ['{1..3,4}', 'a(1).js', '(group)/page.js', 'a:[:b]', '{a,{b,c}}']) parsePolicy('cfg', { allowedPaths: [pattern] })
+  // So is one braces form: Node's glob expands them first (`{@,x}(a)` is `@(a)` or `x(a)`).
+  for (const pattern of ['{@,x}(a)', '@{,x}(a)', 'x/{a,b@}{(c),d}']) refused('disallowedPaths', pattern, 'an extglob')
+  for (const pattern of ['{1..3,4}', 'a(1).js', '(group)/page.js', 'a:[:b]', '{a,{b,c}}', 'a@/(b)']) parsePolicy('cfg', { allowedPaths: [pattern] })
+  // A class is no extglob, whatever it holds.
+  t.assert.ok(refuses('disallowedPaths', ['[!()]secret'], 'xsecret'))
+  t.assert.ok(!refuses('disallowedPaths', ['[!()]secret'], '(secret'))
+  t.assert.ok(refuses('disallowedPaths', ['file[?()].js'], 'file?.js'))
+  t.assert.ok(refuses('disallowedPaths', ['[]@(a)]'], '@'))
   // As Node's glob, an empty alternative is dropped, and braces expand before a class is read.
   t.assert.ok(!refuses('allowedPaths', ['{src,}'], 'src/a.js'))
   t.assert.ok(refuses('allowedPaths', ['{src,}'], 'lib/a.js'))

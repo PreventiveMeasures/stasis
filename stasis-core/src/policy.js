@@ -44,25 +44,48 @@ function bracesListed(pattern) {
   return listed.length === 0
 }
 
-// Glob syntax Node's glob (fs.globSync, path.matchesGlob) reads otherwise than this matcher would: refused,
-// with what to write instead.
+const EXTGLOB = ['an extglob such as `@(a|b)`', 'use `{a,b}`']
+const POSIX_CLASS = ['a POSIX class such as `[[:digit:]]`', 'use `[0-9]`']
+
+// What of `pattern` Node's glob (fs.globSync, path.matchesGlob) reads otherwise than this matcher would, as
+// [what, what to write instead], or null: its braces, which Node expands before reading the rest, and `\`.
 function unsupportedSyntax(pattern) {
   if (pattern.includes('\\')) return ['a `\\` (Node\'s glob takes it for a `/`)', 'match a special character with a class, as `[*]`']
-  if (/[!*+?@]\(/u.test(pattern)) return ['an extglob such as `@(a|b)`', 'use `{a,b}`']
-  for (let i = pattern.indexOf('['); i !== -1; i = pattern.indexOf('[', i + 1)) {
-    const close = classEnd(pattern, i)
-    if (close === -1) break
-    if (/\[[.:=]/u.test(pattern.slice(i + 1, close))) return ['a POSIX class such as `[[:digit:]]`', 'use `[0-9]`']
-    i = close
-  }
   if (/\{[^,{}]*\.\.[^,{}]*\}/u.test(pattern)) return ['a range such as `{1..3}`', 'list it, as `{1,2,3}`']
   if (!bracesListed(pattern)) return ['a `{` or `}` of no list such as `{a,b}`', 'match one with `?`']
   return null
 }
 
-function assertSupported(label, pattern) {
+// The same of a brace-free alternative, a name at a time as Node reads one: an extglob outside a class
+// (`[!()]` is a class), or a POSIX class.
+function unsupportedInNames(alternative) {
+  for (const name of alternative.split('/')) {
+    for (let i = 0; i < name.length; i++) {
+      const close = name[i] === '[' ? classEnd(name, i) : -1
+      if (close !== -1) {
+        if (/\[[.:=]/u.test(name.slice(i + 1, close))) return POSIX_CLASS
+        i = close
+      } else if ('!*+?@'.includes(name[i]) && name[i + 1] === '(') {
+        return EXTGLOB
+      }
+    }
+  }
+  return null
+}
+
+// `pattern`'s brace-free alternatives (expandBraces), refusing what Node's glob reads otherwise.
+function alternativesOf(label, pattern) {
+  const refuse = ([what, instead]) => {
+    throw new Error(`${label}: ${JSON.stringify(pattern)} holds ${what}, which is not supported: ${instead}`)
+  }
   const found = unsupportedSyntax(pattern)
-  if (found !== null) throw new Error(`${label}: ${JSON.stringify(pattern)} holds ${found[0]}, which is not supported: ${found[1]}`)
+  if (found !== null) refuse(found)
+  const alternatives = expandBraces(label, pattern)
+  for (const alternative of alternatives) {
+    const inNames = unsupportedInNames(alternative)
+    if (inNames !== null) refuse(inNames)
+  }
+  return alternatives
 }
 
 // The first outermost `{...}` -> [start, alternatives, end], or null. Braces are lists (bracesListed), and,
@@ -164,8 +187,7 @@ function compile(label, pattern, alternatives, suffix = '') {
 // directory above it (`src` takes in src/**); `.` matches everything, and the root's own `--fs` listing
 // (`.`) is matched by `.` and `**` alone.
 function pathPattern(label, pattern) {
-  assertSupported(label, pattern)
-  const alternatives = expandBraces(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
+  const alternatives = alternativesOf(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
   if (alternatives.some(posixPathEscapes)) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
   }
@@ -179,8 +201,7 @@ function pathPattern(label, pattern) {
 // name-shaped (one segment or a scope's two, none `.`, `..` or `node_modules`): a path such as
 // node_modules/left-pad would match no name, and so silently refuse nothing.
 function modulePattern(label, pattern) {
-  assertSupported(label, pattern)
-  const alternatives = expandBraces(label, pattern)
+  const alternatives = alternativesOf(label, pattern)
   const named = (alternative) => {
     const segments = alternative.split('/')
     return segments.length <= 2 && !/[\\\s]/u.test(alternative) && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
