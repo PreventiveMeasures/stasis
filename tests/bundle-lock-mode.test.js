@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliDecompressSync } from 'node:zlib'
 
@@ -100,6 +100,34 @@ test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.j
   await build(dir, { entries: ['more.js'], lock: 'ignore' })
   writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
   await t.assert.rejects(build(dir, { add: true }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
+}))
+
+test('stasis bundle in lock = frozen attests as a frozen run does: entries in full scope alone, an import of any condition set agreeing', withTmp(async (t, dir) => {
+  project(dir)
+  writeFileSync(join(dir, 'index.js'), "require('dep')\n")
+  mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true })
+  writeJson(join(dir, 'node_modules', 'dep', 'package.json'), { name: 'dep', version: '1.0.0', main: 'index.js' })
+  writeFileSync(join(dir, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n')
+  const lockPath = join(dir, 'stasis.lock.json')
+  const frozen = (options) => {
+    writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+    return build(dir, options)
+  }
+  // node_modules scope, whose lockfile records no entries.
+  writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
+  await build(dir, { scope: 'node_modules', lockfile: 'stasis.lock.json' })
+  await frozen({ scope: 'node_modules' })
+  // A run's lockfile, of concrete condition sets: the build's '*' held to them where they agree.
+  writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
+  await build(dir, { lockfile: 'stasis.lock.json', lock: 'replace' })
+  const lock = readJson(lockPath)
+  const edges = lock.imports['*']
+  lock.imports = { 'node, require': edges, 'import, node': edges }
+  writeJson(lockPath, lock)
+  await frozen()
+  lock.imports = { 'node, require': edges, 'import, node': { 'index.js': { dep: 'node_modules/dep/other.js' } } }
+  writeJson(lockPath, lock)
+  await t.assert.rejects(frozen(), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest import 'dep' from 'index\.js' consistently across condition sets$/u)
 }))
 
 test('stasis bundle --deptree holds its build to the stasis.lock.json there', withTmp(async (t, dir) => {

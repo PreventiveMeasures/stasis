@@ -19,7 +19,7 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, importTargetsEqual, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -2821,16 +2821,25 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   }
   // The lockfile written is the build's, which attests the bundle beside it; --add merges both.
   if (!frozen) return built
-  for (const entry of fresh.entries) {
+  // As a frozen run attests what it observes (State's assertEntry, #assertFrozenAttests and
+  // #assertAttestedResolution).
+  for (const entry of lock.entries.size > 0 ? fresh.entries : []) {
     if (!lock.entries.has(entry)) throw new Error(`${label} (lock = frozen) doesn't attest the entry ${entry}`)
   }
-  for (const file of fresh.formats?.keys() ?? []) {
-    if (!lock.formats?.has(file)) throw new Error(`${label} (lock = frozen) doesn't attest the format of ${file}`)
+  for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
+    if (fresh.formats?.get(file) != null && lock.formats?.get(file) === undefined) throw new Error(`${label} (lock = frozen) doesn't attest the format of ${file}`)
   }
   for (const [conditions, byParent] of fresh.imports ?? []) {
     for (const [parent, specs] of byParent) {
-      for (const spec of specs.keys()) {
-        if (!lock.imports?.get(conditions)?.get(parent)?.has(spec)) throw new Error(`${label} (lock = frozen) doesn't attest import '${spec}' from '${parent}'`)
+      for (const [spec, target] of specs) {
+        let attested = lock.imports?.get(conditions)?.get(parent)?.get(spec)
+        if (attested === undefined) {
+          const targets = new Set([...lock.imports?.values() ?? []].map((parents) => parents.get(parent)?.get(spec)).filter((one) => one !== undefined))
+          if (targets.size === 0 && fresh.config.scope !== 'full' && !hasNodeModulesSegment(parent)) continue
+          if (targets.size !== 1) throw new Error(`${label} (lock = frozen) doesn't attest import '${spec}' from '${parent}'${targets.size > 1 ? ' consistently across condition sets' : ''}`)
+          ;[attested] = targets
+        }
+        if (!importTargetsEqual(target, attested)) throw new Error(`${label} (lock = frozen): import '${spec}' from '${parent}' resolves otherwise`)
       }
     }
   }
