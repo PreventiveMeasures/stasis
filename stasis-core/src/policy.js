@@ -113,9 +113,10 @@ function patternSource(pattern) {
   return out
 }
 
+// `s`: a name may hold a line break, which `.*` (`**`, a directory's paths) must match too.
 function compile(label, pattern, alternatives, suffix = '') {
   try {
-    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'u')
+    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'su')
   } catch (cause) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} is not a valid pattern`, { cause })
   }

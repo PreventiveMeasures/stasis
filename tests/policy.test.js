@@ -93,6 +93,9 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   t.assert.ok(matches('a\\*b', 'a*b'))
   t.assert.ok(!matches('a\\*b', 'axb'))
   t.assert.ok(matches('node_modules/.pnpm/**/left', 'node_modules/.pnpm/left@1.0.0/node_modules/left/index.js'))
+  // A name may hold a line break, which `**` and a directory's paths take in too.
+  for (const pattern of ['secrets', 'secrets/**', '**', '**/*.js', 'secrets/*']) t.assert.ok(matches(pattern, 'secrets/key\n.js'), pattern)
+  t.assert.ok(matches('a/**/b', 'a/x\ny/b'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))
