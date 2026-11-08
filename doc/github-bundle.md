@@ -265,7 +265,10 @@ nothing else stands in for them, so an empty one is refused. Else:
 
 The entries `stasis.config.json`'s `entries` names, given or taken by default,
 are built with their options there, as [`stasis bundle`](bundle.md#entry-options-stasisconfigjson)
-builds them: those with different options apart, their bundles merged into one.
+builds them: those with different options apart, their bundles merged into one;
+and those of different languages apart too, so a JS entry and a `.sol` one are
+bundled together, each of the tree that installs it, where
+[`lockfiles`](#several-lockfiles-lockfiles) lays out both.
 With it:
 
 - An option given for them must be the one each of them is built with there,

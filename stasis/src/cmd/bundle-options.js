@@ -353,7 +353,7 @@ const optionText = (key, value) => (key === 'define'
 // (@exodus/stasis/vfs-bundle's): every entry it names where none are given (none, of an empty
 // `entries`: nothing else stands in for them), as paths from `cwd`.
 // -> { entries, builds }, each build `{ entries, ...options }` with the options there (buildOptions'),
-// the entries with the same ones together; null where it names none of those given, or has no
+// the entries of one language with the same ones together; null where it names none of those given, or has no
 // `entries`: they are built with `options` alone. It may not name only some. Each of `options`
 // (buildOptions' shape) given other than at its default has to be the one each entry's options
 // set, else it is refused, neither taken over them nor left aside; one left out is theirs. One that
@@ -387,14 +387,16 @@ export function configuredBuilds(name, { cwd, host = diskHost, entries, options 
     const what = `${name}: ${CONFIG_FILE}: entries ${JSON.stringify(written)}`
     const running = [...CONSENT_FLAGS.keys()].find((flag) => values[flag] !== undefined)
     if (running !== undefined) throw new Error(`${what} sets ${running}, which runs ${CONSENT_FLAGS.get(running)}, and nothing of the project runs here`)
-    const built = prefixed(() => buildOptions(values, entriesLanguage([entry], cwd, host)), `${what}: `)
+    const language = prefixed(() => entriesLanguage([entry], cwd, host), `${what}: `)
+    const built = prefixed(() => buildOptions(values, language), `${what}: `)
     for (const key of given) {
       if (CONSENT_FLAGS.has(OPTION_FLAGS[key])) continue
       if (comparable(key, options[key]) === comparable(key, built[key])) continue
       const set = comparable(key, built[key]) === comparable(key, DEFAULT_OPTIONS[key]) ? `without --${OPTION_FLAGS[key]}` : `with ${optionText(key, built[key])}`
       throw new Error(`${name}: ${optionText(key, options[key])} is given, but ${CONFIG_FILE}'s entries build ${JSON.stringify(written)} ${set}: an entry it names is built with its options there`)
     }
-    const id = JSON.stringify(built)
+    // Entries of another language are built apart, whatever their options: a build's are of one.
+    const id = JSON.stringify([language, built])
     if (builds.has(id)) builds.get(id).entries.push(entry)
     else builds.set(id, { entries: [entry], ...built })
   }

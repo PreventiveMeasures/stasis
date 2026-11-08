@@ -144,8 +144,8 @@ test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and 
     ...under('contracts', SOLDEER),
     'contracts/src/A.sol': 'pragma solidity ^0.8.0;\ncontract A {}\n',
   }
-  // Built apart, as entries with other options are, their bundles merged.
-  const entries = { 'src/a.js': {}, 'contracts/src/A.sol': { manifests: true } }
+  // Built apart, as entries of other languages are, their options the same, and their bundles merged.
+  const entries = { 'src/a.js': {}, 'contracts/src/A.sol': {} }
   const lockfiles = ['pnpm-lock.yaml', 'contracts/soldeer.lock']
   const build = (config) => buildVfsBundle({ vfs: vfsOf(configured(files, config)), cache: store() })
   // Detected, pnpm's alone, which builds no Solidity bundle.
