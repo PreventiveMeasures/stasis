@@ -575,7 +575,6 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
   // The packages fetched while own code is read and checked.
   const told = []
   const bundled = patchesOf(plan)
-  // Each version's copies, by the lockfile that installs them where several do (lockedBy's split).
   const units = plan.packages.flatMap((pkg) => lockfiles?.split?.(pkg) ?? [{ pkg, locked: lockfiles }])
   counts.packages = units.length
   const fetching = eachOf(units, PACKAGES_AT_ONCE, async ({ pkg, locked }) => {
@@ -883,7 +882,7 @@ function readLockfile(name, read) {
 export function lockedBy(lockfiles) {
   const by = new Map()
   const all = []
-  const given = new Map() // each one read, by what it was given as
+  const given = new Map()
   for (const lockfile of lockfiles) {
     const { path, text, from, read, tree, patches, root = '', at = '' } = lockfile
     const ecosystem = LOCKFILES.get(posix.basename(path))
@@ -914,7 +913,6 @@ export function lockedBy(lockfiles) {
   // copy's location in it.
   const innermost = (of, dir) => of.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
   const installing = (dir) => innermost(npms, dir)
-  // What one lockfile alone locks, of those read.
   const alone = new Map()
   const aloneOf = (one) => alone.get(one) ?? alone.set(one, lockedBy([given.get(one)])).get(one)
   const locationIn = (one, dir) => (above(one.at) ? pathIn(one.root, dir) : dir.slice(one.at.length + 1))
@@ -923,9 +921,8 @@ export function lockedBy(lockfiles) {
   return {
     lockfiles: all.map(({ path }) => path),
     locks: (ecosystem) => by.has(ecosystem),
-    // A version's copies, where several lockfiles of its ecosystem are read, by the one installing
-    // each, the innermost holding it: each held to that one alone (`{ pkg, locked }`), as it alone
-    // installs them; those none holds to them all, as installed nowhere. Undefined for one, or none.
+    // A version's copies by the innermost lockfile of its ecosystem holding each, held to it alone;
+    // those none holds, to them all. Undefined for fewer than two.
     split(pkg) {
       const same = by.get(pkg.ecosystem) ?? []
       if (same.length < 2) return undefined
