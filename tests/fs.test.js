@@ -364,6 +364,27 @@ test('lockData keeps a payload-free stat:file but drops one superseded by conten
   t.assert.ok(lock.sources['.'].files['upgraded.js'], 'upgraded path carries a real hash')
 }))
 
+test('a stat the lockfile holds a real format over is no format of the bundle either, sidecars or not', withProject((t, dir) => {
+  // One run resolves dep.js with its format (import.meta.resolve: no bytes, no hash) into the lockfile;
+  // another only stats it. The lockfile keeps `module` over the weaker stat:file, and so must the
+  // bundle, else a frozen load fails the bundle/lockfile format cross-check.
+  writeFileSync(join(dir, 'main.js'), 'export const m = 1\n')
+  writeFileSync(join(dir, 'other.js'), 'export const o = 1\n')
+  writeFileSync(join(dir, 'dep.js'), 'export const d = 1\n')
+  const bundleFile = join(dir, 'b.br')
+  const resolving = new State(dir, { scope: 'full', lock: 'add', bundle: 'none' })
+  resolving.addFile(fileURL(dir, 'main.js'), { isEntry: true })
+  resolving.addImport(fileURL(dir, 'main.js'), './dep.js', fileURL(dir, 'dep.js'), { format: 'module' })
+  resolving.write()
+  const stating = new State(dir, { scope: 'full', lock: 'add', bundle: 'add', bundleFile })
+  stating.addFile(fileURL(dir, 'other.js'), { isEntry: true })
+  stating.addFsStat(fileURL(dir, 'dep.js'), 'file')
+  stating.write()
+  t.assert.equal(JSON.parse(readFileSync(join(dir, 'stasis.lock.json'), 'utf8')).formats['dep.js'], 'module')
+  t.assert.equal(JSON.parse(brotliDecompressSync(readFileSync(bundleFile)).toString()).formats['dep.js'], undefined)
+  t.assert.doesNotThrow(() => new State(dir, { scope: 'full', lock: 'frozen', bundle: 'load', bundleFile }))
+}))
+
 test('getFsStat classifies recorded files and directories, undefined otherwise', withProject((t, dir) => {
   const state = new State(dir, { scope: 'full', lock: 'add', bundle: 'add', bundleFile: join(dir, 'b.br'), resources: ['bin', 'txt'] })
   state.addFsFile(fileURL(dir, 'assets', 'message.txt'), Buffer.from('hello\n'))

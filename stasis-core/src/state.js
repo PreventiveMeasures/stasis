@@ -1566,10 +1566,9 @@ export class State {
     return Object.keys(reason).length > 1 ? reason : undefined
   }
 
-  // The formats a bundle declares: `this.formats`, minus a 'stat:*' the run's unified attestation
-  // upgraded to a real format (else the bundle fails its lockfile cross-check at load).
+  // The formats a bundle declares: `this.formats`, minus a 'stat:*' the run's unified attestation (the
+  // lockfile's, sidecars') upgraded to a real format, else the bundle fails its lockfile cross-check at load.
   #formatsForBundle() {
-    if (this.#sidecars.size === 0) return this.formats
     const merged = this.#mergedFormats()
     let out = null // copy-on-write: clone only when an entry must be dropped
     for (const [file, format] of this.formats) {
