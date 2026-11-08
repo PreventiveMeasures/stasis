@@ -2,6 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { brotliCompressSync, constants as zlibConstants } from 'node:zlib'
 
 import { Bundle, isValidRepoField } from '@exodus/stasis-core/bundle'
 import { Config } from '@exodus/stasis-core/config'
@@ -22,7 +23,7 @@ import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSO
 import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
-import { compressBundleText, parseBundleBytes } from '@exodus/stasis-core/brotli'
+import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { added as addedTo } from '@preventive/rn/src/rn-config.js'
@@ -2668,8 +2669,9 @@ function reportedRounds(attempt, unpack) {
 export async function buildBundle({ cwd = process.cwd(), env = process.env, entries, mappingFile, manifests = false, scope, conditions, mainFields, platforms, metro, metroResolver, babel = false, babelAliases, jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, cargo = false, cargoFeatures = [], cargoNoDefaultFeatures = false, cargoAllFeatures = false, cargoTarget = null, cargoManifests = false } = {}) {
   const options = { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
-  assertPolicies('buildBundle', { bundle: built.bundle, root: built.root ?? resolve(cwd) })
-  heldOf({ ...built, root: built.root ?? resolve(cwd) }, { cwd, env })
+  const root = built.root ?? resolve(cwd)
+  assertPolicies('buildBundle', { bundle: built.bundle, root })
+  heldOf({ ...built, root }, { cwd, env })?.loads(built.bundle)
   return built.bundle
 }
 
@@ -2758,8 +2760,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   const serialized = bundle.serialize()
-  // frozen writes no lockfile, so the bundle is to load beside the one there.
-  if (mode === 'frozen') loadsBeside(serialized, { at: outAbs ?? join(root, DEFAULT_BUNDLE_FILE), lockAbs: built.held.at, label: relative(resolve(cwd), built.held.at), root, scope: bundle.config.scope })
+  built.held?.loads(bundle, { text: serialized, at: outAbs })
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
@@ -2779,14 +2780,18 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 }
 
 // A build's lockfile held to the one `lockfile` names, else its project's (heldToLockfile): `{ at,
-// lock, lockfile, hold }`, that one's path, the lock mode, what to write, and `hold(other)` holding
-// another lockfile to it.
+// lock, lockfile, hold, loads }`, that one's path, the lock mode, what to write, `hold(other)` holding
+// another lockfile to it, and `loads(bundle)` the bundle, under frozen, which writes no lockfile.
 function heldOf({ lockfile: built, root }, { cwd, env, lockfile }) {
   if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, 'stasis.lock.json')
-  const hold = (other) => heldToLockfile(other, at, relative(resolve(cwd), at), lock)
-  return { at, lock, lockfile: hold(built), hold }
+  const label = relative(resolve(cwd), at)
+  const hold = (other) => heldToLockfile(other, at, label, lock)
+  const loads = (bundle, { text, at: bundleAt = join(root, DEFAULT_BUNDLE_FILE) } = {}) => {
+    if (lock === 'frozen') loadsBeside(text ?? bundle.serialize(), { at: bundleAt, lockAbs: at, label, root, scope: bundle.config.scope })
+  }
+  return { at, lock, lockfile: hold(built), hold, loads }
 }
 
 // The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE, of a run
@@ -2830,10 +2835,22 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
 
 // That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis
 // run --lock=frozen --bundle=load` loads them: a State of those modes, of `root`, through `host`
-// serving the bundle there.
+// serving the bundle there, and stasis.config.json without the bundle paths a run would read instead.
 function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost }) {
-  const bytes = compressBundleText(text, 1)
-  const served = { ...host, readFile: (path) => (path === at ? bytes : host.readFile(path)) }
+  // Not EXODUS_STASIS_BROTLI_QUALITY's, which says how a bundle is written.
+  const bytes = brotliCompressSync(text, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 1 } })
+  const readFile = (path) => {
+    if (path === at) return bytes
+    const data = host.readFile(path)
+    if (basename(path) !== CONFIG_FILE) return data
+    try {
+      const { bundleFile: _bundleFile, resourcesBundleFile: _resourcesBundleFile, ...config } = JSON.parse(data.toString('utf8'))
+      return Buffer.from(JSON.stringify(config))
+    } catch {
+      return data
+    }
+  }
+  const served = { ...host, readFile }
   try {
     new State(root, { lock: 'frozen', lockFile: lockAbs, bundle: 'load', bundleFile: at, scope, host: served, claim: false, env: {} }) // eslint-disable-line no-new -- its constructor is the check
   } catch (cause) {

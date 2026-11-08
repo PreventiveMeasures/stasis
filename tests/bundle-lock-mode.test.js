@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
-import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { buildBundle, bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { withTmp } from './tmp.helper.js'
 
 // `stasis bundle` and the stasis.lock.json there: what it builds held to what the lockfile records,
@@ -145,6 +145,27 @@ test('stasis bundle in lock = frozen builds every entry the lockfile attests, as
   writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
   await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json \(lock = frozen\): bundle\/lockfile entries mismatch/u)
   await build(dir, { entries: ['index.js', 'more.js'] })
+}))
+
+test('stasis bundle in lock = frozen loads the bundle beside the lockfile whatever bundleFile and brotli quality are configured, and buildBundle does too', withTmp(async (t, dir) => {
+  project(dir)
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen', bundleFile: 'stasis.code.br' })
+  await build(dir)
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  const quality = process.env.EXODUS_STASIS_BROTLI_QUALITY
+  process.env.EXODUS_STASIS_BROTLI_QUALITY = '6'
+  try {
+    await build(dir)
+  } finally {
+    if (quality === undefined) delete process.env.EXODUS_STASIS_BROTLI_QUALITY
+    else process.env.EXODUS_STASIS_BROTLI_QUALITY = quality
+  }
+  const lockPath = join(dir, 'stasis.lock.json')
+  const lock = readJson(lockPath)
+  delete lock.formats['index.js']
+  writeJson(lockPath, lock)
+  await t.assert.rejects(buildBundle({ cwd: dir, entries: ['index.js'], env }), /^Error: stasis\.lock\.json \(lock = frozen\): bundle format for index\.js is not attested by the lockfile$/u)
 }))
 
 test('stasis bundle takes a relative EXODUS_STASIS_LOCK_FILE of the working directory, as a run does', withTmp(async (t, dir) => {
