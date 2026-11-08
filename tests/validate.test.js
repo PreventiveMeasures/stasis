@@ -559,6 +559,14 @@ test("validate: a Composer package held to the composer.lock beside the bundle's
   t.assert.deepStrictEqual(await run({ 'composer.lock': COMPOSER_LOCK, 'web/index.php': '<?php\n' }), ['incomplete', [], [['unverified', 'unsupported']]], 'one elsewhere than beside it: none read')
   bundle('1.4.2')
   t.assert.deepStrictEqual(await run({ 'web/composer.lock': COMPOSER_LOCK }), ['incomplete', ['web/composer.lock'], [['unverified', 'unsupported']]])
+  // Read only of the repository, at a commit of its history: none to read it of, none read.
+  const plan = validationPlan(parseFileWithKind(file).artifact)
+  const alone = await validateRepository(plan, { repository: null }, { own: false })
+  t.assert.deepStrictEqual([alone.status, alone.lockfiles, alone.packages.map(({ status, reason }) => [status, reason])], ['incomplete', [], [['unverified', 'unsupported']]])
+  const given = await validateRepository(validationPlan(parseFileWithKind(file).artifact), { repository: null }, { own: false, lockfile: [{ path: 'composer.lock', text: COMPOSER_LOCK }] })
+  t.assert.deepStrictEqual([given.lockfiles, given.packages.map(({ status, reason }) => [status, reason])], [['composer.lock'], [['unverified', 'unsupported']]], 'one given, read')
+  const other = 'f'.repeat(40)
+  await t.assert.rejects(validateRepository(plan, { repository: followingMoves(repoClient({ 'web/composer.lock': COMPOSER_LOCK }), 'org/repo'), commit: other, directory: 'web' }, { own: false }), (error) => error.code === 'commit-not-in-history')
 }))
 
 test('tarballFiles and fetchPackage: a package\'s files as upstream fetches its tarball, held to its integrity, its top directory left out', async (t) => {

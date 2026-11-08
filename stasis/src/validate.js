@@ -1358,6 +1358,9 @@ function listedEntries(listed, dir = '') {
 export async function validateRepository(plan, { repository = null, commit, directory = '' }, { own = true, lockfile = true, listTree, strict = true, fetch, deadline, generated } = {}) {
   const ecosystems = fetchedEcosystems(plan)
   const fromRepository = lockfile === true && ecosystems.size > 0
+  // BESIDE's, read where the repository is, at a commit of its history: none is required.
+  const beside = [...new Set(plan.packages.map((pkg) => BESIDE.get(pkg.ecosystem)).filter(Boolean))]
+  const readsBeside = lockfile === true && beside.length > 0 && repository !== null && commit !== undefined
   const github = repository?.name()
   const told = (error) => {
     if (strict || !(error instanceof ValidateError)) throw error
@@ -1370,7 +1373,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
       throw new ValidateError(code, `no ${what}: ${own ? 'its own code' : 'its lockfile'} is read of the repository`)
     }
     // Read at a commit of its own history alone: GitHub serves a commit of any fork of it through its name too.
-    ref = repository && commit !== undefined && (own || fromRepository || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
+    ref = repository && commit !== undefined && (own || fromRepository || readsBeside || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
       throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
     }
@@ -1455,8 +1458,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
   try {
     // Where its stasis.config.json names its `lockfiles`, those validate reads, none found; else the one
     // found of each ecosystem fetched, and BESIDE's.
-    const beside = [...new Set(plan.packages.map((pkg) => BESIDE.get(pkg.ecosystem)).filter(Boolean))]
-    const needed = ecosystems.size > 0 || beside.length > 0
+    const needed = lockfile === true ? fromRepository || readsBeside : ecosystems.size > 0 || beside.length > 0
     const configured = lockfile === true && needed ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
     const readOf = async (path) => {
       try {
@@ -1470,7 +1472,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
         ? await Promise.all(configured.filter((path) => LOCKFILES.has(posix.basename(path))).map(async (path) => ({ path, text: await readOf(path), ...ofRepository(path, [pathIn(posix.dirname(path) === '.' ? '' : posix.dirname(path), 'patches')]) })))
         : [
           ...ecosystems.size > 0 ? await repositoryLockfiles({ directory, ecosystems, list, read: readRepository }) : [],
-          ...await besideLockfiles({ directory, names: beside, list, read: readRepository }),
+          ...readsBeside ? await besideLockfiles({ directory, names: beside, list, read: readRepository }) : [],
         ].map((one) => ({ ...one, ...ofRepository(one.path) }))
     const held = files && lockedBy(files)
     for (const ecosystem of held ? ecosystems : []) {

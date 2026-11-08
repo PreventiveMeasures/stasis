@@ -123,7 +123,8 @@ vendored from git, or with no `.cargo-checksum.json`, have no package upstream
 fetches by name and version: their files are left unverified, as are those of a
 version that couldn't be fetched (`not published`, `its registry refused it`).
 A Composer or Soldeer package is held to the `composer.lock` or `soldeer.lock`
-in the bundle's directory, where one is there: a version it doesn't lock fails.
+in the bundle's directory of the repository, at the commit, where one is there
+(or to one `--lockfile` gives): a version it doesn't lock fails.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
