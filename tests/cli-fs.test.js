@@ -1188,6 +1188,44 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     t.assert.equal(bundle.sources['.'].files['src/.abc.env'], undefined)
   }))
 
+  test('run --fs reports a .env absent from every stat form, options included (capture and load)', withTmp(async (t, tmp) => {
+    // An options argument (`bigint`, `throwIfNoEntry`) only stops a stat being served or captured: the secret
+    // still answers as a missing file does, which Node's version decides (async stat honours throwIfNoEntry
+    // from 24.15), so each probe of it is held to the same probe of a path missing outside the project.
+    writeFileSync(join(tmp, '.env'), 'API_KEY=secret\n')
+    const program = (forms) => [
+      "import * as fs from 'node:fs'",
+      "import { tmpdir } from 'node:os'",
+      "import { join } from 'node:path'",
+      'const T = { throwIfNoEntry: false }',
+      'const B = { bigint: true }',
+      'const sync = (fn, o) => (p) => { try { return String(fn(p, o)) } catch (e) { return e.code } }',
+      'const viaCallback = (fn, o) => (p) => new Promise((done) => fn(p, o, (e, s) => done(e ? e.code : String(s))))',
+      'const viaPromise = (fn, o) => (p) => fn(p, o).then(String, (e) => e.code)',
+      `const probes = [${forms}]`,
+      'const answers = async (p) => (await Promise.all(probes.map((probe) => probe(p)))).join(" ")',
+      'console.log(await answers(join(process.cwd(), ".env")))',
+      'console.log(await answers(join(tmpdir(), `stasis-missing-${process.pid}`)))',
+      '',
+    ].join('\n')
+    const syncForms = 'sync(fs.statSync), sync(fs.statSync, B), sync(fs.statSync, T), sync(fs.lstatSync, B), sync(fs.lstatSync, T), (p) => String(fs.existsSync(p))'
+    const asyncForms = 'viaCallback(fs.stat, B), viaCallback(fs.stat, T), viaCallback(fs.lstat, T), viaPromise(fs.promises.stat, B), viaPromise(fs.promises.stat, T), viaPromise(fs.promises.lstat, T)'
+    writeFileSync(join(tmp, 'src', 'sync.js'), program(syncForms))
+    writeFileSync(join(tmp, 'src', 'async.js'), program(`${syncForms}, ${asyncForms}`))
+    const asMissing = (r, what) => {
+      t.assert.equal(r.status, 0, `${what} stderr: ${r.stderr}`)
+      const [secret, missing] = r.stdout.trim().split('\n')
+      t.assert.equal(secret, missing, `${what}: the .env answers as a missing file`)
+      t.assert.match(secret, /^ENOENT ENOENT undefined ENOENT undefined false/u, what)
+    }
+    const bundlePath = join(tmp, 'snapshot.br')
+    asMissing(await run(['run', '--lock=add', '--bundle=add', `--bundle-file=${bundlePath}`, '--fs=sync', 'src/sync.js'], { cwd: tmp }), 'sync capture')
+    const asyncPath = join(tmp, 'async.br')
+    asMissing(await run(['run', '--lock=replace', '--bundle=add', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp }), 'async capture')
+    t.assert.equal(decode(asyncPath).formats['.env'], undefined, 'the secret is not recorded, as a stat record either')
+    asMissing(await run(['run', '--lock=frozen', '--bundle=load', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp }), 'load')
+  }))
+
   // --- fs settable via stasis.config.json ("fs": "sync" | "async") ------------------
   // fs is a Config field like scope/lock/bundle, so the mode can live in stasis.config.json
   // instead of the --fs CLI flag. The bundle mode still comes from the CLI here (the bundle
