@@ -2889,7 +2889,8 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     }, { env, plan: { builds: plans, bundleExtra }, outputsAt, refuseInstalled: true, why: '--deptree lays out the dependencies from a lockfile' }))
     console.warn(unpackedSummary(built.stats))
     root = built.root
-    union = { bundle: built.bundle, lockfile: () => built.lockfile }
+    // A lockfile of JS builds alone, as unionOfBuilds has one.
+    union = { bundle: built.bundle, lockfile: kinds.every((kind) => kind === 'js') ? () => built.lockfile : undefined }
   } else {
     const builts = []
     for (const [i, plan] of plans.entries()) {
