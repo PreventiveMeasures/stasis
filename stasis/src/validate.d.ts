@@ -76,6 +76,7 @@ export interface Locked {
   from?: 'repository' | 'local'
   tree?: (dir: string) => Promise<Map<string, Uint8Array>>
   read(path: string): Promise<string>
+  split(pkg: PlanPackage): { pkg: PlanPackage; locked: Locked }[] | undefined
 }
 export function lockedBy(lockfiles: Lockfile[]): Locked
 

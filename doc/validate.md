@@ -149,9 +149,10 @@ Where the repository's `stasis.config.json` in the bundle's directory names its
 [`lockfiles`](github-bundle.md#several-lockfiles-lockfiles), none is found: the
 dependencies are held to those it names, as the build lays out a tree of each,
 of the repository at the commit. Several of one ecosystem are taken (a root
-`pnpm-lock.yaml` and `tools/package-lock.json`, say): each npm copy is held to
-where the innermost of them holding it installs it, and each version is
-locked as any of them locks it. One validate doesn't read (a `soldeer.lock`) is
+`pnpm-lock.yaml` and `tools/package-lock.json`, say): each copy is held to
+the innermost of them holding it alone, as it alone installs it: where it
+installs it, whether it locks the version, and its patch. A copy none holds
+fails. One validate doesn't read (a `soldeer.lock`) is
 passed over, its packages left unverified as ever. One that is not there, or
 outside the repository, is refused, as is a config naming none that locks the
 bundle's npm packages or crates. `--lockfile` and `--no-lockfile` take their
