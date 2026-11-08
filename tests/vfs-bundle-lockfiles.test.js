@@ -141,6 +141,7 @@ test('buildVfsBundle holds its build to the stasis.lock.json the project holds, 
   await t.assert.rejects(build({ 'stasis.lock.json': other }), /^Error: stasis\.lock\.json: content mismatch for 'src\/a\.js'$/u)
   await build({ 'stasis.lock.json': other }, { lock: 'ignore' })
   await build({ 'stasis.lock.json': other }, { lock: 'replace' })
+  await build({ 'stasis.lock.json': other }, { lock: 'none' })
   await t.assert.rejects(build({ 'stasis.config.json': json({ lock: 'frozen' }) }), /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
   await t.assert.rejects(build({}, { lock: 'sometimes' }), /^TypeError: buildVfsBundle: lock must be one of/u)
 })

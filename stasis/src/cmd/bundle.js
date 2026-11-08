@@ -2729,6 +2729,8 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     const links = linksOn(root)
     policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
+    // What it carries already is held to the lockfile too.
+    built.held?.hold(deferredLockfile(existing))
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
     // With none on disk we can't attest the pre-existing bundle's files (their hashes live
@@ -2770,17 +2772,19 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 }
 
 // A build's lockfile held to the one `lockfile` names, else its project's (heldToLockfile): `{ at,
-// lockfile }`, that one's path and what to write.
+// lockfile, hold }`, that one's path, what to write, and `hold(other)` holding another lockfile to it.
 function heldOf({ lockfile: built, root }, { cwd, env, lockfile }) {
   if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, 'stasis.lock.json')
-  return { at, lockfile: heldToLockfile(built, at, relative(resolve(cwd), at), lock) }
+  const hold = (other) => heldToLockfile(other, at, relative(resolve(cwd), at), lock)
+  return { at, lockfile: hold(built), hold }
 }
 
-// The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE.
+// The lock mode the runs of the project at `root` take, and their EXODUS_STASIS_LOCK_FILE, of a run
+// that writes a bundle, as a build does.
 function lockModeOf(root, env = process.env, host = diskHost) {
-  const config = new Config({ env })
+  const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
   const text = readFileSyncMaybe(root, 'stasis.config.json', 'utf-8', host)
   if (text !== null) config.loadConfig(text)
   return { lock: config.lock, file: config.lockFile && resolve(root, config.lockFile) }
@@ -2788,7 +2792,7 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 
 // The lockfile `built()` gives held to the one at `lockAbs` by `mode`. In add it is merged into it,
 // which must agree on all both record, execute bits too; in frozen that one must be there, agree, and
-// attest every entry, file and import built, and none is written; otherwise it isn't read.
+// attest every entry, file, format and import built, and none is written; otherwise it isn't read.
 // -> () => the Lockfile to write, or null.
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   const frozen = mode === 'frozen'
@@ -2812,6 +2816,9 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   if (!frozen) return () => merged
   for (const entry of fresh.entries) {
     if (!lock.entries.has(entry)) throw new Error(`${label} (lock = frozen) doesn't attest the entry ${entry}`)
+  }
+  for (const file of fresh.formats?.keys() ?? []) {
+    if (!lock.formats?.has(file)) throw new Error(`${label} (lock = frozen) doesn't attest the format of ${file}`)
   }
   for (const [conditions, byParent] of fresh.imports ?? []) {
     for (const [parent, specs] of byParent) {

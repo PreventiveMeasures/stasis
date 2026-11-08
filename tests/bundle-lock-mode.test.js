@@ -57,6 +57,11 @@ test('stasis bundle in lock = ignore leaves stasis.lock.json alone, in lock = re
   t.assert.equal(readFileSync(lockPath, 'utf8'), edited)
   await build(dir, { lockfile: 'stasis.lock.json', lock: 'replace' })
   t.assert.equal(readJson(lockPath).sources['.'].files['index.js'], recorded)
+  // And lock = none, which a build writing a bundle takes as a run would.
+  writeJson(lockPath, lock)
+  await build(dir, { lock: 'none' })
+  await build(dir, { lockfile: 'stasis.lock.json', lock: 'none' })
+  t.assert.equal(readJson(lockPath).sources['.'].files['index.js'], recorded)
 }))
 
 test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.json, and never writes it', withTmp(async (t, dir) => {
@@ -75,6 +80,17 @@ test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.j
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
   await t.assert.rejects(build(dir, { entries: ['index.js', 'more.js'] }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
   t.assert.equal(readFileSync(lockPath, 'utf8'), before, 'still not written')
+  // A format it doesn't record.
+  const lock = readJson(lockPath)
+  delete lock.formats['index.js']
+  writeJson(lockPath, lock)
+  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest the format of index\.js$/u)
+  writeFileSync(lockPath, before)
+  // --add: what the bundle there carries too.
+  writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
+  await build(dir, { entries: ['more.js'], lock: 'ignore' })
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  await t.assert.rejects(build(dir, { add: true }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
 }))
 
 test('stasis bundle --deptree holds its build to the stasis.lock.json there', withTmp(async (t, dir) => {
