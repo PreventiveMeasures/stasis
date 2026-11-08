@@ -341,6 +341,24 @@ test("generating never loads @prisma/internals, which reads the host's npm confi
   t.assert.equal(fs.close, close)
 })
 
+test('each schema is read by a schema engine of its own, which a panic in it leaves to that schema alone', async (t) => {
+  const files = { 'prisma/schema.prisma': schema() }
+  const [{ files: before }] = await clients(files)
+  const instances = t.mock.method(WebAssembly, 'Instance')
+  // @prisma/get-dmmf panics the engine where FORCE_PANIC_GET_DMMF is set.
+  process.env.FORCE_PANIC_GET_DMMF = '1'
+  try {
+    await t.assert.rejects(clients(files), /^Error: prisma: \/prisma\/schema\.prisma: the schema engine panicked: panicked at [^\n]*\nThis is the panic triggered by `prisma_fmt::debug_panic\(\)`$/u)
+  } finally {
+    delete process.env.FORCE_PANIC_GET_DMMF
+  }
+  // Its panic hook wrote to the engine's own registry, not the process's.
+  t.assert.equal(globalThis.PRISMA_WASM_PANIC_REGISTRY, undefined)
+  const [{ files: after }] = await clients(files)
+  t.assert.deepStrictEqual(after, before)
+  t.assert.equal(instances.mock.callCount(), 2)
+})
+
 test("a property name is quoted where Prisma's bundled identifier tables, not Node's, say so", async (t) => {
   // U+A7CE continues an identifier in Node 24's Unicode, not in the older tables Prisma bundles.
   const [{ files }] = await clients({ 'prisma/schema.prisma': schema().replace('  email String @unique\n', '  email String @unique\n  a\uA7CEb Int\n') })

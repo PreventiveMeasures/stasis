@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { posix } from 'node:path'
+import { dirname, posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
@@ -75,8 +75,8 @@ function compiled(main, roots, parameters, given) {
 }
 
 // CommonJS files from `main` on, compiled requiring nothing outside their package but what `given`
-// holds (none reads __filename or __dirname).
-function commonjs(main, given) {
+// holds, and reading `globals` in place of the globals they name; each call loads them anew.
+function commonjs(main, given, globals = {}) {
   const modules = new Map()
   const load = (file) => {
     if (modules.has(file)) return modules.get(file).exports
@@ -87,14 +87,59 @@ function commonjs(main, given) {
       if (!Object.hasOwn(given, id)) throw new Error(`--generate=prisma: ${file} requires ${id}, which stasis doesn't let it`)
       return given[id]
     }
-    compileFunction(readFileSync(file, 'utf8'), ['exports', 'require', 'module'], { filename: file })(module.exports, requiring, module)
+    const parameters = ['exports', 'require', 'module', '__filename', '__dirname', ...Object.keys(globals)]
+    compileFunction(readFileSync(file, 'utf8'), parameters, { filename: file })(module.exports, requiring, module, file, dirname(file), ...Object.values(globals))
     return module.exports
   }
   return load(main)
 }
 
-// The schema engine's refusals are JSON with a `message`; its panics aren't.
+// The schema engine's refusals are JSON with a `message`.
 const engineMessage = (message) => { try { return JSON.parse(message).message ?? message } catch { return message } }
+
+// A maker of schema engines (the wasm, and @prisma/get-dmmf over it), one for each schema: a panic traps
+// out of an instance mid-call, its stack never unwound, leaving it in a state none was built for (enough
+// panics and every later call is out of bounds), so no instance reads a schema after another's. Its panic
+// hook writes to a registry of its own, not the process's PRISMA_WASM_PANIC_REGISTRY. The .wasm is read
+// once; a fresh engine costs a millisecond or two.
+function schemaEngines(near) {
+  const glue = near.resolve('@prisma/prisma-schema-wasm')
+  const read = new Map()
+  const fs = { readFileSync: (file) => read.get(file) ?? read.set(file, readFileSync(file)).get(file) }
+  const dmmf = near.resolve('@prisma/get-dmmf')
+  const besideDmmf = createRequire(dmmf)
+  const dmmfGiven = Object.fromEntries(['@prisma/debug', '@streamparser/json', 'pluralize'].map((id) => [id, besideDmmf(id)]))
+  const getDmmf = (engine) => commonjs(dmmf, { ...dmmfGiven, '@prisma/prisma-schema-wasm': engine })
+  const schemaEngine = () => {
+    let panic
+    const engine = commonjs(glue, { fs }, { global: { PRISMA_WASM_PANIC_REGISTRY: { set_message: (message) => { panic = message } } } })
+    const { getDMMF } = getDmmf(engine)
+    // `run`, but where the engine panicked in it, throwing that it did, with the engine's message.
+    const calling = (run) => (options) => {
+      try {
+        return run(options)
+      } catch (error) {
+        throw panic === undefined ? error : new Error(`the schema engine panicked: ${panic}`, { cause: error })
+      }
+    }
+    return {
+      // But for resolving binaryTargets, which the generator never reads.
+      getConfig: calling(({ datamodel }) => {
+        const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: datamodel })))
+        if (errors.length > 0) throw new Error(errors.map((error) => error.message).join('\n'))
+        return config
+      }),
+      getDMMF: calling((options) => {
+        const result = getDMMF(options)
+        if ('error' in result) throw new Error(engineMessage(result.error.message), { cause: result.error })
+        return result
+      }),
+      mergeSchemas: calling(({ schemas }) => engine.merge_schemas(JSON.stringify({ schema: schemas }))),
+    }
+  }
+  // externalToInternalDmmf, the generator's, reads no schema: its get-dmmf has no engine.
+  return { schemaEngine, externalToInternalDmmf: getDmmf({}).externalToInternalDmmf }
+}
 
 // What the compiled generator returns, is given, and requires as Node loads it (none of it the
 // disk's); given, as readSourceFile and inferModuleFormatFromNearestPackageJson read the disk,
@@ -108,8 +153,8 @@ let loaded
 // generateClient runs, nor its generate()'s option parsing and inference, so its bundle is compiled
 // to return them, stripped (cleanup, not a sandbox) of what they never reach. @prisma/internals is
 // never loaded: loading it reads the host's npm and yarn config and platform, and patches fs and
-// process.cwd. Its users get a stand-in: its parsing the schema engine's and @prisma/get-dmmf's,
-// which it wraps, and its isValidJsIdentifier its own file's, whose Unicode tables aren't Node's.
+// process.cwd. Its users get a stand-in, its isValidJsIdentifier its own file's, whose Unicode tables
+// aren't Node's; what it parses schemas with, the schema engine and @prisma/get-dmmf, is schemaEngines'.
 function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -119,31 +164,18 @@ function loadGenerator() {
   if (version !== GENERATOR_VERSION) throw new Error(`--generate=prisma needs ${GENERATOR} ${GENERATOR_VERSION}, not ${version}`)
   // Prisma's packages beside the @prisma/internals the peer was built with.
   const near = createRequire(own.resolve('@prisma/internals'))
-  const engine = near('@prisma/prisma-schema-wasm')
-  const getDmmf = near('@prisma/get-dmmf')
+  const { schemaEngine, externalToInternalDmmf } = schemaEngines(near)
   const internals = {
-    externalToInternalDmmf: getDmmf.externalToInternalDmmf,
+    externalToInternalDmmf,
     hasOwnProperty: Object.hasOwn,
     assertNever: (value, message) => { throw new Error(message) },
     isValidJsIdentifier: commonjs(own.resolve('@prisma/internals/dist/utils/isValidJsIdentifier.js'), {}).isValidJsIdentifier,
-    // But for resolving binaryTargets, which the generator never reads.
-    getConfig: ({ datamodel }) => {
-      const { config, errors } = JSON.parse(engine.get_config(JSON.stringify({ prismaSchema: datamodel })))
-      if (errors.length > 0) throw new Error(errors.map((error) => error.message).join('\n'))
-      return config
-    },
-    getDMMF: (options) => {
-      const result = getDmmf.getDMMF(options)
-      if ('error' in result) throw new Error(engineMessage(result.error.message), { cause: result.error })
-      return result
-    },
-    mergeSchemas: ({ schemas }) => engine.merge_schemas(JSON.stringify({ schema: schemas })),
   }
   const given = { ...Object.fromEntries(REQUIRES.map((id) => [id, own(id)])), '@prisma/internals': internals, '@prisma/ts-builders': commonjs(own.resolve('@prisma/ts-builders'), { '@prisma/internals': internals }) }
   const run = compiled(main, EXPORTS, PARAMETERS, given)
   const { loadSchemaFiles } = compiled(near.resolve('@prisma/schema-files-loader'), ['loadSchemaFiles'], ['realFsResolver'], { 'node:path': posix })()
   // `peer` is evaluated for each client (a millisecond), its functions given what they read.
-  loaded = { peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}), internals, loadSchemaFiles }
+  loaded = { peer: (at) => run(readQueryCompiler(at), packageFormat(at), () => {}), schemaEngine, loadSchemaFiles }
   return loaded
 }
 
@@ -449,15 +481,15 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
 // generated said through `say` and `skip` (generatePrismaClients').
 async function generateSchema({ host, path, prisma, say, skip }) {
   const files = await readingSchema(path, () => schemaFilesAt(host, path))
-  const { internals } = loadGenerator()
-  const config = await readingSchema(path, () => internals.getConfig({ datamodel: files }))
+  const engine = loadGenerator().schemaEngine()
+  const config = await readingSchema(path, () => engine.getConfig({ datamodel: files }))
   const generators = config.generators.filter(ours)
   for (const other of config.generators.filter((generator) => !ours(generator) && !needsNoOutput(generator))) say?.(notGenerating(`${path}'s generator ${other.name}`, SKIPPED, committedOutput(host, other, path)))
   if (generators.length === 0) return []
   for (const warning of config.warnings) say?.(warning)
   if (config.datasources.length === 0) throw new Error(`prisma: ${path} defines no datasource`)
-  const dmmf = await readingSchema(path, () => internals.getDMMF({ datamodel: files }))
-  const datamodel = internals.mergeSchemas({ schemas: files })
+  const dmmf = await readingSchema(path, () => engine.getDMMF({ datamodel: files }))
+  const datamodel = await readingSchema(path, () => engine.mergeSchemas({ schemas: files }))
   const outputs = []
   for (const generator of generators) {
     if (generator.output === null) throw new Error(`prisma: ${path}: generator ${generator.name} names no output`)
