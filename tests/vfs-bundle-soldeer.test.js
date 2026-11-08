@@ -144,7 +144,7 @@ test('stasis bundle --deptree of a Solidity build, which has no stasis lockfile,
   for (const lock of ['replace', 'frozen', 'none']) {
     // eslint-disable-next-line no-await-in-loop -- one mode at a time
     await bundleCommand({ cwd: checkout, entries: ENTRIES, deptree: true, env: { EXODUS_STASIS_LOCK: lock }, output: `${lock}.br` })
-    t.assert.equal(brotliDecompressSync(await readFile(join(checkout, `${lock}.br`))).toString('utf8'), oracles.plain, lock)
+    t.assert.equal(brotliDecompressSync(readFileSync(join(checkout, `${lock}.br`))).toString('utf8'), oracles.plain, lock)
   }
 }))
 
