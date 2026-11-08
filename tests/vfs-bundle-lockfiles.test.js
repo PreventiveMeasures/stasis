@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, posix } from 'node:path'
 
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
@@ -165,14 +165,39 @@ test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and 
   // Without entries, none are taken: which kind is not the lockfiles' to say.
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles })) }), [])
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles, entries })) }), ['src/a.js', 'src/A.sol'])
-  // A Soldeer project below the root: its remappings are not the root's, which the .sol entries are
-  // built from, so they are refused, naming where to bundle them from; JS entries alone are not.
-  const nested = { ...TWO, ...under('contracts', SOLDEER), 'contracts/src/A.sol': files['src/A.sol'] }
-  const cache = store()
-  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configured(nested, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries: { 'src/a.js': {}, 'contracts/src/A.sol': {} } })), cache }), /^Error: buildVfsBundle: contracts\/src\/A\.sol is built from \/, which reads no foundry\.toml or remappings of the Soldeer project stasis\.config\.json's lockfiles names in \/contracts \(contracts\/soldeer\.lock\): bundle its \.sol entries from \/contracts$/u)
-  t.assert.deepStrictEqual(cache.calls, [], 'refused before anything is fetched')
-  const js = await buildVfsBundle({ vfs: vfsOf(configured(nested, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries: { 'src/a.js': {} } })), cache: store() })
-  t.assert.deepStrictEqual([...js.bundle.entries], ['src/a.js'])
+})
+
+test("buildVfsBundle builds the .sol entries of a Soldeer project below the root from its root, its bundle's paths under it", async (t) => {
+  // Two Foundry projects below a JS project's root, each remapping `dep/` to a library of its own.
+  const project = (lib) => ({
+    ...SOLDEER,
+    'remappings.txt': `dep/=lib/${lib}/\n`,
+    [`lib/${lib}/D.sol`]: 'pragma solidity ^0.8.0;\ncontract D {}\n',
+    'src/A.sol': 'pragma solidity ^0.8.0;\nimport "dep/D.sol";\ncontract A {}\n',
+  })
+  const files = {
+    'package.json': manifest('p', ['used']),
+    'pnpm-lock.yaml': pnpmLock({ '.': ['used'] }),
+    'src/a.js': "require('used')\n",
+    ...under('contracts', project('one')),
+    ...under('vault', project('two')),
+  }
+  const lockfiles = ['pnpm-lock.yaml', 'contracts/soldeer.lock', 'vault/soldeer.lock']
+  // Both .sol entries one build, of the same options, split by the project each is in.
+  const entries = { 'src/a.js': {}, 'contracts/src/A.sol': {}, 'vault/src/A.sol': {} }
+  const built = await buildVfsBundle({ vfs: vfsOf(configured(files, { lockfiles, entries })), cache: store() })
+  t.assert.deepStrictEqual([...built.bundle.entries].toSorted(), ['contracts/src/A.sol', 'src/a.js', 'vault/src/A.sol'])
+  const imported = (parent) => [...built.bundle.imports.values()].map((byParent) => byParent.get(parent)?.get('dep/D.sol')).find(Boolean)
+  t.assert.equal(imported('contracts/src/A.sol'), 'contracts/lib/one/D.sol', "by contracts/'s remapping")
+  t.assert.equal(imported('vault/src/A.sol'), 'vault/lib/two/D.sol', "by vault/'s")
+  // Each project's part is the bundle its own build from its directory gives, put under it.
+  for (const dir of ['contracts', 'vault']) {
+    // eslint-disable-next-line no-await-in-loop -- one build at a time
+    const alone = await buildVfsBundle({ vfs: vfsOf(files), cwd: `/${dir}`, packageManager: 'soldeer', entries: ['src/A.sol'] })
+    for (const [path, content] of alone.bundle.sources) t.assert.equal(built.bundle.sources.get(`${dir}/${path}`), content, `${dir}/${path}`)
+    for (const [path, format] of alone.bundle.formats) t.assert.equal(built.bundle.formats.get(`${dir}/${path}`), format, `${dir}/${path}`)
+    for (const [bucket, { name, version }] of alone.bundle.modules) t.assert.deepStrictEqual({ name, version }, { name: built.bundle.modules.get(posix.join(dir, bucket)).name, version: built.bundle.modules.get(posix.join(dir, bucket)).version }, bucket)
+  }
 })
 
 test("buildVfsBundle takes a lockfile stasis.config.json names above it, its workspace root's, as the one detected", async (t) => {

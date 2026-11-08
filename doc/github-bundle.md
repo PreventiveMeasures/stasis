@@ -86,7 +86,7 @@ Solidity entries are bundled together, each built of the tree that installs
 it:
 
 ```json
-{ "lockfiles": ["pnpm-lock.yaml", "soldeer.lock", "tools/package-lock.json"] }
+{ "lockfiles": ["pnpm-lock.yaml", "tools/package-lock.json", "contracts/soldeer.lock"] }
 ```
 
 - Each path is from the directory holding the config, and may climb to a
@@ -110,11 +110,13 @@ it:
   package of each tree as the build reads it.
 - A directory whose config names them is built from the whole repo, as a
   lockfile may be outside it.
-- A `.sol` entry is built from the directory holding the config, reading the
-  `foundry.toml` and remappings there, as `stasis bundle` builds one from its
-  cwd: where the `soldeer.lock` named is laid out from another directory
-  (`contracts/soldeer.lock`), the `.sol` entries are refused, before anything
-  is fetched, for that directory's config to bundle them.
+- A `.sol` entry is built from the root of the Soldeer project holding it, the
+  innermost of those its `soldeer.lock`s lay out (`contracts/` for
+  `contracts/soldeer.lock`), as `stasis bundle` builds it from there, reading
+  the `foundry.toml` and remappings there; its paths are then put under that
+  directory, beside the JS entries'. So each project's `.sol` entries resolve
+  by its own remappings, the entries of several projects built apart. One in
+  none of them is built from the directory holding the config.
 - A lockfile no tree is laid out of (a `Podfile.lock`, say) is refused.
   Without `lockfiles`, the one lockfile is detected as above.
 
