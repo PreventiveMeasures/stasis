@@ -130,6 +130,30 @@ test('stasis bundle in lock = frozen attests as a frozen run does: entries in fu
   await t.assert.rejects(frozen(), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest import 'dep' from 'index\.js' consistently across condition sets$/u)
 }))
 
+test('stasis bundle in lock = frozen builds every entry the lockfile attests, as the bundle loads beside it', withTmp(async (t, dir) => {
+  project(dir)
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  await build(dir, { entries: ['index.js', 'more.js'], lockfile: 'stasis.lock.json' })
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  await t.assert.rejects(build(dir), /^Error: bundleCommand: stasis\.lock\.json \(lock = frozen\) attests the entry more\.js, which the bundle doesn't build$/u)
+  await build(dir, { entries: ['index.js', 'more.js'] })
+}))
+
+test('stasis bundle takes a relative EXODUS_STASIS_LOCK_FILE of the working directory, as a run does', withTmp(async (t, dir) => {
+  project(dir)
+  const sub = join(dir, 'sub')
+  mkdirSync(sub)
+  await build(dir, { lockfile: 'sub/custom.lock.json' })
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  const at = process.cwd()
+  process.chdir(sub)
+  try {
+    await bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', env: { ...env, EXODUS_STASIS_LOCK_FILE: 'custom.lock.json' } })
+  } finally {
+    process.chdir(at)
+  }
+}))
+
 test('stasis bundle --deptree holds its build to the stasis.lock.json there', withTmp(async (t, dir) => {
   // A lockfile of no registry package: nothing is fetched.
   project(dir)

@@ -71,7 +71,7 @@ export class Config {
   #shardSignalFlush
 
   // Env and options must agree when both are set; #explicit is kept so a later loadConfig can't override them.
-  // `ownLock`: a build's, which takes no lock mode of EXODUS_STASIS_LOCK or stasis.config.json.
+  // `ownLock`: a build's, which takes no lock mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
   constructor(options = {}) {
     const { env = process.env, host = diskHost, ownLock = false, ...rest } = options
     assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')
@@ -82,7 +82,7 @@ export class Config {
     this.#host = host
     this.#explicit = explicit
     // An env var set to '' counts as unset.
-    this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, (ownLock && key === 'lock') ? undefined : env[OPTIONS[key].env] || undefined]))
+    this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, (ownLock && (key === 'lock' || key === 'lockFile')) ? undefined : env[OPTIONS[key].env] || undefined]))
     this.#ownLock = ownLock
 
     try {

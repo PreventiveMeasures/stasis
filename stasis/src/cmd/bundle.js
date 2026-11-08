@@ -2755,6 +2755,14 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     }
   }
 
+  // frozen writes no lockfile, so the bundle is to load beside the one there, which takes one of the
+  // entries it records alone (State's #mergeBundleMetadata).
+  if (mode === 'frozen') {
+    const { entries } = Lockfile.parse(readFileSync(built.held.at, 'utf8'))
+    const unbuilt = [...entries].find((entry) => !bundle.entries.has(entry))
+    if (unbuilt !== undefined) throw new Error(`bundleCommand: ${relative(resolve(cwd), built.held.at)} (lock = frozen) attests the entry ${unbuilt}, which the bundle doesn't build`)
+  }
+
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   const serialized = bundle.serialize()
   const files = [...bundle.sources.keys()]
@@ -2792,7 +2800,8 @@ function lockModeOf(root, env = process.env, host = diskHost) {
   const config = new Config({ env: { EXODUS_STASIS_LOCK: env.EXODUS_STASIS_LOCK, EXODUS_STASIS_LOCK_FILE: env.EXODUS_STASIS_LOCK_FILE }, bundle: 'replace' })
   const text = readFileSyncMaybe(root, 'stasis.config.json', 'utf-8', host)
   if (text !== null) config.loadConfig(text)
-  return { lock: config.lock, file: config.lockFile && resolve(root, config.lockFile) }
+  // A relative one of the working directory's, as a run reads it.
+  return { lock: config.lock, file: config.lockFile && resolve(config.lockFile) }
 }
 
 // The lockfile `built()` gives held to the one at `lockAbs` by `mode`, as a run holds itself to one.
