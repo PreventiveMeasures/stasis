@@ -425,7 +425,7 @@ than ship it, and reading one is refused as well.
     dependency's, read off what the package manager that laid out its
     `node_modules` left there: npm's (7 and later) hidden lockfile,
     `node_modules/.package-lock.json`, by the package's location, where it
-    records the version installed there; pnpm's (9 to 12) copy of its
+    records the version installed there; pnpm's (10 to 12) copy of its
     lockfile, `node_modules/.pnpm/lock.yaml`, by the directory under
     `node_modules/.pnpm` the package is installed in; yarn 1's `yarn.lock`, by
     the name the package is installed as and its version, where one entry alone

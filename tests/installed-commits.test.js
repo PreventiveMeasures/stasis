@@ -146,7 +146,7 @@ snapshots:
 ${packages.map(({ key }) => `  '${key}': {}\n`).join('\n')}`)
 }
 
-// Its commit and repository, a capital in its key, as pnpm 9.15.9 and 10.33.4 install it.
+// Its commit and repository, a capital in its key, as pnpm 10.33.4 installs it.
 const XTEND = '4e34185527a9cb93ec5651ca0f70c198df19faa0'
 const xtend = (store) => ({ name: 'xtend', key: `xtend@git+https://git@github.com:Raynos/xtend.git#${XTEND}`, store, resolution: `{commit: ${XTEND}, repo: 'git@github.com:Raynos/xtend.git', type: git}` })
 
@@ -172,14 +172,14 @@ test("pnpm: its copy of the lockfile names a git dependency's repository, commit
   }
 }))
 
-test('pnpm: by the directory pnpm 9 installs it in, its `#` kept, and an MD5 in base32 where hashed', withTmp(async (t, dir) => {
+test("pnpm: pnpm 9's store directories are not read", withTmp(async (t, dir) => {
   writePnpmProject(dir, [
-    { name: 'dep', key: `dep@git+https://git@github.com:o/dep.git#${SHA.dep}`, store: `dep@git+https+++git@github.com+o+dep.git#${SHA.dep}`, resolution: `{commit: ${SHA.dep}, repo: 'git@github.com:o/dep.git', type: git}` },
+    { name: 'dep', key: `dep@git+https://git@github.com:o/dep.git#${SHA.dep}`, store: `dep@git+https+++git@github.com+o+dep.git#${SHA.dep}`, resolution: `{commit: ${SHA.dep}, repo: 'git@github.com:o/dep.git', type: git}`, pkg: { repository: 'github:o/dep' } },
     xtend(`xtend@git+https+++git@github.com+Raynos+xtend.git#${XTEND}_566luz3wrwstne6n4ddwqdopme`),
   ])
   const repos = await bundled(dir, 'state')
-  t.assert.deepStrictEqual(repos[`node_modules/.pnpm/dep@git+https+++git@github.com+o+dep.git#${SHA.dep}/node_modules/dep`], { github: 'o/dep', directory: '', commit: SHA.dep })
-  t.assert.deepStrictEqual(repos[`node_modules/.pnpm/xtend@git+https+++git@github.com+Raynos+xtend.git#${XTEND}_566luz3wrwstne6n4ddwqdopme/node_modules/xtend`], { github: 'Raynos/xtend', directory: '', commit: XTEND })
+  t.assert.deepStrictEqual(repos[`node_modules/.pnpm/dep@git+https+++git@github.com+o+dep.git#${SHA.dep}/node_modules/dep`], { github: 'o/dep' })
+  t.assert.equal(repos[`node_modules/.pnpm/xtend@git+https+++git@github.com+Raynos+xtend.git#${XTEND}_566luz3wrwstne6n4ddwqdopme/node_modules/xtend`], undefined)
 }))
 
 

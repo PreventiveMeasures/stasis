@@ -31,7 +31,6 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { toBase32 } from '@exodus/bytes/base32.js'
 import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, isStatFormat, moduleFileKey } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
@@ -185,10 +184,9 @@ export function fetchFailure(error) {
   return 'failed'
 }
 
-// Whether `text` is the patch `hash` names, as pnpm hashes one: of its text with its CRLFs as LFs, a
-// sha256 in hex from pnpm 10, an md5 in base32 before; or as it is.
-const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text]
-  .flatMap((read) => [sha256(read), toBase32(createHash('md5').update(read).digest(), { padding: false }).toLowerCase()]))
+// Whether `text` is the patch `hash` names, as pnpm hashes one: a sha256 in hex of its text with its
+// CRLFs as LFs, or as it is.
+const patchHashes = (text) => new Set([text.replaceAll('\r\n', '\n'), text].map(sha256))
 export const isPatchOf = (text, hash) => patchHashes(text).has(hash)
 
 // A path as git writes it, unquoted where quoted (as C writes a string, bytes past ASCII in octal);
