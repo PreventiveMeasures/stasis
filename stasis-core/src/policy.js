@@ -15,91 +15,25 @@ const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
 
-// Whether each brace is of a balanced `{...}` holding a `,` of its own, none after a `$`: a list, as Node's
-// glob reads one too (it takes `{a}` and `${a,b}` as themselves, and expands `{{a,b}}` within).
-function bracesListed(pattern) {
-  const listed = []
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '{') {
-      if (pattern[i - 1] === '$') return false
-      listed.push(false)
-    } else if (c === ',' && listed.length > 0) {
-      listed[listed.length - 1] = true
-    } else if (c === '}' && listed.pop() !== true) {
-      return false
-    }
-  }
-  return listed.length === 0
-}
+// The patterns supported, which every glob reads alike: names of letters, digits and `_.@+-`, with `*`, `?`,
+// `**` as a whole name and `{a,b}` lists, none nested. Anything else (a class, an escape, an extglob, a range,
+// a lone or nested brace) is refused, as Node's glob (`extra`'s) may read it otherwise.
+const SIMPLE = /^(?:[\p{L}\p{N}_.@+\-/*?]|\{[\p{L}\p{N}_.@+\-/*?]*,[\p{L}\p{N}_.@+\-/*?,]*\})*$/u
+const isSimple = (pattern) => SIMPLE.test(pattern) && !/[^/]\*\*|\*\*[^/]/u.test(pattern)
 
-// What of `pattern` reads two ways, as text here and otherwise to Node's glob (fs.globSync, path.matchesGlob),
-// as [what, what to write instead], or null. Braces come first: Node expands them before reading the rest.
-function conflictingRead(pattern) {
-  if (pattern.includes('\\')) return ['a `\\` (to Node\'s glob a `/`)', 'match one with `?`']
-  if (/[[\]]/u.test(pattern)) return ['a `[` or `]` (to Node\'s glob a class: `[id]` is one `i` or `d`)', 'match one with `?`']
-  if (/\{[^,{}]*\.\.[^,{}]*\}/u.test(pattern)) return ['a range such as `{1..3}`', 'list it, as `{1,2,3}`']
-  if (!bracesListed(pattern)) return ['a `{` or `}` of no list such as `{a,b}`', 'match one with `?`']
-  return null
-}
-
-// The same of a brace-free alternative: an extglob, or a `**` within a name (to Node's glob a `*`).
-function conflictingReadOf(alternative) {
-  if (/[!*+?@]\(/u.test(alternative)) return ['an extglob such as `@(a|b)`', 'use `{a,b}`']
-  if (alternative.split('/').some((name) => name !== '**' && name.includes('**'))) return ['a `**` within a name', 'use `*`, or `**` as a whole name']
-  return null
-}
-
-// `pattern`'s brace-free alternatives (expandBraces), refusing one that reads two ways.
-function alternativesOf(label, pattern) {
-  const refuse = ([what, instead]) => {
-    throw new Error(`${label}: ${JSON.stringify(pattern)} holds ${what}, which is not supported: ${instead}`)
-  }
-  const found = conflictingRead(pattern)
-  if (found !== null) refuse(found)
-  const alternatives = expandBraces(label, pattern)
-  for (const alternative of alternatives) {
-    const inAlternative = conflictingReadOf(alternative)
-    if (inAlternative !== null) refuse(inAlternative)
-  }
-  return alternatives
-}
-
-// The first outermost `{...}` -> [start, alternatives, end], or null (bracesListed: each holds a `,`).
-function firstAlternation(pattern) {
-  let depth = 0
-  let open
-  const commas = []
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '{') {
-      if (depth++ === 0) open = i
-    } else if (c === ',' && depth === 1) {
-      commas.push(i)
-    } else if (c === '}' && --depth === 0) {
-      const bounds = [open, ...commas, i]
-      return [open, bounds.slice(1).map((end, k) => pattern.slice(bounds[k] + 1, end)), i]
-    }
-  }
-  return null
-}
-
-// The brace-free patterns `{a,b}` expands `pattern` into, as a shell expands it, but for an empty one, which
+// The brace-free patterns `pattern`'s lists expand into, as a shell expands them, but for an empty one, which
 // Node's glob drops (`{src,}` is `src` alone).
-function expandBraces(label, pattern) {
-  const queue = [pattern]
-  const out = []
-  while (queue.length > 0) {
-    const next = queue.shift()
-    const found = firstAlternation(next)
-    if (found === null) {
-      if (next !== '') out.push(next)
-    } else {
-      const [start, alternatives, end] = found
-      for (const alternative of alternatives) queue.push(`${next.slice(0, start)}${alternative}${next.slice(end + 1)}`)
-    }
-    if (queue.length + out.length > MAX_ALTERNATIVES) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to more than ${MAX_ALTERNATIVES} patterns`)
+function alternativesOf(label, pattern) {
+  if (!isSimple(pattern)) {
+    throw new Error(`${label}: ${JSON.stringify(pattern)} is not supported: a pattern is names of letters, digits ` +
+      'and `_.@+-`, with `*`, `?`, `**` as a whole name and `{a,b}` lists (none nested); match any other character with `?`')
   }
+  let out = ['']
+  for (const [, text, list] of pattern.matchAll(/([^{]*)(?:\{([^}]*)\})?/gu)) {
+    out = out.flatMap((head) => (list === undefined ? [head + text] : list.split(',').map((item) => head + text + item)))
+    if (out.length > MAX_ALTERNATIVES) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to more than ${MAX_ALTERNATIVES} patterns`)
+  }
+  out = out.filter((alternative) => alternative !== '')
   if (out.length === 0) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to no pattern`)
   return out
 }
@@ -152,7 +86,7 @@ function modulePattern(label, pattern) {
   const alternatives = alternativesOf(label, pattern)
   const named = (alternative) => {
     const segments = alternative.split('/')
-    return segments.length <= 2 && !/\s/u.test(alternative) && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
+    return segments.length <= 2 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
   }
   if (!alternatives.every(named)) throw new Error(`${label}: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")`)
   const regex = compile(alternatives)
