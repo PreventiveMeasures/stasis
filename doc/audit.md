@@ -24,7 +24,9 @@ takes no flag, so an entry setting an option that needs consent (`babel`,
 bundle such entries with `stasis bundle` and audit the file. The package
 manager's lockfile installing the directory (`pnpm-lock.yaml`,
 `package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`, found as the build
-finds it) is checked too, for malware alone: see
+finds it, or each of those `stasis.config.json`'s
+[`lockfiles`](github-bundle.md#several-lockfiles-lockfiles) names) is checked
+too, for malware alone: see
 [Malware in any dependency](#malware-in-any-dependency).
 
 | Flag | Meaning |
@@ -174,9 +176,11 @@ registry alone for it, which is fast, where OSV and their repositories are not.
 With no file, so are the registry's versions the package manager's lockfile
 installs that the bundle doesn't hold (devDependencies, say), deduped with the
 bundle's before anything is asked; such a package is named by the lockfile in
-place of consumers. Where it can't be told which lockfile that is (more than one
-package manager's, or bun's, which isn't read), that is said, and the audit goes
-on. Any such advisory makes the audit exit 1, an empty table or not.
+place of consumers. Where `stasis.config.json` names its `lockfiles`, so are the
+versions each JS one locks, a package named by the path there of each locking
+it (`tools/package-lock.json`). Where it can't be told which lockfile that is
+(more than one package manager's, or bun's, which isn't read), that is said,
+and the audit goes on. Any such advisory makes the audit exit 1, an empty table or not.
 
 ```
 malware in 2 dependencies:

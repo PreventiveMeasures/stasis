@@ -14,7 +14,7 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
-import { HttpError, ValidateError, exitCodeOf, installedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
+import { HttpError, ValidateError, configuredLockfiles, exitCodeOf, installedNpmPackages, lockedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -1102,6 +1102,106 @@ test('validate: an npm copy held to where the repository\'s npm lockfile install
   }
   t.assert.deepStrictEqual(await at('node_modules/tool/node_modules/ms'), ['valid', ['package-lock.json'], []], 'at web/node_modules/tool/node_modules/ms')
   t.assert.deepStrictEqual(await at('node_modules/ms'), ['invalid', ['package-lock.json'], [['misplaced', 'node_modules/ms']]], 'web/node_modules/ms is ms@2.0.0')
+}))
+
+// A tools/ project's package-lock.json, as npm writes it: ms@2.1.3 at its node_modules/ms.
+const toolsLock = `${JSON.stringify({ name: 'tools', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+  '': { name: 'tools', version: '1.0.0', dependencies: { ms: '2.1.3' } },
+  'node_modules/ms': lockEntry('ms', '2.1.3', SRI),
+} }, null, 2)}\n`
+
+// The root's package-lock.json of a workspace apps/web, which it installs ms@2.1.3 in.
+const appsLock = `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+  '': { name: 'app', version: '1.0.0', workspaces: ['apps/web'] },
+  'apps/web': { version: '1.0.0', dependencies: { ms: '2.1.3' } },
+  'node_modules/web': { resolved: 'apps/web', link: true },
+  'apps/web/node_modules/ms': lockEntry('ms', '2.1.3', SRI),
+} }, null, 2)}\n`
+
+test('lockedBy: several lockfiles of one ecosystem, each where it is (`at`): a copy where the innermost holding it installs it, a version as any of them locks it; two at one place refused', async (t) => {
+  const told = async (dir, locked) => {
+    const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }]]) }).serialize()))
+    const report = await validateBundle(plan, { reason: 'skipped' }, { fetch: async () => new Map([['index.js', bytes(MS['index.js'])]]), locked })
+    return [report.status, report.packages.map((pkg) => [pkg.status, pkg.reason ?? null, pkg.at ?? null])]
+  }
+  const both = lockedBy([
+    { path: 'package-lock.json', text: npmLock(''), from: 'repository' },
+    { path: 'tools/package-lock.json', text: toolsLock, from: 'repository', root: '..', at: 'tools' },
+  ])
+  t.assert.deepStrictEqual(both.lockfiles, ['package-lock.json', 'tools/package-lock.json'])
+  t.assert.deepStrictEqual(await told('tools/node_modules/ms', both), ['valid', []], "tools/'s lockfile installs it at its node_modules/ms")
+  t.assert.deepStrictEqual(await told('node_modules/tool/node_modules/ms', both), ['valid', []], "the root's, there")
+  t.assert.deepStrictEqual(await told('node_modules/ms', both), ['invalid', [['invalid', 'misplaced', 'node_modules/ms']]], "the root's installs ms@2.0.0 there")
+  // The root's alone: tools/node_modules/ms is none of its locations.
+  const root = lockedBy([{ path: 'package-lock.json', text: npmLock(''), from: 'repository' }])
+  t.assert.deepStrictEqual(await told('tools/node_modules/ms', root), ['invalid', [['invalid', 'misplaced', 'tools/node_modules/ms']]])
+  // Locked as any of them locks it: ms@2.0.0 by the root's alone, still locked.
+  t.assert.deepStrictEqual(both.lock('npm', 'ms', '2.0.0'), { from: 'registry', integrity: OTHER_SRI })
+  t.assert.deepStrictEqual(both.lock('npm', 'ms', '9.9.9'), null)
+  t.assert.throws(() => lockedBy([{ path: 'package-lock.json', text: npmLock('') }, { path: 'tools/package-lock.json', text: toolsLock }]), (error) => error instanceof ValidateError && error.code === 'lockfile-ambiguous')
+  // tools/'s alone: node_modules/ms is installed by none of them, whatever version they lock.
+  const tools = lockedBy([{ path: 'tools/package-lock.json', text: toolsLock, from: 'repository', root: '..', at: 'tools' }])
+  t.assert.deepStrictEqual(await told('node_modules/ms', tools), ['invalid', [['invalid', 'misplaced', 'node_modules/ms']]])
+  // Of a bundle in apps/web: apps/tools/'s, beside it, holds none of its copies, though listed first and as
+  // far from it as the root's, which installs them.
+  const beside = lockedBy([
+    { path: 'apps/tools/package-lock.json', text: toolsLock, from: 'repository', root: '../web', at: '../tools' },
+    { path: 'package-lock.json', text: appsLock, from: 'repository', root: 'apps/web', at: '../..' },
+  ])
+  t.assert.deepStrictEqual(await told('node_modules/ms', beside), ['valid', []])
+})
+
+test("validate: the dependencies held to the lockfiles the repository's stasis.config.json names, in place of the one found; one validate doesn't read passed over", withTmp(async (t, tmp) => {
+  const files = {
+    'package.json': '{"name":"app","version":"1.0.0"}\n',
+    'package-lock.json': npmLock(''),
+    'src/main.js': 'main\n',
+    'tools/package.json': '{"name":"tools","version":"1.0.0"}\n',
+    'tools/package-lock.json': toolsLock,
+    'contracts/soldeer.lock': 'dependencies = []\n',
+  }
+  const file = join(tmp, 'app.stasis.code.br')
+  writeBundle(file, { repo: { github: 'org/repo', commit }, modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/tool/node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+    ['tools/node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+  ]) })
+  const config = (lockfiles) => ({ 'stasis.config.json': `${JSON.stringify({ lockfiles })}\n` })
+  const report = await validate(file, { client: repoClient({ ...files, ...config(['package-lock.json', 'tools/package-lock.json', 'contracts/soldeer.lock']) }), fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.lockfiles, report.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])], ['valid', ['package-lock.json', 'tools/package-lock.json'], []])
+  // Found, the root's alone: tools/'s copy is none it installs.
+  const found = await validate(file, { client: repoClient(files), fetch: upstream() })
+  t.assert.deepStrictEqual([found.status, found.lockfiles, found.packages.map((pkg) => [pkg.reason ?? null, pkg.at ?? null])], ['invalid', ['package-lock.json'], [['misplaced', 'tools/node_modules/ms']]])
+  // Naming none validate reads of its npm packages, or one outside the repository: refused.
+  await t.assert.rejects(validate(file, { client: repoClient({ ...files, ...config(['contracts/soldeer.lock']) }), fetch: upstream() }), (error) => error.code === 'no-lockfile' && /none of the lockfiles stasis\.config\.json names locks its npm packages/u.test(error.message))
+  await t.assert.rejects(validate(file, { client: repoClient({ ...files, ...config(['../package-lock.json']) }), fetch: upstream() }), (error) => error.code === 'lockfile-unreadable' && /outside the repository/u.test(error.message))
+  // A lockfile given in place of them all the same.
+  const given = join(tmp, 'package-lock.json')
+  writeFileSync(given, npmLock(''))
+  t.assert.deepStrictEqual((await validate(file, { client: repoClient({ ...files, ...config(['package-lock.json', 'tools/package-lock.json']) }), fetch: upstream(), lockfile: [given] })).lockfiles, [given])
+}))
+
+test("configuredLockfiles and lockedNpmPackages: stasis.config.json's lockfiles, of a repository's directory or the disk's, the npm ones' registry packages each named by its path", withTmp(async (t, tmp) => {
+  const listed = { '': ['stasis.config.json'], web: ['stasis.config.json'], none: ['package.json'] }
+  const read = async (path) => ({ 'stasis.config.json': '{"lockfiles":["pnpm-lock.yaml","tools/package-lock.json"]}', 'web/stasis.config.json': '{"lockfiles":["../pnpm-lock.yaml"]}' })[path]
+  const list = async (dir) => listed[dir] ?? []
+  t.assert.deepStrictEqual(await configuredLockfiles({ directory: '', list, read }), ['pnpm-lock.yaml', 'tools/package-lock.json'])
+  t.assert.deepStrictEqual(await configuredLockfiles({ directory: 'web', list, read }), ['pnpm-lock.yaml'], 'from the repository\'s root')
+  t.assert.equal(await configuredLockfiles({ directory: 'none', list, read }), undefined)
+  // Of the disk: each npm, pnpm or yarn lockfile named; a soldeer.lock passed over.
+  mkdirSync(join(tmp, 'tools'))
+  writeFileSync(join(tmp, 'package.json'), '{"name":"app","version":"1.0.0"}\n')
+  writeFileSync(join(tmp, 'package-lock.json'), npmLock(''))
+  writeFileSync(join(tmp, 'tools', 'package-lock.json'), toolsLock)
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lockfiles: ['package-lock.json', 'tools/package-lock.json', 'contracts/soldeer.lock'] }))
+  const locked = await lockedNpmPackages(tmp)
+  t.assert.deepStrictEqual(locked.map(({ path, name }) => [path, name]), [[join(tmp, 'package-lock.json'), 'package-lock.json'], [join(tmp, 'tools', 'package-lock.json'), 'tools/package-lock.json']])
+  t.assert.deepStrictEqual(locked[1].packages, [{ name: 'ms', version: '2.1.3' }])
+  // Without lockfiles named, the one installedNpmPackages finds, by its name.
+  writeFileSync(join(tmp, 'stasis.config.json'), '{}')
+  t.assert.deepStrictEqual((await lockedNpmPackages(tmp)).map(({ name }) => name), ['package-lock.json'])
+  writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lockfiles: ['missing/pnpm-lock.yaml'] }))
+  await t.assert.rejects(lockedNpmPackages(tmp), (error) => error instanceof ValidateError && error.code === 'lockfile-unreadable')
 }))
 
 test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-unverified), 3 refused or failed; own code skipped with --only-deps, its dependencies held to a lockfile given or, with --no-lockfile, none', withTmp((t, tmp) => {

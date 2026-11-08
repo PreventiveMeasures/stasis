@@ -1586,6 +1586,48 @@ test('audit: the packages a package manager\'s lockfile locks, deduped with the 
   }
 ))
 
+test('audit: the packages several lockfiles lock, each such package named by every lockfile locking it', withFetch(
+  ({ opts }) => json(Object.hasOwn(JSON.parse(opts.body), 'evil')
+    ? { evil: [{ id: 3, severity: 'critical', title: 'Malicious code in evil', url: 'https://github.com/advisories/GHSA-3333-4444-5555', vulnerable_versions: '*', cwe: ['CWE-506'] }] }
+    : {}),
+  async (t, calls) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
+    try {
+      const lockfile = [
+        { path: join(tmp, 'pnpm-lock.yaml'), name: 'pnpm-lock.yaml', packages: [{ name: 'foo', version: '2.0.0' }, { name: 'evil', version: '6.6.6' }] },
+        { path: join(tmp, 'tools', 'package-lock.json'), name: 'tools/package-lock.json', packages: [{ name: 'evil', version: '6.6.6' }] },
+      ]
+      const report = await audit([writeBundle(tmp)], { lockfile })
+      t.assert.deepStrictEqual(calls.map((call) => JSON.parse(call.opts.body)), [{ baz: ['0.0.1'], foo: ['2.0.0'] }, { evil: ['6.6.6'] }], 'evil asked once, whichever locks it')
+      t.assert.deepStrictEqual(report.npmMalware.map(({ package: pkg, reason }) => [pkg, reason]), [['evil', 'pnpm-lock.yaml, tools/package-lock.json']], 'named by both')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+))
+
+test("audit with no file checks the packages of each JS lockfile stasis.config.json names, for malware, by its path there", withTmp((t, tmp) => {
+  const spy = join(tmp, 'spy.mjs')
+  writeFileSync(spy, NPM_SPY)
+  const project = join(tmp, 'project')
+  writeProject(project, { entries: { 'index.js': {}, 'cli.js': {} }, lockfiles: ['package-lock.json', 'tools/package-lock.json', 'contracts/soldeer.lock'] })
+  const SRI = `sha512-${'A'.repeat(86)}==`
+  const entry = (name, version) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: SRI })
+  const lock = (name, deps) => `${JSON.stringify({ name, version: '1.0.0', lockfileVersion: 3, requires: true, packages: {
+    '': { name, version: '1.0.0', dependencies: Object.fromEntries(deps.map(([dep, version]) => [dep, version])) },
+    ...Object.fromEntries(deps.map(([dep, version]) => [`node_modules/${dep}`, entry(dep, version)])),
+  } }, null, 2)}\n`
+  writeFileSync(join(project, 'package-lock.json'), lock('app', [['bar', '2.0.0'], ['foo', '1.0.0']]))
+  // tools/, a project of its own, locks evil, which no build of the root holds.
+  mkdirSync(join(project, 'tools'))
+  writeFileSync(join(project, 'tools', 'package-lock.json'), lock('tools', [['evil', '6.6.6']]))
+  const r = runSpied(spy, project, ['audit'])
+  t.assert.equal(r.status, 1, r.stderr)
+  const asked = r.stderr.split('\n').filter((line) => line.startsWith('npm ')).toSorted()
+  t.assert.deepStrictEqual(asked, ['npm {"bar":["2.0.0"],"foo":["1.0.0"]}', 'npm {"evil":["6.6.6"]}'])
+  t.assert.match(r.stderr, /\nmalware in 1 dependency:\n {2}evil 6\.6\.6 {2}GHSA-3333-4444-5555 {2}Malicious code in evil {2}tools\/package-lock\.json\n$/u)
+}))
+
 test('printAuditReport: npm\'s malware advisories told where --reason\'s consumer recorded no package', (t) => {
   let printed = ''
   const row = { ecosystem: 'npm', package: 'hijacked', installed: '0.7.29', vulnerable: '=0.7.29', severity: 'malware', title: 'Embedded malware in hijacked', id: 'GHSA-pjwm-rvh2-c87w', source: 'registry', reason: '' }

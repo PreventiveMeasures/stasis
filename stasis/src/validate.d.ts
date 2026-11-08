@@ -60,6 +60,7 @@ export interface Lockfile {
   tree?: (dir: string) => Promise<Map<string, Uint8Array>>
   patches?: string[]
   root?: string
+  at?: string
 }
 // A patch pnpm's lockfile names for a version: by its path, or by its hash alone, in a file of one of
 // `names` in a patches directory (locate).
@@ -118,6 +119,8 @@ export function historyOf(repository: Repository, commit: string, options?: { ma
 export function repositoryFiles(repository: Repository, where: { github?: string; commit: string; directory?: string }): Promise<Map<string, RepositoryEntry>>
 export function repositoryLockfiles(options: { directory?: string; ecosystems: Set<string>; list: (dir: string) => Promise<string[]>; read: (path: string) => Promise<string> })
   : Promise<{ path: string; text: string }[]>
+export function configuredLockfiles(options: { directory?: string; list: (dir: string) => Promise<string[]>; read: (path: string) => Promise<string> }): Promise<string[] | undefined>
+export function lockedNpmPackages(dir: string): Promise<{ path: string; name: string; packages: { name: string; version: string }[] }[]>
 
 interface Options { own?: boolean; fetch?: Fetch; deadline?: number }
 export function validateRepository(plan: ValidationPlan, where: { repository?: Repository | null; commit?: string; directory?: string }, options?: Options & {

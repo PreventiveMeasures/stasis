@@ -326,8 +326,9 @@ export function flattenAdvisories(found, reasonsByPkg = new Map(), whyByPkg = nu
 // `npmMalware` is what npm's registry tells of malware in any npm dependency, whatever `reason`: rows as
 // `rows` are, each package's consumers its reason. Under --reason, the npm packages its consumer didn't
 // record are asked of npm's registry alone for it (fast, where OSV and their repositories aren't), as are
-// those `lockfile` (`{ path, packages }`, validate.js installedNpmPackages', a package manager's) locks that
-// the files don't, deduped with the files' before anything is asked; such a package's reason its file name.
+// those `lockfile` (`{ path, packages, name }`, validate.js lockedNpmPackages', a package manager's, or several)
+// locks that the files don't, deduped with the files' before anything is asked; such a package's reason the
+// names of the lockfiles locking it (`name`, else its file name).
 // Consumers are named as consumerNames names them, across all the files: `bundle:metro` as `metro`
 // where none records `metro`, in the rows, the chains and the `reason` returned, and `reason` may
 // name it either way.
@@ -361,12 +362,16 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   const keyed = (pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]
   const byKey = new Map((reason ? all.filter((pkg) => !own.has(pkg) && pkg.ecosystem === 'npm' && unaudited(pkg) === undefined) : []).map(keyed))
   const askedKeys = new Set(asked.map((pkg) => keyed(pkg)[0]))
-  const lockedOnly = new Set()
-  for (const { name, version } of lockfile?.packages ?? []) {
-    const [key, pkg] = keyed({ ecosystem: 'npm', name, version })
-    if (askedKeys.has(key) || byKey.has(key)) continue
-    byKey.set(key, pkg)
-    lockedOnly.add(key)
+  // Each of those the lockfiles alone lock, and the names of those that do.
+  const lockedOnly = new Map()
+  for (const one of lockfile === null ? [] : [lockfile].flat()) {
+    const named = one.name ?? one.path.split(/[/\\]/u).at(-1)
+    for (const { name, version } of one.packages) {
+      const [key, pkg] = keyed({ ecosystem: 'npm', name, version })
+      if (askedKeys.has(key) || (byKey.has(key) && !lockedOnly.has(key))) continue
+      byKey.set(key, pkg)
+      lockedOnly.set(key, (lockedOnly.get(key) ?? new Set()).add(named))
+    }
   }
   const others = [...byKey.values()]
   if (asked.length === 0 && others.length === 0) {
@@ -390,8 +395,8 @@ export async function audit(files, { why = false, whyDeep = false, whyFull = fal
   const vendoredOf = (list) => new Map(list.filter((pkg) => pkg.vendoredIn !== undefined).map((pkg) => [keyOf(pkg.ecosystem, pkg.name, pkg.version), pkg]))
   // npm's registry's malware advisories (`registry` rows, not OSV's records), of every npm dependency.
   const malware = [...result, ...elsewhere].filter((adv) => adv.malware && adv.source === 'registry')
-  // Their consumers, and the lockfile's name for those it alone locks.
-  const malwareReasons = () => (lockedOnly.size === 0 ? indexed().byPkg : new Map([...indexed().byPkg, ...[...lockedOnly].map((key) => [key, new Set([lockfile.path.split(/[/\\]/u).at(-1)])])]))
+  // Their consumers, and the names of the lockfiles for those they alone lock.
+  const malwareReasons = () => (lockedOnly.size === 0 ? indexed().byPkg : new Map([...indexed().byPkg, ...lockedOnly]))
   const npmMalware = malware.length === 0 ? [] : flattenAdvisories(malware, malwareReasons(), null, null, vendoredOf([...asked, ...others]))
   // `--why` REPLACES the consumer list with per-consumer import paths for npm's
   // advisories, the only ones collectWhy has paths for: another ecosystem's keep
