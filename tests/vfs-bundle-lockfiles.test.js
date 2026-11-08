@@ -129,6 +129,22 @@ test("buildVfsBundle lays out a tree of each lockfile stasis.config.json names, 
   t.assert.equal(built.stats.unpacked, 1)
 })
 
+test('buildVfsBundle holds its build to the stasis.lock.json the project holds, by its lock mode', async (t) => {
+  const files = { 'package.json': manifest('p', ['used']), 'pnpm-lock.yaml': pnpmLock({ '.': ['used'] }), 'src/a.js': "require('used')\n" }
+  const build = (more, options) => buildVfsBundle({ vfs: vfsOf({ ...files, ...more }), entries: ['src/a.js'], cache: store(), ...options })
+  const lock = (await build()).lockfile.serialize()
+  await build({ 'stasis.lock.json': lock })
+  // One recording src/a.js otherwise.
+  const parsed = JSON.parse(lock)
+  parsed.sources['.'].files['src/a.js'] = `sha512-${'B'.repeat(85)}A==`
+  const other = `${JSON.stringify(parsed, null, 2)}\n`
+  await t.assert.rejects(build({ 'stasis.lock.json': other }), /^Error: stasis\.lock\.json: content mismatch for 'src\/a\.js'$/u)
+  await build({ 'stasis.lock.json': other }, { lock: 'ignore' })
+  await build({ 'stasis.lock.json': other }, { lock: 'replace' })
+  await t.assert.rejects(build({ 'stasis.config.json': json({ lock: 'frozen' }) }), /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
+  await t.assert.rejects(build({}, { lock: 'sometimes' }), /^TypeError: buildVfsBundle: lock must be one of/u)
+})
+
 test("buildVfsBundle detects the one lockfile without stasis.config.json's lockfiles, which tools/'s is not", async (t) => {
   const built = await buildVfsBundle({ vfs: vfsOf(TWO), cache: store(), entries: ['src/a.js', 'tools/cli.js'] })
   t.assert.equal(built.packageManager, 'pnpm')

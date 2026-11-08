@@ -2173,15 +2173,15 @@ cliTest('CLI: bundle --scope conflicting with stasis.config.json errors instead 
     `expected conflict error in stderr, got: ${r.stderr}`)
 }))
 
-// stasis.config.json can pin the lockfile frozen, which a JS bundle's State -- that ignores the
-// lockfile -- can't override, so the build refuses it; a bundle mode is no config key at all.
-test('buildBundle (JS) refuses a stasis.config.json that sets lock, and one that sets bundle', withTmp(async (t, tmp) => {
+// stasis.config.json can pin the lockfile frozen, which holds the build to the stasis.lock.json
+// there, so one without it is refused; a bundle mode is no config key at all.
+test('buildBundle (JS) refuses a stasis.config.json that pins lock = frozen with no lockfile, one that sets another lock, and one that sets bundle', withTmp(async (t, tmp) => {
   writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'pinned', version: '0.0.0', type: 'module' }))
   writeFileSync(join(tmp, 'pnpm-workspace.yaml'), '')
   writeFileSync(join(tmp, 'entry.js'), 'console.log(1)\n')
   const build = () => buildBundle({ cwd: tmp, env: cleanEnv, entries: ['entry.js'] })
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'frozen' }))
-  await t.assert.rejects(build, (err) => /Flags\/env can not override stasis\.config\.json/.test(err.message) && err.cause.actual === 'frozen' && err.cause.expected === 'ignore')
+  await t.assert.rejects(build, /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ lock: 'add' }))
   await t.assert.rejects(build, /stasis\.config\.json: lock can only be 'frozen'/)
   writeFileSync(join(tmp, 'stasis.config.json'), JSON.stringify({ bundle: 'add' }))
@@ -3898,10 +3898,11 @@ cliTest('CLI: bundle load surfaces ERR_MODULE_NOT_FOUND for dynamic import of a 
   )
 
   const bundlePath = join(tmp, 'snap.br')
-  const build = await runCli(['bundle', `--output=${bundlePath}`, 'src/entry.cjs'], { cwd: tmp })
+  // cjsFixture ships a stasis.lock.json, which attests the entry replaced: lock=ignore, so neither
+  // `stasis bundle` nor `stasis run` holds it to it.
+  const build = await runCli(['bundle', `--output=${bundlePath}`, 'src/entry.cjs'], { cwd: tmp, env: { ...cleanEnv, EXODUS_STASIS_LOCK: 'ignore' } })
   t.assert.equal(build.status, 0, `bundle stderr: ${build.stderr}`)
 
-  // cjsFixture ships a stasis.lock.json; use lock=ignore so `stasis run` tolerates it.
   // The fixture's stasis.config.json declares scope=full, which is now the CLI default
   // since ed41d6f flipped --full into the implicit default. No scope flag needed.
   const load = await runCli(

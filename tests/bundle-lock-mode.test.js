@@ -1,0 +1,90 @@
+import { test } from 'node:test'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import { bundleCommand } from '../stasis/src/cmd/bundle.js'
+import { withTmp } from './tmp.helper.js'
+
+// `stasis bundle` and the stasis.lock.json there: what it builds held to what the lockfile records,
+// by the lock mode the project's runs take (EXODUS_STASIS_LOCK, or frozen where stasis.config.json
+// pins it; add by default).
+
+const OTHER = `sha512-${'B'.repeat(85)}A==`
+const { EXODUS_STASIS_LOCK: _lock, EXODUS_STASIS_LOCK_FILE: _file, ...env } = process.env
+const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
+const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`)
+
+// A project in `dir` of index.js alone.
+function project(dir) {
+  writeJson(join(dir, 'package.json'), { name: 'app', version: '1.0.0' })
+  writeFileSync(join(dir, 'index.js'), 'module.exports = 1\n')
+}
+const build = (dir, { lock, ...options } = {}) => bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', env: lock === undefined ? env : { ...env, EXODUS_STASIS_LOCK: lock }, ...options })
+
+test('stasis bundle in lock = add holds what it builds to the stasis.lock.json there, with --lockfile or not, and merges what is new into it', withTmp(async (t, dir) => {
+  project(dir)
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const written = readFileSync(lockPath, 'utf8')
+  const lock = JSON.parse(written)
+  lock.sources['.'].files['index.js'] = OTHER
+  writeJson(lockPath, lock)
+  const edited = readFileSync(lockPath, 'utf8')
+  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json: content mismatch for 'index\.js'$/u, 'without --lockfile: read all the same')
+  await t.assert.rejects(build(dir, { lockfile: 'stasis.lock.json' }), /content mismatch for 'index\.js'/u, 'with it: not overwritten')
+  t.assert.equal(readFileSync(lockPath, 'utf8'), edited, 'left as it was')
+  // What it adds is merged in, and what it records stays: of another entry alone, both.
+  writeFileSync(lockPath, written)
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json' })
+  const merged = readJson(lockPath)
+  t.assert.deepStrictEqual([Object.keys(merged.sources['.'].files).toSorted(), merged.entries.toSorted()], [['index.js', 'more.js'], ['index.js', 'more.js']])
+  // One changed since, as for a run: lock = replace records it anew.
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 3\n')
+  await t.assert.rejects(build(dir, { entries: ['more.js'] }), /stasis\.lock\.json: content mismatch for 'more\.js'/u)
+}))
+
+test('stasis bundle in lock = ignore leaves stasis.lock.json alone, in lock = replace rewrites it', withTmp(async (t, dir) => {
+  project(dir)
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const lock = readJson(lockPath)
+  const recorded = lock.sources['.'].files['index.js']
+  lock.sources['.'].files['index.js'] = OTHER
+  writeJson(lockPath, lock)
+  const edited = readFileSync(lockPath, 'utf8')
+  await build(dir, { lock: 'ignore' })
+  t.assert.equal(readFileSync(lockPath, 'utf8'), edited)
+  await build(dir, { lockfile: 'stasis.lock.json', lock: 'replace' })
+  t.assert.equal(readJson(lockPath).sources['.'].files['index.js'], recorded)
+}))
+
+test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.json, and never writes it', withTmp(async (t, dir) => {
+  project(dir)
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json isn't there, and lock = frozen holds the build to it$/u)
+  await t.assert.rejects(build(dir, { lock: 'add' }), /^Error: Flags\/env can not override stasis\.config\.json$/u, 'another mode the pin refuses, as a run is')
+  // The lockfile, written as lock = add would, and pinned frozen after.
+  writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const before = readFileSync(lockPath, 'utf8')
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  t.assert.equal(readFileSync(lockPath, 'utf8'), before, 'not written')
+  writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  await t.assert.rejects(build(dir, { entries: ['index.js', 'more.js'] }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
+  t.assert.equal(readFileSync(lockPath, 'utf8'), before, 'still not written')
+}))
+
+test('stasis bundle --deptree holds its build to the stasis.lock.json there', withTmp(async (t, dir) => {
+  // A lockfile of no registry package: nothing is fetched.
+  project(dir)
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n")
+  await build(dir, { deptree: true, lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const lock = readJson(lockPath)
+  lock.sources['.'].files['index.js'] = OTHER
+  writeJson(lockPath, lock)
+  await t.assert.rejects(build(dir, { deptree: true }), /content mismatch for 'index\.js'/u)
+}))

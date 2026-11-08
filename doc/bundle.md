@@ -79,6 +79,17 @@ lockfile at that path is merged the same way as the bundle; with none there it
 refuses rather than write a lockfile that doesn't attest the pre-existing
 bundle's files (write `--lockfile` from the first build, or drop it).
 
+A JS build is held to the `stasis.lock.json` there (the `--lockfile` path, else
+the project's, as a run finds it), with or without `--lockfile`, by the lock
+mode the project's runs take (`EXODUS_STASIS_LOCK`, or `frozen` where its
+`stasis.config.json` pins it; `add` by default, see [modes](run.md#modes)):
+
+| Mode | Behavior |
+| - | - |
+| `add` | What it builds must agree with what the lockfile records, each file and module among it; `--lockfile` writes the two merged: what is new is recorded, nothing recorded changes. |
+| `frozen` | As `add`, and the lockfile must be there and attest every entry, file and import it builds; none is written. |
+| `replace`, `ignore`, `none` | The lockfile there is not read; `--lockfile` writes the one built. |
+
 `--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
 `--lockfile` writes beside the bundle. The bundle is built all the same, and
 checked as it would be for writing, so the lockfile is refused wherever the

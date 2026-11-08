@@ -113,24 +113,24 @@ export class Lockfile {
 
   // Strict union of two Lockfiles (returns a NEW one): buckets must agree, and a file in both must carry
   // the identical hash (fail closed).
-  merge(other) {
+  merge(other, label = 'lockfile merge') {
     assert(this.config.scope === other.config.scope,
-      `lockfile merge: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)
+      `${label}: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)
     return new Lockfile({
       config: { scope: this.config.scope },
       entries: new Set([...this.entries, ...other.entries]),
-      modules: mergeModuleMaps(this.modules, other.modules, 'lockfile merge'),
-      imports: mergeNullable(this.imports, other.imports, (a, b) => mergeImportMaps(a, b, 'lockfile merge'), 'imports'),
-      formats: mergeNullable(this.formats, other.formats, (a, b) => mergeFormatMaps(a, b, 'lockfile merge'), 'formats'),
+      modules: mergeModuleMaps(this.modules, other.modules, label),
+      imports: mergeNullable(this.imports, other.imports, (a, b) => mergeImportMaps(a, b, label), 'imports', label),
+      formats: mergeNullable(this.formats, other.formats, (a, b) => mergeFormatMaps(a, b, label), 'formats', label),
       // `other` (the incoming, newer lockfile) wins for the files it records -- see mergeExecutableSets.
       executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
     })
   }
 }
 
-const mergeNullable = (a, b, merge, what) => {
+const mergeNullable = (a, b, merge, what, label) => {
   if (a === null && b === null) return null
   assert(a !== null && b !== null,
-    `lockfile merge: cannot merge ${what} (one lockfile attests ${what}, the other does not)`)
+    `${label}: cannot merge ${what} (one lockfile attests ${what}, the other does not)`)
   return merge(a, b)
 }
