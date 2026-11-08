@@ -86,8 +86,7 @@ const JS_ENTRY = /\.(?:js|cjs|mjs|ts|cts|mts|jsx|tsx)$/u
 // together, each language's built apart and their bundles merged (bundlePlan).
 function entriesLanguage(entries, cwd, host = diskHost) {
   // Beside JS entries, a directory one is of the Solidity ones (bundlePlan builds them apart).
-  const others = entries.filter((f) => !JS_ENTRY.test(f))
-  const dirError = directoryEntryError(others.length > 0 && others.length < entries.length ? others : entries, cwd, host)
+  const dirError = directoryEntryError(entries.filter((f) => !JS_ENTRY.test(f)), cwd, host)
   if (dirError !== null) throw new Error(dirError)
   const lang = {
     allSol: entries.every((f) => isSolidityEntry(f, cwd, host)),
@@ -218,7 +217,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
 const DISK_RUN_FLAGS = ['babel', 'metro-resolver']
 
 // bundleCommand's options for writing the bundle of entries in `lang` from the parsed output flags in `values`.
-function outputOptions(values, { allJs, allSol, jsAndSol = false }) {
+function outputOptions(values, { allJs, allSol, jsAndSol }) {
   if (values.lockfile && !allJs) throw new Error('--lockfile is only valid for JS bundles')
   // --deptree: the dependencies laid out in memory from the lockfile (pnpm, yarn 1, npm or Soldeer's),
   // never read from disk, which holds none.
@@ -301,11 +300,10 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   const keys = entries.map((entry) => entryKey(cwd, entry))
   const configured = config === null ? [] : entries.filter((_, i) => config.has(keys[i]))
   if (configured.length === 0 && !lang.jsAndSol) return { ...output, entries, ...buildOptions(values, lang) }
-  // JS and Solidity entries, with the flags: each language's a build, the flags valid for each; one of
-  // a language alone refused, which stasis.config.json's entries give its entries instead.
+  // JS and Solidity entries given: a build of each language's, the flags valid for both (one language's
+  // own are set in stasis.config.json's entries).
   if (configured.length === 0) {
-    const parts = [...Map.groupBy(entries, (entry) => (JS_ENTRY.test(entry) ? 'js' : 'sol')).values()]
-    return { ...output, builds: parts.map((part) => {
+    return { ...output, builds: [...Map.groupBy(entries, (entry) => JS_ENTRY.test(entry)).values()].map((part) => {
       try {
         return { entries: part, ...buildOptions(values, entriesLanguage(part, cwd)) }
       } catch (cause) {
