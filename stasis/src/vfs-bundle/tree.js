@@ -500,6 +500,13 @@ export function lockfileSpecs(name, project, cwd, lockfiles, os) {
   })
 }
 
+// The root and projects of each tree layOutTrees lays out of `specs`, `{ root, projects }` each, as
+// planTree finds them: nothing fetched, nor laid out.
+export const plannedTrees = ({ specs, ...options }) => specs.map((spec) => {
+  const { root, projects } = planTree({ ...options, ...spec })
+  return { root, projects }
+})
+
 // One tree of each of `specs`, `{ packageManager, cwd, packageManagerVersion, lazy, path }`
 // (lockfileSpecs', or the one detected), as layOutTree lays out one with the rest of `options`, all at
 // once, the first refusal thrown, in their order, once every one is done. -> the one tree, or the trees

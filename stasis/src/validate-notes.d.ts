@@ -5,6 +5,7 @@ export const PACKAGE_REASONS: Readonly<Record<string, string>>
 export const PATCH_ERRORS: Readonly<Record<string, string>>
 export const FILE_REASONS: Readonly<Record<string, string>>
 export const LOCKFILE_ERRORS: Readonly<Record<string, string>>
+export function generatedBy(client: { schema: string; generator: string; prisma: string }): string
 
 // A package as a report tells it, as much as its note reads.
 export interface NotedPackage {

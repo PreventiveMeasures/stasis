@@ -39,7 +39,16 @@ export const PATCH_ERRORS = {
 }
 
 // Why a file is as it is, by a problem's `reason`.
-export const FILE_REASONS = { symlink: 'a symlink in the repository', submodule: 'in a submodule', 'tree-cut': 'the repository\'s tree was too large to list whole' }
+export const FILE_REASONS = {
+  symlink: 'a symlink in the repository',
+  submodule: 'in a submodule',
+  'tree-cut': 'the repository\'s tree was too large to list whole',
+  generated: 'not as the repository\'s Prisma schema generates it',
+  'not-generated': 'in a Prisma Client\'s output, which generates no such file',
+}
+
+// What a report tells generated a client by, `{ schema, generator, prisma }` (a report's `generated`'s).
+export const generatedBy = (client) => `${client.schema}'s ${client.generator} (Prisma ${client.prisma})`
 
 // Why the dependencies were held to no lockfile, by a report's `lockfileError` (a ValidateError's code).
 export const LOCKFILE_ERRORS = {

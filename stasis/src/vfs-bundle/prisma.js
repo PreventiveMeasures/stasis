@@ -155,7 +155,7 @@ let loaded
 // never loaded: loading it reads the host's npm and yarn config and platform, and patches fs and
 // process.cwd. Its users get a stand-in, its isValidJsIdentifier its own file's, whose Unicode tables
 // aren't Node's; what it parses schemas with, the schema engine and @prisma/get-dmmf, is schemaEngines'.
-function loadGenerator() {
+export function loadGenerator() {
   if (loaded) return loaded
   let main
   try { main = require.resolve(GENERATOR) } catch (cause) { throw new Error(`--generate=prisma needs the optional '${GENERATOR}' ${GENERATOR_VERSION} dependency; install it (e.g. \`npm i ${GENERATOR}@${GENERATOR_VERSION}\`)`, { cause }) }
@@ -444,12 +444,13 @@ const needsNoOutput = (generator) => generator.provider.value === POTHOS && gene
 const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
 export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
 
-// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas. Asked for
-// (`strict`), what stasis can't generate is warned of, and a schema it can't take refused, as `prisma generate`
-// refuses it; detected, both are silent, the scan then reporting what is missing. Two generators writing one
-// output are refused either way.
+// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas, each with the
+// schema (`schema`, its path), the generator's name (`generator`) and the Prisma (`prisma`, its version) it is
+// of. Asked for (`strict`), what stasis can't generate is warned of, and a schema it can't take refused, as
+// `prisma generate` refuses it; detected, both are silent, the scan then reporting what is missing. Two
+// generators writing one output are refused either way, unless `shared`, which keeps each.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
-export async function generatePrismaClients({ host, root, projects, strict = true }) {
+export async function generatePrismaClients({ host, root, projects, strict = true, shared = false }) {
   const outputs = []
   const say = strict ? (message) => { console.warn(`[stasis] prisma: ${message}`) } : undefined
   const skip = (what, why) => say?.(notGenerating(what, why))
@@ -472,7 +473,7 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
   }
   const dirs = outputs.map(({ dir }) => dir)
   const twice = dirs.find((dir, i) => dirs.indexOf(dir) !== i)
-  if (twice !== undefined) throw new Error(`prisma: ${twice} is the output of more than one generator`)
+  if (twice !== undefined && !shared) throw new Error(`prisma: ${twice} is the output of more than one generator`)
   return outputs
 }
 /* eslint-enable no-await-in-loop */
@@ -499,7 +500,8 @@ async function generateSchema({ host, path, prisma, say, skip }) {
     }
     const outputDir = outputOf(generator, path)
     if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
-    outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
+    const client = generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host })
+    outputs.push({ dir: outputDir, files: client, schema: path, generator: generator.name, prisma: prisma.version })
   }
   return outputs
 }
