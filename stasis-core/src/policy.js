@@ -15,49 +15,69 @@ const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
 
-// The index of the `]` closing the class the `[` at `at` opens, or -1: a `]` right after `[` or `[!` is a
-// member, as is one escaped (`\]`).
+// The index of the `]` closing the class the `[` at `at` opens, or -1: a `]` right after `[` or `[!` is a member.
 function classEnd(text, at) {
   let i = at + 1
   if (text[i] === '!' || text[i] === '^') i++
   if (text[i] === ']') i++
-  for (; i < text.length; i++) {
-    if (text[i] === '\\') i++
-    else if (text[i] === ']') return i
-  }
-  return -1
+  return text.indexOf(']', i)
 }
 
-// A class's members (between `[`/`[!` and `]`) as a RegExp class body: `\x` the character x, `-` between
-// two members a range, every other character itself.
-function classSource(body) {
-  let out = ''
-  for (let i = 0; i < body.length; i++) {
-    const escaped = body[i] === '\\' && i + 1 < body.length
-    const c = escaped ? body[++i] : body[i]
-    out += c === '-' && !escaped ? '-' : /[[\\\]^-]/u.test(c) ? `\\${c}` : c
+// A class's members (between `[`/`[!` and `]`) as a RegExp class body: `-` between two members a range.
+const classSource = (body) => body.replaceAll(/[[\]^]/gu, '\\$&')
+
+// Whether each brace is of a balanced `{...}` holding a `,` of its own, none after a `$`: the lists Node's
+// glob expands as this matcher does (it takes `{a}` and `${a,b}` as themselves, and expands `{{a,b}}`).
+function bracesListed(pattern) {
+  const listed = []
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '{') {
+      if (pattern[i - 1] === '$') return false
+      listed.push(false)
+    } else if (c === ',' && listed.length > 0) {
+      listed[listed.length - 1] = true
+    } else if (c === '}' && listed.pop() !== true) {
+      return false
+    }
   }
-  return out
+  return listed.length === 0
 }
 
-// The first outermost `{...}` holding a `,` of its own -> [start, alternatives, end], or null (a brace
-// without one is literal).
+// Glob syntax Node's glob (fs.globSync, path.matchesGlob) reads otherwise than this matcher would: refused,
+// with what to write instead.
+function unsupportedSyntax(pattern) {
+  if (pattern.includes('\\')) return ['a `\\` (Node\'s glob takes it for a `/`)', 'match a special character with a class, as `[*]`']
+  if (/[!*+?@]\(/u.test(pattern)) return ['an extglob such as `@(a|b)`', 'use `{a,b}`']
+  for (let i = pattern.indexOf('['); i !== -1; i = pattern.indexOf('[', i + 1)) {
+    const close = classEnd(pattern, i)
+    if (close === -1) break
+    if (/\[[.:=]/u.test(pattern.slice(i + 1, close))) return ['a POSIX class such as `[[:digit:]]`', 'use `[0-9]`']
+    i = close
+  }
+  if (/\{[^,{}]*\.\.[^,{}]*\}/u.test(pattern)) return ['a range such as `{1..3}`', 'list it, as `{1,2,3}`']
+  if (!bracesListed(pattern)) return ['a `{` or `}` of no list such as `{a,b}`', 'match one with `?`']
+  return null
+}
+
+function assertSupported(label, pattern) {
+  const found = unsupportedSyntax(pattern)
+  if (found !== null) throw new Error(`${label}: ${JSON.stringify(pattern)} holds ${found[0]}, which is not supported: ${found[1]}`)
+}
+
+// The first outermost `{...}` -> [start, alternatives, end], or null. Braces are lists (bracesListed), and,
+// as to Node's glob, a `{` or `,` in a class is no less one.
 function firstAlternation(pattern) {
   let depth = 0
   let open
-  let commas
+  const commas = []
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i]
-    if (c === '\\') {
-      i++
-    } else if (c === '[') {
-      const close = classEnd(pattern, i)
-      if (close !== -1) i = close
-    } else if (c === '{') {
-      if (depth++ === 0) [open, commas] = [i, []]
+    if (c === '{') {
+      if (depth++ === 0) open = i
     } else if (c === ',' && depth === 1) {
       commas.push(i)
-    } else if (c === '}' && depth > 0 && --depth === 0 && commas.length > 0) {
+    } else if (c === '}' && --depth === 0) {
       const bounds = [open, ...commas, i]
       return [open, bounds.slice(1).map((end, k) => pattern.slice(bounds[k] + 1, end)), i]
     }
@@ -65,7 +85,8 @@ function firstAlternation(pattern) {
   return null
 }
 
-// The brace-free patterns `{a,b}` expands `pattern` into, as a shell expands it.
+// The brace-free patterns `{a,b}` expands `pattern` into, as a shell expands it, but for an empty one, which
+// Node's glob drops (`{src,}` is `src` alone).
 function expandBraces(label, pattern) {
   const queue = [pattern]
   const out = []
@@ -73,28 +94,27 @@ function expandBraces(label, pattern) {
     const next = queue.shift()
     const found = firstAlternation(next)
     if (found === null) {
-      out.push(next)
+      if (next !== '') out.push(next)
     } else {
       const [start, alternatives, end] = found
       for (const alternative of alternatives) queue.push(`${next.slice(0, start)}${alternative}${next.slice(end + 1)}`)
     }
     if (queue.length + out.length > MAX_ALTERNATIVES) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to more than ${MAX_ALTERNATIVES} patterns`)
   }
+  if (out.length === 0) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to no pattern`)
   return out
 }
 
 const escapeRegExp = (text) => text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, '\\$&')
 
-// One `/`-free segment as a RegExp source: `*`, `?`, `[...]` and `\x`. Wildcards match dotfiles too,
-// so `.env` doesn't slip past `**`.
+// One `/`-free segment as a RegExp source: `*`, `?` and `[...]`. Wildcards match dotfiles too, so `.env`
+// doesn't slip past `**`.
 function segmentSource(segment) {
   let out = ''
   for (let i = 0; i < segment.length; i++) {
     const c = segment[i]
     const close = c === '[' ? classEnd(segment, i) : -1
-    if (c === '\\' && i + 1 < segment.length) {
-      out += escapeRegExp(segment[++i])
-    } else if (c === '*') {
+    if (c === '*') {
       out += '[^/]*'
       while (segment[i + 1] === '*') i++
     } else if (c === '?') {
@@ -144,6 +164,7 @@ function compile(label, pattern, alternatives, suffix = '') {
 // directory above it (`src` takes in src/**); `.` matches everything, and the root's own `--fs` listing
 // (`.`) is matched by `.` and `**` alone.
 function pathPattern(label, pattern) {
+  assertSupported(label, pattern)
   const alternatives = expandBraces(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
   if (alternatives.some(posixPathEscapes)) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
@@ -158,6 +179,7 @@ function pathPattern(label, pattern) {
 // name-shaped (one segment or a scope's two, none `.`, `..` or `node_modules`): a path such as
 // node_modules/left-pad would match no name, and so silently refuse nothing.
 function modulePattern(label, pattern) {
+  assertSupported(label, pattern)
   const alternatives = expandBraces(label, pattern)
   const named = (alternative) => {
     const segments = alternative.split('/')

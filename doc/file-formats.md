@@ -255,10 +255,14 @@ ignored, and `.` is that directory itself, so everything. A pattern matches a
 path, or a directory above it: `src` takes in everything under `src/`, as `**/test`
 does every `test` directory. `*` matches any run of characters but `/`, `?` one,
 `[abc]`, `[a-z]` and `[!abc]` one of a class, `**` as a whole segment any number
-of segments, none included (`a/**` matches `a`, `**/b` matches `b`), `{a,b}`
-either, and `\` takes the next character as itself. Unlike `extra`'s, which
-globs as a shell does, these wildcards match dotfiles too, so `.env` doesn't slip
-past `**`. A path is matched as the artifact spells it, never folding case.
+of segments, none included (`a/**` matches `a`, `**/b` matches `b`), and `{a,b}`
+either. That is Node's glob, as `extra`'s is, read as Node reads it but that these
+wildcards match dotfiles too, so `.env` doesn't slip past `**` (`extra` globs as a
+shell does), and a path is matched as the artifact spells it, never folding case.
+What Node's glob would read otherwise is refused, not taken as itself: a `\` (to
+Node a `/`; `[*]` matches a `*`), an extglob such as `@(a|b)`, a POSIX class such
+as `[[:digit:]]`, a range such as `{1..3}`, and a `{` or `}` of no list (match one
+with `?`). An empty alternative is dropped, as Node drops it: `{src,}` is `src`.
 
 A module pattern is a package name, matching that name, or a glob of names,
 matching as a path pattern matches a path, but for a directory above it: `*`
