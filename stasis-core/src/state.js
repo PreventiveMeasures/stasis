@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -47,8 +47,6 @@ function readPackageJSON(host, pkgAbsolute) {
 // A Map of Maps, copied as deep as it nests.
 const cloneMaps = (map) => new Map(Array.from(map, ([key, value]) => [key, value instanceof Map ? cloneMaps(value) : value]))
 
-// Loader formats the extension alone decides; `.js`/`.ts` follow the nearest package `type`.
-const EXT_FORMATS = { __proto__: null, '.json': 'json', '.mjs': 'module', '.cjs': 'commonjs', '.mts': 'module-typescript', '.cts': 'commonjs-typescript' }
 // With no `type`, Node decides .js/.ts by syntax detection: either variant is possible, the first is the default.
 const UNTYPED_VARIANTS = { __proto__: null, '.js': ['commonjs', 'module'], '.ts': ['commonjs-typescript', 'module-typescript'] }
 
@@ -927,7 +925,8 @@ export class State {
     }
 
     if (!asResource && inferFormat) {
-      const inferredFormat = EXT_FORMATS[ext] ??
+      // The format the extension alone decides (nodeExtFormat), else `.js`/`.ts` follow the nearest package `type`.
+      const inferredFormat = nodeExtFormat(file) ??
         (closestType === undefined ? undefined : ext === '.js' ? closestType : ext === '.ts' ? `${closestType}-typescript` : undefined)
       if (inferredFormat !== undefined) {
         // A transforming preload (`stasis run --import tsx`) loads a TypeScript file as its

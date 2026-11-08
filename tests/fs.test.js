@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url'
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { State } from '@exodus/stasis-core/state'
-import { moduleFileKey } from '@exodus/stasis-core/util'
+import { classifyFormat, moduleFileKey, nodeExtFormat } from '@exodus/stasis-core/util'
 
 // A non-UTF-8 payload -> resource:base64; valid UTF-8 text -> resource; .json ->
 // code (the json loader format); a directory listing -> directory.
@@ -100,6 +100,32 @@ test('addFsFile records a .jsx fs-read as code, never a resource', withProject((
   t.assert.equal(state.resources.has('comp.jsx'), false)
   t.assert.equal(state.formats.get('comp.jsx'), undefined, 'no Node loader format for .jsx')
   t.assert.match(state.hashes.get('comp.jsx'), /^sha512-/)
+}))
+
+test('a Node extension gives its format only as Node spells it: run, --fs read and nodeExtFormat agree', withProject((t, dir) => {
+  // Node's extension map is case-sensitive and goes by extname: `import` refuses `Lib.MJS`, `require`
+  // loads it (and a `.mjs` dotfile) as commonjs, the load hook naming no format. So stasis names none.
+  for (const [name, format] of [['a.mjs', 'module'], ['a.cjs', 'commonjs'], ['a.json', 'json'], ['a.mts', 'module-typescript'], ['a.cts', 'commonjs-typescript']]) {
+    t.assert.equal(nodeExtFormat(name), format, name)
+    t.assert.equal(classifyFormat(name), format, name)
+  }
+  for (const name of ['Lib.MJS', 'lib.Cjs', 'Data.JSON', 'x/.mjs', '.json']) {
+    t.assert.equal(nodeExtFormat(name), undefined, name)
+    t.assert.equal(classifyFormat(name), null, `${name}: JS-family code the loader decides, as .js is`)
+  }
+  t.assert.equal(classifyFormat('Foo.JS'), null)
+  const state = new State(dir, { scope: 'full', lock: 'add', bundle: 'add', bundleFile: join(dir, 'b.br') })
+  const cjs = 'module.exports = 1\n'
+  writeFileSync(join(dir, 'Lib.MJS'), cjs)
+  writeFileSync(join(dir, 'Data.JSON'), cjs)
+  writeFileSync(join(dir, 'real.mjs'), 'export default 1\n')
+  state.addFile(fileURL(dir, 'Lib.MJS'), { source: Buffer.from(cjs) }) // a run's require: no format from the hook
+  state.addFsFile(fileURL(dir, 'Data.JSON'), Buffer.from(cjs)) // a --fs read: classifyFormat's
+  state.addFile(fileURL(dir, 'real.mjs'), { source: Buffer.from('export default 1\n'), format: 'module' })
+  t.assert.equal(state.formats.get('Lib.MJS'), undefined)
+  t.assert.equal(state.formats.get('Data.JSON'), undefined)
+  t.assert.equal(state.formats.get('real.mjs'), 'module')
+  t.assert.equal(state.sources.get('Data.JSON'), cjs, 'code, not a resource')
 }))
 
 test('addFsFile follows the full classifyFormat vocabulary: a native/source file is code, no allowlist', withProject((t, dir) => {
