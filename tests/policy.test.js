@@ -102,6 +102,9 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   // `?` is one character of a name, never a `/`: what matches one that is no supported one.
   t.assert.ok(!matches('a?b', 'a/b'))
   t.assert.ok(matches('app/?group?/+page@1.js', 'app/(group)/+page@1.js'))
+  // A name an object inherits is a name like any other.
+  for (const pattern of ['constructor', '__proto__', '{toString,hasOwnProperty}']) t.assert.ok(matches(pattern, pattern.replace(/^\{(\w+),.*/u, '$1')), pattern)
+  t.assert.ok(!matches('__proto__', 'other'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))
