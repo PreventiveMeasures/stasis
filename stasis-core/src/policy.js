@@ -1,26 +1,21 @@
 import { posix, relative, resolve } from 'node:path'
 
 import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKeys, posixPathEscapes, sortedByPath, splitNodeModulesPath } from './artifact-util.js'
-import { readJson } from './bundle-util.js'
+import { readPackageJson } from './bundle-util.js'
+import { diskHost } from './host.js'
 import { relativeEscapes, toPosix } from './util.js'
 
-// stasis.config.json's restrictions on what an artifact carries, each a list of patterns: every path
-// it carries matching one of `allowedPaths` (where set) and none of `disallowedPaths`, every
-// dependency it carries, by name, one of `allowedModules` (where set) and none of
-// `disallowedModules`. Each is its own rule, checked on its own: a Policy holds the four of one
-// config (the top level, or one of `entries`), and an artifact meets every Policy that applies to it,
-// none of which overrides another.
+// stasis.config.json's allowedPaths/disallowedPaths (artifact paths) and allowedModules/disallowedModules
+// (dependency names). A Policy holds one config's four (the top level's or one entry's); each rule is
+// checked on its own, and an artifact meets every Policy that applies: none overrides another.
 export const POLICY_KEYS = ['allowedPaths', 'disallowedPaths', 'allowedModules', 'disallowedModules']
 const PATH_KEYS = new Set(['allowedPaths', 'disallowedPaths'])
 const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 
-// The `{a,b}` alternatives of a pattern no more than this many.
 const MAX_ALTERNATIVES = 256
-// Offenders named in an error, the rest counted.
 const MAX_LISTED = 20
 
-// The index of the `]` closing the class `[` at `at` opens (`[!...]` / `[^...]`, a `]` first taken as
-// a member), or -1 where none does in `text`.
+// The index of the `]` closing the class the `[` at `at` opens (a `]` right after `[` or `[!` is a member), or -1.
 function classEnd(text, at) {
   let i = at + 1
   if (text[i] === '!' || text[i] === '^') i++
@@ -28,8 +23,8 @@ function classEnd(text, at) {
   return text.indexOf(']', i)
 }
 
-// The first outermost `{...}` of `pattern` holding a `,` of its own (not a nested brace's) -> [start,
-// [alternative...], end], or null where none does (a brace without one is itself).
+// The first outermost `{...}` holding a `,` of its own -> [start, alternatives, end], or null (a brace
+// without one is literal).
 function firstAlternation(pattern) {
   let depth = 0
   let open
@@ -53,7 +48,7 @@ function firstAlternation(pattern) {
   return null
 }
 
-// `pattern` with each `{a,b}` expanded, as a shell expands it: the patterns it stands for.
+// The brace-free patterns `{a,b}` expands `pattern` into, as a shell expands it.
 function expandBraces(label, pattern) {
   const queue = [pattern]
   const out = []
@@ -73,9 +68,8 @@ function expandBraces(label, pattern) {
 
 const escapeRegExp = (text) => text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, '\\$&')
 
-// One `/`-free segment of a pattern as a RegExp source: `*` any run of characters but `/`, `?` one,
-// `[...]` one of a class, `\x` an `x`; every other character itself. A dot is a character like any:
-// a wildcard matches a dotfile too.
+// One `/`-free segment as a RegExp source: `*`, `?`, `[...]` and `\x`. Wildcards match dotfiles too,
+// so `.env` doesn't slip past `**`.
 function segmentSource(segment) {
   let out = ''
   for (let i = 0; i < segment.length; i++) {
@@ -101,8 +95,8 @@ function segmentSource(segment) {
   return out
 }
 
-// A brace-free pattern as a RegExp source: its segments, a `**` segment standing for any number of
-// them, none included (`a/**` matches `a`, `**/b` matches `b`).
+// A brace-free pattern as a RegExp source, a `**` segment any number of segments, none included
+// (`a/**` matches `a`, `**/b` matches `b`).
 function patternSource(pattern) {
   const segments = pattern.split('/').filter((segment, i, all) => !(segment === '**' && all[i - 1] === '**'))
   let out = ''
@@ -119,8 +113,6 @@ function patternSource(pattern) {
   return out
 }
 
-// `alternatives` (brace-free patterns) as one RegExp of what any of them matches, followed by `suffix` (a
-// RegExp source), its errors `pattern`'s.
 function compile(label, pattern, alternatives, suffix = '') {
   try {
     return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'u')
@@ -129,27 +121,23 @@ function compile(label, pattern, alternatives, suffix = '') {
   }
 }
 
-// A path pattern: relative to the directory of the stasis.config.json, within it, `./` and a
-// trailing `/` ignored, `.` that directory itself. -> { pattern, test(path) }, where `path` is a path
-// an artifact carries, relative to that directory: matched where the pattern matches it, or a
-// directory above it (`src` takes in everything under src/). `.` takes in every path, and the root's
-// own listing (a `--fs` capture of it, spelled `.`) is matched by `.` and `**` alone.
+// A path pattern within the config's directory (`./` and a trailing `/` ignored). It matches a path or a
+// directory above it (`src` takes in src/**); `.` matches everything, and the root's own `--fs` listing
+// (`.`) is matched by `.` and `**` alone.
 function pathPattern(label, pattern) {
   const alternatives = expandBraces(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
   if (alternatives.some(posixPathEscapes)) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
   }
   if (alternatives.includes('.')) return { pattern, test: () => true }
-  // The path, or a directory above it: the pattern matching what comes before a `/` of it.
   const regex = compile(label, pattern, alternatives, '(?:/.*)?')
   const matchesRoot = alternatives.some((alternative) => alternative.split('/').every((segment) => segment === '**'))
   return { pattern, test: (path) => (path === '.' ? matchesRoot : regex.test(path)) }
 }
 
-// A module pattern: a package's name (`left-pad`, `@babel/core`), or a pattern of names (`@babel/*`),
-// a name matching it as itself or as a path matches a path pattern (no `*` across a scope's `/`). Each of
-// its `{a,b}` alternatives is the shape of a name, of one segment or a scope's two, none `.`, `..` or
-// `node_modules`: a path (`node_modules/left-pad`) would match no name, and refuse nothing.
+// A package name, or a glob of names (`*` doesn't cross a scope's `/`). Each alternative must be
+// name-shaped (one segment or a scope's two, none `.`, `..` or `node_modules`): a path such as
+// node_modules/left-pad would match no name, and so silently refuse nothing.
 function modulePattern(label, pattern) {
   const alternatives = expandBraces(label, pattern)
   const named = (alternative) => {
@@ -166,59 +154,64 @@ const listed = (items) => {
   return items.length > MAX_LISTED ? `${shown}, and ${items.length - MAX_LISTED} more` : shown
 }
 
-// The name a dependency recorded at `dir` is installed under: its node_modules directory's (a scope's two
-// segments), as the package manager installed it; undefined for one in none.
+// The name a dependency at `dir` is installed under (its node_modules directory's), or undefined.
 const installedName = (dir) => splitNodeModulesPath(`${dir}/package.json`)?.name
 
-// A dependency as an error names it: by its package.json's name, and the one it is installed under
-// where that is another (an alias, or a package naming itself otherwise), or the link it is reached by.
 const packageText = ({ dir, name, version, via }) => {
   const installed = installedName(dir)
   return `${name}${version === undefined ? '' : `@${version}`} at ${dir}` +
     `${installed === undefined || installed === name ? '' : ` (installed as ${installed})`}${via === undefined ? '' : ` (linked from ${via})`}`
 }
 
-// A path as an error names it, with the file it links to where it is a link.
-const pathText = (path, real) => (real === undefined ? path : `${path} (a link to ${real})`)
-
 // What follows a refusal of what an artifact already on disk records, at `path`.
 export const recordedIn = (path) => ` -- recorded in ${path} already`
 
-// The file `path` (from `root`, read through `host`) is a link to: its path from `realRoot`, the root's real
-// path, where it is a link to another file within the root; undefined where it is no link, links out of
-// the root, or is gone (a file a loaded artifact records, not on disk).
-export function linkOf(host, root, realRoot, path) {
-  const absolute = resolve(root, path)
-  let real
+// (path) => { real, pkg } where the file `path` (from `root`, through `host`) links to another file in the
+// root, `pkg` the dependency that one is in (by its package.json, else its install directory); else
+// undefined. Each path and each package.json is looked up once.
+export function linksOn(root, host = diskHost) {
+  let realRoot
   try {
-    real = host.realpath(absolute)
+    realRoot = host.realpath(root)
   } catch {
-    return undefined
+    return () => undefined
   }
-  if (real === absolute) return undefined
-  const rel = toPosix(relative(realRoot, real)) || '.'
-  return rel === path || relativeEscapes(rel) ? undefined : rel
+  const found = new Map()
+  const manifests = new Map()
+  const packageOf = (real) => {
+    const dir = splitNodeModulesPath(real)?.dir
+    if (dir === undefined) return undefined
+    if (!manifests.has(dir)) {
+      const manifest = readPackageJson(realRoot, `${dir}/package.json`, { host })
+      const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
+      manifests.set(dir, { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined })
+    }
+    return manifests.get(dir)
+  }
+  const find = (path) => {
+    const absolute = resolve(root, path)
+    let real
+    try {
+      real = host.realpath(absolute)
+    } catch {
+      return undefined // gone: a file a loaded artifact records
+    }
+    if (real === absolute) return undefined
+    const rel = toPosix(relative(realRoot, real)) || '.'
+    if (rel === path || relativeEscapes(rel)) return undefined
+    const pkg = packageOf(rel)
+    return { real: rel, pkg: pkg && { ...pkg, via: path } }
+  }
+  return (path) => {
+    if (!found.has(path)) found.set(path, find(path))
+    return found.get(path)
+  }
 }
 
-// The dependency the file `real` (a path from `realRoot`, the project root's real path) is of, where it is
-// in node_modules, reached through the link `via`: `{ dir, name, version, via }`, its name and version its
-// package.json's, read through `host`, its name else the one it is installed under. Undefined where it is in
-// no node_modules.
-export function linkedPackage(host, realRoot, real, via) {
-  const dir = splitNodeModulesPath(real)?.dir
-  if (dir === undefined) return undefined
-  const manifest = readJson(resolve(realRoot, dir, 'package.json'), host)
-  const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
-  return { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined, via }
-}
-
-// The paths an artifact (a Bundle, Lockfile or State: its `modules`, dir -> record, `formats`, file ->
-// format, null where it holds none, and `config`, whose `scope` says what it records) carries, the
-// dependencies it does, each one holding a file, and the real path of each path that is a link, found
-// through `host` from `root`, the project root its paths are relative to: `{ paths: Set<path>, packages:
-// [{ dir, name, version, via? }], links: Map<path, real path> }`. A node_modules-scope one carries what is
-// in node_modules alone, whatever else it holds in memory. A link into a dependency is of that one too.
-function artifactContents({ modules, formats, config }, { root, host }) {
+// What an artifact (a Bundle, Lockfile or State) carries: its paths, dependencies and links (path -> real
+// path, by `linkOf`, linksOn()'s). A node_modules-scope artifact carries node_modules alone, whatever it
+// holds in memory; a link into a dependency counts as that dependency.
+function artifactContents({ modules, formats, config }, linkOf) {
   const scope = config?.scope ?? 'full'
   const inScope = (path) => scope === 'full' || hasNodeModulesSegment(path)
   const paths = moduleFileKeys(modules, { scope })
@@ -229,28 +222,23 @@ function artifactContents({ modules, formats, config }, { root, host }) {
       packages.push({ dir, name: info.name, version: info.version ?? undefined })
     }
   }
+  const dirs = new Set(packages.map(({ dir }) => dir))
   const links = new Map()
-  let realRoot
-  try {
-    realRoot = host.realpath(root)
-  } catch {
-    return { paths, packages, links }
-  }
   for (const path of paths) {
-    const real = linkOf(host, root, realRoot, path)
-    if (real === undefined) continue
-    links.set(path, real)
-    // Its package.json read once, for the first link into a dependency the artifact records none of.
-    const dir = splitNodeModulesPath(real)?.dir
-    if (dir !== undefined && !packages.some((pkg) => pkg.dir === dir)) packages.push(linkedPackage(host, realRoot, real, path))
+    const link = linkOf(path)
+    if (link === undefined) continue
+    links.set(path, link.real)
+    if (link.pkg !== undefined && !dirs.has(link.pkg.dir)) {
+      dirs.add(link.pkg.dir)
+      packages.push(link.pkg)
+    }
   }
   return { paths, packages, links }
 }
 
-export class Policy {
+class Policy {
   // What the errors are of: the stasis.config.json, or one of its entries.
   label
-  // key -> [{ pattern, test }], of each rule set.
   #rules = new Map()
   // The rules as given, each list deduped and sorted.
   #given = {}
@@ -269,26 +257,23 @@ export class Policy {
     }
   }
 
-  // The rules as given, in one canonical string: two Policies with the same are the same Policy.
+  // Two Policies with the same key hold the same rules.
   get key() {
     return JSON.stringify(this.#given)
   }
 
-  // The same rules, their errors `label`'s.
   withLabel(label) {
     return new Policy(label, this.#given)
   }
 
-  // Each rule's offenders among `paths`, `packages` and `links` (artifactContents'), as one problem a
-  // rule, a path rule's in path order. A path is checked as itself and, a link, as the file it links to; a
-  // dependency by its package.json's name and the one it is installed under: refused where a disallowing
-  // rule matches either, allowed where an allowing rule matches both.
+  // One problem per rule, naming its offenders (paths in path order). A path is checked as its link's target
+  // too; a dependency by its package.json name and its install name: refused if a disallowing rule matches
+  // either, allowed only if an allowing rule matches both.
   #problems({ paths, packages, links = new Map() }) {
     const problems = []
     for (const [key, patterns] of this.#rules) {
       const allowing = ALLOWING.has(key)
       const isPath = PATH_KEYS.has(key)
-      // Each offender, and after it the pattern refusing it: none for an allowing rule.
       const offenders = []
       for (const item of isPath ? paths : packages) {
         const names = isPath ? [item, links.get(item)] : [item.name, installedName(item.dir)]
@@ -298,7 +283,7 @@ export class Policy {
       }
       if (offenders.length === 0) continue
       const texts = isPath
-        ? sortedByPath(offenders, ({ item }) => item).map(({ item, by }) => `${pathText(item, links.get(item))}${by}`)
+        ? sortedByPath(offenders, ({ item }) => item).map(({ item, by }) => `${item}${links.has(item) ? ` (a link to ${links.get(item)})` : ''}${by}`)
         : offenders.map(({ item, by }) => `${packageText(item)}${by}`)
       const many = `${texts.length} ${isPath ? 'paths' : 'packages'}: ${listed(texts)}`
       if (allowing) problems.push(texts.length === 1 ? `${key} does not allow ${texts[0]}` : `${key} allows none of ${many}`)
@@ -307,22 +292,18 @@ export class Policy {
     return problems
   }
 
-  // Throws naming every offender of every rule among what `contents` (artifactContents') holds, where
-  // there is one; `hint` follows.
+  // Throws naming every offender of every rule in `contents` (artifactContents()'s shape), then `hint`.
   assert(contents, hint = '') {
     const problems = this.#problems(contents)
     if (problems.length > 0) throw new Error(`${this.label}: ${problems.join('; ')}${hint}`)
   }
 
-  // Throws where `artifact` (artifactContents' argument) carries anything a rule refuses, its links
-  // followed through `host` from `root`; `hint` follows.
-  assertArtifact(artifact, { hint, root, host }) {
-    this.assert(artifactContents(artifact, { root, host }), hint)
+  // `links` is linksOn()'s, for the root the artifact's paths are relative to.
+  assertArtifact(artifact, { hint, links }) {
+    this.assert(artifactContents(artifact, links), hint)
   }
 
-  // Throws where a rule refuses the path `path`, of the dependency `pkg` (`{ dir, name, version }`;
-  // undefined for the project's own), a link where `link` is given: `{ real, pkg }`, the file it links to
-  // (a path from the same root) and the dependency that is of (linkedPackage()'s, undefined for none).
+  // `pkg` is the dependency `path` is in (undefined for the project's own), `link` linksOn()'s result for it.
   assertPath(path, pkg, link) {
     const packages = pkg === undefined ? [] : [pkg]
     if (link?.pkg !== undefined && link.pkg.dir !== pkg?.dir) packages.push(link.pkg)
@@ -330,8 +311,7 @@ export class Policy {
   }
 }
 
-// The Policy of the rules `config` (a stasis.config.json, or an entry's options in it) sets, its
-// errors `label`'s; null where it sets none.
+// The Policy `config` (a stasis.config.json, or an entry's options) sets, its errors `label`'s; null for none.
 export function parsePolicy(label, config) {
   if (config === null || typeof config !== 'object' || !POLICY_KEYS.some((key) => Object.hasOwn(config, key))) return null
   return new Policy(label, config)

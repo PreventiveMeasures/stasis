@@ -299,6 +299,12 @@ nothing is written:
 In `scope = node_modules`, the project's own files are no paths an artifact
 carries, so no rule refuses them.
 
+`rn.config.json`'s keys of the same names are `rn-bundle`'s, which `stasis
+bundle --metro` holds the app's Metro graph to as well (see
+[Metro](bundle.md#metro---metro)): they match as `@preventive/rn` matches, with
+no `[...]` classes or `\` escapes, and the project's own files by its package's
+name, so a rule copied from one file to the other may not refuse the same files.
+
 ## `stasis.lock.json`
 
 ```json

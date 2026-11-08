@@ -238,13 +238,12 @@ function outputOptions(values, { allJs, allSol }) {
 // An entry's options in stasis.config.json's `entries` (`what` names it) as the flags they alias, in
 // parseArgs' shape: `true` for a boolean flag set (`false`, its default, is no flag), a string for one
 // taking a value, which a list flag takes as an array too, and an array of it for a repeatable one
-// (each of a REPEATED_FLAGS one's values, as given). Its POLICY_KEYS are no flags: readConfigEntries
-// reads them as the entry's Policy.
+// (each of a REPEATED_FLAGS one's values, as given).
 function entryFlags(what, options) {
   if (!isPlainObject(options)) throw new Error(`${what} must be an object of stasis bundle options`)
   const values = {}
   for (const [flag, value] of Object.entries(options)) {
-    if (POLICY_KEYS.includes(flag)) continue
+    if (POLICY_KEYS.includes(flag)) continue // the entry's Policy (readConfigEntries)
     if (OUTPUT_FLAGS.has(flag)) throw new Error(`${what}: ${flag} is the bundle's option, not an entry's: pass --${flag}`)
     if (!Object.hasOwn(BUNDLE_FLAGS, flag)) throw new Error(`${what}: unknown option ${JSON.stringify(flag)}`)
     const { type, multiple } = BUNDLE_FLAGS[flag]
@@ -267,9 +266,8 @@ function entryFlags(what, options) {
 }
 
 // The `entries` of the stasis.config.json in `cwd`: each entry it names, as a path relative to cwd
-// -> { entry: the name as written, values: its options as flags (entryFlags'), policy: the Policy of
-// its allowedPaths, disallowedPaths, allowedModules and disallowedModules, where it sets one, which
-// its build is held to beside the config's own }. null where there is none.
+// -> { entry: the name as written, values: its options as flags (entryFlags'), policy?: its own Policy,
+// held beside the config's }. null where there is none.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
@@ -331,11 +329,10 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   return { ...output, builds: withPolicies(builds) }
 }
 
-// Into `builds` (id -> build), `entry`, named in stasis.config.json's entries as `named`
-// (readConfigEntries'), built with `options` (buildOptions'): with the entries built with the same
-// options and held to the same Policy, a build of them together, else one of its own.
+// Adds `entry` (`named`, readConfigEntries') to the build in `builds` with the same language, options and
+// Policy, or starts one.
 function addToBuild(builds, entry, named, options, language) {
-  const id = JSON.stringify([language, options, named.policy?.key ?? null])
+  const id = JSON.stringify([language, options, named.policy?.key])
   // The same Policy for each entry of a build, by `id`: the first one's, relabelled by withPolicies.
   if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [], policy: named.policy })
   const build = builds.get(id)

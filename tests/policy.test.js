@@ -4,10 +4,9 @@ import { once } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { brotliDecompressSync } from 'node:zlib'
 
 import { addCommand } from '@exodus/stasis-core/add'
-import { Bundle } from '@exodus/stasis-core/bundle'
+import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { Config } from '@exodus/stasis-core/config'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { parsePolicy } from '@exodus/stasis-core/policy'
@@ -30,7 +29,7 @@ const writeTree = (dir, files) => {
   }
 }
 
-const readBundle = (path) => Bundle.parse(brotliDecompressSync(readFileSync(path)).toString('utf8'))
+const readBundle = (path) => parseBundleBytes(readFileSync(path))
 const readLock = (dir, file = 'stasis.lock.json') => Lockfile.parse(readFileSync(join(dir, file), 'utf8'))
 // The file URL of `rel` in `dir`, as a State takes it.
 const urlOf = (dir, rel) => pathToFileURL(join(dir, rel)).href
@@ -60,16 +59,18 @@ const project = (dir, config) => writeTree(dir, {
   ...(config === undefined ? {} : { 'stasis.config.json': config }),
 })
 
-// Whether `rule` (a key and its patterns) refuses the path `path` (of the dependency `name`, if any).
-const refuses = (key, patterns, path, name) => {
-  const policy = parsePolicy('cfg', { [key]: patterns })
+// The message of the error `fn` throws, or null.
+const messageOf = (fn) => {
   try {
-    policy.assertPath(path, name === undefined ? undefined : { dir: `node_modules/${name}`, name, version: '1.0.0' })
-    return false
-  } catch {
-    return true
+    fn()
+    return null
+  } catch (error) {
+    return error.message
   }
 }
+
+// Whether the rule `key` of `patterns` refuses the path `path` (of the dependency `name`, if any).
+const refuses = (key, patterns, path, name) => messageOf(() => parsePolicy('cfg', { [key]: patterns }).assertPath(path, name === undefined ? undefined : { dir: `node_modules/${name}`, name, version: '1.0.0' })) !== null
 
 test('a path pattern matches the path or a directory above it, its wildcards dotfiles too', (t) => {
   const matches = (pattern, path) => refuses('disallowedPaths', [pattern], path)
@@ -320,14 +321,7 @@ test('a module pattern is the shape of a name: one segment, or a scope\'s two', 
 test('a dependency is refused by either name it goes by, and allowed by both', (t) => {
   // Its package.json names it `left`; installed at node_modules/evil (a package naming itself otherwise, or an alias).
   const contents = { paths: [], packages: [{ dir: 'node_modules/evil', name: 'left', version: '1.0.0' }] }
-  const refusal = (rules) => {
-    try {
-      parsePolicy('cfg', rules).assert(contents)
-      return null
-    } catch (error) {
-      return error.message
-    }
-  }
+  const refusal = (rules) => messageOf(() => parsePolicy('cfg', rules).assert(contents))
   t.assert.equal(refusal({ disallowedModules: ['evil'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("evil")')
   t.assert.equal(refusal({ disallowedModules: ['left'] }), 'cfg: disallowedModules refuses left@1.0.0 at node_modules/evil (installed as evil) ("left")')
   t.assert.equal(refusal({ allowedModules: ['left'] }), 'cfg: allowedModules does not allow left@1.0.0 at node_modules/evil (installed as evil)')

@@ -22,9 +22,7 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // stasis.config.json), and the file's `lock` can only be CONFIG_FILE_LOCK; `extra` is the reverse,
 // stasis.config.json only (no env var or option), `entries` is `stasis bundle`'s and
 // `installDevDependencies`, `lazyDependencies`, `generatePrisma` and `lockfiles` the trees laid out
-// from the lockfiles' (`stasis github-bundle`), which a run takes nothing from. The POLICY_KEYS
-// (`allowedPaths`, `disallowedPaths`, `allowedModules`, `disallowedModules`) are file-only too, and
-// every command's: what a run or build may carry.
+// from the lockfiles' (`stasis github-bundle`), which a run takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
@@ -256,8 +254,7 @@ export class Config {
     return this.#opts.extra
   }
 
-  // stasis.config.json's allowedPaths / disallowedPaths / allowedModules / disallowedModules (a
-  // Policy), or null where it sets none: what a run may carry. Not serialized.
+  // stasis.config.json's Policy (parsePolicy), or null. File-only, not serialized.
   get policy() {
     return this.#opts.policy
   }

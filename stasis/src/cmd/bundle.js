@@ -20,7 +20,7 @@ import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-u
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
 import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
+import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
@@ -850,8 +850,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // addImport replays the edge map; serialize emits the runtime loader's v1 layout.
   // bundle:'replace' skips reading any on-disk stasis.code.br (bundle:'add' would leak stale
   // entries); lock:'ignore' tolerates a pre-existing lockfile without consuming it; and it is never
-  // written, so it claims no write target. The config's Policy is held to the bundle as a whole, every
-  // offender named at once (assertPolicies), not file by file.
+  // written, so it claims no write target, nor checks the Policy (assertPolicies checks the whole bundle).
   const stateOptions = { bundle: 'replace', lock: 'ignore', ...(scope ? { scope } : {}), host, claim: false, checkPolicy: false }
   let state = new State(baseDir, { ...stateOptions, env })
   // A root holding a stasis file is the project's own choice, whose config the build takes.
@@ -1030,22 +1029,13 @@ export function readConfigFile(name, cwd, host = diskHost) {
   }
 }
 
-// The Policy of the stasis.config.json in `cwd` (read as readConfigFile reads it): its allowedPaths,
-// disallowedPaths, allowedModules and disallowedModules; null where it sets none, or there is none.
-// Its errors are `label`'s.
-const configPolicy = (name, cwd, host, label = CONFIG_FILE) => parsePolicy(label, readConfigFile(name, cwd, host))
-
-// Each of `builds` (each `{ entries, policy?, ...options }`), the i-th built as `builts[i]`, held to
-// the Policy its entries set in stasis.config.json's `entries`, and `bundle`, the one they make
-// together with whatever is added to them, to the Policy of the stasis.config.json at `root` (read
-// through `host`, its errors `label`'s): every rule on its own, none overriding another, so what the
-// config refuses is refused in every entry's build, and what an entry's refuses, in its own. Each path
-// that is a link, found through `files` (the host reading what the builds read, `host` by default), is
-// held to them as the file it links to too.
-function assertPolicies(name, { builds = [], builts = [], bundle, root, host = diskHost, files = host, label }) {
-  const disk = { root, host: files }
-  for (const [i, build] of builds.entries()) build.policy?.assertArtifact(builts[i].bundle, disk)
-  configPolicy(name, root, host, label)?.assertArtifact(bundle, disk)
+// Holds each of `builds` (as built, `builts[i]`) to its entries' Policy, and the whole `bundle` (`extra`
+// included) to that of the stasis.config.json at `root`, read through `host`; links are followed through
+// `files`, the host the builds read.
+function assertPolicies(name, { builds = [], builts = [], bundle, root, host = diskHost, files = host, label = CONFIG_FILE }) {
+  const links = linksOn(root, files)
+  for (const [i, build] of builds.entries()) build.policy?.assertArtifact(builts[i].bundle, { links })
+  parsePolicy(label, readConfigFile(name, root, host))?.assertArtifact(bundle, { links })
 }
 
 // The stasis.config.json `key` in `cwd` (read as readConfigFile reads it), true or false, true where
@@ -2539,7 +2529,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
     ? await debugTimed('Built', () => attempt(), () => builtSince(since))
     : await inRounds(...debugging() ? reportedRounds(attempt, tree.unpack) : [attempt, tree.unpack])
   const { bundle, lockfile, root } = built
-  // Of the full tree's build, whose rounds are done: the config read from the project, at the root.
+  // After the lazy rounds, so only the full tree's build is checked.
   assertPolicies(name, { builds, builts: built.builts, bundle, root, host: project, files: built.host, label: `${name}: ${CONFIG_FILE}` })
   if (repo !== undefined) bundle.repo = repo
   pinCommits(bundle, root, tree)
@@ -2676,10 +2666,10 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     } catch (cause) {
       throw new Error(`bundleCommand: --add failed to read the existing bundle at ${target}`, { cause })
     }
-    // What the bundle and lockfile on disk carry already is written again: held to the config's Policy too
-    // (the fresh build's own files were, by buildOfCommand).
-    const policy = configPolicy('bundleCommand', root)
-    policy?.assertArtifact(existing, { hint: recordedIn(target), root, host: diskHost })
+    // What the bundle and lockfile on disk carry is written again, so held to the config's Policy too.
+    const policy = parsePolicy(CONFIG_FILE, readConfigFile('bundleCommand', root))
+    const links = linksOn(root)
+    policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one.
@@ -2695,8 +2685,8 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       } catch (cause) {
         throw new Error(`bundleCommand: --add failed to read the existing lockfile at ${lockfile}`, { cause })
       }
-      // It may record more than the bundle beside it (a broader run's capture): checked on its own, before either is written.
-      policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), root, host: diskHost })
+      // It may record more than the bundle beside it (a broader run's capture).
+      policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
   }
