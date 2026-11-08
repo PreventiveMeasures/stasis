@@ -181,16 +181,19 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     return realReaddirSync(path, options)
   }
 
-  // Single-arg form only; capture still hands the caller the REAL Stats/errors. statSync follows
-  // symlinks, so it must use the real statSync: an in-root symlink records the TARGET's kind there.
+  // Served/captured in the single-arg form only (an absent path is ENOENT in any); capture hands the caller
+  // the REAL Stats/errors. statSync follows symlinks: an in-root symlink records the TARGET's kind there.
   const servedStatSync = (syscall, realFn) => ({
     [`${syscall}Sync`](path, options) {
-      const t = options == null ? classify(path) : null
-      if (t?.mode === 'absent') throw enoent(syscall, path)
-      if (t?.mode === 'serve') {
+      const t = classify(path)
+      if (t?.mode === 'absent') {
+        if (options?.throwIfNoEntry === false) return undefined
+        throw enoent(syscall, path)
+      }
+      if (options == null && t?.mode === 'serve') {
         const kind = t.state.getFsStatFamily(t.url)
         if (kind !== undefined) return bundleStats(realFn, path, kind === 'directory')
-      } else if (t?.mode === 'capture') {
+      } else if (options == null && t?.mode === 'capture') {
         const stats = realFn(path)
         captureStat(t, stats)
         return stats
@@ -311,12 +314,12 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const servedStat = (syscall, realFn, realSyncFn) => ({
       [syscall](path, options, callback) {
         const [opts, cb] = cbArgs(options, callback)
-        const t = opts == null && typeof cb === 'function' ? classify(path) : null
+        const t = typeof cb === 'function' ? classify(path) : null
         if (t?.mode === 'absent') return later(cb, enoent(syscall, path))
-        if (t?.mode === 'serve') {
+        if (opts == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return later(cb, null, bundleStats(realSyncFn, path, kind === 'directory'))
-        } else if (t?.mode === 'capture') {
+        } else if (opts == null && t?.mode === 'capture') {
           return realFn(path, (err, stats) => {
             if (err) return cb(err)
             captureStat(t, stats)
@@ -331,12 +334,12 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
 
     const servedStatP = (syscall, realFn, realSyncFn) => ({
       async [syscall](path, options) {
-        const t = options == null ? classify(path) : null
+        const t = classify(path)
         if (t?.mode === 'absent') throw enoent(syscall, path)
-        if (t?.mode === 'serve') {
+        if (options == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return bundleStats(realSyncFn, path, kind === 'directory')
-        } else if (t?.mode === 'capture') {
+        } else if (options == null && t?.mode === 'capture') {
           const stats = await realFn(path)
           captureStat(t, stats)
           return stats

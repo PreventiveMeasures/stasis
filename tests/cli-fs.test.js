@@ -1188,6 +1188,43 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
     t.assert.equal(bundle.sources['.'].files['src/.abc.env'], undefined)
   }))
 
+  test('run --fs reports a .env absent from every stat form, options included (capture and load)', withTmp(async (t, tmp) => {
+    // An options argument (`bigint`, `throwIfNoEntry`) only stops a stat being served or captured:
+    // the secret is still absent, as to readFileSync and existsSync. `undefined` is throwIfNoEntry's.
+    writeFileSync(join(tmp, '.env'), 'API_KEY=secret\n')
+    const probes = [
+      "import * as fs from 'node:fs'",
+      "import { join } from 'node:path'",
+      'const p = join(process.cwd(), ".env")',
+      'const code = (fn) => { try { return fn() === undefined ? "undefined" : "ok" } catch (e) { return e.code } }',
+      'const out = [code(() => fs.statSync(p)), code(() => fs.statSync(p, { bigint: true })), code(() => fs.statSync(p, { throwIfNoEntry: false }))]',
+      'out.push(code(() => fs.lstatSync(p, { bigint: true })), code(() => fs.lstatSync(p, { throwIfNoEntry: false })), String(fs.existsSync(p)))',
+    ]
+    writeFileSync(join(tmp, 'src', 'sync.js'), [...probes, 'console.log(out.join(" "))', ''].join('\n'))
+    writeFileSync(join(tmp, 'src', 'async.js'), [
+      ...probes,
+      'const viaCallback = (fn) => new Promise((done) => fn((err) => done(err ? err.code : "ok")))',
+      'const viaPromise = (fn) => fn().then(() => "ok", (err) => err.code)',
+      'out.push(await viaCallback((cb) => fs.stat(p, { bigint: true }, cb)), await viaCallback((cb) => fs.lstat(p, {}, cb)))',
+      'out.push(await viaPromise(() => fs.promises.stat(p, { bigint: true })), await viaPromise(() => fs.promises.lstat(p, {})))',
+      'console.log(out.join(" "))',
+      '',
+    ].join('\n'))
+    const sync = 'ENOENT ENOENT undefined ENOENT undefined false'
+    const bundlePath = join(tmp, 'snapshot.br')
+    const capture = await run(['run', '--lock=add', '--bundle=add', `--bundle-file=${bundlePath}`, '--fs=sync', 'src/sync.js'], { cwd: tmp })
+    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
+    t.assert.equal(capture.stdout, `${sync}\n`)
+    const asyncPath = join(tmp, 'async.br')
+    const captureAsync = await run(['run', '--lock=replace', '--bundle=add', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp })
+    t.assert.equal(captureAsync.status, 0, `async capture stderr: ${captureAsync.stderr}`)
+    t.assert.equal(captureAsync.stdout, `${sync} ENOENT ENOENT ENOENT ENOENT\n`)
+    t.assert.equal(decode(asyncPath).formats['.env'], undefined, 'the secret is not recorded, as a stat record either')
+    const load = await run(['run', '--lock=frozen', '--bundle=load', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp })
+    t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
+    t.assert.equal(load.stdout, `${sync} ENOENT ENOENT ENOENT ENOENT\n`)
+  }))
+
   // --- fs settable via stasis.config.json ("fs": "sync" | "async") ------------------
   // fs is a Config field like scope/lock/bundle, so the mode can live in stasis.config.json
   // instead of the --fs CLI flag. The bundle mode still comes from the CLI here (the bundle
