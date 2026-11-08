@@ -146,19 +146,21 @@ test("buildVfsBundle builds JS and Solidity entries together of a pnpm tree and 
   }
   // Built apart, as entries with other options are, their bundles merged.
   const entries = { 'src/a.js': {}, 'contracts/src/A.sol': { manifests: true } }
+  const lockfiles = ['pnpm-lock.yaml', 'contracts/soldeer.lock']
+  const build = (config) => buildVfsBundle({ vfs: vfsOf(configured(files, config)), cache: store() })
   // Detected, pnpm's alone, which builds no Solidity bundle.
-  await t.assert.rejects(buildVfsBundle({ vfs: vfsOf(configured(files, { entries })), cache: store() }), /^Error: buildVfsBundle: only JS bundles are built with pnpm$/u)
-  const built = await buildVfsBundle({ vfs: vfsOf(configured(files, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries })), cache: store() })
+  await t.assert.rejects(build({ entries }), /^Error: buildVfsBundle: only JS bundles are built with pnpm$/u)
+  const built = await build({ lockfiles, entries })
   t.assert.deepStrictEqual([...built.bundle.entries].toSorted(), ['contracts/src/A.sol', 'src/a.js'])
   t.assert.ok(built.bundle.sources.has('node_modules/.pnpm/used@1.0.0/node_modules/used/index.js'))
   t.assert.deepStrictEqual(built.packageManagers, ['pnpm', 'soldeer'])
   // No lockfile, a Solidity build having none, whichever build comes first.
   t.assert.equal(built.lockfile, undefined)
   const reversed = Object.fromEntries(Object.entries(entries).toReversed())
-  t.assert.equal((await buildVfsBundle({ vfs: vfsOf(configured(files, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries: reversed })), cache: store() })).lockfile, undefined)
+  t.assert.equal((await build({ lockfiles, entries: reversed })).lockfile, undefined)
   // Without entries, none are taken: which kind is not the lockfiles' to say.
-  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'] })) }), [])
-  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles: ['pnpm-lock.yaml', 'contracts/soldeer.lock'], entries })) }), ['src/a.js', 'contracts/src/A.sol'])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles })) }), [])
+  t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(configured(files, { lockfiles, entries })) }), ['src/a.js', 'contracts/src/A.sol'])
 })
 
 test("buildVfsBundle takes a lockfile stasis.config.json names above it, its workspace root's, as the one detected", async (t) => {

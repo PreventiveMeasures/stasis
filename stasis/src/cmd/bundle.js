@@ -2293,7 +2293,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
 // rooted at `roots[i]`: their strict union, rooted where every one of them is; a lockfile only where
-// every one has one (JS builds; a Solidity one has none).
+// every one has one (only JS builds do).
 function unionOfBuilds(name, builds, builts, roots) {
   const other = roots.findIndex((root) => root !== roots[0])
   if (other !== -1) {
