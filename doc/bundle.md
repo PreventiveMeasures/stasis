@@ -70,14 +70,10 @@ stasis bundle --add src/worker.js     # merges the worker's graph into it
 
 The bundle on disk, and the `--lockfile`, must be rooted where the fresh build
 is: `--add` refuses one whose paths are relative to another directory, naming
-both roots. An artifact's root is the first directory, of the build's root and
-each one up from the cwd or from the artifact, holding each workspace package it
-records (a `package.json` of the name it records) and each of its entries; one
-whose root can't be told that way is added to as before. A build that put its
-`stasis.lock.json` or `stasis.code.br` in a package nested below its root leaves
-such a mismatch: that file roots the next build at the package (see
-[discovery](file-formats.md#discovery)). Rebuild without `--add`, which roots
-them where the build is.
+both roots. A build that wrote its `stasis.lock.json` or `stasis.code.br` in a
+package nested below its root leaves such a pair, as that file roots the next
+build at the package (see [discovery](file-formats.md#discovery)). Rebuild
+without `--add`, which roots them where the build is.
 
 ## Companion lockfile (`--lockfile`)
 

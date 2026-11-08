@@ -11,7 +11,7 @@ import { assembleBundle, expandExtra, validateFiles } from '@exodus/stasis-core/
 import { getParser, importsTypescriptByOutputName, isResolvableExt, literalSpec, scan, scanCounts } from '../scan.js'
 import { METRO_RELEASE_DEFINE, parseDefine } from '../define.js'
 import { METRO_ASSET_EXTS, METRO_ASSET_RESOLUTIONS, METRO_SOURCE_EXTS, createFieldResolver, resolveConditions } from '../resolve-fields.js'
-import { discoverTsconfig, isDir, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
+import { discoverTsconfig, isDir, isFile, loadTsconfigPaths, packageTsconfigPaths, tsconfigOutputsOf } from '../resolve-typescript.js'
 import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
@@ -20,7 +20,7 @@ import { pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -39,7 +39,7 @@ import {
 import { decodeUtf8 } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
-import { createCargoContext } from '../loaders/cargo.js'
+import { ancestors, createCargoContext } from '../loaders/cargo.js'
 import {
   bucketizePhpSources,
   buildPhpTree,
@@ -866,9 +866,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
   // refused, named here rather than as the State's bare assertion: a stasis file in a directory below
   // the project's root (a stray stasis.code.br there, say) roots the State at it, out of the files above.
   const { scanner, outside, leftOut } = withinRoot(scanned, (url) => isPathWithin(state.root, fileURLToPath(url)))
-  const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(state.root, name)) !== null)
-  const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}, which can be removed if stale)`
-  const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy}`
+  const root = ` at ${relative(baseDir, state.root) || '.'}${rootedBy(state.root, host, ', which can be removed if stale')}`
   for (const url of outside) {
     throw new Error(`buildJsBundle: ${relative(baseDir, fileURLToPath(url))} is outside the project root${root}`)
   }
@@ -922,6 +920,12 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
 
 // The files that root a State in the directory holding one (state.js's discovery).
 const STASIS_ROOT_FILES = ['stasis.config.json', 'stasis.lock.json', DEFAULT_BUNDLE_FILE]
+
+// ` (rooted there by its <the STASIS_ROOT_FILES in `dir`><hint>)`, or '' where `dir` holds none.
+function rootedBy(dir, host = diskHost, hint = '') {
+  const markers = STASIS_ROOT_FILES.filter((name) => host.stat(join(dir, name)) !== null)
+  return markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')}${hint})`
+}
 
 // The innermost directory at or above `baseDir`, up to `root`, holding every one of `files` (real
 // paths) and a package.json with a name, which a State can be rooted at; `root` where none below it
@@ -2805,11 +2809,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
       }
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }
-  } else if (add && lockData && existsSync(lockAbs)) {
-    // No bundle at the target to add to, but a lockfile at --lockfile: one rooted elsewhere attests a
-    // bundle at that root (the default target is the root's), which this build would leave as it is,
-    // writing its own apart and its lockfile over that one's. One that can't be read is replaced, as
-    // it always was.
+  } else if (add && lockData && mode !== 'replace' && existsSync(lockAbs)) {
+    // No bundle to add to, but a lockfile at --lockfile: replaced, as one that can't be read is,
+    // unless rooted elsewhere, its bundle that root's.
     let existingLock
     try {
       existingLock = Lockfile.parse(readFileSync(lockAbs, 'utf8'))
@@ -2915,46 +2917,30 @@ function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost })
   }
 }
 
-// The directory the paths of `artifact` (a Bundle or Lockfile) are relative to, of `candidates` (in
-// order): the first holding each workspace package it records, as a State there would find it (a
-// package.json of the name it records, where it records a name) with each of its entries; where it
-// records no workspace package, each npm dependency (a package.json of its name). undefined where it
-// records none of these, or no candidate holds them all (one removed since, say).
-function artifactRootOf(artifact, candidates, host = diskHost) {
+// The directory the paths of `artifact` (a Bundle or Lockfile) are relative to: the first of
+// `candidates` holding each workspace package it records (a package.json of that name, as a State
+// rooted there finds it) and each of its entries, or with no workspace package, each npm dependency.
+// undefined where it records none of these, or no candidate holds them all.
+function artifactRootOf(artifact, candidates) {
   const named = [...artifact.modules].filter(([, info]) => typeof info.name === 'string')
-  const workspace = named.filter(([dir]) => !hasNodeModulesSegment(dir))
-  const packages = workspace.length > 0 ? workspace : named.filter(([, info]) => info.ecosystem === 'npm')
+  const ecosystemOf = ([dir, { ecosystem }]) => dependencyEcosystem(dir, ecosystem)
+  const workspace = named.filter((bucket) => ecosystemOf(bucket) === undefined)
+  const [packages, entries] = workspace.length > 0 ? [workspace, [...artifact.entries]] : [named.filter((bucket) => ecosystemOf(bucket) === 'npm'), []]
   if (packages.length === 0) return undefined
-  const entries = workspace.length > 0 ? [...artifact.entries ?? []] : []
-  const holds = (dir) => packages.every(([pkg, { name }]) => readPackageJson(dir, moduleFileKey(pkg, 'package.json'), { host })?.name === name) &&
-    entries.every((entry) => host.stat(join(dir, entry))?.isFile() === true)
-  return candidates.find(holds)
+  return candidates.find((dir) => packages.every(([pkg, { name }]) => readPackageJson(dir, moduleFileKey(pkg, 'package.json'))?.name === name) &&
+    entries.every((entry) => isFile(join(dir, entry))))
 }
 
-// Each directory from `dir` up to the filesystem root, `dir` first.
-function* dirsUpFrom(dir) {
-  for (let at = dir; ; at = dirname(at)) {
-    yield at
-    if (dirname(at) === at) return
-  }
-}
-
-// Refuse, under --add, to add the build rooted at `root` to `artifact`, the existing bundle or
-// lockfile at `at` (`what`, for the message), where its paths are relative to another directory: of
-// the build's root, then each directory from `cwd` up, then each from the artifact's own up, the
-// first holding what it records (artifactRootOf). Merged, its records and the build's would be keyed
-// apart, never held to each other; a lockfile left for a bundle written elsewhere would be replaced.
-// A lockfile the build before wrote in the nested package it was run in, its paths relative to the
-// project above, roots the next build in that package (STASIS_ROOT_FILES), say. One whose root
-// can't be told is added to as ever.
+// Refuse, under --add, to add the build rooted at `root` to `artifact`, the bundle or lockfile at
+// `at` (`what`), whose paths are relative to another directory (artifactRootOf, of the build's root
+// and each directory up from cwd and from `at`): its records and the build's would be keyed apart,
+// never held to each other. One whose root can't be told is added to as ever.
 function refuseOtherRoot(artifact, what, root, { cwd, at }) {
   const baseDir = resolve(cwd)
-  const theirs = artifactRootOf(artifact, [...new Set([root, ...dirsUpFrom(baseDir), ...dirsUpFrom(dirname(at))])])
+  const theirs = artifactRootOf(artifact, [...new Set([root, ...ancestors(baseDir), ...ancestors(dirname(at))])])
   if (theirs === undefined || theirs === root) return
   const shown = (dir) => relative(baseDir, dir) || '.'
-  const markers = STASIS_ROOT_FILES.filter((name) => existsSync(join(root, name)))
-  const rootedBy = markers.length === 0 ? '' : ` (rooted there by its ${markers.join(' and ')})`
-  throw new Error(`bundleCommand: --add can't add to ${what}: its paths are relative to ${shown(theirs)} and this build's to ${shown(root)}${rootedBy}; rebuild it without --add`)
+  throw new Error(`bundleCommand: --add can't add to ${what}: its paths are relative to ${shown(theirs)} and this build's to ${shown(root)}${rootedBy(root)}; rebuild it without --add`)
 }
 
 // The bundle bundleCommand writes of its options (but `brotliQuality` and `add`, which say how it is
