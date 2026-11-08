@@ -19,10 +19,10 @@ import { pinInstalledCommits } from '../installed-commits.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, importTargetsEqual, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
-import { parseBundleBytes } from '@exodus/stasis-core/brotli'
+import { compressBundleText, parseBundleBytes } from '@exodus/stasis-core/brotli'
 import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { isAssetFile } from '@preventive/rn/metro-assets.js'
 import { added as addedTo } from '@preventive/rn/src/rn-config.js'
@@ -2418,6 +2418,7 @@ export async function buildVfsBundle({ lock, ...options } = {}) {
   const { lock: mode, file } = lockModeOf(built.root, lock === undefined ? {} : { EXODUS_STASIS_LOCK: lock }, host)
   const at = file ?? posix.join(built.root, 'stasis.lock.json')
   heldToLockfile(() => built.lockfile, at, posix.relative('/', at), mode, host)
+  if (mode === 'frozen' && built.lockfile !== undefined) loadsBeside(built.bundle.serialize(), { at: posix.join(built.root, DEFAULT_BUNDLE_FILE), lockAbs: at, label: posix.relative('/', at), root: built.root, scope: built.bundle.config.scope, host })
   return built
 }
 const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
@@ -2755,16 +2756,10 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     }
   }
 
-  // frozen writes no lockfile, so the bundle is to load beside the one there, which takes one of the
-  // entries it records alone (State's #mergeBundleMetadata).
-  if (mode === 'frozen') {
-    const { entries } = Lockfile.parse(readFileSync(built.held.at, 'utf8'))
-    const unbuilt = [...entries].find((entry) => !bundle.entries.has(entry))
-    if (unbuilt !== undefined) throw new Error(`bundleCommand: ${relative(resolve(cwd), built.held.at)} (lock = frozen) attests the entry ${unbuilt}, which the bundle doesn't build`)
-  }
-
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
   const serialized = bundle.serialize()
+  // frozen writes no lockfile, so the bundle is to load beside the one there.
+  if (mode === 'frozen') loadsBeside(serialized, { at: outAbs ?? join(root, DEFAULT_BUNDLE_FILE), lockAbs: built.held.at, label: relative(resolve(cwd), built.held.at), root, scope: bundle.config.scope })
   const files = [...bundle.sources.keys()]
   const modules = bundle.modules
 
@@ -2805,9 +2800,9 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 }
 
 // The lockfile `built()` gives held to the one at `lockAbs` by `mode`, as a run holds itself to one.
-// In add it must agree with it on all both record, execute bits too; in frozen that
-// one must be there, agree, and attest every entry, file, format and import built; in none, it must
-// not be there; in replace and ignore, it isn't read. -> () => the Lockfile to write, or null.
+// In add it must agree with it on all both record, execute bits too; in frozen that one must be there,
+// agree, and attest every file built (the bundle loading beside it, loadsBeside); in none, it must not
+// be there; in replace and ignore, it isn't read. -> () => the Lockfile to write, or null.
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   const frozen = mode === 'frozen'
   const text = frozen || mode === 'add' || mode === 'none' ? readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host) : null
@@ -2830,29 +2825,20 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   }
   // The lockfile written is the build's, which attests the bundle beside it; --add merges both.
   if (!frozen) return built
-  // As a frozen run attests what it observes (State's assertEntry, #assertFrozenAttests and
-  // #assertAttestedResolution).
-  for (const entry of lock.entries.size > 0 ? fresh.entries : []) {
-    if (!lock.entries.has(entry)) throw new Error(`${label} (lock = frozen) doesn't attest the entry ${entry}`)
-  }
-  for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
-    if (fresh.formats?.get(file) != null && lock.formats?.get(file) === undefined) throw new Error(`${label} (lock = frozen) doesn't attest the format of ${file}`)
-  }
-  for (const [conditions, byParent] of fresh.imports ?? []) {
-    for (const [parent, specs] of byParent) {
-      for (const [spec, target] of specs) {
-        let attested = lock.imports?.get(conditions)?.get(parent)?.get(spec)
-        if (attested === undefined) {
-          const targets = new Set([...lock.imports?.values() ?? []].map((parents) => parents.get(parent)?.get(spec)).filter((one) => one !== undefined))
-          if (targets.size === 0 && fresh.config.scope !== 'full' && !hasNodeModulesSegment(parent)) continue
-          if (targets.size !== 1) throw new Error(`${label} (lock = frozen) doesn't attest import '${spec}' from '${parent}'${targets.size > 1 ? ' consistently across condition sets' : ''}`)
-          ;[attested] = targets
-        }
-        if (!importTargetsEqual(target, attested)) throw new Error(`${label} (lock = frozen): import '${spec}' from '${parent}' resolves otherwise`)
-      }
-    }
-  }
   return () => null
+}
+
+// That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis
+// run --lock=frozen --bundle=load` loads them: a State of those modes, of `root`, through `host`
+// serving the bundle there.
+function loadsBeside(text, { at, lockAbs, label, root, scope, host = diskHost }) {
+  const bytes = compressBundleText(text, 1)
+  const served = { ...host, readFile: (path) => (path === at ? bytes : host.readFile(path)) }
+  try {
+    new State(root, { lock: 'frozen', lockFile: lockAbs, bundle: 'load', bundleFile: at, scope, host: served, claim: false, env: {} }) // eslint-disable-line no-new -- its constructor is the check
+  } catch (cause) {
+    throw new Error(`${label} (lock = frozen): ${cause.message}`, { cause })
+  }
 }
 
 // The bundle bundleCommand writes of its options (but `brotliQuality` and `add`, which say how it is

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { withTmp } from './tmp.helper.js'
@@ -93,13 +93,21 @@ test('stasis bundle in lock = frozen holds everything it builds to stasis.lock.j
   const lock = readJson(lockPath)
   delete lock.formats['index.js']
   writeJson(lockPath, lock)
-  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest the format of index\.js$/u)
+  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json \(lock = frozen\): bundle format for index\.js is not attested by the lockfile$/u)
   writeFileSync(lockPath, before)
   // --add: what the bundle there carries too.
   writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
   await build(dir, { entries: ['more.js'], lock: 'ignore' })
   writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
   await t.assert.rejects(build(dir, { add: true }), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest more\.js$/u)
+  // A payload-free stat record of it, its format alone.
+  writeFileSync(join(dir, 'stasis.config.json'), '{}\n')
+  await build(dir, { lock: 'ignore' })
+  const existing = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'out.br'))).toString('utf8'))
+  existing.formats['probe.dat'] = 'stat:file'
+  writeFileSync(join(dir, 'out.br'), brotliCompressSync(JSON.stringify(existing)))
+  writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
+  await t.assert.rejects(build(dir, { add: true }), /^Error: stasis\.lock\.json \(lock = frozen\): bundle format for probe\.dat is not attested by the lockfile$/u)
 }))
 
 test('stasis bundle in lock = frozen attests as a frozen run does: entries in full scope alone, an import of any condition set agreeing', withTmp(async (t, dir) => {
@@ -127,7 +135,7 @@ test('stasis bundle in lock = frozen attests as a frozen run does: entries in fu
   await frozen()
   lock.imports = { 'node, require': edges, 'import, node': { 'index.js': { dep: 'node_modules/dep/other.js' } } }
   writeJson(lockPath, lock)
-  await t.assert.rejects(frozen(), /^Error: stasis\.lock\.json \(lock = frozen\) doesn't attest import 'dep' from 'index\.js' consistently across condition sets$/u)
+  await t.assert.rejects(frozen(), /^Error: stasis\.lock\.json \(lock = frozen\): bundle resolution 'dep' from index\.js \(\*\) is attested inconsistently across condition sets in the lockfile$/u)
 }))
 
 test('stasis bundle in lock = frozen builds every entry the lockfile attests, as the bundle loads beside it', withTmp(async (t, dir) => {
@@ -135,7 +143,7 @@ test('stasis bundle in lock = frozen builds every entry the lockfile attests, as
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
   await build(dir, { entries: ['index.js', 'more.js'], lockfile: 'stasis.lock.json' })
   writeJson(join(dir, 'stasis.config.json'), { lock: 'frozen' })
-  await t.assert.rejects(build(dir), /^Error: bundleCommand: stasis\.lock\.json \(lock = frozen\) attests the entry more\.js, which the bundle doesn't build$/u)
+  await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json \(lock = frozen\): bundle\/lockfile entries mismatch/u)
   await build(dir, { entries: ['index.js', 'more.js'] })
 }))
 
