@@ -1189,40 +1189,41 @@ describe('stasis run --fs (spawned, concurrent)', { concurrency: CONCURRENCY }, 
   }))
 
   test('run --fs reports a .env absent from every stat form, options included (capture and load)', withTmp(async (t, tmp) => {
-    // An options argument (`bigint`, `throwIfNoEntry`) only stops a stat being served or captured:
-    // the secret is still absent, as to readFileSync and existsSync. `undefined` is throwIfNoEntry's.
+    // An options argument (`bigint`, `throwIfNoEntry`) only stops a stat being served or captured: the secret
+    // still answers as a missing file does, which Node's version decides (async stat honours throwIfNoEntry
+    // from 24.15), so each probe of it is held to the same probe of a path missing outside the project.
     writeFileSync(join(tmp, '.env'), 'API_KEY=secret\n')
-    const probes = [
+    const program = (forms) => [
       "import * as fs from 'node:fs'",
+      "import { tmpdir } from 'node:os'",
       "import { join } from 'node:path'",
-      'const p = join(process.cwd(), ".env")',
-      'const code = (fn) => { try { return fn() === undefined ? "undefined" : "ok" } catch (e) { return e.code } }',
-      'const out = [code(() => fs.statSync(p)), code(() => fs.statSync(p, { bigint: true })), code(() => fs.statSync(p, { throwIfNoEntry: false }))]',
-      'out.push(code(() => fs.lstatSync(p, { bigint: true })), code(() => fs.lstatSync(p, { throwIfNoEntry: false })), String(fs.existsSync(p)))',
-    ]
-    writeFileSync(join(tmp, 'src', 'sync.js'), [...probes, 'console.log(out.join(" "))', ''].join('\n'))
-    writeFileSync(join(tmp, 'src', 'async.js'), [
-      ...probes,
-      'const viaCallback = (fn) => new Promise((done) => fn((err) => done(err ? err.code : "ok")))',
-      'const viaPromise = (fn) => fn().then(() => "ok", (err) => err.code)',
-      'out.push(await viaCallback((cb) => fs.stat(p, { bigint: true }, cb)), await viaCallback((cb) => fs.lstat(p, {}, cb)))',
-      'out.push(await viaPromise(() => fs.promises.stat(p, { bigint: true })), await viaPromise(() => fs.promises.lstat(p, {})))',
-      'console.log(out.join(" "))',
+      'const T = { throwIfNoEntry: false }',
+      'const B = { bigint: true }',
+      'const sync = (fn, o) => (p) => { try { return String(fn(p, o)) } catch (e) { return e.code } }',
+      'const viaCallback = (fn, o) => (p) => new Promise((done) => fn(p, o, (e, s) => done(e ? e.code : String(s))))',
+      'const viaPromise = (fn, o) => (p) => fn(p, o).then(String, (e) => e.code)',
+      `const probes = [${forms}]`,
+      'const answers = async (p) => (await Promise.all(probes.map((probe) => probe(p)))).join(" ")',
+      'console.log(await answers(join(process.cwd(), ".env")))',
+      'console.log(await answers(join(tmpdir(), `stasis-missing-${process.pid}`)))',
       '',
-    ].join('\n'))
-    const sync = 'ENOENT ENOENT undefined ENOENT undefined false'
+    ].join('\n')
+    const syncForms = 'sync(fs.statSync), sync(fs.statSync, B), sync(fs.statSync, T), sync(fs.lstatSync, B), sync(fs.lstatSync, T), (p) => String(fs.existsSync(p))'
+    const asyncForms = 'viaCallback(fs.stat, B), viaCallback(fs.stat, T), viaCallback(fs.lstat, T), viaPromise(fs.promises.stat, B), viaPromise(fs.promises.stat, T), viaPromise(fs.promises.lstat, T)'
+    writeFileSync(join(tmp, 'src', 'sync.js'), program(syncForms))
+    writeFileSync(join(tmp, 'src', 'async.js'), program(`${syncForms}, ${asyncForms}`))
+    const asMissing = (r, what) => {
+      t.assert.equal(r.status, 0, `${what} stderr: ${r.stderr}`)
+      const [secret, missing] = r.stdout.trim().split('\n')
+      t.assert.equal(secret, missing, `${what}: the .env answers as a missing file`)
+      t.assert.match(secret, /^ENOENT ENOENT undefined ENOENT undefined false/u, what)
+    }
     const bundlePath = join(tmp, 'snapshot.br')
-    const capture = await run(['run', '--lock=add', '--bundle=add', `--bundle-file=${bundlePath}`, '--fs=sync', 'src/sync.js'], { cwd: tmp })
-    t.assert.equal(capture.status, 0, `capture stderr: ${capture.stderr}`)
-    t.assert.equal(capture.stdout, `${sync}\n`)
+    asMissing(await run(['run', '--lock=add', '--bundle=add', `--bundle-file=${bundlePath}`, '--fs=sync', 'src/sync.js'], { cwd: tmp }), 'sync capture')
     const asyncPath = join(tmp, 'async.br')
-    const captureAsync = await run(['run', '--lock=replace', '--bundle=add', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp })
-    t.assert.equal(captureAsync.status, 0, `async capture stderr: ${captureAsync.stderr}`)
-    t.assert.equal(captureAsync.stdout, `${sync} ENOENT ENOENT ENOENT ENOENT\n`)
+    asMissing(await run(['run', '--lock=replace', '--bundle=add', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp }), 'async capture')
     t.assert.equal(decode(asyncPath).formats['.env'], undefined, 'the secret is not recorded, as a stat record either')
-    const load = await run(['run', '--lock=frozen', '--bundle=load', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp })
-    t.assert.equal(load.status, 0, `load stderr: ${load.stderr}`)
-    t.assert.equal(load.stdout, `${sync} ENOENT ENOENT ENOENT ENOENT\n`)
+    asMissing(await run(['run', '--lock=frozen', '--bundle=load', `--bundle-file=${asyncPath}`, '--fs=async', 'src/async.js'], { cwd: tmp }), 'load')
   }))
 
   // --- fs settable via stasis.config.json ("fs": "sync" | "async") ------------------

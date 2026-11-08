@@ -70,6 +70,10 @@ function enoent(syscall, path) {
   return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`), { code: 'ENOENT', errno: -2, syscall, path: p })
 }
 
+// An absent path's stat answers as Node answers for a missing one, in its version (async stat honours
+// throwIfNoEntry from 24.15, async lstat doesn't): the real fn asked of '', which never exists, re-spelled.
+const asAbsent = (syscall, path) => (err) => (err?.code === 'ENOENT' ? enoent(syscall, path) : err)
+
 // File-type bits, so code reading stats.mode (not the is*() methods) still sees file-vs-dir.
 const S_IFREG = 0o100000
 const S_IFDIR = 0o040000
@@ -181,14 +185,13 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     return realReaddirSync(path, options)
   }
 
-  // Served/captured in the single-arg form only (an absent path is ENOENT in any); capture hands the caller
-  // the REAL Stats/errors. statSync follows symlinks: an in-root symlink records the TARGET's kind there.
+  // Served/captured in the single-arg form only (an absent path is missing in any: asAbsent); capture hands the
+  // caller the REAL Stats/errors. statSync follows symlinks: an in-root symlink records the TARGET's kind there.
   const servedStatSync = (syscall, realFn) => ({
     [`${syscall}Sync`](path, options) {
       const t = classify(path)
       if (t?.mode === 'absent') {
-        if (options?.throwIfNoEntry === false) return undefined
-        throw enoent(syscall, path)
+        try { return realFn('', options) } catch (err) { throw asAbsent(syscall, path)(err) }
       }
       if (options == null && t?.mode === 'serve') {
         const kind = t.state.getFsStatFamily(t.url)
@@ -315,7 +318,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
       [syscall](path, options, callback) {
         const [opts, cb] = cbArgs(options, callback)
         const t = typeof cb === 'function' ? classify(path) : null
-        if (t?.mode === 'absent') return later(cb, enoent(syscall, path))
+        if (t?.mode === 'absent') return realFn('', opts, (err, stats) => cb(asAbsent(syscall, path)(err), stats))
         if (opts == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return later(cb, null, bundleStats(realSyncFn, path, kind === 'directory'))
@@ -335,7 +338,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     const servedStatP = (syscall, realFn, realSyncFn) => ({
       async [syscall](path, options) {
         const t = classify(path)
-        if (t?.mode === 'absent') throw enoent(syscall, path)
+        if (t?.mode === 'absent') return realFn('', options).catch((err) => { throw asAbsent(syscall, path)(err) })
         if (options == null && t?.mode === 'serve') {
           const kind = t.state.getFsStatFamily(t.url)
           if (kind !== undefined) return bundleStats(realSyncFn, path, kind === 'directory')
