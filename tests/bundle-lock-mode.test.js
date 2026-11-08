@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { brotliDecompressSync } from 'node:zlib'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { withTmp } from './tmp.helper.js'
@@ -21,7 +22,7 @@ function project(dir) {
 }
 const build = (dir, { lock, ...options } = {}) => bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', env: lock === undefined ? env : { ...env, EXODUS_STASIS_LOCK: lock }, ...options })
 
-test('stasis bundle in lock = add holds what it builds to the stasis.lock.json there, with --lockfile or not, and merges what is new into it', withTmp(async (t, dir) => {
+test('stasis bundle in lock = add holds what it builds to the stasis.lock.json there, with --lockfile or not, and writes the one built, or with --add both merged', withTmp(async (t, dir) => {
   project(dir)
   await build(dir, { lockfile: 'stasis.lock.json' })
   const lockPath = join(dir, 'stasis.lock.json')
@@ -33,12 +34,18 @@ test('stasis bundle in lock = add holds what it builds to the stasis.lock.json t
   await t.assert.rejects(build(dir), /^Error: stasis\.lock\.json: content mismatch for 'index\.js'$/u, 'without --lockfile: read all the same')
   await t.assert.rejects(build(dir, { lockfile: 'stasis.lock.json' }), /content mismatch for 'index\.js'/u, 'with it: not overwritten')
   t.assert.equal(readFileSync(lockPath, 'utf8'), edited, 'left as it was')
-  // What it adds is merged in, and what it records stays: of another entry alone, both.
+  // Held to what it records, the lockfile written is the one built, which the bundle beside it pairs
+  // with; with --add, both merged.
   writeFileSync(lockPath, written)
   writeFileSync(join(dir, 'more.js'), 'module.exports = 2\n')
+  const entriesOf = (file) => JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))).toString('utf8')).entries.toSorted()
   await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json' })
+  t.assert.deepStrictEqual([readJson(lockPath).entries, entriesOf('out.br')], [['more.js'], ['more.js']])
+  writeFileSync(lockPath, written)
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  await build(dir, { entries: ['more.js'], lockfile: 'stasis.lock.json', add: true })
   const merged = readJson(lockPath)
-  t.assert.deepStrictEqual([Object.keys(merged.sources['.'].files).toSorted(), merged.entries.toSorted()], [['index.js', 'more.js'], ['index.js', 'more.js']])
+  t.assert.deepStrictEqual([Object.keys(merged.sources['.'].files).toSorted(), merged.entries.toSorted(), entriesOf('out.br')], [['index.js', 'more.js'], ['index.js', 'more.js'], ['index.js', 'more.js']])
   // One changed since, as for a run: lock = replace records it anew.
   writeFileSync(join(dir, 'more.js'), 'module.exports = 3\n')
   await t.assert.rejects(build(dir, { entries: ['more.js'] }), /stasis\.lock\.json: content mismatch for 'more\.js'/u)

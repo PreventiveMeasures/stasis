@@ -2796,7 +2796,7 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 }
 
 // The lockfile `built()` gives held to the one at `lockAbs` by `mode`, as a run holds itself to one.
-// In add it is merged into it, which must agree on all both record, execute bits too; in frozen that
+// In add it must agree with it on all both record, execute bits too; in frozen that
 // one must be there, agree, and attest every entry, file, format and import built; in none, it must
 // not be there; in replace and ignore, it isn't read. -> () => the Lockfile to write, or null.
 function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
@@ -2813,13 +2813,14 @@ function heldToLockfile(built, lockAbs, label, mode, host = diskHost) {
   }
   const fresh = built()
   if (fresh === undefined) return built
-  const merged = lock.merge(fresh, label)
+  lock.merge(fresh, label)
   const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
   for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
     if (recorded.has(file) && lock.executable.has(file) !== fresh.executable.has(file)) throw new Error(`${label}: ${file}'s execute bit differs`)
     if (frozen && !recorded.has(file)) throw new Error(`${label} (lock = frozen) doesn't attest ${file}`)
   }
-  if (!frozen) return () => merged
+  // The lockfile written is the build's, which attests the bundle beside it; --add merges both.
+  if (!frozen) return built
   for (const entry of fresh.entries) {
     if (!lock.entries.has(entry)) throw new Error(`${label} (lock = frozen) doesn't attest the entry ${entry}`)
   }
