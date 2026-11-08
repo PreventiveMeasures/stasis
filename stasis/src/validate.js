@@ -558,7 +558,7 @@ async function eachOf(items, parallel, run) {
 // MAX_TOLD (`problems`, how many more `moreProblems`); and each version not wholly valid or patched
 // (`packages`), a patched one's patch with, where it is valid, whether a copy of it holds its files
 // patched (`applied`), and one installed from a directory of the repository its `directory`.
-export async function validateBundle(plan, own, { fetch = fetchPackage, locked = null, deadline = Number.POSITIVE_INFINITY, now = Date.now } = {}) {
+export async function validateBundle(plan, own, { fetch = fetchPackage, locked: lockfiles = null, deadline = Number.POSITIVE_INFINITY, now = Date.now } = {}) {
   const problems = []
   const counts = { files: plan.files, own: plan.own.length, dependencies: plan.files - plan.own.length, matched: 0, eol: 0, differs: 0, unexpected: 0, unverified: 0,
     skipped: 0, packages: plan.packages.length, validPackages: 0, lockFailures: 0, misplaced: 0 }
@@ -575,7 +575,10 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
   // The packages fetched while own code is read and checked.
   const told = []
   const bundled = patchesOf(plan)
-  const fetching = eachOf(plan.packages, PACKAGES_AT_ONCE, async (pkg) => {
+  // Each version's copies, by the lockfile that installs them where several do (lockedBy's split).
+  const units = plan.packages.flatMap((pkg) => lockfiles?.split?.(pkg) ?? [{ pkg, locked: lockfiles }])
+  counts.packages = units.length
+  const fetching = eachOf(units, PACKAGES_AT_ONCE, async ({ pkg, locked }) => {
     const of = packageKey(pkg)
     const tellPackage = (status, more) => told.push({ ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, files: pkg.files.length, status, ...more })
     // Left unchecked, its files with it: unverified, or failing its lockfile (not what was installed,
@@ -722,7 +725,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked =
     status: counts.differs + counts.unexpected + counts.lockFailures + counts.misplaced > 0 ? 'invalid' : counts.unverified > 0 ? 'incomplete' : 'valid',
     own: skipped ? { checked: false, reason: read.reason, ...(patchesChecked > 0 && { patches: patchesChecked }) }
       : { checked: true, repository: read.repository, ...(read.movedFrom && { movedFrom: read.movedFrom }), commit: read.commit, ...(read.ref && { ref: read.ref }), directory: read.directory, ...(read.cut && { cut: true }) },
-    lockfiles: locked?.lockfiles ?? null,
+    lockfiles: lockfiles?.lockfiles ?? null,
     counts,
     problems: problems.toSorted(byProblem).slice(0, MAX_TOLD),
     moreProblems: Math.max(0, problems.length - MAX_TOLD),
@@ -874,13 +877,15 @@ function readLockfile(name, read) {
 // given: `locate(lock)` finds it, the file there of pnpm's name for it and of that hash. `root` is the
 // bundle's directory's path from the lockfile's, and `at` the lockfile's directory's from the bundle's
 // (`''`, the default, for the same): several of one ecosystem are taken where each is at another
-// (stasis.config.json's `lockfiles`), a copy installed where the innermost holding it says, and a
-// version locked as every one of them locks it. Their paths (`lockfiles`), and whether one locks an
-// ecosystem's packages (`locks(ecosystem)`), told too.
+// (stasis.config.json's `lockfiles`), each copy held to the innermost holding it alone (`split`), and
+// a version locked as every one of them locks it where nothing splits its copies. Their paths
+// (`lockfiles`), and whether one locks an ecosystem's packages (`locks(ecosystem)`), told too.
 export function lockedBy(lockfiles) {
   const by = new Map()
   const all = []
-  for (const { path, text, from, read, tree, patches, root = '', at = '' } of lockfiles) {
+  const given = new Map() // each one read, by what it was given as
+  for (const lockfile of lockfiles) {
+    const { path, text, from, read, tree, patches, root = '', at = '' } = lockfile
     const ecosystem = LOCKFILES.get(posix.basename(path))
     if (ecosystem === undefined) throw new ValidateError('lockfile-unsupported', `${path}: not a lockfile validate reads (${[...LOCKFILES.keys()].join(', ')})`)
     const same = by.get(ecosystem) ?? []
@@ -898,6 +903,7 @@ export function lockedBy(lockfiles) {
     const one = { ...locks, path, from, read, tree, root: within, at, patchDirs: patches ?? [posix.join(posix.dirname(path), 'patches')] }
     by.set(ecosystem, [...same, one])
     all.push(one)
+    given.set(one, lockfile)
   }
   const npms = by.get('npm') ?? []
   // Of an npm lockfile `at` the bundle's root or above it (`..` alone), every copy; of one below, those
@@ -906,13 +912,25 @@ export function lockedBy(lockfiles) {
   const depth = (at) => (at === '' ? 0 : above(at) ? -at.split('/').length : at.split('/').length)
   // The npm lockfile installing the copy at the bundle's `dir`, the innermost holding it, and the
   // copy's location in it.
-  const installing = (dir) => npms.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
+  const innermost = (of, dir) => of.filter(({ at }) => above(at) || dir.startsWith(`${at}/`)).reduce((inner, one) => (inner === undefined || depth(one.at) > depth(inner.at) ? one : inner), undefined)
+  const installing = (dir) => innermost(npms, dir)
+  // What one lockfile alone locks, of those read.
+  const alone = new Map()
+  const aloneOf = (one) => alone.get(one) ?? alone.set(one, lockedBy([given.get(one)])).get(one)
   const locationIn = (one, dir) => (above(one.at) ? pathIn(one.root, dir) : dir.slice(one.at.length + 1))
   const fromRoot = (dir) => (dir === '.' ? '' : dir)
   const reads = new Map()
   return {
     lockfiles: all.map(({ path }) => path),
     locks: (ecosystem) => by.has(ecosystem),
+    // A version's copies, where several lockfiles of its ecosystem are read, by the one installing
+    // each, the innermost holding it: each held to that one alone (`{ pkg, locked }`), as it alone
+    // installs them; those none holds to them all, as installed nowhere. Undefined for one, or none.
+    split(pkg) {
+      const same = by.get(pkg.ecosystem) ?? []
+      if (same.length < 2) return undefined
+      return [...Map.groupBy(pkg.files, (file) => innermost(same, file.dir))].map(([one, files]) => ({ pkg: { ...pkg, files }, locked: one === undefined ? this : aloneOf(one) }))
+    },
     lock(ecosystem, name, version) {
       const same = by.get(ecosystem)
       if (same === undefined) return undefined

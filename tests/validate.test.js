@@ -1181,6 +1181,28 @@ test("validate: the dependencies held to the lockfiles the repository's stasis.c
   t.assert.deepStrictEqual((await validate(file, { client: repoClient({ ...files, ...config(['package-lock.json', 'tools/package-lock.json']) }), fetch: upstream(), lockfile: [given] })).lockfiles, [given])
 }))
 
+test("validate: of several lockfiles, each copy held to the one of its tree alone, a version another tree's locks not locked by its own", withTmp(async (t, tmp) => {
+  const pnpm = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  const files = {
+    'package.json': '{"name":"app","version":"1.0.0"}\n',
+    'pnpm-lock.yaml': pnpm,
+    'src/main.js': 'main\n',
+    'tools/package.json': '{"name":"tools","version":"1.0.0"}\n',
+    'tools/pnpm-lock.yaml': "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n",
+    'stasis.config.json': `${JSON.stringify({ lockfiles: ['pnpm-lock.yaml', 'tools/pnpm-lock.yaml'] })}\n`,
+  }
+  const file = join(tmp, 'app.stasis.code.br')
+  const write = (dir) => writeBundle(file, { repo: { github: 'org/repo', commit }, modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    [dir, { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+  ]) })
+  write('node_modules/.pnpm/ms@2.1.3/node_modules/ms')
+  t.assert.equal((await validate(file, { client: repoClient(files), fetch: upstream() })).status, 'valid', 'in the tree whose lockfile locks it')
+  write('tools/node_modules/.pnpm/ms@2.1.3/node_modules/ms')
+  const report = await validate(file, { client: repoClient(files), fetch: upstream() })
+  t.assert.deepStrictEqual([report.status, report.packages.map(({ status, reason }) => [status, reason])], ['invalid', [['invalid', 'not-locked']]])
+}))
+
 test("configuredLockfiles and lockedNpmPackages: stasis.config.json's lockfiles, of a repository's directory or the disk's, the npm ones' registry packages each named by its path", withTmp(async (t, tmp) => {
   const listed = { '': ['stasis.config.json'], web: ['stasis.config.json'], none: ['package.json'] }
   const read = async (path) => ({ 'stasis.config.json': '{"lockfiles":["pnpm-lock.yaml","tools/package-lock.json"]}', 'web/stasis.config.json': '{"lockfiles":["../pnpm-lock.yaml"]}' })[path]
