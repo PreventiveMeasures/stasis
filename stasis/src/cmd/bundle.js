@@ -2292,13 +2292,14 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 }
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
-// rooted at `roots[i]`: their strict union, rooted where every one of them is.
+// rooted at `roots[i]`: their strict union, rooted where every one of them is; a lockfile only where
+// every one has one (JS builds; a Solidity one has none).
 function unionOfBuilds(name, builds, builts, roots) {
   const other = roots.findIndex((root) => root !== roots[0])
   if (other !== -1) {
     throw new Error(`${name}: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${roots[0]} and ${roots[other]})`)
   }
-  return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
+  return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && b.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
 }
 
 // buildVfsBundle's checks of `options`, which hold before anything is fetched (`host` the
