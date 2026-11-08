@@ -100,6 +100,11 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   t.assert.ok(matches('secret[.-0]key.js', 'secret.key.js'))
   t.assert.ok(!matches('secret[.-0]key.js', 'secret/key.js'))
   t.assert.ok(!matches('a[!x]b', 'a/b'))
+  // `\` escapes within a class too: `\-` a hyphen, `\]` a bracket.
+  t.assert.ok(matches('secret[a\\-z].js', 'secret-.js'))
+  t.assert.ok(!matches('secret[a\\-z].js', 'secretm.js'))
+  t.assert.ok(matches('x[\\]]y', 'x]y'))
+  t.assert.ok(!matches('x[!\\]]y', 'x]y'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))

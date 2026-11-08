@@ -15,12 +15,29 @@ const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
 
-// The index of the `]` closing the class the `[` at `at` opens (a `]` right after `[` or `[!` is a member), or -1.
+// The index of the `]` closing the class the `[` at `at` opens, or -1: a `]` right after `[` or `[!` is a
+// member, as is one escaped (`\]`).
 function classEnd(text, at) {
   let i = at + 1
   if (text[i] === '!' || text[i] === '^') i++
   if (text[i] === ']') i++
-  return text.indexOf(']', i)
+  for (; i < text.length; i++) {
+    if (text[i] === '\\') i++
+    else if (text[i] === ']') return i
+  }
+  return -1
+}
+
+// A class's members (between `[`/`[!` and `]`) as a RegExp class body: `\x` the character x, `-` between
+// two members a range, every other character itself.
+function classSource(body) {
+  let out = ''
+  for (let i = 0; i < body.length; i++) {
+    const escaped = body[i] === '\\' && i + 1 < body.length
+    const c = escaped ? body[++i] : body[i]
+    out += c === '-' && !escaped ? '-' : /[[\\\]^-]/u.test(c) ? `\\${c}` : c
+  }
+  return out
 }
 
 // The first outermost `{...}` holding a `,` of its own -> [start, alternatives, end], or null (a brace
@@ -87,8 +104,7 @@ function segmentSource(segment) {
       const negated = body[0] === '!' || body[0] === '^'
       if (negated) body = body.slice(1)
       // Never a `/`, whatever range the class spans (`[.-0]` holds one).
-      const members = body.replaceAll(/[[\\\]^]/gu, '\\$&')
-      out += negated ? `[^/${members}]` : `(?!/)[${members}]`
+      out += negated ? `[^/${classSource(body)}]` : `(?!/)[${classSource(body)}]`
       i = close
     } else {
       out += escapeRegExp(c)
