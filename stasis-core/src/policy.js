@@ -15,103 +15,34 @@ const ALLOWING = new Set(['allowedPaths', 'allowedModules'])
 const MAX_ALTERNATIVES = 256
 const MAX_LISTED = 20
 
-// The index of the `]` closing the class the `[` at `at` opens, or -1: a `]` right after `[` or `[!` is a
-// member, as is one escaped (`\]`).
-function classEnd(text, at) {
-  let i = at + 1
-  if (text[i] === '!' || text[i] === '^') i++
-  if (text[i] === ']') i++
-  for (; i < text.length; i++) {
-    if (text[i] === '\\') i++
-    else if (text[i] === ']') return i
-  }
-  return -1
-}
+// The patterns supported, which every glob reads alike: names of letters, digits and `_.@+-`, with `*`, `?`,
+// `**` as a whole name and `{a,b}` lists, none nested. Anything else (a class, an escape, an extglob, a range,
+// a lone or nested brace) is refused, as Node's glob (`extra`'s) may read it otherwise.
+const SIMPLE = /^(?:[\p{L}\p{N}_.@+\-/*?]|\{[\p{L}\p{N}_.@+\-/*?]*,[\p{L}\p{N}_.@+\-/*?,]*\})*$/u
+const isSimple = (pattern) => SIMPLE.test(pattern) && !/[^/]\*\*|\*\*[^/]/u.test(pattern)
 
-// A class's members (between `[`/`[!` and `]`) as a RegExp class body: `\x` the character x, `-` between
-// two members a range, every other character itself.
-function classSource(body) {
-  let out = ''
-  for (let i = 0; i < body.length; i++) {
-    const escaped = body[i] === '\\' && i + 1 < body.length
-    const c = escaped ? body[++i] : body[i]
-    out += c === '-' && !escaped ? '-' : /[[\\\]^-]/u.test(c) ? `\\${c}` : c
+// The brace-free patterns `pattern`'s lists expand into, as a shell expands them, but for an empty one, which
+// Node's glob drops (`{src,}` is `src` alone).
+function alternativesOf(label, pattern) {
+  if (!isSimple(pattern)) {
+    throw new Error(`${label}: ${JSON.stringify(pattern)} is not supported: a pattern is names of letters, digits ` +
+      'and `_.@+-`, with `*`, `?`, `**` as a whole name and `{a,b}` lists (none nested); match any other character with `?`')
   }
-  return out
-}
-
-// The first outermost `{...}` holding a `,` of its own -> [start, alternatives, end], or null (a brace
-// without one is literal).
-function firstAlternation(pattern) {
-  let depth = 0
-  let open
-  let commas
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '\\') {
-      i++
-    } else if (c === '[') {
-      const close = classEnd(pattern, i)
-      if (close !== -1) i = close
-    } else if (c === '{') {
-      if (depth++ === 0) [open, commas] = [i, []]
-    } else if (c === ',' && depth === 1) {
-      commas.push(i)
-    } else if (c === '}' && depth > 0 && --depth === 0 && commas.length > 0) {
-      const bounds = [open, ...commas, i]
-      return [open, bounds.slice(1).map((end, k) => pattern.slice(bounds[k] + 1, end)), i]
-    }
+  let out = ['']
+  for (const [, text, list] of pattern.matchAll(/([^{]*)(?:\{([^}]*)\})?/gu)) {
+    out = out.flatMap((head) => (list === undefined ? [head + text] : list.split(',').map((item) => head + text + item)))
+    if (out.length > MAX_ALTERNATIVES) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to more than ${MAX_ALTERNATIVES} patterns`)
   }
-  return null
-}
-
-// The brace-free patterns `{a,b}` expands `pattern` into, as a shell expands it.
-function expandBraces(label, pattern) {
-  const queue = [pattern]
-  const out = []
-  while (queue.length > 0) {
-    const next = queue.shift()
-    const found = firstAlternation(next)
-    if (found === null) {
-      out.push(next)
-    } else {
-      const [start, alternatives, end] = found
-      for (const alternative of alternatives) queue.push(`${next.slice(0, start)}${alternative}${next.slice(end + 1)}`)
-    }
-    if (queue.length + out.length > MAX_ALTERNATIVES) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to more than ${MAX_ALTERNATIVES} patterns`)
-  }
+  out = out.filter((alternative) => alternative !== '')
+  if (out.length === 0) throw new Error(`${label}: ${JSON.stringify(pattern)} expands to no pattern`)
   return out
 }
 
 const escapeRegExp = (text) => text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, '\\$&')
 
-// One `/`-free segment as a RegExp source: `*`, `?`, `[...]` and `\x`. Wildcards match dotfiles too,
-// so `.env` doesn't slip past `**`.
-function segmentSource(segment) {
-  let out = ''
-  for (let i = 0; i < segment.length; i++) {
-    const c = segment[i]
-    const close = c === '[' ? classEnd(segment, i) : -1
-    if (c === '\\' && i + 1 < segment.length) {
-      out += escapeRegExp(segment[++i])
-    } else if (c === '*') {
-      out += '[^/]*'
-      while (segment[i + 1] === '*') i++
-    } else if (c === '?') {
-      out += '[^/]'
-    } else if (close !== -1) {
-      let body = segment.slice(i + 1, close)
-      const negated = body[0] === '!' || body[0] === '^'
-      if (negated) body = body.slice(1)
-      // Never a `/`, whatever range the class spans (`[.-0]` holds one).
-      out += negated ? `[^/${classSource(body)}]` : `(?!/)[${classSource(body)}]`
-      i = close
-    } else {
-      out += escapeRegExp(c)
-    }
-  }
-  return out
-}
+// One `/`-free name as a RegExp source: `*` any run of characters, `?` one. Both match a dotfile's too, so
+// `.env` doesn't slip past `**`.
+const segmentSource = (segment) => segment.replaceAll(/[*?]|[^*?]+/gu, (part) => (part === '*' ? '[^/]*' : part === '?' ? '[^/]' : escapeRegExp(part)))
 
 // A brace-free pattern as a RegExp source, a `**` segment any number of segments, none included
 // (`a/**` matches `a`, `**/b` matches `b`).
@@ -132,24 +63,18 @@ function patternSource(pattern) {
 }
 
 // `s`: a name may hold a line break, which `.*` (`**`, a directory's paths) must match too.
-function compile(label, pattern, alternatives, suffix = '') {
-  try {
-    return new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'su')
-  } catch (cause) {
-    throw new Error(`${label}: ${JSON.stringify(pattern)} is not a valid pattern`, { cause })
-  }
-}
+const compile = (alternatives, suffix = '') => new RegExp(`^(?:${alternatives.map(patternSource).join('|')})${suffix}$`, 'su')
 
 // A path pattern within the config's directory (`./` and a trailing `/` ignored). It matches a path or a
 // directory above it (`src` takes in src/**); `.` matches everything, and the root's own `--fs` listing
 // (`.`) is matched by `.` and `**` alone.
 function pathPattern(label, pattern) {
-  const alternatives = expandBraces(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
+  const alternatives = alternativesOf(label, pattern).map((alternative) => posix.normalize(alternative).replace(/(?<=.)\/+$/u, ''))
   if (alternatives.some(posixPathEscapes)) {
     throw new Error(`${label}: ${JSON.stringify(pattern)} must be a path or pattern within the directory of stasis.config.json`)
   }
   if (alternatives.includes('.')) return { pattern, test: () => true }
-  const regex = compile(label, pattern, alternatives, '(?:/.*)?')
+  const regex = compile(alternatives, '(?:/.*)?')
   const matchesRoot = alternatives.some((alternative) => alternative.split('/').every((segment) => segment === '**'))
   return { pattern, test: (path) => (path === '.' ? matchesRoot : regex.test(path)) }
 }
@@ -158,13 +83,13 @@ function pathPattern(label, pattern) {
 // name-shaped (one segment or a scope's two, none `.`, `..` or `node_modules`): a path such as
 // node_modules/left-pad would match no name, and so silently refuse nothing.
 function modulePattern(label, pattern) {
-  const alternatives = expandBraces(label, pattern)
+  const alternatives = alternativesOf(label, pattern)
   const named = (alternative) => {
     const segments = alternative.split('/')
-    return segments.length <= 2 && !/[\\\s]/u.test(alternative) && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
+    return segments.length <= 2 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..' && segment !== 'node_modules')
   }
   if (!alternatives.every(named)) throw new Error(`${label}: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")`)
-  const regex = compile(label, pattern, alternatives)
+  const regex = compile(alternatives)
   return { pattern, test: (name) => name === pattern || regex.test(name) }
 }
 

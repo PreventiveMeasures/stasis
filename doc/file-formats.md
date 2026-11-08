@@ -253,20 +253,23 @@ A path pattern is a path or a glob relative to the directory holding
 `stasis.config.json`, which it may not climb out of; `./` and a trailing `/` are
 ignored, and `.` is that directory itself, so everything. A pattern matches a
 path, or a directory above it: `src` takes in everything under `src/`, as `**/test`
-does every `test` directory. `*` matches any run of characters but `/`, `?` one,
-`[abc]`, `[a-z]` and `[!abc]` one of a class, `**` as a whole segment any number
-of segments, none included (`a/**` matches `a`, `**/b` matches `b`), `{a,b}`
-either, and `\` takes the next character as itself. Unlike `extra`'s, which
-globs as a shell does, these wildcards match dotfiles too, so `.env` doesn't slip
-past `**`. A path is matched as the artifact spells it, never folding case.
+does every `test` directory. A pattern is names of letters, digits and `_.@+-`,
+with `*` any run of characters but `/`, `?` one, `**` as a whole segment any
+number of segments, none included (`a/**` matches `a`, `**/b` matches `b`), and
+`{a,b}` either (lists don't nest; an empty alternative is dropped, so `{src,}` is
+`src`). Unlike `extra`'s, which globs as a shell does, these wildcards match
+dotfiles too, so `.env` doesn't slip past `**`, and a path is matched as the
+artifact spells it, never folding case. Any other pattern is refused, as a glob
+may read it otherwise: a `[` (`app/[id].tsx` is a class to Node's glob, matching
+`app/i.tsx`), a `\`, an extglob, a range, a lone or nested brace, a `**` within a
+name. Match any other character with `?` (`app/?id?.tsx`).
 
 A module pattern is a package name, matching that name, or a glob of names,
 matching as a path pattern matches a path, but for a directory above it: `*`
 doesn't cross a scope's `/`, so `@babel/*`, not `*`, takes in `@babel/core`, and
 `**` takes in every name. Each is in the shape of a name, one segment or a
-scope's two, none of them `.`, `..` or `node_modules`, and holds no `\` or
-space: a path such as `node_modules/evil` would match no name, and refuse
-nothing, so it is refused. Two segments without a scope are a Composer name's
+scope's two, none of them `.`, `..` or `node_modules`: a path such as
+`node_modules/evil` would match no name, and refuse nothing, so it is refused. Two segments without a scope are a Composer name's
 (`vendor/package`, which may hold a `.`), so `evil/index.js` is taken as one,
 and matches only a package of that name.
 

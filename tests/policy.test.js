@@ -70,7 +70,11 @@ const messageOf = (fn) => {
 }
 
 // Whether the rule `key` of `patterns` refuses the path `path` (of the dependency `name`, if any).
-const refuses = (key, patterns, path, name) => messageOf(() => parsePolicy('cfg', { [key]: patterns }).assertPath(path, name === undefined ? undefined : { dir: `node_modules/${name}`, name, version: '1.0.0' })) !== null
+// Parsed outside messageOf: a refused pattern fails the test rather than count as a match.
+const refuses = (key, patterns, path, name) => {
+  const policy = parsePolicy('cfg', { [key]: patterns })
+  return messageOf(() => policy.assertPath(path, name === undefined ? undefined : { dir: `node_modules/${name}`, name, version: '1.0.0' })) !== null
+}
 
 test('a path pattern matches the path or a directory above it, its wildcards dotfiles too', (t) => {
   const matches = (pattern, path) => refuses('disallowedPaths', [pattern], path)
@@ -88,23 +92,19 @@ test('a path pattern matches the path or a directory above it, its wildcards dot
   t.assert.ok(matches('a/**/b', 'a/x/y/b/c.js'))
   t.assert.ok(matches('{src,lib}/x', 'lib/x/y.js'))
   t.assert.ok(!matches('{src,lib}/x', 'test/x/y.js'))
-  t.assert.ok(matches('x/[!q]?.md', 'x/ab.md'))
-  t.assert.ok(!matches('x/[!q]?.md', 'x/qb.md'))
-  t.assert.ok(matches('a\\*b', 'a*b'))
-  t.assert.ok(!matches('a\\*b', 'axb'))
+  t.assert.ok(matches('x/?b.md', 'x/ab.md'))
+  t.assert.ok(!matches('x/?b.md', 'x/aab.md'))
+  t.assert.ok(matches('a?b', 'a*b'))
   t.assert.ok(matches('node_modules/.pnpm/**/left', 'node_modules/.pnpm/left@1.0.0/node_modules/left/index.js'))
   // A name may hold a line break, which `**` and a directory's paths take in too.
   for (const pattern of ['secrets', 'secrets/**', '**', '**/*.js', 'secrets/*']) t.assert.ok(matches(pattern, 'secrets/key\n.js'), pattern)
   t.assert.ok(matches('a/**/b', 'a/x\ny/b'))
-  // A class is one character of a name, never a `/`, whatever range it spans.
-  t.assert.ok(matches('secret[.-0]key.js', 'secret.key.js'))
-  t.assert.ok(!matches('secret[.-0]key.js', 'secret/key.js'))
-  t.assert.ok(!matches('a[!x]b', 'a/b'))
-  // `\` escapes within a class too: `\-` a hyphen, `\]` a bracket.
-  t.assert.ok(matches('secret[a\\-z].js', 'secret-.js'))
-  t.assert.ok(!matches('secret[a\\-z].js', 'secretm.js'))
-  t.assert.ok(matches('x[\\]]y', 'x]y'))
-  t.assert.ok(!matches('x[!\\]]y', 'x]y'))
+  // `?` is one character of a name, never a `/`: what matches one that is no supported one.
+  t.assert.ok(!matches('a?b', 'a/b'))
+  t.assert.ok(matches('app/?group?/+page@1.js', 'app/(group)/+page@1.js'))
+  // A name an object inherits is a name like any other.
+  for (const pattern of ['constructor', '__proto__', '{toString,hasOwnProperty}']) t.assert.ok(matches(pattern, pattern.replace(/^\{(\w+),.*/u, '$1')), pattern)
+  t.assert.ok(!matches('__proto__', 'other'))
   // `.` is the config's directory: everything; the root's own listing is `.` and `**`'s alone.
   t.assert.ok(matches('.', 'a/b.js'))
   t.assert.ok(matches('.', '.'))
@@ -134,8 +134,24 @@ test('parsePolicy refuses what is no list of patterns within the config\'s direc
   refused({ allowedPaths: ['../x'] }, /^cfg: allowedPaths: "\.\.\/x" must be a path or pattern within the directory of stasis\.config\.json$/u)
   refused({ disallowedPaths: ['/etc'] }, /must be a path or pattern within/u)
   refused({ disallowedPaths: ['{a,..}/x'] }, /must be a path or pattern within/u)
-  refused({ allowedPaths: ['[z-a]'] }, /^cfg: allowedPaths: "\[z-a\]" is not a valid pattern$/u)
   refused({ allowedPaths: ['{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}{o,p}{q,r}'] }, /expands to more than 256 patterns/u)
+})
+
+test('parsePolicy supports simple patterns alone, refusing any other a glob may read otherwise', (t) => {
+  const refused = (key, pattern) => t.assert.throws(() => parsePolicy('cfg', { [key]: [pattern] }), { message: `cfg: ${key}: ${JSON.stringify(pattern)} is not supported: a pattern is names of letters, digits and \`_.@+-\`, with \`*\`, \`?\`, \`**\` as a whole name and \`{a,b}\` lists (none nested); match any other character with \`?\`` }, pattern)
+  const unsupported = [
+    'src\\a.js', 'app/[id].tsx', 'x]y', 'a[[:digit:]]', // a class, an escape
+    '@(a|b).js', '!(a)', '{@,x}(a)', '(group)/page.js', 'a$b', 'a b', 'a,b', // an extglob, and what one is made of
+    'v{1..3}', '{a}', 'x${a,b}', '{{a,b}}', '{a,{b,c}}', 'a{b', 'a}b', '{a,b}}', // a range, a lone or nested brace
+    'a**', '**b/c', 'src/a**/b', 'a/***/b', '{**,x}/y', // a `**` within a name
+  ]
+  for (const pattern of unsupported) refused('disallowedPaths', pattern)
+  for (const pattern of ['@scope/[ab]*', 'left-{1..3}', '@(left|right)', 'evil pkg']) refused('allowedModules', pattern)
+  for (const pattern of ['{1..3,4}', 'src/{a,b}/*.{js,ts}', '@scope/*', 'node_modules/.pnpm/left@1.0.0+x/**', 'ünï/**']) parsePolicy('cfg', { allowedPaths: [pattern] })
+  // As Node's glob, an empty alternative is dropped.
+  t.assert.ok(!refuses('allowedPaths', ['{src,}'], 'src/a.js'))
+  t.assert.ok(refuses('allowedPaths', ['{src,}'], 'lib/a.js'))
+  t.assert.throws(() => parsePolicy('cfg', { allowedPaths: ['{,}'] }), { message: 'cfg: allowedPaths: "{,}" expands to no pattern' })
 })
 
 test('a Policy names every offender of every rule at once', (t) => {
@@ -325,7 +341,7 @@ test('buildVfsBundle (stasis github-bundle) holds the bundle to the config\'s ru
 
 test('a module pattern is the shape of a name: one segment, or a scope\'s two', (t) => {
   for (const pattern of ['left-pad', '@babel/core', '@babel/*', '@scope/**', '**', 'lodash.*', '{left,right}']) parsePolicy('cfg', { disallowedModules: [pattern] })
-  for (const pattern of ['node_modules/evil', './evil', 'a/b/c', 'evil pkg', '{left,node_modules/evil}', '@scope/', '..']) {
+  for (const pattern of ['node_modules/evil', './evil', 'a/b/c', '{left,node_modules/evil}', '@scope/', '..']) {
     t.assert.throws(() => parsePolicy('cfg', { disallowedModules: [pattern] }), { message: `cfg: disallowedModules: ${JSON.stringify(pattern)} is no package name or pattern of names (such as "left-pad", "@babel/*")` }, pattern)
   }
 })
