@@ -179,6 +179,11 @@ function loadGenerator() {
   return loaded
 }
 
+// Refused where the optional peer stasis generates with is missing, or another version (loadGenerator).
+export function requireGenerator() {
+  loadGenerator()
+}
+
 // --- what `prisma generate` reads ---
 
 const nearestFile = (host, dir, name) => {
@@ -444,7 +449,9 @@ const needsNoOutput = (generator) => generator.provider.value === POTHOS && gene
 const hasSchema = (host) => holding(host, ...configFiles(CONFIG_BASES), ...DEFAULT_SCHEMAS)
 export const schemaProjects = (host, root, projects) => new Set([...projects].filter((project) => hasSchema(host)(posix.join(root, project))))
 
-// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas. Asked for
+// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas, each with the
+// schema (`schema`, its path), the generator's name (`generator`) and the Prisma (`prisma`, its version) it is
+// of. Asked for
 // (`strict`), what stasis can't generate is warned of, and a schema it can't take refused, as `prisma generate`
 // refuses it; detected, both are silent, the scan then reporting what is missing. Two generators writing one
 // output are refused either way.
@@ -499,7 +506,8 @@ async function generateSchema({ host, path, prisma, say, skip }) {
     }
     const outputDir = outputOf(generator, path)
     if (hasNodeModulesSegment(outputDir)) throw new Error(`prisma: ${path}: generator ${generator.name}'s output ${outputDir} is in node_modules, which is laid out from the lockfile alone`)
-    outputs.push({ dir: outputDir, files: generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host }) })
+    const client = generateClientFor({ schemaPath: path, datamodel, generator, dmmf, datasources: config.datasources, outputDir, prisma, host })
+    outputs.push({ dir: outputDir, files: client, schema: path, generator: generator.name, prisma: prisma.version })
   }
   return outputs
 }

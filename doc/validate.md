@@ -47,9 +47,14 @@ The report goes to stdout as tables, as `stasis audit` prints its own:
   directory of the repository it is held to. One failing for its files alone is
   in the files' table; one valid is listed, with its patch, only with
   `--show-valid`. The ecosystem has a column where one is not npm's.
+- **Generated**: the files generated as the repository's Prisma schemas
+  generate them, which it doesn't hold, one row for each client: the schema,
+  its generator and the Prisma it generates as (see [Generated Prisma
+  Clients](#generated-prisma-clients)).
 
-The summary (the status, and the files and packages counted), why own code
-wasn't checked, and the lockfiles the dependencies were held to go to stderr.
+The summary (the status, and the files and packages counted, those generated
+among them), why own code wasn't checked, why no Prisma Client was generated
+where none could be, and the lockfiles the dependencies were held to go to stderr.
 The statuses are in colour (failing red, unverified yellow, valid green) where
 the stream takes colours, as `@exodus/test` tells it: CI's log (`CI` set), or
 a terminal that has them; not a pipe or a file.
@@ -108,7 +113,8 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
    as Node resolves a package by its path (below). A vendored crate's `.cargo-checksum.json`, which
    `cargo vendor` writes and no crate holds, is held to the crate: its package
    checksum, and the sha256 of each file it lists.
-3. **Coverage**: every file the bundle holds must be one or the other. Stasis's
+3. **Coverage**: every file the bundle holds must be one or the other, or a
+   file of a Prisma Client the repository's schemas generate (below). Stasis's
    own empty stub for an import a package disables (`.stasis/empty-module.js`)
    is allowed.
 
@@ -121,6 +127,60 @@ A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
 `invalid` where any differs or is unexpected or a version fails its lockfile,
 and `incomplete` where nothing failed but some files weren't checked.
+
+## Generated Prisma Clients
+
+A bundle [`github-bundle`](github-bundle.md#prisma) builds carries the Prisma
+Client each project's schema generates, which the repository doesn't hold. Own
+code the repository doesn't hold as bundled (a file it hasn't, or has
+otherwise) is held to the clients the repository's schemas generate at the
+commit, generated as `stasis github-bundle` generates them for a bundle of its
+directory: the repository read whole where that directory doesn't stand alone,
+its trees laid out from its lockfiles, and every project's schema generated,
+apart, with the `prisma` its lockfile installs, fetched (it alone, and what the
+generator reads), as the bundle's was. A file in a client's output is:
+
+- **generated** where it is that client's file, byte for byte: counted as it
+  should be, and listed with the client;
+- **differs** (`not as the repository's Prisma schema generates it`) where the
+  client has a file at its path that isn't it;
+- **unexpected** (`in a Prisma Client's output, which generates no such file`)
+  where the client has none there.
+
+A file in no client's output is told as before, and a file the repository holds
+is held to it alone, generated or not: a bundle of a committed client is
+checked as own code, and generates none. The clients are generated only where
+some own file isn't the repository's, and whatever the repository's
+`stasis.config.json` says of `generatePrisma`: what is checked is that a file
+is what its schema generates, not that a bundle would have generated it. An
+edge runtime's client is held to the query compiler of the `prisma` its
+lockfile installs, which it copies.
+
+Generating needs the optional `@prisma/client-generator-ts` 7.10.0 peer
+dependency, as `github-bundle` does. Where the clients can't be generated (the
+peer missing, the repository or a package not read), the files are told as they
+were found, and the summary says why.
+
+```text
+┌────────────┬──────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ status     │ of       │ files                                                                                       │
+├────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ differs    │ own code │ src/generated/prisma/internal/class.ts (not as the repository's Prisma schema generates it) │
+│ unexpected │ own code │ src/generated/prisma/extra.ts (in a Prisma Client's output, which generates no such file)   │
+└────────────┴──────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────┬──────────────────────────────────────────────┬──────────────────────────────────────────────────┐
+│ status    │ of                                           │ files                                            │
+├───────────┼──────────────────────────────────────────────┼──────────────────────────────────────────────────┤
+│ generated │ prisma/schema.prisma's client (Prisma 7.9.0) │ src/generated/prisma/client.ts                   │
+│           │                                              │ src/generated/prisma/enums.ts                    │
+│           │                                              │ src/generated/prisma/internal/prismaNamespace.ts │
+│           │                                              │ src/generated/prisma/models/User.ts              │
+└───────────┴──────────────────────────────────────────────┴──────────────────────────────────────────────────┘
+invalid: 7 of 9 files as they should be, 1 differ, 1 unexpected, 0 unverified; 0 of 0 packages as published; 4 generated by the repository's Prisma schemas
+Own code held to org/app at 0123456789abcdef0123456789abcdef01234567 of main
+Dependencies held to pnpm-lock.yaml
+```
 
 ## Lockfiles
 
@@ -280,9 +340,9 @@ with their types (`src/validate.d.ts`):
 | Export | |
 | - | - |
 | `validationPlan(bundle)` | A parsed bundle's own files, its files by package version, and the patches it holds. |
-| `validateBundle(plan, own, { fetch, locked, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`), `installed(dir)` the version npm's lockfile installs at a copy's directory (`<name>@<version>`, null for none, undefined where its lockfile locks no location), `aliased(as, named)` whether it installs `named` under the name `as` (undefined for no lockfile). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. |
-| `validateRepository(plan, { repository, commit, directory }, { own, lockfile, listTree, strict, fetch, deadline })` | A plan validated against `repository` (`followingMoves`'s, null for none) at `commit`, held to its history (`historyOf`), as `validate` validates a file. Own code is read of the commit's tree, its files' bytes; or, given `listTree(paths)`, of a listing of it (`{ entries, cut }`, as upstream's `listRepoTree` lists it, for the paths of the bundle's own files and of its directory's), by git's blob ids, the lockfile's directories' files named by it too. `lockfile` is `true` (the repository's), lockfiles as `lockedBy` takes them, or `false`. With `strict` false, no repository or commit to read own code or the lockfile of (`no-repository`, `no-commit`), a commit not of the repository's history (`commit-not-in-history`, `history-unread`), or no lockfile to hold the dependencies to is told in the report, not thrown: own code unverified for the `ValidateError`'s code (`own.reason`), and the dependencies held to their registry alone, the code told (`lockfileError`) where their lockfile went unread for it. |
-| `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. |
+| `validateBundle(plan, own, { fetch, locked, generated, deadline })` | The report. `own` is the repository's files by their paths from its root, each `{ data }` (bytes), `{ sha }` (git's blob id), `{ symlink }` or `{ submodule: true }`, with `repository`, `commit`, `directory` and `cut`; or `{ reason }` it wasn't read (`skipped`, counted apart, as asked), with `entries` where the patches the bundle holds are checked all the same; or a promise of any, the packages fetched meanwhile. `locked` (`lockedBy`'s, null for none): `lock(ecosystem, name, version)` how its lockfile locks a version (`{ from: 'registry', integrity }`, `{ from: 'local', directories }`, `{ from: 'git' }`, `{ from: 'elsewhere' }`, null for not at all, undefined where no lockfile of its ecosystem was read), `tree(directory)` a directory's files of the repository by their paths in it, where it is read, `of(name, version)` the patch pnpm's locks it with (`{ hash, path }`, null for none, undefined where none tells), `read(path)` its text, read of `from` (`repository` or `local`), `installed(dir)` the version npm's lockfile installs at a copy's directory (`<name>@<version>`, null for none, undefined where its lockfile locks no location), `aliased(as, named)` whether it installs `named` under the name `as` (undefined for no lockfile). `fetch(ecosystem, name, version, integrity)` is `fetchPackage`'s. `generated()`, where given, is a promise of the Prisma Clients the repository's schemas generate (`{ dir, files, schema, generator, prisma }` each, `files` by their paths from `dir`, which is by its path from the bundle's root, as `schema` is), asked for once every other own file is checked, and only where one isn't the repository's: the report's `generated` lists the clients its files are generated by (`{ output, schema, generator, prisma, files }`), `counts.generated` counts them, and `generatedError` tells why, where `generated()` failed. |
+| `validateRepository(plan, { repository, commit, directory }, { own, lockfile, listTree, strict, fetch, deadline, generated })` | A plan validated against `repository` (`followingMoves`'s, null for none) at `commit`, held to its history (`historyOf`), as `validate` validates a file. Own code is read of the commit's tree, its files' bytes; or, given `listTree(paths)`, of a listing of it (`{ entries, cut }`, as upstream's `listRepoTree` lists it, for the paths of the bundle's own files and of its directory's), by git's blob ids, the lockfile's directories' files named by it too. `lockfile` is `true` (the repository's), lockfiles as `lockedBy` takes them, or `false`. With `strict` false, no repository or commit to read own code or the lockfile of (`no-repository`, `no-commit`), a commit not of the repository's history (`commit-not-in-history`, `history-unread`), or no lockfile to hold the dependencies to is told in the report, not thrown: own code unverified for the `ValidateError`'s code (`own.reason`), and the dependencies held to their registry alone, the code told (`lockfileError`) where their lockfile went unread for it. `generated` is `validateBundle`'s. |
+| `validate(file, { client, github, sha, directory, own, lockfile })` | What the CLI runs, with an `@preventive/upstream/github.js` client. `own: false` is `--only-deps`; `lockfile` is `true` (the repository's), an array of paths (`--lockfile`), or `false` (`--no-lockfile`). Throws a `ValidateError`, by its `code`, where it won't check a file. Own code the repository doesn't hold is held to the Prisma Clients its schemas generate (see [Generated Prisma Clients](#generated-prisma-clients)), read with `client`. |
 | `exitCodeOf(report, { allowUnverified })` | The exit code a report stands for, as the CLI exits. |
 | `printValidationReport(report, { out, err, showValid, colors })` | The report as the CLI prints it, to streams (`process.stdout` and `process.stderr`, else anything with `write`), the packages valid left out but with `showValid`, in colour where `colors` (else where each stream takes colours). |
 | `followingMoves(client, github)` | `client`'s reads of a repository, followed where GitHub answers it has moved. |
@@ -300,5 +360,6 @@ types in `src/validate-notes.d.ts`):
 `LOCKFILE_ERRORS`, the text of each code a report gives (`own.reason`, a
 package's `reason`, its `patch.error`, a problem's `reason`, `lockfileError`);
 `noteOf(pkg)`, a package's note beside its status as parts, text and its paths
-as `{ path }`, for a caller to set the paths apart; and `noteText(pkg)`, the
-note as text.
+as `{ path }`, for a caller to set the paths apart; `noteText(pkg)`, the
+note as text; and `generatedBy(client)`, what a client of the report's
+`generated` is generated by (`prisma/schema.prisma's client (Prisma 7.10.0)`).

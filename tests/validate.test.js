@@ -14,6 +14,8 @@ import { Bundle } from '@exodus/stasis-core/bundle'
 import { compress } from '@preventive/archive/compression.js'
 import { pack } from '@preventive/archive/tar.js'
 
+import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
+import { parseFileWithKind } from '../stasis/src/parse.js'
 import { HttpError, ValidateError, configuredLockfiles, exitCodeOf, installedNpmPackages, lockedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient } from './vfs-bundle-github.helper.js'
@@ -137,7 +139,7 @@ test('validateBundle: own code held to the repository, each dependency to its pa
     { ecosystem: 'npm', name: 'gone', version: '1.0.0', files: 1, status: 'unverified', reason: 'not-published' },
     { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } },
   ], 'ms as the patch the bundle holds named for it changes it, with no lockfile read, the patch as the repository has it')
-  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0, misplaced: 0 })
+  t.assert.deepStrictEqual(report.counts, { files: 14, own: 8, dependencies: 6, matched: 6, eol: 1, generated: 0, differs: 3, unexpected: 3, unverified: 2, skipped: 0, packages: 4, validPackages: 1, lockFailures: 0, misplaced: 0 })
   t.assert.equal(report.lockfiles, null, 'held to no lockfile')
   // Own code read as bytes, as a tree's tarball has them, alike.
   const asBytes = Object.fromEntries(Object.entries(LISTED).map(([path, entry]) => [path, entry.sha === blob('main\n') ? { data: bytes('main\n') } : entry]))
@@ -1281,4 +1283,115 @@ test('stasis validate: exits 0 valid, 1 invalid, 2 incomplete (0 with --allow-un
   const missing = run('--only-deps', '--no-lockfile', join(tmp, 'missing.stasis.code.br'))
   t.assert.deepStrictEqual([missing.status, missing.stderr], [3, `Error: File not found: ${join(tmp, 'missing.stasis.code.br')}\n`])
   t.assert.equal(run().status, 3)
+}))
+
+// A Prisma Client a repository's schema generates, as `generated` gives it: its files from its output.
+const DB_CLIENT = { dir: 'src/db', schema: 'prisma/schema.prisma', generator: 'client', prisma: '7.10.0',
+  files: new Map([['client.ts', 'generated\n'], ['internal/class.ts', 'class\n'], ['query.wasm', new Uint8Array([0, 97, 115, 109])]]) }
+// A bundle built in `web` holding `files` (`.wasm`s as resources), with the repository's main.js.
+const generatedBundle = (files) => validationPlan(Bundle.parse(new Bundle({
+  repo: { github: 'org/repo', directory: 'web', commit },
+  modules: new Map([['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n', ...files } }]]),
+  formats: new Map(Object.keys(files).filter((path) => path.endsWith('.wasm')).map((path) => [path, 'resource:base64'])),
+}).serialize()))
+
+test('validateBundle: an own file the repository doesn\'t hold as bundled held to the Prisma Clients its schemas generate, asked for once, and only then', async (t) => {
+  const plan = generatedBundle({
+    'src/db/client.ts': 'generated\n', 'src/db/query.wasm': 'AGFzbQ==', 'src/db/internal/class.ts': 'tampered\n', 'src/db/extra.ts': 'x\n',
+    // Its own, the repository's: no generated file, whatever its path.
+    'src/db/committed.ts': 'as committed\n', 'src/other.ts': 'y\n',
+  })
+  const entries = { 'web/src/main.js': { sha: blob('main\n') }, 'web/src/db/committed.ts': { sha: blob('as committed\n') } }
+  let asked = 0
+  const generated = async () => (asked++, [DB_CLIENT])
+  const report = await validateBundle(plan, own(entries), { fetch: upstream(), generated })
+  t.assert.equal(asked, 1)
+  t.assert.equal(report.status, 'invalid')
+  t.assert.deepStrictEqual(report.generated, [{ output: 'src/db', schema: 'prisma/schema.prisma', generator: 'client', prisma: '7.10.0', files: ['src/db/client.ts', 'src/db/query.wasm'] }])
+  t.assert.deepStrictEqual(report.problems, [
+    { path: 'src/db/internal/class.ts', kind: 'differs', of: 'own', reason: 'generated' },
+    { path: 'src/db/extra.ts', kind: 'unexpected', of: 'own', reason: 'not-generated' },
+    { path: 'src/other.ts', kind: 'unexpected', of: 'own' },
+  ])
+  t.assert.deepStrictEqual([report.counts.matched, report.counts.generated, report.counts.differs, report.counts.unexpected], [4, 2, 1, 2])
+  t.assert.equal(report.generatedError, undefined)
+
+  // All of it the repository's: none asked for.
+  const whole = await validateBundle(generatedBundle({}), own(entries), { fetch: upstream(), generated: () => t.assert.fail('asked for') })
+  t.assert.deepStrictEqual([whole.status, whole.generated, whole.counts.generated], ['valid', [], 0])
+  // Asked for and failing: each told as it was found, and why.
+  const failed = await validateBundle(plan, own(entries), { fetch: upstream(), generated: async () => { throw new Error('no prisma installed') } })
+  t.assert.deepStrictEqual([failed.generatedError, failed.generated, failed.counts.generated], ['no prisma installed', [], 0])
+  t.assert.ok(failed.problems.every((problem) => problem.reason === undefined) && failed.counts.unexpected === 5)
+  // A listing cut short: one generated as it should be checked all the same, another left unverified.
+  const cut = await validateBundle(generatedBundle({ 'src/db/client.ts': 'generated\n', 'src/db/internal/class.ts': 'tampered\n' }), own(entries, { cut: true }), { fetch: upstream(), generated })
+  t.assert.deepStrictEqual([cut.status, cut.generated[0].files, cut.problems], ['incomplete', ['src/db/client.ts'], [{ path: 'src/db/internal/class.ts', kind: 'unverified', of: 'own', reason: 'tree-cut' }]])
+  // Skipped (--only-deps): none asked for.
+  const skipped = await validateBundle(plan, { reason: 'skipped' }, { fetch: upstream(), generated: () => t.assert.fail('asked for') })
+  t.assert.deepStrictEqual([skipped.generated, skipped.counts.skipped], [[], 7])
+})
+
+test('printValidationReport: the files generated by each Prisma Client in a table of their own, counted; why none was generated, where none could be', async (t) => {
+  const plan = generatedBundle({ 'src/db/client.ts': 'generated\n', 'src/db/query.wasm': 'AGFzbQ==' })
+  const report = await validateBundle(plan, own({ 'web/src/main.js': { sha: blob('main\n') } }), { fetch: upstream(), generated: async () => [DB_CLIENT] })
+  const { rows, err } = printed(report)
+  t.assert.deepStrictEqual(rows, [['status', 'of', 'files'], ['generated', 'prisma/schema.prisma\'s client (Prisma 7.10.0)', 'src/db/client.ts'], ['', '', 'src/db/query.wasm']])
+  t.assert.match(err, /^valid: 3 of 3 files as they should be, 0 differ, 0 unexpected, 0 unverified; 0 of 0 packages as published; 2 generated by the repository's Prisma schemas\n/u)
+  const failed = await validateBundle(plan, own({ 'web/src/main.js': { sha: blob('main\n') } }), { fetch: upstream(), generated: async () => { throw new Error('no prisma installed') } })
+  t.assert.match(printed(failed).err, /\nNo Prisma Client generated to hold the files the repository doesn't hold to: no prisma installed\n/u)
+  // A report of before, with none.
+  const { generated: _, ...older } = report
+  t.assert.doesNotThrow(() => printed({ ...older, counts: { ...older.counts, generated: undefined } }))
+})
+
+// A repository whose schema's client `src/generated/prisma`, which it doesn't commit, index.ts imports; its
+// `prisma` and `@prisma/client` stand-ins linked from vendor/: nothing fetched.
+const PRISMA_LOCK = ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    dependencies:',
+  "      '@prisma/client':", '        specifier: link:vendor/client', '        version: link:vendor/client', '    devDependencies:', '      prisma:', '        specifier: link:vendor/prisma', '        version: link:vendor/prisma', ''].join('\n')
+const PRISMA_REPO = {
+  'package.json': JSON.stringify({ name: 'app', version: '1.0.0', type: 'module', dependencies: { '@prisma/client': 'link:vendor/client' }, devDependencies: { prisma: 'link:vendor/prisma' } }),
+  'pnpm-lock.yaml': PRISMA_LOCK,
+  'vendor/prisma/package.json': JSON.stringify({ name: 'prisma', version: '7.9.0' }),
+  'vendor/client/package.json': JSON.stringify({ name: '@prisma/client', version: '7.9.0', exports: { './runtime/client': './runtime/client.js', './runtime/*': './runtime/*' } }),
+  'vendor/client/runtime/client.js': 'module.exports = {}\n',
+  'prisma/schema.prisma': 'generator client {\n  provider = "prisma-client"\n  output   = "../src/generated/prisma"\n}\n\ndatasource db {\n  provider = "postgresql"\n}\n\nmodel User {\n  id Int @id\n}\n',
+  'index.ts': "export { PrismaClient } from './src/generated/prisma/client.ts'\n",
+}
+
+test('validate: a github-bundle\'s Prisma Client, which its repository doesn\'t hold, generated as its schema generates it; one tampered with differs', withTmp(async (t, tmp) => {
+  t.mock.method(console, 'warn', () => {})
+  await githubBundleCommand({ cwd: tmp, github: 'org/repo', sha: commit, packageManager: 'pnpm', client: fakeClient(PRISMA_REPO), entries: ['index.ts'], output: 'app.stasis.code.br' })
+  const file = join(tmp, 'app.stasis.code.br')
+  const report = await validate(file, { client: repoClient(PRISMA_REPO) })
+  t.assert.deepStrictEqual([report.status, report.problems, report.generatedError], ['valid', [], undefined])
+  const [client] = report.generated
+  t.assert.deepStrictEqual([report.generated.length, client.output, client.schema, client.generator, client.prisma], [1, 'src/generated/prisma', 'prisma/schema.prisma', 'client', '7.9.0'])
+  t.assert.ok(client.files.includes('src/generated/prisma/client.ts') && client.files.includes('src/generated/prisma/internal/class.ts'))
+  t.assert.equal(report.counts.generated, client.files.length)
+
+  // Its client committed as generated: own code, none generated.
+  const { artifact } = parseFileWithKind(file)
+  const { files } = artifact.modules.get('.')
+  const committed = await validate(file, { client: repoClient({ ...PRISMA_REPO, ...Object.fromEntries(client.files.map((path) => [path, files[path]])) }) })
+  t.assert.deepStrictEqual([committed.status, committed.generated, committed.counts.generated], ['valid', [], 0])
+
+  // A line added to its class: not as the schema generates it.
+  files['src/generated/prisma/internal/class.ts'] += 'globalThis.injected = true\n'
+  writeBundle(file, artifact)
+  const tampered = await validate(file, { client: repoClient(PRISMA_REPO) })
+  t.assert.equal(tampered.status, 'invalid')
+  t.assert.deepStrictEqual(tampered.problems, [{ path: 'src/generated/prisma/internal/class.ts', kind: 'differs', of: 'own', reason: 'generated' }])
+
+  // An edge runtime's client, which carries the query compiler of the prisma its lockfile installs (the bundle its
+  // bindings, which the scan reaches): generated as copied from there.
+  const compiler = 'vendor/prisma/build/query_compiler_fast_bg.postgresql'
+  const edge = { ...PRISMA_REPO, 'prisma/schema.prisma': PRISMA_REPO['prisma/schema.prisma'].replace('  output', '  runtime  = "workerd"\n  output'), [`${compiler}.wasm`]: '\0asm stand-in', [`${compiler}.mjs`]: 'export default {}\n',
+    'vendor/client/package.json': JSON.stringify({ name: '@prisma/client', version: '7.9.0', exports: { './runtime/client': './runtime/client.js', './runtime/wasm-compiler-edge': './runtime/client.js' } }) }
+  await githubBundleCommand({ cwd: tmp, github: 'org/repo', sha: commit, packageManager: 'pnpm', client: fakeClient(edge), entries: ['index.ts'], output: 'edge.stasis.code.br' })
+  const edgeReport = await validate(join(tmp, 'edge.stasis.code.br'), { client: repoClient(edge) })
+  t.assert.deepStrictEqual([edgeReport.status, edgeReport.generated[0].files.filter((path) => path.includes('query_compiler'))],
+    ['valid', ['src/generated/prisma/internal/query_compiler_fast_bg.js']])
+  // Its prisma's bindings other than the bundle's: not as the schema generates the client.
+  const other = await validate(join(tmp, 'edge.stasis.code.br'), { client: repoClient({ ...edge, [`${compiler}.mjs`]: 'export default 1\n' }) })
+  t.assert.deepStrictEqual(other.problems, [{ path: 'src/generated/prisma/internal/query_compiler_fast_bg.js', kind: 'differs', of: 'own', reason: 'generated' }])
 }))
