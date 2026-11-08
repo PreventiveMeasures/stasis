@@ -199,6 +199,8 @@ test("buildVfsBundle refuses stasis.config.json's lockfiles a tree can't be laid
   // Two installing the same node_modules: pnpm's and npm's of one project, and one of a project another's workspace holds.
   await refused(configured({ ...TWO, 'package-lock.json': npmLock('p', ['used']) }, { lockfiles: ['pnpm-lock.yaml', 'package-lock.json'] }), {}, /^Error: stasis\.config\.json's lockfiles names pnpm-lock\.yaml and package-lock\.json, which both install \/node_modules$/u)
   await refused(configured({ ...workspace, 'packages/q/package-lock.json': npmLock('q', []) }, { lockfiles: ['pnpm-lock.yaml', 'packages/q/package-lock.json'] }), {}, /^Error: stasis\.config\.json's lockfiles names pnpm-lock\.yaml and packages\/q\/package-lock\.json, which both install \/packages\/q\/node_modules$/u)
+  // A pnpm older than any taken, pinned by the root package.json of its tree.
+  await refused(configured({ ...TWO, 'package.json': json({ name: 'p', version: '1.0.0', packageManager: 'pnpm@9.15.0', dependencies: { used: '1.0.0' } }) }, { lockfiles: LOCKFILES }), {}, /^Error: \/package\.json: packageManager: pnpm "9\.15\.0" is not supported: only pnpm 10 and later are$/u)
   // A package manager given, which the lockfiles name in its place.
   await refused(configured(TWO, { lockfiles: LOCKFILES }), { packageManager: 'pnpm' }, /^Error: buildVfsBundle: packageManager is given, and stasis\.config\.json's lockfiles names the lockfiles to lay out$/u)
   // lazy, which a Soldeer tree can't be.

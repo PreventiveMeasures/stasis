@@ -414,7 +414,8 @@ const layOutTree = (options) => buildTree(planTree(options))
 
 // What layOutTree checks and finds before anything is fetched, `options` as it takes them: the
 // directory `packageManager` installs cwd from (`found`, its real path `root`), its lockfile there,
-// the version reproduced, the projects it finds and the .yarnclean that cleans their node_modules.
+// the version reproduced (refused below the oldest major taken), the projects it finds and the
+// .yarnclean that cleans their node_modules.
 function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, lazy = false, refuseInstalled = false, ...options }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
@@ -443,11 +444,11 @@ function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
-  return { ...options, project, packageManager, pm, os, cpu, libc, lazy, found, root: project.realpath(found), file, pinned, version, view, projects, clean }
+  return { ...options, project, packageManager, pm, os, cpu, libc, lazy, found, root: project.realpath(found), file, pinnedVersion, version, view, projects, clean }
 }
 
 // layOutTree's tree, of planTree's plan.
-async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, lazy, installDevDependencies = true, root, file, pinned, version, view, projects, clean }) {
+async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, lazy, installDevDependencies = true, root, file, pinnedVersion, version, view, projects, clean }) {
   const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy, production: !installDevDependencies })
   // Each project's node_modules, cleaned as `yarn autoclean` would clean it, whatever installs it.
   const cleanAll = () => {
