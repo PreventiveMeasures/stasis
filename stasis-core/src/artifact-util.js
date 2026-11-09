@@ -106,6 +106,46 @@ const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   return normalized
 }
 
+const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
+// A patch's, as pnpm hashes it.
+const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v) }
+
+// The one sha512 an SRI holds, as upstream takes one; undefined where it holds none, or two.
+export function sha512Of(integrity) {
+  const found = new Set((integrity ?? '').split(/\s+/u).filter((token) => token.startsWith('sha512-')).map((token) => token.split('?')[0]))
+  return found.size === 1 ? [...found][0] : undefined
+}
+// That, where it is of a sha512's form: a tarball's integrity as a record holds it.
+export const tarballIntegrityOf = (integrity) => {
+  const one = sha512Of(integrity)
+  return SRI.sha512.test(one ?? '') ? one : undefined
+}
+
+// An npm dependency's bucket alone, not a workspace package's, whatever ecosystem it records.
+export const isNpmDependency = (dir, ecosystem) => hasNodeModulesSegment(dir) && dependencyEcosystem(dir, ecosystem) === 'npm'
+
+// The algorithm of a dependency's archive `integrity`, as its lockfile locks it: an npm tarball's,
+// a crate's (Cargo.lock's `checksum`), a Composer dist's (`shasum`), a Soldeer zip's (`checksum`).
+const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sha1', soldeer: 'sha256' }
+
+// A dependency's `integrity` (ARCHIVE_ALGORITHM's); an npm one's of a node_modules bucket alone.
+const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
+  if (integrity === undefined) return undefined
+  const of = dependencyEcosystem(dir, ecosystem)
+  if (!Object.hasOwn(ARCHIVE_ALGORITHM, of) || (of === 'npm' && !hasNodeModulesSegment(dir))) assert(false, `${what}: '${dir}' is no npm, cargo, composer or soldeer dependency's bucket, and carries no integrity`)
+  if (typeof integrity !== 'string' || !SRI[ARCHIVE_ALGORITHM[of]].test(integrity)) assert(false, `invalid ${what} module '${dir}' integrity: ${JSON.stringify(integrity)}`)
+  return integrity
+}
+
+// An npm dependency's `patch`: the one pnpm installed it with (patchedDependencies), by its integrity.
+const normalizeModulePatch = (dir, { ecosystem, patch }, what) => {
+  if (patch === undefined) return undefined
+  if (!isNpmDependency(dir, ecosystem)) assert(false, `${what}: '${dir}' is no npm dependency's bucket, and carries no patch`)
+  const normalized = normalizeBlock(patch, PATCH_FIELDS, `${what} module '${dir}' patch`)
+  if (normalized?.integrity === undefined) assert(false, `${what} module '${dir}' patch has no integrity`)
+  return normalized
+}
+
 // A package name or version: characters some ecosystem uses there (npm's legacy `~'!()*` too), so not
 // space or `"#$%&,:;<=>?[\]^`{|}`.
 export const isPackageString = (v) => typeof v === 'string' && /^[\w.+@/~'!()*-]+$/u.test(v)
@@ -170,47 +210,69 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
   return carried
 }
 
-// A module bucket record in canonical key order; `ecosystem`, `repo`, `vendored` and `subpackages` are
-// omitted (not undefined) when absent.
-export const moduleInfo = ({ name, version, ecosystem, repo, vendored, subpackages, files }) => ({
-  name, version,
-  ...(ecosystem === undefined ? {} : { ecosystem }),
-  ...(repo === undefined ? {} : { repo }),
-  ...(vendored === undefined ? {} : { vendored }),
-  ...(subpackages === undefined ? {} : { subpackages }),
-  files,
-})
+// The metadata a record holds whole (DIR_METADATA's is by directory), each field's normalizer.
+const RECORD_METADATA = { integrity: normalizeModuleIntegrity, repo: normalizeModuleRepo, patch: normalizeModulePatch }
+const RECORD_ENTRIES = Object.entries(RECORD_METADATA)
+const DIR_FIELDS = Object.keys(DIR_METADATA)
+// Every metadata field, in canonical order.
+const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
+const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 
-// `record` with the metadata `other` (of the same bucket) has and it lacks: `repo` where it records none,
-// the `vendored` and `subpackages` entries of directories it lists none for. Metadata is held to nothing,
-// so where both record one, `record`'s stands. `record` itself when that adds nothing.
-export function withMetadataOf(record, other) {
-  const repo = record.repo ?? other.repo
-  const fields = Object.keys(DIR_METADATA).filter((field) =>
-    other[field] !== undefined && Object.keys(other[field]).some((sub) => !Object.hasOwn(record[field] ?? {}, sub)))
-  if (repo === record.repo && fields.length === 0) return record
-  const merged = fromEntries(fields.map((field) => [field, Object.freeze(fromEntries([...Object.entries(other[field]), ...Object.entries(record[field] ?? {})]))]))
-  return moduleInfo({ ...record, repo, ...merged })
+// A module bucket record in canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.
+export const moduleInfo = (info) => {
+  const record = { name: info.name, version: info.version }
+  for (const key of OPTIONAL_KEYS) if (info[key] !== undefined) record[key] = info[key]
+  record.files = info.files
+  return record
 }
 
-// A record's `vendored` and `subpackages` as `what` writes them: the entries holding one of `files`, validated;
-// a field not in `fields` left out.
-const carriedDirMetadata = (dir, info, files, what, fields) => fromEntries(Object.keys(DIR_METADATA).map((field) =>
-  [field, fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, files, [field]: carriedEntries(info[field], files) }, what) : undefined]))
+// What a record attests of how its package was installed, which two records of one bucket must agree
+// on: its tarball's integrity, and the patch pnpm applied.
+export const ATTESTED_METADATA = ['integrity', 'patch']
+
+// `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none.
+// ATTESTED_METADATA both record must agree; with `attesting`, all `record` has must be `other`'s,
+// one `other` has none of refused too.
+export function withMetadataOf(record, other, what = 'module', { attesting = false } = {}) {
+  let added
+  for (const field of Object.keys(RECORD_METADATA)) {
+    if (ATTESTED_METADATA.includes(field) && record[field] !== undefined && (attesting || other[field] !== undefined)) {
+      if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field]) ?? 'none'})`)
+    } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
+  }
+  for (const field of DIR_FIELDS) {
+    if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue
+    ;(added ??= {})[field] = Object.freeze(fromEntries([...Object.entries(other[field]), ...Object.entries(record[field] ?? {})]))
+  }
+  return added === undefined ? record : moduleInfo({ ...record, ...added })
+}
+
+// `record` held to `account`, of how its package was installed (an install record's, or with
+// `installed` false, a lockfile's alone). -> `record` with what the account names.
+export const heldToAccount = (record, account, what) =>
+  withMetadataOf(record, account, `${what} (recorded vs ${account.installed === false ? 'locked' : 'installed'})`, { attesting: true })
+
+// A record's metadata as `what` holds it, validated, the fields not in `fields` left out: RECORD_METADATA's,
+// and DIR_METADATA's of the entries `entriesOf(field)`.
+function metadataOf(dir, info, what, fields, entriesOf) {
+  const metadata = {}
+  for (const [field, normalize] of RECORD_ENTRIES) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
+  for (const field of DIR_FIELDS) metadata[field] = fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, [field]: entriesOf(field) }, what) : undefined
+  return metadata
+}
 
 // A parsed bucket `dir` of a `what` artifact: an absent version has one spelling (a literal null folds
-// into undefined so identity comparisons and JSON round-trips can't split on it), `repo`, `vendored` and
-// `subpackages` are validated, and `files` is null-prototype.
-export function normalizeModule({ name, version, ecosystem, repo, vendored, subpackages, files }, dir, what) {
+// into undefined so identity comparisons and JSON round-trips can't split on it), the metadata of
+// `fields` is validated and the rest left out, and `files` is null-prototype.
+export function normalizeModule(info, dir, what, fields = MODULE_METADATA) {
+  const { name, version, ecosystem } = info
   assert(ecosystem === undefined || typeof ecosystem === 'string')
   // An array or a string would read as files named by index ('0', '1'...).
-  if (!isPlainObject(files)) assert(false, `${what}: module '${dir}' files must be an object`)
-  files = fromEntries(Object.entries(files))
+  if (!isPlainObject(info.files)) assert(false, `${what}: module '${dir}' files must be an object`)
+  const files = fromEntries(Object.entries(info.files))
   return moduleInfo({
     name, version: version ?? undefined, ecosystem,
-    repo: normalizeModuleRepo(dir, { ecosystem, repo }, what),
-    vendored: normalizeDirMetadata('vendored', dir, { name, ecosystem, files, vendored }, what),
-    subpackages: normalizeDirMetadata('subpackages', dir, { name, ecosystem, files, subpackages }, what),
+    ...metadataOf(dir, { ...info, files }, what, fields, (field) => info[field]),
     files,
   })
 }
@@ -480,7 +542,7 @@ export function serializeImports(imports) {
 // so the bytes are canonical. `metadata` names the metadata fields written, `true` for all, `false` for none
 // (a lockfile writes `vendored` alone, so it can be audited on its own).
 export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
-  const metadata = written === true ? ['repo', ...Object.keys(DIR_METADATA)] : written === false ? [] : written
+  const metadata = written === true ? MODULE_METADATA : written === false ? [] : written
   const grouped = { modules: [], sources: [] }
   for (const [dir, info] of modules) {
     if (skipEmpty && Object.keys(info.files).length === 0) continue
@@ -489,8 +551,7 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
     const files = fromEntries(sortedByPath(Object.entries(info.files), entryKey))
     grouped[inNodeModules ? 'modules' : 'sources'].push([dir, moduleInfo({
       ...info,
-      repo: metadata.includes('repo') ? normalizeModuleRepo(dir, info, what) : undefined,
-      ...carriedDirMetadata(dir, info, files, what, metadata),
+      ...metadataOf(dir, { ...info, files }, what, metadata, (field) => carriedEntries(info[field], files)),
       files,
     })])
   }
@@ -620,9 +681,8 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // `repo`, `vendored` and `subpackages` are metadata, held to nothing: either side's, where only one
-      // records it, else `a`'s.
-      out.set(dir, withMetadataOf(existing, info))
+      // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf).
+      out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

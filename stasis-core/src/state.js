@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccount, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -22,6 +22,9 @@ import corePackage from './package.cjs'
 const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
+// A reader of how the packages were installed, which stasis-core reads no record of, another package
+// registers (run-installed.js): of modules and a root, each one's account (heldToAccount's) by its dir.
+const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 const FILE_LOCK = 'stasis.lock.json'
 const FILE_CODE = 'stasis.code.br'
 
@@ -316,6 +319,7 @@ export class State {
     // Post-loop: with no stasis files the loop never runs, and a frozen run must fail closed.
     if (this.config.frozen) assert.ok(this.#lockfileLoaded, 'No lockfile, but attempting to run in frozen mode')
     if (this.config.frozenBundle) this.#freezeBundle()
+    this.#holdToInstalled(relative(this.root, this.#lockfileLoaded ? this.#lockPath : this.#bundlePath))
 
     // Claim write targets so no other live State (any copy) silently targets the same file.
     if (this.config.writeBundle) {
@@ -332,6 +336,25 @@ export class State {
 
   #exists(p) {
     return this.#host.stat(p) !== null
+  }
+
+  #installed(modules) {
+    return modules.size === 0 ? undefined : globalThis[INSTALLED]?.(modules, this.root)
+  }
+
+  // ATTESTED_METADATA absorbed of the artifact at `label`, held to how each package was installed;
+  // kept as recorded where no account tells (nothing installed, as where a bundle is run from).
+  #holdToInstalled(label) {
+    const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
+    for (const [dir, account] of this.#installed(attested) ?? []) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
+  }
+
+  // Not what a lockfile alone locks, which says what an install would lay out, not what one did.
+  #recordInstalled() {
+    for (const [dir, account] of this.#installed(this.modules) ?? []) {
+      const held = heldToAccount(this.modules.get(dir), account, `module '${dir}'`)
+      if (account.installed !== false) this.modules.set(dir, held)
+    }
   }
 
   #readMaybe(path, encoding) {
@@ -461,9 +484,8 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to
-        // be written again.
-        this.modules.set(dir, withMetadataOf(lockModule, info))
+        // The bundle's metadata is taken where the lockfile records none, to be written again.
+        this.modules.set(dir, withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -507,8 +529,8 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
-          this.modules.set(dir, withMetadataOf(existing, info))
+          // Metadata: the first half's that records one.
+          this.modules.set(dir, withMetadataOf(existing, info, `bundle ${dir}`))
         }
         // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
         // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't
@@ -1762,6 +1784,7 @@ export class State {
     if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
+    if ((this.config.writeLockfile || this.config.writeBundle) && !this.#parent) this.#recordInstalled()
 
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).

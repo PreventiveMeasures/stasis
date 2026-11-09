@@ -9,7 +9,12 @@ their `EXODUS_STASIS_*` environment variables: each sets its variable for the
 node process it spawns, and a variable already set to another value is a
 conflict. The modes are the flags' alone, save that a config file can pin
 `lock` to `frozen`, which a run must then be given. The zero-dependency core CLI
-runs the same loader as `stasis-core run`, without `--mock` and `--package-json`.
+runs the same loader as `stasis-core run`, without `--mock` and `--package-json`,
+and reads no package manager's record of the install: `stasis run` holds what
+the lockfile and the bundle record of how each npm package was installed (its
+`integrity` and `patch`) to that record, else to the lockfile beside its
+`node_modules`, one they name none of refused as another is, and records it,
+as `stasis bundle` reads it (see [`integrity`](file-formats.md#stasiscodebr)).
 
 ```sh
 stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
