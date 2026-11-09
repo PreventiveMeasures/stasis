@@ -485,7 +485,8 @@ const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
 
 // The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas, each with the
 // schema (`schema`, its path), the generator's name (`generator`) and the Prisma (`prisma`, its version) it is
-// of; and `reasons`, by schema path, why one stasis can't generate for isn't. Asked for (`strict`), what stasis
+// of; `reasons`, by schema path, why one stasis can't generate for isn't; and `schemas`, by project, the schema
+// path the Prisma installed there takes (null for none). Asked for (`strict`), what stasis
 // can't generate is warned of, and a schema it can't take refused, as `prisma generate` refuses it; detected,
 // both are silent but for `reasons`, which expectedOutputs gives where an import reaches an output it lacks. Two
 // generators writing one output are refused either way, unless `shared`, which keeps each.
@@ -493,6 +494,7 @@ const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
 export async function generatePrismaClients({ host, root, projects, strict = true, shared = false }) {
   const outputs = []
   const reasons = new Map()
+  const schemas = new Map()
   const say = strict ? (message) => { console.warn(`[stasis] prisma: ${message}`) } : undefined
   const skip = (what, why) => say?.(notGenerating(what, why))
   for (const project of [...projects].toSorted()) {
@@ -500,6 +502,7 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
     const prisma = installedPrisma(host, dir)
     const supported = PRISMA_VERSIONS.includes(prisma?.version)
     const path = await Promise.try(projectSchema, host, dir, supported ? prisma.version : GENERATOR_VERSION).catch((error) => skip(`for ${dir}`, error.message))
+    schemas.set(project, path || null)
     if (!path) continue
     // Checked before parsing: another Prisma's schema needn't satisfy 7.10.0.
     if (!supported) {
@@ -517,7 +520,7 @@ export async function generatePrismaClients({ host, root, projects, strict = tru
   const dirs = outputs.map(({ dir }) => dir)
   const twice = dirs.find((dir, i) => dirs.indexOf(dir) !== i)
   if (twice !== undefined && !shared) throw new Error(`prisma: ${twice} is the output of more than one generator`)
-  return { outputs, reasons }
+  return { outputs, reasons, schemas }
 }
 /* eslint-enable no-await-in-loop */
 
@@ -553,17 +556,22 @@ async function generateSchema({ host, path, prisma, say, skip }) {
 // (generatorBlocks), and why: `{ path }` (its output) or `{ specifier }` (a default output, in a package), `writer`,
 // and `why`. One of `outputs` is generated, so none of it: a miss there is the scan's, as any other's (the client's
 // own `?module` imports, say). `off`: why none is generated; else a generator stasis doesn't run is skipped, and
-// one it can't generate has its schema's reason (generatePrismaClients' `reasons`).
-export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), off }) {
+// one it can't generate has its schema's reason (generatePrismaClients' `reasons`). A project's schema is the one
+// generation took (`schemas`, generatePrismaClients'); with none taken (generation off, which reads no Prisma),
+// each a Prisma stasis generates as would take: 7.10.0's prisma7.config.* is another's.
+export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), schemas, off }) {
   const generated = new Set(outputs.map(({ dir }) => dir))
-  return [...projects].toSorted().flatMap((project) => {
-    let path
+  const taken = (dir, version) => {
     try {
-      path = projectSchema(host, posix.join(root, project), GENERATOR_VERSION)
+      return projectSchema(host, dir, version)
     } catch {
-      return []
+      return null
     }
-    return !path ? [] : generatorBlocks(host, path).flatMap((generator) => {
+  }
+  return [...projects].toSorted().flatMap((project) => {
+    const dir = posix.join(root, project)
+    const paths = schemas?.has(project) ? [schemas.get(project)] : new Set([GENERATOR_VERSION, PRISMA_VERSIONS.at(-1)].map((version) => taken(dir, version)))
+    return [...paths].filter(Boolean).flatMap((path) => generatorBlocks(host, path).flatMap((generator) => {
       const writer = `${path}'s generator ${generator.name}`
       if (generator.output === null) {
         const specifier = generator.provider.fromEnvVar === null ? DEFAULT_OUTPUTS[generator.provider.value] : undefined
@@ -573,7 +581,7 @@ export function expectedOutputs({ host, root, projects, outputs = [], reasons = 
       const output = outputOf(generator, path)
       if (generated.has(output)) return []
       return [{ path: output, writer, why: off ?? (!ours(generator) ? SKIPPED : reasons.get(path) ?? "stasis didn't generate it") }]
-    })
+    }))
   })
 }
 

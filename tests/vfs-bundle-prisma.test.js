@@ -245,6 +245,10 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   const redirecting = { ...exporting, exports: undefined, main: './src/index.ts', browser: { './src/optional.js': './src/generated/pothos-types.ts' } }
   await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('./optional.js')\n`, files: { 'packages/b/package.json': json(redirecting) } })), { cwd: '/', entries: ['packages/b/src/index.ts'], mainFields: ['browser', 'module', 'main'] }),
     { message: broken('./optional.js', 'packages/b/src/index.ts').message.replace('load time:', 'load time (mainFields):') })
+  // And through a package's `main`, which a import()s.
+  const mained = { ...exporting, exports: undefined, main: './src/generated/pothos-types.ts' }
+  await t.assert.rejects(build(project(withPothos({ files: { 'packages/b/package.json': json(mained), 'packages/a/index.ts': "export const load = () => import('b')\n" } })), { cwd: '/', entries: ['packages/a/index.ts'], mainFields: ['module', 'main'] }),
+    { message: broken('b', 'packages/a/index.ts').message.replace('load time:', 'load time (mainFields):') })
   t.assert.deepStrictEqual(said(), [])
   // One into a client stasis generated is no output's it lacks (the client's own `?module` imports, say): the scan's, as before.
   await build(project(withPothos({ index: `${CLIENT_EXPORT}export const edge = () => import('./generated/prisma/edge.ts')\n` })))
@@ -255,6 +259,15 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   // Asked for, the same, and said beforehand.
   await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS })), { generate: ['prisma'] }), broken('./generated/pothos-types.ts'))
   t.assert.equal(said().at(-1), notGenerating('pothos'))
+})
+
+test('what a generator would write is read from the schema the Prisma installed takes', async (t) => {
+  // 7.10.0 alone takes prisma7.config.*: as 7.9.0, the one installed, prisma/schema.prisma, whose Pothos isn't generated.
+  const configs = { 'packages/b/prisma7.config.ts': "export default { schema: 'db/schema.prisma' }\n", 'packages/b/prisma.config.ts': 'export default {}\n', 'packages/b/db/schema.prisma': schema() }
+  const message = `JS bundle would be broken at load time:\n  unresolved dynamic-import ./generated/pothos-types.ts from /packages/b/src/index.ts (MODULE_NOT_FOUND): ${WRITES_POTHOS}`
+  await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS, files: configs }))), { message })
+  // With generation off, no Prisma is read: each schema one stasis generates as would take.
+  await t.assert.rejects(build(project(withPothos({ index: LOAD_POTHOS, files: configs })), { generate: [] }), /unresolved dynamic-import \.\/generated\/pothos-types\.ts from \/packages\/b\/src\/index\.ts \(MODULE_NOT_FOUND\): \/packages\/b\/prisma\/schema\.prisma's generator pothos would write it, but generation is off/u)
 })
 
 test('with generation off, an import of a file a generator would write still fails however it is reached', async (t) => {

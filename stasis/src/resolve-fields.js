@@ -210,8 +210,9 @@ function resolveSourceFile(base, opts) {
 
 // Resolve absolute `base` as a file (ext probing) else as a directory (package.json `main` via
 // mainFields + entry redirect, else `index`). `exports` is NOT consulted — Node applies it only to
-// bare package-name imports, not to a path landing on a directory.
-function resolveFileOrDir(base, opts) {
+// bare package-name imports, not to a path landing on a directory. An entry it finds missing is put
+// in `tried`, where given.
+function resolveFileOrDir(base, opts, tried) {
   const asResolution = (hit) => (hit === null ? null : fileResolution(hit, opts.host))
   const file = asResolution(resolveSourceFile(base, opts))
   if (file) return file
@@ -226,6 +227,7 @@ function resolveFileOrDir(base, opts) {
       const entryOpts = { ...opts, pkgDir: base } // the package naming the entry, for its unbuilt output
       const inner = asResolution(resolveSourceFile(entryBase, entryOpts) ?? resolveSourceFile(join(entryBase, 'index'), entryOpts))
       if (inner) return inner
+      tried?.push(entryBase)
     }
     const index = asResolution(resolveSourceFile(join(base, 'index'), opts))
     if (index) return index
@@ -298,13 +300,13 @@ export function createFieldResolver({
   }
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
   // delegation matches Node resolving from THAT file; falls back to configured `conditions`. Each
-  // file or directory a miss tried is put in `tried` (a redirect's target, say), the resolver's
+  // file or directory a miss tried is put in `tried` (a redirect's target, a package's `main`), the resolver's
   // missTargets.
   const resolve = function resolve(parentFile, specifier, callConditions, tried = []) {
     const fileOpts = typescript && inNodeModules(parentFile, host) ? fromNodeModules : opts
     const conds = new Set(callConditions ?? conditions)
     const probe = (base) => {
-      const hit = resolveFileOrDir(base, fileOpts)
+      const hit = resolveFileOrDir(base, fileOpts, tried)
       if (hit === null) tried.push(base)
       return hit
     }

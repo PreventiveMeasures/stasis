@@ -430,7 +430,10 @@ relative or absolute path, a package's `exports`, `imports` or `main`, under
 `--mainFields` a `browser` or `react-native` field's redirect, or under
 `--typescript` a `tsconfig.json` `paths` alias), or one into the output a
 generator writes with none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client`
-requires) or `@pothos/plugin-prisma/generated` (Pothos's). One into a client
+requires) or `@pothos/plugin-prisma/generated` (Pothos's). The generators are
+those of the schema the installed Prisma takes (with generation off, which
+reads no `prisma`, of each schema Prisma 7.4.0 to 7.10.0 would take: only
+7.10.0 reads `prisma7.config.*`). One into a client
 stasis generated is the scan's, as any other miss is (the client's own
 `?module` imports, say). A specifier built at run time, an output named by
 `env()`, or a miss of Metro's own resolution under `--metro`, can't be told
