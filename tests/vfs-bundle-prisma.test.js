@@ -240,7 +240,11 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   const exporting = { name: 'b', version: '1.0.0', type: 'module', exports: { '.': './src/index.ts', './pothos': './src/generated/pothos-types.ts' }, dependencies: { '@prisma/client': 'link:../../vendor/client' }, devDependencies: { prisma: 'link:../../vendor/prisma' } }
   await t.assert.rejects(build(project(withPothos({ index: CLIENT_EXPORT, files: { 'packages/b/package.json': json(exporting), 'packages/a/index.ts': "export { PrismaClient } from 'b'\nexport const load = () => import('b/pothos')\n" } }))), broken('b/pothos', 'index.ts'))
   const tsconfig = { 'packages/b/tsconfig.json': json({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }) }
-  await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('@/generated/pothos-types')\n`, files: tsconfig })), { typescript: true }), broken('@/generated/pothos-types'))
+  const aliasing = withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('@/generated/pothos-types')\n`, files: tsconfig })
+  await t.assert.rejects(build(project(aliasing), { typescript: true }), broken('@/generated/pothos-types'))
+  // And under --mainFields, by the field resolver's own alias fallback.
+  await t.assert.rejects(build(project(aliasing), { cwd: '/', entries: ['packages/b/src/index.ts'], typescript: true, mainFields: ['module', 'main'] }),
+    { message: broken('@/generated/pothos-types', 'packages/b/src/index.ts').message.replace('load time:', 'load time (mainFields):') })
   // Under --mainFields, through a `browser` field's redirect, by what the field resolver tried.
   const redirecting = { ...exporting, exports: undefined, main: './src/index.ts', browser: { './src/optional.js': './src/generated/pothos-types.ts' } }
   await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('./optional.js')\n`, files: { 'packages/b/package.json': json(redirecting) } })), { cwd: '/', entries: ['packages/b/src/index.ts'], mainFields: ['browser', 'module', 'main'] }),

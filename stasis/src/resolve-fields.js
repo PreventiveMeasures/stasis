@@ -19,7 +19,7 @@ import {
 } from './resolve-typescript.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { metroHost, scanResolution, stripTypeDeclaration } from './metro-resolver.js'
-import { createNodeResolver } from './resolve-node.js'
+import { RELATIVE_REQUEST, createNodeResolver } from './resolve-node.js'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 
 // Static module resolver for legacy package fields (`react-native`/`browser`/`main` + browser-spec
@@ -403,7 +403,11 @@ export function createFieldResolver({
       paths: typescriptPaths,
       host,
     })
-    return hit == null ? null : fileResolution(hit, host)
+    if (hit != null) return fileResolution(hit, host)
+    // A miss tried where a tsconfig alias points, as the scan's own fallback records it (Scan's missTargets).
+    const aliased = typescriptPaths !== null && !RELATIVE_REQUEST.test(specifier) && !isAbsolute(specifier) && !specifier.startsWith('#') && !inNodeModules(parentFile, host)
+    if (aliased) tried.push(...typescriptPaths.matchPaths(specifier, parentFile))
+    return null
   })
 }
 
