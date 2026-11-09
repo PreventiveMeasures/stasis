@@ -11,23 +11,23 @@ export class PatchError extends Error {
   code: string
 }
 
-export type ValidateErrorCode = 'not-a-bundle' | 'no-repository' | 'no-commit' | 'commit-not-in-history' | 'history-unread'
+export type ValidateErrorCode = 'no-repository' | 'no-commit' | 'commit-not-in-history' | 'history-unread'
   | 'no-lockfile' | 'lockfile-ambiguous' | 'lockfile-unsupported' | 'lockfile-unreadable'
 export class ValidateError extends Error {
   constructor(code: ValidateErrorCode, message: string)
   code: ValidateErrorCode
 }
 
-// What validation checks of a bundle (validationPlan).
-export interface PlanFile { path: string; dir: string; rel: string; format?: string; bytes(): Uint8Array }
-export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[] }
+// What validation checks of a bundle, or a stasis.lock.json (validationPlan): a file's bytes, or their integrity.
+export type PlanFile = { path: string; dir: string; rel: string; format?: string } & ({ bytes(): Uint8Array } | { integrity: string })
+export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[]; repos: Map<string, { github: string; directory?: string; commit?: string }> }
 export interface ValidationPlan { files: number; own: PlanFile[]; packages: PlanPackage[]; patches: Map<string, string> }
 // A parsed bundle (Bundle.parse's, or parseFileWithKind's artifact).
 export interface PlannedBundle {
-  modules: Map<string, { name?: string; version?: string; ecosystem?: string; files: Record<string, unknown> }>
+  modules: Map<string, { name?: string; version?: string; ecosystem?: string; repo?: { github: string; directory?: string; commit?: string }; files: Record<string, unknown> }>
   formats?: Map<string, string>
 }
-export function validationPlan(bundle: PlannedBundle): ValidationPlan
+export function validationPlan(bundle: PlannedBundle, options?: { lockfile?: boolean }): ValidationPlan
 
 export function gitBlobId(bytes: Uint8Array): string
 export function tarballFiles(tarball: Uint8Array): Promise<Map<string, Uint8Array | { symlink: string }>>
@@ -51,17 +51,20 @@ interface Where { repository: string; movedFrom?: string; commit: string; ref?: 
 export type OwnCode = (Where & { entries: Map<string, RepositoryEntry>; cut?: boolean })
   | (Partial<Where> & { reason: string; entries?: Map<string, RepositoryEntry> })
 
-export interface Lock { from: 'registry' | 'git' | 'elsewhere' | 'local'; integrity?: string; conflict?: true; directories?: string[] }
+export interface Lock { from: 'registry' | 'git' | 'elsewhere' | 'local'; integrity?: string; conflict?: true; directories?: string[]; at?: GitAt }
 export interface Lockfile {
   path: string
   text: string
   from?: 'repository' | 'local'
   read?: (path: string) => string | Promise<string>
   tree?: (dir: string) => Promise<Map<string, Uint8Array>>
+  // A git dependency's files, of the GitHub repository at the commit and path its lockfile locks.
+  git?: (at: GitAt) => Promise<Map<string, Uint8Array>>
   patches?: string[]
   root?: string
   at?: string
 }
+export type GitAt = { github: string; commit: string; path: string }
 // A patch pnpm's lockfile names for a version: by its path, or by its hash alone, in a file of one of
 // `names` in a patches directory (locate).
 export type LockedPatch = { hash: string; path: string } | { hash: string; names: string[] }
@@ -75,6 +78,7 @@ export interface Locked {
   aliased(as: string, named: string): boolean | undefined
   from?: 'repository' | 'local'
   tree?: (dir: string) => Promise<Map<string, Uint8Array>>
+  git?: (at: GitAt) => Promise<Map<string, Uint8Array>>
   read(path: string): Promise<string>
   split(pkg: PlanPackage): { pkg: PlanPackage; locked: Locked }[] | undefined
 }
@@ -111,10 +115,16 @@ export interface BundleValidation {
   generatedError?: string
   // validateRepository's, `strict` false: why no lockfile was held to.
   lockfileError?: ValidateErrorCode
+  // The stasis.lock.json the repository commits beside it, which it is held to, and what it contradicts of it.
+  stasisLockfile?: { path: string; error?: string }
 }
 
 export function validateBundle(plan: ValidationPlan, own: OwnCode | Promise<OwnCode>,
-  options?: { fetch?: Fetch; locked?: Locked | null; generated?: () => Promise<PrismaClientOutput[]>; deadline?: number; now?: () => number }): Promise<BundleValidation>
+  options?: {
+    fetch?: Fetch; locked?: Locked | null; generated?: () => Promise<PrismaClientOutput[]>; deadline?: number; now?: () => number
+    // A submodule's commit as the repository's tree pins one at a directory (null for none), and its repository's files there.
+    submodules?: { at(dir: string): Promise<string | null>; read(at: GitAt): Promise<Map<string, Uint8Array>> }
+  }): Promise<BundleValidation>
 export function exitCodeOf(report: BundleValidation, options?: { allowUnverified?: boolean }): 0 | 1 | 2
 
 type Read = 'getRepoTreeId' | 'getRepoTreeTarball' | 'listRepoDir' | 'getRepoFile' | 'getRepoHead' | 'listRepoTags' | 'listRepoBranches' | 'compareCommits'
@@ -138,6 +148,10 @@ export function validateRepository(plan: ValidationPlan, where: { repository?: R
   listTree?: (paths: string[]) => Promise<{ entries: RepoDirEntry[]; cut?: boolean }>
   strict?: boolean
   generated?: () => Promise<PrismaClientOutput[]>
+  // The lockfile of what is validated, held to the stasis.lock.json the repository commits.
+  attested?: () => import('@exodus/stasis-core/lockfile').Lockfile
+  // What reads a git dependency's repository (followingMoves wraps it).
+  client?: Reads
 }): Promise<BundleValidation>
 export function validate(file: string, options?: Options & { client?: Reads; github?: string; sha?: string; directory?: string; lockfile?: boolean | string[] }): Promise<BundleValidation>
 
