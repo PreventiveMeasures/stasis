@@ -20,7 +20,7 @@ import { pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, hexIntegrity, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -139,11 +139,10 @@ function ownedText(baseDir, rel, ownership, host) {
   }
 }
 
-// Each git dependency the root's soldeer.lock installs from GitHub, by its folder under
-// `dependencies/` (`<name>-<version>`, as Soldeer names it): the repository's root at the lockfile's
-// `rev`, which Soldeer checks out there. None where the lockfile can't be read or parsed: it is
-// metadata, which never stops a build.
-function soldeerGitRepos(baseDir, ownership, host) {
+// What the root's soldeer.lock locks of each dependency, by its folder under `dependencies/`
+// (`<name>-<version>`): a GitHub git one's `repo` at its `rev`, a zip's `integrity` (its checksum,
+// which Soldeer extracts it by). None where it can't be read or parsed: metadata never stops a build.
+function soldeerLocks(baseDir, ownership, host) {
   const text = ownedText(baseDir, 'soldeer.lock', ownership, host)
   let lock = null
   try {
@@ -151,12 +150,11 @@ function soldeerGitRepos(baseDir, ownership, host) {
   } catch {
     // Not one Soldeer writes: nothing is recorded from it.
   }
-  const repos = new Map()
+  const locks = new Map()
   for (const dep of Object.values(lock?.dependencies ?? {})) {
-    const repo = dep.type === 'git' ? repoRootAt(parseGithubRepository(dep.git), dep.rev) : undefined
-    if (repo !== undefined) repos.set(`${dep.name}-${dep.version}`, repo)
+    locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: hexIntegrity('sha256', dep.checksum) })
   }
-  return repos
+  return locks
 }
 
 // Classify a Solidity file's dep bucket: Soldeer (`dependencies/<name>-<version>/`) or a
@@ -165,9 +163,9 @@ function soldeerGitRepos(baseDir, ownership, host) {
 // through `host`. A bucket's `repo` is the GitHub repository it is checked out from, at its root, at
 // the commit its checkout's HEAD is at, as the bundle's own `repo` reads one: a submodule's, from
 // the GitHub repository its .gitmodules url names; a Soldeer git dependency's, where it is its
-// soldeer.lock `rev` (soldeerGitRepos), as Soldeer holds a checkout to the lockfile before taking it
+// soldeer.lock `rev` (soldeerLocks), as Soldeer holds a checkout to the lockfile before taking it
 // for installed: a folder left at another commit since the lockfile changed, or no checkout, records
-// none.
+// none. A Soldeer zip's records the integrity soldeer.lock locks it with.
 function makeSolidityClassifier(baseDir, ownership, host) {
   const submodules = githubSubmodules(ownership.submodules)
   const check = ownership.assert
@@ -177,17 +175,17 @@ function makeSolidityClassifier(baseDir, ownership, host) {
     if (!commits.has(dir)) commits.set(dir, checkoutCommit(join(baseDir, dir), host))
     return commits.get(dir)
   }
-  let soldeer // soldeerGitRepos, read at the first Soldeer file
+  let soldeer // soldeerLocks, read at the first Soldeer file
   return (path) => {
     if (path.startsWith('dependencies/')) {
       const seg = path.slice('dependencies/'.length).split('/')[0]
       if (seg) {
         const { name, version } = parseSoldeerDir(seg)
         const bucketDir = `dependencies/${seg}`
-        soldeer ??= soldeerGitRepos(baseDir, ownership, host)
-        const locked = soldeer.get(seg)
+        soldeer ??= soldeerLocks(baseDir, ownership, host)
+        const { repo: locked, integrity } = soldeer.get(seg) ?? {}
         const repo = locked !== undefined && commitOf(bucketDir) === locked.commit ? locked : undefined
-        return { bucketDir, name, version, ecosystem: 'soldeer', ...(repo === undefined ? {} : { repo }) }
+        return { bucketDir, name, version, ecosystem: 'soldeer', integrity, ...(repo === undefined ? {} : { repo }) }
       }
     }
     for (const [sub, { name, branch }] of submodules) {
@@ -215,12 +213,14 @@ const vendoredEcosystem = (from) => {
 // vendor dir (`vendor/<dir>/`, or where .cargo/config.toml points) is a dependency (tagged
 // `cargo`, `cargo-git` or `cargo-unknown`: see vendoredEcosystem); any other package (the crate
 // itself, a workspace member reached through a `path` dependency) is first-party, so no
-// ecosystem. Null (no manifest above the file) defers to the package.json/placeholder logic.
+// ecosystem. A registry's copy records the crate's integrity (vendoredIntegrity). Null (no manifest
+// above the file) defers to the package.json/placeholder logic.
 function makeRustClassifier(cargo) {
   return (path) => {
     const pkg = cargo.packageInfo(path)
     if (!pkg) return null
-    return { bucketDir: pkg.dir, name: pkg.name, version: pkg.version, ecosystem: cargo.isVendored(path) ? vendoredEcosystem(cargo.vendoredFrom(path)) : undefined }
+    const ecosystem = cargo.isVendored(path) ? vendoredEcosystem(cargo.vendoredFrom(path)) : undefined
+    return { bucketDir: pkg.dir, name: pkg.name, version: pkg.version, ecosystem, ...(ecosystem === 'cargo' && { integrity: cargo.vendoredIntegrity(path) }) }
   }
 }
 
@@ -2300,10 +2300,10 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
-// stasis.config.json's `extra` names: its git dependencies at the commits their package managers'
-// records name, and each npm package held to the lockfile beside it (pinInstalled), whatever its
-// kind (a Solidity import out of node_modules is one). `outputsAt(root)` are the absolute paths the
-// build writes, given the root its paths are relative to.
+// stasis.config.json's `extra` names: its npm dependencies with what their package managers' records
+// name of them (git ones' commits, integrities, patches), each held to the lockfile beside it
+// (pinInstalled), whatever its kind (a Solidity import out of node_modules is one). `outputsAt(root)`
+// are the absolute paths the build writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
@@ -2407,7 +2407,7 @@ export function checkVfsOptions(name, options) {
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
 // dependency is recorded at the commit the tree installs it from, where deptree names one
-// (pinCommits). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
+// (pinFromTree). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
 // JS bundle built through a State, the State's root, which is at or above it. A lazy tree, pnpm's
 // or npm's, is laid out with nothing fetched, and each package is fetched and unpacked once the
 // build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
@@ -2495,7 +2495,7 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
 // absolute paths written, which `extra` never takes; `refuseInstalled`, layOutTree's; and `why` the
 // package manager is detected, as a refusal to detect one says.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinCommits, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
@@ -2637,12 +2637,25 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // After the lazy rounds, so only the full tree's build is checked.
   assertPolicies(name, { builds, builts: built.builts, bundle, root, host: project, files: built.host, label: `${name}: ${CONFIG_FILE}` })
   if (repo !== undefined) bundle.repo = repo
-  pinCommits(bundle, root, tree)
+  pinFromTree(bundle, root, tree)
   const unpacked = unpackedOf(tree)
   // The lockfile is built when first read, the same one after: `stasis github-bundle` and `stasis
   // bundle --deptree` read it for --lockfile alone.
   let lock
-  return { bundle, get lockfile() { return (lock ??= lockfile?.()) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root }
+  return { bundle, get lockfile() { return (lock ??= lockfile && withAttested(lockfile(), bundle)) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root }
+}
+
+// `lockfile`, taken of a build's bundle before its dependencies were pinned (pinInstalled,
+// pinFromTree), with what the bundle's records attest of how they were installed (ATTESTED_METADATA):
+// their tarballs' integrities and patches, of the same files.
+function withAttested(lockfile, bundle) {
+  for (const [dir, info] of lockfile.modules) {
+    const pinned = bundle.modules.get(dir)
+    if (pinned === undefined) continue
+    const attested = Object.fromEntries(ATTESTED_METADATA.map((field) => [field, pinned[field]]))
+    lockfile.modules.set(dir, moduleInfo({ ...info, ...attested }))
+  }
+  return lockfile
 }
 
 // EXODUS_STASIS_DEBUG=1 or true.
@@ -2718,7 +2731,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
   const root = built.root ?? resolve(cwd)
   assertPolicies('buildBundle', { bundle: built.bundle, root })
-  heldOf(built.lockfile, root, { cwd, env })?.loads(built.bundle)
+  heldOf(built, root, { cwd, env })?.loads(built.bundle)
   return built.bundle
 }
 
@@ -2840,19 +2853,20 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   }
 }
 
-// The lockfile `built()` gives held to the one `lockfile` names, else its project's, by the lock mode
-// of the project's runs (heldToLockfile): `{ lock, label, lockfile, hold, loads }`, `lockfile()` the
-// one to write, `hold(other)` holding another to it, and `loads(bundle)` that, under frozen, the bundle
-// loads beside it.
-function heldOf(built, root, { cwd, env, lockfile }) {
-  if (!built) return undefined
+// The lockfile of a build's `bundle`, with what it attests (withAttested), held to the one `lockfile`
+// names, else its project's, by the lock mode of the project's runs (heldToLockfile): `{ lock, label,
+// lockfile, hold, loads }`, `lockfile()` the one to write, `hold(other)` holding another to it, and
+// `loads(bundle)` that, under frozen, the bundle loads beside it.
+function heldOf({ bundle, lockfile: of }, root, { cwd, env, lockfile }) {
+  if (!of) return undefined
+  const built = () => withAttested(of(), bundle)
   const { lock, file } = lockModeOf(root, env)
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, LOCK_FILE)
   const label = relative(resolve(cwd), at)
   const hold = (other) => heldToLockfile(other, at, label, lock)
   const fresh = hold(built)
-  const loads = (bundle, { text, at: bundleAt = join(root, DEFAULT_BUNDLE_FILE) } = {}) => {
-    if (lock === 'frozen') loadsBeside(text ?? bundle.serialize(), { at: bundleAt, lockAbs: at, label, root, scope: bundle.config.scope })
+  const loads = (written, { text, at: bundleAt = join(root, DEFAULT_BUNDLE_FILE) } = {}) => {
+    if (lock === 'frozen') loadsBeside(text ?? written.serialize(), { at: bundleAt, lockAbs: at, label, root, scope: written.config.scope })
   }
   return { lock, label, lockfile: () => fresh ?? built(), hold, loads }
 }
@@ -3010,5 +3024,5 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     }
     assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })
   }
-  return { ...union, root, held: heldOf(union.lockfile, root, { cwd, env, lockfile }) }
+  return { ...union, root, held: heldOf(union, root, { cwd, env, lockfile }) }
 }

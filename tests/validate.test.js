@@ -18,6 +18,7 @@ import { pack } from '@preventive/archive/tar.js'
 import { githubBundleCommand } from '../stasis/src/cmd/github-bundle.js'
 import { parseFileWithKind } from '../stasis/src/parse.js'
 import { HttpError, ValidateError, configuredLockfiles, exitCodeOf, installedNpmPackages, lockedNpmPackages, fetchFailure, fetchPackage, followingMoves, gitBlobId, historyOf, lockedBy, parsePatch, patchedFiles, printValidationReport, repositoryLockfiles, tarballFiles, validate, validateBundle, validateRepository, validationPlan } from '../stasis/src/validate.js'
+import { patchIntegrity } from '../stasis/src/installed.js'
 import { DIM, takesColors } from '../stasis/src/table.js'
 import { fakeClient, json, lockfile as pnpmLockfile } from './vfs-bundle-github.helper.js'
 import { withTmp } from './tmp.helper.js'
@@ -196,6 +197,89 @@ test('validateBundle: where the lockfile locks a version with a patch, every cop
   // Its patch not verified against the repository: the copy as published differs all the same.
   const unread = await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream(), locked })
   t.assert.deepStrictEqual([unread.status, unread.problems.filter((problem) => problem.of !== 'own')], ['invalid', asPublished])
+})
+
+// ms's record naming the patch it was installed with, as a build records it: of `hash`, MS_PATCH's.
+const recordedMs = (hash = sha256(MS_PATCH), more = {}) => ({ name: 'ms', version: '2.1.3', patch: { integrity: patchIntegrity(hash) }, files: { 'index.js': 'one\nTWO\nthree\n', 'package.json': MS['package.json'] }, ...more })
+const OTHER_PATCH = sha256('another patch\n')
+// Validated but for own code, which a patch the bundle holds is checked with: ms alone.
+const msPlan = (modules) => {
+  const plan = validationPlan(parsed({ 'node_modules/left': undefined, ...modules }))
+  plan.own = plan.own.filter((file) => plan.patches.has(file.path))
+  plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
+  return plan
+}
+const msOf = async (plan, options) => (await validateBundle(plan, own(), { fetch: upstream(), ...options })).packages[0]
+
+test('validationPlan: the patch each copy of a version records, by its directory', (t) => {
+  const plan = msPlan({ 'node_modules/ms': recordedMs(), 'node_modules/tool/node_modules/ms': { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } } })
+  t.assert.deepStrictEqual([...plan.packages[0].recorded], [['node_modules/ms', sha256(MS_PATCH)]])
+})
+
+test('validateBundle: a copy recording its patch is held to it: the lockfile\'s, its files patched with it alone; with no lockfile, the bundle\'s of its hash', async (t) => {
+  const hash = sha256(MS_PATCH)
+  const lockedWith = (lock) => ({ of: (name, version) => (name === 'ms' && version === '2.1.3' ? lock : undefined), from: 'repository', read: async () => MS_PATCH })
+  // As the lockfile locks it, and with none.
+  for (const locked of [lockedWith({ hash, path: 'web/patches/ms@2.1.3.patch' }), null]) {
+    // eslint-disable-next-line no-await-in-loop -- one case at a time
+    t.assert.deepStrictEqual(await msOf(msPlan({ 'node_modules/ms': recordedMs() }), { locked }), { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid',
+      patch: { hash, path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, recorded: true, applied: true } }, `${locked ? 'locked' : 'no lockfile'}: the bundle's file of its hash`)
+  }
+  // Not the lockfile's: another, or none.
+  const other = OTHER_PATCH
+  for (const lock of [{ hash: other, path: 'web/patches/ms@2.1.3.patch' }, null]) {
+    // eslint-disable-next-line no-await-in-loop -- one case at a time
+    const report = await validateBundle(msPlan({ 'node_modules/ms': recordedMs() }), own(), { fetch: upstream(), locked: lockedWith(lock) })
+    t.assert.deepStrictEqual([report.status, report.counts.lockFailures, report.packages[0]], ['invalid', 1,
+      { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'invalid', reason: 'patch-not-locked', patch: { hash, recorded: true } }], `locked with ${lock ? 'another' : 'none'}`)
+    t.assert.ok(hasRow(printed(report).rows, ['invalid', 'ms@2.1.3', 'records a patch its lockfile doesn\'t patch it with']))
+  }
+  // Its files as published: not what it says they are, where the same files recording none pass.
+  const published = { 'index.js': MS['index.js'], 'package.json': MS['package.json'] }
+  const asPublished = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(hash, { files: published }) }), own(), { fetch: upstream() })
+  t.assert.deepStrictEqual([asPublished.status, asPublished.problems], ['invalid', [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]])
+  t.assert.equal((await validateBundle(msPlan({ 'node_modules/ms': { name: 'ms', version: '2.1.3', files: published } }), own(), { fetch: upstream() })).status, 'valid')
+  // With no lockfile, its hash picks the patch: a file named for the version of another isn't it.
+  const missing = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(other) }), own(), { fetch: upstream() })
+  const { status, patch } = missing.packages[0]
+  t.assert.deepStrictEqual([status, patch], ['invalid', { hash: other, error: 'patch-not-found', recorded: true }])
+  t.assert.ok(hasRow(printed(missing).rows, ['invalid', 'ms@2.1.3', 'its patch is in no file of its hash (the bundle\'s, or the patches directory\'s)']))
+})
+
+test('validateBundle: the copies of a version recording different patches fail it, as pnpm patches every copy with one; one recording none is held as before', async (t) => {
+  const tool = 'node_modules/tool/node_modules/ms'
+  const conflicting = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(), [tool]: recordedMs(OTHER_PATCH) }), own(), { fetch: upstream() })
+  t.assert.deepStrictEqual([conflicting.status, conflicting.packages[0]], ['invalid', { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 4, status: 'invalid', reason: 'patch-conflict' }])
+  t.assert.ok(hasRow(printed(conflicting).rows, ['invalid', 'ms@2.1.3', 'its copies record different patches, where pnpm patches every copy with one']))
+  // One copy recording it, patched; another recording none, as published.
+  const mixed = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(), [tool]: { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } } }), own(), { fetch: upstream() })
+  t.assert.deepStrictEqual([mixed.status, mixed.problems], ['valid', []])
+  const { rows } = printed(mixed, { showValid: true })
+  t.assert.ok(hasRow(rows, ['valid', 'ms@2.1.3', 'patched by patches/ms@2.1.3.patch (the bundle\'s, as the repository has it), as recorded']), rows.join('\n'))
+})
+
+test('validateBundle: a version is fetched with the tarball integrity its copies record, which must be one, and the lockfile\'s', async (t) => {
+  const recorded = (integrity) => ({ name: 'ms', version: '2.1.3', integrity, files: { 'index.js': MS['index.js'] } })
+  const integrities = []
+  await validateBundle(msPlan({ 'node_modules/ms': recorded(SRI) }), own(), { fetch: upstream(PACKAGES, [], integrities) })
+  t.assert.deepStrictEqual(integrities, [['npm:ms@2.1.3', SRI]], 'with no lockfile')
+  const conflicting = await msOf(msPlan({ 'node_modules/ms': recorded(SRI), 'node_modules/tool/node_modules/ms': recorded(OTHER_SRI) }))
+  t.assert.equal(conflicting.reason, 'integrity-conflict')
+  const locked = { of: () => undefined, lock: () => ({ from: 'registry', integrity: OTHER_SRI }) }
+  const report = await validateBundle(msPlan({ 'node_modules/ms': recorded(SRI) }), own(), { fetch: upstream(), locked })
+  t.assert.deepStrictEqual([report.status, report.packages[0].reason], ['invalid', 'integrity-not-locked'])
+  t.assert.ok(hasRow(printed(report).rows, ['invalid', 'ms@2.1.3', 'records an integrity its lockfile doesn\'t lock it with']))
+})
+
+test('validateBundle: a copy recording a patch the bundle holds that isn\'t verified against the repository: its files as patched unverified, as published still valid', async (t) => {
+  const unread = { reason: 'no-repository' }
+  const patchedOnly = await validateBundle(msPlan({ 'node_modules/ms': recordedMs() }), unread, { fetch: upstream() })
+  t.assert.deepStrictEqual([patchedOnly.status, patchedOnly.packages[0].reason, patchedOnly.problems], ['incomplete', 'patch-unverified', []])
+  // A copy of files the patch doesn't change: as published, whatever the patch is.
+  const untouched = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(undefined, { files: { 'package.json': MS['package.json'] } }) }), unread, { fetch: upstream() })
+  t.assert.deepStrictEqual([untouched.packages[0].status, untouched.counts.matched], ['valid', 1])
+  const differing = await validateBundle(msPlan({ 'node_modules/ms': recordedMs(undefined, { files: { 'index.js': 'one\ntwo\nthree\n' } }) }), unread, { fetch: upstream() })
+  t.assert.deepStrictEqual(differing.problems, [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }], 'as published, not as its patch makes them')
 })
 
 test('validateBundle: an npm version its lockfile locks from git alone is left unverified; one recording a commit (a registry package\'s gitHead) held to the registry\'s', async (t) => {
@@ -582,6 +666,50 @@ test("validate: a Composer package held to the composer.lock beside the bundle's
   const other = 'f'.repeat(40)
   await t.assert.rejects(validateRepository(plan, { repository: followingMoves(repoClient({ 'web/composer.lock': COMPOSER_LOCK }), 'org/repo'), commit: other, directory: 'web' }, { own: false }), (error) => error.code === 'commit-not-in-history')
 }))
+
+test('validateBundle: a crate\'s recorded integrity, its checksum, fetched with where nothing locks it, and held to the one Cargo.lock locks', async (t) => {
+  const lib = 'pub fn x() {}\n'
+  const crate = Object.assign(new Map([['src/lib.rs', bytes(lib)]]), { checksum: 'c'.repeat(64) })
+  const plan = validationPlan(Bundle.parse(new Bundle({ modules: new Map([
+    ['vendor/dep', { ecosystem: 'cargo', name: 'dep', version: '1.0.0', integrity: `sha256-${Buffer.from('c'.repeat(64), 'hex').toString('base64')}`, files: { 'src/lib.rs': lib } }],
+  ]) }).serialize()))
+  const asked = []
+  const fetch = async (ecosystem, name, version, integrity) => {
+    asked.push(integrity)
+    return crate
+  }
+  t.assert.equal((await validateBundle(plan, { reason: 'skipped' }, { fetch })).status, 'valid')
+  t.assert.deepStrictEqual(asked, ['c'.repeat(64)], 'its checksum, as Cargo.lock spells one')
+  const lock = (checksum) => lockedBy([{ path: 'Cargo.lock', text: `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["dep"]\n\n[[package]]\nname = "dep"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${checksum}"\n` }])
+  t.assert.equal((await validateBundle(plan, { reason: 'skipped' }, { fetch, locked: lock('c'.repeat(64)) })).status, 'valid')
+  const other = await validateBundle(plan, { reason: 'skipped' }, { fetch, locked: lock('d'.repeat(64)) })
+  t.assert.deepStrictEqual([other.status, other.packages[0].reason], ['invalid', 'integrity-not-locked'])
+})
+
+test('validateBundle: a Composer or Soldeer package\'s record held to composer.lock or soldeer.lock, its files unverified; a Soldeer git dependency to its repository', async (t) => {
+  const sha1 = 'ab'.repeat(20)
+  const composer = JSON.parse(COMPOSER_LOCK)
+  const lib = composer.packages.find((p) => p.name === 'acme/lib')
+  lib.dist = { type: 'zip', url: 'https://example.com/acme/lib.zip', reference: lib.dist.reference, shasum: sha1 }
+  // As Composer writes it: indented by four spaces, slashes unescaped.
+  const composerLock = lockedBy([{ path: 'composer.lock', text: `${JSON.stringify(composer, null, 4)}\n` }])
+  const of = (dir, info) => validationPlan(Bundle.parse(new Bundle({ modules: new Map([[dir, { version: '1.0.0', files: { 'a.txt': 'a\n' }, ...info }]]) }).serialize()))
+  const run = async (plan, locked) => (await validateBundle(plan, { reason: 'skipped' }, { locked })).packages.map(({ status, reason }) => [status, reason])
+  const php = (integrity) => of('vendor/acme/lib', { name: 'acme/lib', version: '1.4.2', ecosystem: 'composer', integrity })
+  t.assert.deepStrictEqual(await run(php(`sha1-${Buffer.from(sha1, 'hex').toString('base64')}`), composerLock), [['unverified', 'unsupported']])
+  t.assert.deepStrictEqual(await run(php(`sha1-${Buffer.from('cd'.repeat(20), 'hex').toString('base64')}`), composerLock), [['invalid', 'integrity-not-locked']])
+  t.assert.deepStrictEqual(await run(of('vendor/acme/gone', { name: 'acme/gone', ecosystem: 'composer' }), composerLock), [['invalid', 'not-locked']])
+  t.assert.deepStrictEqual(await run(php(undefined), null), [['unverified', 'unsupported']], 'with none read, as before')
+
+  const rev = 'e'.repeat(40)
+  const soldeer = (checksum) => lockedBy([{ path: 'soldeer.lock', text: `[[dependencies]]\nname = "checked"\nversion = "1.0.0"\ngit = "https://github.com/o/checked.git"\nrev = "${rev}"\n\n[[dependencies]]\nname = "zipped"\nversion = "1.0.0"\nurl = "https://soldeer.example/zipped.zip"\nchecksum = "${checksum}"\nintegrity = "${'0'.repeat(64)}"\n`, git: async () => new Map([['a.txt', bytes('a\n')]]) }])
+  const zip = of('dependencies/zipped-1.0.0', { name: 'zipped', ecosystem: 'soldeer', integrity: `sha256-${Buffer.from('c'.repeat(64), 'hex').toString('base64')}` })
+  t.assert.deepStrictEqual(await run(zip, soldeer('c'.repeat(64))), [['unverified', 'unsupported']])
+  t.assert.deepStrictEqual(await run(zip, soldeer('d'.repeat(64))), [['invalid', 'integrity-not-locked']])
+  const checked = (text) => validateBundle(of('dependencies/checked-1.0.0', { name: 'checked', ecosystem: 'soldeer', files: { 'a.txt': text } }), { reason: 'skipped' }, { locked: soldeer('c'.repeat(64)) })
+  t.assert.equal((await checked('a\n')).status, 'valid')
+  t.assert.deepStrictEqual((await checked('b\n')).problems, [{ path: 'dependencies/checked-1.0.0/a.txt', kind: 'differs', of: 'soldeer:checked@1.0.0' }])
+})
 
 test('validateBundle: a Soldeer git dependency held to its repository at the rev soldeer.lock locks', async (t) => {
   const rev = 'e'.repeat(40)
@@ -1461,26 +1589,56 @@ test('validate: a github-bundle\'s Prisma Client, which its repository doesn\'t 
   t.assert.deepStrictEqual(other.problems, [{ path: 'src/generated/prisma/internal/query_compiler_fast_bg.js', kind: 'differs', of: 'own', reason: 'generated' }])
 }))
 
+// The integrity grid, validate's cells: what the lockfile or stasis.lock.json say of a version holds,
+// whatever early verdict validate comes to of it.
+
+test('validateBundle: an integrity or patch recorded of a version locked from git, elsewhere or a directory fails it, as does a patch an npm or yarn lockfile locks none of', async (t) => {
+  const recorded = { name: 'ms', version: '2.1.3', integrity: SRI, files: { 'index.js': MS['index.js'] } }
+  for (const from of ['git', 'elsewhere', 'local']) {
+    const locked = { of: () => undefined, lock: () => (from === 'local' ? { from, directories: ['ms'] } : { from }), tree: async () => new Map() }
+    // eslint-disable-next-line no-await-in-loop -- one at a time
+    const report = await validateBundle(msPlan({ 'node_modules/ms': recorded }), own(), { fetch: upstream(), locked })
+    t.assert.deepStrictEqual([report.status, report.packages[0].reason], ['invalid', 'integrity-not-locked'], from)
+  }
+  const npm = lockedBy([{ path: 'package-lock.json', text: `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'app', version: '1.0.0', dependencies: { ms: '2.1.3' } }, 'node_modules/ms': lockEntry('ms', '2.1.3', SRI) } }, null, 2)}\n`, from: 'local', read: async () => '' }])
+  const patched = await validateBundle(msPlan({ 'node_modules/ms': recordedMs() }), own(), { fetch: upstream(), locked: npm })
+  t.assert.deepStrictEqual([patched.status, patched.packages[0].reason], ['invalid', 'patch-not-locked'])
+})
+
+test('validateBundle: with npm\'s lockfile read, a version recording no patch is held to the bundle\'s patch named for it, as with no lockfile', async (t) => {
+  const packages = { '': { name: 'app', version: '1.0.0', dependencies: { left: '1.0.0', gone: '1.0.0', ms: '2.1.3' } } }
+  for (const [name, version] of [['left', '1.0.0'], ['gone', '1.0.0'], ['ms', '2.1.3']]) packages[`node_modules/${name}`] = lockEntry(name, version, SRI)
+  const npm = lockedBy([{ path: 'package-lock.json', text: `${JSON.stringify({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages }, null, 2)}\n`, from: 'local', read: async () => '' }])
+  const report = await validateBundle(validationPlan(parsed()), own(), { fetch: upstream(), locked: npm, now: () => 1 })
+  t.assert.deepStrictEqual(report.packages.find((pkg) => pkg.name === 'ms'), { ecosystem: 'npm', name: 'ms', version: '2.1.3', files: 2, status: 'valid', patch: { path: 'patches/ms@2.1.3.patch', from: 'bundle', verified: true, applied: true } })
+})
+
 test('validate: a bundle is held to the stasis.lock.json its repository commits beside it, and a stasis.lock.json validates as a bundle does', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
   // Stasis's empty stub for a disabled import among its own files, of neither the repository nor a package.
-  const modules = () => new Map([
+  const modules = (integrity) => new Map([
     ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n', '.stasis/empty-module.js': '' } }],
-    ['node_modules/ms', { name: 'ms', version: '2.1.3', ecosystem: 'npm', files: { 'index.js': MS['index.js'] } }],
+    ['node_modules/ms', { name: 'ms', version: '2.1.3', ecosystem: 'npm', integrity, files: { 'index.js': MS['index.js'] } }],
   ])
   const sha512 = (path, content) => `sha512-${createHash('sha512').update(content).digest('base64')}`
-  const bundle = new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, entries: new Set(['src/main.js']), modules: modules() })
-  const committed = JSON.parse(Lockfile.fromBundle(new Bundle({ entries: new Set(['src/main.js']), modules: modules() }), sha512).serialize())
+  const lockOf = (integrity, more) => Lockfile.fromBundle(new Bundle({ entries: new Set(['src/main.js']), modules: modules(integrity), ...more }), sha512)
+  const bundle = new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, entries: new Set(['src/main.js']), modules: modules(SRI) })
+  const committed = JSON.parse(lockOf(SRI).serialize())
   committed.modules['node_modules/ms'].files['index.js'] = OTHER_SRI
   const files = { 'web/src/main.js': 'main\n', 'web/package.json': '{}\n', 'pnpm-lock.yaml': lock, 'web/stasis.lock.json': JSON.stringify(committed) }
   const file = join(tmp, 'app.stasis.code.br')
   writeBundle(file, bundle)
-  const report = await validate(file, { client: repoClient(files), fetch: upstream() })
-  t.assert.deepStrictEqual([report.status, report.stasisLockfile], ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: content mismatch for 'node_modules/ms/index.js'" }])
-  // One recording an execute bit the bundle doesn't: as stasis bundle holds a build, refused too.
-  files['web/stasis.lock.json'] = Lockfile.fromBundle(new Bundle({ entries: new Set(['src/main.js']), modules: modules(), executable: new Set(['src/main.js']) }), sha512).serialize()
-  const exec = await validate(file, { client: repoClient(files), fetch: upstream() })
-  t.assert.deepStrictEqual([exec.status, exec.stasisLockfile], ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: src/main.js's execute bit differs" }])
+  const held = async () => {
+    const report = await validate(file, { client: repoClient(files), fetch: upstream() })
+    return [report.status, report.stasisLockfile]
+  }
+  t.assert.deepStrictEqual(await held(), ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: content mismatch for 'node_modules/ms/index.js'" }])
+  // One recording another integrity of a module, or an execute bit the bundle doesn't: as stasis bundle
+  // holds a build, refused too.
+  files['web/stasis.lock.json'] = lockOf(OTHER_SRI).serialize()
+  t.assert.deepStrictEqual(await held(), ['invalid', { path: 'web/stasis.lock.json', error: `web/stasis.lock.json: module 'node_modules/ms' integrity mismatch ("${OTHER_SRI}" vs "${SRI}")` }])
+  files['web/stasis.lock.json'] = lockOf(SRI, { executable: new Set(['src/main.js']) }).serialize()
+  t.assert.deepStrictEqual(await held(), ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: src/main.js's execute bit differs" }])
   // Its directory unlisted (own code alone, of no lockfile to find): failed, not passed over.
   const ownOnly = join(tmp, 'own.stasis.code.br')
   writeBundle(ownOnly, new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([modules().entries().next().value]) }))

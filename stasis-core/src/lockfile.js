@@ -4,10 +4,9 @@ const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// A record as a lockfile holds it: without `repo` and `subpackages`, metadata a bundle carries and nothing attests.
-// `vendored` it keeps, unattested too, so the copies a dependency ships can be audited from a lockfile alone.
-const LOCK_METADATA = ['vendored']
-const lockRecord = ({ repo: _repo, subpackages: _subpackages, ...info }) => info
+// The metadata a lockfile's record holds: what the tarball and patch its package was installed from
+// are (`integrity`, `patch`), and the copies it ships (`vendored`), so it can be audited alone.
+const LOCK_METADATA = ['integrity', 'patch', 'vendored']
 
 export class Lockfile {
   static VERSION = VERSION
@@ -63,7 +62,7 @@ export class Lockfile {
     for (const [dir, info] of Object.entries(json.modules)) {
       assert(hasNodeModulesSegment(dir))
       assert(info?.name && info.version && info.files)
-      modules.set(dir, normalizeModule(lockRecord(info), dir, 'lockfile'))
+      modules.set(dir, normalizeModule(info, dir, 'lockfile', LOCK_METADATA))
     }
 
     let entries = new Set()
@@ -74,7 +73,7 @@ export class Lockfile {
         assert(!hasNodeModulesSegment(dir))
         // A workspace bucket may omit version (a private/unpublished package.json can lack one).
         assert(info?.name && info.files)
-        modules.set(dir, normalizeModule(lockRecord(info), dir, 'lockfile'))
+        modules.set(dir, normalizeModule(info, dir, 'lockfile', LOCK_METADATA))
       }
     }
 
