@@ -241,6 +241,10 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   await t.assert.rejects(build(project(withPothos({ index: CLIENT_EXPORT, files: { 'packages/b/package.json': json(exporting), 'packages/a/index.ts': "export { PrismaClient } from 'b'\nexport const load = () => import('b/pothos')\n" } }))), broken('b/pothos', 'index.ts'))
   const tsconfig = { 'packages/b/tsconfig.json': json({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }) }
   await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('@/generated/pothos-types')\n`, files: tsconfig })), { typescript: true }), broken('@/generated/pothos-types'))
+  // Under --mainFields, through a `browser` field's redirect, by what the field resolver tried.
+  const redirecting = { ...exporting, exports: undefined, main: './src/index.ts', browser: { './src/optional.js': './src/generated/pothos-types.ts' } }
+  await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('./optional.js')\n`, files: { 'packages/b/package.json': json(redirecting) } })), { cwd: '/', entries: ['packages/b/src/index.ts'], mainFields: ['browser', 'module', 'main'] }),
+    { message: broken('./optional.js', 'packages/b/src/index.ts').message.replace('load time:', 'load time (mainFields):') })
   t.assert.deepStrictEqual(said(), [])
   // One into a client stasis generated is no output's it lacks (the client's own `?module` imports, say): the scan's, as before.
   await build(project(withPothos({ index: `${CLIENT_EXPORT}export const edge = () => import('./generated/prisma/edge.ts')\n` })))

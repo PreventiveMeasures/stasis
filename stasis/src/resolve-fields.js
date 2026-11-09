@@ -297,15 +297,24 @@ export function createFieldResolver({
     return scanResolution(resolution, resolution === null && isBuiltin(specifier) && !remapped())
   }
   // `callConditions` (from scan) is the parent's format-driven condition set, so `exports`
-  // delegation matches Node resolving from THAT file; falls back to configured `conditions`.
-  const resolve = function resolve(parentFile, specifier, callConditions) {
+  // delegation matches Node resolving from THAT file; falls back to configured `conditions`. Each
+  // file or directory a miss tried is put in `tried` (a redirect's target, say), the resolver's
+  // missTargets.
+  const resolve = function resolve(parentFile, specifier, callConditions, tried = []) {
     const fileOpts = typescript && inNodeModules(parentFile, host) ? fromNodeModules : opts
     const conds = new Set(callConditions ?? conditions)
+    const probe = (base) => {
+      const hit = resolveFileOrDir(base, fileOpts)
+      if (hit === null) tried.push(base)
+      return hit
+    }
     const viaNode = (spec) => {
       try {
         if (!isBuiltin(spec)) return fileResolution(host.resolve(parentFile, spec, conds), host)
         return fileResolution(nodeResolver().resolve(parentFile, spec, conds, { builtins: false }), host)
-      } catch {
+      } catch (error) {
+        // The file a package target named, where one did (resolve-node's `target`).
+        if (typeof error.target === 'string') tried.push(error.target)
         return null
       }
     }
@@ -317,12 +326,12 @@ export function createFieldResolver({
       // `exports` wins over mainFields; Node's algorithm resolves it (with conditions) correctly.
       if (pkg.exports != null) return viaNode(spec)
       // A bare package import resolves its directory via the same dir algorithm as any other.
-      if (loc.subpath === '') return resolveFileOrDir(loc.pkgDir, fileOpts)
+      if (loc.subpath === '') return probe(loc.pkgDir)
       const sub = `./${loc.subpath}`
       const r = matchRedirect(mergeRedirectMap(pkg, mainFields), sub)
       if (r === false) return { empty: true }
       const target = typeof r === 'string' ? r : sub
-      return resolveFileOrDir(join(loc.pkgDir, target), fileOpts)
+      return probe(join(loc.pkgDir, target))
     }
     if (metro) return viaMetro(parentFile, specifier, conds)
     // `#name` subpath imports use the `imports` field + conditions; Node's algorithm handles them.
@@ -346,15 +355,14 @@ export function createFieldResolver({
         // Browser-map targets are relative to the PACKAGE ROOT, not the importing file; a
         // bare-module target re-enters resolution below.
         if (r.startsWith('.') || isAbsolute(r)) {
-          return resolveFileOrDir(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r), fileOpts)
+          return probe(isAbsolute(r) ? r : resolvePath(imp.pkgDir, r))
         }
         spec = r
       }
     }
 
     if (spec.startsWith('.') || isAbsolute(spec)) {
-      const base = isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec)
-      return resolveFileOrDir(base, fileOpts)
+      return probe(isAbsolute(spec) ? spec : resolvePath(dirname(parentFile), spec))
     }
 
     // A builtin the browser map did not remap: its `node:` form names the builtin itself; a bare
@@ -365,8 +373,17 @@ export function createFieldResolver({
   // Each resolution made once for each directory, specifier and conditions: a file's directory is all
   // of it resolving from it reads (its package, the node_modules above it, its tsconfig `paths`).
   // Kept as the resolver's manifests are (manifestReader), and in `kept` across rounds.
+  // Each kept with what a miss tried, which the resolver's `missTargets` gives (Scan's, for vfs-bundle/prisma.js).
   const resolutions = untouchedMemo(host.touches, { retouch: host.retouch, across: kept })
-  const once = (resolveFn) => (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => resolveFn(parentFile, specifier, callConditions))
+  const once = (resolveFn) => {
+    const of = (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => {
+      const tried = []
+      return { resolution: resolveFn(parentFile, specifier, callConditions, tried), tried }
+    })
+    return Object.assign((parentFile, specifier, callConditions) => of(parentFile, specifier, callConditions).resolution, {
+      missTargets: (parentFile, specifier, callConditions) => of(parentFile, specifier, callConditions).tried,
+    })
+  }
   if (!typescript) return once(resolve)
   // --typescript: when the whole field flow leaves the specifier unresolved, give tsc's mapping
   // the same shot the scanner's fallback gets, via the shared dispatcher. On this path it covers
@@ -374,8 +391,8 @@ export function createFieldResolver({
   // imports, whose targets may name compiled files existing only as TS source -- plus tsconfig
   // `paths` aliases; misses only, so no field/redirect/suffix resolution is ever overridden.
   // (Relative paths re-probe tsc-style too -- redundant after resolveSourceFile, but harmless.)
-  return once(function resolveWithTypescriptFallback(parentFile, specifier, callConditions) {
-    const resolved = resolve(parentFile, specifier, callConditions)
+  return once(function resolveWithTypescriptFallback(parentFile, specifier, callConditions, tried) {
+    const resolved = resolve(parentFile, specifier, callConditions, tried)
     if (resolved) return resolved
     // Under --metro an asset is Metro's asset rule's to resolve, as tsc never does.
     if (metro && isAssetFile(specifier, assetExts)) return null

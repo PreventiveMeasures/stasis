@@ -390,14 +390,15 @@ export class Scan {
 
   // Where a miss of `spec` from `parentFile` would have landed (vfs-bundle/prisma.js's generatedMiss matches
   // them to generator outputs): a relative or absolute path's file; the file a package's `exports`, `imports`
-  // or `main` named (`target`, the resolver's error's); and under --typescript, where a tsconfig alias points
-  // (without it, an alias is never resolved at all, a miss of another kind).
+  // or `main` named (`target`, the resolver's error's), or what a custom resolver tried (its missTargets: a
+  // `browser` field's redirect, say); and under --typescript, where a tsconfig alias points (without it, an
+  // alias is never resolved at all, a miss of another kind).
   #missTargets(parentFile, spec, target) {
     const path = RELATIVE_REQUEST.test(spec) || isAbsolute(spec)
     const aliased = !path && !spec.startsWith('#') && this.typescript && this.typescriptPaths !== null && !inNodeModules(parentFile, this.host)
     return [
       ...(path ? [resolvePath(dirname(parentFile), spec)] : []),
-      ...(typeof target === 'string' ? [target] : []),
+      ...(typeof target === 'string' ? [target] : Array.isArray(target) ? target : []),
       ...(aliased ? this.typescriptPaths.matchPaths(spec, parentFile) : []),
     ].map((at) => this.#realTarget(at))
   }
@@ -617,7 +618,7 @@ export class Scan {
         } else if (r?.url) {
           addChild(s, key, r.url, fileURLToPath(r.url))
         } else {
-          addUnresolved(s, 'MODULE_NOT_FOUND', conditions)
+          addUnresolved(s, 'MODULE_NOT_FOUND', conditions, this.missTargets ? this.customResolve.missTargets?.(file, s.spec, conditions) : undefined)
         }
         continue
       }

@@ -1664,7 +1664,11 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     const aliases = babel ? createBabelAliases({ projectDir: baseDir, platform }) : fileAliases
     // --babel: and whether it keeps a TypeScript import listing types alone (onlyRemoveTypeImports).
     const keepsTypeImports = babel ? createBabelTypeImportsKept({ projectDir: baseDir, platform }) : null
-    const aliased = (resolveFn) => (aliases && resolveFn ? (file, spec, conds) => resolveFn(file, aliases(file, spec) ?? spec, conds) : resolveFn)
+    const aliased = (resolveFn) => {
+      if (!aliases || !resolveFn) return resolveFn
+      const spelled = (file, spec) => aliases(file, spec) ?? spec
+      return Object.assign((file, spec, conds) => resolveFn(file, spelled(file, spec), conds), resolveFn.missTargets && { missTargets: (file, spec, conds) => resolveFn.missTargets(file, spelled(file, spec), conds) })
+    }
     // --metro: built through Babel, which erases an import listing types alone (Scan's `babel`).
     const scanOptions = { conditions: extras, resolve: aliased(resolver), typescriptResolve: aliased(typescriptResolve), jsx, flow, resources: resourceSet, define, babel: metro, keepsTypeImports, host, missTargets: generated !== undefined }
     const platformKey = platform ?? '*' // '*' is a private placeholder for the single mainFields pass; it never unflattens

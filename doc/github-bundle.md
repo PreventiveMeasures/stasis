@@ -426,13 +426,15 @@ JS bundle would be broken at load time:
 ```
 
 That is an import whose resolution lands in a generator's `output` (by a
-relative or absolute path, a package's `exports`, `imports` or `main`, or under
+relative or absolute path, a package's `exports`, `imports` or `main`, under
+`--mainFields` a `browser` or `react-native` field's redirect, or under
 `--typescript` a `tsconfig.json` `paths` alias), or one into the output a
 generator writes with none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client`
 requires) or `@pothos/plugin-prisma/generated` (Pothos's). One into a client
 stasis generated is the scan's, as any other miss is (the client's own
-`?module` imports, say). A specifier built at run time, or an output named by
-`env()`, can't be told apart, and is left to the scan too.
+`?module` imports, say). A specifier built at run time, an output named by
+`env()`, or a miss of Metro's own resolution under `--metro`, can't be told
+apart, and is left to the scan too.
 
 Where a generator stasis doesn't run has its `output` in the repo already, the
 bundle takes what it reaches there as committed, not as `prisma generate` would
