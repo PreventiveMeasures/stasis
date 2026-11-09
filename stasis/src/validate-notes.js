@@ -71,7 +71,7 @@ export function noteOf(pkg) {
   if (patch?.error) return ['its patch', ...(patch.path ? [' ', { path: patch.path }] : []), ` ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`]
   // A patch the bundle holds, as checked against the repository.
   const whose = patch?.from !== 'bundle' ? [] : [patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)']
-  if (patch) return [patch.applied === false ? 'locked patched, bundled as published' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : [])]
+  if (patch) return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : [])]
   return pkg.directory ? ['held to ', { path: pkg.directory }, ' of the repository'] : []
 }
 
