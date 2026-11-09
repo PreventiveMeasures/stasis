@@ -2,14 +2,16 @@ import { constants } from 'node:fs'
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson } from '@exodus/stasis-core/bundle-util'
+import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
 import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.js'
+import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { VfsError } from '@preventive/vfs'
+import { withInstalled } from '../installed.js'
 import { createNodeResolver } from '../resolve-node.js'
 import { globSync, matchesGlob } from './glob.js'
 import { lazyView, untouchedMemo } from './lazy.js'
@@ -225,6 +227,8 @@ const PACKAGE_MANAGERS = {
     version: '1.22.22',
     root: yarn1Root,
     alone: aloneWithoutManifestAbove,
+    // The integrities yarn.lock locks: yarn 1 fetches an entry locking a sha1 alone by the registry's sha512.
+    integrities: (text) => new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages).map(({ resolution }) => tarballIntegrityOf(resolution?.integrity)).filter(Boolean)),
     projects: (view) => findYarn1Workspaces({ project: view }),
     installs: 'node_modules',
     build: (view, yarn, file, given) => {
@@ -456,12 +460,15 @@ async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, laz
     if (clean !== null) for (const dir of projects) clean(built.vfs, posix.join('/', dir, pm.installs))
   }
   cleanAll()
+  const lockText = pm.integrities && readText(view, pm.lockfile)
+  let integrities
   return {
     root,
     vfs: built.vfs,
     projects,
     stats: built.stats,
     installed: built.installed,
+    ...pm.integrities && { integrities: () => (integrities ??= pm.integrities(lockText)) },
     packageManager,
     packageManagerVersion: taken,
     ...lazy ? lazyTree(built, cleanAll) : {},
@@ -760,14 +767,24 @@ const githubRoot = (url) => {
 // repository its own package.json names, so taken only where the bundle records that one; a
 // Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
 // where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
-export function pinCommits(bundle, root, { root: from, installed }) {
+// And an npm one with its tarball's integrity, where its lockfile locks it, and the patch it applies.
+// -> the record of each bucket the tree installs, by its dir: its account, as pinInstalled gives an install's.
+export function pinFromTree(bundle, root, tree) {
+  // A forest's trees apart, each as its own package manager installs it.
+  if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
+  const { root: from, installed, packageManager } = tree
   const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
+  const locked = (integrity) => (PACKAGE_MANAGERS[packageManager].kind === 'js' && (tree.integrities?.().has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
+  const accounts = new Map()
   for (const [dir, info] of bundle.modules) {
     const pkg = byDir.get(dir)
-    if (!isValidRepoField('commit', pkg?.commit)) continue
-    const repo = info.repo ?? githubRoot(pkg.git)
-    if (repo !== undefined) bundle.modules.set(dir, { ...info, repo: { ...repo, commit: pkg.commit } })
+    if (pkg === undefined) continue
+    const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
+    const pinned = withInstalled(dir, info, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
+    bundle.modules.set(dir, pinned)
+    accounts.set(dir, pinned)
   }
+  return accounts
 }
 
 // fs.Stats#mode carries the file type above the permission bits a Vfs stat holds.

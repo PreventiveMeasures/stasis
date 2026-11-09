@@ -117,6 +117,9 @@ test('soldeer: lays out, into a Vfs of its own, the dependencies folder a real i
 test('buildVfsBundle builds, from soldeer.lock alone, the byte-identical bundle a real install yields', async (t) => {
   const built = await build()
   t.assert.equal(built.bundle.serialize(), oracles.plain)
+  // Its zip's integrity, the checksum soldeer.lock locks, as a build from disk records it too.
+  const checksum = /checksum = "([\da-f]{64})"/u.exec(files['soldeer.lock'])[1]
+  t.assert.equal(built.bundle.modules.get('dependencies/stasis-sol-lib-1.0.0').integrity, `sha256-${Buffer.from(checksum, 'hex').toString('base64')}`)
   t.assert.equal(built.lockfile, undefined, 'a Solidity bundle has no lockfile')
   t.assert.deepStrictEqual(built.stats, { dependencies: 1, files: 6, bytes: 637, links: 0, unpacked: 1 })
   t.assert.equal((await build({ manifests: true })).bundle.serialize(), oracles.manifests, 'with the manifests too')
@@ -242,7 +245,10 @@ test('buildVfsBundle with soldeer fetches a git dependency from GitHub through t
   const dep = json.sources['dependencies/stasis-sol-lib-1.0.0']
   t.assert.deepStrictEqual(dep.repo, { github: 'ExodusOSS/stasis-sol-lib', directory: '', commit: REV }, 'the root of the repository it is fetched from, at the lockfile rev')
   delete dep.repo
-  t.assert.deepStrictEqual(json, JSON.parse(oracles.plain), 'else the bundle a registry install of the same files yields')
+  // A registry install's records its zip's integrity, which a git checkout has none of.
+  const zipped = JSON.parse(oracles.plain)
+  delete zipped.sources['dependencies/stasis-sol-lib-1.0.0'].integrity
+  t.assert.deepStrictEqual(json, zipped, 'else the bundle a registry install of the same files yields')
 })
 
 test('buildVfsBundle with soldeer refuses, naming the file, what it cannot reproduce, and checks its entries first', async (t) => {

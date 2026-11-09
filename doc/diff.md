@@ -40,7 +40,9 @@ byte-identical file never shows as a difference.
   `repo` differs in any of its fields, `github` in any case: a `directory` or
   `commit` only one side records is a difference too. A legacy `version: 0`
   bundle records neither name nor version, and a lockfile, or a bundle from
-  before `repo`, records none, so neither is flagged for lacking one.
+  before `repo`, records none, so neither is flagged for lacking one. Its
+  `integrity` or `patch` differing is a change too, one side recording none
+  included: that side attests no tarball or no patch.
 
 **Files** (within packages present on **both** sides):
 

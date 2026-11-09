@@ -1567,7 +1567,7 @@ test('buildRustBundle tags a vendored crate by where it was copied from: a regis
   })
 })
 
-test('buildRustBundle refuses a vendored crate whose package checksum isn\'t the one Cargo.lock locks, as cargo does', async (t) => {
+test('buildRustBundle records a vendored crate\'s package checksum as its integrity, and refuses one that isn\'t the one Cargo.lock locks, as cargo does', async (t) => {
   const files = (locked) => ({
     'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nitoa = "1"\n',
     'Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["itoa"]\n\n[[package]]\nname = "itoa"\nversion = "1.0.18"\nsource = "${REGISTRY}"\nchecksum = "${locked}"\n`,
@@ -1576,7 +1576,7 @@ test('buildRustBundle refuses a vendored crate whose package checksum isn\'t the
   })
   await withProjectAsync(files(sha('a')), async (tmp) => {
     const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })
-    t.assert.ok(bundle.modules.has('vendor/itoa'))
+    t.assert.equal(bundle.modules.get('vendor/itoa').integrity, `sha256-${Buffer.from(sha('a'), 'hex').toString('base64')}`)
   })
   await withProjectAsync(files(sha('b')), async (tmp) => {
     await t.assert.rejects(buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] }), /vendor\/itoa\/\.cargo-checksum\.json: the package checksum of itoa 1\.0\.18, a{64}, isn't the one Cargo\.lock locks \(b{64}\): vendor it again/u)

@@ -4,15 +4,13 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
-// What the package manager that laid out a node_modules on disk recorded there of each package it
-// installed: npm in its hidden lockfile, pnpm in its copy of the lockfile, yarn 1 in yarn.lock as its
-// .yarn-integrity has it installed. A record, `{ version, repo }`, names a git dependency's GitHub
-// repository at its commit. One missing or unreadable names nothing, and fails nothing; each package
-// is held to the lockfile beside it, where there is one, whatever its record names.
+// What the package manager that laid out a node_modules recorded there of each package, `{ version,
+// repo, integrity, patchHash }`: npm in its hidden lockfile, pnpm in its lockfile copy, yarn 1 in
+// yarn.lock as .yarn-integrity has it. One missing or unreadable names nothing, and fails nothing.
 
 // `{ github, commit }` of `repo`, a git URL, at `commit`, where that is a GitHub repository and a full
 // commit id; else undefined.
@@ -33,6 +31,9 @@ export const resolutionCommit = (resolution) => {
   if (resolution?.type === 'git') return githubCommit(resolution.repo, resolution.commit)
   return resolution?.type === 'tarball' ? githubTarball(resolution.tarball ?? '') : undefined
 }
+
+// pnpm's patch hash, a sha256 in hex, as an SRI integrity; undefined for another.
+export const patchIntegrity = (patchHash) => (/^[\da-f]{64}$/u.test(patchHash ?? '') ? hexIntegrity('sha256', patchHash) : undefined)
 
 // A record's `repo` of a commit: at its repository's root, or `path` in it.
 const repoAt = (commit, path = '') => {
@@ -66,15 +67,14 @@ function lockText(file, host, strict) {
 // The name a package is installed as at `location`, the last of it.
 const nameAt = (location) => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length)
 
-// What a lockfile locks of each package, `{ version, repo }`, by its name and version (an id), or its
-// name alone (`name@`, a directory's, of no version): of two entries of one id that differ, either may
-// be the one installed, so its version alone. Of the package installed at `location` by its own
-// `name` (an alias's, `helmet: npm:ms@2.1.3`), else the name it is installed as.
+// A lockfile's record of each package by its name and version, or `name@` (a directory's): of two that
+// differ, either may be the one installed, so its version alone, `ambiguous`. Of `location`'s package
+// by its own `name` (an alias's, `helmet: npm:ms@2.1.3`), else the name it is installed as.
 function byId(entries) {
   const records = new Map()
   for (const [id, record] of entries) {
     const known = records.get(id)
-    records.set(id, known === undefined || JSON.stringify(known) === JSON.stringify(record) ? record : { version: record.version })
+    records.set(id, known === undefined || JSON.stringify(known) === JSON.stringify(record) ? record : { version: record.version, ambiguous: true })
   }
   const find = (name, version) => records.get(`${name}@${version}`) ?? records.get(`${name}@`)
   return (location, version, name) => (name === undefined ? undefined : find(name, version)) ?? find(nameAt(location), version)
@@ -97,7 +97,7 @@ function npmLocks(file, host, strict) {
   }
   return (location) => {
     const entry = Object.hasOwn(packages, location) ? packages[location] : undefined
-    return isPlainObject(entry) ? { version: entry.version, repo: repoAt(npmCommit(entry.resolved)) } : undefined
+    return isPlainObject(entry) ? { version: entry.version, repo: repoAt(npmCommit(entry.resolved)), integrity: entry.integrity } : undefined
   }
 }
 
@@ -113,7 +113,7 @@ function yarnEntries(file, host, strict) {
     return [...new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages))].map(({ patterns, name, version, resolution }) => ({
       id: `${name}@${version}`,
       patterns,
-      record: { version, resolved: resolutionOf(resolution), repo: repoAt(resolutionCommit(resolution)) },
+      record: { version, resolved: resolutionOf(resolution), repo: repoAt(resolutionCommit(resolution)), integrity: resolution?.integrity },
     }))
   } catch (cause) {
     if (strict) throw unreadable(file, cause) // whatever the reader refuses
@@ -152,8 +152,8 @@ function pnpmLocks(file, host, strict) {
   const stored = new Map()
   const keyed = new Map()
   const ids = []
-  for (const [key, { name, version, resolution }] of Object.entries(lockfile?.packages ?? {})) {
-    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path) }
+  for (const [key, { name, version, resolution, patchHash }] of Object.entries(lockfile?.packages ?? {})) {
+    const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path), integrity: resolution?.integrity, patchHash }
     for (const store of storeNames(key)) stored.set(store, record)
     keyed.set(key, record)
     ids.push([`${name}@${version ?? ''}`, record])
@@ -257,6 +257,8 @@ function lockDiffers(version, installed, locked, none) {
   if (installed === undefined) return undefined
   if (installed.resolved !== undefined && installed.resolved !== locked.resolved) return `installed from ${installed.resolved}; it locks ${locked.resolved ?? 'none'}`
   if (commitLabel(installed.repo) !== commitLabel(locked.repo)) return `at ${commitLabel(installed.repo)}; it locks ${commitLabel(locked.repo)}`
+  if (tarballIntegrityOf(installed.integrity) !== tarballIntegrityOf(locked.integrity)) return `installed with ${installed.integrity ?? 'no integrity'}; it locks ${locked.integrity ?? 'none'}`
+  if (installed.patchHash !== locked.patchHash) return `installed with the patch ${installed.patchHash ?? 'none'}; it locks ${locked.patchHash ?? 'none'}`
   return undefined
 }
 
@@ -270,16 +272,28 @@ function holdToLockfile(lockfile, dir, ...of) {
 // A pnpm package's real path, <store>/<dir>/node_modules/<name>, its store a node_modules/.pnpm.
 const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^/]+\/)?[^/]+$/u
 
-// Each npm dependency of `bundle`, its buckets' paths from `root`, that is a git dependency of a GitHub
-// repository, recorded as its package manager's record has it installed: that repository, over the
-// one its package.json names (a fork's, where that names the one forked), at its root (`''`) or the
-// subdirectory pnpm records, at that commit; each one held to the lockfile beside that record, where
-// there is one, whatever the record names of it (holdToLockfile). A dependency is found by its real
-// path, through the link pnpm installs it by: in a node_modules/.pnpm, by its directory there; else
-// by its location from the nearest directory a package manager laid out a node_modules in or locks
-// one of (layoutOf), from the one its outermost node_modules below the bundle root is in up to that
-// root, whatever a directory above the root is named: a record outside the root is another project's.
-export function pinInstalled(bundle, root, host = diskHost) {
+// The metadata an install record names of bucket `dir`: its repository at a commit, its archive's
+// integrity (an npm tarball's sha512 alone), and an npm dependency's patch.
+export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
+  const npm = isNpmDependency(dir, ecosystem)
+  const tarball = npm ? tarballIntegrityOf(integrity) : integrity
+  const patch = npm ? patchIntegrity(patchHash) : undefined
+  return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
+}
+
+// `info` with that; `info` itself where it names nothing.
+export function withInstalled(dir, info, record) {
+  const metadata = installedMetadata(dir, info.ecosystem, record)
+  return Object.keys(metadata).length === 0 ? info : { ...info, ...metadata }
+}
+
+// The install record of each npm dependency of `modules` (paths from `root`), found by its real path:
+// in a node_modules/.pnpm by its directory there, else by its location from the nearest layoutOf up to
+// `root`; each held to the lockfile beside that record (holdToLockfile).
+// -> { records, accounts }, an account (heldToAccount's) the record's, else what that lockfile locks.
+export function installedRecords(modules, root, host = diskHost) {
+  const records = new Map()
+  const accounts = new Map()
   const stores = new Map()
   const layouts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
@@ -287,8 +301,9 @@ export function pinInstalled(bundle, root, host = diskHost) {
     if (!layouts.has(dir)) layouts.set(dir, layoutOf(dir, host))
     return layouts.get(dir)
   }
-  for (const [dir, info] of bundle.modules) {
-    if (info.ecosystem !== 'npm') continue
+  for (const [dir, info] of modules) {
+    // An untagged bucket under node_modules is npm's too (an artifact from before the tag).
+    if (!isNpmDependency(dir, info.ecosystem)) continue
     let real
     try {
       real = toPosix(host.realpath(resolve(root, dir)))
@@ -296,18 +311,20 @@ export function pinInstalled(bundle, root, host = diskHost) {
       continue
     }
     let record
+    let locked
     const pnpm = PNPM_PACKAGE.exec(real)
     if (pnpm !== null) {
       const [, store, name] = pnpm
       if (!stores.has(store)) stores.set(store, storeOf(store, host))
       const { installed, lockfile, locks, none } = stores.get(store)
       record = installed(name)
-      if (locks) holdToLockfile(lockfile, dir, info.version, record, locks(name), none)
+      locked = locks?.(name)
+      if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
     } else {
       try {
         top ??= resolve(host.realpath(resolve(root)))
       } catch {
-        return
+        return { records, accounts }
       }
       const rel = relative(top, real)
       const parts = toPosix(rel).split('/')
@@ -318,8 +335,22 @@ export function pinInstalled(bundle, root, host = diskHost) {
       const { installed, lockfile, locks, none } = layoutAt(from) ?? { installed: NONE }
       const location = toPosix(relative(from, real))
       record = installed(location, info.version, info.name)
-      if (locks) holdToLockfile(lockfile, dir, info.version, record, locks(location, info.version, info.name), none)
+      locked = locks?.(location, info.version, info.name)
+      if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
     }
-    if (record?.repo) bundle.modules.set(dir, { ...info, repo: record.repo })
+    if (record !== undefined) records.set(dir, record)
+    const told = record ?? locked
+    if (told === undefined || told.ambiguous) continue
+    const { integrity, patch } = installedMetadata(dir, info.ecosystem, told)
+    accounts.set(dir, { integrity, patch, installed: record !== undefined })
   }
+  return { records, accounts }
+}
+
+// `bundle`'s npm dependencies with what their install records name (installedRecords).
+// -> their accounts
+export function pinInstalled(bundle, root, host = diskHost) {
+  const { records, accounts } = installedRecords(bundle.modules, root, host)
+  for (const [dir, record] of records) bundle.modules.set(dir, withInstalled(dir, bundle.modules.get(dir), record))
+  return accounts
 }
