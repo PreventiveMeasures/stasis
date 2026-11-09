@@ -515,35 +515,36 @@ function assertInstalledAsLocked(lockText, installedText, { installedFile, vendo
 // The GitHub repository a Composer package `p` (composer.lock's, or installed.json's) is cloned
 // from, at the commit it is installed at: its git `source` on GitHub, at its `reference` where that
 // is a full commit and what is installed at `at` (its directory, or null for none) is at it.
-// Installed from its source -- as installed.json's `installation-source`, `from`, says, or as it
-// must be with no dist, or as a git checkout there shows -- it is a clone Composer checked out at
-// the reference, which may have been moved since: so only where that checkout's HEAD is it. Else
+// Installed from its source (installedFromSource), it is a clone Composer checked out at the
+// reference, which may have been moved since: so only where that checkout's HEAD is it. Else
 // from its dist, which Composer installs by default: only one at the same reference, as one with
 // none, or another, is an archive no commit is known of. Packagist takes a package from the root
 // of its repository, so `directory` is ''. Undefined otherwise.
-function composerRepo({ source, dist }, from, at) {
+function composerRepo({ source, dist }, fromSource, at) {
   if (source?.type !== 'git') return undefined
-  const fromSource = installedFromSource({ dist }, from, at)
   if (fromSource ? at === null || checkoutCommit(at) !== source.reference : dist.reference !== source.reference) return undefined
   const github = parseGithubRepository(source.url)
   return github !== null && isValidRepoField('commit', source.reference) ? { github, directory: '', commit: source.reference } : undefined
 }
 
-// Whether Composer installed package `p` from its source, a clone (composerRepo), not its dist.
+// Whether Composer installed a package from its source, a clone: as installed.json's
+// `installation-source`, `from`, says, as it must with no dist, or as a git checkout at `at` shows.
 const installedFromSource = ({ dist }, from, at) => from === 'source' || dist == null || (at !== null && existsSync(join(at, '.git')))
 
-// The integrity of the archive Composer installed package `p` from: its dist's `shasum`, a sha1, as
-// the lockfile locks it, where it was installed from its dist; undefined where it locks none (GitHub's
-// dists have none), or it was installed from its source.
-const composerIntegrity = (p, from, at) => (installedFromSource(p, from, at) ? undefined : hexIntegrity('sha1', p.dist.shasum))
+// A package's `repo` (composerRepo) and, installed from its dist, its `integrity`: the dist's sha1
+// `shasum`, as the lockfile locks it (GitHub's dists have none).
+function composerInstall(p, from, at) {
+  const fromSource = installedFromSource(p, from, at)
+  return { repo: composerRepo(p, fromSource, at), integrity: fromSource ? undefined : hexIntegrity('sha1', p.dist.shasum) }
+}
 
-// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo, integrity }]`, `dir` where
-// the package is installed, baseDir-relative (null for nowhere in baseDir, as a metapackage). Of
-// its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
+// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo,
+// integrity }]`, `dir` where the package is installed, baseDir-relative (null for nowhere in
+// baseDir, as a metapackage). Of its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
 // `composer install` reads them -- one it refuses stops the build -- each package where Composer
 // installs it (lockedDir), so no install is needed; else of vendor/composer/installed.json, as
 // it is. Where both are, installed.json must be the lockfile's install (assertInstalledAsLocked):
-// its packages, each where installed.json says. `repo` is composerRepo's, `integrity` composerIntegrity's.
+// its packages, each where installed.json says. `repo` and `integrity` are composerInstall's.
 export function loadComposerPackages(baseDir) {
   const { vendorDir } = readComposerJson(baseDir)
   const lockText = readUtf8OrNull(join(baseDir, 'composer.lock'), 'composer.lock')
@@ -553,7 +554,7 @@ export function loadComposerPackages(baseDir) {
       .map((p) => {
         const dir = installedDir(baseDir, vendorDir, p)
         const at = dir == null ? null : join(baseDir, dir)
-        return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, p['installation-source'], at), integrity: composerIntegrity(p, p['installation-source'], at) }
+        return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, p['installation-source'], at) }
       })
   }
 
@@ -569,7 +570,7 @@ export function loadComposerPackages(baseDir) {
     .map((p) => {
       const dir = dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name)
       const at = dir == null ? null : join(baseDir, dir)
-      return { name: p.name, version: p.version, dir, extra: p.extra, repo: composerRepo(p, from.get(p.name), at), integrity: composerIntegrity(p, from.get(p.name), at) }
+      return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, from.get(p.name), at) }
     })
 }
 

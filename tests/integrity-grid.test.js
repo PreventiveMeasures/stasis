@@ -105,7 +105,7 @@ test('stasis run holds stasis.lock.json\'s integrities to what is installed', wi
   for (const mode of ['frozen', 'add']) {
     const result = run(mode)
     t.assert.notEqual(result.status, 0, mode)
-    t.assert.match(result.stderr, /stasis\.lock\.json: module 'node_modules\/reg' integrity mismatch \(.*installed/u, mode)
+    t.assert.match(result.stderr, /stasis\.lock\.json: module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u, mode)
   }
   t.assert.equal(run('replace').status, 0, 'replaced: rewritten of what is installed')
   t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, SRI)

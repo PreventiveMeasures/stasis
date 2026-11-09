@@ -106,9 +106,9 @@ const normalizeModuleRepo = (dir, { ecosystem, repo }, what) => {
   return normalized
 }
 
-// SRI integrities: a tarball's as npm's lockfiles lock it, a sha512; a patch's as pnpm hashes it, a sha256.
-const isTarballIntegrity = (v) => typeof v === 'string' && /^sha512-[A-Za-z\d+/]{86}==$/u.test(v)
-const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && /^sha256-[A-Za-z\d+/]{43}=$/u.test(v) }
+const SRI = { sha1: /^sha1-[A-Za-z\d+/]{27}=$/u, sha256: /^sha256-[A-Za-z\d+/]{43}=$/u, sha512: /^sha512-[A-Za-z\d+/]{86}==$/u }
+// A patch's, as pnpm hashes it.
+const PATCH_FIELDS = { integrity: (v) => typeof v === 'string' && SRI.sha256.test(v) }
 
 // The one sha512 an SRI holds, as upstream takes one; undefined where it holds none, or two.
 export function sha512Of(integrity) {
@@ -118,26 +118,22 @@ export function sha512Of(integrity) {
 // That, where it is of a sha512's form: a tarball's integrity as a record holds it.
 export const tarballIntegrityOf = (integrity) => {
   const one = sha512Of(integrity)
-  return isTarballIntegrity(one) ? one : undefined
+  return SRI.sha512.test(one ?? '') ? one : undefined
 }
 
 // An npm dependency's bucket alone, not a workspace package's, whatever ecosystem it records.
 export const isNpmDependency = (dir, ecosystem) => hasNodeModulesSegment(dir) && dependencyEcosystem(dir, ecosystem) === 'npm'
 
-// The SRI a dependency's `integrity` is of its archive, by its ecosystem, as its lockfile locks it:
-// an npm tarball's sha512, a crate's sha256 (Cargo.lock's `checksum`), a Composer dist's sha1
-// (composer.lock's `shasum`), a Soldeer zip's sha256 (soldeer.lock's `checksum`).
-const ARCHIVE_INTEGRITY = { npm: /^sha512-[A-Za-z\d+/]{86}==$/u, cargo: /^sha256-[A-Za-z\d+/]{43}=$/u, composer: /^sha1-[A-Za-z\d+/]{27}=$/u, soldeer: /^sha256-[A-Za-z\d+/]{43}=$/u }
-// A hex digest of `algorithm`, as a lockfile spells one, as an SRI; undefined for none.
-export const hexIntegrity = (algorithm, hex) => (typeof hex === 'string' && /^(?:[\da-f]{2})+$/u.test(hex) ? `${algorithm}-${Buffer.from(hex, 'hex').toString('base64')}` : undefined)
+// The algorithm of a dependency's archive `integrity`, as its lockfile locks it: an npm tarball's,
+// a crate's (Cargo.lock's `checksum`), a Composer dist's (`shasum`), a Soldeer zip's (`checksum`).
+const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sha1', soldeer: 'sha256' }
 
-// A dependency's `integrity`: its archive's, as its lockfile locks it (ARCHIVE_INTEGRITY). An npm
-// one's is a node_modules bucket's alone, not a workspace package's.
+// A dependency's `integrity` (ARCHIVE_ALGORITHM's); an npm one's of a node_modules bucket alone.
 const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
   if (integrity === undefined) return undefined
   const of = dependencyEcosystem(dir, ecosystem)
-  if (!Object.hasOwn(ARCHIVE_INTEGRITY, of) || (of === 'npm' && !isNpmDependency(dir, ecosystem))) assert(false, `${what}: '${dir}' is no npm, cargo, composer or soldeer dependency's bucket, and carries no integrity`)
-  if (typeof integrity !== 'string' || !ARCHIVE_INTEGRITY[of].test(integrity)) assert(false, `invalid ${what} module '${dir}' integrity: ${JSON.stringify(integrity)}`)
+  if (!Object.hasOwn(ARCHIVE_ALGORITHM, of) || (of === 'npm' && !hasNodeModulesSegment(dir))) assert(false, `${what}: '${dir}' is no npm, cargo, composer or soldeer dependency's bucket, and carries no integrity`)
+  if (typeof integrity !== 'string' || !SRI[ARCHIVE_ALGORITHM[of]].test(integrity)) assert(false, `invalid ${what} module '${dir}' integrity: ${JSON.stringify(integrity)}`)
   return integrity
 }
 
@@ -214,12 +210,12 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
   return carried
 }
 
-// A record's metadata held whole, by field: each one's normalizer.
+// The metadata a record holds whole (DIR_METADATA's is by directory), each field's normalizer.
 const RECORD_METADATA = { integrity: normalizeModuleIntegrity, repo: normalizeModuleRepo, patch: normalizeModulePatch }
 const RECORD_ENTRIES = Object.entries(RECORD_METADATA)
 const DIR_FIELDS = Object.keys(DIR_METADATA)
 // Every metadata field, in canonical order.
-export const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
+const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
 const OPTIONAL_KEYS = ['ecosystem', ...MODULE_METADATA]
 
 // A module bucket record in canonical key order; `ecosystem` and the metadata are omitted (not undefined) when absent.
@@ -233,18 +229,14 @@ export const moduleInfo = (info) => {
 // What a record attests of how its package was installed, which two records of one bucket must agree
 // on: its tarball's integrity, and the patch pnpm applied.
 export const ATTESTED_METADATA = ['integrity', 'patch']
-const ATTESTED = new Set(ATTESTED_METADATA)
 
-// `record` with the metadata `other` (of the same bucket, `what` naming it) has and it lacks: each
-// RECORD_METADATA field it records none of, the DIR_METADATA entries of directories it lists none for.
-// Where both record one, an ATTESTED field must be the same, and of the rest `record`'s stands, as
-// they are held to nothing. Where `other` is another record of the bucket merged in (`merging`), an
-// ATTESTED field only one of them records is left out: it attests the files of that one alone, not
-// the merged record's. `record` itself when that changes nothing.
+// `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none.
+// ATTESTED_METADATA both record must agree; `merging` another record's files in, one only one of them
+// records is left out, as it attests that one's files alone.
 export function withMetadataOf(record, other, what = 'module', { merging = false } = {}) {
   let added
-  for (const [field] of RECORD_ENTRIES) {
-    const attested = ATTESTED.has(field)
+  for (const field of Object.keys(RECORD_METADATA)) {
+    const attested = ATTESTED_METADATA.includes(field)
     if (attested && record[field] !== undefined && other[field] !== undefined) {
       if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field])})`)
     } else if (attested && merging) {
@@ -687,10 +679,8 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // Metadata: either side's, where only one records it, else `a`'s; what is attested agrees, and is
-      // left out where only one side attests it.
-      const merged = withMetadataOf(existing, info, `${label}: module '${dir}'`, { merging: true })
-      if (merged !== existing) out.set(dir, merged)
+      // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf).
+      out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`, { merging: true }))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

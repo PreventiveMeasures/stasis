@@ -20,7 +20,7 @@ export class ValidateError extends Error {
 
 // What validation checks of a bundle, or a stasis.lock.json (validationPlan): a file's bytes, or their integrity.
 export type PlanFile = { path: string; dir: string; rel: string; format?: string } & ({ bytes(): Uint8Array } | { integrity: string })
-export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[]; recorded: Map<string, string>; integrities: Map<string, string>; repos: Map<string, { github: string; directory?: string; commit?: string }> }
+export interface PlanPackage { ecosystem: string; name: string; version: string; files: PlanFile[]; recorded: Map<string, string>; integrities: Set<string>; repos: Map<string, { github: string; directory?: string; commit?: string }> }
 export interface ValidationPlan { files: number; own: PlanFile[]; packages: PlanPackage[]; patches: Map<string, string> }
 // A parsed bundle (Bundle.parse's, or parseFileWithKind's artifact).
 export interface PlannedBundle {

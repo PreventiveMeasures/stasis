@@ -22,8 +22,8 @@ import corePackage from './package.cjs'
 const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
-// Where another package registers a reader of the package managers' install records, which stasis-core
-// reads none of: of a State's modules and root, `Map<dir, { integrity, patch }>` (run-installed.js).
+// A reader of the package managers' install records, which stasis-core reads none of, another
+// package registers (run-installed.js): of modules and a root, `Map<dir, { integrity, patch }>`.
 const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 const FILE_LOCK = 'stasis.lock.json'
 const FILE_CODE = 'stasis.code.br'
@@ -338,34 +338,24 @@ export class State {
     return this.#host.stat(p) !== null
   }
 
-  // A file `rel` this run adds to `module`, of bucket `dir`, whose ATTESTED_METADATA (absorbed of an
-  // artifact) attests its files without it: merged in, the record attests them no longer.
+  // A file `rel` this run adds to `module`: its ATTESTED_METADATA attests the files without it no longer.
   #unattest(dir, module, rel) {
     if (Object.hasOwn(module.files, rel) || ATTESTED_METADATA.every((field) => module[field] === undefined)) return
     this.modules.set(dir, moduleInfo({ ...module, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, undefined])) }))
   }
 
-  #installed() {
-    return globalThis[INSTALLED]?.(this.modules, this.root)
+  #installed(modules) {
+    return modules.size === 0 ? undefined : globalThis[INSTALLED]?.(modules, this.root)
   }
 
   // ATTESTED_METADATA absorbed of the artifact at `label`, held to the install.
   #holdToInstalled(label) {
-    for (const [dir, installed] of this.#installed() ?? []) {
-      const module = this.modules.get(dir)
-      for (const field of ATTESTED_METADATA) {
-        const [recorded, found] = [module[field], installed[field]].map((value) => (value === undefined ? undefined : JSON.stringify(value)))
-        assert(recorded === undefined || found === undefined || recorded === found, `${label}: module '${dir}' ${field} mismatch (${recorded} recorded, ${found} installed)`)
-      }
-    }
+    const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
+    for (const [dir, installed] of this.#installed(attested) ?? []) withMetadataOf(attested.get(dir), installed, `${label}: module '${dir}' (recorded vs installed)`)
   }
 
   #recordInstalled() {
-    for (const [dir, installed] of this.#installed() ?? []) {
-      const module = this.modules.get(dir)
-      const recorded = withMetadataOf(module, installed, `module '${dir}' (as installed)`)
-      if (recorded !== module) this.modules.set(dir, recorded)
-    }
+    for (const [dir, installed] of this.#installed(this.modules) ?? []) this.modules.set(dir, withMetadataOf(this.modules.get(dir), installed, `module '${dir}' (as installed)`))
   }
 
   #readMaybe(path, encoding) {
@@ -495,10 +485,8 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // The bundle's metadata is taken where the lockfile records none, to be written again; what both
-        // attest agrees.
-        const withMetadata = withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`, { merging: true })
-        if (withMetadata !== lockModule) this.modules.set(dir, withMetadata)
+        // The bundle's metadata is taken where the lockfile records none, to be written again.
+        this.modules.set(dir, withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`, { merging: true }))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -542,9 +530,8 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          // Metadata: the first half's that records one, but what both attest agrees.
-          const withMetadata = withMetadataOf(existing, info, `bundle ${dir}`, { merging: true })
-          if (withMetadata !== existing) this.modules.set(dir, withMetadata)
+          // Metadata: the first half's that records one.
+          this.modules.set(dir, withMetadataOf(existing, info, `bundle ${dir}`, { merging: true }))
         }
         // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
         // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't

@@ -165,7 +165,7 @@ test("a yarn 1 tree's packages record the integrity yarn.lock locks, and none it
   t.assert.equal(built.bundle.modules.get('node_modules/used').integrity, used.integrity)
   // Of a tree whose integrity isn't one yarn.lock locks, as yarn 1 takes the registry's: none.
   const bundle = { modules: new Map([['node_modules/used', { name: 'used', version: '1.0.0', ecosystem: 'npm', files: {} }]]) }
-  pinFromTree(bundle, '/', { root: '/', installed: [{ path: 'node_modules/used', integrity: used.integrity }], packageManager: 'yarn1', integrities: new Set() })
+  pinFromTree(bundle, '/', { root: '/', installed: [{ path: 'node_modules/used', integrity: used.integrity }], packageManager: 'yarn1', integrities: () => new Set() })
   t.assert.equal(bundle.modules.get('node_modules/used').integrity, undefined)
 })
 

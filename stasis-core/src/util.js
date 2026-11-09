@@ -10,6 +10,10 @@ import { diskHost } from './host.js'
 // here so `@exodus/stasis-core/util` keeps serving the full set.
 export * from './artifact-util.js'
 
+// A hex digest of `algorithm`, as a lockfile spells one, as an SRI (undefined for none), and back.
+export const hexIntegrity = (algorithm, hex) => (typeof hex === 'string' && /^(?:[\da-f]{2})+$/u.test(hex) ? `${algorithm}-${Buffer.from(hex, 'hex').toString('base64')}` : undefined)
+export const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexOf('-') + 1), 'base64').toString('hex')
+
 // JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
 const NODE_EXT_FORMATS = new Map([
   ['mjs', 'module'], ['cjs', 'commonjs'], ['json', 'json'],

@@ -140,10 +140,8 @@ function ownedText(baseDir, rel, ownership, host) {
 }
 
 // What the root's soldeer.lock locks of each dependency, by its folder under `dependencies/`
-// (`<name>-<version>`, as Soldeer names it): of a git one on GitHub, the repository's root at the
-// lockfile's `rev`, which Soldeer checks out there (`repos`); of a zip's, its `checksum`, a sha256,
-// which Soldeer holds the zip to as it extracts it there, as its integrity (`integrities`). None
-// where the lockfile can't be read or parsed: it is metadata, which never stops a build.
+// (`<name>-<version>`): a GitHub git one's `repo` at its `rev`, a zip's `integrity` (its checksum,
+// which Soldeer extracts it by). None where it can't be read or parsed: metadata never stops a build.
 function soldeerLocks(baseDir, ownership, host) {
   const text = ownedText(baseDir, 'soldeer.lock', ownership, host)
   let lock = null
@@ -152,15 +150,11 @@ function soldeerLocks(baseDir, ownership, host) {
   } catch {
     // Not one Soldeer writes: nothing is recorded from it.
   }
-  const repos = new Map()
-  const integrities = new Map()
+  const locks = new Map()
   for (const dep of Object.values(lock?.dependencies ?? {})) {
-    const repo = dep.type === 'git' ? repoRootAt(parseGithubRepository(dep.git), dep.rev) : undefined
-    if (repo !== undefined) repos.set(`${dep.name}-${dep.version}`, repo)
-    const integrity = dep.type === 'git' ? undefined : hexIntegrity('sha256', dep.checksum)
-    if (integrity !== undefined) integrities.set(`${dep.name}-${dep.version}`, integrity)
+    locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: hexIntegrity('sha256', dep.checksum) })
   }
-  return { repos, integrities }
+  return locks
 }
 
 // Classify a Solidity file's dep bucket: Soldeer (`dependencies/<name>-<version>/`) or a
@@ -189,9 +183,9 @@ function makeSolidityClassifier(baseDir, ownership, host) {
         const { name, version } = parseSoldeerDir(seg)
         const bucketDir = `dependencies/${seg}`
         soldeer ??= soldeerLocks(baseDir, ownership, host)
-        const locked = soldeer.repos.get(seg)
+        const { repo: locked, integrity } = soldeer.get(seg) ?? {}
         const repo = locked !== undefined && commitOf(bucketDir) === locked.commit ? locked : undefined
-        return { bucketDir, name, version, ecosystem: 'soldeer', integrity: soldeer.integrities.get(seg), ...(repo === undefined ? {} : { repo }) }
+        return { bucketDir, name, version, ecosystem: 'soldeer', integrity, ...(repo === undefined ? {} : { repo }) }
       }
     }
     for (const [sub, { name, branch }] of submodules) {
@@ -2408,12 +2402,11 @@ export function checkVfsOptions(name, options) {
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
-// dependency is recorded at the commit the tree installs it from, where deptree names one, and an
-// npm one with the patch the tree applies to it (pinFromTree). `root` is the directory in the Vfs
-// the bundle's paths are relative to: cwd, or for a JS bundle built through a State, the State's
-// root, which is at or above it. A lazy tree, pnpm's or npm's, is laid out with nothing fetched,
-// and each package is fetched and unpacked once the build reads under it, the build run again until
-// it reads none it has not (vfs-bundle/lazy.js):
+// dependency is recorded at the commit the tree installs it from, where deptree names one
+// (pinFromTree). `root` is the directory in the Vfs the bundle's paths are relative to: cwd, or for a
+// JS bundle built through a State, the State's root, which is at or above it. A lazy tree, pnpm's
+// or npm's, is laid out with nothing fetched, and each package is fetched and unpacked once the
+// build reads under it, the build run again until it reads none it has not (vfs-bundle/lazy.js):
 // the bundle the full tree gives, its warnings said once, with `stats` counting what is unpacked. A
 // tarball the build never reaches is never fetched, nor held to the lockfile, nor refused. The tree
 // is lazy where it can be (lazyTaken) and the stasis.config.json in cwd leaves `lazyDependencies`
@@ -2846,10 +2839,10 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   }
 }
 
-// The lockfile `lockfile()` of a build's `bundle` gives, with what the bundle attests (withAttested),
-// held to the one `lockfile` names, else its project's, by the lock mode of the project's runs
-// (heldToLockfile): `{ lock, label, lockfile, hold, loads }`, `lockfile()` the one to write,
-// `hold(other)` holding another to it, and `loads(bundle)` that, under frozen, the bundle loads beside it.
+// The lockfile of a build's `bundle`, with what it attests (withAttested), held to the one `lockfile`
+// names, else its project's, by the lock mode of the project's runs (heldToLockfile): `{ lock, label,
+// lockfile, hold, loads }`, `lockfile()` the one to write, `hold(other)` holding another to it, and
+// `loads(bundle)` that, under frozen, the bundle loads beside it.
 function heldOf({ bundle, lockfile: of }, root, { cwd, env, lockfile }) {
   if (!of) return undefined
   const built = () => withAttested(of(), bundle)

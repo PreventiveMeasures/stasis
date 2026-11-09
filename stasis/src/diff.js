@@ -1,4 +1,4 @@
-import { REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
 // file level. Never reads disk. Comparing across kinds works by reducing every file to the same
@@ -90,8 +90,8 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     if (!reposAgree(l.repo, r.repo)) {
       change.repoChange = { from: l.repo, to: r.repo }
     }
-    for (const [field, key] of [['integrity', 'integrityChange'], ['patch', 'patchChange']]) {
-      if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) change[key] = { from: l[field], to: r[field] }
+    for (const field of ATTESTED_METADATA) {
+      if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) change[`${field}Change`] = { from: l[field], to: r[field] }
     }
     if (change.versionChange || change.nameChange || change.repoChange || change.integrityChange || change.patchChange) modulesChanged.push(change)
 
