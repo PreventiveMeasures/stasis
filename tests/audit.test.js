@@ -1267,9 +1267,11 @@ const json = (body) => new Response(JSON.stringify(body), { status: 200, headers
 // renamed nor transferred (getRepo).
 const githubClient = (listRepoAdvisories) => ({ listRepoAdvisories, getRepo: async ({ repo }) => ({ full_name: repo }) })
 
-// npm's, OSV's and Soldeer's answers for ECOSYSTEMS_BUNDLE: an advisory on the crate serde alone.
+// npm's, OSV's, Packagist's and Soldeer's answers for ECOSYSTEMS_BUNDLE: an advisory on the crate serde alone.
 const ecosystemsFetch = ({ url, opts }) => {
   if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+  // None, as PHP writes an empty array.
+  if (url === 'https://packagist.org/api/security-advisories/') return json({ advisories: [] })
   if (url === 'https://api.osv.dev/v1/querybatch') {
     return json({ results: JSON.parse(opts.body).queries.map(({ package: { name } }) => (name === 'serde' ? { vulns: [{ id: 'RUSTSEC-2099-0001' }] } : {})) })
   }
@@ -1282,7 +1284,7 @@ const ecosystemsFetch = ({ url, opts }) => {
   throw new Error(`unexpected request: ${url}`)
 }
 
-test('audit() asks npm for npm packages, OSV for crates and Composer packages, and GitHub for Soldeer packages and GitHub repos', withFetch(
+test('audit() asks npm for npm packages, OSV for crates, OSV and Packagist for Composer packages, GitHub for Soldeer packages, and OSV and GitHub for GitHub repos', withFetch(
   ecosystemsFetch,
   async (t, calls) => {
     const tmp = mkdtempSync(join(tmpdir(), 'stasis-audit-'))
@@ -1296,12 +1298,15 @@ test('audit() asks npm for npm packages, OSV for crates and Composer packages, a
       const report = await audit([writeBundle(tmp, 'snapshot.br', ECOSYSTEMS_BUNDLE)], { github })
       const body = (url) => JSON.parse(calls.find((call) => call.url === url).opts.body)
       t.assert.deepStrictEqual(body('https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'), { foo: ['2.0.0'], serde: ['1.0.100'] })
-      // A batch for each ecosystem OSV is asked about.
+      // A batch for each ecosystem OSV is asked about: a GitHub repo as a GitHub Action, by its name alone.
       const queries = calls.filter((call) => call.url === 'https://api.osv.dev/v1/querybatch').flatMap((call) => JSON.parse(call.opts.body).queries)
       t.assert.deepStrictEqual(queries.toSorted((a, b) => a.package.name.localeCompare(b.package.name)), [
         { package: { name: 'monolog/monolog', ecosystem: 'Packagist' }, version: '2.9.1' },
+        { package: { name: 'OpenZeppelin/openzeppelin-contracts', ecosystem: 'GitHub Actions' } },
         { package: { name: 'serde', ecosystem: 'crates.io' }, version: '1.0.100' },
       ], 'the Composer dev version is not asked about')
+      const packagist = calls.filter((call) => call.url === 'https://packagist.org/api/security-advisories/')
+      t.assert.deepStrictEqual(packagist.map((call) => new URLSearchParams(new TextDecoder().decode(call.opts.body)).getAll('packages[]')), [['monolog/monolog']], 'nor of Packagist')
       t.assert.deepStrictEqual(asked.toSorted(), ['OpenZeppelin/openzeppelin-contracts', 'foundry-rs/forge-std'])
       t.assert.deepStrictEqual(report.skipped, [{ ecosystem: 'composer', name: 'acme/tools', version: 'dev-main', because: 'a Composer dev version, which no advisory database lists' }])
       t.assert.deepStrictEqual(report.rows.map(({ ecosystem, package: pkg, installed, id }) => ({ ecosystem, package: pkg, installed, id })), [
@@ -1374,7 +1379,7 @@ test('audit() names the sources it asked when a request fails', withFetch(
     try {
       const { 'dependencies/forge-std-1.9.2': _soldeer, 'lib/openzeppelin-contracts': _github, ...sources } = ECOSYSTEMS_BUNDLE.sources
       const bundle = writeBundle(tmp, 'snapshot.br', { ...ECOSYSTEMS_BUNDLE, sources })
-      await t.assert.rejects(audit([bundle]), /^Error: OSV\/npm advisories request failed: /u)
+      await t.assert.rejects(audit([bundle]), /^Error: OSV\/Packagist\/npm advisories request failed: /u)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -1636,8 +1641,10 @@ test('printAuditReport: npm\'s malware advisories told where --reason\'s consume
 })
 
 test('audit() asks about a GitHub repo versioned by its .gitmodules branch `.` as the 0.0.0 every range covers', withFetch(
-  ({ url }) => {
+  ({ url, opts }) => {
     if (url === 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk') return json({})
+    // OSV has no record of either as a GitHub Action.
+    if (url === 'https://api.osv.dev/v1/querybatch') return json({ results: JSON.parse(opts.body).queries.map(() => ({})) })
     throw new Error(`unexpected request: ${url}`)
   },
   async (t) => {

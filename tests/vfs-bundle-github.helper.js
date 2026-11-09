@@ -100,6 +100,11 @@ export const fakeClient = (files, { tags = {} } = {}) => {
       if (!Object.keys(files).some((f) => f.startsWith(`${directory}/`))) throw new Error(`getRepoTreeId: ${repo}@${sha} has no directory at ${directory}`)
       return `tree:${directory}`
     },
+    // The id of the commit's own tree, as getRepoTreeId names trees: the root's, `tree:`.
+    async getCommitTree({ repo, sha }) {
+      calls.push(['getCommitTree', repo, sha])
+      return 'tree:'
+    },
     async getRepoTreeTarball({ repo, tree, symlinksAbove }) {
       calls.push(['getRepoTreeTarball', repo, tree])
       return verified('getRepoTreeTarball', tarballOf(files, tree.slice('tree:'.length)), symlinksAbove)
