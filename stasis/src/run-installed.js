@@ -1,12 +1,13 @@
-import { installedMetadata, installedRecords } from './installed.js'
+import { accountOf, installedRecords } from './installed.js'
 
-// stasis-core's State's reader of the install records (its INSTALLED hook), as a build reads them
-// (installedRecords). `stasis run` preloads it before stasis-core's loader.
+// stasis-core's State's reader of how the packages were installed (its INSTALLED hook), as a build
+// reads it (installedRecords): each module's account (accountOf), `{ integrity, patch, installed }`,
+// for every module one is found of. `stasis run` preloads it before stasis-core's loader.
 globalThis[Symbol.for('@exodus/stasis-core/installed')] = (modules, root) => {
-  const installed = new Map()
-  for (const [dir, record] of installedRecords(modules, root)) {
-    const { integrity, patch } = installedMetadata(dir, modules.get(dir).ecosystem, record)
-    if (integrity !== undefined || patch !== undefined) installed.set(dir, { integrity, patch })
+  const accounts = new Map()
+  for (const [dir, found] of installedRecords(modules, root)) {
+    const account = accountOf(dir, modules.get(dir).ecosystem, found)
+    if (account !== undefined) accounts.set(dir, account)
   }
-  return installed
+  return accounts
 }

@@ -1,4 +1,4 @@
-import { assert, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports, withMetadataOf } from './artifact-util.js'
 
 const VERSION = 0
 
@@ -127,11 +127,18 @@ export class Lockfile {
   }
 
   // merge, refusing a file both record whose execute bit `other` gives otherwise (merge lets `other`'s win).
-  mergeAgreeing(other, label = 'lockfile merge') {
+  // With `attesting`, `other` was held to this one as it was made, so records all this one does of a
+  // bucket both record: an integrity or patch this one records and it doesn't is refused too
+  // (withMetadataOf), where merge alone keeps it.
+  mergeAgreeing(other, label = 'lockfile merge', { attesting = false } = {}) {
     const merged = this.merge(other, label)
     const recorded = moduleFileKeys(this.modules, { scope: this.config.scope })
     for (const file of moduleFileKeys(other.modules, { scope: other.config.scope })) {
       if (recorded.has(file) && this.executable.has(file) !== other.executable.has(file)) throw new Error(`${label}: ${file}'s execute bit differs`)
+    }
+    for (const [dir, info] of attesting ? other.modules : []) {
+      const mine = this.modules.get(dir)
+      if (mine !== undefined) withMetadataOf(mine, info, `${label}: module '${dir}'`, { attesting: true })
     }
     return merged
   }

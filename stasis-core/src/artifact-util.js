@@ -231,16 +231,15 @@ export const moduleInfo = (info) => {
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
 // `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none.
-// ATTESTED_METADATA both record must agree; `merging` another record's files in, one only one of them
-// records is left out, as it attests that one's files alone.
-export function withMetadataOf(record, other, what = 'module', { merging = false } = {}) {
+// ATTESTED_METADATA both record must agree, and one only one of them records is the result's: none
+// is dropped, nor kept over another. With `attesting`, `other` is the whole account of how the package
+// was installed (an install's record, a build's of one): what `record` has and `other` hasn't is
+// refused too, as nothing attests it.
+export function withMetadataOf(record, other, what = 'module', { attesting = false } = {}) {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    const attested = ATTESTED_METADATA.includes(field)
-    if (attested && record[field] !== undefined && other[field] !== undefined) {
-      if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field])})`)
-    } else if (attested && merging) {
-      if (record[field] !== undefined) (added ??= {})[field] = undefined
+    if (ATTESTED_METADATA.includes(field) && record[field] !== undefined && (attesting || other[field] !== undefined)) {
+      if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field]) ?? 'none'})`)
     } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {
@@ -680,7 +679,7 @@ export function mergeModuleMaps(a, b, label) {
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
       // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf).
-      out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`, { merging: true }))
+      out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

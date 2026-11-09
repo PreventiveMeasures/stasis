@@ -768,21 +768,24 @@ const githubRoot = (url) => {
 // Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
 // where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
 // And an npm one with its tarball's integrity, where its lockfile locks it, and the patch it applies.
+// -> the account of each bucket the tree installs, by its dir, as installed.js's accountOf gives an
+// install's: `{ integrity, patch }`, all the tree names of it.
 export function pinFromTree(bundle, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
-  if (tree.trees !== undefined) {
-    for (const one of tree.trees) pinFromTree(bundle, root, one)
-    return
-  }
+  if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
   const { root: from, installed, packageManager } = tree
   const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
   const locked = (integrity) => (PACKAGE_MANAGERS[packageManager].kind === 'js' && (tree.integrities?.().has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
+  const accounts = new Map()
   for (const [dir, info] of bundle.modules) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    bundle.modules.set(dir, withInstalled(dir, info, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash }))
+    const pinned = withInstalled(dir, info, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
+    bundle.modules.set(dir, pinned)
+    accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }
+  return accounts
 }
 
 // fs.Stats#mode carries the file type above the permission bits a Vfs stat holds.

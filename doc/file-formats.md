@@ -375,7 +375,10 @@ name, so a rule copied from one file to the other may not refuse the same files.
   there). Where two records of one bucket meet, a lockfile's and that of the
   bundle a run loads beside it, or those of two artifacts merged (`--add`,
   `stasis add`, `bundle = add`, `lock = add`), one recording none takes the
-  other's, and two that differ are refused: neither is kept over the other. A
+  other's, and two that differ are refused: neither is kept over the other,
+  and neither is dropped, a record a run adds files to keeping its own. Each
+  is held to how its package was installed too, wherever that is told (see
+  `integrity` under `stasis.code.br`). A
   dependency record may carry `vendored`, the packages copied into it, after
   `ecosystem`,
   as a bundle's record does (see there), so that `stasis audit` and `stasis
@@ -528,12 +531,27 @@ than ship it, and reading one is refused as well.
   doesn't lock <dir> as installed (…): install from it again`). Of several
   lockfiles there, it is held to the one whose package manager alone left its
   record, else the build is refused; with no lockfile there, nothing is held.
-  `stasis run` records it as a build from
-  disk does, and holds what its lockfile, else its bundle, records to it: one
-  recorded otherwise stops the run (`stasis-core run` reads no package
-  manager's record). The bundle's lockfile records it too (see
-  `stasis.lock.json`), and [`stasis validate`](validate.md#lockfiles) holds it
-  to the package manager's.
+  `stasis run` records it as a build from disk does. The bundle's lockfile
+  records it too (see `stasis.lock.json`), and [`stasis
+  validate`](validate.md#lockfiles) holds it to the package manager's.
+
+  What another record of the package says of it is held to that account of
+  how it was installed: the `stasis.lock.json` a build is held to (`lock =
+  add` or `frozen`), the bundle `--add` adds to, and the lockfile and bundle a
+  run loads. The account is the install record's; with no install record, what
+  the lockfile beside its `node_modules` locks, which is never recorded of
+  itself (it says what an install would lay out); from a lockfile alone,
+  deptree's. An `integrity` or `patch` recorded otherwise stops the build or
+  the run, as does one the account names none of, such as a patch of a package
+  installed with none (`<file>: module '<dir>' (recorded vs installed) patch
+  mismatch (… vs none)`, or `recorded vs locked`): it is neither dropped nor
+  taken on its word. Only `lock = replace`, `ignore` or `none` passes over
+  `stasis.lock.json`'s. Where nothing tells how a package was installed (no
+  install record and no lockfile there, or nothing installed, as where a run
+  loads a bundle), what is recorded is kept as the build's or the run's own,
+  its files held by their hashes all the same, and `stasis validate` holds it
+  to the archive it names. `stasis-core run` reads no package manager's record
+  or lockfile, and keeps what is recorded.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
   a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
   manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
