@@ -126,3 +126,28 @@ test('builtins: false resolves a builtin name to the installed package of that n
   t.assert.equal(mine.resolve(parent, 'util', ['require']), 'util') // the memo keeps the two apart
   t.assert.throws(() => mine.resolve(parent, 'fs', undefined, off), { code: 'MODULE_NOT_FOUND' })
 }))
+
+test('a miss of the file a package target resolves to names it as `target`: exports, imports, main, self-reference and a subpath', withTmp((t, d) => {
+  const w = (rel, content = '') => {
+    mkdirSync(dirname(join(d, rel)), { recursive: true })
+    writeFileSync(join(d, rel), typeof content === 'string' ? content : JSON.stringify(content))
+  }
+  w('package.json', { name: 'self', exports: { './gen': './gen/client.js' }, imports: { '#gen': './gen/client.js', '#mn': 'mn' } })
+  w('main.js')
+  w('node_modules/ex/package.json', { name: 'ex', exports: { '.': './index.js', './gen': './gen/client.js' } }); w('node_modules/ex/index.js')
+  w('node_modules/mn/package.json', { name: 'mn', main: './gen/client.js' })
+  w('node_modules/sub/package.json', { name: 'sub' })
+  const mine = createNodeResolver(diskHost)
+  const parent = join(d, 'main.js')
+  const at = (rel) => join(realpathSync(d), rel)
+  t.assert.throws(() => mine.resolve(parent, 'ex/gen'), { code: 'MODULE_NOT_FOUND', target: at('node_modules/ex/gen/client.js') })
+  t.assert.throws(() => mine.resolve(parent, '#gen'), { code: 'MODULE_NOT_FOUND', target: at('gen/client.js') })
+  t.assert.throws(() => mine.resolve(parent, 'self/gen'), { code: 'MODULE_NOT_FOUND', target: at('gen/client.js') })
+  t.assert.throws(() => mine.resolve(parent, 'mn'), { code: 'MODULE_NOT_FOUND', target: at('node_modules/mn/gen/client.js') })
+  // An `imports` target naming a package whose `main` isn't there.
+  t.assert.throws(() => mine.resolve(parent, '#mn'), { code: 'MODULE_NOT_FOUND', target: at('node_modules/mn/gen/client.js') })
+  // A subpath of a package without `exports`: the file in the nearest package of that name.
+  t.assert.throws(() => mine.resolve(parent, 'sub/gen/client.js'), { code: 'MODULE_NOT_FOUND', target: at('node_modules/sub/gen/client.js') })
+  // A package that isn't there names no target.
+  t.assert.throws(() => mine.resolve(parent, 'nope'), (error) => error.code === 'MODULE_NOT_FOUND' && error.target === undefined)
+}))
