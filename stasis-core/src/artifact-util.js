@@ -681,8 +681,15 @@ export function mergeModuleMaps(a, b, label) {
           `package without one; regenerate it (bundle=replace / lock=replace)`))
       assert(existing.ecosystem === info.ecosystem,
         `${label}: module '${dir}' ecosystem mismatch ('${existing.ecosystem ?? '(none)'}' vs '${info.ecosystem ?? '(none)'}')`)
-      // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf).
+      // Metadata: either side's, where only one records it, else `a`'s (withMetadataOf). An attested
+      // value one side alone records is of its files alone: the other may add none.
       out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))
+      for (const field of ATTESTED_METADATA) {
+        if ((existing[field] === undefined) === (info[field] === undefined)) continue
+        const [attests, adds] = existing[field] === undefined ? [info, existing] : [existing, info]
+        const added = Object.keys(adds.files).find((rel) => !Object.hasOwn(attests.files, rel))
+        if (added !== undefined) assert(false, `${label}: module '${dir}' ${field} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
+      }
       for (const [rel, value] of Object.entries(info.files)) {
         if (Object.hasOwn(existing.files, rel)) {
           assert(existing.files[rel] === value, `${label}: content mismatch for '${moduleFileKey(dir, rel)}'`)

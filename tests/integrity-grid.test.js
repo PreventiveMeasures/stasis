@@ -191,6 +191,13 @@ test('stasis run holds stasis.lock.json\'s integrities to what is installed', wi
   }
   t.assert.equal(run('replace').status, 0, 'replaced: rewritten of what is installed')
   t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, SRI)
+  // A file the run adds to the record is of the integrity the install record names: kept.
+  writeFileSync(join(dir, 'node_modules', 'reg', 'more.js'), 'module.exports = 2\n')
+  writeFileSync(join(dir, 'more.js'), "require('reg/more.js')\n")
+  const added = spawnSync(process.execPath, [cli, 'run', '--lock=add', 'more.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  t.assert.equal(added.status, 0, added.stderr)
+  const { files, integrity } = readJson(lockPath).modules['node_modules/reg']
+  t.assert.deepStrictEqual([Object.keys(files).toSorted(), integrity], [['index.js', 'more.js'], SRI])
 }))
 
 test('stasis run refuses an integrity or patch its lockfile records that the install names none of, an untagged record\'s too', withTmp(async (t, dir) => {

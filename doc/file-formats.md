@@ -376,9 +376,13 @@ name, so a rule copied from one file to the other may not refuse the same files.
   bundle a run loads beside it, or those of two artifacts merged (`--add`,
   `stasis add`, `bundle = add`, `lock = add`), one recording none takes the
   other's, and two that differ are refused: neither is kept over the other,
-  and neither is dropped, a record a run adds files to keeping its own. Each
-  is held to how its package was installed too, wherever that is told (see
-  `integrity` under `stasis.code.br`). A
+  and neither is dropped. A value is of the files recorded with it: one
+  recording none that adds a file to the other's is refused (`<label>: module
+  '<dir>' integrity is recorded of one side's files, not of '<file>' the other
+  adds`), as is a run adding a file to a record it absorbed one of, where no
+  install record tells of that file's package (`record it anew (lock =
+  replace)`). Each is held to how its package was installed too, wherever that
+  is told (see `integrity` under `stasis.code.br`). A
   dependency record may carry `vendored`, the packages copied into it, after
   `ecosystem`,
   as a bundle's record does (see there), so that `stasis audit` and `stasis
@@ -546,8 +550,9 @@ than ship it, and reading one is refused as well.
   none)`, or `recorded vs locked`). Where nothing tells how a package was
   installed (no record and no lockfile there, or nothing installed, as where a
   run loads a bundle), what is recorded is kept, never dropped, its files held
-  by their hashes all the same. `stasis-core run` reads no package manager's
-  record or lockfile, and keeps what is recorded.
+  by their hashes all the same, and no file can join them. `stasis-core run`
+  reads no package manager's record or lockfile, and keeps what is recorded,
+  adding no file to a record of it.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
   a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
   manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
