@@ -89,9 +89,8 @@ test('stasis bundle in lock = frozen holds its records to stasis.lock.json too',
   await t.assert.rejects(build(dir, frozen), /stasis\.lock\.json: module 'node_modules\/reg' integrity mismatch/u)
 }))
 
-// What stasis.lock.json alone records of a package: held to the account of how it was installed, the
-// install's record's, else the lockfile's beside it; one the account has none of is refused, never
-// dropped. With no account, it is kept, the build's too.
+// What stasis.lock.json alone records of a package: held to how it was installed, as its install
+// record tells, else the lockfile beside it; kept where neither does.
 
 test('stasis bundle refuses an integrity or patch stasis.lock.json records that the install\'s record names none of, rather than drop it', withTmp(async (t, dir) => {
   const frozen = { env: { ...process.env, EXODUS_STASIS_LOCK: 'frozen' } }

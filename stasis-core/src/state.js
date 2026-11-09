@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccount, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -23,9 +23,7 @@ const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
 // A reader of how the packages were installed, which stasis-core reads no record of, another package
-// registers (run-installed.js): of modules and a root, `Map<dir, { integrity, patch, installed }>`,
-// an entry for each module an account is found of: all its package manager's install record names of
-// it, or, with no such record (`installed` false), all the lockfile beside it locks.
+// registers (run-installed.js): of modules and a root, each one's account (heldToAccount's) by its dir.
 const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 const FILE_LOCK = 'stasis.lock.json'
 const FILE_CODE = 'stasis.code.br'
@@ -344,25 +342,17 @@ export class State {
     return modules.size === 0 ? undefined : globalThis[INSTALLED]?.(modules, this.root)
   }
 
-  // `module` (of `dir`) held to its `account` (INSTALLED's): every ATTESTED_METADATA it records is the
-  // account's, one the account has none of refused as another is. -> it with what the account names.
-  #heldToAccount(dir, module, account, label) {
-    return withMetadataOf(module, account, `${label}module '${dir}' (recorded vs ${account.installed === false ? 'locked' : 'installed'})`, { attesting: true })
-  }
-
-  // ATTESTED_METADATA absorbed of the artifact at `label`, held to how each package was installed. One
-  // no account is found of (nothing installed, as where a bundle is run from, or by no package manager
-  // read) is held to nothing here, and kept as recorded.
+  // ATTESTED_METADATA absorbed of the artifact at `label`, held to how each package was installed;
+  // kept as recorded where no account tells (nothing installed, as where a bundle is run from).
   #holdToInstalled(label) {
     const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
-    for (const [dir, account] of this.#installed(attested) ?? []) this.#heldToAccount(dir, attested.get(dir), account, `${label}: `)
+    for (const [dir, account] of this.#installed(attested) ?? []) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
   }
 
-  // Each module with what its install record names, held to it: not what a lockfile alone locks, which
-  // says what an install would lay out, not what one did.
+  // Not what a lockfile alone locks, which says what an install would lay out, not what one did.
   #recordInstalled() {
     for (const [dir, account] of this.#installed(this.modules) ?? []) {
-      const held = this.#heldToAccount(dir, this.modules.get(dir), account, '')
+      const held = heldToAccount(this.modules.get(dir), account, `module '${dir}'`)
       if (account.installed !== false) this.modules.set(dir, held)
     }
   }

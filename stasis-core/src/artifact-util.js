@@ -231,10 +231,8 @@ export const moduleInfo = (info) => {
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
 // `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none.
-// ATTESTED_METADATA both record must agree, and one only one of them records is the result's: none
-// is dropped, nor kept over another. With `attesting`, `other` is the whole account of how the package
-// was installed (an install's record, a build's of one): what `record` has and `other` hasn't is
-// refused too, as nothing attests it.
+// ATTESTED_METADATA both record must agree; with `attesting`, all `record` has must be `other`'s,
+// one `other` has none of refused too.
 export function withMetadataOf(record, other, what = 'module', { attesting = false } = {}) {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
@@ -248,6 +246,11 @@ export function withMetadataOf(record, other, what = 'module', { attesting = fal
   }
   return added === undefined ? record : moduleInfo({ ...record, ...added })
 }
+
+// `record` held to `account`, of how its package was installed (an install record's, or with
+// `installed` false, a lockfile's alone). -> `record` with what the account names.
+export const heldToAccount = (record, account, what) =>
+  withMetadataOf(record, account, `${what} (recorded vs ${account.installed === false ? 'locked' : 'installed'})`, { attesting: true })
 
 // A record's metadata as `what` holds it, validated, the fields not in `fields` left out: RECORD_METADATA's,
 // and DIR_METADATA's of the entries `entriesOf(field)`.

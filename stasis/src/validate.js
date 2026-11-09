@@ -35,7 +35,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, hexIntegrity, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, hexIntegrity, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of, withMetadataOf } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -638,16 +638,14 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     const lock = locked?.lock?.(pkg.ecosystem, pkg.name, pkg.version)
     if (lock === null) return fails('not-locked')
     if (lock?.conflict) return fails('integrity-conflict')
-    // What its copies here record (those of another lockfile's tree are held apart), held to what the
-    // lockfile locks: an integrity, to the one it locks the version with, of its registry or of whatever
-    // else it locks it from; where it locks its registry's with none, it is the one the version is
-    // fetched with, so held to all the same (of an ecosystem none is fetched of, nothing holds it: it
-    // fails). A directory's has none. A patch, to the one it locks, npm's and yarn's none (they patch nothing).
+    // What its copies here record (another lockfile's tree's are held apart), held to what the lockfile
+    // locks: an integrity, to the one it locks its archive with, or, its registry's locked with none, to
+    // the tarball fetched with it; a patch, to the one it locks, npm's and yarn's none (they patch nothing).
     const recordedBy = (by) => new Set(dirs.filter((dir) => by.has(dir)).map((dir) => by.get(dir)))
     const [recordedIntegrity, otherIntegrity] = recordedBy(pkg.integrities)
     if (otherIntegrity !== undefined) return fails('integrity-conflict')
-    const lockedWith = lock?.from === 'registry' ? (lock.integrity === undefined ? FETCHED.has(pkg.ecosystem) : lock.integrity === recordedIntegrity) : Boolean(lock?.integrities?.has(recordedIntegrity))
-    if (recordedIntegrity !== undefined && lock !== undefined && !lockedWith) return fails('integrity-not-locked')
+    const fetchedWith = lock?.from === 'registry' && lock.integrity === undefined && FETCHED.has(pkg.ecosystem)
+    if (recordedIntegrity !== undefined && lock !== undefined && !fetchedWith && lock.integrity !== recordedIntegrity) return fails('integrity-not-locked')
     const [recordedHash, conflicting] = recordedBy(pkg.recorded)
     if (conflicting !== undefined) return fails('patch-conflict')
     const lockedPatch = pkg.ecosystem === 'npm' ? locked?.of(pkg.name, pkg.version) : undefined
@@ -731,8 +729,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       for (const file of misses) tell({ path: file.path, kind: checksum(file) || held.has(file.rel) ? 'differs' : 'unexpected', of })
       missed += misses.length
       if (misses.length === 0 && held === patched) asPatched++
-      // Patched, by a patch that couldn't be read or applied: nothing tells what its files should be.
-      // Those not as published fail all the same; the others, which the patch may change, are unverified.
+      // Its patch unread or unapplied, nothing tells what its files should be: those as published are unverified.
       if (patching && !patched) notVerified += copy.length - misses.length - built.length
     }
     counts.matched += pkg.files.length - missed - notVerified
@@ -741,7 +738,6 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     if (status === 'valid') counts.validPackages++
     if (status !== 'valid' || patch) {
       tellPackage(status, {
-        // A patch that couldn't be read or applied is told by its own error, in place of a reason.
         ...(status === 'unverified' && (aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : patch?.error ? {} : lock?.from === 'git' ? { reason: 'git-built' } : { reason: 'patch-unverified' })),
         ...(patch && { patch: { ...patch, ...(recordedHash !== undefined && { recorded: true }), ...(patched && status === 'valid' && { applied: asPatched > 0 }) } }),
         ...(lock?.from === 'local' && { directory: lock.directories[0] }),
@@ -1092,13 +1088,13 @@ export function lockedBy(lockfiles) {
       }
       const integrities = new Set(locks.filter((entry) => entry.from === 'registry').map((entry) => entry.integrity))
       if (integrities.size === 0) {
-        // The integrities it is locked with, of an archive from git or elsewhere, which a copy may record.
-        const locking = new Set(locks.map((entry) => entry.integrity).filter((integrity) => integrity !== undefined))
-        const integritiesOf = locking.size > 0 && { integrities: locking }
-        if (!locks.every((entry) => entry.from === 'git')) return { from: 'elsewhere', ...integritiesOf }
+        // The one integrity every entry locks its archive with, which a copy may record.
+        const locking = new Set(locks.map((entry) => entry.integrity))
+        const archive = locking.size === 1 && !locking.has(undefined) && { integrity: locks[0].integrity }
+        if (!locks.every((entry) => entry.from === 'git')) return { from: 'elsewhere', ...archive }
         // Of the one commit every entry locks it at, where they name one.
         const [at, other] = new Set(locks.map((entry) => JSON.stringify(entry.at ?? null)))
-        return { from: 'git', ...integritiesOf, ...(other === undefined && at !== 'null' && { at: JSON.parse(at) }) }
+        return { from: 'git', ...archive, ...(other === undefined && at !== 'null' && { at: JSON.parse(at) }) }
       }
       return integrities.size === 1 ? { from: 'registry', integrity: [...integrities][0] } : { from: 'registry', conflict: true }
     },
@@ -1619,7 +1615,13 @@ async function heldToCommitted(attested, directory, list, read) {
   if (!listed.includes('stasis.lock.json')) return undefined
   const path = pathIn(directory, 'stasis.lock.json')
   try {
-    Lockfile.parse(await read(path)).mergeAgreeing(attested(), path, { attesting: true })
+    const committed = Lockfile.parse(await read(path))
+    const artifact = attested()
+    committed.mergeAgreeing(artifact, path)
+    // A build held to it records what it does of a module: one the artifact has none of contradicts it.
+    for (const [dir, info] of artifact.modules) {
+      if (committed.modules.has(dir)) withMetadataOf(committed.modules.get(dir), info, `${path}: module '${dir}'`, { attesting: true })
+    }
     return { path }
   } catch (error) {
     return { path, error: error.message }

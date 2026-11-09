@@ -768,8 +768,7 @@ const githubRoot = (url) => {
 // Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
 // where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
 // And an npm one with its tarball's integrity, where its lockfile locks it, and the patch it applies.
-// -> the account of each bucket the tree installs, by its dir, as installed.js's accountOf gives an
-// install's: `{ integrity, patch }`, all the tree names of it.
+// -> the record of each bucket the tree installs, by its dir: its account, as pinInstalled gives an install's.
 export function pinFromTree(bundle, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
@@ -783,7 +782,7 @@ export function pinFromTree(bundle, root, tree) {
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
     const pinned = withInstalled(dir, info, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
     bundle.modules.set(dir, pinned)
-    accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
+    accounts.set(dir, pinned)
   }
   return accounts
 }

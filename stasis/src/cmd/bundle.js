@@ -20,7 +20,7 @@ import { pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, isDotEnvFile, isPathWithin, isPlainObject, hexIntegrity, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, heldToAccount, isDotEnvFile, isPathWithin, isPlainObject, hexIntegrity, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -2300,34 +2300,35 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 }
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
-// stasis.config.json's `extra` names: its npm dependencies with what their package managers' records
-// name of them (git ones' commits, integrities, patches), each held to the lockfile beside it
-// (pinInstalled), whatever its kind (a Solidity import out of node_modules is one). `outputsAt(root)`
+// stasis.config.json's `extra` names, its dependencies yet to be pinned (pinnedOf). `outputsAt(root)`
 // are the absolute paths the build writes, given the root its paths are relative to.
-// -> { bundle, lockfile: () => Lockfile, stateBuilt, accounts } (lockfile and stateBuilt of a JS
-// bundle alone; `accounts` how each npm package was installed, pinInstalled's)
+// -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
-  const pinned = (built) => ({ ...built, accounts: pinInstalled(built.bundle, built.root ?? resolve(cwd)) })
-  if (kind === 'sol') return pinned(withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }))
-  if (kind === 'php') return pinned(withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) }))
-  if (kind === 'bash') return pinned(withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) }))
-  if (kind === 'rust') return pinned(withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }))
+  if (kind === 'sol') return withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) })
+  if (kind === 'php') return withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) })
+  if (kind === 'bash') return withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) })
+  if (kind === 'rust') return withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) })
   const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
-  return pinned(built.stateBuilt ? built : withExtraOf(built, resources))
+  return built.stateBuilt ? built : withExtraOf(built, resources)
 }
+
+// `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers'
+// records name them, each held to the lockfile beside it, whatever its kind (a Solidity import out
+// of node_modules is one), and their `accounts` (pinInstalled).
+const pinnedOf = (built, root) => ({ ...built, accounts: pinInstalled(built.bundle, root) })
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
 // rooted at `roots[i]`: their strict union, rooted where every one of them is; a lockfile only where
-// every one has one (only JS builds do); `accounts` every one's, where they have them.
+// every one has one (only JS builds do).
 function unionOfBuilds(name, builds, builts, roots) {
   const other = roots.findIndex((root) => root !== roots[0])
   if (other !== -1) {
     throw new Error(`${name}: ${builds[0].entries[0]} and ${builds[other].entries[0]} can't be bundled together: their bundles' paths are relative to different roots (${roots[0]} and ${roots[other]})`)
   }
-  return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && b.lockfile && (() => a.lockfile().merge(b.lockfile())), accounts: new Map([...a.accounts ?? [], ...b.accounts ?? []]) }))
+  return builts.reduce((a, b) => ({ bundle: a.bundle.merge(b.bundle), lockfile: a.lockfile && b.lockfile && (() => a.lockfile().merge(b.lockfile())) }))
 }
 
 // `bundle` with each of its paths under `dir` (POSIX, from the root they are of), as a build from
@@ -2415,7 +2416,7 @@ export function checkVfsOptions(name, options) {
 // true; `lazy: false` installs every package, and `lazy: true` is refused where the tree cannot be
 // lazy, or `lazyDependencies` is false. `stats` are deptree's, and `stats.unpacked` the packages
 // unpacked: each one installed, or those a lazy tree unpacked, of every tree.
-// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager (undefined for several), packageManagers, root, accounts (how the trees install each package, pinFromTree's) }
+// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager (undefined for several), packageManagers, root, accounts (pinFromTree's) }
 export async function buildVfsBundle({ lock, ...options } = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
@@ -2425,10 +2426,8 @@ export async function buildVfsBundle({ lock, ...options } = {}) {
   const mode = lockModeOf(built.root, { EXODUS_STASIS_LOCK: lock }, host).lock
   const at = posix.join(built.root, LOCK_FILE)
   const label = posix.relative('/', at)
-  const fresh = heldToLockfile(() => built.lockfile, at, label, mode, { host, accounts: built.accounts })
-  if (fresh !== undefined) {
-    withAttested(built.bundle, fresh)
-    if (mode === 'frozen') loadsBeside(built.bundle.serialize(), { at: posix.join(built.root, DEFAULT_BUNDLE_FILE), lockAbs: at, label, root: built.root, scope: built.bundle.config.scope, host })
+  if (heldToLockfile(() => built.lockfile, at, label, mode, { host, bundle: built.bundle, accounts: built.accounts }) !== undefined && mode === 'frozen') {
+    loadsBeside(built.bundle.serialize(), { at: posix.join(built.root, DEFAULT_BUNDLE_FILE), lockAbs: at, label, root: built.root, scope: built.bundle.config.scope, host })
   }
   return built
 }
@@ -2645,10 +2644,8 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   return { bundle, get lockfile() { return (lock ??= lockfile && withAttested(lockfile(), bundle)) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root, accounts }
 }
 
-// `to` (a Lockfile or a Bundle) with what `from`'s records of the same buckets attest of how their
-// packages were installed (ATTESTED_METADATA), its own left out: a build's lockfile, taken of its
-// bundle before its dependencies were pinned (pinInstalled, pinFromTree), with the bundle's; and both
-// with what the build was held to (heldToLockfile).
+// `to` (a Lockfile or a Bundle) with the ATTESTED_METADATA `from`'s records of the same buckets
+// carry, in place of its own: a build's lockfile, taken before its bundle was pinned, with the bundle's.
 function withAttested(to, from) {
   for (const [dir, info] of to.modules) {
     const pinned = from.modules.get(dir)
@@ -2732,7 +2729,7 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
   const built = await buildOfKind(classifyEntries('buildBundle', options), options)
   const root = built.root ?? resolve(cwd)
   assertPolicies('buildBundle', { bundle: built.bundle, root })
-  heldOf(built, root, { cwd, env })?.loads(built.bundle)
+  heldOf(pinnedOf(built, root), root, { cwd, env })?.loads(built.bundle)
   return built.bundle
 }
 
@@ -2797,8 +2794,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     const links = linksOn(root)
     policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
-    // What it carries already is held to the lockfile too, and what it records of how a package the
-    // build bundles was installed, to the build's account of that: merged, neither is dropped.
+    // What it carries already is held to the lockfile too, and to how its packages are installed.
     built.held?.hold(deferredLockfile(existing))
     heldToAccounts(existing, built.accounts, target)
     bundle = existing.merge(bundle)
@@ -2857,10 +2853,9 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
 }
 
 // The lockfile of a build's `bundle`, with what it attests (withAttested), held to the one `lockfile`
-// names, else its project's, by the lock mode of the project's runs (heldToLockfile), with the
-// `accounts` of how its packages were installed: `{ lock, label, lockfile, hold, loads }`,
-// `lockfile()` the one to write, `hold(other)` holding another to it, and `loads(bundle)` that, under
-// frozen, the bundle loads beside it. What the build takes of the lockfile is the bundle's too.
+// names, else its project's, by the lock mode of the project's runs (heldToLockfile): `{ lock, label,
+// lockfile, hold, loads }`, `lockfile()` the one to write, `hold(other)` holding another to it, and
+// `loads(bundle)` that, under frozen, the bundle loads beside it.
 function heldOf({ bundle, lockfile: of, accounts }, root, { cwd, env, lockfile }) {
   if (!of) return undefined
   const built = () => withAttested(of(), bundle)
@@ -2868,8 +2863,7 @@ function heldOf({ bundle, lockfile: of, accounts }, root, { cwd, env, lockfile }
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, LOCK_FILE)
   const label = relative(resolve(cwd), at)
   const hold = (other, options) => heldToLockfile(other, at, label, lock, options)
-  const fresh = hold(built, { accounts })
-  if (fresh !== undefined) withAttested(bundle, fresh)
+  const fresh = hold(built, { bundle, accounts })
   const loads = (written, { text, at: bundleAt = join(root, DEFAULT_BUNDLE_FILE) } = {}) => {
     if (lock === 'frozen') loadsBeside(text ?? written.serialize(), { at: bundleAt, lockAbs: at, label, root, scope: written.config.scope })
   }
@@ -2888,13 +2882,8 @@ function lockModeOf(root, env = process.env, host = diskHost) {
 
 // The lockfile `built()` gives held to the one at `lockAbs` by `mode`: in add, agreeing with it on all
 // both record (Lockfile.mergeAgreeing); in frozen, that too, and it must be there and attest every file
-// built; in none, it must not be there. An integrity or patch it records of a package the build
-// bundles is held to the account of how that package was installed (`accounts`, by bucket: an
-// install's record's, a lockfile's beside it, a tree's), where there is one: one the account has none
-// of is refused, as another is. Of a package with no account (installed by no package manager read, or
-// another artifact's, under --add), what the lockfile alone records is taken as the build's, neither
-// dropped nor replaced. -> what built() gave, with that, where it was called.
-function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, accounts = new Map() } = {}) {
+// built; in none, it must not be there. -> what built() gave, where it was called.
+function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, accounts = [] } = {}) {
   if (mode !== 'add' && mode !== 'frozen' && mode !== 'none') return undefined
   const text = readFileSyncMaybe(dirname(lockAbs), basename(lockAbs), 'utf-8', host)
   if (text === null && mode !== 'frozen') return undefined
@@ -2911,7 +2900,8 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, accounts
   }
   const merged = lock.mergeAgreeing(fresh, label)
   heldToAccounts(lock, accounts, label)
-  withAttested(fresh, merged)
+  // What it alone records of a package no account tells the install of is the build's too: kept.
+  for (const to of bundle ? [fresh, bundle] : [fresh]) withAttested(to, merged)
   if (mode === 'frozen') {
     const recorded = moduleFileKeys(lock.modules, { scope: lock.config.scope })
     for (const file of moduleFileKeys(fresh.modules, { scope: fresh.config.scope })) {
@@ -2921,14 +2911,12 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, accounts
   return fresh
 }
 
-// Each record of `artifact` (a Lockfile or a Bundle the build is held to or added to, named `label`)
-// held to the account of how its bucket's package was installed, where the build has one (`accounts`,
-// by bucket): an integrity or patch it records is the account's, one the account has none of refused
-// as another is.
+// What `artifact` (a Lockfile or a Bundle, named `label`) records of each package, held to the
+// build's account of how it was installed (`accounts`, by bucket), where it has one.
 function heldToAccounts(artifact, accounts, label) {
   for (const [dir, account] of accounts) {
     const recorded = artifact.modules.get(dir)
-    if (recorded !== undefined) withMetadataOf(recorded, account, `${label}: module '${dir}' (recorded vs ${account.installed === false ? 'locked' : 'installed'})`, { attesting: true })
+    if (recorded !== undefined) heldToAccount(recorded, account, `${label}: module '${dir}'`)
   }
 }
 
@@ -3041,9 +3029,9 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
     if (bundleExtra) {
       // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
       // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
-      const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
-      union = withExtras === union ? union : { ...withExtras, accounts: new Map([...union.accounts, ...pinInstalled(withExtras.bundle, root)]) }
+      union = withExtra(union, root, { outputs: outputsAt(root) })
     }
+    union = pinnedOf(union, root)
     assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })
   }
   return { ...union, root, held: heldOf(union, root, { cwd, env, lockfile }) }

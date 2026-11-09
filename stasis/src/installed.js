@@ -287,13 +287,13 @@ export function withInstalled(dir, info, record) {
   return Object.keys(metadata).length === 0 ? info : { ...info, ...metadata }
 }
 
-// What tells how each npm dependency of `modules` (paths from `root`) was installed, `{ record,
-// locked }`: its install record, found by its real path (in a node_modules/.pnpm by its directory
-// there, else by its location from the nearest layoutOf up to `root`), and what the lockfile beside
-// that record locks of it, the record held to it (holdToLockfile); either undefined for none, and no
-// entry where there is neither.
+// The install record of each npm dependency of `modules` (paths from `root`), found by its real path:
+// in a node_modules/.pnpm by its directory there, else by its location from the nearest layoutOf up to
+// `root`; each held to the lockfile beside that record (holdToLockfile).
+// -> { records, accounts }, an account (heldToAccount's) the record's, else what that lockfile locks.
 export function installedRecords(modules, root, host = diskHost) {
   const records = new Map()
+  const accounts = new Map()
   const stores = new Map()
   const layouts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
@@ -324,7 +324,7 @@ export function installedRecords(modules, root, host = diskHost) {
       try {
         top ??= resolve(host.realpath(resolve(root)))
       } catch {
-        return records
+        return { records, accounts }
       }
       const rel = relative(top, real)
       const parts = toPosix(rel).split('/')
@@ -338,33 +338,19 @@ export function installedRecords(modules, root, host = diskHost) {
       locked = locks?.(location, info.version, info.name)
       if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
     }
-    if (record !== undefined || locked !== undefined) records.set(dir, { record, locked })
+    if (record !== undefined) records.set(dir, record)
+    const told = record ?? locked
+    if (told === undefined || told.ambiguous) continue
+    const { integrity, patch } = installedMetadata(dir, info.ecosystem, told)
+    accounts.set(dir, { integrity, patch, installed: record !== undefined })
   }
-  return records
+  return { records, accounts }
 }
 
-// The account `found` (installedRecords') gives of how bucket `dir`'s package was installed, which
-// another record of the bucket (stasis.lock.json's, a bundle's) is held to: `{ integrity, patch,
-// installed }`, all its install record names (installedMetadata), each undefined for none; with no
-// install record (`installed` false), all the lockfile beside it locks, which an install lays out.
-// Undefined where neither tells: two entries of one name and version that differ.
-export function accountOf(dir, ecosystem, { record, locked }) {
-  const told = record ?? locked
-  if (told.ambiguous) return undefined
-  const { integrity, patch } = installedMetadata(dir, ecosystem, told)
-  return { integrity, patch, installed: record !== undefined }
-}
-
-// `bundle`'s npm dependencies with what their install records name (installedRecords): never what
-// the lockfile beside one locks, which says what an install would lay out, not what one did.
-// -> each bucket's account (accountOf), by its dir.
+// `bundle`'s npm dependencies with what their install records name (installedRecords).
+// -> their accounts
 export function pinInstalled(bundle, root, host = diskHost) {
-  const accounts = new Map()
-  for (const [dir, found] of installedRecords(bundle.modules, root, host)) {
-    const info = bundle.modules.get(dir)
-    if (found.record !== undefined) bundle.modules.set(dir, withInstalled(dir, info, found.record))
-    const account = accountOf(dir, info.ecosystem, found)
-    if (account !== undefined) accounts.set(dir, account)
-  }
+  const { records, accounts } = installedRecords(bundle.modules, root, host)
+  for (const [dir, record] of records) bundle.modules.set(dir, withInstalled(dir, bundle.modules.get(dir), record))
   return accounts
 }
