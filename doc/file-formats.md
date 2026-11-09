@@ -1484,7 +1484,7 @@ its `Cargo.toml` and the `.cargo-checksum.json` cargo checks its files against
 depends on it. A vendored file the bundle reads is checked against that list
 in any case, and so is the `Cargo.toml` of every vendored crate the bundle or
 its resolution takes in, whose features and dependencies it reads: one changed since `cargo
-vendor` stops the bundle, as cargo refuses to build it. All are `resource` files in their package's bucket, or the
+vendor` stops the bundle, as cargo refuses to build it, as does a vendored crate the bundle reads whose package checksum isn't the one `Cargo.lock` locks its version with, by the replay too. All are `resource` files in their package's bucket, or the
 workspace bucket for the root-level ones. They are carried as written, as `--package-json` carries `package.json`:
 stasis doesn't edit them, so whatever they hold -- a `[registries]` token or
 `[http]` proxy in the cargo config, the credentials in a `git = …` URL or a
