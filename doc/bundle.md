@@ -68,6 +68,13 @@ stasis bundle src/index.js            # writes stasis.code.br in the project roo
 stasis bundle --add src/worker.js     # merges the worker's graph into it
 ```
 
+The bundle on disk, and the `--lockfile`, must be rooted where the fresh build
+is: `--add` refuses one whose paths are relative to another directory, naming
+both roots. A build that wrote its `stasis.lock.json` or `stasis.code.br` in a
+package nested below its root leaves such a pair, as that file roots the next
+build at the package (see [discovery](file-formats.md#discovery)). Rebuild
+without `--add`, which roots them where the build is.
+
 ## Companion lockfile (`--lockfile`)
 
 `--lockfile=stasis.lock.json` also writes a lockfile attesting every bundled

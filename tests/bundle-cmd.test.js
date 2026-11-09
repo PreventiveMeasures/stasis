@@ -6745,6 +6745,73 @@ test('bundleCommand --add refuses to write an under-attesting lockfile when the 
   t.assert.ok(!existsSync(lockPath), 'no lockfile is written on refusal')
 }))
 
+// A package `top/npm` nested in the project `top`, its entry requiring a dependency of its own: run
+// there, `stasis bundle` roots its bundle at `top`, and a lockfile it writes in `top/npm` roots the
+// next build at `top/npm` (a stasis.lock.json there is a root marker).
+const nestedPackageTree = (tmp) => {
+  writeTree(tmp, {
+    // The State's walk up stops here.
+    'pnpm-workspace.yaml': '',
+    'top/package.json': { name: 'top', version: '1.0.0' },
+    'top/npm/package.json': { name: 'top-npm', version: '1.0.0' },
+    'top/npm/index.js': "require('reg')\n",
+    'top/npm/other.js': "require('reg')\n",
+    'top/npm/node_modules/reg/package.json': { name: 'reg', version: '1.0.0' },
+    'top/npm/node_modules/reg/index.js': 'module.exports = 1\n',
+  })
+  return join(tmp, 'top', 'npm')
+}
+
+// The refusal of --add in `top/npm` to add to `what`, rooted at `top`.
+const otherRootRefusal = (what) => `bundleCommand: --add can't add to ${what}: its paths are relative to .. and this build's to . (rooted there by its stasis.lock.json); rebuild it without --add`
+
+test('bundleCommand --add refuses a bundle and lockfile rooted above the root their own lockfile gives the build', withTmp(async (t, tmp) => {
+  const cwd = nestedPackageTree(tmp)
+  const options = { cwd, entries: ['index.js'], output: 'out.br', lockfile: 'stasis.lock.json' }
+  const read = () => ({ bundle: readFileSync(join(cwd, 'out.br')), lock: readFileSync(join(cwd, 'stasis.lock.json'), 'utf8') })
+  const parsed = () => {
+    const { bundle, lock } = read()
+    return [Bundle.parse(brotliDecompressSync(bundle).toString('utf8')), Lockfile.parse(lock)]
+  }
+  await captureWarningsAsync(() => bundleCommand(options))
+  const written = read()
+  // Rooted at `top`, out of the files of `top/npm`.
+  for (const artifact of parsed()) {
+    t.assert.deepStrictEqual([...artifact.entries], ['npm/index.js'])
+    t.assert.deepStrictEqual([...artifact.modules.keys()].toSorted(), ['npm', 'npm/node_modules/reg'])
+  }
+
+  // Run again with --add, the stasis.lock.json in `top/npm` roots it there: its records would be
+  // keyed `node_modules/reg`, the existing ones `npm/node_modules/reg`, and none held to another.
+  await t.assert.rejects(captureWarningsAsync(() => bundleCommand({ ...options, add: true })), { message: otherRootRefusal('the bundle at out.br') })
+  t.assert.deepStrictEqual(read(), written, 'nothing is written on refusal')
+
+  // Rebuilt without --add, both are rooted at `top/npm`, and --add adds to them there.
+  await captureWarningsAsync(() => bundleCommand(options))
+  await captureWarningsAsync(() => bundleCommand({ ...options, entries: ['other.js'], add: true }))
+  for (const artifact of parsed()) {
+    t.assert.deepStrictEqual([...artifact.entries].toSorted(), ['index.js', 'other.js'])
+    t.assert.deepStrictEqual([...artifact.modules.keys()].toSorted(), ['.', 'node_modules/reg'])
+  }
+}))
+
+test('bundleCommand --add refuses to replace a lockfile rooted above the root it gives the build, its bundle there', withTmp(async (t, tmp) => {
+  const cwd = nestedPackageTree(tmp)
+  // The bundle by default at the root, `top`; the lockfile in `top/npm`.
+  const options = { cwd, entries: ['index.js'], lockfile: 'stasis.lock.json' }
+  await captureWarningsAsync(() => bundleCommand(options))
+  const lockPath = join(cwd, 'stasis.lock.json')
+  const lock = readFileSync(lockPath, 'utf8')
+  t.assert.ok(existsSync(join(tmp, 'top', 'stasis.code.br')))
+  t.assert.deepStrictEqual([...Lockfile.parse(lock).entries], ['npm/index.js'])
+
+  // Rooted at `top/npm` by that lockfile, --add would write its bundle there, with none to add to,
+  // and its lockfile over the one of the bundle at `top`.
+  await t.assert.rejects(captureWarningsAsync(() => bundleCommand({ ...options, add: true })), { message: otherRootRefusal('the lockfile at stasis.lock.json') })
+  t.assert.equal(readFileSync(lockPath, 'utf8'), lock, 'the lockfile is kept')
+  t.assert.ok(!existsSync(join(cwd, 'stasis.code.br')), 'no bundle is written apart')
+}))
+
 // --package-json / packageJSON: fold each bundled module's package.json into the bundle even when
 // the scan never reached it (config option, mirrored by the `--package-json` CLI flag). JS-only.
 test('buildBundle (plain JS) with packageJSON includes each bundled module package.json', withTmp(async (t, tmp) => {

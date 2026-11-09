@@ -48,7 +48,7 @@ export function cached(map, key, compute) {
 }
 
 // `dir` and each directory above it, the root last.
-function* ancestors(dir) {
+export function* ancestors(dir) {
   for (;;) {
     yield dir
     const parent = dirname(dir)
