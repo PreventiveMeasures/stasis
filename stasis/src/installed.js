@@ -274,17 +274,11 @@ const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^
 
 // The metadata an install record names of bucket `dir`: its repository at a commit, its archive's
 // integrity (an npm tarball's sha512 alone), and an npm dependency's patch.
-function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
+export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
   const npm = isNpmDependency(dir, ecosystem)
   const tarball = npm ? tarballIntegrityOf(integrity) : integrity
   const patch = npm ? patchIntegrity(patchHash) : undefined
   return { ...(repo && { repo }), ...(tarball && { integrity: tarball }), ...(patch && { patch: { integrity: patch } }) }
-}
-
-// `info` with that; `info` itself where it names nothing.
-export function withInstalled(dir, info, record) {
-  const metadata = installedMetadata(dir, info.ecosystem, record)
-  return Object.keys(metadata).length === 0 ? info : { ...info, ...metadata }
 }
 
 // The account of how each npm dependency of `modules` (paths from `root`) was installed, by its dir:

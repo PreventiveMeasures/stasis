@@ -553,8 +553,7 @@ export function loadComposerPackages(baseDir) {
       .filter((p) => p?.name && p.version)
       .map((p) => {
         const dir = installedDir(baseDir, vendorDir, p)
-        const at = dir == null ? null : join(baseDir, dir)
-        return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, p['installation-source'], at) }
+        return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, p['installation-source'], dir == null ? null : join(baseDir, dir)) }
       })
   }
 
@@ -569,8 +568,7 @@ export function loadComposerPackages(baseDir) {
     .filter((p) => dirs === null || dirs.has(p.name))
     .map((p) => {
       const dir = dirs === null ? lockedDir(baseDir, vendorDir, p) : dirs.get(p.name)
-      const at = dir == null ? null : join(baseDir, dir)
-      return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, from.get(p.name), at) }
+      return { name: p.name, version: p.version, dir, extra: p.extra, ...composerInstall(p, from.get(p.name), dir == null ? null : join(baseDir, dir)) }
     })
 }
 

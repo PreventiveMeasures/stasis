@@ -11,7 +11,7 @@ import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/
 import { buildYarn1Tree, findYarn1Workspaces } from '@preventive/deptree/yarn1.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { VfsError } from '@preventive/vfs'
-import { withInstalled } from '../installed.js'
+import { installedMetadata } from '../installed.js'
 import { createNodeResolver } from '../resolve-node.js'
 import { globSync, matchesGlob } from './glob.js'
 import { lazyView, untouchedMemo } from './lazy.js'
@@ -779,8 +779,8 @@ export function pinFromTree(bundle, root, tree) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    const pinned = withInstalled(dir, info, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
-    bundle.modules.set(dir, pinned)
+    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
+    bundle.modules.set(dir, { ...info, ...pinned })
     accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }
   return accounts
