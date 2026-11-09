@@ -100,8 +100,10 @@ export class State {
   config
   root
   #parent
-  // The files of each record absorbed with ATTESTED_METADATA, by its dir, as it was absorbed.
+  // The files of each record absorbed with ATTESTED_METADATA, by its dir, as it was absorbed; and
+  // the dirs of all absorbed.
   #attestedFiles = new Map()
+  #absorbed = new Set()
   #isPreload = false
   #host
   // The config's Policy (a sidecar's parent's), or null: checked on each artifact loaded and each path recorded.
@@ -349,16 +351,18 @@ export class State {
   #holdToInstalled(label) {
     const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
     this.#attestedFiles = new Map([...attested].map(([dir, module]) => [dir, new Set(Object.keys(module.files))]))
+    this.#absorbed = new Set(this.modules.keys())
     for (const [dir, account] of this.#installed(attested) ?? []) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
   }
 
-  // Not what a lockfile alone locks, which says what an install would lay out, not what one did. What
-  // an artifact attests is of the files it recorded: of one this run adds, an install record alone tells.
+  // Not what a lockfile alone locks, which says what an install would lay out, not what one did; nor
+  // onto a record absorbed, whose other files this run may not have read. What an artifact attests is
+  // of the files it recorded: of one this run adds, an install record alone tells.
   #recordInstalled() {
     const accounts = this.#installed(this.modules) ?? new Map()
     for (const [dir, account] of accounts) {
       const held = heldToAccount(this.modules.get(dir), account, `module '${dir}'`)
-      if (account.installed !== false) this.modules.set(dir, held)
+      if (account.installed !== false && !this.#absorbed.has(dir)) this.modules.set(dir, held)
     }
     for (const [dir, files] of this.#attestedFiles) {
       const module = this.modules.get(dir)
@@ -495,8 +499,17 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // The bundle's metadata is taken where the lockfile records none, to be written again.
-        this.modules.set(dir, withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`))
+        // The bundle's metadata is taken where the lockfile records none, to be written again: what it
+        // alone attests, only where it holds every file the lockfile records of the package. Else it
+        // stays the bundle's, which a run writing the bundle again would drop: refused.
+        let taken = withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`)
+        const beyond = Object.keys(lockModule.files).find((rel) => !Object.hasOwn(info.files, rel))
+        for (const field of beyond === undefined ? [] : ATTESTED_METADATA) {
+          if (lockModule[field] !== undefined || info[field] === undefined) continue
+          assert.ok(!this.config.writeBundle, `bundle module ${dir} ${field} is recorded of its files, not of '${moduleFileKey(dir, beyond)}' the lockfile records: record it anew (lock = replace)`)
+          taken = moduleInfo({ ...taken, [field]: undefined })
+        }
+        this.modules.set(dir, taken)
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }

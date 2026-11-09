@@ -1721,6 +1721,11 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   t.assert.match((await heldBare())[1].error, /module 'node_modules\/ms' patch mismatch \(\{"integrity":"sha256-[^"]+"\} vs none\)/u)
   files['web/stasis.lock.json'] = lockOf().serialize()
   t.assert.deepStrictEqual([await heldBare(), await held()], [['valid', { path: 'web/stasis.lock.json' }], ['valid', { path: 'web/stasis.lock.json' }]])
+  // Nor does one recording none, and more of the module's files: the bundle is held to it, not merged into it.
+  const broader = JSON.parse(lockOf().serialize())
+  broader.modules['node_modules/ms'].files['readme.md'] = OTHER_SRI
+  files['web/stasis.lock.json'] = JSON.stringify(broader)
+  t.assert.deepStrictEqual(await held(), ['valid', { path: 'web/stasis.lock.json' }])
   // Its directory unlisted (own code alone, of no lockfile to find): failed, not passed over.
   const ownOnly = join(tmp, 'own.stasis.code.br')
   writeBundle(ownOnly, new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([modules().entries().next().value]) }))

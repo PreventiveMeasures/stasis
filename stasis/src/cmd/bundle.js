@@ -2931,7 +2931,7 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, 
   } catch (cause) {
     throw new Error(`${label}: not a valid stasis lockfile`, { cause })
   }
-  const merged = lock.mergeAgreeing(fresh, label)
+  const merged = lock.mergeAgreeing(fresh, label, { held: true })
   heldToAccounts(lock, accounts, label)
   // What it alone records of a package no account tells the install of is the build's too: kept.
   for (const to of bundle ? [fresh, bundle] : [fresh]) withAttested(to, merged)

@@ -128,6 +128,15 @@ test('a run holds a bundle\'s dependency integrity to its lockfile\'s, and write
   t.assert.doesNotThrow(() => new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' }), 'the bundle\'s alone')
   run({ bundle: 'add', lock: 'add' }).write()
   t.assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).modules['node_modules/dep'].integrity, TARBALL, 'taken of the bundle')
+  // But not of a file the lockfile records and the bundle doesn't hold: it stays the bundle's alone,
+  // and a run that would write the bundle again, dropping it, is refused.
+  run({ bundle: 'replace', lock: 'replace' }).write()
+  const broader = run({ bundle: 'ignore', lock: 'add' })
+  broader.addFile(pathToFileURL(join(dir, 'node_modules', 'dep', 'more.js')).toString(), { format: 'commonjs' })
+  broader.write()
+  editBundle(TARBALL)
+  t.assert.equal(new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' }).modules.get('node_modules/dep').integrity, undefined)
+  t.assert.throws(() => new State(dir, { scope: 'full', bundle: 'add', lock: 'add' }), /bundle module node_modules\/dep integrity is recorded of its files, not of 'node_modules\/dep\/more\.js' the lockfile records/u)
 }))
 
 // dep 1.0.0 as published, which the lockfile patches, and other 1.0.0, which it doesn't: each as a

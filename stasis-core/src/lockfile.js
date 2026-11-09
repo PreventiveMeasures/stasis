@@ -112,13 +112,13 @@ export class Lockfile {
 
   // Strict union of two Lockfiles (returns a NEW one): buckets must agree, and a file in both must carry
   // the identical hash (fail closed).
-  merge(other, label = 'lockfile merge') {
+  merge(other, label = 'lockfile merge', options) {
     assert(this.config.scope === other.config.scope,
       `${label}: scope mismatch ('${this.config.scope}' vs '${other.config.scope}')`)
     return new Lockfile({
       config: { scope: this.config.scope },
       entries: new Set([...this.entries, ...other.entries]),
-      modules: mergeModuleMaps(this.modules, other.modules, label),
+      modules: mergeModuleMaps(this.modules, other.modules, label, options),
       imports: mergeNullable(this.imports, other.imports, (a, b) => mergeImportMaps(a, b, label), 'imports', label),
       formats: mergeNullable(this.formats, other.formats, (a, b) => mergeFormatMaps(a, b, label), 'formats', label),
       // `other` (the incoming, newer lockfile) wins for the files it records -- see mergeExecutableSets.
@@ -127,8 +127,8 @@ export class Lockfile {
   }
 
   // merge, refusing a file both record whose execute bit `other` gives otherwise (merge lets `other`'s win).
-  mergeAgreeing(other, label = 'lockfile merge') {
-    const merged = this.merge(other, label)
+  mergeAgreeing(other, label = 'lockfile merge', options) {
+    const merged = this.merge(other, label, options)
     const recorded = moduleFileKeys(this.modules, { scope: this.config.scope })
     for (const file of moduleFileKeys(other.modules, { scope: other.config.scope })) {
       if (recorded.has(file) && this.executable.has(file) !== other.executable.has(file)) throw new Error(`${label}: ${file}'s execute bit differs`)
