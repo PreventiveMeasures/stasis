@@ -16,7 +16,7 @@ import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
-import { pinInstalledCommits } from '../installed-commits.js'
+import { pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
@@ -2297,15 +2297,16 @@ function withExtra(built, cwd, { outputs = [], resources, host = diskHost, name 
 
 // The bundle of `kind` (classifyEntries') built from buildBundle's options, from disk, with the files
 // stasis.config.json's `extra` names: its git dependencies at the commits their package managers'
-// records name (pinInstalledCommits), whatever its kind (a Solidity import out of node_modules is one). `outputsAt(root)` are the absolute paths the build
-// writes, given the root its paths are relative to.
+// records name, and each npm package held to the lockfile beside it (pinInstalled), whatever its
+// kind (a Solidity import out of node_modules is one). `outputsAt(root)` are the absolute paths the
+// build writes, given the root its paths are relative to.
 // -> { bundle, lockfile: () => Lockfile, stateBuilt } (the last two of a JS bundle alone)
 async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests, outputsAt = () => [], extra = true }) {
   const outputs = outputsAt(resolve(cwd))
   // Without `extra`, built as if the config named none (one of several builds of a bundle, see bundleCommand).
   const withExtraOf = (built, buildResources) => (extra ? withExtra(built, cwd, { outputs, resources: buildResources }) : built)
   const pinned = (built) => {
-    pinInstalledCommits(built.bundle, built.root ?? resolve(cwd))
+    pinInstalled(built.bundle, built.root ?? resolve(cwd))
     return built
   }
   if (kind === 'sol') return pinned(withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }))
@@ -2964,7 +2965,7 @@ async function buildOfCommand({ cwd = process.cwd(), env = process.env, home, en
       // Once, whatever the builds' order: to their union, whose own record of a file stands, by the
       // allowlist of the stasis.config.json at the root, not any one entry's `resources`.
       const withExtras = withExtra(union, root, { outputs: outputsAt(root) })
-      if (withExtras !== union) pinInstalledCommits(withExtras.bundle, root)
+      if (withExtras !== union) pinInstalled(withExtras.bundle, root)
       union = withExtras
     }
     assertPolicies('bundleCommand', { builds: plans, builts, bundle: union.bundle, root })

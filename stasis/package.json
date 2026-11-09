@@ -53,7 +53,7 @@
     "src/diff.js",
     "src/esbuild.js",
     "src/flow.js",
-    "src/installed-commits.js",
+    "src/installed.js",
     "src/json-stream.js",
     "src/loader.js",
     "src/loader-mock.js",

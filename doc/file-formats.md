@@ -530,10 +530,12 @@ than ship it, and reading one is refused as well.
     `node_modules/.package-lock.json`, by the package's location, where it
     records the version installed there; pnpm's (10 to 12) copy of its
     lockfile, `node_modules/.pnpm/lock.yaml`, by the directory under
-    `node_modules/.pnpm` the package is installed in; yarn 1's `yarn.lock`, by
-    the name the package is installed as and its version, where one entry alone
-    has both and the `node_modules/.yarn-integrity` yarn wrote has that entry
-    installed as `yarn.lock` resolves it now. Where that resolution is a full
+    `node_modules/.pnpm` the package is installed in, or, where pnpm hoists, by
+    its name and version; yarn 1's `yarn.lock`, by the name the package is
+    installed as and its version, where one entry alone has both and the
+    `node_modules/.yarn-integrity` yarn wrote has that entry installed as
+    `yarn.lock` resolves it now (one it has installed otherwise stops the
+    build: `yarn.lock` changed since). Where that resolution is a full
     commit of a GitHub repository, a git URL's or GitHub's tarball of one
     (`https://codeload.github.com/owner/name/tar.gz/<sha>`), the dependency
     records that repository, at its root (`""`) or the subdirectory pnpm
@@ -543,8 +545,18 @@ than ship it, and reading one is refused as well.
     none here: nothing on disk names its commit but its `package.json`'s
     `gitHead` (above). Nor does another host's repository, an abbreviated
     commit, or npm's record beside yarn's in one `node_modules` record one.
-    `package-lock.json` and `pnpm-lock.yaml` are not read: they say what an
-    install would lay out, not what one did.
+    The lockfile beside the `node_modules` is not read for it: it says what
+    an install would lay out, not what one did. Every npm package is held to
+    that lockfile all the same, whatever its record says
+    (`npm-shrinkwrap.json`, else `package-lock.json`, by its location;
+    `yarn.lock`, by its name and version; `pnpm-lock.yaml`, by the directory
+    under `node_modules/.pnpm`, or by its name and version where pnpm hoists):
+    one that locks none of it there, another version, or, of what its record
+    names, another resolution or commit, or that can't be read, stops the
+    build (`<lockfile> doesn't lock <dir> as installed (…): install from it
+    again`). Of several lockfiles there, it is held to the one whose package
+    manager alone left its record, else the build is refused. With no
+    lockfile there, nothing is held.
   - A Soldeer git dependency on GitHub records that repository at its root
     (`""`) and `soldeer.lock`'s `rev`, which Soldeer checks out: from a
     lockfile alone, the commit deptree fetches; on disk, only where its folder
@@ -566,8 +578,9 @@ than ship it, and reading one is refused as well.
     the same reference.
 
   Each is the publisher's or the package manager's word, held to no
-  repository, and a lockfile that can't be read records none rather than
-  stopping the build. First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
+  repository, and a lockfile that can't be read, save the one beside a
+  `node_modules` (above), records none rather than stopping the build.
+  First-party buckets carry none. Like the bundle's own `repo`, it is metadata:
   never written to the lockfile, never attested, and never checked against a
   dependency's `package.json` or another artifact's record. A run fills it in
   where a record has none, and a merge (`stasis add`, `--add`, `bundle = add`)

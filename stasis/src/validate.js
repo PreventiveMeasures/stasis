@@ -49,7 +49,7 @@ import { createVfs } from '@preventive/vfs'
 import { Lockfile } from '@exodus/stasis-core/lockfile'
 import { bundledIntegrity } from '@exodus/stasis-core/state-util'
 
-import { STORE_HASH, resolutionCommit } from './installed-commits.js'
+import { STORE_HASH, resolutionCommit } from './installed.js'
 import { findCargoLock } from './loaders/cargo.js'
 import { parseFileWithKind } from './parse.js'
 import { DIM, formatTable, painter } from './table.js'
@@ -880,7 +880,7 @@ function sha512Of(integrity) {
 const withoutBom = (text) => (text.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text)
 
 // Where a lockfile's entry of a version comes from: git (a git repository, or a git host's tarball,
-// installed-commits.js's resolutionCommit), with the GitHub repository, commit and path in it of its
+// installed.js's resolutionCommit), with the GitHub repository, commit and path in it of its
 // `resolution` where it names them (`at`), its `registry`, with its `integrity`, or elsewhere.
 function lockedFrom(git, registry, integrity, resolution) {
   if (!git) return registry ? { from: 'registry', integrity } : { from: 'elsewhere' }
