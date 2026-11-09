@@ -100,6 +100,8 @@ export class State {
   config
   root
   #parent
+  // The files of each record absorbed with ATTESTED_METADATA, by its dir, as it was absorbed.
+  #attestedFiles = new Map()
   #isPreload = false
   #host
   // The config's Policy (a sidecar's parent's), or null: checked on each artifact loaded and each path recorded.
@@ -346,14 +348,23 @@ export class State {
   // kept as recorded where no account tells (nothing installed, as where a bundle is run from).
   #holdToInstalled(label) {
     const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
+    this.#attestedFiles = new Map([...attested].map(([dir, module]) => [dir, new Set(Object.keys(module.files))]))
     for (const [dir, account] of this.#installed(attested) ?? []) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
   }
 
-  // Not what a lockfile alone locks, which says what an install would lay out, not what one did.
+  // Not what a lockfile alone locks, which says what an install would lay out, not what one did. What
+  // an artifact attests is of the files it recorded: of one this run adds, an install record alone tells.
   #recordInstalled() {
-    for (const [dir, account] of this.#installed(this.modules) ?? []) {
+    const accounts = this.#installed(this.modules) ?? new Map()
+    for (const [dir, account] of accounts) {
       const held = heldToAccount(this.modules.get(dir), account, `module '${dir}'`)
       if (account.installed !== false) this.modules.set(dir, held)
+    }
+    for (const [dir, files] of this.#attestedFiles) {
+      const module = this.modules.get(dir)
+      const added = accounts.get(dir)?.installed ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))
+      const fields = ATTESTED_METADATA.filter((field) => module[field] !== undefined).join(' and ')
+      assert(added === undefined, `module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds and no install record tells of: record it anew (lock = replace)`)
     }
   }
 

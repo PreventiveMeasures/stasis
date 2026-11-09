@@ -68,8 +68,9 @@ test('a dependency integrity and patch are validated on parse and on serialize, 
   }
 })
 
-test('merging bundles or lockfiles keeps a dependency integrity or patch either side records, never dropping one, and refuses two that differ', (t) => {
+test('merging bundles or lockfiles keeps a dependency integrity or patch one side records of the files both do, refuses one the other adds a file to, and two that differ', (t) => {
   const recorded = (hash, integrity) => ({ 'node_modules/dep': dep({ ...(hash && { patch: { integrity: patchIntegrity(hash) } }), ...(integrity && { integrity }) }) })
+  const more = { 'node_modules/dep': { ...dep(), files: { 'index.js': 'module.exports = 1\n', 'more.js': 'module.exports = 2\n' } } }
   for (const [label, of] of [['bundle', bundleOf], ['lockfile', lockOf]]) {
     const merged = (a, b) => of(a).merge(of(b)).modules.get('node_modules/dep')
     t.assert.deepStrictEqual({ ...merged(recorded(), recorded(HASH)).patch }, { integrity: patchIntegrity(HASH) }, `${label}: the one side's is the merged record's`)
@@ -79,6 +80,9 @@ test('merging bundles or lockfiles keeps a dependency integrity or patch either 
     t.assert.deepStrictEqual([merged(recorded(HASH, TARBALL), recorded(HASH, TARBALL)).integrity, { ...merged(recorded(HASH, TARBALL), recorded(HASH, TARBALL)).patch }], [TARBALL, { integrity: patchIntegrity(HASH) }], label)
     t.assert.throws(() => merged(recorded(HASH), recorded(OTHER)), /module 'node_modules\/dep' patch mismatch/u, label)
     t.assert.throws(() => merged(recorded(undefined, TARBALL), recorded(undefined, `sha512-${'B'.repeat(85)}A==`)), /module 'node_modules\/dep' integrity mismatch/u, label)
+    // Of a file only the side recording none has, nothing attests the value, whichever side it is.
+    t.assert.throws(() => merged(recorded(undefined, TARBALL), more), /module 'node_modules\/dep' integrity is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u, label)
+    t.assert.throws(() => merged(more, recorded(HASH)), /module 'node_modules\/dep' patch is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u, label)
   }
 })
 
@@ -111,14 +115,13 @@ test('a run holds a bundle\'s dependency integrity to its lockfile\'s, and write
   t.assert.doesNotThrow(() => new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' }))
   run({ bundle: 'ignore', lock: 'add' }).write()
   t.assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).modules['node_modules/dep'].integrity, TARBALL, 'kept: the run adds nothing to what it attests')
-  // A file the run adds to the record: what the lockfile records of its package stays, not dropped.
+  // A file the run adds to the record, which no install record tells of: its integrity, of the files
+  // it was recorded with, isn't of that one, nor is it dropped.
   writeFileSync(join(dir, 'node_modules', 'dep', 'more.js'), 'module.exports = 2\n')
   const more = run({ bundle: 'ignore', lock: 'add' })
   more.addFile(pathToFileURL(join(dir, 'node_modules', 'dep', 'more.js')).toString(), { format: 'commonjs' })
-  more.write()
-  const added = JSON.parse(readFileSync(lockPath, 'utf8')).modules['node_modules/dep']
-  t.assert.ok(Object.hasOwn(added.files, 'more.js'))
-  t.assert.equal(added.integrity, TARBALL, 'kept')
+  t.assert.throws(() => more.write(), /module 'node_modules\/dep': its integrity is recorded of the files it was read with, not of node_modules\/dep\/more\.js, which this run adds/u)
+  t.assert.ok(!Object.hasOwn(JSON.parse(readFileSync(lockPath, 'utf8')).modules['node_modules/dep'].files, 'more.js'), 'the lockfile left as it was')
   // What the bundle alone records, of a lockfile recording none, is the run's too, and written back.
   run({ bundle: 'replace', lock: 'replace' }).write()
   editBundle(TARBALL)

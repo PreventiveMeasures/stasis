@@ -15,6 +15,9 @@ the lockfile and the bundle record of how each npm package was installed (its
 `integrity` and `patch`) to that record, else to the lockfile beside its
 `node_modules`, one they name none of refused as another is, and records it,
 as `stasis bundle` reads it (see [`integrity`](file-formats.md#stasiscodebr)).
+A file a run adds to such a record must be of a package an install record
+tells of, else the run is refused: `stasis-core run`, which reads none, adds
+none.
 
 ```sh
 stasis run --lock=(add|replace|frozen|ignore) [--bundle=(add|replace|load|frozen|ignore)] [--bundle-file=path/to/bundle.br] [--resources-bundle-file=path/to/resources.br] [--dependencies] [--child-process] [--package-json] [--mock] [--import=module ...] [--fs=(sync|async)] [--resources=ext,ext] [--brotli-quality=0..11] path/to/file.js ...
