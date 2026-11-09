@@ -101,6 +101,18 @@ async function holding(held, fn) {
   }
 }
 
+// `{ value }`, `fn()`'s, or `{ error }`, what it throws, with `warnings`, what it warns (each
+// console.warn's arguments), held back rather than said: for the caller to say, or drop where it
+// tries again in its place. Within a round, what the caller says of them is held for the round.
+export async function warningsHeld(fn) {
+  const warnings = []
+  try {
+    return { value: await holding(warnings, fn), warnings }
+  } catch (error) {
+    return { error, warnings }
+  }
+}
+
 // `attempt(reads)`'s result, of the first round whose reads ask for no package (`reads.asked`), its
 // warnings given then; after each round that does, `unpack(reads.asked, reads.read)`, `reads.read`
 // those of them it read other than by a probe (lazyView). Each round asks for one package at least

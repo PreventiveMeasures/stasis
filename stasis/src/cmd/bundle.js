@@ -748,15 +748,21 @@ const listed = (items, line = (s) => s) => {
 // paths gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
 // `generated(u)` (vfs-bundle/prisma.js's generatedMiss) says why a miss of a file a generator would
 // write is missing: such a miss is fatal however it is imported, at load or at run time.
+// `typescript`: whether a fatal miss names the file --typescript resolves it to (Scan#typescriptCandidate).
 function analyzeScanner(scanner, { baseDir, generated }) {
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
   const fatal = []
   const tolerated = []
+  let typescript = false
   for (const u of scanner.unresolved) {
     const why = generated?.(u)
-    if (why === undefined && !(STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL))) tolerated.push(u)
-    else fatal.push(`unresolved ${describeUnresolved(u, show)}${why === undefined ? '' : `: ${why}`}`)
+    if (why === undefined && !(STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL))) {
+      tolerated.push(u)
+      continue
+    }
+    fatal.push(`unresolved ${describeUnresolved(u, show)}${why === undefined ? '' : `: ${why}`}`)
+    typescript ||= u.typescriptURL !== undefined
   }
   // A file the parser couldn't read cleanly, however it is reached: its edges are unknown (a module
   // file's are discarded) or partial (those of a script's recovered AST), never a graph to record.
@@ -772,16 +778,18 @@ function analyzeScanner(scanner, { baseDir, generated }) {
       }
     }
   }
-  return { fatal, tolerated }
+  return { fatal, tolerated, typescript }
 }
 
 // Throw on fatal scan issues; warn on tolerated ones. `label` tags the scan pass; `baseDir`
-// relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages.
-function reportScanIssues({ fatal, tolerated, leftOut = [] }, { label = '', baseDir, root = '' }) {
+// relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages. The
+// error thrown carries `resolvesUnderTypescript` where a fatal miss resolves under --typescript
+// (analyzeScanner's `typescript`), for a build of a Vfs to take it (buildFromLockfile).
+function reportScanIssues({ fatal, tolerated, typescript = false, leftOut = [] }, { label = '', baseDir, root = '' }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
   if (fatal.length > 0) {
-    throw new Error(`JS bundle would be broken at load time${where}:\n${listed(fatal)}`)
+    throw Object.assign(new Error(`JS bundle would be broken at load time${where}:\n${listed(fatal)}`), { resolvesUnderTypescript: typescript })
   }
   if (tolerated.length > 0) {
     const summary = listed(tolerated, (u) => describeUnresolved(u, show))
@@ -2411,7 +2419,9 @@ export function checkVfsOptions(name, options) {
 // tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js); without `generate`, those of
 // the projects the entries reach, silently, unless the stasis.config.json in cwd sets
 // `generatePrisma` false; `generate: []`, none. Whichever, an import of a file a generator would
-// write that isn't there fails the bundle, saying why, however it is reached. `client`, a
+// write that isn't there fails the bundle, saying why, however it is reached. A JS build without
+// `typescript` that an import --typescript resolves leaves broken at load is built with it, as the
+// repo's own build resolves it, nothing being built in a Vfs; one not broken, as without it. `client`, a
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
@@ -2573,7 +2583,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   }
   const laidOut = specs.length > 1 ? 'Laid out the trees' : specs[0].lazy ? 'Laid out the tree' : 'Installed the tree'
   const tree = await debugTimed(laidOut, () => layOutTrees({ project, specs, os, cpu, libc, client, cache, installDevDependencies, refuseInstalled }))
-  const { inRounds } = await import('../vfs-bundle/lazy.js')
+  const { inRounds, warningsHeld } = await import('../vfs-bundle/lazy.js')
   // The project the builds read: with the Prisma Clients `generate` writes, generated once before
   // any build, for a lazy tree in rounds of their own (they read the tree's `prisma`), so that each
   // of the build's rounds reads the same project, as what its scans keep across them takes it to.
@@ -2608,11 +2618,25 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const generated = expected.length === 0 ? undefined : prisma.generatedMiss(expected)
   // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
   // each reading into its `reads`, each build keeping what its scans read across them in a memo of
-  // its own.
-  const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
+  // its own, and one of its own built with --typescript (jsBuilt).
+  const memos = tree.unpack === undefined ? undefined : builds.map(() => ({ given: new Map(), typescript: new Map() }))
   const attempt = async (reads) => {
     const host = treeHost(tree, outside, reads)
     const args = { cwd, host, env }
+    // A JS build with its options. But of a Vfs, which holds the repo as checked out, nothing built,
+    // one without --typescript that a miss --typescript resolves leaves broken at load (reportScanIssues'
+    // resolvesUnderTypescript) is built with it in its place, as the project's own build resolves it
+    // (tsc, or a bundler resolving as tsc does): what the one it replaces warned unsaid, and what it
+    // throws thrown, those misses resolved. Any other build is the one its options give.
+    const jsBuilt = async (build, memo) => {
+      const js = (typescript, kept) => buildJs({ ...build, ...args, typescript, innermostRoot, extra: !bundleExtra, outputsAt, memo: kept, generated })
+      if (vfs === undefined || build.typescript) return js(build.typescript, memo?.given)
+      const given = await warningsHeld(() => js(false, memo?.given))
+      if (given.error?.resolvesUnderTypescript) return js(true, memo?.typescript)
+      for (const warning of given.warnings) console.warn(...warning)
+      if (given.error !== undefined) throw given.error
+      return given.value
+    }
     const builts = []
     // A build of a round that asked for a package already is void, whatever it threw: the builds
     // after it are run all the same, for all else they ask for, and the round is set aside after.
@@ -2623,7 +2647,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
       let built
       try {
         // eslint-disable-next-line no-await-in-loop -- one build at a time, in the order its warnings read
-        built = kinds[i] === 'sol' ? await solidityBuilt(build, args) : [await buildJs({ ...build, ...args, innermostRoot, extra: !bundleExtra, outputsAt, memo: memos?.[i], generated })]
+        built = kinds[i] === 'sol' ? await solidityBuilt(build, args) : [await jsBuilt(build, memos?.[i])]
       } catch (error) {
         if (reads === undefined || reads.asked.size === 0) throw error
         voided ??= { error }
