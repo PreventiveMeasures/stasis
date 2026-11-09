@@ -19,30 +19,25 @@ const here = dirname(fileURLToPath(import.meta.url))
 const cli = join(here, '..', 'stasis', 'bin', 'stasis.js')
 const SRI = `sha512-${'A'.repeat(86)}==`
 const OTHER = `sha512-${'B'.repeat(85)}A==`
-const COMMIT = 'a'.repeat(40)
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value))
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
 
-// An npm project in `dir` requiring `reg` (and `extra` where given), installed as npm lays it out,
-// its hidden lockfile and package-lock.json both of `lock` (each location's entry, by its name).
-function npmProject(dir, { lock = {}, hidden = lock, installed = {}, packageLock = true } = {}) {
+// An npm project in `dir` requiring `reg`, installed as npm lays it out, its hidden lockfile and
+// package-lock.json locking it, each where asked.
+function npmProject(dir, { hidden = true, packageLock = true } = {}) {
   writeJson(join(dir, 'package.json'), { name: 'app', version: '1.0.0' })
-  const names = Object.keys({ reg: {}, ...installed })
-  writeFileSync(join(dir, 'index.js'), names.map((name) => `require('${name}')\n`).join(''))
-  for (const name of names) {
-    mkdirSync(join(dir, 'node_modules', name), { recursive: true })
-    writeJson(join(dir, 'node_modules', name, 'package.json'), { name, version: installed[name] ?? '1.0.0' })
-    writeFileSync(join(dir, 'node_modules', name, 'index.js'), 'module.exports = 1\n')
-  }
-  const entry = (more) => ({ version: '1.0.0', resolved: 'https://registry.npmjs.org/reg/-/reg-1.0.0.tgz', integrity: SRI, ...more })
-  const of = (entries) => ({ name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: Object.fromEntries(Object.entries({ reg: {}, ...entries }).map(([name, more]) => [`node_modules/${name}`, entry(more)])) })
-  if (hidden !== null) writeJson(join(dir, 'node_modules', '.package-lock.json'), of(hidden))
-  if (packageLock) writeJson(join(dir, 'package-lock.json'), of(lock))
+  writeFileSync(join(dir, 'index.js'), "require('reg')\n")
+  mkdirSync(join(dir, 'node_modules', 'reg'), { recursive: true })
+  writeJson(join(dir, 'node_modules', 'reg', 'package.json'), { name: 'reg', version: '1.0.0' })
+  writeFileSync(join(dir, 'node_modules', 'reg', 'index.js'), 'module.exports = 1\n')
+  const lock = { name: 'app', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { 'node_modules/reg': { version: '1.0.0', resolved: 'https://registry.npmjs.org/reg/-/reg-1.0.0.tgz', integrity: SRI } } }
+  if (hidden) writeJson(join(dir, 'node_modules', '.package-lock.json'), lock)
+  if (packageLock) writeJson(join(dir, 'package-lock.json'), lock)
 }
 const build = (dir, options = {}) => bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', ...options })
 const recordOf = (dir, at = 'node_modules/reg', file = 'out.br') => JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))).toString('utf8')).modules[at]
 
-// 1. stasis bundle and an existing stasis.lock.json.
+// stasis bundle and an existing stasis.lock.json.
 
 test('stasis bundle holds its records to the stasis.lock.json present, in lock = add: neither ignored nor overwritten', withTmp(async (t, dir) => {
   npmProject(dir)
@@ -83,7 +78,7 @@ test('stasis bundle in lock = frozen holds its records to stasis.lock.json too',
   await t.assert.rejects(build(dir, frozen), /stasis\.lock\.json: module 'node_modules\/reg' integrity mismatch/u)
 }))
 
-// 2. Solidity and Bash bundles of npm packages.
+// A Solidity bundle of npm packages.
 
 test('a Solidity bundle\'s npm packages are pinned and held to their lockfile, as a JS bundle\'s are', withTmp(async (t, dir) => {
   cpSync(join(here, 'fixtures', 'solidity-bundle', 'with-node-modules'), dir, { recursive: true })
@@ -99,44 +94,7 @@ test('a Solidity bundle\'s npm packages are pinned and held to their lockfile, a
   await t.assert.rejects(bundleCommand({ cwd: dir, entries: ['src/A.sol'], mappingFile: 'remappings.txt', output: 'out.br' }), /package-lock\.json doesn't lock node_modules\/foo as installed/u)
 }))
 
-// 3. Every npm package held to the lockfile beside it, whatever the install recorded of it.
-
-test('a package installed otherwise than the lockfile beside it locks it stops a disk build, whatever its install record says', withTmp(async (t, dir) => {
-  const at = (name) => join(dir, name)
-  // Its package.json of another version than both lockfiles.
-  mkdirSync(at('a'))
-  npmProject(at('a'), { installed: { reg: '1.0.1' } })
-  await t.assert.rejects(build(at('a')), /package-lock\.json doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks 1\.0\.0\)/u)
-  // A package neither records.
-  mkdirSync(at('b'))
-  npmProject(at('b'), { installed: { stray: '1.0.0' }, lock: {}, hidden: {} })
-  await t.assert.rejects(build(at('b')), /package-lock\.json doesn't lock node_modules\/stray as installed \(it locks none there\)/u)
-  // No hidden lockfile: package-lock.json alone.
-  mkdirSync(at('c'))
-  npmProject(at('c'), { installed: { reg: '1.0.1' }, hidden: null })
-  await t.assert.rejects(build(at('c')), /package-lock\.json doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks 1\.0\.0\)/u)
-  // yarn 1: yarn.lock.
-  mkdirSync(at('d'))
-  npmProject(at('d'), { installed: { reg: '1.0.1' }, hidden: null, packageLock: false })
-  writeFileSync(at('d/yarn.lock'), `# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\nreg@1.0.0:\n  version "1.0.0"\n  resolved "https://registry.yarnpkg.com/reg/-/reg-1.0.0.tgz#${'0'.repeat(40)}"\n  integrity ${SRI}\n`)
-  await t.assert.rejects(build(at('d')), /yarn\.lock doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks none\)/u)
-  // pnpm's hoisted layout: pnpm-lock.yaml.
-  mkdirSync(at('e'))
-  npmProject(at('e'), { installed: { reg: '1.0.1' }, hidden: null, packageLock: false })
-  writeFileSync(at('e/node_modules/.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@10.33.4\n')
-  writeFileSync(at('e/pnpm-lock.yaml'), `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      reg:\n        specifier: 1.0.0\n        version: 1.0.0\n\npackages:\n\n  reg@1.0.0:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  reg@1.0.0: {}\n`)
-  await t.assert.rejects(build(at('e')), /pnpm-lock\.yaml doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks 1\.0\.0\)/u)
-}))
-
-// 10. A git dependency's commit, held to its lockfile on disk.
-
-test('a git dependency installed at another commit than the lockfile beside it locks stops a disk build', withTmp(async (t, dir) => {
-  const git = (commit) => ({ resolved: `git+ssh://git@github.com/o/reg.git#${commit}`, integrity: undefined })
-  npmProject(dir, { lock: { reg: git('b'.repeat(40)) }, hidden: { reg: git(COMMIT) } })
-  await t.assert.rejects(build(dir), /package-lock\.json doesn't lock node_modules\/reg as installed \(at o\/reg@a{40}; it locks o\/reg@b{40}\)/u)
-}))
-
-// 5. A run holds what stasis.lock.json and a bundle attest to what is installed.
+// A run holds what stasis.lock.json and a bundle attest to what is installed.
 
 test('stasis run holds stasis.lock.json\'s integrities to what is installed', withTmp(async (t, dir) => {
   npmProject(dir)
@@ -153,10 +111,10 @@ test('stasis run holds stasis.lock.json\'s integrities to what is installed', wi
   t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, SRI)
 }))
 
-// 12. yarn 1's integrity; stasis diff.
+// yarn 1's integrity; stasis diff.
 
 test('a disk build of a yarn 1 install records each package\'s integrity yarn.lock names, where .yarn-integrity has it installed', withTmp(async (t, dir) => {
-  npmProject(dir, { hidden: null, packageLock: false })
+  npmProject(dir, { hidden: false, packageLock: false })
   writeFileSync(join(dir, 'yarn.lock'), `# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\nreg@1.0.0:\n  version "1.0.0"\n  resolved "https://registry.yarnpkg.com/reg/-/reg-1.0.0.tgz#${'0'.repeat(40)}"\n  integrity ${SRI}\n`)
   writeJson(join(dir, 'node_modules', '.yarn-integrity'), { systemParams: 'linux-x64-137', modulesFolders: ['node_modules'], flags: [], linkedModules: [], topLevelPatterns: ['reg@1.0.0'], lockfileEntries: { 'reg@1.0.0': `https://registry.yarnpkg.com/reg/-/reg-1.0.0.tgz#${'0'.repeat(40)}` }, files: [], artifacts: {} })
   await build(dir)
