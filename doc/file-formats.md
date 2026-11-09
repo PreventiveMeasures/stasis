@@ -384,10 +384,11 @@ name, so a rule copied from one file to the other may not refuse the same files.
   replace)`). A build held to a lockfile, or an artifact validated against the
   one its repository commits, is merged into nothing: what it alone records
   stays a claim of its own files, whatever more the lockfile records. A run
-  takes what the bundle alone records only where the bundle holds every file
-  the lockfile records of the package, and records what an install names on
-  the records it makes, not on one it absorbed, whose other files it may not
-  have read. Each is held to how its package was installed too, wherever that
+  takes what its bundles alone record (a split bundle's halves and a
+  sidecar's, which must agree) only where between them they hold every file
+  the lockfile records of the package; taken or not, it is held to the
+  install. It records what an install names on the records it makes, not on
+  one it absorbed, whose other files it may not have read. Each is held to how its package was installed too, wherever that
   is told (see `integrity` under `stasis.code.br`). A
   dependency record may carry `vendored`, the packages copied into it, after
   `ecosystem`,
