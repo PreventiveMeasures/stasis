@@ -23,9 +23,8 @@
 // repository at the commit the repository's tree pins it at. Ecosystems upstream fetches no package
 // of by name and version alone (Composer's, a Soldeer zip, a crate from git), versions the lockfile
 // locks from another git host or from elsewhere than their registry, and versions it fails to fetch,
-// are left unverified, held to their lockfile all the same where it is read. A version the lockfile
-// doesn't lock, one recording an integrity it locks otherwise, or whose registry's tarball isn't the
-// one it locks, fails.
+// are left unverified. A version the lockfile doesn't lock, or whose registry's tarball isn't the one
+// it locks, fails.
 //
 // Stasis's empty stub for an import a package disables (EMPTY_MODULE_PATH) is no file of either, and
 // is allowed. A vendored crate's `.cargo-checksum.json`, which `cargo vendor` writes and no crate
@@ -883,7 +882,7 @@ export async function repositoryFiles(client, { github, commit, directory = '' }
 // The lockfiles validation reads, by their names, and the ecosystem each locks the packages of.
 const LOCKFILES = new Map([['pnpm-lock.yaml', 'npm'], ['npm-shrinkwrap.json', 'npm'], ['package-lock.json', 'npm'], ['yarn.lock', 'npm'], ['Cargo.lock', 'cargo'], ['composer.lock', 'composer'], ['soldeer.lock', 'soldeer']])
 // The lockfiles of ecosystems upstream fetches no package of: read where the bundle's directory holds
-// one, to hold what its packages record to.
+// one, to hold its packages' versions to.
 const BESIDE = new Map([['composer', 'composer.lock'], ['soldeer', 'soldeer.lock']])
 // crates.io's index, by the sources a Cargo.lock names it by.
 const CRATES_IO = new Set(['registry+https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io/'])
@@ -971,8 +970,7 @@ function readLockfile(name, read) {
     for (const pkg of Object.values(parseCargoLock(text).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.source?.startsWith('git+'), CRATES_IO.has(pkg.source), pkg.checksum))
     return { entries }
   }
-  // Composer's: a dist archive with its sha1 (`shasum`, none of GitHub's), else its git source; a
-  // path repository's is a directory's, elsewhere.
+  // Composer's: a dist archive, else its git source; a path repository's is a directory's, elsewhere.
   if (name === 'composer.lock') {
     for (const pkg of Object.values(parseComposerLock(text, {}).packages)) {
       const git = pkg.dist == null && pkg.source?.type === 'git'
@@ -980,11 +978,9 @@ function readLockfile(name, read) {
     }
     return { entries }
   }
-  // Soldeer's: a zip with its sha256 (`checksum`), or a git repository at its `rev`.
+  // Soldeer's: a zip, or a git repository at its `rev`.
   if (name === 'soldeer.lock') {
-    for (const dep of Object.values(parseSoldeerLockfile(text).dependencies)) {
-      add(dep.name, dep.version, lockedFrom(dep.type === 'git', true, archiveIntegrity('soldeer', dep.checksum), dep.type === 'git' ? { type: 'git', repo: dep.git, commit: dep.rev } : undefined))
-    }
+    for (const dep of Object.values(parseSoldeerLockfile(text).dependencies)) add(dep.name, dep.version, lockedFrom(dep.type === 'git', true, archiveIntegrity('soldeer', dep.checksum), dep.type === 'git' ? { type: 'git', repo: dep.git, commit: dep.rev } : undefined))
     return { entries }
   }
   let packages

@@ -107,11 +107,8 @@ mode the project's runs take (`EXODUS_STASIS_LOCK`, or `frozen` where its
 
 Under `--add`, the bundle already there is held to it too.
 
-An `integrity` or `patch` the lockfile there records of a dependency (`add`,
-`frozen`), or the bundle `--add` adds to, is held to how that package was
-installed, as its install record, else the lockfile beside its `node_modules`,
-tells: one recorded otherwise, or that the install names none of, stops the
-build; where nothing tells, it is kept, the build's own (see
+What it, or the bundle `--add` adds to, records of a dependency's `integrity`
+and `patch` is held to how that package was installed (see
 [`integrity`](file-formats.md#stasiscodebr)).
 
 `--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
