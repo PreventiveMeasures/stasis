@@ -1464,6 +1464,17 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   writeBundle(file, bundle)
   const report = await validate(file, { client: repoClient(files), fetch: upstream() })
   t.assert.deepStrictEqual([report.status, report.stasisLockfile], ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: content mismatch for 'node_modules/ms/index.js'" }])
+  // One recording an execute bit the bundle doesn't: as stasis bundle holds a build, refused too.
+  files['web/stasis.lock.json'] = Lockfile.fromBundle(new Bundle({ entries: new Set(['src/main.js']), modules: modules(), executable: new Set(['src/main.js']) }), sha512).serialize()
+  const exec = await validate(file, { client: repoClient(files), fetch: upstream() })
+  t.assert.deepStrictEqual([exec.status, exec.stasisLockfile], ['invalid', { path: 'web/stasis.lock.json', error: "web/stasis.lock.json: src/main.js's execute bit differs" }])
+  // Its directory unlisted (own code alone, of no lockfile to find): failed, not passed over.
+  const ownOnly = join(tmp, 'own.stasis.code.br')
+  writeBundle(ownOnly, new Bundle({ repo: { github: 'org/repo', directory: 'web', commit }, modules: new Map([modules().entries().next().value]) }))
+  const unlisted = repoClient(files)
+  const list = unlisted.listRepoDir.bind(unlisted)
+  unlisted.listRepoDir = async (options) => (options.directory === 'web' ? Promise.reject(new HttpError(500, 'GET contents/web 500')) : list(options))
+  await t.assert.rejects(validate(ownOnly, { client: unlisted, fetch: upstream() }), /GET contents\/web 500/u)
 
   // The lockfile alone: each file of it held to its package's by its integrity, and its own code to the
   // repository's, which commits it alone.

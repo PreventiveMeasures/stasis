@@ -1579,12 +1579,17 @@ const gitReader = (client) => client && (async ({ github, commit, path }) => {
 // The stasis.lock.json the repository commits in `directory`, where it does (`list` and `read`, as
 // validateRepository reads its files), `{ path }`, with what `attested()` (the validated artifact's
 // lockfile) contradicts of it (`error`): held as `stasis bundle` holds a build to it (lock = add),
-// what both record agrees.
+// what both record agrees, execute bits too (Lockfile.mergeAgreeing). A directory the repository
+// hasn't commits none; one that couldn't be listed fails the validation, as its tree unread does.
 async function heldToCommitted(attested, directory, list, read) {
-  if (!(await list(directory).catch(() => [])).includes('stasis.lock.json')) return undefined
+  const listed = await list(directory).catch((error) => {
+    if (error instanceof HttpError && error.status === 404) return []
+    throw error
+  })
+  if (!listed.includes('stasis.lock.json')) return undefined
   const path = pathIn(directory, 'stasis.lock.json')
   try {
-    Lockfile.parse(await read(path)).merge(attested(), path)
+    Lockfile.parse(await read(path)).mergeAgreeing(attested(), path)
     return { path }
   } catch (error) {
     return { path, error: error.message }
