@@ -37,8 +37,10 @@ import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
 import { HttpError, getTarball } from '@preventive/upstream/npm.js'
 import { parseCargoChecksum, parseCargoLock } from '@preventive/lockfile/cargo.js'
+import { parseComposerLock } from '@preventive/lockfile/composer.js'
 import { parseNpmLockfile } from '@preventive/lockfile/npm.js'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
+import { parseSoldeerLockfile } from '@preventive/lockfile/soldeer.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 import { createVfs } from '@preventive/vfs'
 
@@ -597,7 +599,8 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       unverified(reason, 'invalid')
     }
     if (!pkg.name || !pkg.version) return unverified('unnamed')
-    if (!FETCHED.has(pkg.ecosystem)) return unverified('unsupported')
+    // Unfetched: held to its lockfile alone, where one is read (composer.lock, soldeer.lock).
+    if (!FETCHED.has(pkg.ecosystem)) return locked?.lock?.(pkg.ecosystem, pkg.name, pkg.version) === null ? fails('not-locked') : unverified('unsupported')
     // Each copy where Node resolves it by its path (a crate by its Cargo.toml alone, wherever it is):
     // the version failing where any is installed where another is; those installed under another
     // name no lockfile read tells of left unverified, the others checked all the same.
@@ -804,7 +807,10 @@ export async function repositoryFiles(client, { github, commit, directory = '' }
 }
 
 // The lockfiles validation reads, by their names, and the ecosystem each locks the packages of.
-const LOCKFILES = new Map([['pnpm-lock.yaml', 'npm'], ['npm-shrinkwrap.json', 'npm'], ['package-lock.json', 'npm'], ['yarn.lock', 'npm'], ['Cargo.lock', 'cargo']])
+const LOCKFILES = new Map([['pnpm-lock.yaml', 'npm'], ['npm-shrinkwrap.json', 'npm'], ['package-lock.json', 'npm'], ['yarn.lock', 'npm'], ['Cargo.lock', 'cargo'], ['composer.lock', 'composer'], ['soldeer.lock', 'soldeer']])
+// The lockfiles of ecosystems upstream fetches no package of: read where the bundle's directory holds
+// one, to hold its packages' versions to.
+const BESIDE = new Map([['composer', 'composer.lock'], ['soldeer', 'soldeer.lock']])
 // crates.io's index, by the sources a Cargo.lock names it by.
 const CRATES_IO = new Set(['registry+https://github.com/rust-lang/crates.io-index', 'sparse+https://index.crates.io/'])
 
@@ -889,6 +895,16 @@ function readLockfile(name, read) {
   }
   if (name === 'Cargo.lock') {
     for (const pkg of Object.values(parseCargoLock(text).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.source?.startsWith('git+'), CRATES_IO.has(pkg.source), pkg.checksum))
+    return { entries }
+  }
+  // Composer's: a dist archive, else its git source; a path repository's is a directory's, elsewhere.
+  if (name === 'composer.lock') {
+    for (const pkg of Object.values(parseComposerLock(text, {}).packages)) add(pkg.name, pkg.version, lockedFrom(pkg.dist == null && pkg.source?.type === 'git', pkg.dist != null && pkg.dist.type !== 'path'))
+    return { entries }
+  }
+  // Soldeer's: a zip, or a git repository at its `rev`.
+  if (name === 'soldeer.lock') {
+    for (const dep of Object.values(parseSoldeerLockfile(text).dependencies)) add(dep.name, dep.version, lockedFrom(dep.type === 'git', true))
     return { entries }
   }
   let packages
@@ -1079,6 +1095,14 @@ export async function configuredLockfiles({ directory = '', list, read }) {
     if (at === '..' || at.startsWith('../')) throw new ValidateError('lockfile-unreadable', `${path}: lockfiles names ${one}, which is outside the repository`)
     return at
   })
+}
+
+// Of `names` (BESIDE's), those `directory` of a repository holds, as lockedBy takes them (but `from`
+// and `read`).
+async function besideLockfiles({ directory, names, list, read }) {
+  if (names.length === 0) return []
+  const listed = await list(directory)
+  return Promise.all(names.filter((name) => listed.includes(name)).map(async (name) => ({ path: pathIn(directory, name), text: await read(pathIn(directory, name)) })))
 }
 
 // The lockfiles that install `directory` of a repository, for the packages of `ecosystems`, as
@@ -1334,6 +1358,9 @@ function listedEntries(listed, dir = '') {
 export async function validateRepository(plan, { repository = null, commit, directory = '' }, { own = true, lockfile = true, listTree, strict = true, fetch, deadline, generated } = {}) {
   const ecosystems = fetchedEcosystems(plan)
   const fromRepository = lockfile === true && ecosystems.size > 0
+  // BESIDE's, read where the repository is, at a commit of its history: none is required.
+  const beside = [...new Set(plan.packages.map((pkg) => BESIDE.get(pkg.ecosystem)).filter(Boolean))]
+  const readsBeside = lockfile === true && beside.length > 0 && repository !== null && commit !== undefined
   const github = repository?.name()
   const told = (error) => {
     if (strict || !(error instanceof ValidateError)) throw error
@@ -1346,7 +1373,7 @@ export async function validateRepository(plan, { repository = null, commit, dire
       throw new ValidateError(code, `no ${what}: ${own ? 'its own code' : 'its lockfile'} is read of the repository`)
     }
     // Read at a commit of its own history alone: GitHub serves a commit of any fork of it through its name too.
-    ref = repository && commit !== undefined && (own || fromRepository || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
+    ref = repository && commit !== undefined && (own || fromRepository || readsBeside || plan.patches.size > 0) ? await historyOf(repository, commit, { deadline }) : undefined
     if (ref === null) {
       throw new ValidateError('commit-not-in-history', `${commit} is in the history of no branch or tag of ${repository.name()} (a fork's, say, which GitHub serves through its name too): give --sha= a commit of its own`)
     }
@@ -1429,9 +1456,10 @@ export async function validateRepository(plan, { repository = null, commit, dire
     patches: [...new Set([...besides, pathIn(directory, 'patches'), 'patches'])],
   })
   try {
-    // Where its stasis.config.json names its `lockfiles`, those validate reads (npm's, pnpm's, yarn's,
-    // cargo's), none found; a soldeer.lock, whose packages none is held to, passed over.
-    const configured = lockfile === true && ecosystems.size > 0 ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
+    // Where its stasis.config.json names its `lockfiles`, those validate reads, none found; else the one
+    // found of each ecosystem fetched, and BESIDE's.
+    const needed = lockfile === true ? fromRepository || readsBeside : ecosystems.size > 0 || beside.length > 0
+    const configured = lockfile === true && needed ? await configuredLockfiles({ directory, list, read: readRepository }) : undefined
     const readOf = async (path) => {
       try {
         return await readRepository(path)
@@ -1439,10 +1467,13 @@ export async function validateRepository(plan, { repository = null, commit, dire
         throw new ValidateError('lockfile-unreadable', `${path}: ${error.message}`)
       }
     }
-    const files = lockfile === false ? null : ecosystems.size === 0 ? [] : lockfile !== true ? lockfile
+    const files = lockfile === false ? null : !needed ? [] : lockfile !== true ? lockfile
       : configured !== undefined
         ? await Promise.all(configured.filter((path) => LOCKFILES.has(posix.basename(path))).map(async (path) => ({ path, text: await readOf(path), ...ofRepository(path, [pathIn(posix.dirname(path) === '.' ? '' : posix.dirname(path), 'patches')]) })))
-        : (await repositoryLockfiles({ directory, ecosystems, list, read: readRepository })).map((one) => ({ ...one, ...ofRepository(one.path) }))
+        : [
+          ...ecosystems.size > 0 ? await repositoryLockfiles({ directory, ecosystems, list, read: readRepository }) : [],
+          ...readsBeside ? await besideLockfiles({ directory, names: beside, list, read: readRepository }) : [],
+        ].map((one) => ({ ...one, ...ofRepository(one.path) }))
     const held = files && lockedBy(files)
     for (const ecosystem of held ? ecosystems : []) {
       if (held.locks(ecosystem)) continue
