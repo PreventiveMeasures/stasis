@@ -389,8 +389,8 @@ export class Scan {
   }
 
   // Where a miss of `spec` from `parentFile` would have landed (vfs-bundle/prisma.js's generatedMiss matches
-  // them to generator outputs): a relative or absolute path's file; the file a package's `exports`, `imports`
-  // or `main` named (`target`, the resolver's error's), or what a custom resolver tried (its missTargets: a
+  // them to generator outputs): a relative or absolute path's file; the file a package's `exports`, `imports`,
+  // `main` or subpath named (`target`, the resolver's error's), or what a custom resolver tried (its missTargets: a
   // `browser` field's redirect, say); and under --typescript, where a tsconfig alias points (without it, an
   // alias is never resolved at all, a miss of another kind).
   #missTargets(parentFile, spec, target) {

@@ -290,7 +290,9 @@ export function createNodeResolver(host) {
     for (const index of ['./index.js', './index.json', './index.node']) {
       if (fileExists(guess = new URL(index, packageJSONUrl))) return guess
     }
-    throw codedError('ERR_MODULE_NOT_FOUND', `Cannot find package '${fileURLToPath(new URL('.', packageJSONUrl))}' imported from ${fileURLToPath(base)}`)
+    // `target`: the file `main` names, which isn't there (viaEsm keeps it).
+    const target = packageConfig.main === undefined ? {} : { target: fileURLToPath(new URL(`./${packageConfig.main}`, packageJSONUrl)) }
+    throw Object.assign(codedError('ERR_MODULE_NOT_FOUND', `Cannot find package '${fileURLToPath(new URL('.', packageJSONUrl))}' imported from ${fileURLToPath(base)}`), target)
   }
 
   // ESM-style bare resolution, reached only through a bare `imports` target (`"#x": "dep"`).
@@ -330,7 +332,7 @@ export function createNodeResolver(host) {
     try {
       resolved = resolveUrl()
     } catch (e) {
-      if (e.code === 'ERR_MODULE_NOT_FOUND') throw createEsmNotFoundErr(request, errPath)
+      if (e.code === 'ERR_MODULE_NOT_FOUND') throw Object.assign(createEsmNotFoundErr(request, errPath), e.target === undefined ? {} : { target: e.target })
       throw e
     }
     if (resolved.protocol === 'node:') throw codedError('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file')
@@ -391,6 +393,13 @@ export function createNodeResolver(host) {
   }
 
   const notFound = (request, parentFile) => Object.assign(codedError('MODULE_NOT_FOUND', `Cannot find module '${request}'\nRequire stack:\n- ${parentFile}`), { requireStack: [parentFile] })
+  // `target`, for a bare request that misses a package without `exports`: the file it names in the nearest package
+  // of that name, which isn't there (with `exports`, viaEsm's; a missing `main`, tryPackage's).
+  const packageMiss = (request, paths) => {
+    const name = !RELATIVE_LOOKUP.test(request) && !isAbsolute(request) && EXPORTS_PATTERN.exec(request)?.[1]
+    const at = name ? paths.find((curPath) => stat(resolve(curPath, name)) === 1) : undefined
+    return at === undefined ? {} : { target: resolve(at, request) }
+  }
 
   // Module._resolveFilename: -> the file's real path, or a builtin's id. Without `builtins`, a
   // request naming a builtin is looked up like any bare name (see resolve).
@@ -404,7 +413,7 @@ export function createNodeResolver(host) {
     const paths = RELATIVE_LOOKUP.test(request) ? [dirname(parentFile)] : Module._nodeModulePaths(dirname(parentFile))
     const hit = trySelf(parentFile, request, conditions) || findPath(request, paths, conditions)
     if (hit) return hit
-    throw notFound(request, parentFile)
+    throw Object.assign(notFound(request, parentFile), packageMiss(request, paths))
   }
 
   // Node's Module._pathCache: the tree is immutable for the build.

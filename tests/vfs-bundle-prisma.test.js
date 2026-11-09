@@ -245,6 +245,11 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   const redirecting = { ...exporting, exports: undefined, main: './src/index.ts', browser: { './src/optional.js': './src/generated/pothos-types.ts' } }
   await t.assert.rejects(build(project(withPothos({ index: `${CLIENT_EXPORT}export const load = () => import('./optional.js')\n`, files: { 'packages/b/package.json': json(redirecting) } })), { cwd: '/', entries: ['packages/b/src/index.ts'], mainFields: ['browser', 'module', 'main'] }),
     { message: broken('./optional.js', 'packages/b/src/index.ts').message.replace('load time:', 'load time (mainFields):') })
+  // A subpath of a package without `exports`, b's, by default and under --mainFields.
+  const plain = { files: { 'packages/b/package.json': json({ ...exporting, exports: undefined, main: './src/index.ts' }), 'packages/a/index.ts': "export const load = () => import('b/src/generated/pothos-types.ts')\n" } }
+  await t.assert.rejects(build(project(withPothos(plain))), broken('b/src/generated/pothos-types.ts', 'index.ts'))
+  await t.assert.rejects(build(project(withPothos(plain)), { cwd: '/', entries: ['packages/a/index.ts'], mainFields: ['module', 'main'] }),
+    { message: broken('b/src/generated/pothos-types.ts', 'packages/a/index.ts').message.replace('load time:', 'load time (mainFields):') })
   // And through a package's `main`, which a import()s.
   const mained = { ...exporting, exports: undefined, main: './src/generated/pothos-types.ts' }
   await t.assert.rejects(build(project(withPothos({ files: { 'packages/b/package.json': json(mained), 'packages/a/index.ts': "export const load = () => import('b')\n" } })), { cwd: '/', entries: ['packages/a/index.ts'], mainFields: ['module', 'main'] }),

@@ -426,7 +426,8 @@ JS bundle would be broken at load time:
 ```
 
 That is an import whose resolution lands in a generator's `output` (by a
-relative or absolute path, a package's `exports`, `imports` or `main`, under
+relative or absolute path, a package's `exports`, `imports` or `main` (or a
+subpath of one without `exports`), under
 `--mainFields` a `browser` or `react-native` field's redirect, or under
 `--typescript` a `tsconfig.json` `paths` alias), or one into the output a
 generator writes with none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client`
