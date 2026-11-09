@@ -6812,6 +6812,20 @@ test('bundleCommand --add refuses to replace a lockfile rooted above the root it
   t.assert.ok(!existsSync(join(cwd, 'stasis.code.br')), 'no bundle is written apart')
 }))
 
+test('bundleCommand warns where it writes a stasis file in a package below its root, which roots stasis there', withTmp(async (t, tmp) => {
+  const cwd = nestedPackageTree(tmp)
+  const rootsIt = (file) => `[stasis] ${file} roots stasis run and stasis bundle in the package at ., but its paths are relative to ..: write it at ../${file}`
+  const warned = (warnings) => warnings.filter((warning) => warning.includes(' roots stasis run '))
+  // Rooted at `top`, both written in `top/npm`, which each roots in turn.
+  const nested = await captureWarningsAsync(() => bundleCommand({ cwd, entries: ['index.js'], output: 'stasis.code.br', lockfile: 'stasis.lock.json' }))
+  t.assert.deepStrictEqual(warned(nested.warnings), [rootsIt('stasis.code.br'), rootsIt('stasis.lock.json')])
+
+  // Written at the root, they root nothing else.
+  for (const file of ['stasis.code.br', 'stasis.lock.json']) rmSync(join(cwd, file))
+  const atRoot = await captureWarningsAsync(() => bundleCommand({ cwd, entries: ['index.js'], lockfile: '../stasis.lock.json' }))
+  t.assert.deepStrictEqual(warned(atRoot.warnings), [])
+}))
+
 // --package-json / packageJSON: fold each bundled module's package.json into the bundle even when
 // the scan never reached it (config option, mirrored by the `--package-json` CLI flag). JS-only.
 test('buildBundle (plain JS) with packageJSON includes each bundled module package.json', withTmp(async (t, tmp) => {

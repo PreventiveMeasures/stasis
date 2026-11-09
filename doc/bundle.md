@@ -75,6 +75,12 @@ package nested below its root leaves such a pair, as that file roots the next
 build at the package (see [discovery](file-formats.md#discovery)). Rebuild
 without `--add`, which roots them where the build is.
 
+`stasis bundle` warns when it writes a `stasis.lock.json` or `stasis.code.br`
+in a package nested below its root: that file roots each later `stasis run`
+and `stasis bundle` in the package at the package, while its paths are
+relative to the build's root, so a `stasis run --lock=frozen` there finds none
+of its files. The warning names the path at the root to write it at instead.
+
 ## Companion lockfile (`--lockfile`)
 
 `--lockfile=stasis.lock.json` also writes a lockfile attesting every bundled

@@ -2838,6 +2838,21 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
   } else {
     console.warn(bundledSummary(files.length, modules, fromDir, dest))
   }
+  for (const file of [lockfileOnly ? undefined : outAbs, lockData ? lockAbs : undefined]) {
+    const warning = file === undefined ? null : nestedRootWarning(file, root, cwd)
+    if (warning !== null) console.warn(warning)
+  }
+}
+
+// The warning that `file`, a stasis file (STASIS_ROOT_FILES) the build rooted at `root` wrote in a
+// package below it, roots each stasis run and stasis bundle in that package there (see discovery),
+// though its paths are relative to `root`: a --lockfile=stasis.lock.json given in a nested package,
+// say. null where it roots nothing but `root`. Paths are shown from `cwd`.
+function nestedRootWarning(file, root, cwd) {
+  const dir = dirname(file)
+  if (!STASIS_ROOT_FILES.includes(basename(file)) || dir === root || !isPathWithin(root, dir) || diskHost.stat(join(dir, 'package.json')) === null) return null
+  const shown = (path) => relative(resolve(cwd), path) || '.'
+  return `[stasis] ${shown(file)} roots stasis run and stasis bundle in the package at ${shown(dir)}, but its paths are relative to ${shown(root)}: write it at ${shown(join(root, basename(file)))}`
 }
 
 // The lockfile `built()` gives held to the one `lockfile` names, else its project's, by the lock mode
