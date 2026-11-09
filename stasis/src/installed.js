@@ -55,24 +55,34 @@ const npmCommit = (resolved) => {
 // A lockfile of `file` beside an install record, which can't be read.
 const unreadable = (file, cause) => new Error(`${file}: ${cause?.message ?? 'not a lockfile'}`, { cause })
 
+// The text of `file`, without the byte order mark npm, pnpm and yarn read past: null where there is
+// none, or, unless `strict`, where it can't be read.
+function lockText(file, host, strict) {
+  const text = readText(host, file)
+  if (text === null && strict && host.stat(file) !== null) throw new Error(`${file}: can't be read`)
+  return text?.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text
+}
+
 // The name a package is installed as at `location`, the last of it.
 const nameAt = (location) => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length)
 
 // What a lockfile locks of each package, `{ version, repo }`, by its name and version (an id): of two
-// entries of one id that differ, either may be the one installed, so its version alone.
+// entries of one id that differ, either may be the one installed, so its version alone. Of the
+// package installed at `location` by its own `name` (an alias's, `helmet: npm:ms@2.1.3`), else the
+// name it is installed as.
 function byId(entries) {
   const records = new Map()
   for (const [id, record] of entries) {
     const known = records.get(id)
     records.set(id, known === undefined || JSON.stringify(known) === JSON.stringify(record) ? record : { version: record.version })
   }
-  return (location, version) => records.get(`${nameAt(location)}@${version}`)
+  return (location, version, name) => (name === undefined ? undefined : records.get(`${name}@${version}`)) ?? records.get(`${nameAt(location)}@${version}`)
 }
 
 // npm's lockfile `file`, what it locks at each location from its directory: undefined where there is
 // none, or, unless `strict`, where it can't be read.
 function npmLocks(file, host, strict) {
-  const text = readText(host, file)
+  const text = lockText(file, host, strict)
   if (text === null) return undefined
   let packages
   try {
@@ -96,7 +106,7 @@ const resolutionOf = (resolution) => (resolution?.type === 'git' ? `${resolution
 // yarn.lock `file`'s entries by id, with their patterns: undefined where there is none, or, unless
 // `strict`, where it can't be read.
 function yarnEntries(file, host, strict) {
-  const text = readText(host, file)
+  const text = lockText(file, host, strict)
   if (text === null) return undefined
   try {
     return [...new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages))].map(({ patterns, name, version, resolution }) => ({
@@ -129,7 +139,7 @@ export const STORE_HASH = /_[\da-f]{32}$/u
 // resolution is the repository and commit, or GitHub's tarball of the commit, and the package's
 // `path` in it (`#path:`) where it is not at the root.
 function pnpmLocks(file, host, strict) {
-  const text = readText(host, file)
+  const text = lockText(file, host, strict)
   if (text === null) return undefined
   let packages
   try {
@@ -291,8 +301,8 @@ export function pinInstalled(bundle, root, host = diskHost) {
       while (layoutAt(from) === null && from !== top) from = dirname(from)
       const { installed, lockfile, locks, none } = layoutAt(from) ?? { installed: NONE }
       const location = toPosix(relative(from, real))
-      record = installed(location, info.version)
-      if (locks) holdToLockfile(lockfile, dir, info.version, record, locks(location, info.version), none)
+      record = installed(location, info.version, info.name)
+      if (locks) holdToLockfile(lockfile, dir, info.version, record, locks(location, info.version, info.name), none)
     }
     if (record?.repo) bundle.modules.set(dir, { ...info, repo: record.repo })
   }

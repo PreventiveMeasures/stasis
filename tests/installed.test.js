@@ -365,6 +365,24 @@ test('a package installed otherwise than the lockfile beside it locks it stops a
   await t.assert.rejects(build(at('f')), new RegExp(`package-lock\\.json doesn't lock node_modules/reg as installed \\(at o/reg@${SHA.dep}; it locks o/reg@${SHA.fork}\\)`, 'u'))
 }))
 
+test("a disk build holds an alias by its package's own name, reads past a lockfile's byte order mark, and stops at one that can't be read", withTmp(async (t, dir) => {
+  const at = (...parts) => join(dir, ...parts)
+  // pnpm, hoisted: helmet, an alias of ms@2.1.3.
+  mkdirSync(at('a'))
+  writeProject(at('a'), ['helmet'])
+  writePackage(at('a'), 'node_modules/helmet', { name: 'ms', version: '2.1.3' })
+  writeFileSync(at('a/node_modules/.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@10.33.4\n')
+  writeFileSync(at('a/pnpm-lock.yaml'), `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`)
+  await build(at('a'))
+  // npm: a package-lock.json starting with a byte order mark, then one that can't be read.
+  npmProject(at('b'))
+  writeFileSync(at('b/package-lock.json'), `\uFEFF${readFileSync(at('b/package-lock.json'), 'utf8')}`)
+  await build(at('b'))
+  rmSync(at('b/package-lock.json'))
+  mkdirSync(at('b/package-lock.json'))
+  await t.assert.rejects(build(at('b')), /package-lock\.json: can't be read$/u)
+}))
+
 test("pnpm, hoisted: its copy of the lockfile names a git dependency's repository and commit, by its name and version, held to pnpm-lock.yaml", withTmp(async (t, dir) => {
   writeProject(dir, ['dep'])
   writePackage(dir, 'node_modules/dep', { name: 'dep', repository: 'github:o/elsewhere' })
