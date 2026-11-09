@@ -66,17 +66,18 @@ function lockText(file, host, strict) {
 // The name a package is installed as at `location`, the last of it.
 const nameAt = (location) => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length)
 
-// What a lockfile locks of each package, `{ version, repo }`, by its name and version (an id): of two
-// entries of one id that differ, either may be the one installed, so its version alone. Of the
-// package installed at `location` by its own `name` (an alias's, `helmet: npm:ms@2.1.3`), else the
-// name it is installed as.
+// What a lockfile locks of each package, `{ version, repo }`, by its name and version (an id), or its
+// name alone (`name@`, a directory's, of no version): of two entries of one id that differ, either may
+// be the one installed, so its version alone. Of the package installed at `location` by its own
+// `name` (an alias's, `helmet: npm:ms@2.1.3`), else the name it is installed as.
 function byId(entries) {
   const records = new Map()
   for (const [id, record] of entries) {
     const known = records.get(id)
     records.set(id, known === undefined || JSON.stringify(known) === JSON.stringify(record) ? record : { version: record.version })
   }
-  return (location, version, name) => (name === undefined ? undefined : records.get(`${name}@${version}`)) ?? records.get(`${nameAt(location)}@${version}`)
+  const find = (name, version) => records.get(`${name}@${version}`) ?? records.get(`${name}@`)
+  return (location, version, name) => (name === undefined ? undefined : find(name, version)) ?? find(nameAt(location), version)
 }
 
 // npm's lockfile `file`, what it locks at each location from its directory: undefined where there is
@@ -141,21 +142,36 @@ export const STORE_HASH = /_[\da-f]{32}$/u
 function pnpmLocks(file, host, strict) {
   const text = lockText(file, host, strict)
   if (text === null) return undefined
-  let packages
+  let lockfile
   try {
-    packages = parsePnpmLockfile(text).lockfile?.packages
+    ;({ lockfile } = parsePnpmLockfile(text))
   } catch (cause) {
     if (strict) throw unreadable(file, cause)
     return undefined
   }
   const stored = new Map()
+  const keyed = new Map()
   const ids = []
-  for (const [key, { name, version, resolution }] of Object.entries(packages ?? {})) {
+  for (const [key, { name, version, resolution }] of Object.entries(lockfile?.packages ?? {})) {
     const record = { version, repo: repoAt(resolutionCommit(resolution), resolution?.path) }
     for (const store of storeNames(key)) stored.set(store, record)
-    ids.push([`${name}@${version}`, record])
+    keyed.set(key, record)
+    ids.push([`${name}@${version ?? ''}`, record])
   }
-  return { stored: (name) => stored.get(name) ?? stored.get(STORE_HASH.exec(name)?.[0]), named: byId(ids) }
+  // What the importers install at a top-level location, by the name it is installed as: an alias's
+  // or an override's (`ms: ms-fork@file:local-ms`) too; none where two install different ones.
+  const top = new Map()
+  for (const importer of Object.values(lockfile?.importers ?? {})) {
+    for (const [as, key] of [importer.dependencies, importer.devDependencies, importer.optionalDependencies].flatMap((deps) => Object.entries(deps ?? {}))) {
+      const record = keyed.get(key)
+      if (record) top.set(as, top.has(as) && top.get(as) !== record ? undefined : record)
+    }
+  }
+  const named = byId(ids)
+  return {
+    stored: (name) => stored.get(name) ?? stored.get(STORE_HASH.exec(name)?.[0]),
+    named: (location, ...of) => (location === `node_modules/${nameAt(location)}` ? top.get(nameAt(location)) : undefined) ?? named(location, ...of),
+  }
 }
 
 // Each package manager that lays out a node_modules: the record it leaves there of what it installed

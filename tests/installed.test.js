@@ -358,7 +358,7 @@ test('a package installed otherwise than the lockfile beside it locks it stops a
   npmProject(at('e'), { installed: { reg: '1.0.1' }, hidden: null, packageLock: false })
   writeFileSync(at('e/node_modules/.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@10.33.4\n')
   writeFileSync(at('e/pnpm-lock.yaml'), `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      reg:\n        specifier: 1.0.0\n        version: 1.0.0\n\npackages:\n\n  reg@1.0.0:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  reg@1.0.0: {}\n`)
-  await t.assert.rejects(build(at('e')), /pnpm-lock\.yaml doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks none\)/u)
+  await t.assert.rejects(build(at('e')), /pnpm-lock\.yaml doesn't lock node_modules\/reg as installed \(1\.0\.1; it locks 1\.0\.0\)/u)
   // A git dependency installed at another commit than it locks.
   const git = (commit) => ({ resolved: `git+ssh://git@github.com/o/reg.git#${commit}` })
   npmProject(at('f'), { lock: { reg: git(SHA.fork) }, hidden: { reg: git(SHA.dep) } })
@@ -374,6 +374,19 @@ test("a disk build holds an alias by its package's own name, reads past a lockfi
   writeFileSync(at('a/node_modules/.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@10.33.4\n')
   writeFileSync(at('a/pnpm-lock.yaml'), `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      helmet:\n        specifier: npm:ms@2.1.3\n        version: ms@2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`)
   await build(at('a'))
+  // pnpm, hoisted: a directory, of no version locked, under its own name and under the one an
+  // override installs it as.
+  const directory = (as, key) => `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      ${as}:\n        specifier: file:local-ms\n        version: ${key}\n\npackages:\n\n  ms-fork@file:local-ms:\n    resolution: {directory: local-ms, type: directory}\n\nsnapshots:\n\n  ms-fork@file:local-ms: {}\n`
+  for (const [as, key] of [['ms-fork', 'file:local-ms'], ['ms', 'ms-fork@file:local-ms']]) {
+    const project = at(`dir-${as}`)
+    mkdirSync(project)
+    writeProject(project, [as])
+    writePackage(project, `node_modules/${as}`, { name: 'ms-fork', version: '2.0.0' })
+    writeFileSync(join(project, 'node_modules', '.modules.yaml'), 'nodeLinker: hoisted\npackageManager: pnpm@10.33.4\n')
+    writeFileSync(join(project, 'pnpm-lock.yaml'), directory(as, key))
+    // eslint-disable-next-line no-await-in-loop -- one project at a time
+    await build(project)
+  }
   // npm: a package-lock.json starting with a byte order mark, then one that can't be read.
   npmProject(at('b'))
   writeFileSync(at('b/package-lock.json'), `\uFEFF${readFileSync(at('b/package-lock.json'), 'utf8')}`)
