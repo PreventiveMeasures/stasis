@@ -425,20 +425,22 @@ JS bundle would be broken at load time:
   unresolved dynamic-import ./generated/pothos-types.ts from /src/index.ts (MODULE_NOT_FOUND): /prisma/schema.prisma's generator pothos would write it, but stasis generates the "prisma-client" provider's alone
 ```
 
-That is an import whose resolution lands in a generator's `output` (by a
-relative or absolute path, a package's `exports`, `imports` or `main` (or a
-subpath of one without `exports`), under
-`--mainFields` a `browser` or `react-native` field's redirect, or under
-`--typescript` a `tsconfig.json` `paths` alias), or one into the output a
-generator writes with none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client`
-requires) or `@pothos/plugin-prisma/generated` (Pothos's). The generators are
-those of the schema the installed Prisma takes (with generation off, which
-reads no `prisma`, of each schema Prisma 7.4.0 to 7.10.0 would take: only
-7.10.0 reads `prisma7.config.*`). One into a client
-stasis generated is the scan's, as any other miss is (the client's own
-`?module` imports, say). A specifier built at run time, an output named by
-`env()`, or a miss of Metro's own resolution under `--metro`, can't be told
-apart, and is left to the scan too.
+That is an import whose resolution lands in a generator's `output`, or on a
+directory whose index the output is. It may get there by a relative or absolute
+path; by a package's `exports`, `imports` or `main`, or a subpath of a package
+without `exports`; under `--mainFields`, by a `browser` or `react-native`
+field's redirect; or under `--typescript`, by a `tsconfig.json` `paths` alias.
+It may also be an import into the output a generator writes when it names
+none: `.prisma/client` (`prisma-client-js`'s, which `@prisma/client` requires)
+or `@pothos/plugin-prisma/generated` (Pothos's).
+
+The generators are those of the schema the installed Prisma takes. With
+generation off, which reads no `prisma`, they are those of each schema Prisma
+7.4.0 to 7.10.0 would take (only 7.10.0 reads `prisma7.config.*`). A miss
+inside a client stasis generated is the scan's, as any other miss is (the
+client's own `?module` imports, say). A specifier built at run time, an output
+named by `env()`, or a miss of Metro's own resolution under `--metro`, can't be
+told apart, and is left to the scan too.
 
 Where a generator stasis doesn't run has its `output` in the repo already, the
 bundle takes what it reaches there as committed, not as `prisma generate` would

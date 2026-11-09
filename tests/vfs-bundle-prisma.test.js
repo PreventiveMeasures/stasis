@@ -250,6 +250,9 @@ test('what stasis cannot generate is silent given no generate, but an import of 
   await t.assert.rejects(build(project(withPothos(plain))), broken('b/src/generated/pothos-types.ts', 'index.ts'))
   await t.assert.rejects(build(project(withPothos(plain)), { cwd: '/', entries: ['packages/a/index.ts'], mainFields: ['module', 'main'] }),
     { message: broken('b/src/generated/pothos-types.ts', 'packages/a/index.ts').message.replace('load time:', 'load time (mainFields):') })
+  // A directory whose index the output is, by default and under --typescript.
+  const indexed = withPothos({ output: '../src/types/index.ts', index: `${CLIENT_EXPORT}export const load = () => import('./types')\n` })
+  for (const typescript of [false, true]) await t.assert.rejects(build(project(indexed), { typescript }), broken('./types'))
   // And through a package's `main`, which a import()s.
   const mained = { ...exporting, exports: undefined, main: './src/generated/pothos-types.ts' }
   await t.assert.rejects(build(project(withPothos({ files: { 'packages/b/package.json': json(mained), 'packages/a/index.ts': "export const load = () => import('b')\n" } })), { cwd: '/', entries: ['packages/a/index.ts'], mainFields: ['module', 'main'] }),
@@ -314,6 +317,7 @@ test('generatedMiss: an import whose resolution landed in a generator\'s output,
   const miss = generatedMiss([
     { path: '/p/src/generated/pothos-types.ts', writer: 'pothos', why: 'not run' },
     { path: '/p/src/generated/prisma', writer: 'client', why: 'off' },
+    { path: '/p/src/types/index.ts', writer: 'types', why: 'not run' },
     { specifier: '@pothos/plugin-prisma/generated', writer: 'pothos2', why: 'not run' },
     { specifier: '.prisma/client', writer: 'js', why: 'not run' },
   ])
@@ -321,9 +325,11 @@ test('generatedMiss: an import whose resolution landed in a generator\'s output,
   // Where it landed (the scan's targets), its extension left out or written as .js, or the output's directory or a file in it.
   for (const target of ['/p/src/generated/pothos-types', '/p/src/generated/pothos-types.js', '/p/src/generated/pothos-types.ts']) t.assert.equal(from('x', [target]), 'pothos would write it, but not run', target)
   for (const target of ['/p/src/generated/prisma', '/p/src/generated/prisma/edge.ts']) t.assert.equal(from('x', ['/elsewhere', target]), 'client would write it, but off', target)
+  // A directory whose index the output is.
+  for (const target of ['/p/src/types', '/p/src/types/index.js']) t.assert.equal(from('x', [target]), 'types would write it, but not run', target)
   t.assert.equal(from('@pothos/plugin-prisma/generated'), 'pothos2 would write it, but not run')
   t.assert.equal(from('.prisma/client/default'), 'js would write it, but not run')
-  for (const target of ['/p/src/generated/other.ts', '/p/src/generated/prismatic.ts']) t.assert.equal(from('x', [target]), undefined, target)
+  for (const target of ['/p/src/generated/other.ts', '/p/src/generated/prismatic.ts', '/p/src', '/p/src/types/other']) t.assert.equal(from('x', [target]), undefined, target)
   for (const spec of ['@pothos/plugin-prisma', '.prisma/clientele']) t.assert.equal(from(spec), undefined, spec)
   t.assert.equal(miss({ kind: 'dynamic-import', reason: 'dynamic' }), undefined)
 })

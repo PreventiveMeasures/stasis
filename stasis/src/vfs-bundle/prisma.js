@@ -593,14 +593,15 @@ function withoutExtension(path) {
 }
 
 // The failure of the scan's unresolved import `u` where it is of a file a generator would write (`expected`,
-// expectedOutputs'): one whose resolution landed in such an output (the scan's `targets`), or one into a default
+// expectedOutputs'): one whose resolution landed in such an output (the scan's `targets`, each a file, or a
+// directory whose index the output is), or one into a default
 // output by its specifier, however it is imported (statically, or by import() or require() at run time) -> why it
 // is missing, or undefined.
 export function generatedMiss(expected) {
   const outputs = expected.filter(({ path }) => path !== undefined).map((each) => ({ ...each, bare: withoutExtension(each.path) }))
   const defaults = expected.filter(({ specifier }) => specifier !== undefined)
   return (u) => {
-    const hit = outputs.find(({ path, bare }) => u.targets?.some((target) => isPathWithin(path, target) || withoutExtension(target) === bare)) ??
+    const hit = outputs.find(({ path, bare }) => u.targets?.some((target) => isPathWithin(path, target) || withoutExtension(target) === bare || posix.join(target, 'index') === bare)) ??
       defaults.find(({ specifier }) => u.spec === specifier || u.spec?.startsWith(`${specifier}/`))
     if (hit === undefined) return undefined
     return `${hit.writer} would write it, but ${hit.why}`
