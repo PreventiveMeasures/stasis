@@ -35,7 +35,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { EMPTY_MODULE_PATH, dependencyEcosystem, hasNodeModulesSegment, hexIntegrity, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of, withMetadataOf } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -104,11 +104,11 @@ const moduleEcosystem = (dir, ecosystem) => (dir === '.' || (ecosystem === 'npm'
 // What a bundle's files are, as validation checks them, or a stasis.lock.json's: its own code,
 // `{ path, dir, rel, bytes() }` each (a lockfile's `{ path, dir, rel, integrity }`, its bytes'
 // integrity alone), and each package version's, `{ ecosystem, name, version, files, recorded,
-// integrities, repos }`, one with no name or version among them, each of the last three what a copy
-// records, by its directory: its patch's hash, its archive's integrity, its repository; the patches it
-// holds (`patches`, their text by path); and how many files.
-// Directories and stat records, which are no files, and Stasis's empty stub are left out, as is a
-// lockfile's `.cargo-checksum.json`, which is held to its crate by its bytes, which it records none of.
+// integrities, repos }`, one with no name or version among them, the last three what each copy
+// records, by its directory (its patch hash, archive integrity, repository); the patches it holds
+// (`patches`, their text by path); and how many files. Directories and stat records, which are no
+// files, and Stasis's empty stub are left out, as is a lockfile's `.cargo-checksum.json`, which is
+// held to its crate by its bytes, which it records none of.
 export function validationPlan(bundle, { lockfile = false } = {}) {
   const formats = bundle.formats ?? new Map()
   const own = []
@@ -649,7 +649,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     const [recordedHash, conflicting] = recordedBy(pkg.recorded)
     if (conflicting !== undefined) return fails('patch-conflict')
     const lockedPatch = pkg.ecosystem === 'npm' ? locked?.of(pkg.name, pkg.version) : undefined
-    const installedPatch = lockedPatch === undefined && locked?.locks?.('npm') && !locked.patching ? null : lockedPatch
+    const installedPatch = lockedPatch === undefined && locked?.unpatched ? null : lockedPatch
     if (recordedHash !== undefined && installedPatch !== undefined && installedPatch?.hash !== recordedHash) return fails('patch-not-locked', { patch: { hash: recordedHash, recorded: true } })
     if (lock?.from === 'git' && !(lock.at && locked.git)) return unverified('git')
     // A Foundry `lib/` submodule's copies, each held to the repository it records, at the commit the
@@ -737,8 +737,11 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     const status = missed > 0 ? 'invalid' : notVerified > 0 ? 'unverified' : 'valid'
     if (status === 'valid') counts.validPackages++
     if (status !== 'valid' || patch) {
+      // A patch that couldn't be read or applied is told by its error.
+      let why
+      if (status === 'unverified') why = aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : patch?.error ? {} : { reason: lock?.from === 'git' ? 'git-built' : 'patch-unverified' }
       tellPackage(status, {
-        ...(status === 'unverified' && (aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : patch?.error ? {} : lock?.from === 'git' ? { reason: 'git-built' } : { reason: 'patch-unverified' })),
+        ...why,
         ...(patch && { patch: { ...patch, ...(recordedHash !== undefined && { recorded: true }), ...(patched && status === 'valid' && { applied: asPatched > 0 }) } }),
         ...(lock?.from === 'local' && { directory: lock.directories[0] }),
       })
@@ -973,14 +976,14 @@ function readLockfile(name, read) {
   if (name === 'composer.lock') {
     for (const pkg of Object.values(parseComposerLock(text, {}).packages)) {
       const git = pkg.dist == null && pkg.source?.type === 'git'
-      add(pkg.name, pkg.version, lockedFrom(git, pkg.dist != null && pkg.dist.type !== 'path', hexIntegrity('sha1', pkg.dist?.shasum), git ? { type: 'git', repo: pkg.source.url, commit: pkg.source.reference } : undefined))
+      add(pkg.name, pkg.version, lockedFrom(git, pkg.dist != null && pkg.dist.type !== 'path', archiveIntegrity('composer', pkg.dist?.shasum), git ? { type: 'git', repo: pkg.source.url, commit: pkg.source.reference } : undefined))
     }
     return { entries }
   }
   // Soldeer's: a zip with its sha256 (`checksum`), or a git repository at its `rev`.
   if (name === 'soldeer.lock') {
     for (const dep of Object.values(parseSoldeerLockfile(text).dependencies)) {
-      add(dep.name, dep.version, lockedFrom(dep.type === 'git', true, hexIntegrity('sha256', dep.checksum), dep.type === 'git' ? { type: 'git', repo: dep.git, commit: dep.rev } : undefined))
+      add(dep.name, dep.version, lockedFrom(dep.type === 'git', true, archiveIntegrity('soldeer', dep.checksum), dep.type === 'git' ? { type: 'git', repo: dep.git, commit: dep.rev } : undefined))
     }
     return { entries }
   }
@@ -1147,8 +1150,8 @@ export function lockedBy(lockfiles) {
     from: npms[0]?.from,
     tree: npms[0]?.tree,
     git: all.find((one) => one.git)?.git,
-    // Whether an npm lockfile read is pnpm's, which patches as it installs (npm's and yarn's don't).
-    patching: npms.some((npm) => npm.patches !== undefined),
+    // Whether the npm lockfiles read are npm's or yarn's alone, which patch nothing as they install.
+    unpatched: npms.length > 0 && npms.every((npm) => npm.patches === undefined),
     read(path) {
       if (!reads.has(path)) reads.set(path, Promise.resolve().then(() => npms[0].read(path)))
       return reads.get(path)
@@ -1620,7 +1623,7 @@ async function heldToCommitted(attested, directory, list, read) {
     committed.mergeAgreeing(artifact, path, { held: true })
     // A build held to it records what it does of a module: one the artifact has none of contradicts it.
     for (const [dir, info] of artifact.modules) {
-      if (committed.modules.has(dir)) withMetadataOf(committed.modules.get(dir), info, `${path}: module '${dir}'`, { attesting: true })
+      if (committed.modules.has(dir)) assertAttested(committed.modules.get(dir), info, `${path}: module '${dir}'`)
     }
     return { path }
   } catch (error) {

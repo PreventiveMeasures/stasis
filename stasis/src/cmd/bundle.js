@@ -20,7 +20,7 @@ import { pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, hasNodeModulesSegment, heldToAccount, isDotEnvFile, isPathWithin, isPlainObject, hexIntegrity, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -152,7 +152,7 @@ function soldeerLocks(baseDir, ownership, host) {
   }
   const locks = new Map()
   for (const dep of Object.values(lock?.dependencies ?? {})) {
-    locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: hexIntegrity('sha256', dep.checksum) })
+    locks.set(`${dep.name}-${dep.version}`, dep.type === 'git' ? { repo: repoRootAt(parseGithubRepository(dep.git), dep.rev) } : { integrity: archiveIntegrity('soldeer', dep.checksum) })
   }
   return locks
 }
@@ -2366,8 +2366,11 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 
 // `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers'
 // records name them, each held to the lockfile beside it, whatever its kind (a Solidity import out
-// of node_modules is one), and their `accounts` (pinInstalled).
-const pinnedOf = (built, root) => ({ ...built, accounts: pinInstalled(built.bundle, root) })
+// of node_modules is one), their `accounts` (pinInstalled), and its lockfile with what they attest.
+function pinnedOf(built, root) {
+  const accounts = pinInstalled(built.bundle, root)
+  return { ...built, accounts, ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
+}
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
 // rooted at `roots[i]`: their strict union, rooted where every one of them is; a lockfile only where
@@ -2867,7 +2870,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     mergedFrom = existing.sources.size
     // What it carries already is held to the lockfile too, and to how its packages are installed.
     built.held?.hold(deferredLockfile(existing))
-    heldToAccounts(existing, built.accounts, target)
+    heldToAccounts(existing.modules, built.accounts, `${target}: `)
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one, or in
     // replace, which reads none, the bundle there recorded anew.
@@ -2938,13 +2941,10 @@ function nestedRootWarning(file, root, cwd) {
   return `[stasis] ${shown(file)} roots stasis run and stasis bundle in the package at ${shown(dir)}, but its paths are relative to ${shown(root)}: write it at ${shown(join(root, basename(file)))}`
 }
 
-// The lockfile of a build's `bundle`, with what it attests (withAttested), held to the one `lockfile`
-// names, else its project's, by the lock mode of the project's runs (heldToLockfile): `{ lock, label,
-// lockfile, hold, loads }`, `lockfile()` the one to write, `hold(other)` holding another to it, and
-// `loads(bundle)` that, under frozen, the bundle loads beside it.
-function heldOf({ bundle, lockfile: of, accounts }, root, { cwd, env, lockfile }) {
-  if (!of) return undefined
-  const built = () => withAttested(of(), bundle)
+// A build's lockfile held to the one `lockfile` names, else its project's, by its runs' lock mode
+// (heldToLockfile): `{ lock, label, lockfile, hold, loads }`, `hold(other)` holding another to it.
+function heldOf({ bundle, lockfile: built, accounts }, root, { cwd, env, lockfile }) {
+  if (!built) return undefined
   const { lock, file } = lockModeOf(root, env)
   const at = lockfile ? resolve(cwd, lockfile) : file ?? join(root, LOCK_FILE)
   const label = relative(resolve(cwd), at)
@@ -2985,7 +2985,7 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, 
     throw new Error(`${label}: not a valid stasis lockfile`, { cause })
   }
   const merged = lock.mergeAgreeing(fresh, label, { held: true })
-  heldToAccounts(lock, accounts, label)
+  heldToAccounts(lock.modules, accounts, `${label}: `)
   // What it alone records of a package no account tells the install of is the build's too: kept.
   for (const to of bundle ? [fresh, bundle] : [fresh]) withAttested(to, merged)
   if (mode === 'frozen') {
@@ -2995,15 +2995,6 @@ function heldToLockfile(built, lockAbs, label, mode, { host = diskHost, bundle, 
     }
   }
   return fresh
-}
-
-// What `artifact` (a Lockfile or a Bundle, named `label`) records of each package, held to the
-// build's account of how it was installed (`accounts`, by bucket), where it has one.
-function heldToAccounts(artifact, accounts, label) {
-  for (const [dir, account] of accounts) {
-    const recorded = artifact.modules.get(dir)
-    if (recorded !== undefined) heldToAccount(recorded, account, `${label}: module '${dir}'`)
-  }
 }
 
 // That the bundle of `text`, to be written at `at`, loads beside the lockfile at `lockAbs` as `stasis

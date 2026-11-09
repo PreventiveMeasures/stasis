@@ -93,7 +93,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     for (const field of ATTESTED_METADATA) {
       if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) change[`${field}Change`] = { from: l[field], to: r[field] }
     }
-    if (change.versionChange || change.nameChange || change.repoChange || change.integrityChange || change.patchChange) modulesChanged.push(change)
+    if (change.versionChange || change.nameChange || change.repoChange || ATTESTED_METADATA.some((field) => change[`${field}Change`])) modulesChanged.push(change)
 
     const rels = new Set([...l.files.keys(), ...r.files.keys()])
     for (const rel of rels) {

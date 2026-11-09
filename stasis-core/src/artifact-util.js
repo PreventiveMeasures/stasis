@@ -126,7 +126,7 @@ export const isNpmDependency = (dir, ecosystem) => hasNodeModulesSegment(dir) &&
 
 // The algorithm of a dependency's archive `integrity`, as its lockfile locks it: an npm tarball's,
 // a crate's (Cargo.lock's `checksum`), a Composer dist's (`shasum`), a Soldeer zip's (`checksum`).
-const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sha1', soldeer: 'sha256' }
+export const ARCHIVE_ALGORITHM = { npm: 'sha512', cargo: 'sha256', composer: 'sha1', soldeer: 'sha256' }
 
 // A dependency's `integrity` (ARCHIVE_ALGORITHM's); an npm one's of a node_modules bucket alone.
 const normalizeModuleIntegrity = (dir, { ecosystem, integrity }, what) => {
@@ -212,7 +212,6 @@ const normalizeDirMetadata = (field, dir, { name, ecosystem, files, [field]: ent
 
 // The metadata a record holds whole (DIR_METADATA's is by directory), each field's normalizer.
 const RECORD_METADATA = { integrity: normalizeModuleIntegrity, repo: normalizeModuleRepo, patch: normalizeModulePatch }
-const RECORD_ENTRIES = Object.entries(RECORD_METADATA)
 const DIR_FIELDS = Object.keys(DIR_METADATA)
 // Every metadata field, in canonical order.
 const MODULE_METADATA = [...Object.keys(RECORD_METADATA), ...DIR_FIELDS]
@@ -230,15 +229,22 @@ export const moduleInfo = (info) => {
 // on: its tarball's integrity, and the patch pnpm applied.
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
-// `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none.
-// ATTESTED_METADATA both record must agree; with `attesting`, all `record` has must be `other`'s,
-// one `other` has none of refused too.
-export function withMetadataOf(record, other, what = 'module', { attesting = false } = {}) {
+const agree = (field, record, other, what) => {
+  if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field]) ?? 'none'})`)
+}
+
+// That each ATTESTED_METADATA `record` has is `other`'s, `other` recording none of it too.
+export function assertAttested(record, other, what) {
+  for (const field of ATTESTED_METADATA) if (record[field] !== undefined) agree(field, record, other, what)
+}
+
+// `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none;
+// ATTESTED_METADATA both record must agree.
+export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    if (ATTESTED_METADATA.includes(field) && record[field] !== undefined && (attesting || other[field] !== undefined)) {
-      if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field]) ?? 'none'})`)
-    } else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
+    if (ATTESTED_METADATA.includes(field) && record[field] !== undefined && other[field] !== undefined) agree(field, record, other, what)
+    else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {
     if (other[field] === undefined || Object.keys(other[field]).every((sub) => Object.hasOwn(record[field] ?? {}, sub))) continue
@@ -247,16 +253,19 @@ export function withMetadataOf(record, other, what = 'module', { attesting = fal
   return added === undefined ? record : moduleInfo({ ...record, ...added })
 }
 
-// `record` held to `account`, of how its package was installed (an install record's, or with
-// `installed` false, a lockfile's alone). -> `record` with what the account names.
-export const heldToAccount = (record, account, what) =>
-  withMetadataOf(record, account, `${what} (recorded vs ${account.installed === false ? 'locked' : 'installed'})`, { attesting: true })
+// Each record of `modules` held to the account of how its package was installed (`accounts`, by dir:
+// an install record's, or, `locked`, a lockfile's alone), `prefix` naming where the records are from.
+export function heldToAccounts(modules, accounts, prefix = '') {
+  for (const [dir, account] of accounts) {
+    if (modules.has(dir)) assertAttested(modules.get(dir), account, `${prefix}module '${dir}' (recorded vs ${account.locked ? 'locked' : 'installed'})`)
+  }
+}
 
 // A record's metadata as `what` holds it, validated, the fields not in `fields` left out: RECORD_METADATA's,
 // and DIR_METADATA's of the entries `entriesOf(field)`.
 function metadataOf(dir, info, what, fields, entriesOf) {
   const metadata = {}
-  for (const [field, normalize] of RECORD_ENTRIES) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
+  for (const [field, normalize] of Object.entries(RECORD_METADATA)) metadata[field] = fields.includes(field) ? normalize(dir, info, what) : undefined
   for (const field of DIR_FIELDS) metadata[field] = fields.includes(field) ? normalizeDirMetadata(field, dir, { ...info, [field]: entriesOf(field) }, what) : undefined
   return metadata
 }
@@ -540,7 +549,7 @@ export function serializeImports(imports) {
 
 // A module map as a `what` artifact's `modules` (node_modules buckets) and `sources` (the rest), path-sorted
 // so the bytes are canonical. `metadata` names the metadata fields written, `true` for all, `false` for none
-// (a lockfile writes `vendored` alone, so it can be audited on its own).
+// (a lockfile writes LOCK_METADATA's).
 export function groupModules(modules, { skipEmpty = false, metadata: written = true, what } = {}) {
   const metadata = written === true ? MODULE_METADATA : written === false ? [] : written
   const grouped = { modules: [], sources: [] }

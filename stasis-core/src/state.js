@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccount, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, INSTALLED, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -22,9 +22,6 @@ import corePackage from './package.cjs'
 const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
-// A reader of how the packages were installed, which stasis-core reads no record of, another package
-// registers (run-installed.js): of modules and a root, each one's account (heldToAccount's) by its dir.
-const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 const FILE_LOCK = 'stasis.lock.json'
 const FILE_CODE = 'stasis.code.br'
 
@@ -347,7 +344,7 @@ export class State {
   }
 
   #installed(modules) {
-    return modules.size === 0 ? undefined : globalThis[INSTALLED]?.(modules, this.root)
+    return (modules.size > 0 && globalThis[INSTALLED]?.(modules, this.root)) || new Map()
   }
 
   // ATTESTED_METADATA absorbed of the artifact at `label`, and what each bundle attests, taken into
@@ -366,11 +363,9 @@ export class State {
     }
     const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
     for (const [dir, module] of attested) if (!files.has(dir)) files.set(dir, new Set(Object.keys(module.files)))
-    const bundle = relative(this.root, this.#bundlePath)
-    for (const [dir, account] of this.#installed(new Map([...bundles, ...attested])) ?? []) {
-      if (attested.has(dir)) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
-      if (bundles.has(dir)) heldToAccount(bundles.get(dir), account, `${bundle}: module '${dir}'`)
-    }
+    const accounts = this.#installed(new Map([...bundles, ...attested]))
+    heldToAccounts(attested, accounts, `${label}: `)
+    heldToAccounts(bundles, accounts, `${relative(this.root, this.#bundlePath)}: `)
   }
 
   // A bundle's record of a package, absorbed, merged into the State's record of it (`record`,
@@ -393,16 +388,15 @@ export class State {
   // onto a record absorbed, whose other files this run may not have read. What an artifact attests is
   // of the files it recorded: of one this run adds, an install record alone tells.
   #recordInstalled() {
-    const accounts = this.#installed(this.modules) ?? new Map()
-    for (const [dir, account] of accounts) {
-      const held = heldToAccount(this.modules.get(dir), account, `module '${dir}'`)
-      if (account.installed !== false && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, held)
-    }
+    const accounts = this.#installed(this.modules)
+    heldToAccounts(this.modules, accounts)
+    for (const [dir, account] of accounts) if (!account.locked && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, withMetadataOf(this.modules.get(dir), account))
     for (const [dir, files] of this.#absorbed.files) {
-      const module = this.modules.get(dir)
-      const added = accounts.get(dir)?.installed ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))
+      const [module, account] = [this.modules.get(dir), accounts.get(dir)]
+      const added = account && !account.locked ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))
+      if (added === undefined) continue
       const fields = ATTESTED_METADATA.filter((field) => module[field] !== undefined).join(' and ')
-      assert(added === undefined, `module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds and no install record tells of: record it anew (lock = replace)`)
+      assert.fail(`module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds and no install record tells of: record it anew (lock = replace)`)
     }
   }
 

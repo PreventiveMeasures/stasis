@@ -11,7 +11,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { checkoutCommit, parseGithubRepository } from '@exodus/stasis-core/bundle-util'
-import { assertRealPathWithinBase, fileInBucket, hexIntegrity, isPlainObject, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { archiveIntegrity, assertRealPathWithinBase, fileInBucket, isPlainObject, moduleInfo, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { LockfileError, parseComposerLock } from '@preventive/lockfile/composer.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 import { applyToDir, isDotRelative } from './paths.js'
@@ -535,12 +535,12 @@ const installedFromSource = ({ dist }, from, at) => from === 'source' || dist ==
 // `shasum`, as the lockfile locks it (GitHub's dists have none).
 function composerInstall(p, from, at) {
   const fromSource = installedFromSource(p, from, at)
-  return { repo: composerRepo(p, fromSource, at), integrity: fromSource ? undefined : hexIntegrity('sha1', p.dist.shasum) }
+  return { repo: composerRepo(p, fromSource, at), integrity: fromSource ? undefined : archiveIntegrity('composer', p.dist.shasum) }
 }
 
-// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo,
-// integrity }]`, `dir` where the package is installed, baseDir-relative (null for nowhere in
-// baseDir, as a metapackage). Of its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
+// The Composer packages of the project at `baseDir`, `[{ name, version, dir, extra, repo, integrity }]`, `dir` where
+// the package is installed, baseDir-relative (null for nowhere in baseDir, as a metapackage). Of
+// its composer.lock where there is one, read by @preventive/lockfile beside composer.json as
 // `composer install` reads them -- one it refuses stops the build -- each package where Composer
 // installs it (lockedDir), so no install is needed; else of vendor/composer/installed.json, as
 // it is. Where both are, installed.json must be the lockfile's install (assertInstalledAsLocked):
@@ -683,8 +683,9 @@ function packageVersions(packages) {
   const byDir = new Map()
   const byName = new Map()
   for (const { name, version, dir, repo, integrity } of packages) {
-    byName.set(name, { version, repo, integrity })
-    if (dir) byDir.set(dir, { version, repo, integrity })
+    const known = { version, repo, integrity }
+    byName.set(name, known)
+    if (dir) byDir.set(dir, known)
   }
   return { byDir, byName }
 }
@@ -709,18 +710,14 @@ function findComposerPackage(baseDir, fileRelPath, installed, fallbackVersion) {
 // Group bundled PHP sources into per-package buckets keyed by the nearest
 // composer.json's directory (vendor deps get their own; workspace files and
 // orphans -> the root "." bucket with the placeholder identity). Returns a
-// Map<dir, { name, version, ecosystem?, integrity?, repo?, files }>, a dependency's `repo` where
-// composerRepo gives one, and `integrity` where composerIntegrity does. `packages`: loadComposerPackages(baseDir).
+// Map<dir, { name, version, ecosystem?, integrity?, repo?, files }>, a dependency's `repo` and
+// `integrity` where composerInstall gives them. `packages`: loadComposerPackages(baseDir).
 export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVersion, packages = loadComposerPackages(baseDir)) {
   const installed = packageVersions(packages)
 
   const modules = new Map()
-  const ensureBucket = (dir, name, version, ecosystem, repo, integrity) => {
-    if (!modules.has(dir)) {
-      modules.set(dir, ecosystem === undefined
-        ? { name, version, files: Object.create(null) }
-        : { name, version, ecosystem, ...(integrity === undefined ? {} : { integrity }), ...(repo === undefined ? {} : { repo }), files: Object.create(null) })
-    }
+  const ensureBucket = (dir, name, version, ecosystem, { repo, integrity } = {}) => {
+    if (!modules.has(dir)) modules.set(dir, moduleInfo({ name, version, ecosystem, ...(ecosystem !== undefined && { integrity, repo }), files: Object.create(null) }))
     return modules.get(dir)
   }
 
@@ -731,7 +728,7 @@ export function bucketizePhpSources(baseDir, sources, fallbackName, fallbackVers
       // Below the root package = an installed Composer dependency, tagged
       // `composer`; the root "." bucket is workspace code and stays ecosystem-less.
       const ecosystem = pkg.pkgDir === '.' ? undefined : 'composer'
-      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg.repo, pkg.integrity).files[rel] = content
+      ensureBucket(pkg.pkgDir, pkg.name, pkg.version, ecosystem, pkg).files[rel] = content
     } else {
       ensureBucket('.', fallbackName, fallbackVersion).files[path] = content
     }

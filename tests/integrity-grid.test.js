@@ -45,6 +45,8 @@ function editLock(dir, edit) {
   edit(lock.modules['node_modules/reg'])
   writeJson(join(dir, 'stasis.lock.json'), lock)
 }
+// `stasis run` of `entry` in `dir`, with these flags and no lock mode from the environment.
+const stasisRun = (dir, flags, entry = 'index.js') => spawnSync(process.execPath, [cli, 'run', ...flags, entry], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
 const build = (dir, options = {}) => bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', ...options })
 const recordOf = (dir, at = 'node_modules/reg', file = 'out.br') => JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))).toString('utf8')).modules[at]
 
@@ -203,7 +205,7 @@ test('stasis run holds stasis.lock.json\'s integrities to what is installed', wi
   await build(dir, { lockfile: 'stasis.lock.json' })
   const lockPath = join(dir, 'stasis.lock.json')
   writeFileSync(lockPath, readFileSync(lockPath, 'utf8').replace(SRI, OTHER))
-  const run = (mode) => spawnSync(process.execPath, [cli, 'run', `--lock=${mode}`, 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  const run = (mode) => stasisRun(dir, [`--lock=${mode}`])
   for (const mode of ['frozen', 'add']) {
     const result = run(mode)
     t.assert.notEqual(result.status, 0, mode)
@@ -214,7 +216,7 @@ test('stasis run holds stasis.lock.json\'s integrities to what is installed', wi
   // A file the run adds to the record is of the integrity the install record names: kept.
   writeFileSync(join(dir, 'node_modules', 'reg', 'more.js'), 'module.exports = 2\n')
   writeFileSync(join(dir, 'more.js'), "require('reg/more.js')\n")
-  const added = spawnSync(process.execPath, [cli, 'run', '--lock=add', 'more.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  const added = stasisRun(dir, ['--lock=add'], 'more.js')
   t.assert.equal(added.status, 0, added.stderr)
   const { files, integrity } = readJson(lockPath).modules['node_modules/reg']
   t.assert.deepStrictEqual([Object.keys(files).toSorted(), integrity], [['index.js', 'more.js'], SRI])
@@ -225,7 +227,7 @@ test('stasis run refuses an integrity or patch its lockfile records that the ins
   await build(dir, { lockfile: 'stasis.lock.json' })
   const lockPath = join(dir, 'stasis.lock.json')
   const written = readFileSync(lockPath, 'utf8')
-  const run = (mode) => spawnSync(process.execPath, [cli, 'run', `--lock=${mode}`, 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  const run = (mode) => stasisRun(dir, [`--lock=${mode}`])
   const refused = (pattern, label) => {
     for (const mode of ['frozen', 'add']) {
       const result = run(mode)
@@ -261,7 +263,7 @@ test('stasis run records an install\'s integrity of the packages it captures ane
   await build(dir, { lockfile: 'stasis.lock.json' })
   const lockPath = join(dir, 'stasis.lock.json')
   npmProject(dir)
-  const run = (mode) => spawnSync(process.execPath, [cli, 'run', `--lock=${mode}`, 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  const run = (mode) => stasisRun(dir, [`--lock=${mode}`])
   t.assert.equal(run('add').status, 0)
   t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, undefined, 'added to: no claim of the files recorded before')
   t.assert.equal(run('replace').status, 0)
@@ -283,7 +285,7 @@ test('stasis run holds what its bundle alone attests to the install too, where i
     writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(bundle)))
   }
   npmProject(dir)
-  const run = () => spawnSync(process.execPath, [cli, 'run', '--lock=frozen', '--bundle=load', 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  const run = () => stasisRun(dir, ['--lock=frozen', '--bundle=load'])
   attest({ integrity: SRI })
   t.assert.equal(run().status, 0, 'as installed')
   for (const [more, field] of [[{ integrity: OTHER }, 'integrity'], [{ integrity: SRI, patch: PATCHED }, 'patch']]) {

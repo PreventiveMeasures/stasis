@@ -274,7 +274,7 @@ const PNPM_PACKAGE = /^(.*\/node_modules\/\.pnpm)\/([^/]+)\/node_modules\/(?:@[^
 
 // The metadata an install record names of bucket `dir`: its repository at a commit, its archive's
 // integrity (an npm tarball's sha512 alone), and an npm dependency's patch.
-export function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
+function installedMetadata(dir, ecosystem, { repo, integrity, patchHash } = {}) {
   const npm = isNpmDependency(dir, ecosystem)
   const tarball = npm ? tarballIntegrityOf(integrity) : integrity
   const patch = npm ? patchIntegrity(patchHash) : undefined
@@ -287,15 +287,11 @@ export function withInstalled(dir, info, record) {
   return Object.keys(metadata).length === 0 ? info : { ...info, ...metadata }
 }
 
-// The install record of each npm dependency of `modules` (paths from `root`), found by its real path:
-// in a node_modules/.pnpm by its directory there, else by its location from the nearest layoutOf up to
-// `root`; each held to the lockfile beside that record (holdToLockfile).
-// -> { records, accounts }, an account (heldToAccount's) the record's, else what that lockfile locks.
-export function installedRecords(modules, root, host = diskHost) {
-  const records = new Map()
+// The account of how each npm dependency of `modules` (paths from `root`) was installed, by its dir:
+// what its install record names (installedMetadata), found by its real path and held to the lockfile
+// beside it (holdToLockfile), else, `locked`, what that lockfile locks. `cache` keeps what was read.
+export function installedRecords(modules, root, host = diskHost, { stores = new Map(), layouts = new Map() } = {}) {
   const accounts = new Map()
-  const stores = new Map()
-  const layouts = new Map()
   let top // the bundle root's real path, as each package's is compared with it
   const layoutAt = (dir) => {
     if (!layouts.has(dir)) layouts.set(dir, layoutOf(dir, host))
@@ -310,47 +306,40 @@ export function installedRecords(modules, root, host = diskHost) {
     } catch {
       continue
     }
-    let record
-    let locked
+    let layout
+    let at
     const pnpm = PNPM_PACKAGE.exec(real)
     if (pnpm !== null) {
       const [, store, name] = pnpm
       if (!stores.has(store)) stores.set(store, storeOf(store, host))
-      const { installed, lockfile, locks, none } = stores.get(store)
-      record = installed(name)
-      locked = locks?.(name)
-      if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
+      ;[layout, at] = [stores.get(store), [name]]
     } else {
       try {
         top ??= resolve(host.realpath(resolve(root)))
       } catch {
-        return { records, accounts }
+        return accounts
       }
       const rel = relative(top, real)
       const parts = toPosix(rel).split('/')
-      const at = parts.indexOf('node_modules')
-      if (relativeEscapes(rel) || at === -1) continue
-      let from = resolve(top, ...parts.slice(0, at))
+      const segment = parts.indexOf('node_modules')
+      if (relativeEscapes(rel) || segment === -1) continue
+      let from = resolve(top, ...parts.slice(0, segment))
       while (layoutAt(from) === null && from !== top) from = dirname(from)
-      const { installed, lockfile, locks, none } = layoutAt(from) ?? { installed: NONE }
-      const location = toPosix(relative(from, real))
-      record = installed(location, info.version, info.name)
-      locked = locks?.(location, info.version, info.name)
-      if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
+      ;[layout, at] = [layoutAt(from) ?? { installed: NONE }, [toPosix(relative(from, real)), info.version, info.name]]
     }
-    if (record !== undefined) records.set(dir, record)
+    const { installed, lockfile, locks, none } = layout
+    const record = installed(...at)
+    const locked = locks?.(...at)
+    if (locks) holdToLockfile(lockfile, dir, info.version, record, locked, none)
     const told = record ?? locked
-    if (told === undefined || told.ambiguous) continue
-    const { integrity, patch } = installedMetadata(dir, info.ecosystem, told)
-    accounts.set(dir, { integrity, patch, installed: record !== undefined })
+    if (told !== undefined && !told.ambiguous) accounts.set(dir, { ...installedMetadata(dir, info.ecosystem, told), ...(record === undefined && { locked: true }) })
   }
-  return { records, accounts }
+  return accounts
 }
 
-// `bundle`'s npm dependencies with what their install records name (installedRecords).
-// -> their accounts
+// `bundle`'s npm dependencies with what their install records name. -> their accounts (installedRecords).
 export function pinInstalled(bundle, root, host = diskHost) {
-  const { records, accounts } = installedRecords(bundle.modules, root, host)
-  for (const [dir, record] of records) bundle.modules.set(dir, withInstalled(dir, bundle.modules.get(dir), record))
+  const accounts = installedRecords(bundle.modules, root, host)
+  for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
   return accounts
 }

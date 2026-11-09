@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 
 import { readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { canonicalizePath } from '@exodus/stasis-core/state-util'
-import { hexIntegrity, posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { archiveIntegrity, posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 
 import { LockfileError, linkCargo, parseCargoConfig, parseCargoLock, parseCargoManifest as readCargoManifest, readCargoVendor, resolveCargoFeatures } from '@preventive/lockfile/cargo.js'
 import { matches, parseVersion, parseVersionReq } from '@preventive/lockfile/rust-semver.js'
@@ -1648,7 +1648,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const m = packageFor(fileRel)
       if (m === null || !isVendoredDir(m.dir)) return undefined
       checkLocked(m)
-      return hexIntegrity('sha256', checksumOf(m.dir)?.package)
+      return archiveIntegrity('cargo', checksumOf(m.dir)?.package)
     },
     // Where `cargo vendor` copied the vendored package owning `fileRel` from, as its
     // `.cargo-checksum.json` tells: `registry` (a package checksum) or `git` (a git checkout's: none);
