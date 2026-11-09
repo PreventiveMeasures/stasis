@@ -775,9 +775,10 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         throw new Error(`${file}: not JSON: ${err.message}`, { cause: err })
       }
     }
-    // A registry's copy has a package checksum; a git checkout's has none. `files`: each file's
-    // sha256, as `cargo vendor` listed them, path relative to the package.
-    return value === null ? null : { text, git: (value?.package ?? null) === null, files: isPlainObject(value?.files) ? value.files : {} }
+    // A registry's copy has a package checksum (`package`, the crate's sha256 in hex); a git
+    // checkout's has none. `files`: each file's sha256, as `cargo vendor` listed them, path relative
+    // to the package.
+    return value === null ? null : { text, git: (value?.package ?? null) === null, package: typeof value?.package === 'string' ? value.package : null, files: isPlainObject(value?.files) ? value.files : {} }
   })
   // Where `cargo vendor` copied the vendored package at `dir` from, as its `.cargo-checksum.json`
   // tells: `registry` or `git` (a git checkout); null without that file, when it could be either.
@@ -798,6 +799,21 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (actual !== listed) throw new Error(`${fileRel} isn't the file ${dir}/.cargo-checksum.json lists (sha256 ${actual}, listed ${listed}): changed since \`cargo vendor\`, which cargo refuses to build`)
     }
     verified.add(fileRel)
+  }
+  // Throws when the package checksum of the vendored package `m` (its `.cargo-checksum.json`'s, a
+  // registry copy's) isn't one the build's Cargo.lock locks its version with, where it locks one:
+  // the copy isn't of the crate locked, which cargo refuses to build, and so the bundle does. Once
+  // per package.
+  const lockChecked = new Set()
+  const checkLocked = (m) => {
+    if (lockChecked.has(m.dir)) return
+    lockChecked.add(m.dir)
+    const hex = checksumOf(m.dir)?.package
+    const lk = hex ? lockfile() : null
+    const locked = lk === null ? [] : lockKeysOf(lk, m).map((key) => lk.lock.packages[key].checksum).filter(Boolean)
+    if (locked.length > 0 && !locked.includes(hex)) {
+      throw new Error(`${m.dir}/.cargo-checksum.json: the package checksum of ${m.package.name} ${version(m)}, ${hex}, isn't the one ${lk.file} locks (${locked.join(', ')}): vendor it again`)
+    }
   }
   // The package the build is of: the first entry's package that isn't vendored -- the one cargo is
   // run in (runDir), taken now that the vendor directory is known; null when no entry has one.
@@ -1609,12 +1625,15 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       return m.buildFiles
     },
     // Throws when `fileRel` is a vendored package's file whose bytes (`buf`) aren't the ones its
-    // `.cargo-checksum.json` lists -- edited after `cargo vendor`: cargo refuses to build it, and
-    // so the bundle does. A file the list doesn't name, or a package without one, passes; one
-    // checked already -- a vendored Cargo.toml, as its package was read -- isn't hashed again.
+    // `.cargo-checksum.json` lists -- edited after `cargo vendor` -- or of a package whose checksum
+    // isn't the one Cargo.lock locks (checkLocked): cargo refuses to build it, and so the bundle
+    // does. A file the list doesn't name, or a package without one, passes; one checked already --
+    // a vendored Cargo.toml, as its package was read -- isn't hashed again.
     checkVendoredFile(fileRel, buf) {
       const m = packageFor(fileRel)
-      if (m !== null && isVendoredDir(m.dir)) checkVendored(m.dir, fileRel, buf)
+      if (m === null || !isVendoredDir(m.dir)) return
+      checkVendored(m.dir, fileRel, buf)
+      checkLocked(m)
     },
     // Whether `fileRel` belongs to a vendored package (a crate `cargo vendor` copied in, a registry's
     // or a git checkout's: see vendoredFrom).

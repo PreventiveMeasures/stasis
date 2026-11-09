@@ -1567,6 +1567,22 @@ test('buildRustBundle tags a vendored crate by where it was copied from: a regis
   })
 })
 
+test('buildRustBundle refuses a vendored crate whose package checksum isn\'t the one Cargo.lock locks, as cargo does', async (t) => {
+  const files = (locked) => ({
+    'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nitoa = "1"\n',
+    'Cargo.lock': `version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["itoa"]\n\n[[package]]\nname = "itoa"\nversion = "1.0.18"\nsource = "${REGISTRY}"\nchecksum = "${locked}"\n`,
+    'src/main.rs': 'use itoa::Buffer;\nfn main() {}\n',
+    ...vendoredCopy('itoa', '[package]\nname = "itoa"\nversion = "1.0.18"\n', sha('a')),
+  })
+  await withProjectAsync(files(sha('a')), async (tmp) => {
+    const bundle = await buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] })
+    t.assert.ok(bundle.modules.has('vendor/itoa'))
+  })
+  await withProjectAsync(files(sha('b')), async (tmp) => {
+    await t.assert.rejects(buildRustBundle({ cwd: tmp, entries: ['src/main.rs'] }), /vendor\/itoa\/\.cargo-checksum\.json: the package checksum of itoa 1\.0\.18, a{64}, isn't the one Cargo\.lock locks \(b{64}\): vendor it again/u)
+  })
+})
+
 test('createCargoContext turns a package\'s feature of a dependency\'s name on with `dep/feature`, written or implicit', (t) => {
   withProject({
     'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n[features]\ndefault = ["full"]\nfull = ["serde/derive"]\nserde = ["dep:serde", "chrono?/serde", "extra"]\nextra = []\n[dependencies]\nserde = { version = "1", optional = true }\nchrono = { version = "0.4", optional = true }\n',
