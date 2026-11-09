@@ -1450,8 +1450,9 @@ test('validate: a github-bundle\'s Prisma Client, which its repository doesn\'t 
 
 test('validate: a bundle is held to the stasis.lock.json its repository commits beside it, and a stasis.lock.json validates as a bundle does', withTmp(async (t, tmp) => {
   const lock = `lockfileVersion: '9.0'\n\nimporters:\n\n  web:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  // Stasis's empty stub for a disabled import among its own files, of neither the repository nor a package.
   const modules = () => new Map([
-    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n', '.stasis/empty-module.js': '' } }],
     ['node_modules/ms', { name: 'ms', version: '2.1.3', ecosystem: 'npm', files: { 'index.js': MS['index.js'] } }],
   ])
   const sha512 = (path, content) => `sha512-${createHash('sha512').update(content).digest('base64')}`

@@ -124,7 +124,7 @@ export function validationPlan(bundle, { lockfile = false } = {}) {
       if (ecosystem !== undefined) {
         if (!packages.has(key)) packages.set(key, { ecosystem, name: info.name ?? '', version: info.version ?? '', files: [], repos: new Map() })
         packages.get(key).files.push(file)
-      } else if (path !== EMPTY_MODULE_PATH || content !== '') {
+      } else if (path !== EMPTY_MODULE_PATH || content !== (lockfile ? EMPTY_INTEGRITY : '')) {
         if (!lockfile && (format === 'patch' || path.endsWith('.patch'))) patches.set(path, content)
         own.push(file)
       }
@@ -415,6 +415,8 @@ export function patchedFiles(files, patch) {
 const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 const equal = (a, b) => asBuffer(a).equals(b)
 const integrityOf = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`
+// Stasis's empty stub, as a lockfile records it.
+const EMPTY_INTEGRITY = integrityOf(new Uint8Array())
 // Whether a plan's file is `bytes`: a bundle's by its own, a lockfile's by its integrity.
 const isFile = (file, bytes) => (file.integrity === undefined ? equal(file.bytes(), bytes) : integrityOf(bytes) === file.integrity)
 // Formats a CR before each line's end changes the meaning of: a binary's bytes, which no checkout
