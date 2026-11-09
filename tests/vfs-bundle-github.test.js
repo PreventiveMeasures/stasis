@@ -778,6 +778,92 @@ test('buildGitHubBundle builds a path to a file as an entry of the nearest proje
   await t.assert.rejects(build({ client: fakeClient(sol), path: 'contracts/src/A.sol' }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm/u)
 })
 
+// A package whose src/ holds files a pattern matches, and what it never matches: a dotfile, a symlink,
+// a directory, and a file in a directory below.
+const patterned = {
+  'package.json': json({ name: 'root', version: '1.0.0', private: true }),
+  'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+  'pnpm-lock.yaml': lockfile('.', 'packages/p'),
+  'packages/p/package.json': json({ name: 'p', version: '1.0.0' }),
+  'packages/p/src/b.abc.js': 'module.exports = 2\n',
+  'packages/p/src/a.abc.js': 'module.exports = 1\n',
+  'packages/p/src/abc.js': 'module.exports = 3\n',
+  'packages/p/src/c.js': 'module.exports = 4\n',
+  'packages/p/src/.d.abc.js': 'module.exports = 5\n',
+  'packages/p/src/link.abc.js': { symlink: 'a.abc.js' },
+  'packages/p/src/dir.abc.js/f.js': '',
+  'packages/p/src/sub/e.abc.js': '',
+}
+
+test('buildGitHubBundle takes an entry prefix*suffix as the files directly in its directory it matches, sorted', async (t) => {
+  // The same bundle and lockfile as the entries it matches give.
+  const same = async (entries, expected, message) => {
+    const built = await build({ client: fakeClient(patterned), directory: 'packages/p', entries })
+    const given = await build({ client: fakeClient(patterned), directory: 'packages/p', entries: expected })
+    t.assert.deepStrictEqual([...built.bundle.entries], expected, message)
+    t.assert.deepStrictEqual([built.bundle.serialize(), built.lockfile.serialize()], [given.bundle.serialize(), given.lockfile.serialize()], message)
+  }
+  await same(['src/*.abc.js'], ['src/a.abc.js', 'src/b.abc.js'], 'no dotfile, symlink, directory, or file below')
+  await same(['src/a*.js'], ['src/a.abc.js', 'src/abc.js'], 'its * matching none too')
+  await same(['src/*'], ['src/a.abc.js', 'src/abc.js', 'src/b.abc.js', 'src/c.js'], 'whatever its suffix, checked once it matches')
+  await same(['src/.*'], ['src/.d.abc.js'], 'a dotfile where its prefix begins with .')
+  await same(['src/c.js', './src/*.abc.js'], ['src/c.js', 'src/a.abc.js', 'src/b.abc.js'], 'in its place, spelled as its directory is')
+  await same(['src/b.abc.js', 'src/*.abc.js'], ['src/b.abc.js', 'src/a.abc.js'], 'one given besides, once')
+  // From the directory, or the repo's root.
+  const root = await build({ client: fakeClient(patterned), entries: ['packages/p/src/*.abc.js'] })
+  t.assert.deepStrictEqual([...root.bundle.entries], ['packages/p/src/a.abc.js', 'packages/p/src/b.abc.js'])
+  // Matching no file, refused once the tree says so.
+  const none = fakeClient(patterned)
+  await t.assert.rejects(build({ client: none, directory: 'packages/p', entries: ['src/a.js', 'src/*.xyz.js'] }), /^Error: buildGitHubBundle: ExodusOSS\/example@a{40}: "src\/\*\.xyz\.js" matches no file$/u)
+  await t.assert.rejects(build({ client: fakeClient(patterned), directory: 'packages/p', entries: ['nope/*.js'] }), /^Error: buildGitHubBundle: ExodusOSS\/example@a{40}: "nope\/\*\.js" matches no file$/u)
+})
+
+test('buildGitHubBundle takes a path ending prefix*suffix as the files it matches there, entries of the nearest project above them', async (t) => {
+  const same = async (options, expected, message) => {
+    const built = await build({ client: fakeClient(patterned), ...options })
+    const given = await build({ client: fakeClient(patterned), ...expected })
+    t.assert.equal(built.directory, expected.directory, message)
+    t.assert.deepStrictEqual([...built.bundle.entries], expected.entries, message)
+    t.assert.deepStrictEqual([built.bundle.serialize(), built.lockfile.serialize()], [given.bundle.serialize(), given.lockfile.serialize()], message)
+  }
+  await same({ path: 'packages/p/src/*.abc.js' }, { directory: 'packages/p', entries: ['src/a.abc.js', 'src/b.abc.js'] }, 'the package.json nearest them')
+  await same({ path: 'packages/p/src/a*.js', entries: ['src/c.js', 'src/b*'] }, { directory: 'packages/p', entries: ['src/a.abc.js', 'src/abc.js', 'src/c.js', 'src/b.abc.js'] }, 'ahead of the entries, patterns among them, from there')
+  await same({ path: 'packages/p/src/.*' }, { directory: 'packages/p', entries: ['src/.d.abc.js'] }, 'a dotfile where its prefix begins with .')
+  // As suggestedEntries suggests: the files.
+  t.assert.deepStrictEqual(await suggestedEntries({ github: GITHUB, sha: SHA, client: fakeClient(patterned), packageManager: 'pnpm', path: 'packages/p/src/*.abc.js' }), ['src/a.abc.js', 'src/b.abc.js'])
+  // Of .sol files, the foundry.toml or soldeer.toml nearest them, never a package.json nearer.
+  const sol = { 'package.json': json({ name: 'root', version: '1.0.0', private: true }), ...Object.fromEntries(Object.entries(SOLDEER).map(([name, text]) => [`contracts/${name}`, text])), 'contracts/src/package.json': '{}\n', 'contracts/src/A.sol': 'pragma solidity ^0.8.0;\nimport "./B.sol";\n', 'contracts/src/B.sol': 'pragma solidity ^0.8.0;\n', 'contracts/src/B.t.sol': 'pragma solidity ^0.8.0;\n' }
+  const contracts = await build({ client: fakeClient(sol), packageManager: 'soldeer', path: 'contracts/src/*.sol' })
+  t.assert.equal(contracts.directory, 'contracts')
+  t.assert.deepStrictEqual([...contracts.bundle.entries], ['src/A.sol', 'src/B.sol', 'src/B.t.sol'])
+  // Matching no file there, refused from the listings, before the tree is fetched; so is one under a
+  // directory the listings can't tell (a symlink).
+  await Promise.all(['packages/p/src/*.xyz.js', 'packages/p/nope/*.js', 'packages/p/src/link.abc.js/*.js'].map(async (path) => {
+    const none = fakeClient(patterned)
+    await t.assert.rejects(build({ client: none, path }), new RegExp(`^Error: buildGitHubBundle: ExodusOSS/example@a{40}: ${RegExp.escape(JSON.stringify(path))} matches no file$`, 'u'), path)
+    t.assert.ok(methods(none).every((method) => method === 'listRepoDir'), path)
+  }))
+})
+
+test('buildGitHubBundle takes one * in a pattern, in its last segment alone, refusing any other before anything is fetched', async (t) => {
+  const refusal = (pattern) => new RegExp(`^Error: buildGitHubBundle: ${RegExp.escape(JSON.stringify(pattern))}: a pattern holds one \\*, in its last segment \\(prefix\\*suffix\\)$`, 'u')
+  await Promise.all(['src/**/*.js', 'src/**', 'src/*.*.js', '*/a.js', 'packages/*/src/a.js'].map(async (pattern) => {
+    const client = fakeClient(patterned)
+    await t.assert.rejects(build({ client, entries: ['src/a.js', pattern] }), refusal(pattern), `entry ${pattern}`)
+    await t.assert.rejects(build({ client, path: pattern }), refusal(pattern), `path ${pattern}`)
+    t.assert.deepStrictEqual(client.calls, [], pattern)
+  }))
+  // Checked as an entry of the kind its suffix names, where it names one, before anything is fetched.
+  const client = fakeClient(patterned)
+  await t.assert.rejects(build({ client, entries: ['src/*.sol'] }), /^Error: buildGitHubBundle: only JS bundles are built with pnpm/u)
+  await t.assert.rejects(build({ client, entries: ['src/*.js'], mappingFile: 'remappings.txt' }), /^Error: buildGitHubBundle: --mapping is only valid for \.sol bundles$/u)
+  t.assert.deepStrictEqual(client.calls, [])
+  // A path's * is no name's, which is checked as a directory's otherwise.
+  await t.assert.rejects(build({ client, path: 'a b/*.js' }), /invalid path: "a b\/\*\.js"/u)
+  await t.assert.rejects(build({ client, path: '../up/*.js' }), /invalid path: "\.\.\/up\/\*\.js"/u)
+  t.assert.deepStrictEqual(client.calls, [])
+})
+
 const detect =(options) => buildGitHubBundle({ github: GITHUB, sha: SHA, ...options })
 
 test('buildGitHubBundle takes the one package manager whose lockfile installs the directory, told by the listings', async (t) => {
@@ -1393,7 +1479,7 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
     const names = await readdir(out)
     return { names, bytes: await readFile(join(out, names[0])), said: stderr.trim().split('\n').at(-1) }
   }
-  const [given, file, after, directory, root, rootFile, rootSlash] = await Promise.all([
+  const [given, file, after, directory, root, rootFile, rootSlash, both, pattern, patterns] = await Promise.all([
     [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'src/a.js'],
     [`${GITHUB}/packages/api/src/a.js`, `--sha=${SHA}`],
     [`--sha=${SHA}`, `${GITHUB}/packages/api/src/a.js`],
@@ -1401,6 +1487,9 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
     [`--github=${GITHUB}`, `--sha=${SHA}`, 'scripts/x.js'],
     [`${GITHUB}/scripts/x.js`, `--sha=${SHA}`],
     [`${GITHUB}/`, `--sha=${SHA}`, 'scripts/x.js'],
+    [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'src/a.js', 'src/b.js'],
+    [`${GITHUB}/packages/api/src/*.js`, `--sha=${SHA}`],
+    [`--github=${GITHUB}`, '--directory=packages/api', `--sha=${SHA}`, 'src/*.js'],
   ].map(run))
   t.assert.deepStrictEqual(given.names, ['ExodusOSS-example.packages-api.aaaaaaa.stasis.code.br'])
   t.assert.deepStrictEqual([...Bundle.parse(brotliDecompressSync(given.bytes).toString('utf8')).sources.keys()], ['src/a.js', 'src/b.js'])
@@ -1411,6 +1500,9 @@ test('stasis github-bundle owner/name/path bundles as --github=owner/name --dire
   t.assert.deepStrictEqual(root.names, ['ExodusOSS-example.aaaaaaa.stasis.code.br'])
   t.assert.deepStrictEqual(rootFile, root, "a file, from the root's package.json")
   t.assert.deepStrictEqual(rootSlash, root, 'the root, with a / after it')
+  t.assert.deepStrictEqual(Bundle.parse(brotliDecompressSync(both.bytes).toString('utf8')).entries, new Set(['src/a.js', 'src/b.js']))
+  t.assert.deepStrictEqual(pattern, both, 'a pattern, the files it matches, from the nearest package.json above them')
+  t.assert.deepStrictEqual(patterns, both, 'an entry pattern, the files it matches')
 })
 
 test("stasis github-bundle fetches with ~/.audit/config.json's token where GITHUB_TOKEN is not set", async (t) => {
