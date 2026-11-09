@@ -157,27 +157,19 @@ test('a Composer package records the GitHub repository of its git source, at its
   t.assert.equal(await buildPhp(), undefined, 'installed from a dist at another reference')
 }))
 
-test('a Composer package installed from its dist records the dist\'s shasum, a sha1, as its integrity', withTmp(async (t, tmp) => {
+test("a Composer package installed from its dist records the dist's shasum, a sha1, as its integrity", withTmp(async (t, tmp) => {
   cpSync(phpFixture, tmp, { recursive: true })
-  const LIB = 'vendor/acme/lib'
   const SHA1 = 'ab'.repeat(20)
-  // acme/lib's dist with `shasum`, installed from `from`, in composer.lock and installed.json alike.
-  const relock = (shasum, from = 'dist') => {
+  for (const [shasum, from, integrity, why] of [[SHA1, 'dist', `sha1-${Buffer.from(SHA1, 'hex').toString('base64')}`, 'its shasum'], ['', 'dist', undefined, "a dist with none, as GitHub's"], [SHA1, 'source', undefined, 'installed from its source']]) {
+    // acme/lib's dist with `shasum`, installed from `from`, in composer.lock and installed.json alike.
     for (const file of ['composer.lock', 'vendor/composer/installed.json']) {
-      const path = join(tmp, file)
-      if (!existsSync(path)) continue
-      const json = JSON.parse(readFileSync(path, 'utf8'))
+      const json = JSON.parse(readFileSync(join(tmp, file), 'utf8'))
       const at = json.packages.findIndex((p) => p.name === 'acme/lib')
-      const { name, version, source: _source, dist: _dist, 'transport-options': _transport, ...rest } = json.packages[at]
+      const { name, version, dist: _dist, 'transport-options': _transport, ...rest } = json.packages[at]
       json.packages[at] = { name, version, dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', shasum }, ...rest, ...(file === 'composer.lock' ? {} : { 'installation-source': from }) }
-      writeFileSync(path, `${JSON.stringify(json, null, 4)}\n`)
+      writeFileSync(join(tmp, file), `${JSON.stringify(json, null, 4)}\n`)
     }
+    // eslint-disable-next-line no-await-in-loop -- each build reads the lockfiles just written
+    t.assert.equal(Bundle.parse((await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })).serialize()).modules.get('vendor/acme/lib').integrity, integrity, why)
   }
-  const integrityOf = async () => Bundle.parse((await buildPhpBundle({ cwd: tmp, entries: ['index.php'] })).serialize()).modules.get(LIB).integrity
-  relock(SHA1)
-  t.assert.equal(await integrityOf(), `sha1-${Buffer.from(SHA1, 'hex').toString('base64')}`)
-  relock('')
-  t.assert.equal(await integrityOf(), undefined, 'a dist with none, as GitHub\'s')
-  relock(SHA1, 'source')
-  t.assert.equal(await integrityOf(), undefined, 'installed from its source')
 }))
