@@ -74,7 +74,8 @@ white on red, critical magenta, high red, moderate yellow, low cyan, unrated
 dimmed), and so is the summary's count of each. Where the terminal draws sixel
 images (it answers a Primary Device Attributes query with sixel graphics among
 what it has), each id has an icon before it for where the advisory comes from:
-npm's registry, a GitHub repository's advisories, or OSV. The icon is sized to
+npm's registry, a GitHub repository's advisories, or OSV (Packagist's has
+none). The icon is sized to
 fit two of the terminal's cells, as it reports their size: iTerm2's
 `ReportCellSize` (in points, by its Retina scale), else `CSI 16 t`; 16 pixels
 where it reports none. It is an eighth of a row shorter than the row, and set
@@ -112,9 +113,9 @@ artifact tags it with (see [file formats](file-formats.md)):
 | - | - | - |
 | `npm` | `node_modules` packages | npm's advisories, and OSV's for a public package (see [OSV and private packages](#osv-and-private-packages)) |
 | `cargo` | crates vendored from a registry | OSV |
-| `composer` | Composer packages | OSV; a dev version (`dev-main`, `1.x-dev`) is listed as not audited, no database having one |
+| `composer` | Composer packages | OSV, and Packagist's advisories (what `composer audit` reads, with the FriendsOfPHP ones OSV lacks); a dev version (`dev-main`, `1.x-dev`) is listed as not audited, no database having one |
 | `soldeer` | Soldeer packages | the advisories their GitHub repository publishes: a git dependency's, the one its artifact records, else the one Soldeer's registry names |
-| `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes |
+| `github` | GitHub repos (Foundry's `lib/`) | the advisories the repository publishes, and OSV's records of it as a GitHub Action |
 | `cargo-git`, `cargo-unknown` | crates vendored from git, or with no `.cargo-checksum.json` | nothing: listed as not audited, never sent to OSV, whose crate of that name may be another |
 
 A copy of a package that a dependency ships inside itself, which the

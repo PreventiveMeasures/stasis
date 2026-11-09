@@ -38,8 +38,8 @@ importers:
         specifier: 1.0.0-rc.116
         version: 1.0.0-rc.116(patch_hash=91700ea042ce1ab37dd135b5344f098bb4c862d12dd9cd2c053bc006aaa5be94)
       '@preventive/archive':
-        specifier: ^1.2.2
-        version: 1.2.2(@noble/hashes@2.4.0)
+        specifier: ^1.4.0
+        version: 1.4.0(@noble/hashes@2.4.0)
       '@prisma/client-generator-ts':
         specifier: 7.10.0
         version: 7.10.0
@@ -83,20 +83,20 @@ importers:
         specifier: 1.0.0-beta.15
         version: link:../stasis-plugins
       '@preventive/archive':
-        specifier: ^1.2.2
-        version: 1.2.2(@noble/hashes@2.4.0)
+        specifier: ^1.4.0
+        version: 1.4.0(@noble/hashes@2.4.0)
       '@preventive/deptree':
-        specifier: ^1.3.3
-        version: 1.3.3(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
+        specifier: ^1.4.0
+        version: 1.4.0(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/lockfile':
-        specifier: ^1.2.0
-        version: 1.2.0(@noble/hashes@2.4.0)
+        specifier: ^1.3.0
+        version: 1.3.0(@noble/hashes@2.4.0)
       '@preventive/rn':
         specifier: 1.0.0-alpha.6
         version: 1.0.0-alpha.6(esbuild@0.27.3)(flow-remove-types@2.322.0)(oxc-parser@0.152.0)
       '@preventive/upstream':
-        specifier: ^1.5.1
-        version: 1.5.1(@noble/hashes@2.4.0)
+        specifier: ^1.6.0
+        version: 1.6.0(@noble/hashes@2.4.0)
       '@preventive/vfs':
         specifier: ^1.1.0
         version: 1.1.0
@@ -728,8 +728,8 @@ packages:
     resolution: {integrity: sha512-OqiFvSOF0dBSesELYY2CAMa4YINvlLpvKOz/rv6NeZEqiyttlHgv98Juwv4Ch+GrEV7IZ8jfI2VcEoYUjXXCjw==, tarball: https://registry.npmjs.org/@paralleldrive/cuid2/-/cuid2-3.3.0.tgz}
     hasBin: true
 
-  '@preventive/archive@1.2.2':
-    resolution: {integrity: sha512-RnGcgKh4+lrrgXrW7fAKC1P38GBwJ1rDbbZr4vMzYBHZgYyNFyPE6e/pHOlQxa9bGnNXYiHllsMJVr+cQlsAZQ==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.2.2.tgz}
+  '@preventive/archive@1.4.0':
+    resolution: {integrity: sha512-TEllb2VRoX7bKP7FrP+OHxlHdFAeYfG9nlvW6hNKV0gYnxkaDN3cBcPmbThQfOUdZbvZNLmCWhH2CRrZtoNf9A==, tarball: https://registry.npmjs.org/@preventive/archive/-/archive-1.4.0.tgz}
     engines: {node: '>=24.14.0'}
 
   '@preventive/compare@1.2.11':
@@ -750,8 +750,8 @@ packages:
       oxfmt:
         optional: true
 
-  '@preventive/deptree@1.3.3':
-    resolution: {integrity: sha512-AIuZ8GJJ/Bo+xnDLW91otO9A0JPA3ykTKtgTV5uhs7YDqryjTn/ZE7LBg1l2NCuIFN25DT00J2xBe6LjcXNUAg==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.3.3.tgz}
+  '@preventive/deptree@1.4.0':
+    resolution: {integrity: sha512-s4exK11+fypNXDZirU7mibNdIh42YxS1IMPbvF4sZJFM+2o/x4lQFce0P2qD0XilqEfzEAVckSjTMPYaevzGMQ==, tarball: https://registry.npmjs.org/@preventive/deptree/-/deptree-1.4.0.tgz}
     engines: {node: '>=24.14.0'}
     hasBin: true
 
@@ -759,8 +759,8 @@ packages:
     resolution: {integrity: sha512-BOV7wpd+v2HJllvK90KW+asSVuIwo4B74nhpxa5qOjbR6piMzq5Gl5icv1JHzUWffbXPcwJFFYnTeLepuKhsJA==, tarball: https://registry.npmjs.org/@preventive/diff/-/diff-1.1.0.tgz}
     engines: {node: '>=24.14.0'}
 
-  '@preventive/lockfile@1.2.0':
-    resolution: {integrity: sha512-naLhjcPE6tb4D4g1I2VBQMzHk7/YwXKi6TV8S8m81mCUQ9MTI4WSSMAHlkpkTXtglxoLzWxzXQyVTToNRYYs9A==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.2.0.tgz}
+  '@preventive/lockfile@1.3.0':
+    resolution: {integrity: sha512-0+nRcaG80njFslcT5KzAyAutYQzVej2xsnCZv5hv4i8gPtECR5CSTsktRo85brkoEPz1xF6w8IrdfIrns82KhQ==, tarball: https://registry.npmjs.org/@preventive/lockfile/-/lockfile-1.3.0.tgz}
     engines: {node: '>=24.14.0'}
 
   '@preventive/rn@1.0.0-alpha.6':
@@ -782,8 +782,8 @@ packages:
       oxc-parser:
         optional: true
 
-  '@preventive/upstream@1.5.1':
-    resolution: {integrity: sha512-K6Vmy4nUrL9AQgfcvk3mhb0axGtKBI8nT1fcvYb7dt1bwd9DRmmpYJVmjEo6rldSKSDD8UHxogfOSk5TpNl/JQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.5.1.tgz}
+  '@preventive/upstream@1.6.0':
+    resolution: {integrity: sha512-k0767DDai1QWkvyfWa+Nuh1SErT57lLLuMMD80GD/MWdyfQIYpMv/3HHxvw8St86Ni7cCDPfCC3eeg49OwG5rQ==, tarball: https://registry.npmjs.org/@preventive/upstream/-/upstream-1.6.0.tgz}
     engines: {node: '>=24.14.0'}
     peerDependencies:
       semver: ^7.5.2
@@ -3269,7 +3269,7 @@ snapshots:
       bignumber.js: 9.3.1
       error-causes: 3.0.2
 
-  '@preventive/archive@1.2.2(@noble/hashes@2.4.0)':
+  '@preventive/archive@1.4.0(@noble/hashes@2.4.0)':
     dependencies:
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
     transitivePeerDependencies:
@@ -3284,15 +3284,15 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  '@preventive/deptree@1.3.3(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
+  '@preventive/deptree@1.4.0(@noble/hashes@2.4.0)(oxc-parser@0.152.0)':
     dependencies:
       '@chalker/queue': 1.0.1
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
-      '@preventive/archive': 1.2.2(@noble/hashes@2.4.0)
+      '@preventive/archive': 1.4.0(@noble/hashes@2.4.0)
       '@preventive/compare': 1.2.11(@noble/hashes@2.4.0)(oxc-parser@0.152.0)
       '@preventive/diff': 1.1.0
-      '@preventive/lockfile': 1.2.0(@noble/hashes@2.4.0)
-      '@preventive/upstream': 1.5.1(@noble/hashes@2.4.0)
+      '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
+      '@preventive/upstream': 1.6.0(@noble/hashes@2.4.0)
       '@preventive/vfs': 1.1.0
     transitivePeerDependencies:
       - '@noble/hashes'
@@ -3304,7 +3304,7 @@ snapshots:
 
   '@preventive/diff@1.1.0': {}
 
-  '@preventive/lockfile@1.2.0(@noble/hashes@2.4.0)':
+  '@preventive/lockfile@1.3.0(@noble/hashes@2.4.0)':
     dependencies:
       '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
     transitivePeerDependencies:
@@ -3316,9 +3316,10 @@ snapshots:
       flow-remove-types: 2.322.0
       oxc-parser: 0.152.0
 
-  '@preventive/upstream@1.5.1(@noble/hashes@2.4.0)':
+  '@preventive/upstream@1.6.0(@noble/hashes@2.4.0)':
     dependencies:
-      '@preventive/archive': 1.2.2(@noble/hashes@2.4.0)
+      '@preventive/archive': 1.4.0(@noble/hashes@2.4.0)
+      '@preventive/lockfile': 1.3.0(@noble/hashes@2.4.0)
     transitivePeerDependencies:
       - '@noble/hashes'
 

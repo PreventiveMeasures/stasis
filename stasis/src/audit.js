@@ -11,10 +11,11 @@ import { logos } from './sixel.js'
 import { collectWhy, invertReason, packageRecords } from './why.js'
 
 // Where advisories() asks for each ecosystem's advisories: npm's registry; OSV for crates (those
-// vendored from a registry, which OSV takes for crates.io's) and Composer packages; for Soldeer
-// packages and GitHub repos (Foundry's lib/ submodules), the advisories their GitHub repository
-// publishes, a Soldeer package's as Soldeer names it.
-const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV'], soldeer: ['Soldeer', 'GitHub'], github: ['GitHub'] }
+// vendored from a registry, which OSV takes for crates.io's); OSV and Packagist's own (what
+// `composer audit` reads) for Composer packages; for Soldeer packages and GitHub repos (Foundry's
+// lib/ submodules), the advisories their GitHub repository publishes, a Soldeer package's as Soldeer
+// names it, and for a GitHub repo OSV's records of it as a GitHub Action too.
+const SOURCES = { npm: ['npm'], cargo: ['OSV'], composer: ['OSV', 'Packagist'], soldeer: ['Soldeer', 'GitHub'], github: ['OSV', 'GitHub'] }
 
 // Why a vendored crate that may not be crates.io's is asked nowhere: by its name, crates.io's
 // advisories would be another crate's, and a private git dependency's name must not reach a public
@@ -436,7 +437,8 @@ function alertStats(rows, paint, colored) {
 const badge = (severity, text, colored) => (severity === 'malware' && colored ? ` ${text} ` : text)
 
 // Where an advisory comes from (upstream's `source`), as sixel.js draws it: npm's registry, a GitHub
-// repository's advisories, or OSV.
+// repository's advisories, or OSV. Packagist's, which stands for an advisory only where OSV has no
+// record of it, has no icon.
 const SOURCE_LOGOS = { registry: 'npm', repository: 'github', osv: 'osv' }
 // The cells an icon covers: two, as sixel.js logos() picks icons no wider than two of the terminal's cells.
 const ICON_CELLS = 2

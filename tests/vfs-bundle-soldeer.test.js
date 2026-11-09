@@ -231,12 +231,13 @@ test('soldeer: installs from the nearest foundry.toml or soldeer.toml, never abo
 })
 
 test('buildVfsBundle with soldeer fetches a git dependency from GitHub through the client given', async (t) => {
-  // GitHub's tarball of that commit: the files the registry's zip of the same version holds.
+  // GitHub's tarball of that commit's tree: the files the registry's zip of the same version holds.
   const checkout = Object.fromEntries(Object.entries(listDisk(join(fixture, 'dependencies', 'stasis-sol-lib-1.0.0')))
     .filter(([, node]) => node !== 'directory').map(([path, { data }]) => [path, Buffer.from(data, 'base64').toString('utf8')]))
   const client = fakeClient(checkout)
   const built = await build({ vfs: projectVfs(gitDependency()), client })
-  t.assert.deepStrictEqual(client.calls, [['getRepoTarball', 'ExodusOSS/stasis-sol-lib', REV]])
+  // The tree read off the commit itself, and GitHub's tarball of that tree.
+  t.assert.deepStrictEqual(client.calls, [['getCommitTree', 'ExodusOSS/stasis-sol-lib', REV], ['getRepoTreeTarball', 'ExodusOSS/stasis-sol-lib', 'tree:']])
   const json = JSON.parse(built.bundle.serialize())
   const dep = json.sources['dependencies/stasis-sol-lib-1.0.0']
   t.assert.deepStrictEqual(dep.repo, { github: 'ExodusOSS/stasis-sol-lib', directory: '', commit: REV }, 'the root of the repository it is fetched from, at the lockfile rev')
