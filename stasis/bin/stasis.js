@@ -126,6 +126,8 @@ if (command === '-v' || command === '--version') {
     // import map matches a non-mock run; native addons still can't load (--allow-addons off).
     nodeArgs.push('--conditions=node-addons')
   }
+  // The State's install reader, registered before the loader.
+  nodeArgs.push('--import', import.meta.resolve('../src/run-installed.js'))
   // --mock uses stasis's loader-mock entry (composes the mock before installing the hooks), whose
   // denials the --import preloads then run under.
   const loader = import.meta.resolve(values.mock ? '../src/loader-mock.js' : '@exodus/stasis-core/loader')

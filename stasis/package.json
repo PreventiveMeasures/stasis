@@ -78,6 +78,7 @@
     "src/resolve-node.js",
     "src/resolve-typescript.js",
     "src/rollup.js",
+    "src/run-installed.js",
     "src/sbom.js",
     "src/sixel.js",
     "src/table.js",

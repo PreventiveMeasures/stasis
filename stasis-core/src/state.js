@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -22,6 +22,9 @@ import corePackage from './package.cjs'
 const { mkdirSync, rmSync, writeFileSync } = fs
 
 const FILE_CONFIG = 'stasis.config.json'
+// Where another package registers a reader of the package managers' install records, which stasis-core
+// reads none of: of a State's modules and root, `Map<dir, { integrity, patch }>` (run-installed.js).
+const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 const FILE_LOCK = 'stasis.lock.json'
 const FILE_CODE = 'stasis.code.br'
 
@@ -316,6 +319,7 @@ export class State {
     // Post-loop: with no stasis files the loop never runs, and a frozen run must fail closed.
     if (this.config.frozen) assert.ok(this.#lockfileLoaded, 'No lockfile, but attempting to run in frozen mode')
     if (this.config.frozenBundle) this.#freezeBundle()
+    this.#holdToInstalled(relative(this.root, this.#lockfileLoaded ? this.#lockPath : this.#bundlePath))
 
     // Claim write targets so no other live State (any copy) silently targets the same file.
     if (this.config.writeBundle) {
@@ -332,6 +336,36 @@ export class State {
 
   #exists(p) {
     return this.#host.stat(p) !== null
+  }
+
+  // A file `rel` this run adds to `module`, of bucket `dir`, whose ATTESTED_METADATA (absorbed of an
+  // artifact) attests its files without it: merged in, the record attests them no longer.
+  #unattest(dir, module, rel) {
+    if (Object.hasOwn(module.files, rel) || ATTESTED_METADATA.every((field) => module[field] === undefined)) return
+    this.modules.set(dir, moduleInfo({ ...module, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, undefined])) }))
+  }
+
+  #installed() {
+    return globalThis[INSTALLED]?.(this.modules, this.root)
+  }
+
+  // ATTESTED_METADATA absorbed of the artifact at `label`, held to the install.
+  #holdToInstalled(label) {
+    for (const [dir, installed] of this.#installed() ?? []) {
+      const module = this.modules.get(dir)
+      for (const field of ATTESTED_METADATA) {
+        const [recorded, found] = [module[field], installed[field]].map((value) => (value === undefined ? undefined : JSON.stringify(value)))
+        assert(recorded === undefined || found === undefined || recorded === found, `${label}: module '${dir}' ${field} mismatch (${recorded} recorded, ${found} installed)`)
+      }
+    }
+  }
+
+  #recordInstalled() {
+    for (const [dir, installed] of this.#installed() ?? []) {
+      const module = this.modules.get(dir)
+      const recorded = withMetadataOf(module, installed, `module '${dir}' (as installed)`)
+      if (recorded !== module) this.modules.set(dir, recorded)
+    }
   }
 
   #readMaybe(path, encoding) {
@@ -461,9 +495,10 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to
-        // be written again.
-        this.modules.set(dir, withMetadataOf(lockModule, info))
+        // The bundle's metadata is taken where the lockfile records none, to be written again; what both
+        // attest agrees.
+        const withMetadata = withMetadataOf(lockModule, info, `bundle module ${dir} (against the lockfile)`, { merging: true })
+        if (withMetadata !== lockModule) this.modules.set(dir, withMetadata)
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -507,8 +542,9 @@ export class State {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
-          this.modules.set(dir, withMetadataOf(existing, info))
+          // Metadata: the first half's that records one, but what both attest agrees.
+          const withMetadata = withMetadataOf(existing, info, `bundle ${dir}`, { merging: true })
+          if (withMetadata !== existing) this.modules.set(dir, withMetadata)
         }
         // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
         // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't
@@ -1000,6 +1036,7 @@ export class State {
         `format flip for ${file}: lockfile attests '${attested}', observed '${format}' (bytes unchanged) -- re-run with --lock=replace to re-attest`)
     }
 
+    this.#unattest(dir, module, rel)
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
     // The vendored package or subpackage this file is in is reached: listed in the host's `vendored` or
@@ -1138,6 +1175,7 @@ export class State {
 
     if (this.config.full || hasNodeModulesSegment(dir)) this.#assertFrozenAttests('Directory', file, module, rel, this.#bundleResources, format)
 
+    this.#unattest(dir, module, rel)
     if (!Object.hasOwn(module.files, rel)) module.files[rel] = integrity
     assert.equal(module.files[rel], integrity)
     if (this.config.bundle) noupsert(this.resources, file, content)
@@ -1762,6 +1800,7 @@ export class State {
     if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
+    if ((this.config.writeLockfile || this.config.writeBundle) && !this.#parent) this.#recordInstalled()
 
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
