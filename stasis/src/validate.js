@@ -659,8 +659,9 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     if (now() > deadline) return unverified('timeout')
     // What each copy is held to, the first it matches: the repository's directories one from a
     // directory is installed from; else its files patched, where the patch is verified, then as
-    // published.
+    // published; patched alone where the lockfile locks the patch, as pnpm patches every copy.
     let candidates
+    let published
     let patch
     let patched
     let unverifiedPatch = false
@@ -668,9 +669,9 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       if (pinned) candidates = []
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
-        const files = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' ? await patchOf(bundled, pkg, files, locked, verdicts) : {})
-        candidates = patched && !unverifiedPatch ? [patched, files] : [files]
+        published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity)
+        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' ? await patchOf(bundled, pkg, published, locked, verdicts) : {})
+        candidates = patched && patch.hash !== undefined ? [patched] : patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {
       const reason = fetchFailure(error)
@@ -696,8 +697,9 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       for (const other of heldTo.slice(1)) {
         if (misses.length > 0 && missing(other).length === 0) [held, misses] = [other, []]
       }
-      // As a patch not verified against the repository patches them: neither as they should be nor not.
-      if (misses.length > 0 && unverifiedPatch && missing(patched).length === 0) {
+      // As a patch not verified against the repository patches them, not as published: neither as they
+      // should be nor not.
+      if (unverifiedPatch && missing(patched).length === 0 && missing(published).length > 0) {
         notVerified += copy.length
         continue
       }

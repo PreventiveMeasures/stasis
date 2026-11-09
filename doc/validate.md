@@ -309,7 +309,8 @@ A version pnpm patches as it installs it (its lockfile's `patchedDependencies`)
 is held to its files patched, as pnpm applies the patch (patch-package's
 algorithm, which pnpm bundles: each hunk where its header says, else up to 20
 lines either side, its lines the same but for the space they end in, a byte
-order mark the file starts with kept). The patch is the one the
+order mark the file starts with kept): every copy, as pnpm patches each it
+installs, so one bundled as published differs. The patch is the one the
 `pnpm-lock.yaml` locks the version with, read of the bundle where it holds a
 file of that hash, else beside the lockfile: of the repository, or of the disk
 for one given, and held to that hash (`patch-mismatch` where it isn't). One
@@ -319,7 +320,8 @@ its selector) in the `patches` directory of the bundle's project, else of the
 repository's root (beside the lockfile, for one given on disk), whose text is
 of that hash; with none, it is `in no file of its hash`. With no
 `pnpm-lock.yaml` read (`--no-lockfile`, or npm's or yarn's), it is the patch
-the bundle holds named for the version, pnpm's way (`patches/name@version.patch`).
+the bundle holds named for the version, pnpm's way (`patches/name@version.patch`),
+each copy held to its files patched or as published.
 
 A patch the bundle holds is own code, and is taken as the repository has it
 alone: checked with own code, or, with `--only-deps`, checked all the same

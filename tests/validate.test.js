@@ -185,6 +185,19 @@ test('validateBundle: each installed copy of a version held to its files patched
   t.assert.deepStrictEqual(fetched, ['npm:ms@2.1.3'])
 })
 
+test('validateBundle: where the lockfile locks a version with a patch, every copy is held to its files patched, one bundled as published differing', async (t) => {
+  const plan = validationPlan(parsed({ 'node_modules/left': undefined, 'node_modules/tool/node_modules/ms': { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } } }))
+  plan.own = plan.own.filter((file) => plan.patches.has(file.path))
+  plan.packages = plan.packages.filter((pkg) => pkg.name === 'ms')
+  const locked = { of: () => ({ hash: sha256(MS_PATCH), path: 'web/patches/ms@2.1.3.patch' }), from: 'repository', read: async () => MS_PATCH }
+  const asPublished = [{ path: 'node_modules/tool/node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]
+  const report = await validateBundle(plan, own(), { fetch: upstream(), locked })
+  t.assert.deepStrictEqual([report.status, report.problems], ['invalid', asPublished])
+  // Its patch not verified against the repository: the copy as published differs all the same.
+  const unread = await validateBundle(plan, { reason: 'no-repository' }, { fetch: upstream(), locked })
+  t.assert.deepStrictEqual([unread.status, unread.problems.filter((problem) => problem.of !== 'own')], ['invalid', asPublished])
+})
+
 test('validateBundle: an npm version its lockfile locks from git alone is left unverified; one recording a commit (a registry package\'s gitHead) held to the registry\'s', async (t) => {
   const fetched = []
   const gitHead = { github: 'vercel/ms', commit: 'a'.repeat(40) }
@@ -1489,6 +1502,33 @@ test('validate: a bundle is held to the stasis.lock.json its repository commits 
   writeFileSync(lockPath, JSON.stringify(edited))
   const differs = await validate(lockPath, { client: repoClient(files), github: 'org/repo', sha: commit, directory: 'web', fetch: upstream() })
   t.assert.deepStrictEqual([differs.status, differs.problems], ['invalid', [{ path: 'node_modules/ms/index.js', kind: 'differs', of: 'npm:ms@2.1.3' }]])
+}))
+
+test('validate: a bundle of the lockfiles stasis.config.json names holds each package to the one whose tree installs it', withTmp(async (t, tmp) => {
+  const pnpm = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n\npackages:\n\n  ms@2.1.3:\n    resolution: {integrity: ${SRI}}\n\nsnapshots:\n\n  ms@2.1.3: {}\n`
+  const npm = `${JSON.stringify({ name: 'tools', version: '1.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'tools', version: '1.0.0', dependencies: { left: '1.0.0' } }, 'node_modules/left': lockEntry('left', '1.0.0', OTHER_SRI) } }, null, 2)}\n`
+  const files = { 'src/main.js': 'main\n', 'package.json': '{}\n', 'pnpm-lock.yaml': pnpm, 'tools/package.json': '{}\n', 'tools/package-lock.json': npm, 'stasis.config.json': JSON.stringify({ lockfiles: ['pnpm-lock.yaml', 'tools/package-lock.json'] }) }
+  const file = join(tmp, 'app.stasis.code.br')
+  writeBundle(file, new Bundle({ repo: { github: 'org/repo', directory: '', commit }, modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['node_modules/.pnpm/ms@2.1.3/node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+    ['tools/node_modules/left', { name: 'left', version: '1.0.0', files: { 'index.js': 'original\n' } }],
+  ]) }))
+  const integrities = []
+  const report = await validate(file, { client: repoClient(files), fetch: upstream(PACKAGES, [], integrities) })
+  t.assert.deepStrictEqual([report.status, report.lockfiles], ['valid', ['pnpm-lock.yaml', 'tools/package-lock.json']])
+  t.assert.deepStrictEqual(integrities.toSorted(), [['npm:left@1.0.0', OTHER_SRI], ['npm:ms@2.1.3', SRI]])
+
+  // Each copy held to its tree's lockfile alone: of a version another tree's locks, and its own not.
+  const empty = "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n"
+  const trees = { ...files, 'tools/pnpm-lock.yaml': empty, 'stasis.config.json': JSON.stringify({ lockfiles: ['pnpm-lock.yaml', 'tools/pnpm-lock.yaml'] }) }
+  delete trees['tools/package-lock.json']
+  writeBundle(file, new Bundle({ repo: { github: 'org/repo', directory: '', commit }, modules: new Map([
+    ['.', { name: 'app', version: '1.0.0', files: { 'src/main.js': 'main\n' } }],
+    ['tools/node_modules/.pnpm/ms@2.1.3/node_modules/ms', { name: 'ms', version: '2.1.3', files: { 'index.js': MS['index.js'] } }],
+  ]) }))
+  const other = await validate(file, { client: repoClient(trees), fetch: upstream() })
+  t.assert.deepStrictEqual([other.status, other.packages.map(({ status, reason }) => [status, reason])], ['invalid', [['invalid', 'not-locked']]])
 }))
 
 test('validate: a git dependency is held to its repository\'s tree at the commit its lockfile locks', withTmp(async (t, tmp) => {
