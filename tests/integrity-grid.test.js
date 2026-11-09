@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 
@@ -160,6 +160,26 @@ test('stasis bundle --add holds what the bundle there records to how its package
   t.assert.equal(recordOf(dir).integrity, SRI, 'kept, where nothing tells')
 }))
 
+// A build held to a stasis.lock.json is merged into nothing: what it alone attests is of its own files.
+
+test('stasis bundle is held to a stasis.lock.json recording no integrity of a package, and more of its files: what the build attests is its own', withTmp(async (t, dir) => {
+  npmProject(dir, { hidden: false, packageLock: false })
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const lock = readJson(lockPath)
+  lock.modules['node_modules/reg'].files['other.js'] = SRI
+  lock.formats['node_modules/reg/other.js'] = 'commonjs'
+  writeJson(lockPath, lock)
+  const broader = readFileSync(lockPath, 'utf8')
+  npmProject(dir)
+  for (const mode of ['add', 'frozen']) {
+    // eslint-disable-next-line no-await-in-loop -- one mode at a time
+    await build(dir, { env: { ...process.env, EXODUS_STASIS_LOCK: mode } })
+    t.assert.deepStrictEqual([recordOf(dir).integrity, Object.keys(recordOf(dir).files)], [SRI, ['index.js']], mode)
+    t.assert.equal(readFileSync(lockPath, 'utf8'), broader, mode)
+  }
+}))
+
 // A Solidity bundle of npm packages.
 
 test('a Solidity bundle\'s npm packages are pinned and held to their lockfile, as a JS bundle\'s are', withTmp(async (t, dir) => {
@@ -234,6 +254,44 @@ test('stasis run refuses an integrity or patch its lockfile records that the ins
   t.assert.equal(run('frozen').status, 0)
   t.assert.equal(run('add').status, 0)
   t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, SRI, 'neither dropped nor replaced')
+}))
+
+test('stasis run records an install\'s integrity of the packages it captures anew, not onto a record its lockfile holds, whose other files it may not have read', withTmp(async (t, dir) => {
+  npmProject(dir, { hidden: false, packageLock: false })
+  await build(dir, { lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  npmProject(dir)
+  const run = (mode) => spawnSync(process.execPath, [cli, 'run', `--lock=${mode}`, 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  t.assert.equal(run('add').status, 0)
+  t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, undefined, 'added to: no claim of the files recorded before')
+  t.assert.equal(run('replace').status, 0)
+  t.assert.equal(readJson(lockPath).modules['node_modules/reg'].integrity, SRI, 'replaced: of the files it read')
+}))
+
+test('stasis run holds what its bundle alone attests to the install too, where its lockfile records more of the package\'s files', withTmp(async (t, dir) => {
+  npmProject(dir, { hidden: false, packageLock: false })
+  await build(dir, { output: 'stasis.code.br', lockfile: 'stasis.lock.json' })
+  const lockPath = join(dir, 'stasis.lock.json')
+  const lock = readJson(lockPath)
+  lock.modules['node_modules/reg'].files['other.js'] = SRI
+  lock.formats['node_modules/reg/other.js'] = 'commonjs'
+  writeJson(lockPath, lock)
+  const bundlePath = join(dir, 'stasis.code.br')
+  const attest = (more) => {
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(bundlePath)))
+    Object.assign(bundle.modules['node_modules/reg'], more)
+    writeFileSync(bundlePath, brotliCompressSync(JSON.stringify(bundle)))
+  }
+  npmProject(dir)
+  const run = () => spawnSync(process.execPath, [cli, 'run', '--lock=frozen', '--bundle=load', 'index.js'], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+  attest({ integrity: SRI })
+  t.assert.equal(run().status, 0, 'as installed')
+  for (const [more, field] of [[{ integrity: OTHER }, 'integrity'], [{ integrity: SRI, patch: PATCHED }, 'patch']]) {
+    attest(more)
+    const refused = run()
+    t.assert.notEqual(refused.status, 0, field)
+    t.assert.match(refused.stderr, new RegExp(`stasis\\.code\\.br: module 'node_modules/reg' \\(recorded vs installed\\) ${field} mismatch`, 'u'), field)
+  }
 }))
 
 // yarn 1's integrity; stasis diff.

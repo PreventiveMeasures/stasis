@@ -1617,7 +1617,7 @@ async function heldToCommitted(attested, directory, list, read) {
   try {
     const committed = Lockfile.parse(await read(path))
     const artifact = attested()
-    committed.mergeAgreeing(artifact, path)
+    committed.mergeAgreeing(artifact, path, { held: true })
     // A build held to it records what it does of a module: one the artifact has none of contradicts it.
     for (const [dir, info] of artifact.modules) {
       if (committed.modules.has(dir)) withMetadataOf(committed.modules.get(dir), info, `${path}: module '${dir}'`, { attesting: true })

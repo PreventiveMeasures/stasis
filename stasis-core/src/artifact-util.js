@@ -660,8 +660,9 @@ export const duplicateKeyError = (what, regenerate) => (key) => assert(false,
   `duplicate file key '${key}' across ${what} buckets -- module bucketing changed between writes ` +
   `(a workspace package without a version now owns its own bucket); regenerate the ${regenerate}`)
 
-// Result `files` objects are null-prototype, so a `__proto__` file name is a plain own key.
-export function mergeModuleMaps(a, b, label) {
+// Result `files` objects are null-prototype, so a `__proto__` file name is a plain own key. With
+// `held`, `b` is held to `a`, not merged into it: what `b` alone attests stays a claim of its own files.
+export function mergeModuleMaps(a, b, label, { held = false } = {}) {
   const out = new Map()
   const absorb = (modules) => {
     for (const [dir, info] of modules) {
@@ -685,7 +686,7 @@ export function mergeModuleMaps(a, b, label) {
       // value one side alone records is of its files alone: the other may add none.
       out.set(dir, withMetadataOf(existing, info, `${label}: module '${dir}'`))
       for (const field of ATTESTED_METADATA) {
-        if ((existing[field] === undefined) === (info[field] === undefined)) continue
+        if ((existing[field] === undefined) === (info[field] === undefined) || (held && existing[field] === undefined)) continue
         const [attests, adds] = existing[field] === undefined ? [info, existing] : [existing, info]
         const added = Object.keys(adds.files).find((rel) => !Object.hasOwn(attests.files, rel))
         if (added !== undefined) assert(false, `${label}: module '${dir}' ${field} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)

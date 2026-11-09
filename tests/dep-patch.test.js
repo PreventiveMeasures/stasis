@@ -128,6 +128,70 @@ test('a run holds a bundle\'s dependency integrity to its lockfile\'s, and write
   t.assert.doesNotThrow(() => new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' }), 'the bundle\'s alone')
   run({ bundle: 'add', lock: 'add' }).write()
   t.assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).modules['node_modules/dep'].integrity, TARBALL, 'taken of the bundle')
+  // But not of a file the lockfile records and the bundle doesn't hold: it stays the bundle's alone,
+  // and a run that would write the bundle again, dropping it, is refused.
+  run({ bundle: 'replace', lock: 'replace' }).write()
+  const broader = run({ bundle: 'ignore', lock: 'add' })
+  broader.addFile(pathToFileURL(join(dir, 'node_modules', 'dep', 'more.js')).toString(), { format: 'commonjs' })
+  broader.write()
+  editBundle(TARBALL)
+  t.assert.equal(new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' }).modules.get('node_modules/dep').integrity, undefined)
+  t.assert.throws(() => new State(dir, { scope: 'full', bundle: 'add', lock: 'add' }), /bundle module node_modules\/dep integrity is recorded of its files, not of 'node_modules\/dep\/more\.js' its record holds/u)
+}))
+
+test('what a bundle alone attests of a package agrees across a split bundle\'s halves and a sidecar\'s, and is held to the install, whether or not the run takes it', withTmp((t, dir) => {
+  const OTHER_TARBALL = `sha512-${'B'.repeat(85)}A==`
+  writeFileSync(join(dir, 'package.json'), json({ name: 'app', version: '1.0.0' }))
+  writeFileSync(join(dir, 'index.js'), "require('dep')\n")
+  mkdirSync(join(dir, 'node_modules', 'dep'), { recursive: true })
+  writeFileSync(join(dir, 'node_modules', 'dep', 'package.json'), json({ name: 'dep', version: '1.0.0' }))
+  for (const file of ['index.js', 'more.js', 'data.bin']) writeFileSync(join(dir, 'node_modules', 'dep', file), 'module.exports = 1\n')
+  const url = (rel) => pathToFileURL(join(dir, rel)).toString()
+  const split = { bundleFile: join(dir, 'code.br'), resourcesBundleFile: join(dir, 'res.br') }
+  const captured = (options, files) => {
+    const state = new State(dir, { scope: 'full', ...options })
+    if (!options.parent) state.addFile(url('index.js'), { format: 'commonjs', isEntry: true })
+    for (const file of files) state.addFile(url(`node_modules/dep/${file}`), file.endsWith('.bin') ? { resource: true } : { format: 'commonjs' })
+    return state
+  }
+  // A lockfile recording none of dep's integrity, a split bundle of two of its files, and a sidecar's of the third.
+  const root = captured({ ...split, bundle: 'replace', lock: 'replace' }, ['index.js', 'data.bin'])
+  captured({ parent: root, bundle: 'replace', lock: 'replace', bundleFile: join(dir, 'side.br') }, ['more.js']).write()
+  root.write()
+  const attest = (file, integrity) => {
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))))
+    bundle.modules['node_modules/dep'].integrity = integrity
+    writeFileSync(join(dir, file), brotliCompressSync(JSON.stringify(bundle)))
+  }
+  const loaded = () => new State(dir, { scope: 'full', ...split, bundle: 'load', lock: 'frozen' })
+  const sidecar = () => new State(dir, { scope: 'full', parent: loaded(), bundle: 'load', lock: 'frozen', bundleFile: join(dir, 'side.br') })
+  const taken = (state) => state.modules.get('node_modules/dep').integrity
+  attest('code.br', TARBALL)
+  attest('res.br', OTHER_TARBALL)
+  t.assert.throws(() => loaded(), /bundle module node_modules\/dep integrity mismatch/u, 'its halves')
+  attest('res.br', TARBALL)
+  t.assert.equal(taken(loaded()), undefined, 'of fewer files than the lockfile records: not the run\'s')
+  // A sidecar's, of the same package: another is refused; the same, of every file between them, is the run's.
+  attest('side.br', OTHER_TARBALL)
+  t.assert.throws(() => sidecar(), /bundle module node_modules\/dep integrity mismatch/u, 'a sidecar\'s')
+  attest('side.br', TARBALL)
+  t.assert.equal(taken(sidecar()), TARBALL, 'of every file the lockfile records, between the bundles')
+  // Each is held to the install, as an install's record tells of it.
+  const hook = Symbol.for('@exodus/stasis-core/installed')
+  const installed = (integrity) => {
+    globalThis[hook] = (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', { integrity, installed: true }]] : [])
+  }
+  t.after(() => delete globalThis[hook])
+  installed(OTHER_TARBALL)
+  t.assert.throws(() => loaded(), /code\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u, 'the halves\' to the install')
+  installed(TARBALL)
+  t.assert.doesNotThrow(() => sidecar())
+  attest('code.br', undefined)
+  attest('res.br', undefined)
+  attest('side.br', OTHER_TARBALL)
+  t.assert.throws(() => sidecar(), /side\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u, 'a sidecar\'s to the install')
+  installed(OTHER_TARBALL)
+  t.assert.doesNotThrow(() => sidecar())
 }))
 
 // dep 1.0.0 as published, which the lockfile patches, and other 1.0.0, which it doesn't: each as a
