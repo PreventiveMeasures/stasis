@@ -31,7 +31,7 @@ It exits:
 | Code | |
 | - | - |
 | 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
-| 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile, or a copy is installed where another is. |
+| 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile, a copy is installed where another is, or it contradicts the `stasis.lock.json` the repository commits. |
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
 | 3 | It refused the bundle (no repository or commit, a commit of no branch or tag of the repository, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
@@ -117,19 +117,38 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
    file of a Prisma Client the repository's schemas generate (below). Stasis's
    own empty stub for an import a package disables (`.stasis/empty-module.js`)
    is allowed.
+4. **The stasis.lock.json the repository commits** in that directory, where it
+   does: the bundle must agree with what it records, as `stasis bundle` holds
+   a build to it (`lock = add`): each file both record, each module's name and
+   version. One it contradicts makes it `invalid`, told on stderr
+   (`stasisLockfile`).
 
-Composer packages, Soldeer packages, GitHub repos (Foundry's `lib/`) and crates
-vendored from git, or with no `.cargo-checksum.json`, have no package upstream
-fetches by name and version: their files are left unverified, as are those of a
-version that couldn't be fetched (`not published`, `its registry refused it`).
-A Composer or Soldeer package is held to the `composer.lock` or `soldeer.lock`
-in the bundle's directory of the repository, at the commit, where one is there
-(or to one `--lockfile` gives): a version it doesn't lock fails.
+A `stasis.lock.json` is validated as a bundle is, each file by the integrity it
+records: of the repository's bytes (or as a CRLF checkout has them), and of the
+package's. A lockfile records no repository: give `--github` and `--sha`. A
+listing of the repository's tree, which gives git's blob ids alone, leaves its
+own code unverified; a vendored crate's `.cargo-checksum.json`, held to the
+crate by its bytes, is left out.
+
+Composer packages, Soldeer zips and crates vendored from git, or with no
+`.cargo-checksum.json`, have no package upstream fetches by name and version:
+their files are left unverified, as are those of a version that couldn't be
+fetched (`not published`, `its registry refused it`). A Composer or Soldeer
+package is held to the `composer.lock` or `soldeer.lock` in the bundle's
+directory of the repository, at the commit, where one is there (or to one
+`--lockfile` gives): a version it doesn't lock fails; one it locks from git
+(Composer's git source, Soldeer's `rev`) is held to its repository at that
+commit, as an npm one from git is (below). A Foundry `lib/` submodule (`github`)
+is held to the repository it records, at the commit the repository's tree pins
+at its path: one recording another commit fails (`records another commit than
+its repository's tree pins it at`), and one at a path the tree has no submodule
+at is left unverified.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
-`invalid` where any differs or is unexpected or a version fails its lockfile,
-and `incomplete` where nothing failed but some files weren't checked.
+`invalid` where any differs or is unexpected, a version fails its lockfile, or
+it contradicts the stasis.lock.json the repository commits, and `incomplete`
+where nothing failed but some files weren't checked.
 
 ## Generated Prisma Clients
 
@@ -233,7 +252,11 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
   a version the lockfile locks with two. One locked with no sha512 (a yarn
   entry with a sha1 alone) is left unverified.
 - **From git** (a `type: git` resolution, a git host's tarball, GitHub's
-  tarball of a commit, a `git+` source) alone: left unverified, as npm may build one as it installs it, and
+  tarball of a commit, a `git+` source) alone: a version the lockfile locks at
+  one full commit of a GitHub repository is held to that repository's tree at
+  the commit, under the path it names: a file there with other bytes differs,
+  and one it hasn't, which an install may build, is left unverified
+  (`git-built`). Any other (another host's, a crate's) is left unverified, as
   the registry's release of its name and version is another package. A
   module's recorded commit is no sign of one, as a registry package's
   `gitHead` is recorded too.

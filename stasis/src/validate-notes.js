@@ -11,11 +11,13 @@ export const OWN_REASONS = {
   'history-unread': 'its commit is at no tag or branch head, nor in its default branch\'s history, and not every other branch was compared',
 }
 
-// A package's reason, unverified (the first) or failing its lockfile (the last four).
+// A package's reason: unverified, or, from `misplaced` on, failing its lockfile or what its repository pins.
 export const PACKAGE_REASONS = {
   local: 'installed from a directory of the repository, which isn\'t read',
   'patch-unverified': 'as patched by the bundle\'s patch, which isn\'t verified against the repository',
   git: 'locked from git, not a registry',
+  'not-a-submodule': 'no submodule of its repository\'s tree at its path',
+  'git-built': 'locked from git: of the files its repository hasn\'t at the commit, which its install may build, none verified',
   'not-registry': 'locked from elsewhere than its registry',
   'no-integrity': 'locked with no sha512 to hold its tarball to',
   unsupported: 'no upstream package for its ecosystem',
@@ -29,6 +31,7 @@ export const PACKAGE_REASONS = {
   'not-locked': 'not locked by the lockfile',
   'integrity-mismatch': 'its registry\'s tarball is not the one the lockfile locks',
   'integrity-conflict': 'locked with two integrities',
+  'commit-not-locked': 'records another commit than its repository\'s tree pins it at',
 }
 
 // Why a patch wasn't applied, told after `its patch` and its path.
@@ -45,6 +48,7 @@ export const FILE_REASONS = {
   'tree-cut': 'the repository\'s tree was too large to list whole',
   generated: 'not as the repository\'s Prisma schema generates it',
   'not-generated': 'in a Prisma Client\'s output, which generates no such file',
+  listed: 'the repository\'s tree was listed, not read, and a lockfile records its integrity alone',
 }
 
 // What a report tells generated a client by, `{ schema, generator, prisma }` (a report's `generated`'s).
