@@ -104,6 +104,8 @@ export class State {
   // the dirs of all absorbed.
   #attestedFiles = new Map()
   #absorbed = new Set()
+  // A bundle's own record of each package it alone attests something of that the run's doesn't take.
+  #bundleAttested = new Map()
   #isPreload = false
   #host
   // The config's Policy (a sidecar's parent's), or null: checked on each artifact loaded and each path recorded.
@@ -352,7 +354,12 @@ export class State {
     const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
     this.#attestedFiles = new Map([...attested].map(([dir, module]) => [dir, new Set(Object.keys(module.files))]))
     this.#absorbed = new Set(this.modules.keys())
-    for (const [dir, account] of this.#installed(attested) ?? []) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
+    // What the bundle alone attests is held to the install too, though no record of the run's carries it.
+    const bundle = relative(this.root, this.#bundlePath)
+    for (const [dir, account] of this.#installed(new Map([...this.#bundleAttested, ...attested])) ?? []) {
+      if (attested.has(dir)) heldToAccount(attested.get(dir), account, `${label}: module '${dir}'`)
+      if (this.#bundleAttested.has(dir)) heldToAccount(this.#bundleAttested.get(dir), account, `${bundle}: module '${dir}'`)
+    }
   }
 
   // Not what a lockfile alone locks, which says what an install would lay out, not what one did; nor
@@ -508,6 +515,7 @@ export class State {
           if (lockModule[field] !== undefined || info[field] === undefined) continue
           assert.ok(!this.config.writeBundle, `bundle module ${dir} ${field} is recorded of its files, not of '${moduleFileKey(dir, beyond)}' the lockfile records: record it anew (lock = replace)`)
           taken = moduleInfo({ ...taken, [field]: undefined })
+          this.#bundleAttested.set(dir, info)
         }
         this.modules.set(dir, taken)
         for (const rel of Object.keys(info.files)) {
