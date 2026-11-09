@@ -155,6 +155,8 @@ test('stasis bundle --add holds what the bundle there records to how its package
   await build(dir, { env })
   npmProject(dir, { integrity: OTHER })
   await t.assert.rejects(build(dir, { env, add: true }), /module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u, 'another')
+  writeFileSync(join(dir, 'none.js'), '')
+  await t.assert.rejects(build(dir, { env, add: true, entries: ['none.js'] }), /module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u, 'of a package it keeps, this build bundling none of it')
   npmProject(dir, { integrity: null })
   await t.assert.rejects(build(dir, { env, add: true }), /out\.br: module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch \("sha512-A+==" vs none\)/u, 'none')
   npmProject(dir, { hidden: false, packageLock: false })

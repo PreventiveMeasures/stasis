@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, INSTALLED, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, INSTALLED, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -368,16 +368,19 @@ export class State {
     heldToAccounts(bundles, accounts, `${relative(this.root, this.#bundlePath)}: `)
   }
 
-  // A bundle's record of a package, absorbed, merged into the State's record of it (`record`,
-  // undefined for none yet). What it alone attests agrees with every other bundle's (a split
-  // bundle's halves, a sidecar's), of their files together, and is taken once all are absorbed.
+  // A bundle's record of a package, absorbed, merged into the State's record of it (`record`, undefined
+  // for none yet). What it alone attests agrees with every other bundle's (a split bundle's halves, a
+  // sidecar's) of the files it covers (mergeModuleMaps), and is taken once all are absorbed.
   #absorbBundleRecord(dir, info, record, what) {
-    const { dirs, bundles } = this.#absorbed
+    const { dirs, files, bundles } = this.#absorbed
     dirs.add(dir)
     if (ATTESTED_METADATA.some((field) => info[field] !== undefined)) {
       this.#attestedByBundle.add(dir)
       const known = bundles.get(dir)
-      bundles.set(dir, known === undefined ? info : moduleInfo({ ...withMetadataOf(known, info, `bundle module ${dir}`), files: { ...known.files, ...info.files } }))
+      bundles.set(dir, known === undefined ? info : mergeModuleMaps(new Map([[dir, known]]), new Map([[dir, info]]), 'bundle').get(dir))
+      // A later bundle's files (a sidecar's) of what it attests alike are absorbed, not this run's.
+      const baseline = files.get(dir)
+      if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || JSON.stringify(record[field]) === JSON.stringify(info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
     }
     if (record === undefined) return moduleInfo({ ...info, files: Object.create(null) })
     const alone = ATTESTED_METADATA.filter((field) => record[field] === undefined).map((field) => [field, undefined])

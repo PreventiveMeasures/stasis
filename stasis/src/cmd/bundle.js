@@ -16,7 +16,7 @@ import { createMetroResolver } from '../metro-resolver.js'
 import { ASSET_REGISTRY } from '../metro-assets.js'
 import { createAliases, createBabelAliases, createBabelTypeImportsKept } from '../babel.js'
 import { AUTO_INCLUDES, RN_CORE_INCLUDE_FILES, linkedNativePackages, linkedPackages, listing, looksNative, metroAssetFiles, nativeInputs } from '@exodus/stasis-plugins/metro-native'
-import { pinInstalled } from '../installed.js'
+import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
@@ -2868,9 +2868,11 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     const links = linksOn(root)
     policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
-    // What it carries already is held to the lockfile too, and to how its packages are installed.
+    // What it carries already is held to the lockfile too, and to how its packages are installed,
+    // those this build doesn't bundle read anew.
     built.held?.hold(deferredLockfile(existing))
-    heldToAccounts(existing.modules, built.accounts, `${target}: `)
+    const kept = new Map([...existing.modules].filter(([dir, info]) => !bundle.modules.has(dir) && ATTESTED_METADATA.some((field) => info[field] !== undefined)))
+    heldToAccounts(existing.modules, new Map([...installedRecords(kept, root), ...built.accounts]), `${target}: `)
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one, or in
     // replace, which reads none, the bundle there recorded anew.

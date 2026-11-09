@@ -168,14 +168,28 @@ test('what a bundle alone attests of a package agrees across a split bundle\'s h
   const taken = (state) => state.modules.get('node_modules/dep').integrity
   attest('code.br', TARBALL)
   attest('res.br', OTHER_TARBALL)
-  t.assert.throws(() => loaded(), /bundle module node_modules\/dep integrity mismatch/u, 'its halves')
+  t.assert.throws(() => loaded(), /bundle: module 'node_modules\/dep' integrity mismatch/u, 'its halves')
   attest('res.br', TARBALL)
   t.assert.equal(taken(loaded()), undefined, 'of fewer files than the lockfile records: not the run\'s')
   // A sidecar's, of the same package: another is refused; the same, of every file between them, is the run's.
   attest('side.br', OTHER_TARBALL)
-  t.assert.throws(() => sidecar(), /bundle module node_modules\/dep integrity mismatch/u, 'a sidecar\'s')
+  t.assert.throws(() => sidecar(), /bundle: module 'node_modules\/dep' integrity mismatch/u, 'a sidecar\'s')
   attest('side.br', TARBALL)
   t.assert.equal(taken(sidecar()), TARBALL, 'of every file the lockfile records, between the bundles')
+  // Written again, the sidecar's files are absorbed ones, not the run's.
+  const rewritten = new State(dir, { scope: 'full', ...split, bundle: 'add', lock: 'ignore', claim: false })
+  new State(dir, { scope: 'full', parent: rewritten, bundle: 'add', lock: 'ignore', bundleFile: join(dir, 'side.br'), claim: false }).write()
+  t.assert.doesNotThrow(() => rewritten.write())
+  // One half attesting what the other doesn't, of files it hasn't: refused, as a merge refuses it.
+  const patched = (file) => {
+    const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))))
+    bundle.modules['node_modules/dep'] = { ...bundle.modules['node_modules/dep'], integrity: undefined, patch: { integrity: patchIntegrity(HASH) } }
+    writeFileSync(join(dir, file), brotliCompressSync(JSON.stringify(bundle)))
+  }
+  const res = readFileSync(join(dir, 'res.br'))
+  patched('res.br')
+  t.assert.throws(() => loaded(), /bundle: module 'node_modules\/dep' (integrity|patch) is recorded of one side's files/u, 'its halves, each of its own')
+  writeFileSync(join(dir, 'res.br'), res)
   // Each is held to the install, as an install's record tells of it.
   const hook = Symbol.for('@exodus/stasis-core/installed')
   const installed = (integrity) => {
