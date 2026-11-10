@@ -1,5 +1,2 @@
-// Public-export adapter: backs `@exodus/stasis/esbuild`. The plugin lives in
-// @exodus/stasis-plugins (which depends on @exodus/stasis-core for State /
-// resolvePluginState). Internal code uses `@exodus/stasis-plugins/esbuild` directly;
-// this file exists only to back the package's `exports` map.
+// Backs `@exodus/stasis/esbuild` in the exports map; the plugin lives in @exodus/stasis-plugins.
 export * from '@exodus/stasis-plugins/esbuild'
