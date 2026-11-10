@@ -20,7 +20,7 @@ import {
 import { diskHost } from '@exodus/stasis-core/host'
 import { metroHost, scanResolution, stripTypeDeclaration } from './metro-resolver.js'
 import { RELATIVE_REQUEST, createNodeResolver } from './resolve-node.js'
-import { untouchedMemo } from './vfs-bundle/lazy.js'
+import { hostMemo } from './vfs-bundle/lazy.js'
 
 // Static module resolver for legacy package fields (`react-native`/`browser`/`main` + browser-spec
 // redirect maps) and platform suffixes (`.ios`/`.android`/`.native`), as Metro/React Native resolve
@@ -104,7 +104,7 @@ function matchRedirect(map, relPath) {
 // readJson of each manifest a resolver reads, once, as a lazy tree allows (untouchedMemo). Each resolver
 // reads its own, so a build on the disk reads each manifest as it is then.
 function manifestReader(host) {
-  const manifests = untouchedMemo(host.touches, { retouch: host.retouch })
+  const manifests = hostMemo(host)
   return (path) => manifests(path, () => readJson(path, host))
 }
 
@@ -319,7 +319,7 @@ export function createFieldResolver({
   // Each resolution made once per directory, specifier and conditions (a file's directory is all its
   // resolving reads), kept as the manifests are and in `kept` across rounds, with what a miss tried
   // (the resolver's `missTargets`, Scan's for vfs-bundle/prisma.js).
-  const resolutions = untouchedMemo(host.touches, { retouch: host.retouch, across: kept })
+  const resolutions = hostMemo(host, { across: kept })
   const once = (resolveFn) => {
     const of = (parentFile, specifier, callConditions) => resolutions(`${dirname(parentFile)}\0${specifier}\0${[...callConditions ?? conditions].join('\0')}`, () => {
       const tried = []

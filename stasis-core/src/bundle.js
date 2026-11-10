@@ -33,6 +33,7 @@ import {
   RESOURCE_FORMATS,
   sameGithub,
   splitNodeModulesPath,
+  upsert,
 } from './artifact-util.js'
 
 const VERSION = 1
@@ -235,7 +236,7 @@ export class Bundle {
         assertArtifactPath(path, 'bundle')
         const { dir, rel, name } = inferModuleDir(path)
         assert(!posixPathEscapes(dir) && !posixPathEscapes(rel))
-        const { files } = modules.get(dir) ?? modules.set(dir, { name, version: null, files: Object.create(null) }).get(dir)
+        const { files } = upsert(modules, dir, () => ({ name, version: null, files: Object.create(null) }))
         assert(!Object.hasOwn(files, rel), `bundle: duplicate file key '.' (v0 '' and '.')`)
         files[rel] = content
       }

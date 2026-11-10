@@ -35,6 +35,9 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
 // A get-or-read cache, `(key, read) => value`, keeping only what was read without `touches` of what a lazy tree has
 // yet to unpack, and nothing without `cache`. With `retouch` (a cache of one round), a touched value is kept too
 // and retouches on each hit; with `across` (a Map kept across rounds), an untouched one is kept there.
+// untouchedMemo over `host`'s touches (a lazy tree's), retouching as it does.
+export const hostMemo = (host, options) => untouchedMemo(host.touches, { retouch: host.retouch, ...options })
+
 export function untouchedMemo(touches = () => 0, { cache = true, retouch, across } = {}) {
   const kept = new Map()
   return (key, read) => {

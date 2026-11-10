@@ -9,7 +9,7 @@ import { utf8toString } from '@exodus/bytes/utf8.js'
 import { LockfileError, parseGitmodules } from '@preventive/lockfile/foundry.js'
 import { NO_ENTRY, lexists, readRegularFileOrNull } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, memoized, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
+import { hasNodeModulesSegment, memoized, nestedMap, relativeEscapes, upsert } from '@exodus/stasis-core/util'
 import { isDir } from '../resolve-typescript.js'
 
 // `/`-separated, as the loader's paths are: only Windows' separator is converted (on POSIX a `\\` is
@@ -120,7 +120,7 @@ function gitmodulesLeniently(text) {
     const name = variable.slice('submodule.'.length)
     if (section !== 'submodule') notes.push(`${header}, a section git reads as [submodule "${name}"]; reading it as that`)
     const kept = nestedMap(sections, name)
-    const given = paths.get(name) ?? paths.set(name, []).get(name)
+    const given = upsert(paths, name, () => [])
     for (const entry of keys) {
       if (!SUBMODULE_KEYS.has(entry.key)) continue
       if (entry.key === 'path') given.push(entry.value)

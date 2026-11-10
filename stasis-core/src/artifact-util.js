@@ -424,7 +424,14 @@ export const fileMapToObject = (map, { sorted = true } = {}) => {
   return fromEntries(entries.map(([k, v]) => [k, v instanceof Map ? fileMapToObject(v, { sorted }) : v]))
 }
 
-export const nestedMap = (map, key) => map.get(key) ?? map.set(key, new Map()).get(key)
+// `map`'s value of `key`, `make()`'s set there where it has none (undefined).
+export function upsert(map, key, make) {
+  let value = map.get(key)
+  if (value === undefined) map.set(key, (value = make()))
+  return value
+}
+
+export const nestedMap = (map, key) => upsert(map, key, () => new Map())
 
 export const objectToMaps = (obj) => new Map(
   Object.entries(obj).map(([k, v]) => [k, isPlainObject(v) ? objectToMaps(v) : v])

@@ -1,12 +1,12 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, moduleFileKey, sameGithub, withoutBom } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, sameGithub, upsert, withoutBom } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
 import { DIM, formatTable, painter, takesColors } from './table.js'
 import { parseFile, parseFileWithKind } from './parse.js'
 import { logos } from './sixel.js'
-import { collectWhy, invertReason, packageRecords, upsert } from './why.js'
+import { collectWhy, invertReason, packageRecords } from './why.js'
 
 export { formatTable }
 

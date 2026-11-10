@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, memoized, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsert, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -1749,8 +1749,7 @@ export class State {
     // Gather first: addFile mutates this.modules, so don't addFile while iterating it.
     const realRoot = this.#host.realpath(this.root)
     const claims = this.#reasonClaims()
-    const found = new Map()
-    const exists = (rel) => found.get(rel) ?? found.set(rel, packageJSONStat(this.#host, resolve(this.root, rel))?.isFile() ?? false).get(rel)
+    const exists = memoized((rel) => packageJSONStat(this.#host, resolve(this.root, rel))?.isFile() ?? false)
     // A manifest's bytes and parsed fields, or null where it's gone or malformed (skipped).
     const read = (rel) => {
       const buf = readModuleManifest({ baseDir: this.root, realBase: realRoot, rel, host: this.#host })
@@ -1775,7 +1774,7 @@ export class State {
       const scopes = new Map([[own, files]])
       for (const file of files) {
         const nearest = this.#bundled(file) ? scopeManifestOf(file, dir, exists) : undefined
-        if (nearest !== undefined) (scopes.get(nearest) ?? scopes.set(nearest, []).get(nearest)).push(file)
+        if (nearest !== undefined) upsert(scopes, nearest, () => []).push(file)
       }
       for (const [rel, of] of scopes) {
         if (this.#bundled(rel)) continue // already in this bundle

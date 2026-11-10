@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { packageJSONStat, packageJSONText } from '@exodus/stasis-core/bundle-util'
 import { isPlainObject } from '@exodus/stasis-core/util'
-import { untouchedMemo } from './vfs-bundle/lazy.js'
+import { hostMemo } from './vfs-bundle/lazy.js'
 
 // Node's CommonJS resolution (`createRequire(parent).resolve(spec, { conditions })`) over a
 // `host` (@exodus/stasis-core/host), mirroring lib/internal/modules/cjs/loader.js and
@@ -115,7 +115,7 @@ export function createNodeResolver(host) {
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)
     return { exists: true, path: pjsonPath, name: string(data.name), main: string(data.main), exports: map(data.exports), imports: map(data.imports) }
   }
-  const packages = untouchedMemo(host.touches, { retouch: host.retouch })
+  const packages = hostMemo(host)
   const readPackage = (pjsonPath) => {
     const pkg = packages(pjsonPath, () => parsePackage(pjsonPath))
     if (pkg instanceof Error) throw pkg
@@ -416,7 +416,7 @@ export function createNodeResolver(host) {
   }
 
   // Node's Module._pathCache: the tree is immutable for the build.
-  const memo = untouchedMemo(host.touches, { retouch: host.retouch })
+  const memo = hostMemo(host)
 
   return {
     // `conditions`: `require.resolve`'s own by default. A builtin returns its id, as it does.
