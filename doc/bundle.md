@@ -962,8 +962,11 @@ allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
 `resources`, `brotliQuality`, all optional; the file itself is required), and
 what it adds is held to its [allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules),
 as what the bundles and lockfile it adds to carry already is. A
-`stasis.lock.json` is updated only when one already exists. It also ships on
-the core CLI as `stasis-core add`.
+`stasis.lock.json` is updated only when one already exists. What those record
+of a dependency's [`integrity` and `patch`](file-formats.md#stasiscodebr) is
+held to how it is installed, and to each other, a split bundle's half no file
+is added to as well. It also ships on the core CLI
+as `stasis-core add`, which reads no package manager's record of the install.
 
 A directory expands to every file under it, minus what a sweep leaves out:
 

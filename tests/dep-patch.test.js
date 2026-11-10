@@ -58,6 +58,9 @@ test('a merge keeps one side\'s integrity or patch, and refuses two that differ 
     ['both\'s', { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL, patch: PATCHED }],
     ['two patches', { patch: PATCHED }, { patch: { integrity: patchIntegrity('0'.repeat(64)) } }, /module 'node_modules\/dep' patch mismatch/u],
     ['two integrities', { integrity: TARBALL }, { integrity: OTHER_TARBALL }, /module 'node_modules\/dep' integrity mismatch/u],
+    // An integrity and no patch: installed unpatched.
+    ['an integrity patched, and unpatched', { integrity: TARBALL, patch: PATCHED }, { integrity: TARBALL }, /module 'node_modules\/dep' patch mismatch \(\{"integrity":"sha256-[^"]+"\} vs none\)/u],
+    ['an integrity unpatched, and a patch', { integrity: TARBALL }, { patch: PATCHED }, /module 'node_modules\/dep' patch mismatch \(none vs /u],
     ['an integrity of fewer files', { integrity: TARBALL }, more, /module 'node_modules\/dep' integrity is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u],
     ['a patch of fewer files', more, { patch: PATCHED }, /module 'node_modules\/dep' patch is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u],
   ]
@@ -82,6 +85,11 @@ const captured = (dir, options, files = ['index.js']) => {
   if (!options.parent) add('index.js', { format: 'commonjs', isEntry: true })
   for (const file of files) add(`node_modules/dep/${file}`, file.endsWith('.bin') ? { resource: true } : { format: 'commonjs' })
   return state
+}
+const HOOK = Symbol.for('@exodus/stasis-core/installed')
+const installs = (t) => {
+  t.after(() => delete globalThis[HOOK])
+  return (account) => Object.assign(globalThis, { [HOOK]: (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', account]] : []) })
 }
 const attest = (path, integrity, more) => {
   const br = path.endsWith('.br')
@@ -117,6 +125,27 @@ test('a run holds a bundle\'s dependency integrity to its lockfile\'s, and write
   t.assert.throws(() => new State(dir, { scope: 'full', bundle: 'add', lock: 'add' }), /bundle module node_modules\/dep integrity is recorded of its files, not of 'node_modules\/dep\/more\.js' its record holds/u, 'nor rewritten without it')
 }))
 
+test('a record of an integrity and no patch is of a package installed unpatched, held so to another record and to the install', withTmp((t, dir) => {
+  installed(dir)
+  const [lockPath, bundlePath] = ['stasis.lock.json', 'stasis.code.br'].map((file) => join(dir, file))
+  const frozen = () => new State(dir, { scope: 'full', bundle: 'load', lock: 'frozen' })
+  captured(dir, { bundle: 'replace', lock: 'replace' }).write()
+  attest(lockPath, TARBALL)
+  attest(bundlePath, TARBALL, { patch: PATCHED })
+  t.assert.throws(frozen, /bundle module node_modules\/dep \(against the lockfile\) patch mismatch \(none vs /u, 'a bundle recording it patched')
+  attest(bundlePath, TARBALL, { patch: undefined })
+  const install = installs(t)
+  install({ integrity: TARBALL, patch: PATCHED })
+  t.assert.throws(frozen, /stasis\.lock\.json: module 'node_modules\/dep' \(recorded vs installed\) patch mismatch \(none vs /u, 'installed patched')
+  install({ integrity: TARBALL })
+  t.assert.doesNotThrow(frozen, 'installed unpatched')
+  install({ integrity: TARBALL, patch: PATCHED })
+  for (const path of [lockPath, bundlePath]) attest(path, undefined)
+  t.assert.doesNotThrow(frozen, 'a record of neither tells nothing of it')
+  for (const path of [lockPath, bundlePath]) attest(path, undefined, { patch: PATCHED })
+  t.assert.doesNotThrow(frozen, 'nor does one of a patch alone, of its integrity')
+}))
+
 test('a split bundle\'s halves and a sidecar agree on what they alone attest of a package, each held to the install', withTmp((t, dir) => {
   installed(dir)
   const at = (file) => join(dir, file)
@@ -130,7 +159,7 @@ test('a split bundle\'s halves and a sidecar agree on what they alone attest of 
   attest(at('res.br'), OTHER_TARBALL)
   t.assert.throws(loaded, /bundle: module 'node_modules\/dep' integrity mismatch/u, 'its halves')
   attest(at('res.br'), undefined, { patch: PATCHED })
-  t.assert.throws(loaded, /bundle: module 'node_modules\/dep' (integrity|patch) is recorded of one side's files/u, 'its halves, each of its own')
+  t.assert.throws(loaded, /bundle: module 'node_modules\/dep' patch mismatch \(none vs /u, 'its halves, one of an integrity and no patch: unpatched')
   attest(at('res.br'), undefined, { patch: undefined })
   t.assert.throws(() => new State(dir, { scope: 'full', ...split, bundle: 'add', lock: 'ignore', claim: false }), /bundle module node_modules\/dep integrity is recorded of its files, not of 'node_modules\/dep\/data\.bin'/u, 'one half\'s, of the other\'s files')
   attest(at('res.br'), TARBALL)
@@ -145,9 +174,8 @@ test('a split bundle\'s halves and a sidecar agree on what they alone attest of 
   const parent = new State(dir, { scope: 'full', ...split, bundle: 'load', lock: 'ignore' })
   const writing = captured(dir, { parent, bundle: 'add', lock: 'ignore', bundleFile: at('side2.br'), claim: false }, ['more.js'])
   t.assert.throws(() => writing.write(), /its integrity is recorded of the files it was read with, not of node_modules\/dep\/more\.js/u, 'a writing sidecar\'s own capture')
-  const hook = Symbol.for('@exodus/stasis-core/installed')
-  const install = (integrity) => Object.assign(globalThis, { [hook]: (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', { integrity, installed: true }]] : []) })
-  t.after(() => delete globalThis[hook])
+  const installAt = installs(t)
+  const install = (integrity) => installAt({ integrity, installed: true })
   install(OTHER_TARBALL)
   t.assert.throws(loaded, /code\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u)
   install(TARBALL)
@@ -155,6 +183,10 @@ test('a split bundle\'s halves and a sidecar agree on what they alone attest of 
   for (const file of ['code.br', 'res.br']) attest(at(file), undefined)
   attest(at('side.br'), OTHER_TARBALL)
   t.assert.throws(sidecar, /side\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u)
+  for (const file of ['code.br', 'res.br']) attest(at(file), TARBALL)
+  attest(at('side.br'), undefined)
+  const adding = new State(dir, { scope: 'full', ...split, bundle: 'add', lock: 'ignore', claim: false })
+  t.assert.throws(() => new State(dir, { scope: 'full', parent: adding, bundle: 'add', lock: 'ignore', bundleFile: at('side.br'), claim: false }), /bundle: module 'node_modules\/dep' integrity is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u, 'a sidecar attesting none: its files are no read of the install')
 }))
 
 // dep 1.0.0, which the lockfile patches, and other 1.0.0: as published, and as a cache store holds them.

@@ -254,6 +254,7 @@ if (command === '-v' || command === '--version') {
     brotliQuality,
   })
 } else if (command === 'add') {
+  await import('../src/run-installed.js')
   await addCli(argv, { label: 'stasis', fail })
 } else if (command === 'build') {
   const options = {

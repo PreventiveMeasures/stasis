@@ -19,6 +19,7 @@ export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORIT
 // Where another package registers the State's reader of how packages were installed, which stasis-core
 // reads no record of (stasis's run-installed.js): of modules and a root, their accounts by dir.
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
+export const installedAccounts = (modules, root) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root)) || new Map()
 
 // JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
 const NODE_EXT_FORMATS = new Map([

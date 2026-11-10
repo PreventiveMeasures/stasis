@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
+import { archiveIntegrity, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -766,20 +766,20 @@ const githubRoot = (url) => {
 // repository its own package.json names, so taken only where the bundle records that one; a
 // Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
 // where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
-// An npm one's tarball integrity where its lockfile locks it, and its patch. -> their accounts, by dir.
+// An npm one's tarball integrity where its lockfile locks it, and its patch; a Soldeer zip's checksum. -> their accounts, by dir.
 export function pinFromTree(bundle, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
   const { root: from, installed, packageManager } = tree
   const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
   const integrities = tree.integrities?.()
-  const locked = (integrity) => (PACKAGE_MANAGERS[packageManager].kind === 'js' && (integrities?.has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
+  const locked = ({ integrity, checksum }) => (PACKAGE_MANAGERS[packageManager].kind !== 'js' ? archiveIntegrity('soldeer', checksum) : (integrities?.has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
   const accounts = new Map()
   for (const [dir, info] of bundle.modules) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg.integrity), patchHash: pkg.patch?.hash })
+    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash })
     bundle.modules.set(dir, { ...info, ...pinned })
     accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }

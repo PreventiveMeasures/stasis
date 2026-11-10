@@ -334,6 +334,12 @@ held to its files patched with it. Its version fails where its copies record
 different patches (`patch-conflict`), or the npm lockfile read locks another or
 none (`patch-not-locked`); with none read, the recorded hash picks the patch.
 
+A copy that records an [`integrity`](file-formats.md#stasiscodebr) and no
+patch records it installed unpatched, and is held to its files as published:
+the bundle's patch named for its version is not tried. Its version fails where
+another copy records a patch (`patch-conflict`), or the lockfile read patches
+it (`patch-not-recorded`).
+
 A patch the bundle holds is own code, and is taken as the repository has it
 alone: checked with own code, or, with `--only-deps`, checked all the same
 (by git's blob id, as the repository's listing has it) where a repository and
