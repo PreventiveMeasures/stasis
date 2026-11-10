@@ -51,11 +51,13 @@ test('pnpm: lays out, into a Vfs of its own, the lockfile of cwd or the nearest 
     // eslint-disable-next-line no-await-in-loop -- one pin at a time
     await t.assert.rejects(load({ vfs: project(files) }), (err) => err.message === `/package.json: packageManager: pnpm "${pinned.split('+')[0]}" is not supported: only pnpm 10 and later are`, pinned)
   }
-  // pnpm 12 from 12.8.1 on, the one installed where the project pins none.
+  // Any pnpm 12, an early one too (deptree refuses only what it installs otherwise), and none after,
+  // the one installed where the project pins none.
   files['package.json'] = { name: 'p', version: '1.0.0' }
   await t.assert.rejects(load({ vfs: project(files), packageManagerVersion: '9.15.9' }), (err) => err.message === 'packageManagerVersion: pnpm "9.15.9" is not supported: only pnpm 10 and later are')
   t.assert.equal((await load({ vfs: project(files), packageManagerVersion: '12.8.1' })).packageManagerVersion, '12.8.1')
-  await t.assert.rejects(load({ vfs: project(files), packageManagerVersion: '12.0.0' }), /host\.pnpm: pnpm "12\.0\.0" is not supported: pnpm 12 is from 12\.8\.1 on/u)
+  t.assert.equal((await load({ vfs: project(files), packageManagerVersion: '12.0.0' })).packageManagerVersion, '12.0.0')
+  await t.assert.rejects(load({ vfs: project(files), packageManagerVersion: '13.0.0' }), /host\.pnpm: pnpm "13\.0\.0" is not supported: only pnpm 10, 11 and 12 are/u)
 })
 
 test('pnpm: reads every project pnpm finds and every one the lockfile has, and the workspace settings', async (t) => {
