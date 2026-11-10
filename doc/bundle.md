@@ -920,12 +920,6 @@ stasis bundle [--add] [--output=(path|-)] path/to/file.teal ...
 stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
 ```
 
-A TEAL program (Algorand's `.teal`) includes no other file, so a TEAL bundle is
-its entries, each carried as written: name each program, an app's approval and
-clear-state programs both. A `.teal` file any other bundle carries (named in
-`extra`, added by `stasis add`, read under `stasis run --fs`) is tagged `teal`
-too, as code, with no `resources` entry needed.
-
 A Solidity directory entry stands for every `.sol` file under it (a missing or
 empty one is skipped): `stasis bundle src test script` is what `forge build`
 compiles, `stasis bundle contracts` what Hardhat does. Imports resolve through

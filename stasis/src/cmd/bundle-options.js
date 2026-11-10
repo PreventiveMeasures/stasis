@@ -179,7 +179,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   const jsx = Boolean(values.jsx) || metro
   if (jsx && !allJs) throw new Error('--jsx is only valid for JS bundles')
   // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
-  // modules carry an npm package.json; the sol/php/bash/rust/teal bucketizers have no such manifest).
+  // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).
   const packageJSON = Boolean(values['package-json'])
   if (packageJSON && !allJs) throw new Error('--package-json is only valid for JS bundles')
   // --resources: comma-separated extension/filename allowlist for assets reached through the graph
