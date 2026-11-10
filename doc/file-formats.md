@@ -521,8 +521,9 @@ than ship it, and reading one is refused as well.
   give it to a file it wasn't recorded with stops (`lock = replace` records
   anew). A build held to `stasis.lock.json` merges nothing into it, so what the
   build alone records stays its own. `stasis add` adds a file of a package as
-  the artifact records it where an install record tells of it, and as that
-  record names it to an artifact recording none of the package.
+  the artifact records it where an install record tells of it; to one
+  recording none of the package, as a split bundle's other half records it,
+  else its other artifacts, else as that record names it.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
   a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
   manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,

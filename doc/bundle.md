@@ -964,7 +964,8 @@ what it adds is held to its [allowed and disallowed paths and modules](file-form
 as what the bundles and lockfile it adds to carry already is. A
 `stasis.lock.json` is updated only when one already exists. What those record
 of a dependency's [`integrity` and `patch`](file-formats.md#stasiscodebr) is
-held to how it is installed, and to each other. It also ships on the core CLI
+held to how it is installed, and to each other, a split bundle's half no file
+is added to as well. It also ships on the core CLI
 as `stasis-core add`, which reads no package manager's record of the install.
 
 A directory expands to every file under it, minus what a sweep leaves out:

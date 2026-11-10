@@ -1,5 +1,5 @@
 import { test } from 'node:test'
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -256,6 +256,27 @@ test('stasis add holds what the bundle and stasis.lock.json record to the instal
   for (const file of [code, LOCK]) rmSync(join(dir, file))
   t.assert.equal(stasisAdd(dir, 'node_modules/reg/index.js').status, 0)
   t.assert.equal(recordOf(dir, code).integrity, SRI, 'a package it records none of: as its install record names it')
+}))
+
+test("stasis add holds a split bundle's other half too, and adds to one half as the other attests the package", withTmp((t, dir) => {
+  npmProject(dir)
+  writeJson(join(dir, 'stasis.config.json'), { bundleFile: 'code.br', resourcesBundleFile: 'res.br', resources: ['bin'] })
+  writeFileSync(join(dir, 'node_modules', 'reg', 'data.bin'), 'data\n')
+  const add = (file) => stasisAdd(dir, `node_modules/reg/${file}`)
+  t.assert.equal(add('index.js').status, 0)
+  t.assert.equal(recordOf(dir, 'code.br').integrity, SRI)
+  npmProject(dir, { integrity: OTHER })
+  t.assert.match(add('data.bin').stderr, /code\.br: module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u, 'the half no file is added to')
+  t.assert.ok(!existsSync(join(dir, 'res.br')), 'nothing written')
+  npmProject(dir)
+  for (const [label, integrity] of [['as the other half attests it', SRI], ['of none, as the other half', undefined]]) {
+    const code = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'code.br'))))
+    code.modules['node_modules/reg'].integrity = integrity
+    writeFileSync(join(dir, 'code.br'), brotliCompressSync(JSON.stringify(code)))
+    rmSync(join(dir, 'res.br'), { force: true })
+    t.assert.equal(add('data.bin').status, 0, label)
+    t.assert.deepStrictEqual([recordOf(dir, 'res.br').integrity, Object.keys(recordOf(dir, 'res.br').files)], [integrity, ['data.bin']], label)
+  }
 }))
 
 test("a build held to a stasis.lock.json recording more of a package's files attests its own, and a run holds that to the install", withTmp(async (t, dir) => {

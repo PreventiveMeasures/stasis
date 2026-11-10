@@ -95,42 +95,48 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
   return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason(reason)
 }
 
-// -> (existing, added, path): `added` as it merges into `existing` (the artifact at `path`). What the
-// artifacts attest of a package agrees, and with how it is installed where the host tells (INSTALLED);
-// one an install record tells of is added as `existing` attests it, as that record does where none.
+// What the artifacts `stasis add` adds to attest of their packages. `hold`: each agrees with the others,
+// and with how its packages are installed where the host tells (INSTALLED). `attest`: a package an install
+// record tells of, as `existing` attests it, else its `companion` (a split bundle's other half), the others, that record.
 function installHolder(baseDir) {
   const known = new Map()
-  return (existing, added, path) => {
-    const attested = new Map([...existing?.modules ?? []].filter(([, info]) => ATTESTED_METADATA.some((field) => info[field] !== undefined)))
-    for (const [dir, info] of attested) known.set(dir, known.has(dir) ? withMetadataOf(known.get(dir), info, `${path}: module '${dir}' (against the other artifacts)`) : info)
-    const accounts = globalThis[INSTALLED]?.(new Map([...added.modules, ...attested]), baseDir) ?? new Map()
-    heldToAccounts(attested, accounts, `${path}: `)
-    for (const [dir, account] of accounts) {
-      const [record, of] = [added.modules.get(dir), existing?.modules.get(dir) ?? account]
-      if (record && !account.locked) added.modules.set(dir, moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, of[field]])) }))
-    }
-    return added
+  const installed = (modules) => globalThis[INSTALLED]?.(modules, baseDir) ?? new Map()
+  return {
+    hold(artifact, path) {
+      const attested = new Map([...artifact.modules].filter(([, info]) => ATTESTED_METADATA.some((field) => info[field] !== undefined)))
+      for (const [dir, info] of attested) known.set(dir, known.has(dir) ? withMetadataOf(known.get(dir), info, `${path}: module '${dir}' (against the other artifacts)`) : info)
+      heldToAccounts(attested, installed(attested), `${path}: `)
+    },
+    attest(existing, added, companion) {
+      for (const [dir, account] of installed(added.modules)) {
+        const of = existing?.modules.get(dir) ?? companion?.modules.get(dir) ?? known.get(dir) ?? account
+        if (!account.locked) added.modules.set(dir, moduleInfo({ ...added.modules.get(dir), ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, of[field]])) }))
+      }
+      return added
+    },
   }
 }
 
-// Merge add-if-missing into any existing bundle (divergent bytes throw: mergeModuleMaps). The write is a
+// The bundle at `targetPath` already, undefined for none.
+function readBundle(baseDir, targetPath) {
+  const abs = resolve(baseDir, targetPath)
+  if (!existsSync(abs)) return undefined
+  try {
+    return parseBundleBytes(readFileSync(abs))
+  } catch (cause) {
+    throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
+  }
+}
+
+// Merge add-if-missing into the bundle there (`existing`; divergent bytes throw: mergeModuleMaps). The write is a
 // thunk so every target's conflicts surface before a byte lands; serializing inside it keeps peak memory
 // at one target's bytes. `check` (the Policy, or null) sees the files added, then the bundle's own.
-function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, held) {
+function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing, attest) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
-  let mergedFrom
-  let existing
-  if (existsSync(abs)) {
-    try {
-      existing = parseBundleBytes(readFileSync(abs))
-    } catch (cause) {
-      throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
-    }
-    check?.(existing, recordedIn(targetPath))
-    mergedFrom = tally(existing).files
-  }
-  held(existing, bundle, targetPath)
+  if (existing) check?.(existing, recordedIn(targetPath))
+  const mergedFrom = existing && tally(existing).files
+  attest(existing, bundle)
   if (existing) bundle = existing.merge(bundle)
   const { files, packages } = tally(bundle)
   return {
@@ -142,19 +148,22 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, he
   }
 }
 
-// Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
-// prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
-// records: the files added were checked as the bundles'.
-function prepareLockfile(lockPath, lockAdd, check, held) {
-  let existing
+// The project's stasis.lock.json.
+function readLockfile(lockPath) {
   try {
-    existing = Lockfile.parse(readFileSync(lockPath, 'utf8'))
+    return Lockfile.parse(readFileSync(lockPath, 'utf8'))
   } catch (cause) {
     throw new Error(`add: failed to read the existing ${LOCK_FILE}`, { cause })
   }
+}
+
+// Merge into the project's stasis.lock.json (`existing`; strict: divergent bytes throw), deferring the write
+// like prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
+// records: the files added were checked as the bundles'.
+function prepareLockfile(lockPath, existing, lockAdd, check, held) {
   check?.(existing, recordedIn(LOCK_FILE))
   const before = tally(existing).files
-  const merged = existing.merge(held(existing, lockAdd, LOCK_FILE))
+  const merged = existing.merge(held.attest(existing, lockAdd))
   const total = tally(merged).files
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }
@@ -358,10 +367,15 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const summary = []
   const writes = []
   const repo = detectRepo(baseDir)
+  // Each bundle and the lockfile there, read before a file is added to any: what one attests of a
+  // package is held of the others too, one no file is added to as well.
   const held = installHolder(baseDir)
+  const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, readBundle(baseDir, file)]))
+  const lock = hasLock ? readLockfile(lockPath) : undefined
+  for (const [path, artifact] of [...bundles, [LOCK_FILE, lock]]) if (artifact) held.hold(artifact, path)
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
-    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality, check, held)
+    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality, check, bundles.get(target), (existing, added) => held.attest(existing, added, bundles.get(target === bundleFile ? resourcesBundleFile : bundleFile)))
     writes.push(write)
     summary.push(`+${counts.added} ${kind} (${counts.total} total) -> ${counts.path}`)
   }
@@ -378,7 +392,7 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   if (hasLock) {
     const allFiles = new Map([...codeFiles, ...resourceFiles])
     const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
-    const { write, counts } = prepareLockfile(lockPath, lockAdd, check, held)
+    const { write, counts } = prepareLockfile(lockPath, lock, lockAdd, check, held)
     writes.push(write)
     summary.push(`+${counts.added} (${counts.total} total) -> ${LOCK_FILE}`)
   }
