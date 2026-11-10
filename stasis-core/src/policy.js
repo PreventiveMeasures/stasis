@@ -3,7 +3,7 @@ import { posix, relative, resolve } from 'node:path'
 import { dependencyEcosystem, hasNodeModulesSegment, moduleFileKeys, posixPathEscapes, sortedByPath, splitNodeModulesPath } from './artifact-util.js'
 import { readPackageJson } from './bundle-util.js'
 import { diskHost } from './host.js'
-import { relativeEscapes, toPosix } from './util.js'
+import { memoized, relativeEscapes, toPosix } from './util.js'
 
 // stasis.config.json's allowedPaths/disallowedPaths (artifact paths) and allowedModules/disallowedModules
 // (dependency names). A Policy holds one config's four (the top level's or one entry's); each rule is
@@ -120,17 +120,14 @@ export function linksOn(root, host = diskHost) {
   } catch {
     return () => undefined
   }
-  const found = new Map()
-  const manifests = new Map()
+  const manifestOf = memoized((dir) => {
+    const manifest = readPackageJson(realRoot, `${dir}/package.json`, { host })
+    const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
+    return { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined }
+  })
   const packageOf = (real) => {
     const dir = splitNodeModulesPath(real)?.dir
-    if (dir === undefined) return undefined
-    if (!manifests.has(dir)) {
-      const manifest = readPackageJson(realRoot, `${dir}/package.json`, { host })
-      const name = typeof manifest?.name === 'string' && manifest.name !== '' ? manifest.name : installedName(dir)
-      manifests.set(dir, { dir, name, version: typeof manifest?.version === 'string' ? manifest.version : undefined })
-    }
-    return manifests.get(dir)
+    return dir === undefined ? undefined : manifestOf(dir)
   }
   const find = (path) => {
     const absolute = resolve(root, path)
@@ -146,10 +143,7 @@ export function linksOn(root, host = diskHost) {
     const pkg = packageOf(rel)
     return { real: rel, pkg: pkg && { ...pkg, via: path } }
   }
-  return (path) => {
-    if (!found.has(path)) found.set(path, find(path))
-    return found.get(path)
-  }
+  return memoized(find)
 }
 
 // What an artifact (a Bundle, Lockfile or State) carries: its paths, dependencies and links (path -> real

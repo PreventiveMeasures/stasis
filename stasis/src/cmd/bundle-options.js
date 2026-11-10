@@ -2,13 +2,11 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, parseBrotliQuality, parseResourcesOption, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
 import { lockfileOnlyError } from './output.js'
-
-const CONFIG_FILE = 'stasis.config.json'
 
 // `stasis bundle`'s flags, as parseArgs takes them.
 export const BUNDLE_FLAGS = {

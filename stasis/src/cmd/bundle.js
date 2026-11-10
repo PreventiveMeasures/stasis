@@ -20,7 +20,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
+import { attestsAny, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, LOCK_FILE, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -962,7 +962,7 @@ export async function buildJsBundle({ cwd = process.cwd(), env = process.env, en
 }
 
 // The files that root a State in the directory holding one (state.js's discovery).
-const STASIS_ROOT_FILES = ['stasis.config.json', 'stasis.lock.json', DEFAULT_BUNDLE_FILE]
+const STASIS_ROOT_FILES = [CONFIG_FILE, LOCK_FILE, DEFAULT_BUNDLE_FILE]
 
 // ` (rooted there by its <the STASIS_ROOT_FILES in `dir`><hint>)`, or '' where `dir` holds none.
 function rootedBy(dir, host = diskHost, hint = '') {
@@ -1066,9 +1066,6 @@ export function fieldResolverFor(platform, { mainFields, metro = false, assetExt
   })
   return { extras, mainFields: fields, resolver }
 }
-
-const CONFIG_FILE = 'stasis.config.json'
-const LOCK_FILE = 'stasis.lock.json'
 
 // The stasis.config.json in `cwd`, parsed; null where there is none. `name`, if any, prefixes errors.
 export function readConfigFile(name, cwd, host = diskHost) {

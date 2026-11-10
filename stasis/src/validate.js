@@ -34,7 +34,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, LOCK_FILE, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -1157,8 +1157,6 @@ export function lockedBy(lockfiles) {
   }
 }
 
-const CONFIG_FILE = 'stasis.config.json'
-
 // The lockfiles the stasis.config.json in `directory` of a repository names in its `lockfiles`, by
 // their paths from the repository's root, which the build lays out a tree of each of, in place of
 // the one it finds; undefined where it names none, or there is none. `list(dir)` and `read(path)` as
@@ -1613,8 +1611,8 @@ async function heldToCommitted(attested, directory, list, read) {
     if (error instanceof HttpError && error.status === 404) return []
     throw error
   })
-  if (!listed.includes('stasis.lock.json')) return undefined
-  const path = pathIn(directory, 'stasis.lock.json')
+  if (!listed.includes(LOCK_FILE)) return undefined
+  const path = pathIn(directory, LOCK_FILE)
   try {
     const committed = Lockfile.parse(await read(path))
     const artifact = attested()

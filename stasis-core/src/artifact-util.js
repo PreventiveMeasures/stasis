@@ -362,9 +362,13 @@ export function assert(condition, msg) {
   if (!condition) throw new Error(msg)
 }
 
+export const LOCK_FILE = 'stasis.lock.json'
+export const CONFIG_FILE = 'stasis.config.json'
+export const BUNDLE_FILE = 'stasis.code.br'
+
 // stasis's lockfile, by name at any depth and in any case: a case-insensitive disk resolves
 // `STASIS.LOCK.JSON` to it too.
-export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === 'stasis.lock.json'
+export const isLockfileName = (path) => path.slice(path.lastIndexOf('/') + 1).toLowerCase() === LOCK_FILE
 
 // sortPaths' order, of two paths as split at '/' (read, not changed).
 function compareSegments(al, bl) {

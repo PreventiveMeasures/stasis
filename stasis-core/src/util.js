@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer'
 import { basename, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { ARCHIVE_ALGORITHM, NODE_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, CONFIG_FILE, NODE_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
@@ -83,7 +83,19 @@ export function parseResourcesOption(label, resources) {
   return out
 }
 
-const CONFIG_FILE_NAME = 'stasis.config.json'
+// The `lock` and `bundle` modes, `lock`'s in the order extract's error lists them.
+export const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
+export const BUNDLE_MODES = new Set(['none', 'ignore', 'add', 'replace', 'load', 'frozen'])
+
+// `fn`, computed once per `keyOf(arg)` (the argument itself by default).
+export function memoized(fn, keyOf = (arg) => arg) {
+  const cache = new Map()
+  return (arg) => {
+    const key = keyOf(arg)
+    if (!cache.has(key)) cache.set(key, fn(arg))
+    return cache.get(key)
+  }
+}
 
 const unnegated = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
 
@@ -104,7 +116,7 @@ export function parseExtraOption(label, extra) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }
-  return extra.some((entry) => extraPattern(entry) === CONFIG_FILE_NAME) ? [...extra] : [...extra, CONFIG_FILE_NAME]
+  return extra.some((entry) => extraPattern(entry) === CONFIG_FILE) ? [...extra] : [...extra, CONFIG_FILE]
 }
 
 // An `extra` entry's pattern, `!` dropped, as expandExtra matches it: no `./`, no trailing `/`.
@@ -125,7 +137,7 @@ export function parseLockfilesOption(label, lockfiles) {
     }
     // As every artifact path: `/`-separated, a `\` being no separator but part of a name.
     if (entry.includes('\\') || posix.isAbsolute(entry)) {
-      throw new Error(`${label}: lockfiles entry '${entry}' must be a POSIX path relative to the directory holding ${CONFIG_FILE_NAME}`)
+      throw new Error(`${label}: lockfiles entry '${entry}' must be a POSIX path relative to the directory holding ${CONFIG_FILE}`)
     }
     const path = posix.normalize(entry)
     if (path.endsWith('/') || path === '.' || path === '..' || path.endsWith('/..')) {

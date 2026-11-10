@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { archiveIntegrity, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
+import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -29,8 +29,6 @@ import { isDir, isFile } from '../resolve-typescript.js'
 // directory installed or above it (yarnclean.js), whatever installs it. The project is read through
 // a host it is given, and nothing else. pnpm's and npm's trees may be laid out lazily, each package
 // unpacked once asked for (lazy.js).
-
-const CONFIG_FILE = 'stasis.config.json'
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 export function nearest(cwd, holds) {

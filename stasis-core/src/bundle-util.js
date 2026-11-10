@@ -4,7 +4,7 @@ import { dirname, join, posix, relative, resolve } from 'node:path'
 import { isValidRepoField } from './bundle.js'
 import { isPackageString, isSubpackage, posixPathEscapes } from './artifact-util.js'
 import { diskHost } from './host.js'
-import { assertRealPathWithinBase, hasNodeModulesSegment, relativeEscapes, splitNodeModulesPath, toPosix } from './util.js'
+import { assertRealPathWithinBase, hasNodeModulesSegment, memoized, relativeEscapes, splitNodeModulesPath, toPosix } from './util.js'
 
 // Text as Node reads a package.json: UTF-8, past a byte order mark.
 const utf8 = new TextDecoder()
@@ -120,12 +120,7 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 // findPackageMetadata (with `options`) of each project-relative path, once per directory, the only
 // thing its answer depends on.
 export function packageLookup(baseDir, options) {
-  const byDir = new Map()
-  return (path) => {
-    const dir = posix.dirname(path)
-    if (!byDir.has(dir)) byDir.set(dir, findPackageMetadata(baseDir, path, options))
-    return byDir.get(dir)
-  }
+  return memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
 }
 
 // The directory, package-relative, of the package.json naming `manifestName` at `dir` (project-relative,

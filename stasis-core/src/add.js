@@ -9,15 +9,12 @@ import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, sta
 import { diskHost } from './host.js'
 import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, attestsAny, classifyFormat, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from './util.js'
+import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONFIG_FILE, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, installedAccounts, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, LOCK_FILE, memoized, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
 // these at write (outputMatcher), which must read the real disk, not be captured as the program's
 // reads. It sweeps `extra` through its host, which the disk's snapshots too.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
-
-const CONFIG_FILE = 'stasis.config.json'
-const LOCK_FILE = 'stasis.lock.json'
 
 // A `.js`/`.ts` follows its package `type` (LIMITATION: none means commonjs; use `.mjs`/`.cjs` or set it).
 // Any other name is classifyFormat's call: a format, null for a JS-family file (`.jsx`/`.tsx`: source with
@@ -39,7 +36,7 @@ function readAddConfig(baseDir) {
   if (cfg.brotliQuality !== undefined && !isBrotliQuality(cfg.brotliQuality)) {
     throw new Error(`${CONFIG_FILE}: brotliQuality must be an integer 0..11 (got ${JSON.stringify(cfg.brotliQuality)})`)
   }
-  const bundleFile = cfg.bundleFile ?? 'stasis.code.br'
+  const bundleFile = cfg.bundleFile ?? BUNDLE_FILE
   const resourcesBundleFile = cfg.resourcesBundleFile
   // Split targets must be distinct files (else they clobber on write); canonicalized so symlink and
   // relative aliases are caught too.
@@ -245,11 +242,7 @@ export function expandExtra(baseDir, patterns, outputs, host = diskHost) {
   const exclusions = patterns.filter((pattern) => pattern.startsWith('!')).map(extraPattern)
   // Each path once: a walk asks of it, a sweep again, and a named path of every directory above it,
   // where the disk's path.matchesGlob parses each pattern anew.
-  const excluded = new Map()
-  const exclude = exclusions.length === 0 ? undefined : (rel) => {
-    if (!excluded.has(rel)) excluded.set(rel, exclusions.some((pattern) => host.matchesGlob(rel, pattern)))
-    return excluded.get(rel)
-  }
+  const exclude = exclusions.length === 0 ? undefined : memoized((rel) => exclusions.some((pattern) => host.matchesGlob(rel, pattern)))
   const entries = patterns.filter((pattern) => !pattern.startsWith('!')).flatMap((pattern) => {
     const matches = globPaths(host, pattern, baseDir, baseDir, exclude)
     return matches.length === 0 ? [pattern] : sortedByPath(matches)

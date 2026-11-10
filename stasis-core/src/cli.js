@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { constants as osConstants } from 'node:os'
 import { resolve } from 'node:path'
-import { parseBrotliQuality, parseLeadingOptions, valueFlagsOf } from './util.js'
+import { BUNDLE_MODES, LOCK_MODES, parseBrotliQuality, parseLeadingOptions, valueFlagsOf } from './util.js'
 
 const RUN_OPTIONS = {
   lock: { type: 'string', default: 'none' },
@@ -21,7 +21,6 @@ const RUN_OPTIONS = {
   resources: { type: 'string' },
   'brotli-quality': { type: 'string' },
 }
-const LOCK_MODES = new Set(['none', 'ignore', 'add', 'replace', 'frozen'])
 // `--fs` is taken only as `--fs=<mode>`: a bare `--fs` is refused rather than given the program as its mode.
 const RUN_VALUE_FLAGS = valueFlagsOf(RUN_OPTIONS).filter((flag) => flag !== '--fs')
 
@@ -34,7 +33,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   if (!LOCK_MODES.has(lock)) fail('Error: invalid --lock value')
   const bundleFile = values['bundle-file'] ? resolve(values['bundle-file']) : ''
   const resourcesBundleFile = values['resources-bundle-file'] ? resolve(values['resources-bundle-file']) : ''
-  if (!['none', 'ignore', 'add', 'replace', 'load', 'frozen'].includes(bundle)) fail('Error: invalid --bundle value')
+  if (!BUNDLE_MODES.has(bundle)) fail('Error: invalid --bundle value')
   if (bundleFile && bundle === 'none') fail('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
   // --resources-bundle-file needs an active bundle mode (unlike --bundle-file, inert under ignore).
   if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')

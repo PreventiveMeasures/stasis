@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { isPlainObject, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -246,8 +246,6 @@ const chainTransforms = (first, second) => async (source, file) => {
   const firstMade = await first(source, file)
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
-
-const CONFIG_FILE = 'stasis.config.json'
 
 // A list option as the command line takes one, as an array of strings or one string, each split at commas.
 const listOf = (value) => [value].flat().flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean)

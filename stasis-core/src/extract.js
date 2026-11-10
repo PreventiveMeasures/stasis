@@ -5,10 +5,7 @@ import { parseBundleBytes } from './brotli.js'
 import { Bundle } from './bundle.js'
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js'
-import { EXECUTE_BITS, canObserveExecuteBits, moduleFileKey, relativeEscapes } from './util.js'
-
-const FILE_LOCK = 'stasis.lock.json'
-const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
+import { EXECUTE_BITS, canObserveExecuteBits, LOCK_FILE, LOCK_MODES, moduleFileKey, relativeEscapes } from './util.js'
 
 // Buffer.from silently drops invalid chars, so a tampered `resource:base64` could hash-spoof; require a fixed point.
 function assertCanonicalBase64(content, file) {
@@ -115,7 +112,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
 
   const outDir = resolve(cwd, output ?? '.')
   const outPrefix = outDir === sep ? outDir : `${outDir}${sep}`
-  const lockAbs = join(outDir, FILE_LOCK)
+  const lockAbs = join(outDir, LOCK_FILE)
   // A file (or a dangling symlink) there holds neither a lockfile nor room for the bundle's paths.
   const outStats = statSync(outDir, { throwIfNoEntry: false })
   if (outStats === undefined ? lstatSync(outDir, { throwIfNoEntry: false }) !== undefined : !outStats.isDirectory()) {
@@ -182,7 +179,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   // missing), and each target missing or already holding its bytes. The lockfile, which --lock governs, is no
   // exception to the bundle being off limits.
   const bundleId = fileId(bundleAbs)
-  if (lockText !== null && fileId(lockAbs) === bundleId) throw new Error(`extract: ${FILE_LOCK} is the bundle being extracted`)
+  if (lockText !== null && fileId(lockAbs) === bundleId) throw new Error(`extract: ${LOCK_FILE} is the bundle being extracted`)
   const checkedDirs = new Set()
   const inPlace = new Set()
   for (const { abs, content, file } of writes) {
@@ -240,14 +237,14 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   const executables = writes.filter(({ exec }) => exec).length
   const notes = [executables > 0 && `${executables} executable`, inPlace.size > 0 && `${inPlace.size} already in place`].filter(Boolean)
   const execNote = notes.length > 0 ? ` (${notes.join(', ')})` : ''
-  const andLock = lockText !== null && !merging ? ` and ${FILE_LOCK}` : ''
-  const lockNote = frozen ? `, verified against ${FILE_LOCK}` : merging ? `, added to ${FILE_LOCK}` : ''
+  const andLock = lockText !== null && !merging ? ` and ${LOCK_FILE}` : ''
+  const lockNote = frozen ? `, verified against ${LOCK_FILE}` : merging ? `, added to ${LOCK_FILE}` : ''
   console.warn(`[${logLabel}] Extracted ${writes.length} file(s)${execNote}${andLock} to ${outDir}${lockNote}`)
   if (chmodFailures > 0) {
     console.warn(`[${logLabel}] Warning: could not set file modes on ${chmodFailures} file(s) (the filesystem may not support them); contents were written`)
   }
   if (!withLockfile && writesLock) {
-    console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${FILE_LOCK} can not be restored and was not written`)
+    console.warn(`[${logLabel}] Warning: legacy v0 bundle records no package name/version, so ${LOCK_FILE} can not be restored and was not written`)
   }
   return { dir: outDir, files: writes.length, executable: executables, inPlace: inPlace.size, lock }
 }

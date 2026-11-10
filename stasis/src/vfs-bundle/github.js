@@ -1,7 +1,7 @@
 import { posix } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { posixPathEscapes } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, posixPathEscapes } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
@@ -11,7 +11,6 @@ import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entri
 import { checkCache, checkTarget, detectPackageManager, installedAlone, listsFile, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
-const CONFIG_FILE = 'stasis.config.json'
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
 // What a git tree holds (upstream's verification refuses anything else from GitHub).
