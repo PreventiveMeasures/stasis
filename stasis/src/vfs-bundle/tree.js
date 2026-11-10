@@ -19,16 +19,9 @@ import { settleSoldeer } from './soldeer.js'
 import { YARNCLEAN, yarnclean } from './yarnclean.js'
 import { isDir, isFile } from '../resolve-typescript.js'
 
-// A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm
-// install --frozen-lockfile --ignore-scripts` lays out its node_modules with pnpm 10, 11 or 12,
-// `yarn install --frozen-lockfile --ignore-scripts` with yarn 1.22, `npm ci --ignore-scripts` with
-// npm 10.9 or 11, or `soldeer install` its dependencies folder with Soldeer 0.12, and the host that
-// reads the project through them; without devDependencies, as `pnpm install --prod`, `yarn install
-// --production` and `npm ci --omit=dev` lay it out, where the project's stasis.config.json says so.
-// node_modules is then cleaned as `yarn autoclean` would clean it by each .yarnclean in the
-// directory installed or above it (yarnclean.js), whatever installs it. The project is read through
-// a host it is given, and nothing else. pnpm's and npm's trees may be laid out lazily, each package
-// unpacked once asked for (lazy.js).
+// A project's dependencies laid out in memory from its lockfile by @preventive/deptree, as `pnpm install` (10 to 12),
+// `yarn install` (1.22), `npm ci` (10.9 or 11) or `soldeer install` (0.12) lay them out, scripts ignored, then
+// cleaned by each .yarnclean (yarnclean.js); and the host reading the project, through a host it is given, over them.
 
 // cwd or the nearest of its ancestors that `holds`, or null.
 export function nearest(cwd, holds) {
@@ -38,7 +31,6 @@ export function nearest(cwd, holds) {
   }
 }
 
-// Whether a directory holds a file of one of `names`.
 export const holding = (host, ...names) => (dir) => names.some((name) => isFile(join(dir, name), host))
 
 // Whether `dir` holds a package: a package.json naming one, or unreadable, which is one all the same;
@@ -92,34 +84,30 @@ export function projectView(host, root) {
 // What pnpm matches packages' `libc` against (as deptree's host.libc takes it).
 const LIBCS = new Set(['glibc', 'musl', 'unknown'])
 
-// pnpm's libc, detect-libc's familySync, by its check of Node's report alone (it reads
-// /usr/bin/ldd first): unknown where that can't tell, which pnpm then installs everything for.
-// The report leaves out the network, whose reverse DNS can stall.
-let machineLibc
-function currentLibc() {
-  if (machineLibc !== undefined) return machineLibc
-  machineLibc = 'unknown'
-  if (process.platform !== 'linux' || !process.report) return machineLibc
+// pnpm's libc, detect-libc's familySync by its check of Node's report alone (it reads /usr/bin/ldd first): unknown
+// where that can't tell, which pnpm then installs everything for. The report leaves out the network, whose reverse
+// DNS can stall.
+function reportedLibc() {
+  if (process.platform !== 'linux' || !process.report) return 'unknown'
   const { excludeNetwork } = process.report
   try {
     process.report.excludeNetwork = true
     const report = process.report.getReport()
-    if (report.header?.glibcVersionRuntime) machineLibc = 'glibc'
-    else if (report.sharedObjects?.some((file) => file.includes('libc.musl-') || file.includes('ld-musl-'))) machineLibc = 'musl'
+    if (report.header?.glibcVersionRuntime) return 'glibc'
+    if (report.sharedObjects?.some((file) => file.includes('libc.musl-') || file.includes('ld-musl-'))) return 'musl'
   } catch { /* unknown */ } finally {
     process.report.excludeNetwork = excludeNetwork
   }
-  return machineLibc
+  return 'unknown'
 }
-
-const machine = () => ({ node: process.versions.node, os: process.platform, cpu: process.arch })
+let machineLibc
+const currentLibc = () => (machineLibc ??= reportedLibc())
 
 // The machine a tree is laid out for: this one, but for the `os`, `cpu` and `libc` given. A libc is
 // detected only for this machine's os; for another, unless given, pnpm matches none ('unknown').
 const target = ({ os, cpu, libc } = {}) => {
-  const here = machine()
-  const forOs = os ?? here.os
-  return { node: here.node, os: forOs, cpu: cpu ?? here.cpu, libc: libc ?? (forOs === here.os ? currentLibc() : 'unknown') }
+  const forOs = os ?? process.platform
+  return { node: process.versions.node, os: forOs, cpu: cpu ?? process.arch, libc: libc ?? (forOs === process.platform ? currentLibc() : 'unknown') }
 }
 
 // `os` and `cpu` as Node names them (process.platform, process.arch); `libc` is pnpm's alone, and
@@ -166,11 +154,9 @@ function npmWorkspaceRoot(host, dir, os) {
   return null
 }
 
-// npm installs the package cwd is in from npmWorkspaceRoot's, whatever package-lock.json is nearer,
-// and past a workspace declaring workspaces of its own -- and any other package from the nearest
-// package-lock.json beside a package.json, npm's prefix being no directory without one. A
-// package.json with no name is a package where a workspace root takes it, which npm names by its
-// directory, and else a `type` marker, its files the package's above.
+// npm installs the package cwd is in from npmWorkspaceRoot's (past a workspace declaring its own), whatever
+// package-lock.json is nearer; any other from the nearest package-lock.json beside a package.json. A nameless
+// package.json is a package where a workspace root takes it, else a `type` marker.
 function npmRoot(host, cwd, os) {
   for (let dir = cwd; ; dir = dirname(dir)) {
     if (isFile(join(dir, 'package.json'), host)) {
@@ -187,22 +173,16 @@ function npmRoot(host, cwd, os) {
 // neither.
 const npmHost = (npm, given) => {
   const { libc, ...host } = target(given)
-  return { npm, ...host, ...(libc === 'glibc' || libc === 'musl' ? { libc } : {}) }
+  return { npm, ...host, ...((libc === 'glibc' || libc === 'musl') && { libc }) }
 }
 
-// Whether a directory holding yarn's or npm's lockfile is installed from by itself: a package.json
-// above may declare it a workspace.
-const aloneWithoutManifestAbove = async (names, above) => !(await above()).some((dir) => dir.includes('package.json'))
+// Whether a directory holding the lockfile is installed from by itself: no directory above it holds `file`, which
+// may take it in (a workspace's root).
+const noneAbove = (file) => async (names, above) => !(await above()).some((dir) => dir.includes(file))
 
-// What each package manager reproduced installs from: the kind of bundle it installs for; its
-// lockfile; the name a root package.json's packageManager pins it by, where one does; the version
-// reproduced where nothing pins one, and the oldest major taken (`from`); the directory it installs
-// cwd from, which holds the lockfile (for the os given, where that changes it); whether a directory
-// holding the lockfile is installed from by itself, by the names in it and in each directory above it (`above()`, as listings); the
-// projects it finds in a view of that directory, for the machine given; the directory it installs
-// in each, and any it hides, as another package manager's; whether it lays out a tree from the
-// lockfile alone, which may then be lazy; and the tree, without what devDependencies alone reach
-// where `given.production` (Soldeer has no devDependencies, so it leaves out nothing).
+// Each package manager reproduced: the kind of bundle it builds, its lockfile, the name packageManager pins it by, the
+// version taken where none is pinned and the oldest major (`from`); the directory it installs cwd from, whether that
+// stands alone, its projects, where it installs and what it hides; whether it may be lazy; and its tree.
 const PACKAGE_MANAGERS = {
   pnpm: {
     kind: 'js',
@@ -212,11 +192,11 @@ const PACKAGE_MANAGERS = {
     from: 10,
     // pnpm installs from the workspace's root, whatever pnpm-lock.yaml is nearer.
     root: (host, cwd) => nearest(cwd, holding(host, 'pnpm-workspace.yaml')) ?? nearest(cwd, holding(host, 'pnpm-lock.yaml')),
-    alone: async (names, above) => !(await above()).some((dir) => dir.includes('pnpm-workspace.yaml')),
+    alone: noneAbove('pnpm-workspace.yaml'),
     projects: (view, pnpm) => findPnpmProjects({ project: view, host: { pnpm } }),
     installs: 'node_modules',
     lazy: true,
-    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) }, cache: given?.cache, lazy: given?.lazy, production: given?.production }),
+    build: (view, pnpm, _file, given) => buildPnpmTree({ project: view, host: { pnpm, ...target(given) }, cache: given.cache, lazy: given.lazy, production: given.production }),
   },
   yarn1: {
     kind: 'js',
@@ -224,14 +204,14 @@ const PACKAGE_MANAGERS = {
     pin: 'yarn',
     version: '1.22.22',
     root: yarn1Root,
-    alone: aloneWithoutManifestAbove,
+    alone: noneAbove('package.json'),
     // The integrities yarn.lock locks: yarn 1 fetches an entry locking a sha1 alone by the registry's sha512.
     integrities: (text) => new Set(Object.values(parseYarn1Lockfile(text, { checkVersions: false }).packages).map(({ resolution }) => tarballIntegrityOf(resolution?.integrity)).filter(Boolean)),
     projects: (view) => findYarn1Workspaces({ project: view }),
     installs: 'node_modules',
     build: (view, yarn, file, given) => {
       const { libc: _, ...host } = target({ ...given, libc: 'unknown' }) // yarn 1 matches no libc
-      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host }, cache: given?.cache, production: given?.production }))
+      return naming(file, buildYarn1Tree({ project: view, host: { yarn, ...host }, cache: given.cache, production: given.production }))
     },
   },
   npm: {
@@ -240,11 +220,11 @@ const PACKAGE_MANAGERS = {
     // npm reads no packageManager, so nothing pins it.
     version: '11.21.0',
     root: npmRoot,
-    alone: aloneWithoutManifestAbove,
+    alone: noneAbove('package.json'),
     projects: (view, _npm, given) => findNpmWorkspaces({ project: view, os: target(given).os }),
     installs: 'node_modules',
     lazy: true,
-    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given?.cache, lazy: given?.lazy, production: given?.production })),
+    build: (view, npm, file, given) => naming(file, buildNpmTree({ project: view, host: npmHost(npm, given), cache: given.cache, lazy: given.lazy, production: given.production })),
   },
   soldeer: {
     kind: 'sol',
@@ -258,14 +238,13 @@ const PACKAGE_MANAGERS = {
     installs: 'dependencies',
     hides: 'node_modules',
     async build(view, soldeer, file, given) {
-      const tree = await naming(file, buildSoldeerTree({ project: view, host: { soldeer, os: given?.os ?? process.platform }, github: given?.client }))
+      const tree = await naming(file, buildSoldeerTree({ project: view, host: { soldeer, os: given.os ?? process.platform }, github: given.client }))
       settleSoldeer(view, tree.vfs, dirname(file))
       return tree
     },
   },
 }
 
-// Their names.
 const PACKAGE_MANAGER_NAMES = Object.keys(PACKAGE_MANAGERS)
 
 // layOutTree's tree, with the host reading `project` through it (treeHost), but a lazy one's, whose
@@ -275,13 +254,9 @@ export async function loadTree(options) {
   return tree.lazy === undefined ? { ...tree, host: treeHost(tree, options.project) } : tree
 }
 
-// The host reading `project`, a host of the project's Vfs, through `tree` (layOutTree's): the tree
-// serves what the package manager installs, and any file it writes beside it at the root. A lazy
-// tree is read as lazyView reads it, into the round's `reads`, caching nothing it reads of a package
-// not unpacked yet: each such read reaches it, so that what a file's scan reads tells whether it
-// touched one. Its `probing(fn)` is `fn()`, its reads taken as probes of what files a package holds
-// (lazyView), which read none of its code. The trees as one (forestOf) are read alike, by what they
-// install and hide.
+// The host reading `project` (a host of the project's Vfs) through `tree`, which serves what it installs. A lazy tree
+// is read through lazyView into the round's `reads`, caching nothing read of a package not yet unpacked; its
+// `probing(fn)` is `fn()`, its reads taken as probes of what files a package holds.
 export function treeHost(tree, project, reads) {
   const { installs, hides } = tree.trees === undefined ? { installs: installsOf(tree), hides: hiding(PACKAGE_MANAGERS[tree.packageManager].hides) } : tree
   if (tree.lazy === undefined) return vfsHost(tree.vfs, { root: tree.root, outside: project, installs, hides })
@@ -297,7 +272,6 @@ export function treeHost(tree, project, reads) {
   return host
 }
 
-// Refused where `packageManager` lays out no tree from the lockfile alone, which `lazy` would have.
 export function checkLazy(name, packageManager) {
   if (!PACKAGE_MANAGERS[packageManager].lazy) throw new Error(`${name}: lazy is taken with pnpm and npm alone, which lay out a tree from the lockfile alone; ${packageManager}'s is not`)
 }
@@ -306,7 +280,6 @@ export function checkLazy(name, packageManager) {
 // lays it out: pnpm's and npm's, but where a .yarnclean in cwd or above it keeps paths with `!`.
 export const lazyTaken = (project, packageManager, cwd) => PACKAGE_MANAGERS[packageManager].lazy === true && !yarnclean(project, cwd)?.keeps
 
-// The lockfile `packageManager` installs from, e.g. 'pnpm-lock.yaml'.
 export const lockfileOf = (packageManager) => PACKAGE_MANAGERS[packageManager].lockfile
 
 // Whether `packageManager` installs a directory holding its lockfile from that directory itself, by
@@ -326,7 +299,6 @@ function rootOf(host, pm, cwd, os) {
 // `os`, which holds the lockfile and which a bundle's paths are relative to; null without one.
 export const lockfileRoot = (host, packageManager, cwd, os) => rootOf(host, PACKAGE_MANAGERS[packageManager], host.realpath(cwd), os)
 
-// The package managers that install node_modules.
 export const NODE_MODULES_MANAGERS = PACKAGE_MANAGER_NAMES.filter((name) => PACKAGE_MANAGERS[name].installs === 'node_modules')
 
 // Why the package manager is detected, as a refusal to detect one says: none was given.
@@ -356,7 +328,6 @@ export const listsFile = (listing, name) => listing.some((entry) => entry.path =
 // the only ones that may install that directory.
 export const lockfilesListed = (listings) => PACKAGE_MANAGER_NAMES.filter((pm) => listings.some((listing) => listsFile(listing, lockfileOf(pm))))
 
-// A `packageManagerVersion` is one of the package manager given, never of one detected.
 export function checkVersion(name, { packageManager, packageManagerVersion }) {
   if (packageManagerVersion !== undefined && packageManager === undefined) throw new TypeError(`${name}: packageManagerVersion is only valid with packageManager`)
 }
@@ -372,7 +343,6 @@ export function packageManagerFor(name, host, cwd, { packageManager, packageMana
 
 const KIND_LABELS = { js: 'JS', sol: 'Solidity' }
 
-// Refused where no package manager of `names` builds bundles of `kind`.
 export function checkKind(name, kind, names = PACKAGE_MANAGER_NAMES) {
   if (names.some((pm) => PACKAGE_MANAGERS[pm].kind === kind)) return
   const kinds = [...new Set(names.map((pm) => PACKAGE_MANAGERS[pm].kind))]
@@ -382,7 +352,6 @@ export function checkKind(name, kind, names = PACKAGE_MANAGER_NAMES) {
     : `${name}: only ${kinds.map((of) => `${KIND_LABELS[of]} bundles (${builders(of)})`).join(' and ')} are built`)
 }
 
-// The PACKAGE_MANAGERS entry of `packageManager`, which has to be one of `names`.
 export function packageManagerOf(name, packageManager, names = PACKAGE_MANAGER_NAMES) {
   if (!names.includes(packageManager)) throw new TypeError(`${name}: packageManager must be one of ${names.map((n) => `'${n}'`).join(', ')}`)
   return PACKAGE_MANAGERS[packageManager]
@@ -395,30 +364,14 @@ export function checkVfs(name, vfs) {
   }
 }
 
-// -> { root, vfs, projects, stats, installed, packageManager, packageManagerVersion }, of the project
-// `project` holds that `cwd` is in, as `packageManager` installs it: the directory it installs from,
-// as a real path; a new Vfs holding the tree, rooted there; the directories of the projects it finds,
-// from there; deptree's counts, and what it installs, each by its `path` from there; and the version
-// reproduced, `packageManagerVersion` if given, else the one the root package.json's packageManager
-// pins, else the default. deptree reads the project through a view of `project`, which nothing is
-// written through. `client`, a @preventive/upstream/github.js client, is what a Soldeer git
-// dependency is fetched through (deptree's `github`); without one, a lockfile holding one is refused
-// before anything is fetched. `cache` (checkCache) is where npm packages' tarballs and version
-// documents are kept, which deptree fetches for pnpm, yarn1 and npm. Each project's node_modules is
-// cleaned by every .yarnclean in cwd and the directories above it (yarnclean.js). With `lazy`, for
-// pnpm and npm (checkLazy), the tree is laid out with nothing fetched, and comes with `unpack` and
-// `lazy` besides (lazyTree). Without `installDevDependencies`, what devDependencies alone reach is
-// left out, as the package manager's production install leaves it out (deptree's `production`).
-// With `refuseInstalled`, refused before anything is fetched where `project` holds anything at all
-// (a link too) where the tree installs a project's dependencies: its node_modules, or Soldeer's
-// dependencies folder, which the tree would serve in place of what is there.
+// -> { root, vfs, projects, stats, installed, packageManager, packageManagerVersion }: the project `project` holds at
+// `cwd`, as `packageManager` installs it, into a new Vfs rooted at the real path it installs from. With
+// `refuseInstalled`, refused where `project` already holds what the tree installs; with `lazy`, lazyTree's besides.
 const layOutTree = (options) => buildTree(planTree(options))
 
-// What layOutTree checks and finds before anything is fetched, `options` as it takes them: the
-// directory `packageManager` installs cwd from (`found`, its real path `root`), its lockfile there,
-// the version deptree is given (`version`, none for one package.json pins) and the one reproduced
-// (`taken`, refused below the oldest major taken), the projects it finds and the .yarnclean that
-// cleans their node_modules.
+// What layOutTree checks and finds before anything is fetched: the directory `packageManager` installs cwd from (its
+// real path `root`), its lockfile there, the version deptree is given (none where package.json pins one) and the one
+// reproduced (`taken`), the projects it finds, and the .yarnclean that cleans their node_modules.
 function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, lazy = false, refuseInstalled = false, ...options }) {
   const pm = PACKAGE_MANAGERS[packageManager]
   const found = pm.root(project, cwd, os)
@@ -447,10 +400,9 @@ function planTree({ project, packageManager, cwd, packageManagerVersion, os, cpu
   // Read before anything is fetched: matching its patterns needs the optional minimatch.
   const clean = pm.kind === 'js' ? yarnclean(project, cwd) : null
   if (lazy && clean?.keeps) throw new Error(`a ${YARNCLEAN} in ${cwd} or above it keeps paths with \`!\`, which lazy does not take: what it keeps of one package turns on what the others hold, which a lazy tree has not fetched`)
-  return { ...options, project, packageManager, pm, os, cpu, libc, lazy, found, root: project.realpath(found), file, version, taken, view, projects, clean }
+  return { ...options, packageManager, pm, os, cpu, libc, lazy, root: project.realpath(found), file, version, taken, view, projects, clean }
 }
 
-// layOutTree's tree, of planTree's plan.
 async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, lazy, installDevDependencies = true, root, file, version, taken, view, projects, clean }) {
   const built = await pm.build(view, version, file, { os, cpu, libc, client, cache, lazy, production: !installDevDependencies })
   // Each project's node_modules, cleaned as `yarn autoclean` would clean it, whatever installs it.
@@ -483,11 +435,9 @@ export function lockfilesManagers(name, lockfiles) {
   })
 }
 
-// The trees layOutTrees lays out of `lockfiles` (stasis.config.json's in `cwd`, a real path, by
-// their paths from there), each `{ packageManager, cwd, path }`: by the package manager its name says
-// (lockfilesManagers), from its directory, which has to be the one that package manager installs
-// from there for `os`; or from cwd where cwd is in it, which it then has to install. Refused where
-// one climbs out of the root or is not there. `name` prefixes a refusal of a lockfile's name.
+// The trees layOutTrees lays out of `lockfiles` (stasis.config.json's in `cwd`, a real path), `{ packageManager, cwd,
+// path }` each: from the lockfile's directory, which its package manager has to install from, or from cwd where cwd
+// is in it. Refused where one climbs out of the root or is not there.
 export function lockfileSpecs(name, project, cwd, lockfiles, os) {
   const managers = lockfilesManagers(name, lockfiles)
   return lockfiles.map((path, i) => {
@@ -511,11 +461,9 @@ export const plannedTrees = ({ specs, ...options }) => specs.map((spec) => {
   return { root, projects }
 })
 
-// One tree of each of `specs`, `{ packageManager, cwd, packageManagerVersion, lazy, path }`
-// (lockfileSpecs', or the one detected), as layOutTree lays out one with the rest of `options`, all at
-// once, the first refusal thrown, in their order, once every one is done. -> the one tree, or the trees
-// as one (forestOf). Refused before anything is fetched where two would install the same directory
-// (a project's node_modules, say), or one inside another's, by the `path`s stasis.config.json names.
+// One tree of each of `specs` (lockfileSpecs', or the one detected), as layOutTree lays one out, all at once.
+// -> the one tree, or the trees as one (forestOf). Refused before anything is fetched where two would install the
+// same directory, or one inside another's.
 export async function layOutTrees({ specs, ...options }) {
   const plans = specs.map((spec) => planTree({ ...options, ...spec }))
   // What each plan installs, by its real path, and each directory above one, the one it is above.
@@ -540,10 +488,16 @@ export async function layOutTrees({ specs, ...options }) {
       }
     }
   }
-  const built = await Promise.allSettled(plans.map(buildTree))
-  const failed = built.find(({ status }) => status === 'rejected')
+  const built = await settled(plans.map(buildTree))
+  return built.length === 1 ? built[0] : forestOf(built)
+}
+
+// The values of `promises` once every one is settled, else the first refusal, in their order.
+async function settled(promises) {
+  const done = await Promise.allSettled(promises)
+  const failed = done.find(({ status }) => status === 'rejected')
   if (failed !== undefined) throw failed.reason
-  return built.length === 1 ? built[0].value : forestOf(built.map(({ value }) => value))
+  return done.map(({ value }) => value)
 }
 
 // What `tree` (layOutTree's) installs, by their paths from its root: each project's node_modules (or
@@ -558,10 +512,8 @@ function installsOf(tree) {
 // tree's root with a directory of that name in it; undefined for none.
 const hiding = (name) => (name === undefined ? undefined : (rel) => rel.split('/').includes(name))
 
-// The Vfs of the trees whose members `owners` holds by what each installs, by its path from the Vfs's
-// `/`: a path at or under one is that member's tree's, read in its Vfs by its path from the tree's
-// root (`prefix` its root's path, '' or ending in `/`), and any other is none. As vfsHost reads a
-// tree's Vfs (lstat, readlink, readFile and readdir), and lazyView wraps one.
+// The Vfs of the trees `owners` holds by what each installs (paths from `/`): a path at or under one is read in that
+// member's tree by its path from the tree's root (`prefix`, '' or ending in `/`); any other is none.
 function mountedVfs(owners) {
   const ownerOf = (p) => {
     for (let at = p.indexOf('/', 1); ; at = p.indexOf('/', at + 1)) {
@@ -595,13 +547,9 @@ export const unpackedOf = (tree) => (tree.trees === undefined
   ? tree.lazy?.unpacked.size ?? tree.stats.installed ?? tree.stats.dependencies
   : tree.trees.reduce((sum, one) => sum + unpackedOf(one), 0))
 
-// `trees` (layOutTree's, none installing what another does) as one, as treeHost and the build read
-// one: rooted at the innermost directory holding every one's root, its Vfs each one's mounted at its
-// root (mountedVfs), its projects the JS trees' (Prisma's), and deptree's counts added up (statsOf) and
-// what each installs, by its `path` from that root, both as they are when read. Of a lazy one, lazy itself:
-// what lazyView reads of the trees' packages by their paths there, each unpacked by its tree. What
-// none of them installs is read as of a tree's root it is in, a directory Soldeer's hides there
-// hidden; and as out of a tree's root, out of every one's: a node_modules there is none.
+// `trees` (none installing what another does) as one: rooted at the innermost directory holding every root, each tree
+// mounted at its root (mountedVfs), its projects the JS trees', and lazy where one is. A path no tree installs is
+// hidden as its tree's root hides it (Soldeer's), and out of every tree's root, a node_modules is none.
 function forestOf(trees) {
   let root = trees[0].root
   while (!trees.every((tree) => isPathWithin(root, tree.root))) root = dirname(root)
@@ -662,13 +610,11 @@ function forestOf(trees) {
       const by = new Map()
       for (const dir of asked) {
         const [member, own] = packages.get(dir)
-        if (!by.has(member)) by.set(member, { asked: new Set(), read: new Set() })
-        by.get(member).asked.add(own)
-        if (read.has(dir)) by.get(member).read.add(own)
+        const sets = by.get(member) ?? by.set(member, { asked: new Set(), read: new Set() }).get(member)
+        sets.asked.add(own)
+        if (read.has(dir)) sets.read.add(own)
       }
-      const done = await Promise.allSettled([...by].map(([member, sets]) => member.tree.unpack(sets.asked, sets.read)))
-      const failed = done.find(({ status }) => status === 'rejected')
-      if (failed !== undefined) throw failed.reason
+      await settled([...by].map(([member, sets]) => member.tree.unpack(sets.asked, sets.read)))
     },
   })
 }
@@ -683,21 +629,21 @@ function dependenciesOf(vfs, dir, roots) {
   const manifest = readJson(`${dir}/package.json`, vfs)
   if (!isPlainObject(manifest)) return []
   const names = new Set(['dependencies', 'optionalDependencies', 'peerDependencies'].flatMap((field) => (isPlainObject(manifest[field]) ? Object.keys(manifest[field]) : [])))
+  const realOrNull = (path) => {
+    try {
+      return vfs.realpath(path)
+    } catch {
+      return null
+    }
+  }
   const found = []
   for (const name of names) {
     if (!PACKAGE_NAME.test(name)) continue
     for (let at = dir; ; at = posix.dirname(at)) {
-      if (posix.basename(at) !== 'node_modules') {
-        let real
-        try {
-          real = vfs.realpath(posix.join(at, 'node_modules', name))
-        } catch {
-          real = null
-        }
-        if (real !== null) {
-          if (roots.has(real)) found.push(real)
-          break
-        }
+      const real = posix.basename(at) === 'node_modules' ? null : realOrNull(posix.join(at, 'node_modules', name))
+      if (real !== null) {
+        if (roots.has(real)) found.push(real)
+        break
       }
       if (at === '/') break
     }
@@ -705,17 +651,9 @@ function dependenciesOf(vfs, dir, roots) {
   return found
 }
 
-// A lazy tree's `unpack(dirs)`, of its packages' directories from `/` of its Vfs, as lazyView asks
-// for them, which deptree unpacks, cleaned as the rest is; and its `lazy`, those directories, as
-// lazyView takes them: `roots`, each the layout has (a .yarnclean may take some away), and
-// `unpacked`, each unpacked so far. Positive patterns alone clean each path by its own, whatever
-// else the tree holds, so cleaning again cleans each package unpacked as the full tree's is.
-// `installed` takes in what each one's version document says, once it is unpacked. What each
-// package `read` (inRounds') depends on is unpacked with it, as the build would ask for it a round
-// later, each round a build; but not what one only probed for its files depends on, nor what those
-// depend on in turn, which most builds never read: a package's dependencies are often its tools. One
-// deptree refuses is left for the build to ask for, which is then refused, so that one it never
-// reads is never refused, as one never fetched is not.
+// A lazy tree's `unpack(asked, read)` and its `lazy` ({ roots, unpacked }), as lazyView takes them; each unpacked
+// package is cleaned as the full tree's (positive patterns clean each path by its own). What a package `read` depends
+// on is unpacked with it, but not what a probed one does; one deptree refuses then is left for the build to ask for.
 function lazyTree({ vfs, installed, unpack }, cleanAll) {
   const roots = new Set(installed.map(({ path }) => `/${path}`).filter((dir) => vfs.isDirectory(dir)))
   const unpacked = new Set()
@@ -729,10 +667,8 @@ function lazyTree({ vfs, installed, unpack }, cleanAll) {
   return {
     lazy: { roots, unpacked },
     async unpack(asked, read = asked) {
-      // Each asked for, and once one read is unpacked, what it depends on, then and there rather
-      // than once every one asked for is: so the fetches of both share the time, not one waiting
-      // on the last of the other. The first refusal of one asked for is thrown once every one is
-      // done, as deptree throws one.
+      // What one read depends on is fetched as soon as it is unpacked, alongside the rest asked for. The first
+      // refusal of one asked for is thrown once every one is done, as deptree throws one.
       const seen = new Set(asked)
       const ahead = []
       const done = await Promise.allSettled([...asked].map(async (dir) => {
@@ -758,13 +694,9 @@ const githubRoot = (url) => {
   return github === null ? undefined : { github, directory: '' }
 }
 
-// Each dependency of `bundle`, its paths from `root`, at the commit the tree (layOutTree's) installs
-// it from, where deptree names a full one: an npm package at its gitHead, which the registry's
-// version document names, over the one its package.json may name (packageRepo), a commit of the
-// repository its own package.json names, so taken only where the bundle records that one; a
-// Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
-// where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
-// An npm one's tarball integrity where its lockfile locks it, and its patch; a Soldeer zip's checksum. -> their accounts, by dir.
+// Each dependency of `bundle` (paths from `root`) at the full commit the tree installs it from, the publisher's word:
+// an npm package at its gitHead, only where the bundle records its repo; a Soldeer git dependency at its `rev`, of its
+// GitHub repo's root. Its lockfile's tarball integrity and patch, or a Soldeer zip's checksum. -> accounts, by dir
 export function pinFromTree(bundle, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
@@ -797,9 +729,8 @@ const dirent = (name, type) => ({ name, ...typePredicates(type) })
 // A view over the Vfs's bytes, never a copy.
 const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 
-// `make()`, an error for a name a lookup does not find, made without a stack: a resolver probes
-// many names for each it finds, and its callers take a miss as none, so the stack is never read,
-// and building it is most of what a miss costs.
+// `make()`, an error for a name a lookup does not find, made without a stack: a resolver probes many names, its
+// callers take a miss as none, and building the stack is most of what a miss costs.
 function stackless(make) {
   const limit = Error.stackTraceLimit
   Error.stackTraceLimit = 0
@@ -825,19 +756,9 @@ const TREE = 'tree'
 const NONE = 'none'
 const OUTSIDE = 'outside'
 
-// A `host` (@exodus/stasis-core/host) over `vfs`. Alone, every path is the Vfs's. With `root`, a
-// real path, and `outside`, a host of the rest, the Vfs's `/` stands for `root`, holding the tree
-// the package manager lays out there: each of the paths it `installs` (from `root`) is served from
-// the Vfs only, whatever `outside` holds there; a path from `root` that `hides(path)` says is hidden
-// (hiding's), and any node_modules out of `root`, is none; and everything else comes from `outside`. Symlinks cross
-// between the two both ways, so realpaths are walked here one link at a time, and a path is read as
-// the OS reads one: a `..` after a link leads up from where the link leads, never textually (Node's
-// own resolution, `findPackageJSON` and `resolve`, normalizes its paths first, as Node does). A
-// relative path is from `/`. What it reads is cached, as for a tree that holds still, unless `cache`
-// is false; with `touches`, a count of the reads that read what the tree does not hold yet (a lazy
-// tree's, lazy.js), only what was read with none is cached, so that each of those is read again; but
-// with `retouch` too, for a host of one round of a lazy tree, those are cached too, and each taken
-// from the cache counts as read again (untouchedMemo's `retouch`).
+// A `host` (@exodus/stasis-core/host) over `vfs`; with `root` (a real path) and `outside` (a host of the rest), the
+// Vfs's `/` is `root`, serving what it `installs`, a path `hides` takes and a node_modules out of `root` being none.
+// Links cross both ways, walked one at a time as the OS does. Cached unless `cache` is false, as untouchedMemo caches.
 export function vfsHost(vfs, { root, outside, installs = [], hides, cache = true, touches = () => 0, retouch } = {}) {
   if (sep !== '/') throw new Error('The Vfs host is POSIX-only')
   const disk = outside ?? null
