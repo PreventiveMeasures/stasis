@@ -4,7 +4,7 @@
 
 // KNOWN_FORMATS is the closed universe of `format` strings; parsers reject anything outside it.
 export const NODE_FORMATS = new Set(['module', 'commonjs', 'json', 'module-typescript', 'commonjs-typescript'])
-export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'shell', 'rust'])
+export const SOURCE_LANGUAGE_FORMATS = new Set(['solidity', 'php', 'shell', 'rust', 'teal'])
 export const NATIVE_BUILD_FORMATS = new Set([
   'java', 'kotlin', 'gradle', 'objc', 'objcpp', 'swift', 'c', 'cpp', 'c-header', 'cpp-header',
   'ruby', 'python', 'cmake', 'podspec', 'podfile', 'podfile-lock', 'template', 'xml', 'env', 'fastlane', 'pbxproj',

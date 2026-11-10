@@ -94,10 +94,11 @@ function entriesLanguage(entries, cwd, host = diskHost) {
     allJs: entries.every((f) => JS_ENTRY.test(f)),
     allBash: entries.every((f) => /\.(?:sh|bash)$/u.test(f)),
     allRust: entries.every((f) => f.endsWith('.rs')),
+    allTeal: entries.every((f) => f.endsWith('.teal')),
   }
   if (Object.values(lang).some(Boolean)) return lang
   if (entries.every((f) => JS_ENTRY.test(f) || isSolidityEntry(f, cwd, host))) return { ...lang, jsAndSol: true }
-  throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
+  throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
 }
 
 // bundleCommand's options for building `entries` (in `lang`, entriesLanguage's) from the parsed
@@ -178,7 +179,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   const jsx = Boolean(values.jsx) || metro
   if (jsx && !allJs) throw new Error('--jsx is only valid for JS bundles')
   // --package-json: fold each bundled module's package.json into the bundle. JS-only (only JS
-  // modules carry an npm package.json; the sol/php/bash/rust bucketizers have no such manifest).
+  // modules carry an npm package.json; the sol/php/bash/rust/teal bucketizers have no such manifest).
   const packageJSON = Boolean(values['package-json'])
   if (packageJSON && !allJs) throw new Error('--package-json is only valid for JS bundles')
   // --resources: comma-separated extension/filename allowlist for assets reached through the graph

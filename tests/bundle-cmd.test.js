@@ -6479,7 +6479,7 @@ test('buildBundle rejects an empty entry list', async (t) => {
 test('buildBundle rejects mixed-language entries', async (t) => {
   await t.assert.rejects(
     () => buildBundle({ cwd: fixtures, entries: ['a.sol', 'b.js'] }),
-    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts\/\.jsx\/\.tsx, all be \.sh\/\.bash, or all be \.rs/,
+    /must all be \.sol, all be \.php, all be \.js\/\.cjs\/\.mjs\/\.ts\/\.cts\/\.mts\/\.jsx\/\.tsx, all be \.sh\/\.bash, all be \.rs, or all be \.teal/,
   )
 })
 

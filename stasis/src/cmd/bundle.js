@@ -39,6 +39,7 @@ import {
 import { decodeUtf8 } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
+import { buildTealTree, collectTealFilesFromDisk } from '../loaders/teal.js'
 import { ancestors, createCargoContext } from '../loaders/cargo.js'
 import {
   bucketizePhpSources,
@@ -54,6 +55,7 @@ import { withNpmToken } from './tokens.js'
 const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 const BASH_EXTS = new Set(['.sh', '.bash'])
 const RUST_EXTS = new Set(['.rs'])
+const TEAL_EXTS = new Set(['.teal'])
 
 // Fallback identity for the workspace bucket; Bundle.parse requires every bucket to attest name+version.
 const SOLIDITY_WORKSPACE_NAME = 'solidity-bundle'
@@ -70,6 +72,10 @@ const RUST_FORMAT = 'rust'
 const PHP_WORKSPACE_NAME = 'php-bundle'
 const PHP_WORKSPACE_VERSION = '0.0.0'
 const PHP_FORMAT = 'php'
+
+const TEAL_WORKSPACE_NAME = 'teal-bundle'
+const TEAL_WORKSPACE_VERSION = '0.0.0'
+const TEAL_FORMAT = 'teal'
 
 // Deepest common parent dir of `paths`, relative to `cwd`; starts with `..` when entries
 // escape cwd (e.g. via remapping), or "." when it is cwd itself.
@@ -494,6 +500,36 @@ export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
     workspaceVersion: BASH_WORKSPACE_VERSION,
     format: SHELL_FORMAT,
     conditionKey: SHELL_FORMAT,
+  })
+}
+
+// Build an in-memory Bundle from entry .teal files (Algorand TEAL programs): each entry, as written,
+// and nothing else, since a TEAL program includes no other file (see loaders/teal.js). A missing
+// entry is fatal.
+export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('buildTealBundle: at least one entry .teal file is required')
+  }
+  for (const e of entries) {
+    if (!TEAL_EXTS.has(extname(e))) throw new Error(`buildTealBundle: not a .teal file: ${e}`)
+  }
+
+  const baseDir = resolve(cwd)
+  const normalized = normalizeEntries(entries, cwd)
+
+  const { sources, resolutions } = buildTealTree(collectTealFilesFromDisk(baseDir, normalized))
+
+  assertSelfContained('TEAL', 'program', normalized, sources, [])
+
+  return assembleCodeBundle({
+    baseDir,
+    entries: normalized,
+    sources,
+    resolutions,
+    workspaceName: TEAL_WORKSPACE_NAME,
+    workspaceVersion: TEAL_WORKSPACE_VERSION,
+    format: TEAL_FORMAT,
+    conditionKey: TEAL_FORMAT,
   })
 }
 
@@ -2140,8 +2176,9 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   else if (entries.every((e) => JS_EXTS.has(extname(e)))) kind = 'js'
   else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
   else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
+  else if (entries.every((e) => TEAL_EXTS.has(extname(e)))) kind = 'teal'
   else {
-    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs (no mixing)`)
+    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
   if (mappingFile && kind !== 'sol') {
     throw new Error(`${name}: --mapping is only valid for .sol bundles`)
@@ -2176,7 +2213,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   // --mainFields and --metro/--platforms are legacy-/platform-resolution knobs; --jsx toggles the
   // scanner's JSX parsing for the .js family (.jsx/.tsx need no flag), and only JS entries are scanned;
   // --define folds the globals it gives in the JS scan's branch tests; --package-json folds each bundled
-  // module's npm package.json in (the sol/php/bash/rust bucketizers group by their own ecosystems'
+  // module's npm package.json in (the sol/php/bash/rust/teal bucketizers group by their own ecosystems'
   // manifests, not an npm package.json). `define` is parsed (checked) whatever the kind.
   onlyFor('js', 'JS', { mainFields: mainFields !== undefined, jsx, define: parseDefine(name, define).size > 0, 'package-json': packageJSON, metro: metro || (Array.isArray(platforms) && platforms.length > 0) })
   // --metro presets conditions + mainFields + platform suffixes, so it can't combine with
@@ -2329,6 +2366,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'sol') return pinned(withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }))
   if (kind === 'php') return pinned(withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) }))
   if (kind === 'bash') return pinned(withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) }))
+  if (kind === 'teal') return pinned(withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) }))
   if (kind === 'rust') return pinned(withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }))
   const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
   return pinned(built.stateBuilt ? built : withExtraOf(built, resources))
