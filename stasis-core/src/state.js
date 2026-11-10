@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, importTargetsEqual, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, attestsAny, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -97,6 +97,12 @@ export class State {
   config
   root
   #parent
+  // What this State and its sidecars absorbed, shared with them: the `dirs` of every record, the
+  // `files` of each absorbed with ATTESTED_METADATA, as absorbed, and the `bundles`' own record of
+  // each package they attest something of, which the run's record may not take.
+  #absorbed = { dirs: new Set(), files: new Map(), bundles: new Map() }
+  // The dirs of those its own bundles attest something of.
+  #attestedByBundle = new Set()
   #isPreload = false
   #host
   // The config's Policy (a sidecar's parent's), or null: checked on each artifact loaded and each path recorded.
@@ -206,6 +212,7 @@ export class State {
       this.#lockFormats = inherited.lockFormats
       this.#lockfileLoaded = inherited.lockfileLoaded
       this.#policy = inherited.policy
+      this.#absorbed = inherited.absorbed
       assert.ok(this.config.bundleFile, 'sidecar State requires bundleFile')
       // Only writing States claim, so two write-intent States can't silently target the same file.
       if (this.config.writeBundle) {
@@ -226,6 +233,7 @@ export class State {
         this.#absorbResourcesBundleFile()
       }
       if (this.config.frozenBundle) this.#freezeBundle()
+      if (this.#attestedByBundle.size > 0) this.#holdToInstalled(relative(this.root, this.#bundlePath))
       // Register AFTER every fallible step so a throw leaves no dead reference. Frozen sidecars
       // join neither registry (--fs neither captures nor serves in frozen-bundle mode).
       if (this.config.writeBundle) parentState.registerSidecar(this)
@@ -316,6 +324,7 @@ export class State {
     // Post-loop: with no stasis files the loop never runs, and a frozen run must fail closed.
     if (this.config.frozen) assert.ok(this.#lockfileLoaded, 'No lockfile, but attempting to run in frozen mode')
     if (this.config.frozenBundle) this.#freezeBundle()
+    this.#holdToInstalled(relative(this.root, this.#lockfileLoaded ? this.#lockPath : this.#bundlePath))
 
     // Claim write targets so no other live State (any copy) silently targets the same file.
     if (this.config.writeBundle) {
@@ -332,6 +341,67 @@ export class State {
 
   #exists(p) {
     return this.#host.stat(p) !== null
+  }
+
+  // ATTESTED_METADATA absorbed of the artifact at `label`, and what each bundle attests, taken into
+  // the run's records or not, held to how each package was installed; kept as recorded where no
+  // account tells (nothing installed, as where a bundle is run from).
+  #holdToInstalled(label) {
+    const { files, bundles } = this.#absorbed
+    // What its bundles alone attest of a package is its record's too where they hold every file of
+    // it; else it stays theirs, which a run writing its bundle again would drop: refused.
+    for (const dir of this.#attestedByBundle) {
+      const [module, own] = [this.modules.get(dir), bundles.get(dir)]
+      const alone = Object.fromEntries(ATTESTED_METADATA.filter((field) => module[field] === undefined && own[field] !== undefined).map((field) => [field, own[field]]))
+      const beyond = Object.keys(module.files).find((rel) => !Object.hasOwn(own.files, rel))
+      if (beyond === undefined) this.modules.set(dir, moduleInfo({ ...module, ...alone }))
+      else assert.ok(!this.config.writeBundle || Object.keys(alone).length === 0, `bundle module ${dir} ${Object.keys(alone)[0]} is recorded of its files, not of '${moduleFileKey(dir, beyond)}' its record holds: record it anew (lock = replace)`)
+    }
+    const attested = new Map([...this.modules].filter(([, module]) => attestsAny(module)))
+    for (const [dir, module] of attested) if (!files.has(dir)) files.set(dir, new Set(Object.keys(module.files)))
+    const accounts = installedAccounts(new Map([...bundles, ...attested]), this.root)
+    heldToAccounts(attested, accounts, `${label}: `)
+    heldToAccounts(bundles, accounts, `${relative(this.root, this.#bundlePath)}: `)
+  }
+
+  // A bundle's record of a package, absorbed, merged into the State's record of it (`record`, undefined
+  // for none yet). What it alone attests agrees with every other bundle's (a split bundle's halves, a
+  // sidecar's) of the files it covers (mergeModuleMaps), and is taken once all are absorbed.
+  #absorbBundleRecord(dir, info, record, what) {
+    const { dirs, files, bundles } = this.#absorbed
+    dirs.add(dir)
+    if (attestsAny(info)) {
+      this.#attestedByBundle.add(dir)
+      const known = bundles.get(dir)
+      bundles.set(dir, known === undefined ? info : mergeModuleMaps(new Map([[dir, known]]), new Map([[dir, info]]), 'bundle').get(dir))
+      // A later bundle's files (a sidecar's) of what it attests alike are absorbed, not this run's.
+      const baseline = files.get(dir)
+      if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || JSON.stringify(record[field]) === JSON.stringify(info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
+    }
+    // One attesting none of what the record took already (a sidecar's, after its parent's) adds no
+    // file to it where its files are the record's too: the value was recorded without them.
+    const lacked = this.config.writeBundle && record ? ATTESTED_METADATA.find((field) => record[field] !== undefined && info[field] === undefined) : undefined
+    const added = lacked === undefined ? undefined : Object.keys(info.files).find((rel) => !(files.get(dir)?.has(rel) ?? Object.hasOwn(record.files, rel)))
+    if (added !== undefined) assert.fail(`bundle: module '${dir}' ${lacked} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
+    // What a bundle alone attests is the record's once all are absorbed, where they cover its files (#holdToInstalled).
+    const alone = Object.fromEntries(ATTESTED_METADATA.filter((field) => record?.[field] === undefined).map((field) => [field, undefined]))
+    return moduleInfo(record === undefined ? { ...info, ...alone, files: Object.create(null) } : { ...withMetadataOf(record, info, what), ...alone })
+  }
+
+  // Not what a lockfile alone locks, which says what an install would lay out, not what one did; nor
+  // onto a record absorbed, whose other files this run may not have read. What an artifact attests is
+  // of the files it recorded: of one this run adds, an install record alone tells.
+  #recordInstalled() {
+    const accounts = installedAccounts(this.modules, this.root)
+    heldToAccounts(this.modules, accounts)
+    for (const [dir, account] of accounts) if (!account.locked && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, withMetadataOf(this.modules.get(dir), account))
+    for (const [dir, files] of this.#absorbed.files) {
+      const [module, account] = [this.modules.get(dir), accounts.get(dir)]
+      const added = account && !account.locked ? undefined : Object.keys(module.files).find((rel) => !files.has(rel))
+      if (added === undefined) continue
+      const fields = ATTESTED_METADATA.filter((field) => module[field] !== undefined).join(' and ')
+      assert.fail(`module '${dir}': its ${fields} is recorded of the files it was read with, not of ${moduleFileKey(dir, added)}, which this run adds and no install record tells of: record it anew (lock = replace)`)
+    }
   }
 
   #readMaybe(path, encoding) {
@@ -359,6 +429,7 @@ export class State {
     for (const [dir, info] of lockfile.modules) {
       if (!hasNodeModulesSegment(dir) && !includeSources) continue
       this.modules.set(dir, info)
+      this.#absorbed.dirs.add(dir)
     }
     if (includeSources) this.entries = lockfile.entries
 
@@ -461,9 +532,8 @@ export class State {
         // a real workspace identity (or a stripped field), never v0 partial metadata -- a
         // version-less bundle bucket must not dodge the lockfile consistency check.
         assert.equal(info.version, lockModule.version, `bundle module ${dir} version mismatch with lockfile`)
-        // `repo` and `vendored` are metadata, which a lockfile never records: the bundle's are taken, to
-        // be written again.
-        this.modules.set(dir, withMetadataOf(lockModule, info))
+        // The bundle's metadata is taken where the lockfile records none, to be written again.
+        this.modules.set(dir, this.#absorbBundleRecord(dir, info, lockModule, `bundle module ${dir} (against the lockfile)`))
         for (const rel of Object.keys(info.files)) {
           assert.ok(Object.hasOwn(lockModule.files, rel), `bundle file ${dir}/${rel} missing in lockfile`)
         }
@@ -501,15 +571,13 @@ export class State {
         // buckets); a v1 workspace bucket may omit version, so its identity is absorbed anyway.
         if (!info.name || (!info.version && hasNodeModulesSegment(dir))) continue
         const existing = this.modules.get(dir)
-        if (existing === undefined) {
-          this.modules.set(dir, moduleInfo({ ...info, files: Object.create(null) }))
-        } else {
+        if (existing !== undefined) {
           // A dir may be added twice (code + resource entries), and both must agree.
           assert.equal(info.name, existing.name, `bundle ${dir} name mismatch`)
           assert.equal(info.version, existing.version, `bundle ${dir} version mismatch`)
-          // `repo` and `vendored` are metadata, held to nothing: the first half's that records one.
-          this.modules.set(dir, withMetadataOf(existing, info))
         }
+        // Metadata: the first half's that records one.
+        this.modules.set(dir, this.#absorbBundleRecord(dir, info, existing, `bundle ${dir}`))
         // A bundle=add run writes these buckets back, and #bundleModules carries only the files a
         // bucket lists: seed them as #absorbLockfile does, else a bundled file this run doesn't
         // load again drops out of the rewritten bundle.
@@ -661,6 +729,7 @@ export class State {
       lockFormats: this.#lockFormats,
       lockfileLoaded: this.#lockfileLoaded,
       policy: this.#policy,
+      absorbed: this.#absorbed,
     }
   }
 
@@ -1762,6 +1831,8 @@ export class State {
     if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
+    // A sidecar's too: it writes its bundle before its parent writes.
+    if (this.config.writeLockfile || this.config.writeBundle) this.#recordInstalled()
 
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).

@@ -2,13 +2,24 @@ import { isUtf8 } from 'node:buffer'
 import { basename, extname, isAbsolute, join, normalize, posix, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
-import { NODE_FORMATS, isLockfileName } from './artifact-util.js'
+import { ARCHIVE_ALGORITHM, NODE_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
 // The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
 // observation and CLI parsing. The pure artifact data model lives in artifact-util.js, re-exported
 // here so `@exodus/stasis-core/util` keeps serving the full set.
 export * from './artifact-util.js'
+
+// A hex digest of `algorithm`, as a lockfile spells one, as an SRI (undefined for none), and back.
+export const hexIntegrity = (algorithm, hex) => (typeof hex === 'string' && /^(?:[\da-f]{2})+$/u.test(hex) ? `${algorithm}-${Buffer.from(hex, 'hex').toString('base64')}` : undefined)
+export const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexOf('-') + 1), 'base64').toString('hex')
+// An `ecosystem` dependency's archive integrity (ARCHIVE_ALGORITHM's) of its lockfile's hex digest.
+export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORITHM[ecosystem], hex)
+
+// Where another package registers the State's reader of how packages were installed, which stasis-core
+// reads no record of (stasis's run-installed.js): of modules and a root, their accounts by dir.
+export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
+export const installedAccounts = (modules, root) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root)) || new Map()
 
 // JS_UNRESOLVED_EXTS (.js/.ts type/syntax-dependent, .jsx/.tsx transformed) classify as null, not a format.
 const NODE_EXT_FORMATS = new Map([

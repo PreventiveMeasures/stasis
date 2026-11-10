@@ -12,7 +12,7 @@ export interface NotedPackage {
   reason?: string
   at?: string
   directory?: string
-  patch?: { path?: string; from?: string; error?: string; verified?: boolean; applied?: boolean }
+  patch?: { path?: string; from?: string; error?: string; verified?: boolean; applied?: boolean; recorded?: true }
 }
 export type NotePart = string | { path: string }
 export function noteOf(pkg: NotedPackage): NotePart[]

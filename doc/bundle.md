@@ -107,6 +107,10 @@ mode the project's runs take (`EXODUS_STASIS_LOCK`, or `frozen` where its
 
 Under `--add`, the bundle already there is held to it too.
 
+What it, or the bundle `--add` adds to, records of a dependency's `integrity`
+and `patch` is held to how that package was installed (see
+[`integrity`](file-formats.md#stasiscodebr)).
+
 `--lockfile-only` writes the lockfile alone: the same one, byte for byte, that
 `--lockfile` writes beside the bundle. The bundle is built all the same, and
 checked as it would be for writing, so the lockfile is refused wherever the
@@ -958,8 +962,11 @@ allowlist come from `stasis.config.json` (`bundleFile`, `resourcesBundleFile`,
 `resources`, `brotliQuality`, all optional; the file itself is required), and
 what it adds is held to its [allowed and disallowed paths and modules](file-formats.md#allowed-and-disallowed-paths-and-modules),
 as what the bundles and lockfile it adds to carry already is. A
-`stasis.lock.json` is updated only when one already exists. It also ships on
-the core CLI as `stasis-core add`.
+`stasis.lock.json` is updated only when one already exists. What those record
+of a dependency's [`integrity` and `patch`](file-formats.md#stasiscodebr) is
+held to how it is installed, and to each other, a split bundle's half no file
+is added to as well. It also ships on the core CLI
+as `stasis-core add`, which reads no package manager's record of the install.
 
 A directory expands to every file under it, minus what a sweep leaves out:
 

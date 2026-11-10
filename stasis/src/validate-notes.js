@@ -11,7 +11,7 @@ export const OWN_REASONS = {
   'history-unread': 'its commit is at no tag or branch head, nor in its default branch\'s history, and not every other branch was compared',
 }
 
-// A package's reason: unverified, or, from `misplaced` on, failing its lockfile or what its repository pins.
+// A package's reason: unverified, or, from `misplaced` on, failing its lockfile or what it records.
 export const PACKAGE_REASONS = {
   local: 'installed from a directory of the repository, which isn\'t read',
   'patch-unverified': 'as patched by the bundle\'s patch, which isn\'t verified against the repository',
@@ -29,9 +29,13 @@ export const PACKAGE_REASONS = {
   'alias-unverified': 'installed under another name, an alias no lockfile read tells of',
   misplaced: 'installed where its path or its lockfile names another package or version',
   'not-locked': 'not locked by the lockfile',
-  'integrity-mismatch': 'its registry\'s tarball is not the one the lockfile locks',
-  'integrity-conflict': 'locked with two integrities',
+  'integrity-mismatch': 'its registry\'s tarball is not the one it is locked or recorded with',
+  'integrity-conflict': 'locked or recorded with two integrities',
+  'integrity-not-locked': 'records an integrity its lockfile doesn\'t lock it with',
   'commit-not-locked': 'records another commit than its repository\'s tree pins it at',
+  'patch-not-locked': 'records a patch its lockfile doesn\'t patch it with',
+  'patch-not-recorded': 'records an integrity and no patch, where its lockfile patches it',
+  'patch-conflict': 'its copies record different patches, or one of them none, where pnpm patches every copy with one',
 }
 
 // Why a patch wasn't applied, told after `its patch` and its path.
@@ -71,7 +75,8 @@ export function noteOf(pkg) {
   if (patch?.error) return ['its patch', ...(patch.path ? [' ', { path: patch.path }] : []), ` ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`]
   // A patch the bundle holds, as checked against the repository.
   const whose = patch?.from !== 'bundle' ? [] : [patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)']
-  if (patch) return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : [])]
+  const recorded = patch?.recorded ? [', as recorded'] : []
+  if (patch) return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : []), ...recorded]
   return pkg.directory ? ['held to ', { path: pkg.directory }, ' of the repository'] : []
 }
 

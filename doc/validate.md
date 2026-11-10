@@ -31,7 +31,7 @@ It exits:
 | Code | |
 | - | - |
 | 0 | `valid`: every file it was to check was checked and is as it should be. Own code skipped with `--only-deps` is no file it was to check. |
-| 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile, a copy is installed where another is, or it contradicts the `stasis.lock.json` the repository commits. |
+| 1 | `invalid`: a file differs or is unexpected, a version fails its lockfile or what it records, a copy is installed where another is, or it contradicts the `stasis.lock.json` the repository commits. |
 | 2 | `incomplete`: nothing failed, but files it was to check went unverified (a package that couldn't be fetched, one locked from git, a Composer package, …). 0 with `--allow-unverified`. |
 | 3 | It refused the bundle (no repository or commit, a commit of no branch or tag of the repository, no lockfile, a lockfile it can't read, a usage error) or failed (GitHub refusing the repository, say), with the error alone on stderr. |
 
@@ -119,8 +119,9 @@ stasis validate --only-deps --no-lockfile app.stasis.code.br
    is allowed.
 4. **The stasis.lock.json the repository commits** in that directory, where it
    does: the bundle must agree with what it records, as `stasis bundle` holds
-   a build to it (`lock = add`): each file both record, each module's name and
-   version. One it contradicts makes it `invalid`, told on stderr
+   a build to it (`lock = add`): each file both record, each module's name,
+   version, `integrity` and `patch` (one it records and the bundle doesn't
+   too). One it contradicts makes it `invalid`, told on stderr
    (`stasisLockfile`).
 
 A `stasis.lock.json` is validated as a bundle is, each file by the integrity it
@@ -142,7 +143,8 @@ commit, as an npm one from git is (below). A Foundry `lib/` submodule (`github`)
 is held to the repository it records, at the commit the repository's tree pins
 at its path: one recording another commit fails (`records another commit than
 its repository's tree pins it at`), and one at a path the tree has no submodule
-at is left unverified.
+at is left unverified. A Composer or Soldeer
+package's `integrity` must be the one its lockfile locks.
 
 A file differing is `differs`, one neither the repository nor its package has
 `unexpected`. The bundle is `valid` where every file was checked and matches,
@@ -237,9 +239,9 @@ dependencies are held to those it names, as the build lays out a tree of each,
 of the repository at the commit. Several of one ecosystem are taken (a root
 `pnpm-lock.yaml` and `tools/package-lock.json`, say): each copy is held to
 the innermost of them holding it alone, as it alone installs it: where it
-installs it, whether it locks the version, and its patch. A copy none holds
-fails. A `composer.lock` or `soldeer.lock` among them holds its packages, as
-one beside the bundle does (above). One that is not there, or
+installs it, whether it locks the version, its integrity and its patch. A copy
+none holds fails. A `composer.lock` or `soldeer.lock` among them holds its
+packages, as one beside the bundle does (above). One that is not there, or
 outside the repository, is refused, as is a config naming none that locks the
 bundle's npm packages or crates. `--lockfile` and `--no-lockfile` take their
 place all the same.
@@ -248,9 +250,10 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
 
 - **Of its registry** (npm's or a mirror's tarball of it, crates.io): fetched
   with the integrity it locks. A tarball upstream refuses for it fails the
-  version (`its registry's tarball is not the one the lockfile locks`), as does
-  a version the lockfile locks with two. One locked with no sha512 (a yarn
-  entry with a sha1 alone) is left unverified.
+  version (`its registry's tarball is not the one it is locked or recorded
+  with`), as does a version locked or recorded with two. Where no sha512 is
+  locked (no lockfile read, a yarn entry with a sha1 alone), it is fetched with
+  the integrity it records; with neither, it is left unverified.
 - **From git** (a `type: git` resolution, a git host's tarball, GitHub's
   tarball of a commit, a `git+` source) alone: a version the lockfile locks at
   one full commit of a GitHub repository is held to that repository's tree at
@@ -267,6 +270,9 @@ Each npm version or crate the bundle holds must be one its lockfile locks:
 - **From elsewhere** (another tarball, a `file:` one included, a path crate, a
   package another bundles): left unverified.
 - **Not at all**: fails (`not locked by the lockfile`).
+
+An `integrity` a copy records must be the one the lockfile locks its archive
+with, whatever it is locked from.
 
 A version failing its lockfile is not compared, its files counted unverified.
 
@@ -323,18 +329,30 @@ of that hash; with none, it is `in no file of its hash`. With no
 the bundle holds named for the version, pnpm's way (`patches/name@version.patch`),
 each copy held to its files patched or as published.
 
+A copy that records its patch ([`patch`](file-formats.md#stasiscodebr)) is
+held to its files patched with it. Its version fails where its copies record
+different patches (`patch-conflict`), or the npm lockfile read locks another or
+none (`patch-not-locked`); with none read, the recorded hash picks the patch.
+
+A copy that records an [`integrity`](file-formats.md#stasiscodebr) and no
+patch records it installed unpatched, and is held to its files as published:
+the bundle's patch named for its version is not tried. Its version fails where
+another copy records a patch (`patch-conflict`), or the lockfile read patches
+it (`patch-not-recorded`).
+
 A patch the bundle holds is own code, and is taken as the repository has it
 alone: checked with own code, or, with `--only-deps`, checked all the same
 (by git's blob id, as the repository's listing has it) where a repository and
 commit are known. One the repository has otherwise, or not at all, is refused
-(`is the bundle's, not the repository's`), the version held to its files as
-published. Where it can't be checked (no repository known), the files only it
+(`is the bundle's, not the repository's`), as one that couldn't be read is
+(below). Where it can't be checked (no repository known), the files only it
 makes as they should be are left unverified.
 
 Each patched version is listed, with its patch, where it was read, whether a
-patch the bundle holds is as the repository has it, and whether the bundle
-holds its files patched or as published. One whose patch couldn't be read or
-applied is held to its files as published.
+patch the bundle holds is as the repository has it, whether its copies record
+it, and whether the bundle holds its files patched or as published. A copy to
+be patched by a patch that couldn't be read or applied is never valid: its
+files as published are left unverified, the others fail.
 
 ## The commit
 

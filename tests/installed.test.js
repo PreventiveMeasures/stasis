@@ -34,9 +34,11 @@ function writePackage(dir, at, { requires = [], ...pkg }) {
 // Each bucket's repo, by its dir, of `stasis bundle` with `options` in `dir`, written to `label`.br.
 async function bundled(dir, label, options = {}) {
   await bundleCommand({ cwd: dir, entries: ['index.js'], output: `${label}.br`, ...options })
-  const { modules } = JSON.parse(brotliDecompressSync(readFileSync(join(dir, `${label}.br`))).toString('utf8'))
-  return Object.fromEntries(Object.entries(modules).map(([at, { repo }]) => [at, repo]))
+  return Object.fromEntries(Object.entries(modulesOf(dir, label)).map(([at, { repo }]) => [at, repo]))
 }
+
+// The records of the bundle `stasis bundle` wrote to `label`.br in `dir`, by their dirs.
+const modulesOf = (dir, label) => JSON.parse(brotliDecompressSync(readFileSync(join(dir, `${label}.br`))).toString('utf8')).modules
 
 // [label, bundled()] of each of BUILDS.
 const bundledEach = (dir) => Promise.all(BUILDS.map(async ([label, options]) => [label, await bundled(dir, label, options)]))
@@ -77,6 +79,7 @@ test("npm: the hidden lockfile's `resolved` names a git dependency's repository 
     t.assert.equal(repos['node_modules/short'], undefined, `${label}: an abbreviated commit, none`)
     t.assert.equal(repos['node_modules/stale'], undefined, `${label}: a record of another version, none`)
   }
+  t.assert.deepStrictEqual(['node_modules/reg', 'node_modules/dep/node_modules/tar', 'node_modules/dep'].map((at) => modulesOf(dir, 'state')[at].integrity), [SRI, SRI, undefined], 'the integrity it names')
 }))
 
 test('a Solidity bundle records its npm git dependencies at their commits, and holds them to the lockfile beside them, as a JS bundle does', withTmp(async (t, dir) => {
@@ -136,7 +139,8 @@ test("yarn 1: yarn.lock names a git dependency's repository and commit, by its n
 
 // A project pnpm installed `packages` into, as it installs each: in node_modules/.pnpm/<store>/
 // node_modules/<name>, linked into the project's node_modules, its snapshot in the lockfile
-// node_modules/.pnpm/lock.yaml copies; one from the registry with no version of its own there.
+// node_modules/.pnpm/lock.yaml copies; one from the registry with no version of its own there; one
+// patched with its `patch`, its key naming its hash, as its snapshot's key alone does.
 function writePnpmProject(dir, packages) {
   writeProject(dir, packages.map(({ name }) => name))
   for (const { name, store, pkg } of packages) {
@@ -144,13 +148,15 @@ function writePnpmProject(dir, packages) {
     symlinkSync(`.pnpm/${store}/node_modules/${name}`, join(dir, 'node_modules', name))
   }
   const importer = packages.map(({ name, key }) => `      ${name}:\n        specifier: x\n        version: '${key.slice(name.length + 1)}'\n`)
-  const snapshots = packages.map(({ key, resolution }) => `  '${key}':\n    resolution: ${resolution}\n${resolution.startsWith('{integrity') ? '' : '    version: 1.0.0\n'}`)
+  const id = (key) => key.replace(/\(patch_hash=[\da-f]+\)$/u, '')
+  const snapshots = packages.map(({ key, resolution }) => `  '${id(key)}':\n    resolution: ${resolution}\n${resolution.startsWith('{integrity') ? '' : '    version: 1.0.0\n'}`)
+  const patched = packages.filter(({ patch }) => patch).map(({ key, patch }) => `  ${id(key)}:\n    hash: ${patch}\n    path: patches/${id(key)}.patch\n`)
   writeFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), `lockfileVersion: '9.0'
 
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
-
+${patched.length === 0 ? '' : `\npatchedDependencies:\n${patched.join('')}`}
 importers:
 
   .:
@@ -424,4 +430,30 @@ test('of two lockfiles beside a node_modules, a package is held to the one whose
   await t.assert.rejects(build(dir), /yarn\.lock doesn't lock node_modules\/reg as installed \(1\.0\.0; it locks none\)/u, "yarn's alone")
   rmSync(join(dir, 'node_modules', '.yarn-integrity'))
   await t.assert.rejects(build(dir), both, 'neither record there')
+}))
+
+test('pnpm and npm: the tarball and patch a package was installed with are recorded, by its directory, and held to the lockfile beside it', withTmp(async (t, dir) => {
+  const [OTHER, PATCH] = [`sha512-${'B'.repeat(85)}A==`, 'c'.repeat(64)]
+  writePnpmProject(dir, [
+    { name: 'reg', key: `reg@1.0.0(patch_hash=${PATCH})`, store: `reg@1.0.0_patch_hash=${PATCH}`, resolution: `{integrity: ${SRI}}`, patch: PATCH },
+    { name: 'plain', key: 'plain@1.0.0', store: 'plain@1.0.0', resolution: `{integrity: ${SRI}}` },
+  ])
+  const installed = readFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), 'utf8')
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), installed)
+  await bundledEach(dir)
+  for (const [label] of BUILDS) {
+    // By name: a State's bucket is where the package is, the field resolver's where it is linked.
+    const byName = Object.fromEntries(Object.values(modulesOf(dir, label)).filter(({ ecosystem }) => ecosystem === 'npm').map((info) => [info.name, [info.integrity, info.patch]]))
+    t.assert.deepStrictEqual(byName, { reg: [SRI, { integrity: `sha256-${Buffer.from(PATCH, 'hex').toString('base64')}` }], plain: [SRI, undefined] }, label)
+  }
+  for (const [lockfile, differs] of [
+    [installed.replace(`plain@1.0.0':\n    resolution: {integrity: ${SRI}}`, `plain@1.0.0':\n    resolution: {integrity: ${OTHER}}`), `installed with ${SRI}; it locks ${OTHER}`],
+    [installed.replaceAll(PATCH, 'd'.repeat(64)), 'it locks none there'],
+  ]) {
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), lockfile)
+    // eslint-disable-next-line no-await-in-loop -- one lockfile at a time
+    await t.assert.rejects(build(dir), (err) => err.message.includes("pnpm-lock.yaml doesn't lock ") && err.message.endsWith(`as installed (${differs}): install from it again`), differs)
+  }
+  npmProject(join(dir, 'npm'), { lock: { reg: { integrity: OTHER } }, hidden: { reg: { integrity: SRI } } })
+  await t.assert.rejects(build(join(dir, 'npm')), new RegExp(`package-lock\\.json doesn't lock npm/node_modules/reg as installed \\(installed with ${SRI}; it locks ${OTHER}\\): install from it again$`, 'u'))
 }))

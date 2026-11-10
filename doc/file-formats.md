@@ -370,7 +370,9 @@ name, so a rule copied from one file to the other may not refuse the same files.
   still load.
 - A record carries no `repo` or `subpackages`: a dependency's repository and
   its subpath entry points are metadata, which a bundle carries (see `modules`
-  under `stasis.code.br`) and a lockfile neither writes nor reads. A dependency
+  under `stasis.code.br`) and a lockfile neither writes nor reads. An npm
+  dependency's record carries `integrity` and `patch` as a bundle's does, held
+  and merged as there (see `integrity` under `stasis.code.br`). A dependency
   record may carry `vendored`, the packages copied into it, after `ecosystem`,
   as a bundle's record does (see there), so that `stasis audit` and `stasis
   sbom` see them from a lockfile alone; it is metadata here too, never
@@ -497,9 +499,34 @@ than ship it, and reading one is refused as well.
   `scope = full`; `modules` may be omitted (treated as empty). A bundle carrying
   code in `scope = full` must declare at least one entry; a resources-only bundle
   may have none.
+- A dependency record may carry `integrity`, after `ecosystem`: the SRI of the
+  archive it was installed from, as its lockfile locks it. That is an npm
+  tarball's sha512, a vendored crate's sha256 (its `.cargo-checksum.json`'s
+  package checksum, which `Cargo.lock` must lock), a Composer dist's sha1
+  (`shasum`; none where installed from its source) or a Soldeer zip's sha256
+  (`checksum`). A build from a lockfile alone records what deptree fetches it
+  with; one from disk, what the package manager's install record names (yarn
+  1's only where `yarn.lock` locks a sha512).
+
+  Wherever a build, `--add`, `stasis add` or a run meets a recorded `integrity`
+  or `patch`, it is held to how its package was installed, whether the build
+  bundles it or not: the install record, else the lockfile beside its
+  `node_modules`, else, from a lockfile alone, deptree's. `--add` holds a
+  Soldeer, Composer or vendored Cargo dependency's to what a build reads its
+  integrity of, above.
+  One recorded otherwise, or that the install names none of, stops it
+  (`<file>: module '<dir>' (recorded vs installed) patch mismatch (… vs
+  none)`); where nothing tells, it is kept. A value is of the files recorded
+  with it: two records of one package must agree, and a merge or run that would
+  give it to a file it wasn't recorded with stops (`lock = replace` records
+  anew). A build held to `stasis.lock.json` merges nothing into it, so what the
+  build alone records stays its own. `stasis add` adds a file of a package as
+  the artifact records it where an install record tells of it; to one
+  recording none of the package, as a split bundle's other half records it,
+  else its other artifacts, else as that record names it.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
-  a `repo`, after `ecosystem`: the GitHub repository its own manifest names,
-  `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
+  a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
+  manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,
   with the fields and checks of the bundle's own `repo` (see `repo` below), except
   that `github` is required: a `directory` or `commit` places nothing without the
   repository it is in, so a `repo` without one (`{}` too) is rejected on both
@@ -552,7 +579,7 @@ than ship it, and reading one is refused as well.
     `yarn.lock`, by its name and version; `pnpm-lock.yaml`, by the directory
     under `node_modules/.pnpm`, or by its name and version where pnpm hoists):
     one that locks none of it there, another version, or, of what its record
-    names, another resolution or commit, or that can't be read, stops the
+    names, another resolution, commit, integrity or patch, or that can't be read, stops the
     build (`<lockfile> doesn't lock <dir> as installed (…): install from it
     again`). Of several lockfiles there, it is held to the one whose package
     manager alone left its record, else the build is refused. With no
@@ -589,10 +616,21 @@ than ship it, and reading one is refused as well.
   audit` asks it for its advisories rather than looking one up, and for a record
   with none, the one its bundled `package.json` names by the same rules (see the
   `stasis` README).
-- A dependency record may carry `vendored`, after `repo`: the packages copied
-  into the dependency (Next.js compiles ~140 into `dist/compiled`) whose files
-  the bundle carries, by the directory each one's own `package.json` is in, with
-  that `package.json`'s `name` and, where it gives one, `version`:
+- An npm dependency record may carry `patch`, after `repo`: the patch pnpm
+  installed it with (`patchedDependencies`), as `{ "integrity": "sha256-…" }` of
+  its hash. A build from a lockfile alone records the one deptree applies, one
+  from disk the one `node_modules/.pnpm/lock.yaml` names; npm and yarn patch
+  nothing. A record with an `integrity` and no `patch` is of a package
+  installed unpatched, the two being recorded of one install: it disagrees
+  with a record of a patch, and with an install that applied one (`patch
+  mismatch (none vs …)`). One with neither tells nothing of either. It is held
+  as `integrity` is, and [`stasis validate`](validate.md#patched-dependencies)
+  holds it to the lockfile.
+- A dependency record may carry `vendored`, after `repo` and `patch`: the
+  packages copied into the dependency (Next.js compiles ~140 into
+  `dist/compiled`) whose files the bundle carries, by the directory each one's
+  own `package.json` is in, with that `package.json`'s `name` and, where it
+  gives one, `version`:
 
   ```json
   "node_modules/next": {
