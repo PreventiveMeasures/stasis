@@ -382,9 +382,9 @@ export class State {
       const baseline = files.get(dir)
       if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || JSON.stringify(record[field]) === JSON.stringify(info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
     }
-    if (record === undefined) return moduleInfo({ ...info, files: Object.create(null) })
-    const alone = ATTESTED_METADATA.filter((field) => record[field] === undefined).map((field) => [field, undefined])
-    return moduleInfo({ ...withMetadataOf(record, info, what), ...Object.fromEntries(alone) })
+    // What a bundle alone attests is the record's once all are absorbed, where they cover its files (#holdToInstalled).
+    const alone = Object.fromEntries(ATTESTED_METADATA.filter((field) => record?.[field] === undefined).map((field) => [field, undefined]))
+    return moduleInfo(record === undefined ? { ...info, ...alone, files: Object.create(null) } : { ...withMetadataOf(record, info, what), ...alone })
   }
 
   // Not what a lockfile alone locks, which says what an install would lay out, not what one did; nor
