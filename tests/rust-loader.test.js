@@ -588,6 +588,13 @@ test('scanRustItems matches a mod with its attribute on the same line', (t) => {
   t.assert.deepStrictEqual(mods.map((m) => [m.name, m.conditional]), [['macros', false], ['unix', true], ['hidden', false]])
 })
 
+test('scanRustItems declares nothing a macro_rules! with no name holds, whatever macro came before it', (t) => {
+  for (const src of ['macro_rules! { mod x; use a::b; }', 'macro_rules! (mod x;);', 'macro_rules! named { () => {}; }\nmacro_rules! { mod x; include!("x.rs"); }']) {
+    const items = scanRustItems(`${src}\nmod real;\n`)
+    t.assert.deepStrictEqual([items.mods.map((m) => m.name), items.imports.length, items.includes.length], [['real'], 0, 0], src)
+  }
+})
+
 test('scanRustItems marks a mod inside a macro invocation body conditional (cfg_if!, generate_guide!, macro_rules!)', (t) => {
   const { mods } = scanRustItems([
     'cfg_if::cfg_if! {', '    if #[cfg(unix)] {', '        mod imp_unix;', '    } else {', '        mod imp_other;', '    }', '}',

@@ -615,6 +615,13 @@ export function scanRustItems(content, { features = null, maybeFeatures = null, 
       }
       if (masked[open] === '{' || masked[open] === '(' || masked[open] === '[') {
         const close = matchClose(masked, open)
+        // A `macro_rules!` with no name defines no macro (rustc refuses it), so nothing in it is declared.
+        if (word === 'macro_rules' && definition === null) {
+          deadSpans.push([i, close + 1])
+          pending = []
+          i = close + 1
+          continue
+        }
         if (definition !== null) {
           openBlocks(defs, i)
           defs.push({ macro: definition, end: close, depth: stack.length })
