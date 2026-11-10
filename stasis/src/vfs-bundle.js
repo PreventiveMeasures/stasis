@@ -6,21 +6,9 @@ import { checkAhead, defaultEntries } from './vfs-bundle/entries.js'
 import { suggestedRepoEntries } from './vfs-bundle/github.js'
 import { NODE_MODULES_MANAGERS, checkCache, checkTarget, checkVfs, detectPackageManager, loadTree, lockfilesManagers, packageManagerFor, vfsHost } from './vfs-bundle/tree.js'
 
-// @exodus/stasis/vfs-bundle: static bundles from a project's lockfile alone, through the
-// dependencies its package manager would install (`packageManager`: 'pnpm', pnpm 10, 11 or 12;
-// 'yarn1', yarn 1.22; 'npm', npm 10.9 or 11; or 'soldeer', Soldeer 0.12; without one, the one whose
-// lockfile installs the project, where only one's does, or one of each of the `lockfiles` its
-// stasis.config.json names, laid out as one), over the project held in a Vfs, which is
-// only read. The tree is laid out by @preventive/deptree into a Vfs of its own, and nothing is read
-// from disk or written there but the tarballs and zips: fetched from registry.npmjs.org and
-// Soldeer's registry, or read from npm's cache or ~/.audit's where one holds them, every copy held
-// to the lockfile's integrity before it is used; cached only where setCacheDir says. A Soldeer git
-// dependency is GitHub's tarball of its commit, fetched through the `client` buildVfsBundle is given.
-// buildGitHubBundle builds one from a GitHub repo at a commit, or the one a tag names (the default
-// branch's head without either), its tree fetched from GitHub and held to its git tree id, cached
-// there the same way, and its Soldeer git dependencies through the same client. A pnpm or npm tree
-// is lazy unless `lazy` is false or stasis.config.json's `lazyDependencies` is: laid out with nothing
-// fetched, and each package fetched once the build reads it (vfs-bundle/lazy.js).
+// @exodus/stasis/vfs-bundle: static bundles of a project held in a Vfs, which is only read, from its lockfile alone,
+// through the tree its package manager would install (@preventive/deptree). Nothing touches disk but the tarballs and
+// zips, each held to the lockfile's integrity, and cached only where setCacheDir says.
 
 export { buildVfsBundle } from './cmd/bundle.js'
 export { buildGitHubBundle } from './vfs-bundle/github.js'
@@ -34,62 +22,36 @@ export function createVfsHost(vfs) {
   return vfsHost(vfs, { cache: false })
 }
 
-// -> { root, vfs, projects, host, stats, installed, packageManager, packageManagerVersion }, as
-// 'pnpm', 'yarn1' or 'npm' installs node_modules, then cleaned by each .yarnclean in cwd and above
-// it as `yarn autoclean` cleans Yarn's (vfs-bundle/yarnclean.js): the directory in the project's Vfs
-// it installs cwd from, which holds the lockfile; the Vfs the tree is laid out into, rooted there;
-// the projects' directories from there; the host reading the project through the tree; deptree's
-// counts, and the
-// packages it installs (each by its `path` from there, with the `commit` its version document
-// names, where it names a full one); and the
-// package manager reproduced, at `packageManagerVersion` if given, else the one the root
-// package.json's packageManager pins, else pnpm 10.33.4, yarn 1.22.22 or npm 11.21.0 (which nothing
-// pins: npm reads no packageManager). The host caches what it reads, of the project's Vfs too, so
-// neither is to change while it is used.
-// `os`, `cpu` and `libc` ('glibc', 'musl' or 'unknown', pnpm's and npm's, which takes 'unknown' for
-// none) are the machine packages are matched against: this one's but for what is given (for another
-// os, libc defaults to 'unknown'). Without a `packageManager`, it is the one of the three whose
-// lockfile installs cwd, where only one's does. `cache` is where the packages' tarballs and version
-// documents are kept, as @preventive/upstream's CacheOptions take it: left out, in setCacheDir's
-// cache; a store with `read` and `write`, in place of it; or false, nowhere. Where the
-// stasis.config.json in cwd sets `installDevDependencies` false, what devDependencies alone reach is
-// left out, as buildVfsBundle's tree leaves it out.
+// -> { root, vfs, projects, host, stats, installed, packageManager, packageManagerVersion }: node_modules as 'pnpm',
+// 'yarn1' or 'npm' installs it (the one whose lockfile installs cwd, where none is given) for the machine `os`, `cpu`
+// and `libc` name, cleaned by each .yarnclean. The host caches what it reads, so neither Vfs is to change meanwhile.
 export async function loadNodeModules({ vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, cache } = {}) {
-  checkVfs('loadNodeModules', vfs)
-  checkTarget('loadNodeModules', { os, cpu, libc })
-  checkCache('loadNodeModules', cache)
+  const name = 'loadNodeModules'
+  checkVfs(name, vfs)
+  checkTarget(name, { os, cpu, libc })
+  checkCache(name, cache)
   const project = vfsHost(vfs)
   // A real path, as detection and the layout take it.
   cwd = project.realpath(posix.resolve('/', cwd))
-  packageManager = packageManagerFor('loadNodeModules', project, cwd, { packageManager, packageManagerVersion, os }, NODE_MODULES_MANAGERS)
-  const installDevDependencies = installsDevDependencies('loadNodeModules', cwd, project)
+  packageManager = packageManagerFor(name, project, cwd, { packageManager, packageManagerVersion, os }, NODE_MODULES_MANAGERS)
+  const installDevDependencies = installsDevDependencies(name, cwd, project)
   return loadTree({ project, packageManager, cwd, packageManagerVersion, os, cpu, libc, cache, installDevDependencies })
 }
 
-// -> the entries buildGitHubBundle takes where none are given, as paths from the project's
-// directory: those its stasis.config.json's `entries` names, where it has `entries` (none of an
-// empty one), checked with the options as the build checks them; else of the kind its package
-// manager builds: `packageManager` if given, else the one detected as the build detects it, or
-// where its stasis.config.json names its `lockfiles`, the one their package managers build (none
-// where they build JS and Solidity bundles both, but those its `entries` names). For
-// pnpm and yarn 1, the entry points its package.json names, resolved as the build resolves them
-// with the same `conditions`, `mainFields`, `metro`, `platforms` and `typescript` (packageEntries);
-// for Soldeer, its .sol entry points by name and layout (solidityEntries). The options are checked
-// as the build checks them, and `os`, the one the build is for, detects the package manager as
-// there. Of the project held in `vfs`, from `cwd`; or of a GitHub repo, `{ github, sha, tag,
-// directory | path, client }` as buildGitHubBundle takes them, downloaded as it downloads them: of a
-// `path` to a file, that file.
+// -> the entries buildGitHubBundle takes where none are given (defaultEntries), as paths from the project's directory,
+// the options checked as the build checks them: of the project held in `vfs`, from `cwd`; or of a GitHub repo
+// (`{ github, sha, tag, directory | path, client }`), downloaded as buildGitHubBundle downloads it.
 export async function suggestedEntries({ vfs, cwd = '/', packageManager, conditions, mainFields, metro, platforms, jsx, typescript, os, ...repo } = {}) {
-  checkTarget('suggestedEntries', { os })
+  const name = 'suggestedEntries'
+  checkTarget(name, { os })
   const resolution = { conditions, mainFields, metro, platforms, jsx, typescript }
-  if (vfs === undefined && repo.github === undefined) throw new Error('suggestedEntries: a vfs or a github repo is required')
-  if (vfs !== undefined && repo.github !== undefined) throw new Error('suggestedEntries: takes a vfs or a github repo, not both')
+  if (vfs === undefined && repo.github === undefined) throw new Error(`${name}: a vfs or a github repo is required`)
+  if (vfs !== undefined && repo.github !== undefined) throw new Error(`${name}: takes a vfs or a github repo, not both`)
   if (vfs === undefined) return suggestedRepoEntries({ ...repo, packageManager }, { ...resolution, os })
-  checkVfs('suggestedEntries', vfs)
+  checkVfs(name, vfs)
   const host = vfsHost(vfs)
   const at = posix.resolve('/', cwd)
   // As the build lays them out: a tree of each lockfile stasis.config.json names, none detected.
-  const name = 'suggestedEntries'
   const lockfiles = packageManager === undefined ? configuredLockfiles(name, at, host) : undefined
   const one = lockfiles === undefined ? packageManager ?? detectPackageManager(name, host, at, { os }) : undefined
   checkAhead(name, one, resolution)
