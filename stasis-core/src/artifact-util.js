@@ -323,13 +323,9 @@ function executableEntryProblem(file, { what, files, formats, scope }) {
 
 // Applied at every write site, so the in-memory artifact is honest before it is ever serialized.
 export function narrowExecutable(executable, { modules, formats, scope }) {
-  const out = new Set()
-  if (executable.size === 0) return out
+  if (executable.size === 0) return new Set()
   const files = moduleFileKeys(modules, { scope })
-  for (const file of executable) {
-    if (executableEntryProblem(file, { what: 'artifact', files, formats, scope }) === null) out.add(file)
-  }
-  return out
+  return new Set(executable.values().filter((file) => executableEntryProblem(file, { what: 'artifact', files, formats, scope }) === null))
 }
 
 function assertExecutable(executable, { what, files, formats, scope }) {
@@ -578,12 +574,8 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
 
 // Whether two import targets are one: a resolved file, or (--metro) a { platform: file } Map, compared structurally.
 export function importTargetsEqual(a, b) {
-  const aMap = a instanceof Map
-  if (aMap !== (b instanceof Map)) return false
-  if (!aMap) return a === b
-  if (a.size !== b.size) return false
-  for (const [platform, file] of a) if (b.get(platform) !== file) return false
-  return true
+  if (!(a instanceof Map) || !(b instanceof Map)) return a === b
+  return a.size === b.size && a.entries().every(([platform, file]) => b.get(platform) === file)
 }
 
 const fmtTarget = (t) => (t instanceof Map ? `{${[...t].map(([p, f]) => `${p}: ${f}`).join(', ')}}` : t)
@@ -591,7 +583,7 @@ const fmtTarget = (t) => (t instanceof Map ? `{${[...t].map(([p, f]) => `${p}: $
 // Merge two import maps (conditions -> parent -> specifier -> target); a redirect conflict throws.
 export function mergeImportMaps(a, b, label) {
   const out = new Map()
-  const absorb = (imports) => {
+  for (const imports of [a, b]) {
     for (const [conditions, byParent] of imports) {
       const outByParent = nestedMap(out, conditions)
       for (const [parent, specs] of byParent) {
@@ -607,8 +599,6 @@ export function mergeImportMaps(a, b, label) {
       }
     }
   }
-  absorb(a)
-  absorb(b)
   return out
 }
 
@@ -636,10 +626,7 @@ export function mergeFormatMaps(a, b, label) {
 // authoritative for its own files: a since-lost execute bit is cleared, not resurrected by the union.
 export function mergeExecutableSets(a, b, bModules, scope) {
   if (a.size === 0) return new Set(b)
-  const bFiles = moduleFileKeys(bModules, { scope })
-  const out = new Set(b)
-  for (const file of a) if (!bFiles.has(file)) out.add(file)
-  return out
+  return new Set(b).union(a.difference(moduleFileKeys(bModules, { scope })))
 }
 
 // An empty, '.' or '..' path segment.
@@ -735,25 +722,26 @@ export function hasNodeModulesSegment(path) {
   return path === 'node_modules' || path.startsWith('node_modules/') || path.endsWith('/node_modules') || path.includes('/node_modules/')
 }
 
+const NODE_MODULES_MARKER = 'node_modules/'
+
 // Deepest segment-aligned `node_modules/` marker, or -1: `lastIndexOf` alone would also match a bare
 // substring (`foo_node_modules/`), so a candidate only counts at the start or after a `/`.
 function lastNodeModulesMarker(path) {
-  const marker = 'node_modules/'
   let idx = path.length
-  while ((idx = path.lastIndexOf(marker, idx - 1)) !== -1) {
+  while ((idx = path.lastIndexOf(NODE_MODULES_MARKER, idx - 1)) !== -1) {
     if (idx === 0 || path[idx - 1] === '/') return idx
   }
   return -1
 }
 
 export function splitNodeModulesPath(path) {
-  const marker = 'node_modules/'
   const idx = lastNodeModulesMarker(path)
   if (idx === -1) return null
-  const after = idx + marker.length
+  const after = idx + NODE_MODULES_MARKER.length
   const parts = path.slice(after).split('/')
   const pkgLen = parts[0].startsWith('@') ? 2 : 1
-  if (parts.length <= pkgLen || parts.slice(0, pkgLen).some((p) => !p)) return null
-  const name = parts.slice(0, pkgLen).join('/')
+  const nameParts = parts.slice(0, pkgLen)
+  if (parts.length <= pkgLen || nameParts.includes('')) return null
+  const name = nameParts.join('/')
   return { dir: path.slice(0, after) + name, rel: parts.slice(pkgLen).join('/'), name }
 }

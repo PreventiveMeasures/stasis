@@ -49,20 +49,14 @@ function assertShard(files, formats, imports) {
     for (const [parent, specs] of byParent) {
       assertKey(parent, 'shard import parent')
       assert(specs instanceof Map, `shard imports for ${parent}: expected a specifier map`)
-      for (const [, target] of specs) assertTarget(target, parent)
+      // A target is a file, or (--metro) a platform -> file map; nothing deeper.
+      for (const [, target] of specs) {
+        for (const file of target instanceof Map ? target.values() : [target]) assertKey(file, `shard import target from ${parent}`)
+      }
     }
   }
 }
 
 function assertKey(key, what) {
   assert(typeof key === 'string' && key !== '' && !isRefusedPath(key), `${what}: ${key}`)
-}
-
-// A target is a file, or (--metro) a platform -> file map; nothing deeper.
-function assertTarget(target, parent) {
-  if (target instanceof Map) {
-    for (const [, file] of target) assertKey(file, `shard import target from ${parent}`)
-    return
-  }
-  assertKey(target, `shard import target from ${parent}`)
 }

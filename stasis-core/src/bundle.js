@@ -30,6 +30,7 @@ import {
   serializeImports,
   posixPathEscapes,
   REPO_FIELDS,
+  RESOURCE_FORMATS,
   sameGithub,
   splitNodeModulesPath,
 } from './artifact-util.js'
@@ -72,10 +73,7 @@ const mergeReason = (a, b) => {
   const merged = new Map()
   for (const src of [a, b]) {
     for (const [consumer, files] of Object.entries(src ?? {})) {
-      if (!Array.isArray(files)) continue
-      let set = merged.get(consumer)
-      if (set === undefined) merged.set(consumer, (set = new Set()))
-      for (const file of files) set.add(file)
+      if (Array.isArray(files)) merged.set(consumer, new Set([...(merged.get(consumer) ?? []), ...files]))
     }
   }
   return fromEntries([...merged.keys()].toSorted().map((c) => [c, fileSetToObject(merged.get(c))]))
@@ -165,18 +163,14 @@ export class Bundle {
   }
 
   static isResourceFormat(format) {
-    return format === 'resource' || format === 'resource:base64' || format === 'directory'
+    return RESOURCE_FORMATS.has(format) || format === 'directory'
   }
 
   // True if any bundled file is non-resource; a full-scope code bundle must declare an entry to be
   // runnable (State#absorbCodeBundle).
   get hasCode() {
-    for (const [dir, { files }] of this.modules) {
-      for (const rel of Object.keys(files)) {
-        if (!Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))) return true
-      }
-    }
-    return false
+    return this.modules.entries().some(([dir, { files }]) =>
+      Object.keys(files).some((rel) => !Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))))
   }
 
   static parse(text) {
@@ -210,7 +204,6 @@ export class Bundle {
     let entries = new Set()
 
     if (json.version === VERSION) {
-      const full = json.config.scope === 'full'
       if (json.modules !== undefined) {
         assert(isPlainObject(json.modules), 'bundle: modules must be an object')
         for (const [dir, info] of Object.entries(json.modules)) {
@@ -220,7 +213,7 @@ export class Bundle {
           modules.set(dir, normalizeModule(info, dir, 'bundle'))
         }
       }
-      if (full) {
+      if (json.config.scope === 'full') {
         assert(isPlainObject(json.sources), 'bundle: sources must be an object')
         for (const [dir, info] of Object.entries(json.sources)) {
           assert(!hasNodeModulesSegment(dir))
@@ -242,8 +235,7 @@ export class Bundle {
         assertArtifactPath(path, 'bundle')
         const { dir, rel, name } = inferModuleDir(path)
         assert(!posixPathEscapes(dir) && !posixPathEscapes(rel))
-        if (!modules.has(dir)) modules.set(dir, { name, version: null, files: Object.create(null) })
-        const { files } = modules.get(dir)
+        const { files } = modules.get(dir) ?? modules.set(dir, { name, version: null, files: Object.create(null) }).get(dir)
         assert(!Object.hasOwn(files, rel), `bundle: duplicate file key '.' (v0 '' and '.')`)
         files[rel] = content
       }
