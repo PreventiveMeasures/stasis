@@ -1,11 +1,9 @@
 import { createRequire } from 'node:module'
 import { posix } from 'node:path'
 
-// Node's own fs.globSync and path.matchesGlob over a `host` (@exodus/stasis-core/host) in place of
-// the disk, for a Vfs's: Node 24.22.2's and 26.13.0's internal/fs/glob.js, its globSync as it runs
-// without `followSymlinks`, `maxDepth` or an array `exclude`, over the minimatch 10 they vendor, an
-// optional dependency loaded where a pattern is first matched. Unlike Node's, matching never folds
-// case, whatever the OS: the tree is git's, whose names differ by case alone.
+// Node 24.22.2's and 26.13.0's fs.globSync (internal/fs/glob.js, as it runs without `followSymlinks`, `maxDepth` or
+// an array `exclude`) and path.matchesGlob over a `host`, on the optional minimatch 10 they vendor. Unlike Node's,
+// matching never folds case, whatever the OS: the tree is git's, whose names may differ by case alone.
 
 const { join, resolve } = posix
 const require = createRequire(import.meta.url)
@@ -398,10 +396,9 @@ class Glob {
   }
 }
 
-// fs.globSync(pattern, { cwd, exclude }) over `host`, `cwd` an absolute path there: the matches as
-// Node spells them, from `cwd` (or from `/`, of an absolute pattern), never walking into a path
-// `exclude` takes, given its absolute path. As Node's, it leaves out such a path where its `**`
-// meets it alone: one the segment after the `**` matches is still a match.
+// fs.globSync(pattern, { cwd, exclude }) over `host`, `cwd` absolute: the matches as Node spells them, from `cwd` (or
+// `/`, of an absolute pattern), never walking into a path `exclude` takes by its absolute path. As Node's, such a
+// path is left out where a `**` meets it alone; one the segment after the `**` matches is still a match.
 export const globSync = (host, pattern, { cwd, exclude } = {}) => new Glob(host, pattern, { cwd, exclude }).globSync()
 
 // As Node's matchGlobPattern keeps them: the most recent 250 patterns' matchers.

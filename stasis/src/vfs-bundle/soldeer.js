@@ -2,11 +2,9 @@ import { join } from 'node:path'
 
 import { isTomlTable, readToml } from '../loaders/toml.js'
 
-// What `soldeer install` (0.12.0) writes beside the dependencies folder after installing it
-// (soldeer-core's update_config_libs and edit_remappings with RemappingsAction::Update): the
-// remappings.txt it would write is written into the tree, which then serves it in place of the
-// project's; a foundry.toml it would edit is refused, as is what this can't tell it would leave as
-// it is. `view` is the project's root by paths from `/`, `root` its real path, for messages.
+// What `soldeer install` 0.12.0 writes beside the dependencies folder (soldeer-core's update_config_libs and
+// edit_remappings, RemappingsAction::Update): the remappings.txt it would write goes into the tree, served in place
+// of the project's; a foundry.toml it would edit, or what this can't tell it leaves as it is, is refused.
 
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?(?:\+[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?$/u
 // A requirement Soldeer takes as exact: a bare version (its `^` made `=`), or one written `=`.
@@ -46,29 +44,23 @@ function folderMatches(dep, name) {
 // The remappings Soldeer's update leaves, of `existing` (`[name, target]` pairs) and the config's
 // dependencies, sorted as it sorts them (by their UTF-8 bytes).
 function updatedRemappings(existing, deps, { regenerate, where }) {
-  const items = deps.map((dep) => ({ dep, line: `${dep.remapped}=dependencies/${dep.folder}/` }))
-  let lines
-  if (regenerate || existing.length === 0) {
-    lines = items.map(({ line }) => line)
-  } else {
-    lines = []
-    let rest = existing
-    for (const { dep, line } of items) {
-      let found = false
-      rest = rest.filter(([name, target]) => {
-        const path = components(target).slice(0, 2)
-        const folder = path.at(-1)
-        const matches = folder === undefined || ['/', '.', '..'].includes(folder) ? false : folderMatches(dep, folder)
-        if (matches === null) throw new Error(`${where}: "${name}=${target}" names ${folder}, which \`soldeer install\` may rewrite to dependencies/${dep.folder}`)
-        if (!matches) return true
-        lines.push(`${name}=${target.replaceAll(path.join('/').replace(/^\/\//u, '/'), `dependencies/${dep.folder}`)}`)
-        found = true
-        return false
-      })
-      if (!found) lines.push(line)
-    }
-    lines.push(...rest.map(([name, target]) => `${name}=${target}`))
+  const lines = []
+  let rest = regenerate ? [] : existing
+  for (const dep of deps) {
+    let found = false
+    rest = rest.filter(([name, target]) => {
+      const path = components(target).slice(0, 2)
+      const folder = path.at(-1)
+      const matches = folder === undefined || ['/', '.', '..'].includes(folder) ? false : folderMatches(dep, folder)
+      if (matches === null) throw new Error(`${where}: "${name}=${target}" names ${folder}, which \`soldeer install\` may rewrite to dependencies/${dep.folder}`)
+      if (!matches) return true
+      lines.push(`${name}=${target.replaceAll(path.join('/').replace(/^\/\//u, '/'), `dependencies/${dep.folder}`)}`)
+      found = true
+      return false
+    })
+    if (!found) lines.push(`${dep.remapped}=dependencies/${dep.folder}/`)
   }
+  lines.push(...rest.map(([name, target]) => `${name}=${target}`))
   return lines.toSorted((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
 }
 
@@ -79,14 +71,15 @@ const pairs = (lines) => lines.flatMap((line) => {
   return at === -1 ? [] : [[line.slice(0, at), line.slice(at + 1)]]
 })
 
+// `view` is the project's root by paths from `/`, `root` its real path, for messages.
 export function settleSoldeer(view, vfs, root) {
   const foundryText = textOf(view, '/foundry.toml')
   const foundry = foundryText === undefined ? undefined : readToml(foundryText)
-  const configFile = isTomlTable(foundry?.dependencies) ? 'foundry.toml' : 'soldeer.toml'
-  const config = configFile === 'foundry.toml' ? foundry : readToml(textOf(view, '/soldeer.toml') ?? '')
+  const inFoundry = isTomlTable(foundry?.dependencies)
+  const config = inFoundry ? foundry : readToml(textOf(view, '/soldeer.toml') ?? '')
   const where = (file) => join(root, file)
 
-  if (configFile === 'foundry.toml') {
+  if (inFoundry) {
     const libs = foundry.profile?.default?.libs
     if (!Array.isArray(libs) || !libs.includes('dependencies')) {
       throw new Error(`${where('foundry.toml')}: [profile.default] libs holds no "dependencies", which \`soldeer install\` adds`)
@@ -104,7 +97,7 @@ export function settleSoldeer(view, vfs, root) {
   })
 
   const remappingsTxt = textOf(view, '/remappings.txt')
-  if (configFile === 'foundry.toml' && settings.remappings_location === 'config') {
+  if (inFoundry && settings.remappings_location === 'config') {
     if (remappingsTxt !== undefined) throw new Error(`${where('remappings.txt')}: \`soldeer install\` removes it, as remappings_location is "config"`)
     for (const [name, profile] of Object.entries(isTomlTable(foundry.profile) ? foundry.profile : {})) {
       const current = Array.isArray(profile?.remappings) ? profile.remappings : undefined

@@ -2,24 +2,17 @@ import { posix } from 'node:path'
 
 import { loadMinimatch } from './glob.js'
 
-// Yarn 1's .yarnclean, which `yarn autoclean` (and `yarn install`, where the lockfile's directory
-// holds one) cleans node_modules by: each line a pattern of paths to remove, `!` one of paths to
-// keep, `#` a comment. Here every .yarnclean in the directory installed or above it cleans the tree
-// a package manager lays out, whichever it is, as Yarn 1.22.22's autoclean cleans its own
-// (sortFilter and matchesFilter, src/util/filter.js), on minimatch with the options Yarn gives
-// micromatch. A path is matched from the node_modules directory holding its package, as Yarn's
-// hoisted layout has it (pnpm's .pnpm/x@1/node_modules/x/README.md as x/README.md), and none of the
-// package manager's own (.bin, .pnpm, .modules.yaml) is.
+// Yarn 1.22.22's .yarnclean (autoclean's sortFilter and matchesFilter, src/util/filter.js), on minimatch: every one
+// in the directory installed or above it cleans whichever package manager's tree, each path matched from the
+// node_modules holding its package, as Yarn hoists it (pnpm's .pnpm/x@1/node_modules/x/README.md as x/README.md).
 
 export const YARNCLEAN = '.yarnclean'
 
 // The lines ignoreLinesToRegex takes for patterns: no comment, blank line or bare `!`.
 const patternLines = (lines) => lines.filter((line) => !(line === '!' || line[0] === '#' || /^\s*$/u.test(line)))
 
-// ignoreLinesToRegex's filter of a line, with the expressions matchesFilter matches by: `regex`, of
-// its trimmed spelling as micromatch's makeRe makes one for Yarn, dotfiles and all, case aside, and
-// `plain`, of the pattern as micromatch's isMatch takes it, by default; never matching where the
-// pattern makes none.
+// ignoreLinesToRegex's filter of a line: `regex` as micromatch's makeRe makes it for Yarn (trimmed, dotfiles and
+// all, case aside), `plain` as its isMatch takes it by default; NONE where the pattern makes no expression.
 const NONE = /(?!)/u
 function filterOf(line, { makeRe }) {
   const negation = line[0] === '!'
@@ -39,11 +32,9 @@ function packagePath(dir, path) {
   return tail.length === 0 || tail[0].startsWith('.') ? null : tail.join('/')
 }
 
-// Of every .yarnclean in `cwd` and the directories above it, read through `host`: a function
-// cleaning the node_modules directory at a path of a Vfs as sortFilter cleans one, or null where
-// none holds a pattern; its `keeps`, whether a `!` pattern keeps paths, which turns what is cleaned
-// of one package on what the others hold. minimatch is loaded here, where one does: before anything
-// is installed.
+// Of every .yarnclean in `cwd` and above it: a function cleaning a Vfs's node_modules at a path as sortFilter does,
+// or null where none holds a pattern. Its `keeps`: whether a `!` pattern keeps paths, so that what is cleaned of one
+// package turns on what the others hold. minimatch is loaded here, before anything is installed.
 export function yarnclean(host, cwd) {
   const lines = []
   for (let dir = cwd; ; dir = posix.dirname(dir)) {

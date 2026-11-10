@@ -17,15 +17,9 @@ const JS = /\.(?:[cm]?[jt]s|[jt]sx)$/u
 const NODE_CONDITIONS = [['require', 'node', 'node-addons', 'module-sync'], ['import', 'node', 'node-addons', 'module-sync']]
 const FIELD_CONDITIONS = ['commonjs', 'module'].map((format) => resolveConditions(format))
 
-// The entry points the package.json in `dir` names, as paths from `dir`, resolved as the JS build
-// with the given options resolves: as Node does, `conditions` added, or with `mainFields` or
-// `metro` through the build's field resolver, once per platform of `platforms` under `metro`; what
-// that misses mapped as tsc maps it under `typescript`, as the build's fallback maps it. In
-// that order: its own entry, as the build resolves `./` there (`main`, or the first of the main
-// fields, else index); each subpath `exports` holds (but a pattern), as the package's name resolves
-// for require() and for import, with the conditions the build adds (the RN ones under `metro`) to
-// Node's, or with `mainFields` or `metro` to the field resolver's; and each `bin`. Only JS files in
-// `dir` that are there, named from within it; none without a package.json.
+// The JS files in `dir` its package.json names, as paths from `dir`, resolved as the build resolves them: by Node plus
+// `conditions`, or the field resolver under `mainFields` or `metro` (per platform), a miss mapped as tsc maps it under
+// `typescript`. Its `./` entry, each `exports` subpath but a pattern (for require() and import), then each `bin`.
 function packageEntries(host, dir, { conditions = [], mainFields, metro = false, platforms = [], typescript = false } = {}) {
   const real = host.realpath(dir)
   const manifest = join(real, 'package.json')
@@ -103,10 +97,9 @@ function solidityFiles(host, real, rel) {
   return out.toSorted()
 }
 
-// The entry points of the Soldeer project in `dir`, by name and layout, as paths from `dir`: its
-// .sol files directly in it, then those under contracts/, then those under its source directory
-// (its foundry.toml's default profile's `src`, else `src`); none of its tests, scripts or mocks,
-// nor any in what it depends on or builds. A link to a directory is none.
+// The entry points of the Soldeer project in `dir`, by name and layout: its own .sol files, then those under
+// contracts/, then under its source directory (foundry.toml's default `src`, else `src`); none of its tests,
+// scripts, mocks, dependencies or build output. A link to a directory is none.
 function solidityEntries(host, dir) {
   const real = host.realpath(dir)
   const isDirectory = (rel) => !posixPathEscapes(rel) && host.stat(join(real, rel))?.isDirectory() && host.readlink(join(real, rel)) === null
@@ -149,33 +142,22 @@ const KINDS = {
 
 const EMPTY = vfsHost(new Vfs())
 
-// What a stasis.config.json's empty `entries` says of the directory holding it.
-const CONFIGURED_NONE = 'has a stasis.config.json whose entries name none'
-// What one whose lockfiles are of JS and Solidity projects both, and which names no entries, says.
-const MIXED_NONE = "has a stasis.config.json whose lockfiles lay out JS and Solidity trees, and no entries naming which to bundle"
-
-// -> { entries, none }: the entries a build of the project in `dir` (read through `host`) takes
-// where none are given, as paths from `dir`, and what having none says of `dir`. Those its
-// stasis.config.json's `entries` names, checked with `options` as the build checks them
-// (configuredBuilds), where it has `entries`, whatever it names; else those of the kind
-// `packageManagers` (its trees') build (KINDS'), with `options` then checked on their own, as the
-// build checks them, which nothing completes; none where they build JS and Solidity bundles both.
+// -> { entries, none }: the entries a build of the project in `dir` takes where none are given, and what having none
+// says of `dir`: its stasis.config.json's `entries` (configuredBuilds), else those its `packageManagers` build by kind
+// (KINDS'), `options` checked as the build checks them; none where they build JS and Solidity bundles both.
 export function defaultEntries(name, host, dir, packageManagers, options) {
   const configured = configuredBuilds(name, { cwd: dir, host, options })
-  if (configured !== null) return { entries: configured.entries, none: CONFIGURED_NONE }
+  if (configured !== null) return { entries: configured.entries, none: 'has a stasis.config.json whose entries name none' }
   const kinds = new Set(packageManagers.map((pm) => packageManagerOf(name, pm).kind))
-  if (kinds.size > 1) return { entries: [], none: MIXED_NONE }
+  if (kinds.size > 1) return { entries: [], none: 'has a stasis.config.json whose lockfiles lay out JS and Solidity trees, and no entries naming which to bundle' }
   const kind = KINDS[[...kinds][0]]
   checkVfsOptions(name, { ...options, entries: [kind.standIn], cwd: '/', host: EMPTY, fetched: false })
   return { entries: kind.entries(host, dir, options), none: kind.none }
 }
 
-// The build's checks of `options` before anything is fetched, over an empty tree, which never
-// decides them: for the package manager given, else for any; over the entries given, else over one
-// of the kind the default ones are. But for what one of them needs of another, which the options of
-// an entry stasis.config.json names may set (`partial`), left to the build, which knows whether it
-// names it; and `lazy`, which the package manager given has to take. -> the PACKAGE_MANAGERS entry of
-// the one given
+// The build's checks of `options` before anything is fetched, over an empty tree: for the package manager given or
+// any, over the entries given or a stand-in of each kind, but for what one option needs of another, which a
+// configured entry's options may set (`partial`). -> the PACKAGE_MANAGERS entry of the one given
 export function checkAhead(name, packageManager, options) {
   checkVersion(name, { packageManager, ...options })
   if (options.lazy !== undefined && typeof options.lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)

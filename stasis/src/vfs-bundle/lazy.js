@@ -1,20 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { posix } from 'node:path'
 
-// A lazy tree (@preventive/deptree's `lazy`): laid out from the lockfile alone, each package's
-// directory left empty until it is unpacked. The host reads synchronously, so a build reading it
-// cannot wait for a tarball: it runs in rounds. A round that reads under a package not yet unpacked
-// is void, whatever it built, and those packages are unpacked for the next; the first round that
-// reads none read nothing but what the full tree holds there, and is the build. What a round's scan
-// reads of a file is kept for the rounds after it where reading it read no such package (Scan's
-// `memo`), so each file is scanned once, but those that read what was not unpacked yet.
+// A lazy tree (@preventive/deptree's `lazy`) leaves each package's directory empty until it is unpacked. The host
+// reads synchronously, so a build runs in rounds: one that reads under a package not yet unpacked is void, and
+// those packages are unpacked for the next; the first round that reads none is the build.
 
-// The tree's Vfs as tree.js's vfsHost reads it (lstat, readlink, readFile and readdir). A read under
-// the directory of a package of `roots` not in `unpacked`, or a listing of that directory itself,
-// adds it to `reads.asked`, and to `reads.read` but while `reads.probing` (a check of what files the
-// package holds, which reads none of its code), counts in `reads.touches`, and reads what the layout
-// holds there. The directory itself, and those above a package's on the way to it, are as the full
-// tree holds them, so reading them asks for nothing.
+// The tree's Vfs, as vfsHost reads it. A read under a package of `roots` not yet `unpacked` (or a listing of its
+// directory) adds it to `reads.asked`, and to `reads.read` unless `reads.probing`, and counts in `reads.touches`;
+// a package's own directory and those above it read as the full tree holds them, asking for nothing.
 export function lazyView(vfs, { roots, unpacked, reads }) {
   const above = new Set()
   for (const root of roots) {
@@ -32,35 +25,16 @@ export function lazyView(vfs, { roots, unpacked, reads }) {
     if (reads.probing === 0) reads.read.add(owner)
     reads.touches++
   }
-  return {
-    lstat(path) {
-      touch(path, false)
-      return vfs.lstat(path)
-    },
-    readlink(path) {
-      touch(path, false)
-      return vfs.readlink(path)
-    },
-    readFile(path) {
-      touch(path, false)
-      return vfs.readFile(path)
-    },
-    readdir(path) {
-      touch(path, true)
-      return vfs.readdir(path)
-    },
+  const read = (method, listing = false) => (path) => {
+    touch(path, listing)
+    return vfs[method](path)
   }
+  return { lstat: read('lstat'), readlink: read('readlink'), readFile: read('readFile'), readdir: read('readdir', true) }
 }
 
-// A get-or-read cache, `(key, read) => read()`'s value, as for a tree that holds still: but kept only
-// where reading it read nothing a lazy tree does not hold yet (counted by `touches`, a lazy tree's
-// host's), which is read again; and kept nowhere without `cache`. With `retouch`, for a cache that
-// lives no longer than one round of a lazy tree, in which the tree holds still, what such a reading
-// gave is kept too, and each time it is taken it touches again (`retouch()`), as reading it again
-// would: what reads it knows it read what the tree does not hold yet, which a round's scan keeps none
-// of (Scan's `memo`), and it is not read again only to fail again. With `across`, a Map kept across
-// a lazy tree's rounds, what was read with none is kept there, for each round after, as a scan
-// keeps a file it read so.
+// A get-or-read cache, `(key, read) => value`, keeping only what was read without `touches` of what a lazy tree has
+// yet to unpack, and nothing without `cache`. With `retouch` (a cache of one round), a touched value is kept too
+// and retouches on each hit; with `across` (a Map kept across rounds), an untouched one is kept there.
 export function untouchedMemo(touches = () => 0, { cache = true, retouch, across } = {}) {
   const kept = new Map()
   return (key, read) => {
@@ -112,10 +86,8 @@ export async function warningsHeld(fn) {
   }
 }
 
-// `attempt(reads)`'s result, of the first round whose reads ask for no package (`reads.asked`), its
-// warnings given then; after each round that does, `unpack(reads.asked, reads.read)`, `reads.read`
-// those of them it read other than by a probe (lazyView). Each round asks for one package at least
-// that no round before did, so there are no more rounds than packages.
+// `attempt(reads)`'s result, of the first round whose reads ask for no package, its warnings given then; after each
+// round that does, `unpack(reads.asked, reads.read)`. Each round asks for a package no round before did.
 export async function inRounds(attempt, unpack) {
   for (;;) {
     const reads = { asked: new Set(), read: new Set(), probing: 0, touches: 0 }
