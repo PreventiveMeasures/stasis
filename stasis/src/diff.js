@@ -1,4 +1,4 @@
-import { ATTESTED_METADATA, REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, REPO_FIELDS, moduleFileKey, sameGithub, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and file
 // level, never reading disk. Every file is reduced to an SRI digest: a lockfile holds them, and a bundle's
@@ -15,8 +15,6 @@ function digestOf(kind, format, value, hash) {
   return hash(format === 'resource:base64' ? Buffer.from(value, 'base64') : value)
 }
 
-const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
-
 // Whether two records of one dependency agree on its `repo`: an artifact from before the field records
 // none; else every field alike, `github` in any case.
 const reposAgree = (a, b) => a === undefined || b === undefined ||
@@ -32,7 +30,7 @@ export function normalizeArtifact(input, { hash } = {}) {
   const formats = artifact.formats ?? new Map()
   const modules = new Map()
   for (const [dir, { name, version, ecosystem, repo, integrity, patch, files }] of artifact.modules) {
-    const digests = new Map(Object.entries(files).map(([rel, value]) => [rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash)]))
+    const digests = new Map(Object.entries(files).map(([rel, value]) => [rel, digestOf(kind, formats.get(moduleFileKey(dir, rel)), value, hash)]))
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
     modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo, integrity, patch, files: digests })
   }
@@ -87,7 +85,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
     for (const rel of new Set([...l.files.keys(), ...r.files.keys()])) {
       const lh = l.files.get(rel)
       const rh = r.files.get(rel)
-      const path = projectPath(dir, rel)
+      const path = moduleFileKey(dir, rel)
       if (lh !== undefined && rh === undefined) filesRemoved.push(path)
       else if (lh === undefined && rh !== undefined) filesAdded.push(path)
       else if (lh !== rh) filesDiffering.push(path)

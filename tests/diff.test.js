@@ -182,6 +182,20 @@ test('diffArtifacts reports added, removed, and differing files within shared mo
   t.assert.deepStrictEqual(files.differing, ['src/changed.js'])
 })
 
+test("diffArtifacts names a directory capture of a bucket's own directory by that directory", (t) => {
+  // A `directory` capture of the bucket's own dir is its record of '', at the dir's own path.
+  const of = (listing) => codeOf({
+    version: 1, config: { scope: 'full' }, entries: ['index.js'],
+    sources: { '.': { name: 'app', version: '1.0.0', files: { 'index.js': 'x', '': listing } } },
+    modules: { 'node_modules/a': { name: 'a', version: '1.0.0', ecosystem: 'npm', files: { 'index.js': 'y', '': listing } } },
+    formats: { 'index.js': 'commonjs', '.': 'directory', 'node_modules/a': 'directory', 'node_modules/a/index.js': 'commonjs' },
+    imports: {},
+  })
+  const diff = diffArtifacts(of('["index.js"]'), of('["index.js","more.js"]'), HASH)
+  t.assert.deepStrictEqual(diff.files.differing, ['.', 'node_modules/a'])
+  t.assert.match(formatDiffStat(diff, { left: 'l', right: 'r' }), /^ {2}\S+ node_modules\/a$/mu)
+})
+
 test('diffArtifacts does not re-list files of an added/removed module at the file level', (t) => {
   const left = { version: 0, config: { scope: 'node_modules' }, modules: { 'node_modules/keep': { name: 'keep', version: '1.0.0', files: { 'i.js': 'sha512-k' } } } }
   const right = {
