@@ -619,8 +619,11 @@ than ship it, and reading one is refused as well.
   installed it with (`patchedDependencies`), as `{ "integrity": "sha256-…" }` of
   its hash. A build from a lockfile alone records the one deptree applies, one
   from disk the one `node_modules/.pnpm/lock.yaml` names; npm and yarn patch
-  nothing, so a record with none is of no patch known. It is held as
-  `integrity` is, and [`stasis validate`](validate.md#patched-dependencies)
+  nothing. A record with an `integrity` and no `patch` is of a package
+  installed unpatched, the two being recorded of one install: it disagrees
+  with a record of a patch, and with an install that applied one (`patch
+  mismatch (none vs …)`). One with neither tells nothing of either. It is held
+  as `integrity` is, and [`stasis validate`](validate.md#patched-dependencies)
   holds it to the lockfile.
 - A dependency record may carry `vendored`, after `repo` and `patch`: the
   packages copied into the dependency (Next.js compiles ~140 into

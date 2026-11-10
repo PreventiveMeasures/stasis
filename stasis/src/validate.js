@@ -645,11 +645,15 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     if (otherIntegrity !== undefined) return fails('integrity-conflict')
     const fetchedWith = lock?.from === 'registry' && lock.integrity === undefined && FETCHED.has(pkg.ecosystem)
     if (recordedIntegrity !== undefined && lock !== undefined && !fetchedWith && lock.integrity !== recordedIntegrity) return fails('integrity-not-locked')
-    const [recordedHash, conflicting] = recordedBy(pkg.recorded)
+    // A copy recording an integrity and no patch records it installed unpatched (null): undefined where none tells.
+    const [recordedPatch, conflicting] = new Set(dirs.filter((dir) => pkg.recorded.has(dir) || pkg.integrities.has(dir)).map((dir) => pkg.recorded.get(dir) ?? null))
     if (conflicting !== undefined) return fails('patch-conflict')
+    const recordedHash = recordedPatch ?? undefined
     const lockedPatch = pkg.ecosystem === 'npm' ? locked?.of(pkg.name, pkg.version) : undefined
     const installedPatch = lockedPatch === undefined && locked?.unpatched ? null : lockedPatch
-    if (recordedHash !== undefined && installedPatch !== undefined && installedPatch?.hash !== recordedHash) return fails('patch-not-locked', { patch: { hash: recordedHash, recorded: true } })
+    if (recordedPatch !== undefined && installedPatch !== undefined && (installedPatch?.hash ?? null) !== recordedPatch) {
+      return recordedHash === undefined ? fails('patch-not-recorded') : fails('patch-not-locked', { patch: { hash: recordedHash, recorded: true } })
+    }
     if (lock?.from === 'git' && !(lock.at && locked.git)) return unverified('git')
     // A Foundry `lib/` submodule's copies, each held to the repository it records, at the commit the
     // repository's tree pins it at (submodules.at): one recording another commit fails it.
@@ -686,7 +690,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
         published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity ?? recordedIntegrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' ? await patchOf(bundled, pkg, published, locked, verdicts, recordedHash) : {})
+        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedHash) : {})
         candidates = patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {

@@ -34,7 +34,8 @@ export const PACKAGE_REASONS = {
   'integrity-not-locked': 'records an integrity its lockfile doesn\'t lock it with',
   'commit-not-locked': 'records another commit than its repository\'s tree pins it at',
   'patch-not-locked': 'records a patch its lockfile doesn\'t patch it with',
-  'patch-conflict': 'its copies record different patches, where pnpm patches every copy with one',
+  'patch-not-recorded': 'records an integrity and no patch, where its lockfile patches it',
+  'patch-conflict': 'its copies record different patches, or one of them none, where pnpm patches every copy with one',
 }
 
 // Why a patch wasn't applied, told after `its patch` and its path.

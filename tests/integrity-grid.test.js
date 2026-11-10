@@ -67,7 +67,8 @@ test('stasis bundle and stasis run refuse what stasis.lock.json records otherwis
     // A record from before the `ecosystem` tag is npm's all the same.
     ['another integrity, untagged', () => editLock(dir, (record) => Object.assign(record, { ecosystem: undefined, integrity: OTHER })), null, integrity, SRI],
     ['another hash of a file', () => editLock(dir, (record) => { record.files['index.js'] = SRI }), /content mismatch for 'node_modules\/reg\/index\.js'/u, null, SRI],
-    ['a patch the install names none of', () => editLock(dir, (record) => { record.patch = PATCHED }), patch, patch, SRI],
+    // The build's record, of an integrity and no patch, is of a package installed unpatched.
+    ['a patch the install names none of', () => editLock(dir, (record) => { record.patch = PATCHED }), /stasis\.lock\.json: module 'node_modules\/reg' patch mismatch \(\{"integrity":"sha256-[^"]+"\} vs none\)/u, patch, SRI],
     ['an integrity the install names none of', () => npmProject(dir, { integrity: null }), none, none, undefined],
     ['another integrity, package-lock.json alone locking it', () => npmProject(dir, { hidden: false, integrity: OTHER }), locked, locked, undefined],
     ['no integrity, package-lock.json alone locking it', () => npmProject(dir, { hidden: false, integrity: null }), locked, null, undefined],

@@ -229,21 +229,26 @@ export const moduleInfo = (info) => {
 // on: its tarball's integrity, and the patch pnpm applied.
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
+// What `record` attests of `field`: its value; of the patch of one recording an integrity and none,
+// null (installed unpatched: the two are recorded of one install); undefined where it tells nothing.
+export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)
+
 const agree = (field, record, other, what) => {
-  if (JSON.stringify(record[field]) !== JSON.stringify(other[field])) assert(false, `${what} ${field} mismatch (${JSON.stringify(record[field])} vs ${JSON.stringify(other[field]) ?? 'none'})`)
+  const [ours, theirs] = [record[field], other[field]].map((value) => JSON.stringify(value) ?? 'none')
+  if (ours !== theirs) assert(false, `${what} ${field} mismatch (${ours} vs ${theirs})`)
 }
 
-// That each ATTESTED_METADATA `record` has is `other`'s, `other` recording none of it too.
+// That each ATTESTED_METADATA `record` attests (attestedOf) is `other`'s, `other` recording none of it too.
 export function assertAttested(record, other, what) {
-  for (const field of ATTESTED_METADATA) if (record[field] !== undefined) agree(field, record, other, what)
+  for (const field of ATTESTED_METADATA) if (attestedOf(record, field) !== undefined) agree(field, record, other, what)
 }
 
 // `record` with the metadata `other` (of its bucket) has and it lacks, `record` itself where none;
-// ATTESTED_METADATA both record must agree.
+// ATTESTED_METADATA both attest (attestedOf) must agree.
 export function withMetadataOf(record, other, what = 'module') {
   let added
   for (const field of Object.keys(RECORD_METADATA)) {
-    if (ATTESTED_METADATA.includes(field) && record[field] !== undefined && other[field] !== undefined) agree(field, record, other, what)
+    if (ATTESTED_METADATA.includes(field) && attestedOf(record, field) !== undefined && attestedOf(other, field) !== undefined) agree(field, record, other, what)
     else if (record[field] === undefined && other[field] !== undefined) (added ??= {})[field] = other[field]
   }
   for (const field of DIR_FIELDS) {
