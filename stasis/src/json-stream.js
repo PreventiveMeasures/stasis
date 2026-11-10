@@ -1,6 +1,5 @@
-// Incremental JSON parser over UTF-8 bytes, holding only the value being built and one token in flight.
-// Exactly JSON.parse(Buffer.concat(chunks).toString('utf8')) for any chunking (json-stream.test.js checks it),
-// so a bundle read in a stream can't parse differently from one read whole. Pure: no Node builtins.
+// Incremental JSON parser over UTF-8 bytes, holding only the value being built and one token in flight: exactly
+// JSON.parse(Buffer.concat(chunks).toString('utf8')) for any chunking (json-stream.test.js checks it), no Node builtins.
 // Not mirrored: Node 24+'s JSON.parse can return a stale escaped key cached by an earlier call (a V8 bug).
 
 const QUOTE = 0x22
@@ -127,7 +126,8 @@ export class JsonStreamParser {
     const state = this.#state
     const isArray = Array.isArray(this.#stack.at(-1))
     if ((state === AFTER || state === ARRAY_FIRST || state === OBJECT_FIRST) && b === (isArray ? 0x5d : 0x7d)) {
-      this.#close()
+      this.#path.pop()
+      this.#value(this.#stack.pop())
       return i + 1
     }
     if (state === AFTER) {
@@ -254,11 +254,6 @@ export class JsonStreamParser {
       if (!LITERALS.has(word)) throw new SyntaxError(`Bad literal at byte ${this.#tokenStart}`)
       this.#value(LITERALS.get(word))
     }
-  }
-
-  #close() {
-    this.#path.pop()
-    this.#value(this.#stack.pop())
   }
 
   #value(value) {
