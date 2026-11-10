@@ -57,17 +57,25 @@ const TRAILING_SAME_LINE = /(?:[ \t]|\/\*(?:[^*\n\r\u2028\u2029]|\*(?!\/))*\*\/)
 // A directive string followed by one of these heads a multi-line expression, not a directive (ASI gotcha).
 const EXPR_CONTINUATION = new Set(['.', '[', '(', '`', '+', '-', '*', '/', '%', ',', '?', ':', '=', '<', '>', '&', '|', '^'])
 const KEYWORD_CONTINUATION = /(?:instanceof|in)\b/uy
-function skipSticky(re, source, i) {
+// Where the sticky `re` matched at `i` ends, or -1 for no match.
+function matchEnd(re, source, i) {
   re.lastIndex = i
-  re.exec(source)
-  return re.lastIndex
+  return re.test(source) ? re.lastIndex : -1
 }
 function newStatementAfterBreak(source, pos) {
-  const afterBreak = skipSticky(WS_COMMENTS, source, pos)
+  const afterBreak = matchEnd(WS_COMMENTS, source, pos)
   if (afterBreak >= source.length) return true
   if (EXPR_CONTINUATION.has(source[afterBreak])) return false
-  KEYWORD_CONTINUATION.lastIndex = afterBreak
-  return !KEYWORD_CONTINUATION.test(source)
+  return matchEnd(KEYWORD_CONTINUATION, source, afterBreak) === -1
+}
+// Whether a directive string's statement ends at `pos`, past its same-line trailing whitespace and comments.
+function endsDirective(source, pos) {
+  const c = source[pos]
+  if (c === undefined || c === ';' || c === '}') return true
+  if (c === '/' && source[pos + 1] === '/') return true
+  // A `/*` here is a newline-spanning block comment: like a line break it can end the directive.
+  if (c === '/' && source[pos + 1] === '*') return newStatementAfterBreak(source, pos)
+  return (c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029') && newStatementAfterBreak(source, pos)
 }
 
 // Insert CJS_REQUIRE_REPAIR AFTER the Directive Prologue with a leading ';', so a `'use strict'`
@@ -80,20 +88,8 @@ function repairCjsRequire(source) {
     i = nl === -1 ? source.length : nl + 1
   }
   for (;;) {
-    const afterWs = skipSticky(WS_COMMENTS, source, i)
-    STRING_LITERAL.lastIndex = afterWs
-    if (STRING_LITERAL.exec(source) === null) break
-    const afterStr = STRING_LITERAL.lastIndex
-    const afterTrail = skipSticky(TRAILING_SAME_LINE, source, afterStr)
-    const c = source[afterTrail]
-    let isDirective
-    if (c === undefined || c === ';' || c === '}') isDirective = true
-    else if (c === '/' && source[afterTrail + 1] === '/') isDirective = true
-    // A `/*` here is a newline-spanning block comment: like a line break it can end the directive.
-    else if (c === '/' && source[afterTrail + 1] === '*') isDirective = newStatementAfterBreak(source, afterTrail)
-    else if (c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029') isDirective = newStatementAfterBreak(source, afterTrail)
-    else isDirective = false
-    if (!isDirective) break
+    const afterStr = matchEnd(STRING_LITERAL, source, matchEnd(WS_COMMENTS, source, i))
+    if (afterStr === -1 || !endsDirective(source, matchEnd(TRAILING_SAME_LINE, source, afterStr))) break
     i = afterStr
   }
   return `${source.slice(0, i)};${CJS_REQUIRE_REPAIR}${source.slice(i)}`
@@ -132,7 +128,7 @@ const servedFromBundle = new Set()
 // EXODUS_STASIS_PID = the root stasis's pid; on mismatch we're a child and must not write the
 // bundle/lockfile (root owns the artifact; a 2nd writer races). A forked child also relaxes assertEntry.
 const OWN_PID = String(process.pid)
-if (!process.env.EXODUS_STASIS_PID) process.env.EXODUS_STASIS_PID = OWN_PID
+process.env.EXODUS_STASIS_PID ||= OWN_PID
 const isChildProcess = process.env.EXODUS_STASIS_PID !== OWN_PID
 const forkedChild = isChildProcess && process.channel !== undefined
 
@@ -166,13 +162,15 @@ function loadCounted(nextLoad, url, context) {
 }
 
 const toBuffer = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(source))
+// Node's CJS loader may return source=null and read the file from disk itself.
+const sourceOrDisk = (source, url) => source ?? readFileSync(fileURLToPath(url))
 
 // Child-process capture forwarding (shards), opt-in via --child-process: a capturing child writes a
 // signed per-pid shard the root verifies against its own public key before merging. Trust rests on
 // that signature, not the dir being secret; shards carry NO bytes (the root re-reads from disk).
 
 function shardForwardingEnabled() {
-  return Boolean(state) && state.config.childProcess && (state.config.writeLockfile || state.config.writeBundle)
+  return state.config.childProcess && (state.config.writeLockfile || state.config.writeBundle)
 }
 
 function clearShardEnv() {
@@ -186,7 +184,6 @@ function removeShardDir() {
 }
 
 function writeChildShard() {
-  if (!shardForwardingEnabled()) return
   const dir = process.env.EXODUS_STASIS_SHARD_DIR
   const keyB64 = process.env.EXODUS_STASIS_SHARD_KEY
   if (!dir || !keyB64) return
@@ -241,27 +238,22 @@ function mergeChildShards(dir) {
   }
 }
 
-// Install the --fs reader patches. Must run AFTER stasis's own fs snapshots so they never redirect
-// stasis's own reads.
-function installFsHooksFromConfig() {
-  const fsMode = state.config.fs
-  if (!fsMode) return
-  installFsHooks({
-    async: fsMode === 'async',
-    getState: () => state,
-    isLoadingModule: () => loadingModule > 0,
-    // Warn on the first taint so the silent discard (reads succeed, exit 0, no artifact) has a clue.
-    markAborted: (err) => {
-      if (!aborted) console.warn(`[stasis] --fs: capture aborted, no bundle/lockfile will be written -- ${err?.message ?? err}`)
-      aborted = true
-    },
-  })
-}
-
 function initState(root) {
   state = new State(root, { preload: true, preloadRoot: PRELOAD_ROOT })
 
-  installFsHooksFromConfig()
+  // The --fs reader patches, installed AFTER stasis's own fs snapshots so they never redirect its own reads.
+  if (state.config.fs) {
+    installFsHooks({
+      async: state.config.fs === 'async',
+      getState: () => state,
+      isLoadingModule: () => loadingModule > 0,
+      // Warn on the first taint so the silent discard (reads succeed, exit 0, no artifact) has a clue.
+      markAborted: (err) => {
+        if (!aborted) console.warn(`[stasis] --fs: capture aborted, no bundle/lockfile will be written -- ${err?.message ?? err}`)
+        aborted = true
+      },
+    })
+  }
 
   // Root + opt-in only, before any child can fork: ALWAYS mint our own dir (OS tmpdir, mkdtemp 0700)
   // and keypair, overwriting any inherited/attacker-set env, so we merge only shards we can verify.
@@ -289,10 +281,9 @@ function initState(root) {
   // Persist on exit unless `aborted` -- deliberately NOT gated on exit code, so a clean capture
   // exiting non-zero still persists. Must stay fully synchronous for `exit` to host it.
   const save = () => {
-    const writing = state.config.writeLockfile || state.config.writeBundle
     // A child forwards a shard instead of writing the artifact (root owns it; a 2nd writer races).
     if (isChildProcess) {
-      if (writing && !aborted) writeChildShard()
+      if (shardForwardingEnabled() && !aborted) writeChildShard()
       return
     }
     try {
@@ -303,7 +294,7 @@ function initState(root) {
       state.write()
       // Latch only in write modes: a read-only run persists nothing, so a later first load (e.g. a
       // require() from another exit handler) is still attested and must not trip the load hook.
-      if (writing) saved = true
+      if (state.config.writeLockfile || state.config.writeBundle) saved = true
     } finally {
       removeShardDir()
     }
@@ -374,12 +365,9 @@ function load(url, context, nextLoad) {
   }
 
   const result = loadCounted(nextLoad, url, context)
-  let { source } = result
   const { format } = result
   assert.notEqual(format, 'builtin')
-
-  // Node's CJS loader may return source=null and read from disk itself; capture it for the bundle
-  if (source == null && format === 'commonjs') source = readFileSync(fileURLToPath(url))
+  const source = format === 'commonjs' ? sourceOrDisk(result.source, url) : result.source
 
   const isEntry = entryUnseen
   entryUnseen = false
@@ -399,8 +387,7 @@ function promoteInfraUrl(url, { isEntry = false } = {}) {
   const stashed = infraSources.get(url)
   if (stashed === undefined) return
   infraSources.delete(url)
-  // Same disk fallback as the live load path: Node's CJS loader may return source=null.
-  const source = stashed.source ?? readFileSync(fileURLToPath(url))
+  const source = sourceOrDisk(stashed.source, url)
   recording(() => state.addFile(url, { source, format: stashed.format ?? undefined, isEntry }))
   const edges = infraEdges.get(url)
   infraEdges.delete(url)
@@ -417,7 +404,7 @@ function assertInfraMatchesBundle(url) {
   if (!infraUrls.has(url)) return
   const stashed = infraSources.get(url)
   if (stashed === undefined) { infraUrls.delete(url); return } // resolved but never loaded: the hooks will serve it
-  const executed = toBuffer(stashed.source ?? readFileSync(fileURLToPath(url)))
+  const executed = toBuffer(sourceOrDisk(stashed.source, url))
   if (!executed.equals(toBuffer(state.getFile(url).source))) {
     throw new Error(
       `[stasis] cannot serve '${url}' from the bundle: a preload already executed it from disk ` +
@@ -428,24 +415,23 @@ function assertInfraMatchesBundle(url) {
 }
 
 function resolve(specifier, context, nextResolve) {
+  const { parentURL, conditions, importAttributes } = context
   // Runner-infrastructure passthrough (see entryUnresolved): a preload's graph resolves from a DIRECTORY
   // parent (never a loadable module, so it can't shadow an app parent) or an infra module; any other
   // pre-entry parent ([eval]'s import) fails closed below. Edges are remembered for promoteInfraUrl, not recorded.
-  const infraParent = context.parentURL !== undefined
-    && (infraUrls.has(context.parentURL) || (entryUnresolved && context.parentURL.endsWith('/')))
-  if (infraParent) {
+  if (parentURL !== undefined && (infraUrls.has(parentURL) || (entryUnresolved && parentURL.endsWith('/')))) {
     const res = nextResolve(specifier)
     if (!res.url.startsWith('node:')) {
       infraUrls.add(res.url)
-      if (infraUrls.has(context.parentURL)) {
+      if (infraUrls.has(parentURL)) {
         // Last-write-wins per specifier, like observeResolution: only the final target can be the
         // one a cached instance pins.
-        nestedMap(infraEdges, context.parentURL).set(specifier, { url: res.url, context: { conditions: context.conditions, format: res.format, importAttributes: context.importAttributes } })
+        nestedMap(infraEdges, parentURL).set(specifier, { url: res.url, context: { conditions, format: res.format, importAttributes } })
       }
     }
     return res
   }
-  if (entryUnresolved && !context.parentURL) entryUnresolved = false
+  if (entryUnresolved && !parentURL) entryUnresolved = false
 
   if (isBuiltin(specifier)) {
     const res = nextResolve(specifier)
@@ -453,13 +439,11 @@ function resolve(specifier, context, nextResolve) {
     return res
   }
 
-  if (context.importAttributes !== undefined) {
+  if (importAttributes !== undefined) {
     const expectedAttrs = Object.create(null) // saving not supported yet; enforce expected attrs
-    if (extname(specifier) === '.json' && context.importAttributes?.type) expectedAttrs.type = 'json'
-    assert.deepStrictEqual(context.importAttributes, expectedAttrs)
+    if (extname(specifier) === '.json' && importAttributes?.type) expectedAttrs.type = 'json'
+    assert.deepStrictEqual(importAttributes, expectedAttrs)
   }
-
-  const { parentURL, conditions, importAttributes } = context
 
   // Full-scope load serves the entry from the bundle, so state must exist before nextResolve.
   if (!state && !parentURL && process.env.EXODUS_STASIS_BUNDLE === 'load'
@@ -523,8 +507,7 @@ export function isLoaderInstalled() {
 
 // For plugins.js when a plugin constructor runs ahead of the load hook.
 export function ensureStateForLoader() {
-  if (state) return
-  initState(process.cwd())
+  if (!state) initState(process.cwd())
 }
 
 // Separate from the --import entry points so a host can compose setup before the hooks register.
