@@ -343,10 +343,6 @@ export class State {
     return this.#host.stat(p) !== null
   }
 
-  #installed(modules) {
-    return installedAccounts(modules, this.root)
-  }
-
   // ATTESTED_METADATA absorbed of the artifact at `label`, and what each bundle attests, taken into
   // the run's records or not, held to how each package was installed; kept as recorded where no
   // account tells (nothing installed, as where a bundle is run from).
@@ -363,7 +359,7 @@ export class State {
     }
     const attested = new Map([...this.modules].filter(([, module]) => attestsAny(module)))
     for (const [dir, module] of attested) if (!files.has(dir)) files.set(dir, new Set(Object.keys(module.files)))
-    const accounts = this.#installed(new Map([...bundles, ...attested]))
+    const accounts = installedAccounts(new Map([...bundles, ...attested]), this.root)
     heldToAccounts(attested, accounts, `${label}: `)
     heldToAccounts(bundles, accounts, `${relative(this.root, this.#bundlePath)}: `)
   }
@@ -396,7 +392,7 @@ export class State {
   // onto a record absorbed, whose other files this run may not have read. What an artifact attests is
   // of the files it recorded: of one this run adds, an install record alone tells.
   #recordInstalled() {
-    const accounts = this.#installed(this.modules)
+    const accounts = installedAccounts(this.modules, this.root)
     heldToAccounts(this.modules, accounts)
     for (const [dir, account] of accounts) if (!account.locked && !this.#absorbed.dirs.has(dir)) this.modules.set(dir, withMetadataOf(this.modules.get(dir), account))
     for (const [dir, files] of this.#absorbed.files) {

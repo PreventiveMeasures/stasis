@@ -2370,32 +2370,19 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 function archiveAccounts(modules, root) {
   let soldeer, composer
   const told = {
-    soldeer: (dir) => (dir.startsWith('dependencies/') ? (soldeer ??= soldeerLocks(root, solidityOwnership(root), diskHost)).get(dir.slice('dependencies/'.length)) : undefined),
+    soldeer: (dir) => (soldeer ??= soldeerLocks(root, solidityOwnership(root), diskHost)).get(dir.slice('dependencies/'.length)),
     composer: (dir) => (composer ??= loadComposerPackages(root)).find((pkg) => pkg.dir === dir),
-    cargo: (dir) => {
-      const text = readFileSyncMaybe(join(root, dir), '.cargo-checksum.json', 'utf8')
-      try {
-        return text === null ? undefined : { integrity: archiveIntegrity('cargo', JSON.parse(text)?.package) }
-      } catch {
-        return undefined
-      }
-    },
+    cargo: (dir, sums = readJson(join(root, dir, '.cargo-checksum.json'))) => sums && { integrity: archiveIntegrity('cargo', sums.package) },
   }
-  const accounts = new Map()
-  for (const [dir, { ecosystem }] of modules) {
-    const account = Object.hasOwn(told, ecosystem) ? told[ecosystem](dir) : undefined
-    if (account) accounts.set(dir, { integrity: account.integrity })
-  }
-  return accounts
+  return new Map([...modules].map(([dir, { ecosystem }]) => [dir, Object.hasOwn(told, ecosystem) ? told[ecosystem](dir) : undefined]).filter(([, account]) => account))
 }
 
 // `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers' records
 // name them, each held to the lockfile beside it, whatever its kind (a Solidity import out of node_modules
 // is one); their `accounts` (`accountsOf(modules)`: any other records'), and its lockfile attesting as they do.
 function pinnedOf(built, root) {
-  const read = { stores: new Map(), layouts: new Map() }
-  const accounts = pinInstalled(built.bundle, root, diskHost, read)
-  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root, diskHost, read)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
+  const accounts = pinInstalled(built.bundle, root)
+  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
@@ -2496,7 +2483,7 @@ export function checkVfsOptions(name, options) {
 // true; `lazy: false` installs every package, and `lazy: true` is refused where the tree cannot be
 // lazy, or `lazyDependencies` is false. `stats` are deptree's, and `stats.unpacked` the packages
 // unpacked: each one installed, or those a lazy tree unpacked, of every tree.
-// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager (undefined for several), packageManagers, root, accounts (pinFromTree's), accountsOf (treeAccounts, of other records) }
+// -> { bundle: Bundle, lockfile: Lockfile (of a JS bundle, built when first read), stats, packageManager (undefined for several), packageManagers, root, accounts (pinFromTree's), accountsOf (of other records) }
 export async function buildVfsBundle({ lock, ...options } = {}) {
   const { checkVfs, vfsHost } = await import('../vfs-bundle/tree.js')
   checkVfs('buildVfsBundle', options.vfs)
@@ -2574,7 +2561,7 @@ export async function prismaClientsOf({ vfs, cwd = '/', packageManager, client, 
 // absolute paths written, which `extra` never takes; `refuseInstalled`, layOutTree's; and `why` the
 // package manager is detected, as a refusal to detect one says.
 async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/', packageManagerVersion, os, cpu, libc, repo, innermostRoot = false, generate, client, cache, lazy, ...options } = {}, { env = {}, plan, outputsAt = () => [], refuseInstalled = false, why } = {}) {
-  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeAccounts, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
+  const { checkCache, checkKind, checkLazy, checkTarget, layOutTrees, packageManagerOf, pinFromTree, treeHost, unpackedOf, vfsHost } = await import('../vfs-bundle/tree.js')
   const { configuredBuilds } = await import('./bundle-options.js')
   const { checkGlob } = await import('../vfs-bundle/glob.js')
   checkTarget(name, { os, cpu, libc })
@@ -2741,7 +2728,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   // The lockfile is built when first read, the same one after: `stasis github-bundle` and `stasis
   // bundle --deptree` read it for --lockfile alone.
   let lock
-  return { bundle, get lockfile() { return (lock ??= lockfile && withAttested(lockfile(), bundle)) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root, accounts, accountsOf: (modules) => treeAccounts(modules, root, tree) }
+  return { bundle, get lockfile() { return (lock ??= lockfile && withAttested(lockfile(), bundle)) }, stats: { ...tree.stats, unpacked }, packageManager: packageManagers.length === 1 ? packageManagers[0] : undefined, packageManagers, root, accounts, accountsOf: (modules) => pinFromTree({ modules }, root, tree) }
 }
 
 // `to` (a Lockfile or a Bundle) with the ATTESTED_METADATA `from`'s records of the same buckets

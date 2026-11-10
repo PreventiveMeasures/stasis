@@ -650,9 +650,8 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     if (conflicting !== undefined) return fails('patch-conflict')
     const lockedPatch = pkg.ecosystem === 'npm' ? locked?.of(pkg.name, pkg.version) : undefined
     const installedPatch = lockedPatch === undefined && locked?.unpatched ? null : lockedPatch
-    if (recordedPatch !== undefined && installedPatch !== undefined && (installedPatch?.hash ?? null) !== recordedPatch) {
-      return recordedPatch === null ? fails('patch-not-recorded') : fails('patch-not-locked', { patch: { hash: recordedPatch, recorded: true } })
-    }
+    const otherwise = recordedPatch !== undefined && installedPatch !== undefined && (installedPatch?.hash ?? null) !== recordedPatch
+    if (otherwise) return recordedPatch === null ? fails('patch-not-recorded') : fails('patch-not-locked', { patch: { hash: recordedPatch, recorded: true } })
     if (lock?.from === 'git' && !(lock.at && locked.git)) return unverified('git')
     // A Foundry `lib/` submodule's copies, each held to the repository it records, at the commit the
     // repository's tree pins it at (submodules.at): one recording another commit fails it.

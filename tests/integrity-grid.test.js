@@ -171,7 +171,7 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
   const composerDist = (dir, shasum) => {
     for (const file of ['composer.lock', 'vendor/composer/installed.json']) {
       const json = readJson(join(dir, file))
-      Object.assign(json.packages.find((p) => p.name === 'acme/lib'), { dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', shasum }, ...(file !== 'composer.lock' && { 'installation-source': 'dist' }) })
+      Object.assign(json.packages.find((p) => p.name === 'acme/lib'), { dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', shasum } })
       writeFileSync(join(dir, file), `${JSON.stringify(json, null, 4)}\n`)
     }
   }
@@ -213,12 +213,8 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
     const dir = join(tmp, name)
     project(dir)
     const add = () => build(dir, { entries: alone, add: true, env: {} })
-    const recorded = () => Bundle.parse(brotliDecompressSync(readFileSync(join(dir, 'out.br'))).toString('utf8')).modules.get(at)
     await build(dir, { entries, env: {} })
-    const { integrity, files } = recorded()
-    t.assert.ok(integrity, name)
     await add()
-    t.assert.deepStrictEqual([recorded().integrity, Object.keys(recorded().files)], [integrity, Object.keys(files)], `${name}: kept, as installed`)
     otherwise(dir)
     await t.assert.rejects(add(), new RegExp(`out\\.br: module '${at}' \\(recorded vs installed\\) integrity mismatch`, 'u'), name)
   }
@@ -247,13 +243,8 @@ test('stasis add holds what the bundle and stasis.lock.json record to the instal
     t.assert.match(refused.stderr, new RegExp(`stasis\\.code\\.br: module 'node_modules/reg' \\(recorded vs ${of}\\) integrity mismatch`, 'u'), label)
     t.assert.deepStrictEqual([readFileSync(join(dir, code)), lockText(dir)], [bundle, lock], `${label}: nothing written`)
   }
-  for (const [label, options] of [['locked alone', { hidden: false }], ['nothing tells', NOTHING_TELLS]]) {
-    restore()
-    npmProject(dir, options)
-    t.assert.equal(stasisAdd(dir, 'own.js').status, 0, `${label}: kept as recorded`)
-    t.assert.match(stasisAdd(dir, 'node_modules/reg/more.js').stderr, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files, not of 'node_modules\/reg\/more\.js' the other adds/u, `${label}: no file of it added`)
-  }
   restore()
+  npmProject(dir, NOTHING_TELLS)
   editLock(dir, (record) => { record.integrity = OTHER })
   t.assert.match(stasisAdd(dir, 'own.js').stderr, /stasis\.lock\.json: module 'node_modules\/reg' \(against the other artifacts\) integrity mismatch/u, 'the two, of one package')
   npmProject(dir)

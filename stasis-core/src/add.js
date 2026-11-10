@@ -113,20 +113,18 @@ function heldToInstall(baseDir, artifacts) {
   }
 }
 
-// The bundle at `targetPath` already, undefined for none.
-function readBundle(baseDir, targetPath) {
-  const abs = resolve(baseDir, targetPath)
-  if (!existsSync(abs)) return undefined
+// `parse()`, of an artifact there already (`what`), a failure to read it told as that.
+function existingOf(what, parse) {
   try {
-    return parseBundleBytes(readFileSync(abs))
+    return parse()
   } catch (cause) {
-    throw new Error(`add: failed to read the existing bundle at ${targetPath}`, { cause })
+    throw new Error(`add: failed to read the existing ${what}`, { cause })
   }
 }
 
-// Merge add-if-missing into the bundle there (`existing`; divergent bytes throw: mergeModuleMaps). The
-// write is a thunk so every target's conflicts surface before a byte lands; serializing inside it keeps peak
-// memory at one target's bytes. `check` (the Policy, or null) sees the files added, then the bundle's own.
+// Merge add-if-missing into any existing bundle (divergent bytes throw: mergeModuleMaps). The write is a
+// thunk so every target's conflicts surface before a byte lands; serializing inside it keeps peak memory
+// at one target's bytes. `check` (the Policy, or null) sees the files added, then the bundle's own.
 function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
@@ -146,17 +144,8 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, ex
   }
 }
 
-// The project's stasis.lock.json.
-function readLockfile(lockPath) {
-  try {
-    return Lockfile.parse(readFileSync(lockPath, 'utf8'))
-  } catch (cause) {
-    throw new Error(`add: failed to read the existing ${LOCK_FILE}`, { cause })
-  }
-}
-
-// Merge into the project's stasis.lock.json (`existing`; strict: divergent bytes throw), deferring the write
-// like prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
+// Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
+// prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
 // records: the files added were checked as the bundles'.
 function prepareLockfile(lockPath, existing, lockAdd, check) {
   check?.(existing, recordedIn(LOCK_FILE))
@@ -367,8 +356,9 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const repo = detectRepo(baseDir)
   // Each bundle and the lockfile there, read before a file is added to any: what one attests of a
   // package is held of the others too, one no file is added to as well.
-  const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, readBundle(baseDir, file)]))
-  const lock = hasLock ? readLockfile(lockPath) : undefined
+  const bundleAt = (file, abs = resolve(baseDir, file)) => (existsSync(abs) ? existingOf(`bundle at ${file}`, () => parseBundleBytes(readFileSync(abs))) : undefined)
+  const bundles = new Map([bundleFile, resourcesBundleFile].filter(Boolean).map((file) => [file, bundleAt(file)]))
+  const lock = hasLock ? existingOf(LOCK_FILE, () => Lockfile.parse(readFileSync(lockPath, 'utf8'))) : undefined
   const attest = heldToInstall(baseDir, [...bundles, [LOCK_FILE, lock]].filter(([, artifact]) => artifact))
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return

@@ -461,14 +461,13 @@ async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, laz
   }
   cleanAll()
   const lockText = pm.integrities && readText(view, pm.lockfile)
-  let locked // what it locks, parsed once
   return {
     root,
     vfs: built.vfs,
     projects,
     stats: built.stats,
     installed: built.installed,
-    ...pm.integrities && { integrities: () => (locked ??= pm.integrities(lockText)) },
+    ...pm.integrities && { integrities: () => pm.integrities(lockText) },
     packageManager,
     packageManagerVersion: taken,
     ...lazy ? lazyTree(built, cleanAll) : {},
@@ -767,31 +766,22 @@ const githubRoot = (url) => {
 // repository its own package.json names, so taken only where the bundle records that one; a
 // Soldeer git dependency at its lockfile's `rev`, the root of the repository it is fetched from,
 // where that is a GitHub one. Metadata, as `repo` is: the publisher's word, held to no repository.
-// An npm one's tarball integrity where its lockfile locks it, and its patch. -> their accounts, by dir.
+// An npm one's tarball integrity where its lockfile locks it, and its patch; a Soldeer zip's checksum. -> their accounts, by dir.
 export function pinFromTree(bundle, root, tree) {
-  const accounts = treeAccounts(bundle.modules, root, tree)
-  for (const [dir, metadata] of accounts) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
-  return accounts
-}
-
-// How the tree installs each of `modules` (records by dir, paths from `root`) it installs, as
-// installedRecords tells an install's: its `repo`, and its archive's integrity and patch (an npm
-// tarball's, where its lockfile locks it; a Soldeer zip's checksum).
-export function treeAccounts(modules, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
-  if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...treeAccounts(modules, root, one)]))
+  if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...pinFromTree(bundle, root, one)]))
   const { root: from, installed, packageManager } = tree
   const byDir = new Map(installed.map((pkg) => [posix.relative(root, posix.join(from, pkg.path)), pkg]))
   const integrities = tree.integrities?.()
-  const integrityOf = PACKAGE_MANAGERS[packageManager].kind === 'js'
-    ? ({ integrity }) => ((integrities?.has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
-    : ({ checksum }) => archiveIntegrity('soldeer', checksum)
+  const locked = ({ integrity, checksum }) => (PACKAGE_MANAGERS[packageManager].kind !== 'js' ? archiveIntegrity('soldeer', checksum) : (integrities?.has(tarballIntegrityOf(integrity)) ?? true) ? integrity : undefined)
   const accounts = new Map()
-  for (const [dir, info] of modules) {
+  for (const [dir, info] of bundle.modules) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    accounts.set(dir, installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: integrityOf(pkg), patchHash: pkg.patch?.hash }))
+    const pinned = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: locked(pkg), patchHash: pkg.patch?.hash })
+    bundle.modules.set(dir, { ...info, ...pinned })
+    accounts.set(dir, { integrity: pinned.integrity, patch: pinned.patch })
   }
   return accounts
 }

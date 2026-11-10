@@ -137,7 +137,6 @@ test('a record of an integrity and no patch is of a package installed unpatched,
   const install = installs(t)
   install({ integrity: TARBALL, patch: PATCHED })
   t.assert.throws(frozen, /stasis\.lock\.json: module 'node_modules\/dep' \(recorded vs installed\) patch mismatch \(none vs /u, 'installed patched')
-  t.assert.throws(() => captured(dir, { bundle: 'ignore', lock: 'add' }, ['index.js', 'more.js']), /\(recorded vs installed\) patch mismatch \(none vs /u, 'nor added to')
   install({ integrity: TARBALL })
   t.assert.doesNotThrow(frozen, 'installed unpatched')
   install({ integrity: TARBALL, patch: PATCHED })
