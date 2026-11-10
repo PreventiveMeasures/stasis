@@ -10,14 +10,12 @@ const DEFAULT_TOOL = { name: '@exodus/stasis', version: pkg.version, vendor: 'Ex
 // Web Crypto (global) instead of node:crypto, keeping this module dependency-light.
 const newUuid = () => globalThis.crypto.randomUUID()
 
-// purl types we can mint; an ecosystem with no registered type (`soldeer`) gets no purl rather than a fabricated one,
-// and so does a crate vendored from git or from a source not known (`cargo-git`, `cargo-unknown`): `pkg:cargo` names
-// crates.io's crate of that name, which it may not be.
+// purl types we can mint: `soldeer` has no registered type, and `pkg:cargo` names crates.io's crate, which a
+// crate vendored from git or from a source not known (`cargo-git`, `cargo-unknown`) may not be.
 const PURL_TYPES = new Set(['npm', 'composer', 'cargo', 'github'])
 
-// Infer an artifact's ecosystem from its loader formats: PHP bundles map to Composer, everything
-// else to npm. Used for untagged (first-party) buckets and as the fallback for legacy artifacts
-// predating the per-dependency `ecosystem` field.
+// An artifact's ecosystem by its formats, PHP's Composer, any other npm: its untagged buckets', and every
+// bucket's in an artifact predating the per-dependency `ecosystem` field.
 const detectEcosystem = (artifact) => ([...(artifact.formats?.values?.() ?? [])].includes('php') ? 'composer' : 'npm')
 
 // Legacy scope classification (pre-`ecosystem` artifacts): non-`node_modules` dirs are first-party,
@@ -32,20 +30,14 @@ function classifyScope(ecosystem, dir) {
 // Split a package name into purl/CycloneDX namespace (group) + bare name: npm scopes, Composer
 // vendors and GitHub owners use the segment before the first slash; cargo and bare names have none.
 function splitName(ecosystem, name) {
-  const namespaced = ecosystem === 'composer' || ecosystem === 'github' ||
-    (ecosystem === 'npm' && name.startsWith('@'))
-  if (namespaced && name.includes('/')) {
-    const slash = name.indexOf('/')
-    return { group: name.slice(0, slash), name: name.slice(slash + 1) }
-  }
-  return { group: undefined, name }
+  const namespaced = ecosystem === 'composer' || ecosystem === 'github' || (ecosystem === 'npm' && name.startsWith('@'))
+  const slash = name.indexOf('/')
+  if (!namespaced || slash === -1) return { group: undefined, name }
+  return { group: name.slice(0, slash), name: name.slice(slash + 1) }
 }
 
-// Build a Package URL (purl) for a known ecosystem, or null when it has no purl type. Each path
-// segment is percent-encoded (npm scope's `@` -> `%40`) while the `/` namespace separator and the
-// `@` before the version stay literal; Composer and GitHub names are lowercased, per the purl spec.
-// The version qualifier is optional in the purl spec, so a versionless workspace package mints a
-// bare-name purl rather than a fabricated version.
+// A Package URL (purl), or null for an ecosystem with no purl type: each segment percent-encoded (npm's `@`
+// scope -> `%40`), Composer and GitHub names lowercased, per the purl spec; with no version, a bare-name purl.
 export function buildPurl(ecosystem, rawName, version) {
   if (!PURL_TYPES.has(ecosystem)) return null
   let { group, name } = splitName(ecosystem, rawName)
@@ -69,40 +61,20 @@ function compareComponents(a, b) {
   return a.ecosystem < b.ecosystem ? -1 : a.ecosystem > b.ecosystem ? 1 : 0
 }
 
-// Collect the deduplicated, sorted set of packages across parsed artifacts. Unlike `stasis audit`
-// (installed deps only), an SBOM is the *full* bill of materials, so workspace/first-party packages
-// are included too, tagged scope 'workspace' vs 'dependency'. Buckets without a name are skipped,
-// and so are DEPENDENCY buckets without a version (v0 partial metadata: unverifiable identity) --
-// but a workspace package may legitimately omit version (private/unpublished) and is kept, since
-// dropping it would silently lose the document's own first-party subject. Dedup is by
-// ecosystem+name+version; a package seen as workspace in any artifact stays workspace regardless
-// of argument order, so output doesn't depend on how artifacts are listed.
-// A dependency's `vendored` packages (those copied into it whose files a bundle carries) ride on its
-// component as `vendored`, sorted by `dir`: each its `name`, the `version` its package.json gives if
-// any, and a purl only beside one -- a vendored package.json without a version names no release, and
-// may not name a registry package at all (Next.js calls its React copy `react-builtin`).
+// The artifacts' named packages, deduped by ecosystem+name+version and sorted: a dependency only with a version,
+// a first-party one ('workspace' where any artifact has it so) with or without. A dependency's `vendored` copies
+// ride on it, by `dir`, a purl only beside a version (Next.js's React copy, `react-builtin`, names no release).
 export function collectComponents(artifacts) {
   const seen = new Map()
   for (const artifact of artifacts) {
     const records = [...artifact.modules]
-    // The per-dependency `ecosystem` field separates deps (tagged) from first-party buckets (untagged);
-    // if no bucket carries it, the artifact predates the field and we use the heuristic for everything.
+    // An artifact where no bucket carries `ecosystem` predates the field: classifyScope tells deps apart.
     const tagged = records.some(([, m]) => m.ecosystem !== undefined)
     const fileEcosystem = detectEcosystem(artifact)
     for (const [dir, { name, version, ecosystem, vendored }] of records) {
       if (!name) continue
-      let scope, eco
-      if (ecosystem !== undefined) {
-        scope = 'dependency'
-        eco = ecosystem
-      } else if (tagged) {
-        // Untagged bucket in a modern artifact: first-party workspace code; ecosystem inferred.
-        scope = 'workspace'
-        eco = fileEcosystem
-      } else {
-        scope = classifyScope(fileEcosystem, dir)
-        eco = fileEcosystem
-      }
+      const eco = ecosystem ?? fileEcosystem
+      const scope = ecosystem !== undefined ? 'dependency' : tagged ? 'workspace' : classifyScope(fileEcosystem, dir)
       if (!version && scope !== 'workspace') continue
       const key = `${eco} ${name} ${version ?? ''}`
       let component = seen.get(key)
@@ -141,10 +113,9 @@ const isoSeconds = (date) => date.toISOString().replace(/\.\d{3}Z$/u, 'Z')
 // ecosystem+name(+version) (unique by construction -- it's the dedup key).
 const bomRef = (c) => c.purl ?? `${c.ecosystem}:${c.name}${c.version == null ? '' : `@${c.version}`}`
 
-// Render an SPDX 2.3 document. It DESCRIBES its primary component, which DEPENDS_ON each installed
-// dependency (flat graph). With no single primary, the document DESCRIBES the workspace packages,
-// or every package when there are none. A package vendored into a dependency is a package of its own,
-// after the rest, which that dependency CONTAINS, its directory there its `packageFileName`.
+// An SPDX 2.3 document: it DESCRIBES its primary, which DEPENDS_ON each dependency (flat), else the workspace
+// packages, else every package. A package vendored into a dependency comes after the rest, CONTAINED by that
+// dependency, its directory there its `packageFileName`.
 export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
   const ordered = primary ? [primary, ...rest] : components
@@ -170,22 +141,15 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
   for (const { v, id } of vendored) packages.push(spdxPackage(id, v, 'LIBRARY', { packageFileName: v.dir }))
 
   const relationships = []
+  const relate = (spdxElementId, relatedSpdxElement, relationshipType) => relationships.push({ spdxElementId, relatedSpdxElement, relationshipType })
   if (primary) {
-    relationships.push({ spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElement: ids.get(primary), relationshipType: 'DESCRIBES' })
-    for (const c of rest) {
-      if (c.scope === 'dependency') {
-        relationships.push({ spdxElementId: ids.get(primary), relatedSpdxElement: ids.get(c), relationshipType: 'DEPENDS_ON' })
-      }
-    }
+    relate('SPDXRef-DOCUMENT', ids.get(primary), 'DESCRIBES')
+    for (const c of rest) if (c.scope === 'dependency') relate(ids.get(primary), ids.get(c), 'DEPENDS_ON')
   } else {
     const workspace = ordered.filter((c) => c.scope === 'workspace')
-    for (const c of workspace.length > 0 ? workspace : ordered) {
-      relationships.push({ spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElement: ids.get(c), relationshipType: 'DESCRIBES' })
-    }
+    for (const c of workspace.length > 0 ? workspace : ordered) relate('SPDXRef-DOCUMENT', ids.get(c), 'DESCRIBES')
   }
-  for (const { host, id } of vendored) {
-    relationships.push({ spdxElementId: ids.get(host), relatedSpdxElement: id, relationshipType: 'CONTAINS' })
-  }
+  for (const { host, id } of vendored) relate(ids.get(host), id, 'CONTAINS')
 
   const docName = primary
     ? (primary.version == null ? primary.name : `${primary.name}@${primary.version}`)
@@ -205,10 +169,9 @@ export function toSpdx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid
   }
 }
 
-// Render a CycloneDX 1.5 document. The primary (workspace root) becomes metadata.component; the
-// rest go in `components`, with a flat `dependencies` edge from primary to each installed dependency.
-// A package vendored into a dependency is nested in that dependency's `components`, its directory
-// there the location of its one occurrence.
+// A CycloneDX 1.5 document: the primary (workspace root) its metadata.component, the rest `components`, with a flat
+// `dependencies` edge from it to each dependency. A package vendored into a dependency is nested in its `components`,
+// its directory there the location of its one occurrence.
 export function toCyclonedx(components, { tool = DEFAULT_TOOL, now = new Date(), uuid = newUuid() } = {}) {
   const { primary, rest } = selectPrimary(components)
   // `c` (a component, or one vendored) as a CycloneDX component of `type`, `ref` its bom-ref, `tail` after its purl.
@@ -258,7 +221,6 @@ export function generateSbom(format, components, options) {
   throw new Error(`sbom: format must be spdx or cyclonedx, got ${format}`)
 }
 
-// Convenience one-shot: collectComponents then generateSbom.
 export function sbom(format, artifacts, options) {
   return generateSbom(format, collectComponents(artifacts), options)
 }

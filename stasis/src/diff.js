@@ -1,22 +1,18 @@
 import { ATTESTED_METADATA, REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
 
-// `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and
-// file level. Never reads disk. Comparing across kinds works by reducing every file to the same
-// digest space: a lockfile already holds SRI digests; a bundle holds bytes, re-hashed via the
-// injected `hash` — so a `hash` function is required whenever a bundle is an operand. Per-file
-// encoding (resource:base64 vs text) is read from the bundle's `formats` map.
+// `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and file
+// level, never reading disk. Every file is reduced to an SRI digest: a lockfile holds them, and a bundle's
+// bytes are re-hashed by the injected `hash`, so one is required whenever a bundle is an operand.
 
 const KINDS = new Set(['lockfile', 'bundle'])
 
-// Reduce one file's recorded value to an SRI digest: lockfile values already are digests; a
-// bundle's are re-hashed, with a `resource:base64` file decoded to bytes first (others hash as text).
+// One file's recorded value as an SRI digest: a bundle's re-hashed, a `resource:base64` file decoded first.
 function digestOf(kind, format, value, hash) {
   if (kind === 'lockfile') return value
   if (typeof hash !== 'function') {
     throw new Error('diff: a `hash` function is required to compare a bundle (its bytes are re-hashed into a lockfile-style digest)')
   }
-  if (format === 'resource:base64') return hash(Buffer.from(value, 'base64'))
-  return hash(value)
+  return hash(format === 'resource:base64' ? Buffer.from(value, 'base64') : value)
 }
 
 const projectPath = (dir, rel) => (dir === '.' ? rel : `${dir}/${rel}`)
@@ -36,10 +32,7 @@ export function normalizeArtifact(input, { hash } = {}) {
   const formats = artifact.formats ?? new Map()
   const modules = new Map()
   for (const [dir, { name, version, ecosystem, repo, integrity, patch, files }] of artifact.modules) {
-    const digests = new Map()
-    for (const [rel, value] of Object.entries(files)) {
-      digests.set(rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash))
-    }
+    const digests = new Map(Object.entries(files).map(([rel, value]) => [rel, digestOf(kind, formats.get(projectPath(dir, rel)), value, hash)]))
     // v0 bundles record no name/version; normalize undefined -> null for a single "unknown" sentinel.
     modules.set(dir, { name: name ?? null, version: version ?? null, ecosystem: ecosystem ?? null, repo, integrity, patch, files: digests })
   }
@@ -48,12 +41,9 @@ export function normalizeArtifact(input, { hash } = {}) {
   return { scope: artifact.config?.scope ?? 'full', modules, executable: artifact.executable ?? new Set() }
 }
 
-// Diff two `{ artifact, kind }` operands (`left` = baseline/"from", `right` = "to"). Modules are
-// compared whole-package; files only within packages present on BOTH sides (a one-sided package is
-// reported once as an added/removed module, not per-file). A version/name/repo change is reported
-// only when both sides record a non-null value (an artifact from before `repo` records none); an
-// integrity/patch change whenever they differ. `{ imports: true }` also diffs the resolution graphs
-// (opt-in; verbose). `hash` is required only when a bundle is an operand.
+// Diff two `{ artifact, kind }` operands, `left` the baseline. Files are compared only within modules on BOTH
+// sides (a one-sided module is reported once); a name/version/repo change only where both sides record one, an
+// integrity/patch change wherever they differ. `imports: true` also diffs the resolution graphs (verbose).
 export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   const L = normalizeArtifact(left, { hash })
   const R = normalizeArtifact(right, { hash })
@@ -66,8 +56,7 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   const filesDiffering = []
 
   const summary = (dir, m) => ({ dir, name: m.name, version: m.version, ecosystem: m.ecosystem, files: m.files.size })
-  const dirs = new Set([...L.modules.keys(), ...R.modules.keys()])
-  for (const dir of dirs) {
+  for (const dir of new Set([...L.modules.keys(), ...R.modules.keys()])) {
     const l = L.modules.get(dir)
     const r = R.modules.get(dir)
     if (l && !r) {
@@ -79,24 +68,23 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
       continue
     }
 
-    const change = { dir, name: r.name ?? l.name }
+    const changes = {}
     if (l.version !== null && r.version !== null && l.version !== r.version) {
-      change.versionChange = { from: l.version, to: r.version }
+      changes.versionChange = { from: l.version, to: r.version }
     }
     if (l.name !== null && r.name !== null && l.name !== r.name) {
-      change.nameChange = { from: l.name, to: r.name }
+      changes.nameChange = { from: l.name, to: r.name }
     }
     // A dependency's repo picks the GitHub advisories audit asks, so a change to it is one to review.
     if (!reposAgree(l.repo, r.repo)) {
-      change.repoChange = { from: l.repo, to: r.repo }
+      changes.repoChange = { from: l.repo, to: r.repo }
     }
     for (const field of ATTESTED_METADATA) {
-      if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) change[`${field}Change`] = { from: l[field], to: r[field] }
+      if (JSON.stringify(l[field]) !== JSON.stringify(r[field])) changes[`${field}Change`] = { from: l[field], to: r[field] }
     }
-    if (change.versionChange || change.nameChange || change.repoChange || ATTESTED_METADATA.some((field) => change[`${field}Change`])) modulesChanged.push(change)
+    if (Object.keys(changes).length > 0) modulesChanged.push({ dir, name: r.name ?? l.name, ...changes })
 
-    const rels = new Set([...l.files.keys(), ...r.files.keys()])
-    for (const rel of rels) {
+    for (const rel of new Set([...l.files.keys(), ...r.files.keys()])) {
       const lh = l.files.get(rel)
       const rh = r.files.get(rel)
       const path = projectPath(dir, rel)
@@ -107,39 +95,21 @@ export function diffArtifacts(left, right, { imports = false, hash } = {}) {
   }
 
   const byDir = (a, b) => sortPaths(a.dir, b.dir)
-  modulesAdded.sort(byDir)
-  modulesRemoved.sort(byDir)
-  modulesChanged.sort(byDir)
-  filesAdded.sort(sortPaths)
-  filesRemoved.sort(sortPaths)
-  filesDiffering.sort(sortPaths)
-
-  // Execute-bit changes, reported for every path either side marks (not just files in shared
-  // modules): gaining or losing +x is a real change to the extracted tree, whatever bucket it sits in.
+  // Execute-bit changes, of every path either side marks (not just files in shared modules): gaining or
+  // losing +x changes the extracted tree, whatever bucket it sits in.
   const onlyIn = (a, b) => [...a.difference(b)].toSorted(sortPaths)
-  const executableAdded = onlyIn(R.executable, L.executable)
-  const executableRemoved = onlyIn(L.executable, R.executable)
-
   const result = {
     scope: { left: L.scope, right: R.scope },
-    modules: { added: modulesAdded, removed: modulesRemoved, changed: modulesChanged },
-    files: { added: filesAdded, removed: filesRemoved, differing: filesDiffering },
-    executable: { added: executableAdded, removed: executableRemoved },
+    modules: { added: modulesAdded.toSorted(byDir), removed: modulesRemoved.toSorted(byDir), changed: modulesChanged.toSorted(byDir) },
+    files: { added: filesAdded.toSorted(sortPaths), removed: filesRemoved.toSorted(sortPaths), differing: filesDiffering.toSorted(sortPaths) },
+    executable: { added: onlyIn(R.executable, L.executable), removed: onlyIn(L.executable, R.executable) },
   }
   if (imports) result.imports = diffImports(left, right)
   return result
 }
 
-// The resolution graph an artifact attests, or null when it attests none (a legacy lockfile
-// predating attestation); a bundle always carries a possibly-empty map.
-function attestedImports({ artifact }) {
-  return artifact.imports ?? null
-}
-
-// Collapse an imports map (conditions -> parent -> specifier -> target) to (parent, specifier) ->
-// Set<target>, unioning over conditions: a static bundle keys every edge under "*" while a runtime
-// lockfile uses precise sets, so keying on conditions would report identical resolutions as
-// removed+added. Folding conditions away makes them compare equal.
+// An imports map (conditions -> parent -> specifier -> target) as (parent, specifier) -> Set<target>, unioned over
+// conditions: a static bundle keys every edge under "*", a runtime lockfile by precise sets, and the two must agree.
 function resolutionsOf(imports) {
   const byPair = new Map()
   for (const [, byParent] of imports) {
@@ -162,13 +132,12 @@ const cmpPair = (a, b) => sortPaths(a.parent, b.parent) || cmpStr(a.specifier, b
 const sortedTargets = (set) => [...set].toSorted(sortPaths)
 const sameTargets = (a, b) => a.size === b.size && a.isSubsetOf(b)
 
-// Diff resolution graphs at the (parent, specifier) level (conditions folded away — see
-// resolutionsOf). Reports added/removed and changed (resolved on both sides to different targets —
-// a redirect a byte diff can't see). When either side doesn't attest imports, the diff is skipped
-// and `attested` flags why, rather than reporting one whole graph as added/removed.
-export function diffImports(left, right) {
-  const li = attestedImports(left)
-  const ri = attestedImports(right)
+// Diff resolution graphs by (parent, specifier) (see resolutionsOf): added, removed, and changed -- a
+// redirect a byte diff can't see. A side attesting no imports (a lockfile predating attestation) skips the
+// diff, `attested` saying which, rather than reporting the other whole graph as added/removed.
+export function diffImports({ artifact: left }, { artifact: right }) {
+  const li = left.imports ?? null
+  const ri = right.imports ?? null
   const attested = { left: li !== null, right: ri !== null }
   if (li === null || ri === null) return { attested, added: [], removed: [], changed: [] }
 
@@ -192,12 +161,10 @@ export function diffImports(left, right) {
   return { attested, added, removed, changed }
 }
 
-// True when the diff records any module-, file-, or import-level change. Scope alone is
-// informational and doesn't count (unattested imports contribute empty lists).
+// True when the diff records any module-, file-, executable- or import-level change; scope alone doesn't
+// count. Only the opt-in `imports` is guarded: a guard on the others would make a renamed facet read as
+// "no differences" and quietly pass a review gate.
 export function hasDifferences(diff) {
-  // `executable` is unguarded like modules/files -- diffArtifacts always sets it, and a shape guard
-  // here would make a renamed facet read as "no differences" and quietly pass a review gate.
-  // `imports` is genuinely opt-in (the `imports` option), so it keeps its guard.
   const { modules, files, executable, imports } = diff
   let n =
     modules.added.length + modules.removed.length + modules.changed.length +
@@ -237,39 +204,38 @@ const moduleLine = (mark, x) => {
 const edgeLabel = (e) => `${e.parent}  '${e.specifier}'`
 
 // Render the `--stat` summary (module + file change lists with counts, plus import-edge changes
-// when present); reports what changed, not the text. `labels` is { left, right, leftKind, rightKind }.
-// Returns a string ending in a newline.
+// when present); reports what changed, not the text. Returns a string ending in a newline.
 export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftKind, rightKind } = {}) {
   const { modules: m, files: f, executable: ex, imports: im, scope } = diff
-  const lines = ['stasis diff --stat']
   const label = (kind) => (kind ? `${kind}, ` : '')
-  lines.push(`  ${REMOVED} ${left} (${label(leftKind)}scope=${scope.left})`)
-  lines.push(`  ${ADDED} ${right} (${label(rightKind)}scope=${scope.right})`)
+  const lines = [
+    'stasis diff --stat',
+    `  ${REMOVED} ${left} (${label(leftKind)}scope=${scope.left})`,
+    `  ${ADDED} ${right} (${label(rightKind)}scope=${scope.right})`,
+  ]
+  const paths = (mark, list) => {
+    for (const p of list) lines.push(`  ${mark} ${p}`)
+  }
   if (scope.left !== scope.right) {
     lines.push(`  note: scopes differ (${scope.left} vs ${scope.right}); files only the full-scope artifact records show as removed/added`)
   }
 
-  lines.push('')
-  lines.push(`Modules: ${m.added.length} added, ${m.removed.length} removed, ${m.changed.length} changed`)
+  lines.push('', `Modules: ${m.added.length} added, ${m.removed.length} removed, ${m.changed.length} changed`)
   for (const x of m.removed) lines.push(moduleLine(REMOVED, x))
   for (const x of m.added) lines.push(moduleLine(ADDED, x))
   for (const x of m.changed) lines.push(`  ${CHANGED} ${x.dir}  ${describeModuleChange(x)}`)
 
-  lines.push('')
-  // Counts cover only files within modules present on both sides; a wholly added/removed module's
-  // files are summarized by its module entry above — hence the "within shared modules" label.
-  lines.push(`Files (within shared modules): ${f.added.length} added, ${f.removed.length} removed, ${f.differing.length} differing`)
-  for (const p of f.removed) lines.push(`  ${REMOVED} ${p}`)
-  for (const p of f.added) lines.push(`  ${ADDED} ${p}`)
-  for (const p of f.differing) lines.push(`  ${CHANGED} ${p}`)
+  // A wholly added/removed module's files are summarized by its module entry above.
+  lines.push('', `Files (within shared modules): ${f.added.length} added, ${f.removed.length} removed, ${f.differing.length} differing`)
+  paths(REMOVED, f.removed)
+  paths(ADDED, f.added)
+  paths(CHANGED, f.differing)
 
-  // Only rendered when something changed: an unchanged execute-bit set is the overwhelming norm,
-  // and a permanent "0 added, 0 removed" line would be noise in every diff.
+  // Only when something changed: a permanent "0 added, 0 removed" line would be noise in every diff.
   if (ex.added.length > 0 || ex.removed.length > 0) {
-    lines.push('')
-    lines.push(`Executable: ${ex.added.length} added, ${ex.removed.length} removed`)
-    for (const p of ex.removed) lines.push(`  ${REMOVED} ${p}`)
-    for (const p of ex.added) lines.push(`  ${ADDED} ${p}`)
+    lines.push('', `Executable: ${ex.added.length} added, ${ex.removed.length} removed`)
+    paths(REMOVED, ex.removed)
+    paths(ADDED, ex.added)
   }
 
   if (im) {
@@ -287,7 +253,6 @@ export function formatDiffStat(diff, { left = '(left)', right = '(right)', leftK
     }
   }
 
-  lines.push('')
-  lines.push(hasDifferences(diff) ? 'Artifacts differ' : 'No differences')
+  lines.push('', hasDifferences(diff) ? 'Artifacts differ' : 'No differences')
   return lines.join('\n') + '\n'
 }

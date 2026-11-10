@@ -40,11 +40,11 @@ export function unpackedSummary({ unpacked, installed, dependencies, files, byte
   return `[stasis] Unpacked ${unpacked} of ${installed ?? dependencies} packages: ${files} files, ${(bytes / 2 ** 20).toFixed(1)} MiB${fetched}`
 }
 
-// The summary of a bundle of `count` files in `modules` written from `from` to `dest`.
-export const bundledSummary = (count, modules, from, dest) => `[stasis] Bundled ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
-
-// The summary of --lockfile-only: the lockfile of a bundle of `count` files in `modules`, from `from`, written to `dest`.
-export const lockedSummary = (count, modules, from, dest) => `[stasis] Locked ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
+// The summary of a bundle of `count` files in `modules` written from `from` to `dest`, or under --lockfile-only
+// of its lockfile.
+const summary = (verb) => (count, modules, from, dest) => `[stasis] ${verb} ${count} files in ${packagesLabel(modules)} from ${from} to ${dest}`
+export const bundledSummary = summary('Bundled')
+export const lockedSummary = summary('Locked')
 
 // Why --lockfile-only can't be taken with the bundle's other output options as given (`brotliQuality`
 // parsed or not: only whether it is given counts), or null where it can. It writes the lockfile
