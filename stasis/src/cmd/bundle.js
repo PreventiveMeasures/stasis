@@ -2377,9 +2377,9 @@ function archiveAccounts(modules, root) {
   return new Map([...modules].map(([dir, { ecosystem }]) => [dir, Object.hasOwn(told, ecosystem) ? told[ecosystem](dir) : undefined]).filter(([, account]) => account))
 }
 
-// `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers' records
-// name them, each held to the lockfile beside it, whatever its kind (a Solidity import out of node_modules
-// is one); their `accounts` (`accountsOf(modules)`: any other records'), and its lockfile attesting as they do.
+// `built` (of disk builds rooted at `root`) with its npm dependencies as their install records name them,
+// each held to the lockfile beside it, whatever its kind (a Solidity import out of node_modules is one):
+// their `accounts`, `accountsOf(modules)` any other's (archiveAccounts too), its lockfile attesting as they do.
 function pinnedOf(built, root) {
   const accounts = pinInstalled(built.bundle, root)
   return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
@@ -2734,11 +2734,7 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
 // `to` (a Lockfile or a Bundle) with the ATTESTED_METADATA `from`'s records of the same buckets
 // carry, in place of its own: a build's lockfile, taken before its bundle was pinned, with the bundle's.
 function withAttested(to, from) {
-  for (const [dir, info] of to.modules) {
-    const pinned = from.modules.get(dir)
-    if (pinned === undefined) continue
-    to.modules.set(dir, withAttestedOf(info, pinned))
-  }
+  for (const [dir, info] of to.modules) if (from.modules.has(dir)) to.modules.set(dir, withAttestedOf(info, from.modules.get(dir)))
   return to
 }
 
