@@ -1,4 +1,4 @@
-import { join, normalize, relative } from 'node:path'
+import { join, normalize, posix, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
@@ -116,6 +116,30 @@ function solidityEntries(host, dir) {
   return [...new Set([...own, ...under('contracts'), ...(src === 'contracts' ? [] : under(src))])]
 }
 
+// `prefix*suffix`, one `*` in the last segment, as `{ dir, matches(fileName) }`; null for no pattern.
+// Its `*` takes no leading `.`, as a shell's.
+export function entryPattern(name, entry) {
+  if (typeof entry !== 'string' || !entry.includes('*')) return null
+  const dir = entry.slice(0, entry.lastIndexOf('/') + 1)
+  const [prefix, suffix, ...more] = entry.slice(dir.length).split('*')
+  if (dir.includes('*') || more.length > 0) throw new Error(`${name}: ${JSON.stringify(entry)}: a pattern holds one *, in its last segment (prefix*suffix)`)
+  const matches = (file) => file.length >= prefix.length + suffix.length && file.startsWith(prefix) && file.endsWith(suffix) && (prefix !== '' || !file.startsWith('.'))
+  return { dir, matches }
+}
+
+// Each pattern among `entries` replaced by the files (no symlinks) it matches in `host`, sorted.
+export function expandEntries(name, host, cwd, entries) {
+  if (!Array.isArray(entries)) return entries
+  return entries.flatMap((entry) => {
+    const pattern = entryPattern(name, entry)
+    if (pattern === null) return [entry]
+    const dir = posix.resolve(cwd, pattern.dir)
+    const files = host.stat(dir)?.isDirectory() ? host.readdir(dir).filter((dirent) => dirent.isFile() && pattern.matches(dirent.name)) : []
+    if (files.length === 0) throw new Error(`${name}: ${JSON.stringify(entry)} matches no file`)
+    return files.map((dirent) => `${pattern.dir}${dirent.name}`).toSorted()
+  })
+}
+
 // By the kind of bundle a package manager builds: an entry its options are checked over before
 // there are any, the entries the build takes where none are given, and what having none says.
 const KINDS = {
@@ -165,7 +189,10 @@ export function checkAhead(name, packageManager, options) {
       return error
     }
   }
-  const refusals = options.entries === undefined ? (pm === undefined ? Object.values(KINDS) : [KINDS[pm.kind]]).map(({ standIn }) => refusal([standIn])) : [refusal(options.entries)]
+  // A pattern is checked as an entry of the kind its extension names, if any (not `src/*`).
+  const told = Array.isArray(options.entries) ? options.entries.filter((entry) => !entryPattern(name, entry) || /^\.[^*]+$/u.test(posix.extname(entry))) : options.entries
+  const entries = told?.length === 0 && options.entries.length > 0 ? undefined : told
+  const refusals = entries === undefined ? (pm === undefined ? Object.values(KINDS) : [KINDS[pm.kind]]).map(({ standIn }) => refusal([standIn])) : [refusal(entries)]
   if (!refusals.includes(null)) throw refusals[0]
   return pm
 }

@@ -39,6 +39,7 @@ stasis github-bundle --github=owner/name --sha=0123abc src/index.js
 stasis github-bundle --github=owner/name --tag=v1.2.0 --directory=packages/api --typescript src/index.ts
 stasis github-bundle owner/name/packages/api --tag=v1.2.0 --typescript src/index.ts
 stasis github-bundle owner/name/packages/api/src/index.ts --tag=v1.2.0 --typescript
+stasis github-bundle 'owner/name/packages/api/src/*.entry.ts' --tag=v1.2.0 --typescript
 stasis github-bundle --github=owner/name --package-manager=soldeer src/Token.sol
 ```
 
