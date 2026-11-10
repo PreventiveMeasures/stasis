@@ -101,9 +101,8 @@ async function holding(held, fn) {
   }
 }
 
-// `{ value }`, `fn()`'s, or `{ error }`, what it throws, with `warnings`, what it warns (each
-// console.warn's arguments), held back rather than said: for the caller to say, or drop where it
-// tries again in its place. Within a round, what the caller says of them is held for the round.
+// `fn()`'s `{ value }` or `{ error }`, with the `warnings` it gave (console.warn's arguments) held
+// back, for the caller to say or drop.
 export async function warningsHeld(fn) {
   const warnings = []
   try {

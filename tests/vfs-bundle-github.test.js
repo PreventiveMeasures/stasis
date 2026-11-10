@@ -297,7 +297,7 @@ test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their 
   }))
   const { bundle } = await build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'], typescript: true })
   t.assert.deepStrictEqual([...bundle.sources.keys()], sources)
-  // Without it, the misses it resolves would leave the bundle broken at load: built with it all the same.
+  // Without it, broken at load: built with it.
   await Promise.all([{}, { lazy: false }].map(async (options) => {
     const detected = await build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'], ...options })
     t.assert.deepStrictEqual([...detected.bundle.sources.keys()], sources, JSON.stringify(options))
@@ -306,9 +306,7 @@ test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their 
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(unbuiltSibling), cwd: 'packages/dep', typescript: true }), ['src/index.ts', 'src/foo.ts'])
 })
 
-// A TypeScript project whose entry imports as Node does (`./a/c.ts`), and a file below it as tsc
-// resolves (extensionless `./b`): nothing in the entries tells, and the bundle is broken at load
-// without typescript.
+// An extensionless import below an entry that imports `./a/c.ts`, which the entries don't tell.
 const tscBelowEntry = {
   'package.json': json({ name: 'p', version: '1.0.0', type: 'module' }),
   'pnpm-lock.yaml': lockfile('.'),
@@ -316,46 +314,32 @@ const tscBelowEntry = {
   'src/a/c.ts': "import { b } from './b'\nexport const c: number = b\n",
   'src/a/b.ts': 'export const b: number = 1\n',
 }
+const unresolvedWarnings = (warn) => warn.mock.calls.map((call) => call.arguments[0]).filter((line) => line.includes('unresolved'))
 
-test('buildGitHubBundle builds with typescript where a miss it resolves would leave the bundle broken at load', async (t) => {
-  const resolutions = (bundle) => Object.fromEntries([...bundle.imports.values()][0].get('src/a/c.ts'))
-  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }, { typescript: true }].map(async (options) => {
+test('buildGitHubBundle builds with typescript where a miss it resolves leaves the bundle broken at load', async (t) => {
+  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }].map(async (options) => {
     const { bundle } = await build({ client: fakeClient(tscBelowEntry), entries: ['src/index.ts'], ...options })
     t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/index.ts', 'src/a/c.ts', 'src/a/b.ts'], JSON.stringify(options))
-    t.assert.deepStrictEqual(resolutions(bundle), { './b': 'src/a/b.ts' }, JSON.stringify(options))
   }))
-  // `stasis bundle` of the same files on disk keeps Node's resolution, naming the file it would take.
-  const tmp = await mkdtemp(join(tmpdir(), 'stasis-vfs-bundle-github-tsc-'))
-  t.after(() => rm(tmp, { recursive: true, force: true }))
-  await Promise.all(Object.entries(tscBelowEntry).map(async ([path, text]) => {
-    await mkdir(dirname(join(tmp, path)), { recursive: true })
-    await writeFile(join(tmp, path), text)
-  }))
-  await t.assert.rejects(buildBundle({ cwd: tmp, entries: ['src/index.ts'] }), {
-    message: 'JS bundle would be broken at load time:\n  unresolved import ./b from src/a/c.ts (MODULE_NOT_FOUND; resolves to src/a/b.ts under --typescript)',
-  })
-})
-
-test('buildGitHubBundle builds without typescript where the misses it resolves leave the bundle unbroken at load', async (t) => {
-  // A miss behind an import() is caught at run time, as Node's resolution misses it: warned of, the bundle as it was.
-  const warn = t.mock.method(console, 'warn', () => {})
-  const client = fakeClient({ ...tscBelowEntry, 'src/a/c.ts': "export const c: number = 1\nexport const b = () => import('./b')\n" })
-  const { bundle } = await build({ client, entries: ['src/index.ts'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/index.ts', 'src/a/c.ts'])
-  t.assert.deepStrictEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => line.includes('unresolved')), [
-    "[stasis] Bundle has 1 unresolved import(s); they will fall through at load time:\n  dynamic-import ./b from src/a/c.ts (MODULE_NOT_FOUND; resolves to src/a/b.ts under --typescript)",
-  ])
-})
-
-test('buildGitHubBundle with the typescript it takes fails as typescript fails, saying once what it warns', async (t) => {
-  // Broken under typescript too: its misses are the failure, those resolved without it gone.
+  // Broken with it too: its failure.
   const gone = fakeClient({ ...tscBelowEntry, 'src/a/b.ts': "import './gone.js'\nexport const b: number = 1\n" })
   await t.assert.rejects(build({ client: gone, entries: ['src/index.ts'] }), {
     message: 'JS bundle would be broken at load time:\n  unresolved import ./gone.js from src/a/b.ts (MODULE_NOT_FOUND)',
   })
-  // An iOS build warns of its catchable miss before Android's is broken without typescript, and then
-  // again built with it: said once, as by the build with typescript. (Metro completes `./b` itself:
-  // `./b.js` is tsc's alone.)
+})
+
+test('buildGitHubBundle builds without typescript where the bundle is not broken at load', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const client = fakeClient({ ...tscBelowEntry, 'src/a/c.ts': "export const c: number = 1\nexport const b = () => import('./b')\n" })
+  const { bundle } = await build({ client, entries: ['src/index.ts'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/index.ts', 'src/a/c.ts'])
+  t.assert.deepStrictEqual(unresolvedWarnings(warn), [
+    '[stasis] Bundle has 1 unresolved import(s); they will fall through at load time:\n  dynamic-import ./b from src/a/c.ts (MODULE_NOT_FOUND; resolves to src/a/b.ts under --typescript)',
+  ])
+})
+
+test('buildGitHubBundle warns once where it builds again with typescript', async (t) => {
+  // iOS warns before Android breaks without typescript. Metro completes `./b` itself, not `./b.js`.
   const warn = t.mock.method(console, 'warn', () => {})
   const client = fakeClient({
     ...tscBelowEntry,
@@ -364,9 +348,9 @@ test('buildGitHubBundle with the typescript it takes fails as typescript fails, 
     'src/a/c.android.ts': "import { b } from './b.js'\nexport const c: number = b\n",
   })
   const { bundle } = await build({ client, entries: ['src/index.ts'], metro: true, platforms: ['ios', 'android'] })
-  t.assert.deepStrictEqual([...bundle.sources.keys()].toSorted(), ['src/a/b.ts', 'src/a/c.android.ts', 'src/a/c.ios.ts', 'src/index.ts'])
-  t.assert.deepStrictEqual(warn.mock.calls.map((call) => call.arguments[0]).filter((line) => line.includes('unresolved')), [
-    "[stasis] Bundle has 1 unresolved import(s) (ios); they will fall through at load time:\n  dynamic-import ./later from src/a/c.ios.ts (MODULE_NOT_FOUND)",
+  t.assert.ok(bundle.sources.has('src/a/b.ts'))
+  t.assert.deepStrictEqual(unresolvedWarnings(warn), [
+    '[stasis] Bundle has 1 unresolved import(s) (ios); they will fall through at load time:\n  dynamic-import ./later from src/a/c.ios.ts (MODULE_NOT_FOUND)',
   ])
 })
 

@@ -748,7 +748,7 @@ const listed = (items, line = (s) => s) => {
 // paths gate identically. `baseDir` relativizes the paths in the emitted messages (see displayPath).
 // `generated(u)` (vfs-bundle/prisma.js's generatedMiss) says why a miss of a file a generator would
 // write is missing: such a miss is fatal however it is imported, at load or at run time.
-// `typescript`: whether a fatal miss names the file --typescript resolves it to (Scan#typescriptCandidate).
+// `typescript`: whether a fatal miss resolves under --typescript.
 function analyzeScanner(scanner, { baseDir, generated }) {
   const show = (url) => displayPath(url, baseDir)
   const staticReachable = eagerlyLinked(scanner)
@@ -757,12 +757,11 @@ function analyzeScanner(scanner, { baseDir, generated }) {
   let typescript = false
   for (const u of scanner.unresolved) {
     const why = generated?.(u)
-    if (why === undefined && !(STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL))) {
-      tolerated.push(u)
-      continue
+    if (why === undefined && !(STATIC_KINDS.has(u.kind) && staticReachable.has(u.parentURL))) tolerated.push(u)
+    else {
+      fatal.push(`unresolved ${describeUnresolved(u, show)}${why === undefined ? '' : `: ${why}`}`)
+      typescript ||= u.typescriptURL !== undefined
     }
-    fatal.push(`unresolved ${describeUnresolved(u, show)}${why === undefined ? '' : `: ${why}`}`)
-    typescript ||= u.typescriptURL !== undefined
   }
   // A file the parser couldn't read cleanly, however it is reached: its edges are unknown (a module
   // file's are discarded) or partial (those of a script's recovered AST), never a graph to record.
@@ -782,9 +781,7 @@ function analyzeScanner(scanner, { baseDir, generated }) {
 }
 
 // Throw on fatal scan issues; warn on tolerated ones. `label` tags the scan pass; `baseDir`
-// relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages. The
-// error thrown carries `resolvesUnderTypescript` where a fatal miss resolves under --typescript
-// (analyzeScanner's `typescript`), for a build of a Vfs to take it (buildFromLockfile).
+// relativizes the paths in the warnings (see displayPath), matching analyzeScanner's messages.
 function reportScanIssues({ fatal, tolerated, typescript = false, leftOut = [] }, { label = '', baseDir, root = '' }) {
   const where = label ? ` (${label})` : ''
   const show = (url) => displayPath(url, baseDir)
@@ -2419,9 +2416,8 @@ export function checkVfsOptions(name, options) {
 // tree before the scan, leaving `vfs` as it is (vfs-bundle/prisma.js); without `generate`, those of
 // the projects the entries reach, silently, unless the stasis.config.json in cwd sets
 // `generatePrisma` false; `generate: []`, none. Whichever, an import of a file a generator would
-// write that isn't there fails the bundle, saying why, however it is reached. A JS build without
-// `typescript` that an import --typescript resolves leaves broken at load is built with it, as the
-// repo's own build resolves it, nothing being built in a Vfs; one not broken, as without it. `client`, a
+// write that isn't there fails the bundle, saying why, however it is reached. A JS build that a miss
+// --typescript resolves leaves broken at load is built with `typescript`. `client`, a
 // @preventive/upstream/github.js client, is what a Soldeer git dependency is fetched through; without
 // one, a soldeer.lock holding one is refused, naming deptree's `github`, before anything is fetched.
 // `cache` is where npm packages' tarballs and version documents are kept (checkCache). Each
@@ -2618,24 +2614,21 @@ async function buildFromLockfile(name, project, { vfs, packageManager, cwd = '/'
   const generated = expected.length === 0 ? undefined : prisma.generatedMiss(expected)
   // What follows reads the tree through a host of `outside`: once, or for a lazy tree, in rounds,
   // each reading into its `reads`, each build keeping what its scans read across them in a memo of
-  // its own, and one of its own built with --typescript (jsBuilt).
-  const memos = tree.unpack === undefined ? undefined : builds.map(() => ({ given: new Map(), typescript: new Map() }))
+  // its own.
+  const memos = tree.unpack === undefined ? undefined : builds.map(() => new Map())
   const attempt = async (reads) => {
     const host = treeHost(tree, outside, reads)
     const args = { cwd, host, env }
-    // A JS build with its options. But of a Vfs, which holds the repo as checked out, nothing built,
-    // one without --typescript that a miss --typescript resolves leaves broken at load (reportScanIssues'
-    // resolvesUnderTypescript) is built with it in its place, as the project's own build resolves it
-    // (tsc, or a bundler resolving as tsc does): what the one it replaces warned unsaid, and what it
-    // throws thrown, those misses resolved. Any other build is the one its options give.
+    // A Vfs holds nothing built: a build broken at load by a miss --typescript resolves is built with
+    // it instead, as tsc resolves it, saying nothing of what the first warned.
     const jsBuilt = async (build, memo) => {
-      const js = (typescript, kept) => buildJs({ ...build, ...args, typescript, innermostRoot, extra: !bundleExtra, outputsAt, memo: kept, generated })
-      if (vfs === undefined || build.typescript) return js(build.typescript, memo?.given)
-      const given = await warningsHeld(() => js(false, memo?.given))
-      if (given.error?.resolvesUnderTypescript) return js(true, memo?.typescript)
-      for (const warning of given.warnings) console.warn(...warning)
-      if (given.error !== undefined) throw given.error
-      return given.value
+      const js = (typescript, kept = memo) => buildJs({ ...build, ...args, typescript, innermostRoot, extra: !bundleExtra, outputsAt, memo: kept, generated })
+      if (vfs === undefined || build.typescript) return js(build.typescript)
+      const first = await warningsHeld(() => js(false))
+      if (first.error?.resolvesUnderTypescript) return js(true, memo && nestedMap(memo, 'typescript'))
+      for (const warning of first.warnings) console.warn(...warning)
+      if (first.error) throw first.error
+      return first.value
     }
     const builts = []
     // A build of a round that asked for a package already is void, whatever it threw: the builds
