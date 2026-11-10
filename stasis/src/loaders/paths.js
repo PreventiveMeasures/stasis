@@ -3,17 +3,12 @@
 // Apply `segments` on `fromFile`'s directory, resolving '.'/'..'. Returns a baseDir-relative POSIX
 // path ('' for baseDir itself), or null when traversal escapes the root.
 export function applyToDir(fromFile, segments) {
-  const fromDir = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')) : ''
-  const parts = [...(fromDir ? fromDir.split('/') : []), ...segments]
   const resolved = []
-  for (const part of parts) {
+  for (const part of [...fromFile.split('/').slice(0, -1), ...segments]) {
     if (part === '.' || part === '') continue
-    if (part === '..') {
-      if (resolved.length === 0) return null
-      resolved.pop()
-    } else {
-      resolved.push(part)
-    }
+    if (part !== '..') resolved.push(part)
+    else if (resolved.length === 0) return null
+    else resolved.pop()
   }
   return resolved.join('/')
 }
