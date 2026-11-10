@@ -151,6 +151,71 @@ test('stasis bundle --add --lockfile holds what stasis.lock.json records of a pa
   }
 }))
 
+test('stasis bundle --add holds what the bundle there records of a Soldeer, Composer or vendored Cargo dependency it bundles none of to how it is installed', withTmp(async (t, tmp) => {
+  const fixtures = join(here, 'fixtures')
+  const write = (dir, files) => {
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true })
+      writeFileSync(join(dir, rel), text)
+    }
+  }
+  // Composer's record of acme/lib's dist, in composer.lock and installed.json alike, with `shasum`.
+  const composerDist = (dir, shasum) => {
+    for (const file of ['composer.lock', 'vendor/composer/installed.json']) {
+      const json = readJson(join(dir, file))
+      Object.assign(json.packages.find((p) => p.name === 'acme/lib'), { dist: { type: 'zip', url: 'https://example.com/acme/lib.zip', shasum }, ...(file !== 'composer.lock' && { 'installation-source': 'dist' }) })
+      writeFileSync(join(dir, file), `${JSON.stringify(json, null, 4)}\n`)
+    }
+  }
+  const crate = (checksum) => ({ 'vendor/itoa/.cargo-checksum.json': JSON.stringify({ files: {}, package: checksum.repeat(64) }) })
+  // Each: its project, the entries bundling its dependency (at `at`) and none of it, and it installed otherwise.
+  const cases = {
+    soldeer: {
+      project: (dir) => {
+        cpSync(join(fixtures, 'soldeer-bundle', 'project'), dir, { recursive: true })
+        cpSync(join(fixtures, 'soldeer-bundle', 'dependencies'), join(dir, 'dependencies'), { recursive: true })
+        write(dir, { 'alone/Alone.sol': 'pragma solidity ^0.8.20;\n\ncontract Alone {}\n' })
+      },
+      entries: ['src'], alone: ['alone'], at: 'dependencies/stasis-sol-lib-1.0.0',
+      otherwise: (dir) => writeFileSync(join(dir, 'soldeer.lock'), readFileSync(join(dir, 'soldeer.lock'), 'utf8').replace(/checksum = "../u, 'checksum = "ff')),
+    },
+    composer: {
+      project: (dir) => {
+        cpSync(join(fixtures, 'php-bundle', 'composer-lock'), dir, { recursive: true })
+        composerDist(dir, 'ab'.repeat(20))
+        write(dir, { 'alone.php': '<?php\necho 1;\n' })
+      },
+      entries: ['index.php'], alone: ['alone.php'], at: 'vendor/acme/lib',
+      otherwise: (dir) => composerDist(dir, 'cd'.repeat(20)),
+    },
+    cargo: {
+      project: (dir) => write(dir, {
+        'Cargo.toml': '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nitoa = "1"\n',
+        'src/main.rs': 'use itoa::Buffer;\nfn main() {}\n',
+        'src/bin/alone.rs': 'fn main() {}\n',
+        'vendor/itoa/Cargo.toml': '[package]\nname = "itoa"\nversion = "1.0.18"\n',
+        'vendor/itoa/src/lib.rs': 'pub struct Buffer;\n',
+        ...crate('a'),
+      }),
+      entries: ['src/main.rs'], alone: ['src/bin/alone.rs'], at: 'vendor/itoa',
+      otherwise: (dir) => write(dir, crate('b')),
+    },
+  }
+  for (const [name, { project, entries, alone, at, otherwise }] of Object.entries(cases)) {
+    const dir = join(tmp, name)
+    project(dir)
+    const add = () => bundleCommand({ cwd: dir, entries: alone, output: 'out.br', add: true, env: {} })
+    const recorded = () => Bundle.parse(brotliDecompressSync(readFileSync(join(dir, 'out.br'))).toString('utf8')).modules.get(at)
+    await bundleCommand({ cwd: dir, entries, output: 'out.br', env: {} })
+    const { integrity, files } = recorded()
+    t.assert.ok(integrity, name)
+    await add()
+    t.assert.deepStrictEqual([recorded().integrity, Object.keys(recorded().files)], [integrity, Object.keys(files)], `${name}: kept, as installed`)
+    otherwise(dir)
+    await t.assert.rejects(add(), new RegExp(`out\\.br: module '${at}' \\(recorded vs installed\\) integrity mismatch`, 'u'), name)
+  }
+}))
+
 // `stasis add` of `files` in `dir`, with no lock mode from the environment.
 const stasisAdd = (dir, ...files) => spawnSync(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'add', ...files], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
 

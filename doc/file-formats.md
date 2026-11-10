@@ -511,7 +511,9 @@ than ship it, and reading one is refused as well.
   Wherever a build, `--add`, `stasis add` or a run meets a recorded `integrity`
   or `patch`, it is held to how its package was installed: the install record,
   else the lockfile beside its `node_modules`, else, from a lockfile alone,
-  deptree's (a package the build bundles none of too).
+  deptree's (a package the build bundles none of too). `--add` holds a Soldeer,
+  Composer or vendored Cargo dependency's to what a build reads its integrity
+  of, above.
   One recorded otherwise, or that the install names none of, stops it
   (`<file>: module '<dir>' (recorded vs installed) patch mismatch (… vs
   none)`); where nothing tells, it is kept. A value is of the files recorded

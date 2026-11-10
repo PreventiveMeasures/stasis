@@ -36,7 +36,7 @@ import {
   discoverSolidityConfig,
   expandSolidityEntries,
 } from '../loaders/solidity.js'
-import { decodeUtf8 } from '../loaders/solidity-ownership.js'
+import { decodeUtf8, solidityOwnership } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
 import { ancestors, createCargoContext } from '../loaders/cargo.js'
@@ -2364,13 +2364,38 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   return built.stateBuilt ? built : withExtraOf(built, resources)
 }
 
+// The account of how each Soldeer, Composer and vendored Cargo dependency of `modules` is installed
+// at `root`, by its dir, where what a build reads its integrity of tells of it: soldeer.lock's
+// checksum, Composer's record of its dist's shasum, its .cargo-checksum.json's package checksum.
+function archiveAccounts(modules, root, host = diskHost) {
+  let soldeer, composer
+  const told = {
+    soldeer: (dir) => (dir.startsWith('dependencies/') ? (soldeer ??= soldeerLocks(root, solidityOwnership(root, { host }), host)).get(dir.slice('dependencies/'.length)) : undefined),
+    composer: (dir) => (composer ??= loadComposerPackages(root)).find((pkg) => pkg.dir === dir),
+    cargo: (dir) => {
+      const text = readFileSyncMaybe(join(root, dir), '.cargo-checksum.json', 'utf8', host)
+      try {
+        return text === null ? undefined : { integrity: archiveIntegrity('cargo', JSON.parse(text)?.package) }
+      } catch {
+        return undefined
+      }
+    },
+  }
+  const accounts = new Map()
+  for (const [dir, { ecosystem }] of modules) {
+    const account = Object.hasOwn(told, ecosystem) ? told[ecosystem](dir) : undefined
+    if (account) accounts.set(dir, { integrity: account.integrity })
+  }
+  return accounts
+}
+
 // `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers'
 // records name them, each held to the lockfile beside it, whatever its kind (a Solidity import out
 // of node_modules is one), their `accounts` (pinInstalled), and its lockfile with what they attest;
-// `accountsOf(modules)` reads those of other records of the install's packages.
+// `accountsOf(modules)` reads those of other records, of any ecosystem's dependencies installed there.
 function pinnedOf(built, root) {
   const accounts = pinInstalled(built.bundle, root)
-  return { ...built, accounts, accountsOf: (modules) => installedRecords(modules, root), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
+  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
