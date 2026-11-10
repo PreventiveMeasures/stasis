@@ -86,6 +86,11 @@ const captured = (dir, options, files = ['index.js']) => {
   for (const file of files) add(`node_modules/dep/${file}`, file.endsWith('.bin') ? { resource: true } : { format: 'commonjs' })
   return state
 }
+const HOOK = Symbol.for('@exodus/stasis-core/installed')
+const installs = (t) => {
+  t.after(() => delete globalThis[HOOK])
+  return (account) => Object.assign(globalThis, { [HOOK]: (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', account]] : []) })
+}
 const attest = (path, integrity, more) => {
   const br = path.endsWith('.br')
   const artifact = JSON.parse(br ? brotliDecompressSync(readFileSync(path)) : readFileSync(path, 'utf8'))
@@ -129,9 +134,7 @@ test('a record of an integrity and no patch is of a package installed unpatched,
   attest(bundlePath, TARBALL, { patch: PATCHED })
   t.assert.throws(frozen, /bundle module node_modules\/dep \(against the lockfile\) patch mismatch \(none vs /u, 'a bundle recording it patched')
   attest(bundlePath, TARBALL, { patch: undefined })
-  const hook = Symbol.for('@exodus/stasis-core/installed')
-  const install = (account) => Object.assign(globalThis, { [hook]: (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', account]] : []) })
-  t.after(() => delete globalThis[hook])
+  const install = installs(t)
   install({ integrity: TARBALL, patch: PATCHED })
   t.assert.throws(frozen, /stasis\.lock\.json: module 'node_modules\/dep' \(recorded vs installed\) patch mismatch \(none vs /u, 'installed patched')
   t.assert.throws(() => captured(dir, { bundle: 'ignore', lock: 'add' }, ['index.js', 'more.js']), /\(recorded vs installed\) patch mismatch \(none vs /u, 'nor added to')
@@ -172,9 +175,8 @@ test('a split bundle\'s halves and a sidecar agree on what they alone attest of 
   const parent = new State(dir, { scope: 'full', ...split, bundle: 'load', lock: 'ignore' })
   const writing = captured(dir, { parent, bundle: 'add', lock: 'ignore', bundleFile: at('side2.br'), claim: false }, ['more.js'])
   t.assert.throws(() => writing.write(), /its integrity is recorded of the files it was read with, not of node_modules\/dep\/more\.js/u, 'a writing sidecar\'s own capture')
-  const hook = Symbol.for('@exodus/stasis-core/installed')
-  const install = (integrity) => Object.assign(globalThis, { [hook]: (modules) => new Map(modules.has('node_modules/dep') ? [['node_modules/dep', { integrity, installed: true }]] : []) })
-  t.after(() => delete globalThis[hook])
+  const installAt = installs(t)
+  const install = (integrity) => installAt({ integrity, installed: true })
   install(OTHER_TARBALL)
   t.assert.throws(loaded, /code\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u)
   install(TARBALL)

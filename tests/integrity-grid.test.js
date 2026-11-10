@@ -54,7 +54,14 @@ const mode = (lock) => ({ env: { ...process.env, EXODUS_STASIS_LOCK: lock } })
 const build = (dir, options = {}) => bundleCommand({ cwd: dir, entries: ['index.js'], output: 'out.br', ...options })
 const recordOf = (dir, file = 'out.br', at = 'node_modules/reg') => JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))).toString('utf8')).modules[at]
 // `stasis run` of `entry` in `dir`, with these flags and no lock mode from the environment.
-const stasisRun = (dir, flags, entry = 'index.js') => spawnSync(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'run', ...flags, entry], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+const stasis = (dir, ...args) => spawnSync(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+const stasisRun = (dir, flags, entry = 'index.js') => stasis(dir, 'run', ...flags, entry)
+const stasisAdd = (dir, ...files) => stasis(dir, 'add', ...files)
+function editBundle(dir, file, edit) {
+  const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(dir, file))))
+  edit(bundle.modules['node_modules/reg'])
+  writeFileSync(join(dir, file), brotliCompressSync(JSON.stringify(bundle)))
+}
 
 test('stasis bundle and stasis run refuse what stasis.lock.json records otherwise than the install, which lock = ignore leaves and replace rewrites', withTmp(async (t, dir) => {
   const integrity = /stasis\.lock\.json: module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u
@@ -205,9 +212,9 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
   for (const [name, { project, entries, alone, at, otherwise }] of Object.entries(cases)) {
     const dir = join(tmp, name)
     project(dir)
-    const add = () => bundleCommand({ cwd: dir, entries: alone, output: 'out.br', add: true, env: {} })
+    const add = () => build(dir, { entries: alone, add: true, env: {} })
     const recorded = () => Bundle.parse(brotliDecompressSync(readFileSync(join(dir, 'out.br'))).toString('utf8')).modules.get(at)
-    await bundleCommand({ cwd: dir, entries, output: 'out.br', env: {} })
+    await build(dir, { entries, env: {} })
     const { integrity, files } = recorded()
     t.assert.ok(integrity, name)
     await add()
@@ -216,9 +223,6 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
     await t.assert.rejects(add(), new RegExp(`out\\.br: module '${at}' \\(recorded vs installed\\) integrity mismatch`, 'u'), name)
   }
 }))
-
-// `stasis add` of `files` in `dir`, with no lock mode from the environment.
-const stasisAdd = (dir, ...files) => spawnSync(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'add', ...files], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
 
 test('stasis add holds what the bundle and stasis.lock.json record to the install, and to each other, and adds a file as its install record names it', withTmp(async (t, dir) => {
   npmProject(dir)
@@ -243,11 +247,11 @@ test('stasis add holds what the bundle and stasis.lock.json record to the instal
     t.assert.match(refused.stderr, new RegExp(`stasis\\.code\\.br: module 'node_modules/reg' \\(recorded vs ${of}\\) integrity mismatch`, 'u'), label)
     t.assert.deepStrictEqual([readFileSync(join(dir, code)), lockText(dir)], [bundle, lock], `${label}: nothing written`)
   }
-  for (const [label, options, pattern] of [['locked alone', { hidden: false }, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files, not of 'node_modules\/reg\/more\.js' the other adds/u], ['nothing tells', NOTHING_TELLS, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files/u]]) {
+  for (const [label, options] of [['locked alone', { hidden: false }], ['nothing tells', NOTHING_TELLS]]) {
     restore()
     npmProject(dir, options)
     t.assert.equal(stasisAdd(dir, 'own.js').status, 0, `${label}: kept as recorded`)
-    t.assert.match(stasisAdd(dir, 'node_modules/reg/more.js').stderr, pattern, `${label}: no file of it added`)
+    t.assert.match(stasisAdd(dir, 'node_modules/reg/more.js').stderr, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files, not of 'node_modules\/reg\/more\.js' the other adds/u, `${label}: no file of it added`)
   }
   restore()
   editLock(dir, (record) => { record.integrity = OTHER })
@@ -270,9 +274,7 @@ test("stasis add holds a split bundle's other half too, and adds to one half as 
   t.assert.ok(!existsSync(join(dir, 'res.br')), 'nothing written')
   npmProject(dir)
   for (const [label, integrity] of [['as the other half attests it', SRI], ['of none, as the other half', undefined]]) {
-    const code = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'code.br'))))
-    code.modules['node_modules/reg'].integrity = integrity
-    writeFileSync(join(dir, 'code.br'), brotliCompressSync(JSON.stringify(code)))
+    editBundle(dir, 'code.br', (record) => { record.integrity = integrity })
     rmSync(join(dir, 'res.br'), { force: true })
     t.assert.equal(add('data.bin').status, 0, label)
     t.assert.deepStrictEqual([recordOf(dir, 'res.br').integrity, Object.keys(recordOf(dir, 'res.br').files)], [integrity, ['data.bin']], label)
@@ -296,9 +298,7 @@ test("a build held to a stasis.lock.json recording more of a package's files att
   const run = () => stasisRun(dir, ['--lock=frozen', '--bundle=load'])
   t.assert.equal(run().status, 0, 'run: as installed')
   for (const [field, more] of [['integrity', { integrity: OTHER }], ['patch', { integrity: SRI, patch: PATCHED }]]) {
-    const bundle = JSON.parse(brotliDecompressSync(readFileSync(join(dir, 'stasis.code.br'))))
-    Object.assign(bundle.modules['node_modules/reg'], more)
-    writeFileSync(join(dir, 'stasis.code.br'), brotliCompressSync(JSON.stringify(bundle)))
+    editBundle(dir, 'stasis.code.br', (record) => Object.assign(record, more))
     const refused = run()
     t.assert.notEqual(refused.status, 0, field)
     t.assert.match(refused.stderr, new RegExp(`stasis\\.code\\.br: module 'node_modules/reg' \\(recorded vs installed\\) ${field} mismatch`, 'u'), field)

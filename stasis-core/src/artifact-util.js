@@ -229,6 +229,10 @@ export const moduleInfo = (info) => {
 // on: its tarball's integrity, and the patch pnpm applied.
 export const ATTESTED_METADATA = ['integrity', 'patch']
 
+// Whether `record` attests any of it; and `record` attesting what `from` does, in place of its own.
+export const attestsAny = (record) => ATTESTED_METADATA.some((field) => record[field] !== undefined)
+export const withAttestedOf = (record, from) => moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, from[field]])) })
+
 // What `record` attests of `field`: its value; of the patch of one recording an integrity and none,
 // null (installed unpatched: the two are recorded of one install); undefined where it tells nothing.
 export const attestedOf = (record, field) => record[field] ?? (field === 'patch' && record.integrity !== undefined ? null : undefined)

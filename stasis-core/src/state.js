@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, INSTALLED, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, attestsAny, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -344,7 +344,7 @@ export class State {
   }
 
   #installed(modules) {
-    return (modules.size > 0 && globalThis[INSTALLED]?.(modules, this.root)) || new Map()
+    return installedAccounts(modules, this.root)
   }
 
   // ATTESTED_METADATA absorbed of the artifact at `label`, and what each bundle attests, taken into
@@ -361,7 +361,7 @@ export class State {
       if (beyond === undefined) this.modules.set(dir, moduleInfo({ ...module, ...alone }))
       else assert.ok(!this.config.writeBundle || Object.keys(alone).length === 0, `bundle module ${dir} ${Object.keys(alone)[0]} is recorded of its files, not of '${moduleFileKey(dir, beyond)}' its record holds: record it anew (lock = replace)`)
     }
-    const attested = new Map([...this.modules].filter(([, module]) => ATTESTED_METADATA.some((field) => module[field] !== undefined)))
+    const attested = new Map([...this.modules].filter(([, module]) => attestsAny(module)))
     for (const [dir, module] of attested) if (!files.has(dir)) files.set(dir, new Set(Object.keys(module.files)))
     const accounts = this.#installed(new Map([...bundles, ...attested]))
     heldToAccounts(attested, accounts, `${label}: `)
@@ -374,7 +374,7 @@ export class State {
   #absorbBundleRecord(dir, info, record, what) {
     const { dirs, files, bundles } = this.#absorbed
     dirs.add(dir)
-    if (ATTESTED_METADATA.some((field) => info[field] !== undefined)) {
+    if (attestsAny(info)) {
       this.#attestedByBundle.add(dir)
       const known = bundles.get(dir)
       bundles.set(dir, known === undefined ? info : mergeModuleMaps(new Map([[dir, known]]), new Map([[dir, info]]), 'bundle').get(dir))
@@ -384,10 +384,9 @@ export class State {
     }
     // One attesting none of what the record took already (a sidecar's, after its parent's) adds no
     // file to it where its files are the record's too: the value was recorded without them.
-    for (const field of this.config.writeBundle && record ? ATTESTED_METADATA : []) {
-      const added = record[field] !== undefined && info[field] === undefined && Object.keys(info.files).find((rel) => !(files.get(dir)?.has(rel) ?? Object.hasOwn(record.files, rel)))
-      if (added) assert.fail(`bundle: module '${dir}' ${field} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
-    }
+    const lacked = this.config.writeBundle && record ? ATTESTED_METADATA.find((field) => record[field] !== undefined && info[field] === undefined) : undefined
+    const added = lacked === undefined ? undefined : Object.keys(info.files).find((rel) => !(files.get(dir)?.has(rel) ?? Object.hasOwn(record.files, rel)))
+    if (added !== undefined) assert.fail(`bundle: module '${dir}' ${lacked} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
     // What a bundle alone attests is the record's once all are absorbed, where they cover its files (#holdToInstalled).
     const alone = Object.fromEntries(ATTESTED_METADATA.filter((field) => record?.[field] === undefined).map((field) => [field, undefined]))
     return moduleInfo(record === undefined ? { ...info, ...alone, files: Object.create(null) } : { ...withMetadataOf(record, info, what), ...alone })

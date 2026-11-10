@@ -20,7 +20,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { ATTESTED_METADATA, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withMetadataOf } from '@exodus/stasis-core/util'
+import { attestsAny, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -2367,13 +2367,13 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
 // The account of how each Soldeer, Composer and vendored Cargo dependency of `modules` is installed
 // at `root`, by its dir, where what a build reads its integrity of tells of it: soldeer.lock's
 // checksum, Composer's record of its dist's shasum, its .cargo-checksum.json's package checksum.
-function archiveAccounts(modules, root, host = diskHost) {
+function archiveAccounts(modules, root) {
   let soldeer, composer
   const told = {
-    soldeer: (dir) => (dir.startsWith('dependencies/') ? (soldeer ??= soldeerLocks(root, solidityOwnership(root, { host }), host)).get(dir.slice('dependencies/'.length)) : undefined),
+    soldeer: (dir) => (dir.startsWith('dependencies/') ? (soldeer ??= soldeerLocks(root, solidityOwnership(root), diskHost)).get(dir.slice('dependencies/'.length)) : undefined),
     composer: (dir) => (composer ??= loadComposerPackages(root)).find((pkg) => pkg.dir === dir),
     cargo: (dir) => {
-      const text = readFileSyncMaybe(join(root, dir), '.cargo-checksum.json', 'utf8', host)
+      const text = readFileSyncMaybe(join(root, dir), '.cargo-checksum.json', 'utf8')
       try {
         return text === null ? undefined : { integrity: archiveIntegrity('cargo', JSON.parse(text)?.package) }
       } catch {
@@ -2389,13 +2389,13 @@ function archiveAccounts(modules, root, host = diskHost) {
   return accounts
 }
 
-// `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers'
-// records name them, each held to the lockfile beside it, whatever its kind (a Solidity import out
-// of node_modules is one), their `accounts` (pinInstalled), and its lockfile with what they attest;
-// `accountsOf(modules)` reads those of other records, of any ecosystem's dependencies installed there.
+// `built` (of disk builds rooted at `root`) with its npm dependencies as their package managers' records
+// name them, each held to the lockfile beside it, whatever its kind (a Solidity import out of node_modules
+// is one); their `accounts` (`accountsOf(modules)`: any other records'), and its lockfile attesting as they do.
 function pinnedOf(built, root) {
-  const accounts = pinInstalled(built.bundle, root)
-  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
+  const read = { stores: new Map(), layouts: new Map() }
+  const accounts = pinInstalled(built.bundle, root, diskHost, read)
+  return { ...built, accounts, accountsOf: (modules) => new Map([...archiveAccounts(modules, root), ...installedRecords(modules, root, diskHost, read)]), ...(built.lockfile && { lockfile: () => withAttested(built.lockfile(), built.bundle) }) }
 }
 
 // Several builds' bundles (and lockfiles) as one, the i-th of `builts` built of `builds[i]` and
@@ -2750,8 +2750,7 @@ function withAttested(to, from) {
   for (const [dir, info] of to.modules) {
     const pinned = from.modules.get(dir)
     if (pinned === undefined) continue
-    const attested = Object.fromEntries(ATTESTED_METADATA.map((field) => [field, pinned[field]]))
-    to.modules.set(dir, moduleInfo({ ...info, ...attested }))
+    to.modules.set(dir, withAttestedOf(info, pinned))
   }
   return to
 }
@@ -2897,7 +2896,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     // What it carries already is held to the lockfile too, and to how its packages are installed,
     // those this build doesn't bundle read anew: as is what the lockfile there records, written again.
     const heldToInstall = (artifact, label) => {
-      const kept = new Map([...artifact.modules].filter(([dir, info]) => !built.bundle.modules.has(dir) && ATTESTED_METADATA.some((field) => info[field] !== undefined)))
+      const kept = new Map([...artifact.modules].filter(([dir, info]) => !built.bundle.modules.has(dir) && attestsAny(info)))
       heldToAccounts(artifact.modules, new Map([...built.accountsOf(kept), ...built.accounts]), `${label}: `)
     }
     built.held?.hold(deferredLockfile(existing))

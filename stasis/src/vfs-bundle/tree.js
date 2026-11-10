@@ -461,13 +461,14 @@ async function buildTree({ packageManager, pm, os, cpu, libc, client, cache, laz
   }
   cleanAll()
   const lockText = pm.integrities && readText(view, pm.lockfile)
+  let locked // what it locks, parsed once
   return {
     root,
     vfs: built.vfs,
     projects,
     stats: built.stats,
     installed: built.installed,
-    ...pm.integrities && { integrities: () => pm.integrities(lockText) },
+    ...pm.integrities && { integrities: () => (locked ??= pm.integrities(lockText)) },
     packageManager,
     packageManagerVersion: taken,
     ...lazy ? lazyTree(built, cleanAll) : {},
@@ -769,13 +770,13 @@ const githubRoot = (url) => {
 // An npm one's tarball integrity where its lockfile locks it, and its patch. -> their accounts, by dir.
 export function pinFromTree(bundle, root, tree) {
   const accounts = treeAccounts(bundle.modules, root, tree)
-  for (const [dir, { repo, integrity, patch }] of accounts) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...(repo && { repo }), ...(integrity && { integrity }), ...(patch && { patch }) })
+  for (const [dir, metadata] of accounts) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
   return accounts
 }
 
 // How the tree installs each of `modules` (records by dir, paths from `root`) it installs, as
-// installedRecords tells an install's: its `repo`, and its archive's integrity and patch, each
-// undefined for none (an npm tarball's, where its lockfile locks it; a Soldeer zip's checksum).
+// installedRecords tells an install's: its `repo`, and its archive's integrity and patch (an npm
+// tarball's, where its lockfile locks it; a Soldeer zip's checksum).
 export function treeAccounts(modules, root, tree) {
   // A forest's trees apart, each as its own package manager installs it.
   if (tree.trees !== undefined) return new Map(tree.trees.flatMap((one) => [...treeAccounts(modules, root, one)]))
@@ -790,8 +791,7 @@ export function treeAccounts(modules, root, tree) {
     const pkg = byDir.get(dir)
     if (pkg === undefined) continue
     const at = isValidRepoField('commit', pkg.commit) ? info.repo ?? githubRoot(pkg.git) : undefined
-    const { repo, integrity, patch } = installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: integrityOf(pkg), patchHash: pkg.patch?.hash })
-    accounts.set(dir, { ...(repo && { repo }), integrity, patch })
+    accounts.set(dir, installedMetadata(dir, info.ecosystem, { repo: at && { ...at, commit: pkg.commit }, integrity: integrityOf(pkg), patchHash: pkg.patch?.hash }))
   }
   return accounts
 }

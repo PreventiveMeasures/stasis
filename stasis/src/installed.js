@@ -332,8 +332,8 @@ export function installedRecords(modules, root, host = diskHost, { stores = new 
 }
 
 // `bundle`'s npm dependencies with what their install records name. -> their accounts (installedRecords).
-export function pinInstalled(bundle, root, host = diskHost) {
-  const accounts = installedRecords(bundle.modules, root, host)
+export function pinInstalled(bundle, root, host = diskHost, cache = {}) {
+  const accounts = installedRecords(bundle.modules, root, host, cache)
   for (const [dir, { locked, ...metadata }] of accounts) if (!locked) bundle.modules.set(dir, { ...bundle.modules.get(dir), ...metadata })
   return accounts
 }

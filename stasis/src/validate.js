@@ -34,7 +34,7 @@ import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, parse as parsePath, posix, relative, sep } from 'node:path'
 
-import { EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
+import { EMPTY_MODULE_PATH, archiveIntegrity, assertAttested, attestedOf, dependencyEcosystem, hasNodeModulesSegment, integrityHex, isStatFormat, moduleFileKey, parseLockfilesOption, sha512Of } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { unpack } from '@preventive/archive/tar.js'
 import { getCrate } from '@preventive/upstream/cargo.js'
@@ -640,19 +640,18 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
     // What its copies here record (another lockfile's tree's are held apart), held to what the lockfile
     // locks: an integrity, to the one it locks its archive with, or, its registry's locked with none, to
     // the tarball fetched with it; a patch, to the one it locks, npm's and yarn's none (they patch nothing).
-    const recordedBy = (by) => new Set(dirs.filter((dir) => by.has(dir)).map((dir) => by.get(dir)))
-    const [recordedIntegrity, otherIntegrity] = recordedBy(pkg.integrities)
+    const recordedBy = (by) => new Set(dirs.map(by).filter((value) => value !== undefined))
+    const [recordedIntegrity, otherIntegrity] = recordedBy((dir) => pkg.integrities.get(dir))
     if (otherIntegrity !== undefined) return fails('integrity-conflict')
     const fetchedWith = lock?.from === 'registry' && lock.integrity === undefined && FETCHED.has(pkg.ecosystem)
     if (recordedIntegrity !== undefined && lock !== undefined && !fetchedWith && lock.integrity !== recordedIntegrity) return fails('integrity-not-locked')
-    // A copy recording an integrity and no patch records it installed unpatched (null): undefined where none tells.
-    const [recordedPatch, conflicting] = new Set(dirs.filter((dir) => pkg.recorded.has(dir) || pkg.integrities.has(dir)).map((dir) => pkg.recorded.get(dir) ?? null))
+    // Each copy's patch as it attests it: null, unpatched, of one recording an integrity and none.
+    const [recordedPatch, conflicting] = recordedBy((dir) => attestedOf({ integrity: pkg.integrities.get(dir), patch: pkg.recorded.get(dir) }, 'patch'))
     if (conflicting !== undefined) return fails('patch-conflict')
-    const recordedHash = recordedPatch ?? undefined
     const lockedPatch = pkg.ecosystem === 'npm' ? locked?.of(pkg.name, pkg.version) : undefined
     const installedPatch = lockedPatch === undefined && locked?.unpatched ? null : lockedPatch
     if (recordedPatch !== undefined && installedPatch !== undefined && (installedPatch?.hash ?? null) !== recordedPatch) {
-      return recordedHash === undefined ? fails('patch-not-recorded') : fails('patch-not-locked', { patch: { hash: recordedHash, recorded: true } })
+      return recordedPatch === null ? fails('patch-not-recorded') : fails('patch-not-locked', { patch: { hash: recordedPatch, recorded: true } })
     }
     if (lock?.from === 'git' && !(lock.at && locked.git)) return unverified('git')
     // A Foundry `lib/` submodule's copies, each held to the repository it records, at the commit the
@@ -690,7 +689,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       else if (lock?.from === 'local') candidates = await Promise.all(lock.directories.map((dir) => locked.tree(dir)))
       else {
         published = lock?.from === 'git' ? await locked.git(lock.at) : await fetch(pkg.ecosystem, pkg.name, pkg.version, lock?.integrity ?? recordedIntegrity)
-        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedHash) : {})
+        ;({ patch, patched, unverified: unverifiedPatch = false } = pkg.ecosystem === 'npm' && recordedPatch !== null ? await patchOf(bundled, pkg, published, locked, verdicts, recordedPatch) : {})
         candidates = patched && !unverifiedPatch ? [patched, published] : [published]
       }
     } catch (error) {
@@ -745,7 +744,7 @@ export async function validateBundle(plan, own, { fetch = fetchPackage, locked: 
       if (status === 'unverified') why = aliased.length > 0 ? { reason: 'alias-unverified', at: aliased[0] } : patch?.error ? {} : { reason: lock?.from === 'git' ? 'git-built' : 'patch-unverified' }
       tellPackage(status, {
         ...why,
-        ...(patch && { patch: { ...patch, ...(recordedHash !== undefined && { recorded: true }), ...(patched && status === 'valid' && { applied: asPatched > 0 }) } }),
+        ...(patch && { patch: { ...patch, ...(recordedPatch !== undefined && { recorded: true }), ...(patched && status === 'valid' && { applied: asPatched > 0 }) } }),
         ...(lock?.from === 'local' && { directory: lock.directories[0] }),
       })
     }

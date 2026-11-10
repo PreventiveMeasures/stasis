@@ -157,7 +157,7 @@ test("stasis bundle --deptree --add holds what the bundle there records to the t
   writeFileSync(join(checkout, 'alone', 'Alone.sol'), 'pragma solidity ^0.8.20;\n\ncontract Alone {}\n')
   t.mock.method(console, 'warn', () => {})
   const LIB = 'dependencies/stasis-sol-lib-1.0.0'
-  const add = (entries = ENTRIES) => bundleCommand({ cwd: checkout, entries, deptree: true, env: {}, output: 'out.br', add: true })
+  const add = (entries = ENTRIES, output = 'out.br') => bundleCommand({ cwd: checkout, entries, deptree: true, env: {}, output, add: true })
   const read = () => JSON.parse(brotliDecompressSync(readFileSync(join(checkout, 'out.br'))))
   await add()
   const { integrity } = read().sources[LIB]
@@ -169,7 +169,7 @@ test("stasis bundle --deptree --add holds what the bundle there records to the t
     const other = read()
     other.sources[LIB].integrity = `sha256-${'A'.repeat(43)}=`
     writeFileSync(join(checkout, 'other.br'), brotliCompressSync(JSON.stringify(other)))
-    await t.assert.rejects(bundleCommand({ cwd: checkout, entries, deptree: true, env: {}, output: 'other.br', add: true }), /other\.br: module 'dependencies\/stasis-sol-lib-1\.0\.0' \(recorded vs installed\) integrity mismatch/u, `another: ${entries}`)
+    await t.assert.rejects(add(entries, 'other.br'), /other\.br: module 'dependencies\/stasis-sol-lib-1\.0\.0' \(recorded vs installed\) integrity mismatch/u, `another: ${entries}`)
   }
   /* eslint-enable no-await-in-loop */
 }))
