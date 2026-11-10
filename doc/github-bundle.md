@@ -12,12 +12,12 @@ source it is built from, by the package's `tsconfig.json` `outDir` and
 `rootDir`, as [`stasis bundle`](bundle.md#typescript---typescript) resolves it.
 
 ```sh
-stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir|prefix*suffix) ...]
+stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```
 
 | Flag | Meaning |
 | - | - |
-| `owner/name[/path]` | The repository, and where `/path` is given, a directory or a file in it, or a [pattern](#patterns) of files, as one argument, the first that is no option. A directory is `--directory=path`; a file is an entry of the nearest project above it, and a pattern each file it matches, see [A file's project](#a-files-project). Not with `--github` or `--directory`. |
+| `owner/name[/path]` | The repository, and where `/path` is given, a directory or a file in it, as one argument, the first that is no option. A directory is `--directory=path`; a file is an entry of the nearest project above it, see [A file's project](#a-files-project). Not with `--github` or `--directory`. |
 | `--github=owner/name` | The repository, where `owner/name[/path]` does not give it. Fetched with `GITHUB_TOKEN` where it is set. |
 | `--sha=commit` / `--tag=name` | The commit to bundle, or the one the tag names; one or the other. Default: the default branch's head. |
 | `--directory=path` | With `--github` only: a directory in the repo to bundle, such as a monorepo package. The entries, the lockfile and the bundle's paths are its. |
@@ -275,31 +275,6 @@ nothing else stands in for them, so an empty one is refused. Else:
   and under its source directory (`foundry.toml`'s `src`, else `src/`), but not
   its tests, scripts, mocks, or dependency and build directories.
 
-### Patterns
-
-An entry may be a pattern, `prefix*suffix`: one `*`, in its last segment. It
-stands for the files directly in its directory whose names begin with
-`prefix` and end with `suffix`, sorted, in its place, as though each were
-given:
-
-```sh
-# Where src/ holds a.entry.js, b.entry.js and c.js: as ... src/a.entry.js src/b.entry.js
-stasis github-bundle --github=owner/name 'src/*.entry.js'
-```
-
-- It is matched in the commit's tree, not on the disk: quote it, so that the
-  shell leaves it to `github-bundle`.
-- Its `*` matches any part of a name, none of it too, but not a name's leading
-  `.`: `src/*.js` matches no `src/.eslintrc.js`, and `src/.*` does.
-- It matches files alone: no directory, symlink, or file in a directory below.
-  `**`, a second `*`, and a `*` in a directory (`*/index.js`) are refused, before
-  anything is fetched.
-- One matching no file is refused.
-- Before the tree is fetched, the options are checked for it as for an entry
-  of the kind its suffix names: `src/*.sol` is refused with `--package-manager=pnpm`.
-  One whose suffix names no kind (`src/*`) is checked as the files it matches,
-  once they are known.
-
 The entries `stasis.config.json`'s `entries` names, given or taken by default,
 are built with their options there, as [`stasis bundle`](bundle.md#entry-options-stasisconfigjson)
 builds them: those with different options apart, their bundles merged into one;
@@ -340,22 +315,9 @@ entries given are from there too:
 stasis github-bundle owner/name/packages/api/src/index.js src/worker.js
 ```
 
-A [pattern](#patterns) given as `owner/name/path/to/prefix*suffix` is the files
-it matches, all in its directory, and so all in one project: each is an entry
-of it, as a file given there is, ahead of any entries given. Its project is
-that of a `.sol` file where every file it matches is one, else that of a JS
-file:
-
-```sh
-# Where packages/api has a package.json, and src/ holds a.entry.js and b.entry.js: as
-# stasis github-bundle --github=owner/name --directory=packages/api src/a.entry.js src/b.entry.js
-stasis github-bundle 'owner/name/packages/api/src/*.entry.js'
-```
-
 The directories are told from the commit's tree listings, before the tree is
 fetched. A path that is no file there, a symlink or anything under one, is
-taken as a directory, as `--directory` takes it; a pattern matching no file
-there (a symlink or anything under one matching none) is refused.
+taken as a directory, as `--directory` takes it.
 
 ## Extra files
 
@@ -544,9 +506,8 @@ To generate none for a repo, whoever bundles it:
   `stats.unpacked` the packages unpacked: each one installed, or of a lazy
   tree those unpacked.
 - `buildGitHubBundle` takes `path` in place of `directory`, as the command
-  takes `owner/name/path`: a directory, a file, or a pattern (see
-  [A file's project](#a-files-project)). Its `entries` may be
-  [patterns](#patterns), as the command's are. It returns the `directory` it bundled
+  takes `owner/name/path`: a directory, or a file (see
+  [A file's project](#a-files-project)). It returns the `directory` it bundled
   beside `buildVfsBundle`'s `bundle`, `lockfile`, `stats`, `packageManager`,
   `packageManagers` and `root`: `packageManagers` the package manager of each
   tree laid out, and `packageManager` the one, undefined where
@@ -559,7 +520,7 @@ To generate none for a repo, whoever bundles it:
   detects the one lockfile.
 - `suggestedEntries({ github, ... } | { vfs, ... })` returns the entries the
   command would take without any, of a GitHub repo or a `Vfs`: of a `path` to
-  a file, that file, and of a pattern, the files it matches.
+  a file, that file.
   `buildVfsBundle` takes a project's `stasis.config.json` entries as the
   command does, and every one where it is given none.
 - `setCacheDir(dir)` is where tarballs, zips and trees are cached; the CLI

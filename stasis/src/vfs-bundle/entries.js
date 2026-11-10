@@ -116,42 +116,27 @@ function solidityEntries(host, dir) {
   return [...new Set([...own, ...under('contracts'), ...(src === 'contracts' ? [] : under(src))])]
 }
 
-// An entry pattern: `prefix*suffix`, its one `*` in its last segment (`src/*.abc.js`), standing for
-// the files directly in its directory, but symlinks, whose names begin with `prefix` and end with
-// `suffix`; a name beginning with `.` only where `prefix` does, as a shell's `*` takes it. No other `*`:
-// no `**`, nor one in a directory.
-export const isEntryPattern = (entry) => typeof entry === 'string' && entry.includes('*')
-
-// The pattern `entry` is (isEntryPattern), refused where a `*` of it is not its last segment's one.
-// -> { dir, at, prefix, suffix }: its directory ('.' for none), what each match is spelled after (as
-// the pattern spells its directory), and the two sides of its `*`
+// `prefix*suffix`, one `*` in the last segment, as `{ dir, matches(fileName) }`; null for no pattern.
+// Its `*` takes no leading `.`, as a shell's.
 export function entryPattern(name, entry) {
-  const at = entry.slice(0, entry.lastIndexOf('/') + 1)
-  const [prefix, suffix, ...more] = entry.slice(at.length).split('*')
-  if (at.includes('*') || more.length > 0) throw new Error(`${name}: ${JSON.stringify(entry)}: a pattern holds one *, in its last segment (prefix*suffix)`)
-  return { dir: at === '' ? '.' : at, at, prefix, suffix }
+  if (typeof entry !== 'string' || !entry.includes('*')) return null
+  const dir = entry.slice(0, entry.lastIndexOf('/') + 1)
+  const [prefix, suffix, ...more] = entry.slice(dir.length).split('*')
+  if (dir.includes('*') || more.length > 0) throw new Error(`${name}: ${JSON.stringify(entry)}: a pattern holds one *, in its last segment (prefix*suffix)`)
+  const matches = (file) => file.length >= prefix.length + suffix.length && file.startsWith(prefix) && file.endsWith(suffix) && (prefix !== '' || !file.startsWith('.'))
+  return { dir, matches }
 }
 
-// Whether `pattern` (entryPattern's) matches the file name `file`.
-export const matchesEntryPattern = ({ prefix, suffix }, file) => file.length >= prefix.length + suffix.length && file.startsWith(prefix) && file.endsWith(suffix) && (prefix !== '' || !file.startsWith('.'))
-
-// `entries`, each pattern among them (isEntryPattern) in its place the files it matches in `host`,
-// its directory from `cwd`, sorted, each spelled as the pattern spells its directory; refused where
-// one matches none.
+// Each pattern among `entries` replaced by the files (no symlinks) it matches in `host`, sorted.
 export function expandEntries(name, host, cwd, entries) {
-  if (!Array.isArray(entries) || !entries.some(isEntryPattern)) return entries
+  if (!Array.isArray(entries)) return entries
   return entries.flatMap((entry) => {
-    if (!isEntryPattern(entry)) return [entry]
     const pattern = entryPattern(name, entry)
-    let listing
-    try {
-      listing = host.readdir(posix.resolve(cwd, pattern.dir))
-    } catch {
-      listing = [] // no directory there
-    }
-    const files = listing.filter((dirent) => dirent.isFile() && matchesEntryPattern(pattern, dirent.name)).map((dirent) => dirent.name).toSorted()
+    if (pattern === null) return [entry]
+    const dir = posix.resolve(cwd, pattern.dir)
+    const files = host.stat(dir)?.isDirectory() ? host.readdir(dir).filter((dirent) => dirent.isFile() && pattern.matches(dirent.name)) : []
     if (files.length === 0) throw new Error(`${name}: ${JSON.stringify(entry)} matches no file`)
-    return files.map((file) => `${pattern.at}${file}`)
+    return files.map((dirent) => `${pattern.dir}${dirent.name}`).toSorted()
   })
 }
 
@@ -189,10 +174,8 @@ export function defaultEntries(name, host, dir, packageManagers, options) {
 // decides them: for the package manager given, else for any; over the entries given, else over one
 // of the kind the default ones are. But for what one of them needs of another, which the options of
 // an entry stasis.config.json names may set (`partial`), left to the build, which knows whether it
-// names it; and `lazy`, which the package manager given has to take. An entry pattern
-// (entryPattern's, refused here where it is none) is checked as an entry of the kind its suffix's
-// extension names (`src/*.js` as a JS one), and one whose suffix names none (`src/*`) not at all: the
-// build checks the files it matches. -> the PACKAGE_MANAGERS entry of the one given
+// names it; and `lazy`, which the package manager given has to take. -> the PACKAGE_MANAGERS entry of
+// the one given
 export function checkAhead(name, packageManager, options) {
   checkVersion(name, { packageManager, ...options })
   if (options.lazy !== undefined && typeof options.lazy !== 'boolean') throw new TypeError(`${name}: lazy must be a boolean`)
@@ -206,11 +189,9 @@ export function checkAhead(name, packageManager, options) {
       return error
     }
   }
-  let { entries } = options
-  if (Array.isArray(entries) && entries.some(isEntryPattern)) {
-    const told = entries.filter((entry) => !isEntryPattern(entry) || /\.[^.]+$/u.test(entryPattern(name, entry).suffix))
-    entries = told.length > 0 ? told : undefined
-  }
+  // A pattern is checked as an entry of the kind its extension names, if any (not `src/*`).
+  const told = Array.isArray(options.entries) ? options.entries.filter((entry) => !entryPattern(name, entry) || /^\.[^*]+$/u.test(posix.extname(entry))) : options.entries
+  const entries = told?.length === 0 && options.entries.length > 0 ? undefined : told
   const refusals = entries === undefined ? (pm === undefined ? Object.values(KINDS) : [KINDS[pm.kind]]).map(({ standIn }) => refusal([standIn])) : [refusal(entries)]
   if (!refusals.includes(null)) throw refusals[0]
   return pm

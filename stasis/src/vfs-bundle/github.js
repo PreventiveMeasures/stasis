@@ -7,7 +7,7 @@ import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
 import { vfsFromEntries } from '@preventive/vfs'
 import { buildVfsBundle, configuredLockfiles, debugTimed, prismaClientsOf } from '../cmd/bundle.js'
-import { checkAhead, defaultEntries, entryPattern, expandEntries, isEntryPattern, matchesEntryPattern } from './entries.js'
+import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entries.js'
 import { checkCache, checkTarget, detectPackageManager, installedAlone, listsFile, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
@@ -82,8 +82,7 @@ async function repoFiles(client, { github, sha, where }) {
 }
 
 // Checked as the Bundle checks them, before anything is fetched; a tag's name is upstream's to check,
-// and a `path` is checked as a `directory`, which it may be, but for the `*` of a pattern in it
-// (entryPattern's), refused where it is none.
+// and a `path` is checked as a `directory`, which it may be, but for a pattern's `*`.
 function checkRepo(name, { github, sha, tag, directory, path }) {
   if (github === undefined) throw new Error(`${name}: github is required`)
   if (tag !== undefined && (typeof tag !== 'string' || tag === '')) throw new TypeError(`${name}: tag must be a non-empty string`)
@@ -92,8 +91,7 @@ function checkRepo(name, { github, sha, tag, directory, path }) {
   for (const [key, value] of Object.entries({ github, commit: sha, directory: directory || undefined })) {
     if (value !== undefined && !isValidRepoField(key, value)) throw new Error(`${name}: invalid ${key}: ${JSON.stringify(value)}`)
   }
-  if (path && isEntryPattern(path)) entryPattern(name, path)
-  if (path && !isValidRepoField('directory', isEntryPattern(path) ? path.replace('*', '_') : path)) throw new Error(`${name}: invalid path: ${JSON.stringify(path)}`)
+  if (path && !isValidRepoField('directory', entryPattern(name, path) ? path.replace('*', '_') : path)) throw new Error(`${name}: invalid path: ${JSON.stringify(path)}`)
 }
 
 // The files that make a directory a project's root, for an entry of each kind: a JS project's
@@ -113,20 +111,16 @@ async function listingsOf(list, dirs) {
   }
 }
 
-// `path` in the repo, by `list`'s listings, as `{ directory, entries }`: a file (no symlink) is an
-// entry of the nearest directory at or above it holding one of PROJECT_FILES of its kind, the repo's
-// root (undefined) where none does, and a path from there; and a pattern (entryPattern's), the files
-// it matches there, sorted, which share that directory, refused where it matches none (or the
-// listings can't tell, a symlink on the way); anything else, or what the listings can't tell, is the
-// directory, with no entries.
+// `path` in the repo, by `list`'s listings, as `{ directory, entries }`: a file (no symlink), or those
+// a pattern matches, are entries of the nearest directory at or above them holding one of
+// PROJECT_FILES of their kind, else of the repo's root (undefined); anything else is the directory.
 async function splitPath(list, path, where) {
-  const pattern = isEntryPattern(path) ? entryPattern(where, path) : null
+  const pattern = entryPattern(where, path)
+  const matches = pattern?.matches ?? ((file) => file === posix.basename(path))
   const above = ancestorsOf(path)
   const listings = await listingsOf(list, above)
-  const name = posix.basename(path)
-  const matches = (entry) => entry.type === 'blob' && entry.mode !== SYMLINK && (pattern === null ? entry.path === name : matchesEntryPattern(pattern, entry.path))
-  const names = listings === null ? [] : listings[0].filter(matches).map((entry) => entry.path).toSorted()
-  if (pattern !== null && names.length === 0) throw new Error(`${where}: ${JSON.stringify(path)} matches no file`)
+  const names = (listings?.[0] ?? []).filter((entry) => entry.type === 'blob' && entry.mode !== SYMLINK && matches(entry.path)).map((entry) => entry.path).toSorted()
+  if (names.length === 0 && pattern) throw new Error(`${where}: ${JSON.stringify(path)} matches no file`)
   if (names.length === 0) return { directory: path }
   const files = PROJECT_FILES[names.every((file) => file.endsWith('.sol')) ? 'sol' : 'js']
   const at = listings.findIndex((listing) => listing.some((entry) => files.includes(entry.path) && entry.type === 'blob'))
@@ -187,9 +181,8 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
 // `packageManager` if given, else the one the listings tell, before the tree is fetched, else the
 // tree; `options` are checked for it once it is known. Where the directory's stasis.config.json
 // names its `lockfiles`, a tree is laid out of each and none is told: the whole repo, which they may
-// climb to; `packageManagers` those of the trees. A `path` is the `directory`, or a file in it which is
-// an entry ahead of `options.entries`, or a pattern, the files it matches there (splitPath). Each
-// pattern among the entries is the files it matches in the tree (expandEntries).
+// climb to; `packageManagers` those of the trees. A `path` is the `directory`, or a file or pattern in
+// it, its files entries ahead of `options.entries` (splitPath).
 // -> { vfs, host, cwd, subtree, sha, where, packageManager, packageManagers, directory, entries }
 async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
@@ -230,7 +223,7 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
     subtree = null
     opened = open(await repoFiles(client, { github, sha, where }), directory)
   }
-  if (options.entries !== undefined) options = { ...options, entries: expandEntries(where, opened.host, opened.cwd, options.entries) }
+  options = { ...options, entries: expandEntries(where, opened.host, opened.cwd, options.entries) }
   if (lockfiles === undefined && packageManager === undefined) {
     found = detectPackageManager(where, opened.host, opened.cwd, { os: options.os })
     if (found !== checked) checkAhead(name, found, options)
@@ -255,9 +248,8 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
 // `path`, in place of `directory`, is a path in the repo at the commit: a directory is the
 // `directory`, and a file an entry ahead of `entries`, of the nearest directory at or above it with
 // a package.json (with a foundry.toml or soldeer.toml, for a .sol file), else of the repo's root,
-// which is then the `directory`; a pattern, `prefix*suffix` in its last segment alone, the files it
-// matches there, sorted, as one file is (splitPath). An entry may be such a pattern too, from the
-// `directory`: the files it matches in the tree, sorted, in its place (expandEntries).
+// which is then the `directory` (splitPath). A pattern (entryPattern's), as `path` or an entry, is
+// the files it matches.
 // -> buildVfsBundle's, and the `directory` bundled
 export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
@@ -295,8 +287,7 @@ export async function repoPrismaClients({ github, sha, directory, client }) {
 }
 
 // suggestedEntries of a GitHub repo, `{ github, sha, tag, directory | path, client, packageManager }`,
-// as buildGitHubBundle downloads it: a `path` to a file, that file, and of a pattern, the files it
-// matches.
+// as buildGitHubBundle downloads it: of a `path` to a file or a pattern, its files.
 export async function suggestedRepoEntries(repo, resolution) {
   const tree = await repoTree('suggestedEntries', repo, resolution)
   return tree.entries ?? defaultEntries('suggestedEntries', tree.host, tree.cwd, tree.packageManagers, resolution).entries
