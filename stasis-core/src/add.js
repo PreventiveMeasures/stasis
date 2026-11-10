@@ -28,19 +28,7 @@ function sourceFormat(absFile, content, host, kept) {
   return classifyFormat(absFile, { content })
 }
 
-// File and non-empty package counts of a bundle or lockfile.
-const tally = (artifact) => {
-  let files = 0
-  let packages = 0
-  for (const m of artifact.modules.values()) {
-    const n = Object.keys(m.files).length
-    if (n > 0) {
-      files += n
-      packages += 1
-    }
-  }
-  return { files, packages }
-}
+const fileCount = (artifact) => artifact.modules.values().reduce((n, { files }) => n + Object.keys(files).length, 0)
 
 function readAddConfig(baseDir) {
   const cfg = readJson(join(baseDir, CONFIG_FILE))
@@ -69,14 +57,6 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
   const modules = new Map()
   const formats = new Map()
   const executable = new Set()
-  // `identity`'s name, version, ecosystem, repo and vendored (moduleInfo takes those alone); a later
-  // file's adds the vendored package it is in.
-  const bucketFiles = (dir, identity) => {
-    const bucket = modules.get(dir)
-    identity = buckets.get(dir) ?? identity
-    modules.set(dir, bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity))
-    return modules.get(dir).files
-  }
   const metaFor = packageLookup(baseDir, { host })
 
   for (const [rel, { content, format, executable: isExec }] of files) {
@@ -86,8 +66,14 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
     if (splitNodeModulesPath(rel) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
       throw new Error(`add: no package.json with name+version found for ${rel}`)
     }
-    const [dir, identity] = meta ? [meta.pkgDir, meta] : ['.', { name: workspaceName, version: workspaceVersion }]
-    bucketFiles(dir, identity)[fileInBucket(dir, rel)] = content
+    const dir = meta ? meta.pkgDir : '.'
+    // `identity`'s name, version, ecosystem, repo and vendored (moduleInfo takes those alone); a later
+    // file's adds the vendored package it is in.
+    const identity = buckets.get(dir) ?? meta ?? { name: workspaceName, version: workspaceVersion }
+    const bucket = modules.get(dir)
+    const info = bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity)
+    modules.set(dir, info)
+    info.files[fileInBucket(dir, rel)] = content
     if (format != null) formats.set(rel, format)
     if (isExec) executable.add(rel)
   }
@@ -128,20 +114,18 @@ function existingOf(what, parse) {
 function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
-  let mergedFrom
+  let before = 0
   if (existing) {
     check?.(existing, recordedIn(targetPath))
-    mergedFrom = tally(existing).files
+    before = fileCount(existing)
     bundle = existing.merge(bundle)
   }
-  const { files, packages } = tally(bundle)
-  return {
-    write: () => {
-      mkdirSync(dirname(abs), { recursive: true })
-      writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
-    },
-    counts: { path: targetPath, total: files, packages, added: mergedFrom === undefined ? files : files - mergedFrom },
+  const total = fileCount(bundle)
+  const write = () => {
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, compressBundleText(bundle.serialize(), brotliQuality))
   }
+  return { write, total, added: total - before }
 }
 
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
@@ -149,10 +133,10 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, ex
 // records: the files added were checked as the bundles'.
 function prepareLockfile(lockPath, existing, lockAdd, check) {
   check?.(existing, recordedIn(LOCK_FILE))
-  const before = tally(existing).files
+  const before = fileCount(existing)
   const merged = existing.merge(lockAdd)
-  const total = tally(merged).files
-  return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
+  const total = fileCount(merged)
+  return { write: () => writeFileSync(lockPath, merged.serialize()), total, added: total - before }
 }
 
 // Whether a path (stats undefined when missing) is one of `outputs`: by name, or by dev+inode (a symlink or
@@ -362,28 +346,29 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const attest = heldToInstall(baseDir, [...bundles, [LOCK_FILE, lock]].filter(([, artifact]) => artifact))
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
-    const [existing, companion] = [target, target === bundleFile ? resourcesBundleFile : bundleFile].map((file) => bundles.get(file))
+    const existing = bundles.get(target)
+    const companion = bundles.get(target === bundleFile ? resourcesBundleFile : bundleFile)
     const added = attest(existing, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), companion)
-    const { write, counts } = prepareBundleFile(baseDir, target, added, brotliQuality, check, existing)
+    const { write, total, added: count } = prepareBundleFile(baseDir, target, added, brotliQuality, check, existing)
     writes.push(write)
-    summary.push(`+${counts.added} ${kind} (${counts.total} total) -> ${counts.path}`)
+    summary.push(`+${count} ${kind} (${total} total) -> ${target}`)
   }
+  const allFiles = new Map([...codeFiles, ...resourceFiles])
   if (resourcesBundleFile) {
     planTarget(bundleFile, codeFiles, 'source')
     planTarget(resourcesBundleFile, resourceFiles, 'resource')
   } else {
     const kind = codeFiles.size > 0 && resourceFiles.size > 0 ? 'file' : resourceFiles.size > 0 ? 'resource' : 'source'
-    planTarget(bundleFile, new Map([...codeFiles, ...resourceFiles]), kind)
+    planTarget(bundleFile, allFiles, kind)
   }
 
   // One lockfile attests both split targets, so it takes every packed file's integrity (code + resources):
   // the bundle's shape, each file's content swapped for its on-disk integrity, so `--lock=frozen` matches.
   if (hasLock) {
-    const allFiles = new Map([...codeFiles, ...resourceFiles])
     const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
-    const { write, counts } = prepareLockfile(lockPath, lock, attest(lock, lockAdd), check)
+    const { write, total, added } = prepareLockfile(lockPath, lock, attest(lock, lockAdd), check)
     writes.push(write)
-    summary.push(`+${counts.added} (${counts.total} total) -> ${LOCK_FILE}`)
+    summary.push(`+${added} (${total} total) -> ${LOCK_FILE}`)
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 
