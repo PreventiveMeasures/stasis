@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { NO_ENTRY, invalidPackageConfig, lexists, packageJSONStat, packageJSONText, parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { byName } from '@exodus/stasis-core/host'
-import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf } from '@exodus/stasis-core/util'
+import { archiveIntegrity, CONFIG_FILE, hasNodeModulesSegment, isPathWithin, isPlainObject, posixPathEscapes, tarballIntegrityOf, upsert } from '@exodus/stasis-core/util'
 import { buildNpmTree, findNpmWorkspaces } from '@preventive/deptree/npm.js'
 import { buildPnpmTree, findPnpmProjects } from '@preventive/deptree/pnpm.js'
 import { LockfileError, TomlError, buildSoldeerTree } from '@preventive/deptree/soldeer.js'
@@ -610,7 +610,7 @@ function forestOf(trees) {
       const by = new Map()
       for (const dir of asked) {
         const [member, own] = packages.get(dir)
-        const sets = by.get(member) ?? by.set(member, { asked: new Set(), read: new Set() }).get(member)
+        const sets = upsert(by, member, () => ({ asked: new Set(), read: new Set() }))
         sets.asked.add(own)
         if (read.has(dir)) sets.read.add(own)
       }

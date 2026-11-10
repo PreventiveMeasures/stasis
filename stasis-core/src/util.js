@@ -27,6 +27,8 @@ const NODE_EXT_FORMATS = new Map([
   ['mts', 'module-typescript'], ['cts', 'commonjs-typescript'],
 ])
 const JS_UNRESOLVED_EXTS = new Set(['js', 'ts', 'jsx', 'tsx'])
+// The extensions of the JS and TS files a build takes as entries and scans as scripts.
+export const JS_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESOLVED_EXTS])
 // The format the name of the file `path` alone gives it, as Node loads it: .json, .mjs, .cjs, .mts and
 // .cts are each one format whatever the file holds or its package declares, spelled as Node spells them

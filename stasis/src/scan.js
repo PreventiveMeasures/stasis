@@ -3,12 +3,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
+import { classifyExtension, classifyFormat, JS_EXTENSIONS, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
 import { inNodeModules, isSourceFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
-import { untouchedMemo } from './vfs-bundle/lazy.js'
+import { hostMemo } from './vfs-bundle/lazy.js'
 import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from './flow.js'
 
 // Static require/import graph walker: parses source, never loads or executes user code.
@@ -17,8 +17,7 @@ import { FLOW_EXTS, hasFlowPragma, stripFlowTypes } from './flow.js'
 
 // .jsx/.tsx need no flag: oxc parses them as JSX/TSX purely from the filename, so a reached one
 // -- e.g. a package whose React Native entry is src/index.tsx -- is parsed and carried like any .ts.
-const SCRIPT_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
-const RESOLVABLE_EXTS = new Set([...SCRIPT_EXTS, '.json'])
+const RESOLVABLE_EXTS = new Set([...JS_EXTENSIONS, '.json'])
 // Whether a file of extension `ext` (`.mjs`) is code a bundle carries as such.
 export const isResolvableExt = (ext) => RESOLVABLE_EXTS.has(ext)
 // The extensions whose name can't tell whether they hold JSX, parsed with JSX enabled only under
@@ -205,7 +204,7 @@ export class Scan {
     this.keepsTypeImports = keepsTypeImports
     this.host = host
     this.memo = memo
-    this.#types = untouchedMemo(host.touches, { retouch: host.retouch })
+    this.#types = hostMemo(host)
   }
 
   // The `type` of each package.json the files scanned are under, read once (formatForFile's), as
@@ -479,7 +478,7 @@ export class Scan {
       this.files.set(url, { format: null, edges: [], resource: true })
       return
     }
-    if (!SCRIPT_EXTS.has(ext)) {
+    if (!JS_EXTENSIONS.has(ext)) {
       this.files.set(url, { format: null, edges: [] })
       return
     }

@@ -2,7 +2,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve as reso
 
 import { isTypeDeclaration, memoized, relativeEscapes } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { untouchedMemo } from './vfs-bundle/lazy.js'
+import { hostMemo } from './vfs-bundle/lazy.js'
 
 // tsc-style module resolution (`--typescript`), shared by scan.js's Node resolver and resolve-fields.js's
 // field resolver: where normal resolution misses and tsc would land on an on-disk TypeScript source, the
@@ -171,7 +171,7 @@ function leniently(lenient, read) {
 // tsconfigOutputs, cached as a lazy tree allows (untouchedMemo). `lenient` is for builds that only
 // hint, where a tsconfig.json that does not load maps nothing rather than failing the build.
 export function tsconfigOutputsOf({ host = diskHost, lenient = false } = {}) {
-  const layouts = untouchedMemo(host.touches, { retouch: host.retouch })
+  const layouts = hostMemo(host)
   return (pkgDir) => {
     const dir = realpathOr(pkgDir, host)
     return layouts(dir, () => leniently(lenient, () => tsconfigOutputs(dir, host)))

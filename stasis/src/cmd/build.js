@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { CONFIG_FILE, isPlainObject, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -21,7 +21,6 @@ import { writeFile } from './output.js'
 
 export { bundleFromLockfile }
 
-const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 
 // Allowlist (not blocklist) of per-file formats `stasis build` accepts, so a bundle
 // format added later fails closed here rather than in a cryptic esbuild error.
@@ -123,7 +122,7 @@ function reachableFiles(entry, imports) {
 // it must be buildable. A non-JS file elsewhere (another entry, or a `stasis add` attachment)
 // isn't reached, so it doesn't block the build. imports/formats are null on a legacy lockfile.
 function assertBuildableEntry(artifact, entry, label) {
-  if (!JS_EXTS.has(extname(entry))) {
+  if (!JS_EXTENSIONS.has(extname(entry))) {
     throw new Error(`stasis build only builds JavaScript/TypeScript entries (esbuild); got non-JS entry '${entry}' in ${label}`)
   }
   const reachable = reachableFiles(entry, artifact.imports ?? new Map())

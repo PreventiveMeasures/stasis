@@ -20,7 +20,7 @@ import { installedRecords, pinInstalled } from '../installed.js'
 import { State } from '@exodus/stasis-core/state'
 import { bundledIntegrity, readFileSyncMaybe } from '@exodus/stasis-core/state-util'
 import { checkoutCommit, detectRepo, normalizeEntries, packageLookup, packageJSONStat, packageType, parseGithubRepository, readJson, readModuleManifest, readPackageJson, readRegularFileOrNull, scopeManifestOf } from '@exodus/stasis-core/bundle-util'
-import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, LOCK_FILE, memoized, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
+import { attestsAny, BUNDLE_FILE, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, classifyFormat, dependencyEcosystem, fileInBucket, archiveIntegrity, hasNodeModulesSegment, heldToAccounts, isDotEnvFile, isPathWithin, isPlainObject, JS_EXTENSIONS, LOCK_FILE, memoized, moduleFileKey, moduleFileKeys, moduleInfo, nestedMap, nodeExtFormat, observeExecutable, parseExtraOption, parseLockfilesOption, parseResourcesOption, posixPathEscapes, relativeEscapes, splitNodeModulesPath, toPosix, upsert, withAttestedOf, withMetadataOf } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { linksOn, parsePolicy, recordedIn } from '@exodus/stasis-core/policy'
 import { parseBundleBytes } from '@exodus/stasis-core/brotli'
@@ -39,7 +39,8 @@ import {
 import { decodeUtf8, solidityOwnership } from '../loaders/solidity-ownership.js'
 import { buildBashTree, collectBashFilesFromDisk } from '../loaders/bash.js'
 import { boundaryOf, collectRustBundle, withinRealDir } from '../loaders/rust.js'
-import { ancestors, createCargoContext } from '../loaders/cargo.js'
+import { createCargoContext } from '../loaders/cargo.js'
+import { ancestors } from '../loaders/paths.js'
 import {
   bucketizePhpSources,
   buildPhpTree,
@@ -51,7 +52,6 @@ import {
 import { bundledSummary, lockedSummary, lockfileOnlyError, packagesLabel, unpackedSummary, writeBundle, writeFile } from './output.js'
 import { withNpmToken } from './tokens.js'
 
-const JS_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 const BASH_EXTS = new Set(['.sh', '.bash'])
 const RUST_EXTS = new Set(['.rs'])
 const nonEmpty = (list) => Array.isArray(list) && list.length > 0
@@ -698,7 +698,7 @@ function typescriptPathsFor(typescript, baseDir, tsconfig, host, env) {
 // runs; TS is stored verbatim). `innermostRoot` roots it at the innermost package holding every file
 // reached; `extra` adds the config's `extra` files; `memo` keeps scans across a lazy tree's rounds.
 export async function buildJsBundle({ cwd = process.cwd(), env = process.env, entries, scope, conditions = [], jsx = false, flow = false, typescript = false, tsconfig, resources, define, packageJSON = false, host = diskHost, innermostRoot = false, extra = false, outputsAt = () => [], memo, generated } = {}) {
-  assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTS.has(extname(e)), 'JS/TS file')
+  assertEntries('buildJsBundle', entries, '.js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx file', (e) => JS_EXTENSIONS.has(extname(e)), 'JS/TS file')
   const baseDir = resolve(cwd)
   const absEntries = entries.map((e) => resolve(baseDir, e))
 
@@ -1098,7 +1098,7 @@ function readLists(program, lists, entry) {
   const read = (node, type, depth) => {
     if (!node || depth > MAX_LIST_DEPTH) return
     const key = `${type}${depth}`
-    const keys = seen.get(node) ?? seen.set(node, new Set()).get(node)
+    const keys = upsert(seen, node, () => new Set())
     if (keys.has(key)) return
     keys.add(key)
     if (node.type === 'ArrayExpression') {
@@ -1345,7 +1345,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     return fromRoot.get(abs)
   }
   const pathsOf = memo ? nestedMap(memo, 'file paths') : new Map()
-  const pathOf = (url) => pathsOf.get(url) ?? pathsOf.set(url, fileURLToPath(url)).get(url)
+  const pathOf = (url) => upsert(pathsOf, url, () => fileURLToPath(url))
   const toRel = (abs) => {
     const rel = relWithin(abs)
     if (rel === null) throw new Error(`Bundle would reach a file outside the project root: ${abs}`)
@@ -1578,9 +1578,9 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           for (const e of info.edges) if (e.child) frontier.push(e.child)
           const file = pathOf(url)
           const rel = toRel(file)
-          if (info.resource || !JS_EXTS.has(extname(file))) continue
+          if (info.resource || !JS_EXTENSIONS.has(extname(file))) continue
           for (const [spec, target] of resolutionsOf(file, () => requireResolutions(file, host))) {
-            if (!JS_EXTS.has(extname(target)) || relWithin(target) === null) continue
+            if (!JS_EXTENSIONS.has(extname(target)) || relWithin(target) === null) continue
             named.add(target)
             // A specifier keeps the first edge recorded (a require() of it Node's loader's), as a run
             // records a resolution only where no edge is; every copy found is still traced.
@@ -1591,7 +1591,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
           if (!configModule && splitNodeModulesPath(rel)) continue
           for (const name of namedOf(`${configModule}\0${file}`, () => babelNamedModules(file, host, { anyString: configModule }))) {
             const found = resolveNamed(name, file)
-            if (found !== undefined && JS_EXTS.has(extname(found)) && relWithin(found) !== null) named.add(found)
+            if (found !== undefined && JS_EXTENSIONS.has(extname(found)) && relWithin(found) !== null) named.add(found)
           }
         }
         const fresh = [...named].filter((file) => !files.has(pathToFileURL(file).toString()))
@@ -1761,7 +1761,7 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
       const pkgDir = packageOf(rel)?.pkgDir ?? (splitNodeModulesPath(rel) ? undefined : '.')
       if (pkgDir === undefined) continue
       for (const manifest of [moduleFileKey(pkgDir, 'package.json'), scopeManifestOf(rel, pkgDir, exists)]) {
-        if (manifest !== undefined) (manifests.get(manifest) ?? manifests.set(manifest, []).get(manifest)).push(rel)
+        if (manifest !== undefined) upsert(manifests, manifest, () => []).push(rel)
       }
     }
     for (const [rel, of] of manifests) {
@@ -1827,7 +1827,7 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   let kind
   if (entries.every((e) => isSolidityEntry(e, cwd, host))) kind = 'sol'
   else if (entries.every((e) => e.endsWith('.php'))) kind = 'php'
-  else if (entries.every((e) => JS_EXTS.has(extname(e)))) kind = 'js'
+  else if (entries.every((e) => JS_EXTENSIONS.has(extname(e)))) kind = 'js'
   else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
   else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
   else if (entries.every((e) => e.endsWith('.teal'))) kind = 'teal'

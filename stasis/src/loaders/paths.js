@@ -1,3 +1,5 @@
+import { dirname } from 'node:path'
+
 // Path arithmetic shared by the source-language loaders.
 
 // Apply `segments` on `fromFile`'s directory, resolving '.'/'..'. Returns a baseDir-relative POSIX
@@ -15,3 +17,13 @@ export function applyToDir(fromFile, segments) {
 
 // A `./`/`../` specifier, first segment `.` or `..` (a `.`-led NAME like `..cache/a.php` is a bare one).
 export const isDotRelative = (spec) => spec === '.' || spec === '..' || spec.startsWith('./') || spec.startsWith('../')
+
+// `dir` and each directory above it, the root last.
+export function* ancestors(dir) {
+  for (;;) {
+    yield dir
+    const parent = dirname(dir)
+    if (parent === dir) return
+    dir = parent
+  }
+}

@@ -1,4 +1,4 @@
-import { entryDirOf, hasNodeModulesSegment, moduleFileKey } from '@exodus/stasis-core/util'
+import { entryDirOf, hasNodeModulesSegment, moduleFileKey, upsert } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
@@ -36,12 +36,6 @@ const PATH_CAP = 2000
 // stops there, the hub its head (`@babel/core -> a -> b -> c`).
 const TERMINAL_PACKAGES = new Set(['@babel/core', 'react-native', 'metro'])
 
-// `map`'s value at `key`, set to `make()` where it has none.
-export function upsert(map, key, make) {
-  let value = map.get(key)
-  if (value === undefined) map.set(key, (value = make()))
-  return value
-}
 
 const EMPTY_GRAPH = { adjRev: new Map(), srcImporters: new Map() }
 

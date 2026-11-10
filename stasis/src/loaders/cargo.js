@@ -11,12 +11,13 @@ import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 
 import { readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { canonicalizePath } from '@exodus/stasis-core/state-util'
-import { archiveIntegrity, fromEntries, isPlainObject, memoized, nestedMap, posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { archiveIntegrity, fromEntries, isPlainObject, memoized, nestedMap, posixPathEscapes, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 
 import { LockfileError, linkCargo, parseCargoConfig, parseCargoLock, parseCargoManifest as readCargoManifest, readCargoVendor, resolveCargoFeatures } from '@preventive/lockfile/cargo.js'
 import { matches, parseVersion, parseVersionReq } from '@preventive/lockfile/rust-semver.js'
 
 import { isFile } from '../resolve-typescript.js'
+import { ancestors } from './paths.js'
 import { TomlError, isTomlTable, nameErrors, readToml, splitTopLevel } from './toml.js'
 
 // `cargo vendor` copies registry crates in-tree under this dir.
@@ -25,25 +26,6 @@ export const VENDOR_DIR = 'vendor'
 // A crate name as source spells it (`use proc_macro2`): Cargo allows `-`, rustc doesn't.
 export const normName = (name) => name.replaceAll('-', '_')
 
-// `map`'s value for `key` (a Map or WeakMap), computed on the first ask.
-export function cached(map, key, compute) {
-  let value = map.get(key)
-  if (value === undefined) {
-    value = compute()
-    map.set(key, value)
-  }
-  return value
-}
-
-// `dir` and each directory above it, the root last.
-export function* ancestors(dir) {
-  for (;;) {
-    yield dir
-    const parent = dirname(dir)
-    if (parent === dir) return
-    dir = parent
-  }
-}
 
 // A TOML value that is a table, else null.
 const table = (v) => (isTomlTable(v) ? v : null)
@@ -95,7 +77,7 @@ function manifestOf(text, doc, file, workspace) {
   const deps = new Map()
   for (const d of pkg?.dependencies ?? []) {
     const key = normName(d.name)
-    cached(deps, key, () => ({ key, name: d.name, kinds: new Map() })).kinds.set(requestKey(d), {
+    upsert(deps, key, () => ({ key, name: d.name, kinds: new Map() })).kinds.set(requestKey(d), {
       kind: d.kind,
       target: d.target ?? null,
       version: d.version ?? null,
@@ -357,7 +339,7 @@ function vendorDirOf(baseDir, configs, { quiet = false } = {}) {
   for (const config of configs) {
     for (const [name, fields] of Object.entries(table(config.doc.source) ?? {})) {
       if (!isTomlTable(fields)) continue
-      const s = cached(sources, name, () => ({ replaceWith: null, directory: null }))
+      const s = upsert(sources, name, () => ({ replaceWith: null, directory: null }))
       if (s.replaceWith === null && typeof fields['replace-with'] === 'string') s.replaceWith = fields['replace-with']
       if (s.directory === null && typeof fields.directory === 'string') s.directory = { path: fields.directory, config }
     }
@@ -638,15 +620,15 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const m = manifestAt(`${vendorDir}/${d}`)
       if (!m?.package) continue
       const entry = { version: version(m), dir: m.dir, git: checksumOf(m.dir)?.git ?? null }
-      cached(vendorIndex.byName, normName(m.package.name), () => []).push(entry)
-      cached(vendorIndex.byLib, libName(m), () => []).push(entry)
+      upsert(vendorIndex.byName, normName(m.package.name), () => []).push(entry)
+      upsert(vendorIndex.byLib, libName(m), () => []).push(entry)
     }
     return vendorIndex
   }
   // A vendored package's `.cargo-checksum.json`, or null when it has none: `package` the crate's
   // sha256 in hex (a git checkout's copy has none: `git`), `files` each file's by package-relative path.
   const checksums = new Map()
-  const checksumOf = (dir) => cached(checksums, dir, () => {
+  const checksumOf = (dir) => upsert(checksums, dir, () => {
     const file = posix.join(dir, '.cargo-checksum.json')
     const text = readText(diskHost, join(baseDir, file))
     let value = null
@@ -719,7 +701,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (text !== null) {
         const parsed = readNamed(file, () => parseCargoLock(text))
         const byId = new Map()
-        for (const [key, p] of Object.entries(parsed.packages)) cached(byId, `${normName(p.name)} ${p.version}`, () => []).push(key)
+        for (const [key, p] of Object.entries(parsed.packages)) upsert(byId, `${normName(p.name)} ${p.version}`, () => []).push(key)
         lock = { file, lock: parsed, byId }
       }
     }
@@ -779,7 +761,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // fits. Null when it isn't in-tree, and warned when the copies don't settle it: none is guessed.
   const depTargets = new Map() // memoized per (package, request): the fixed-point loop asks many times
   const resolveDep = (m, dep, request, { quiet = false } = {}) => {
-    const found = cached(nestedMap(depTargets, m.dir), request, () => {
+    const found = upsert(nestedMap(depTargets, m.dir), request, () => {
       const warnings = []
       return { t: resolveDepUncached(m, dep, request, (w) => warnings.push(w)), warnings }
     })
@@ -967,7 +949,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (unbuilt || !(key in resolved.result)) continue
       warnDep(m, request)
       if (!standIn) continue
-      cached(lacking, `${m.dir}\0${normName(d.name)}`, () => ({ dir: m.dir, key: normName(d.name), name: d.name, kinds: new Set() })).kinds.add(d.kind)
+      upsert(lacking, `${m.dir}\0${normName(d.name)}`, () => ({ dir: m.dir, key: normName(d.name), name: d.name, kinds: new Set() })).kinds.add(d.kind)
     }
     return { resolved, lacking }
   }
@@ -1205,7 +1187,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // lib aside, as `[{ file, key }]`: its dependency of that name or lib name through each table the
   // code's `roles` link on its `platforms` (`key` naming which); for no package, the one vendored crate.
   const crateTargets = new Map() // every file of a package asks for the same few crates
-  const depCrate = (m, norm, roles, platforms) => cached(crateTargets, `${m?.dir ?? ''}\0${norm}\0${roles.join()}\0${platforms.join()}`, () => depCrateUncached(m, norm, roles, platforms))
+  const depCrate = (m, norm, roles, platforms) => upsert(crateTargets, `${m?.dir ?? ''}\0${norm}\0${roles.join()}\0${platforms.join()}`, () => depCrateUncached(m, norm, roles, platforms))
   const ROLE_KINDS = { build: ['build'], test: ['normal', 'dev'], normal: ['normal'] }
   // The role of the code of crate root `root` in package `m` (see depCrate).
   const roleOf = (m, root) => (root === buildScript(m) ? 'build' : (linksDevDeps(root) ? 'test' : 'normal'))
@@ -1423,7 +1405,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     // it calls, and what rustflags set. One object per package (and one for all that set none).
     cfgsSetFor(fileRel) {
       const m = packageFor(fileRel)
-      return cached(cfgsSetMemo, m?.dir ?? '\0', () => {
+      return upsert(cfgsSetMemo, m?.dir ?? '\0', () => {
         rustflagCfgs ??= rustflagsCfgsOf(configs)
         const script = m ? buildScript(m) : null
         const printed = script === null ? NO_CFGS_SET : cfgsPrinted(crateTexts(script))
