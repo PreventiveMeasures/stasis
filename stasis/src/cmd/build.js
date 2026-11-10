@@ -69,8 +69,7 @@ function resolveGlobalEsbuild() {
     } catch {
       continue
     }
-    if (!out || out.status !== 0 || !out.stdout) continue
-    const base = out.stdout.trim()
+    const base = out?.status === 0 ? out.stdout?.trim() : undefined
     if (!base) continue
     // `npm/pnpm root -g` print the global node_modules dir; `yarn global dir` prints a
     // dir whose node_modules holds the packages. Try both shapes.
@@ -78,8 +77,7 @@ function resolveGlobalEsbuild() {
       if (!existsSync(join(nm, 'esbuild', 'package.json'))) continue
       try {
         return createRequire(join(nm, 'noop.js')).resolve('esbuild')
-      } catch {
-      }
+      } catch { /* try the next */ }
     }
   }
   return undefined
@@ -106,13 +104,10 @@ function reachableFiles(entry, imports) {
   const stack = [entry]
   while (stack.length > 0) {
     const parent = stack.pop()
-    for (const [, byParent] of imports) {
-      const specifiers = byParent.get(parent)
-      if (specifiers === undefined) continue
-      for (const [, target] of specifiers) {
+    for (const byParent of imports.values()) {
+      for (const target of byParent.get(parent)?.values() ?? []) {
         // A plain edge is a file string; a --metro edge is a {platform: file} Map.
-        const targets = typeof target === 'string' ? [target] : [...target.values()]
-        for (const file of targets) {
+        for (const file of typeof target === 'string' ? [target] : target.values()) {
           if (!seen.has(file)) {
             seen.add(file)
             stack.push(file)
@@ -135,8 +130,7 @@ function assertBuildableEntry(artifact, entry, label) {
   // A reachable resource (plugin captures DO record asset edges) stays allowed via BUILDABLE_FORMATS;
   // an entry that imports an unbuildable asset fails later at esbuild, not here.
   for (const [file, format] of artifact.formats ?? new Map()) {
-    if (!reachable.has(file)) continue
-    if (!BUILDABLE_FORMATS.has(format)) {
+    if (reachable.has(file) && !BUILDABLE_FORMATS.has(format)) {
       throw new Error(`stasis build only supports JavaScript/TypeScript bundles (esbuild); ${label} carries a '${format}' file (${file})`)
     }
   }
@@ -179,9 +173,7 @@ function loadStateForBundle(root, bundle) {
   state.formats = bundle.formats
   state.imports = bundle.imports
   state.entries = new Set(bundle.entries)
-  // Not state.executable either: like state.modules below, the load path never reads it, and every
-  // consumer narrows against state.modules -- which is empty here -- so copying it would be inert.
-  // Not state.modules: the load path never reads it (only the capture paths write it).
+  // Not state.modules or state.executable: the load path reads neither (only the capture paths write them).
   return state
 }
 
@@ -192,13 +184,10 @@ const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(sour
 // by getFile.
 const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
-// --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches -- in a
-// --metro bundle, a Metro asset, as it records an import edge to no other -- served as the module
-// Metro builds of it for `platform` (@preventive/rn's assetData and assetModule), from the files of the
-// asset the artifact carries in its directory, at its path from the project root. The module's require
-// of the asset registry resolves to the file the artifact carries for it (metro-assets.js), an edge
-// added to the State's graph: the bundle records none, as Metro adds it past the source. `built`
-// collects each asset's data for --assets-dest.
+// --metro=PLATFORM's resource hook (StasisEsbuild's `resource`): each resource the build reaches (a Metro
+// asset) served as the module Metro builds of it for `platform` (@preventive/rn's assetData, assetModule),
+// from the asset's files the artifact carries. Its require of the asset registry is added to the State's
+// graph, as Metro adds it past the source. `built` collects each asset's data for --assets-dest.
 function metroAssetResource(state, platform, built) {
   const listing = bundleDirHost(state)
   const registryFor = assetRegistryResolver(platform, state.sources)
@@ -216,13 +205,10 @@ function metroAssetResource(state, platform, built) {
   }
 }
 
-// --flow's per-file transform (StasisEsbuild's `transform` hook shape), as `stasis bundle --flow` reads
-// a file, and Metro's Babel builds it: a JS-family one gets its Flow types stripped (flow.js), an
-// import listing types alone dropped whole, as Babel's Flow transform drops it (a --metro bundle
-// records no edge for it) -- one marked `@flow` (hasFlowPragma) whether or not esbuild parses it as it
-// is (where `f<T>(x)` is a comparison, not Flow's call), any other only where esbuild can't parse it.
-// A file still unparseable fails the build in esbuild: Flow syntax that is code, which stripping
-// leaves, or one flow-remove-types itself can't parse, served as it is.
+// --flow's per-file transform (StasisEsbuild's `transform` hook), as `stasis bundle --flow` reads a file and
+// Metro's Babel builds it: a JS-family file's Flow types stripped (an import listing types alone dropped
+// whole), of one marked `@flow` whether or not esbuild parses it, of any other only where esbuild can't.
+// What still doesn't parse fails the build in esbuild.
 function createFlowTransform(esbuild) {
   return async (source, { path, loader }) => {
     if (!FLOW_EXTS.has(extname(path))) return undefined
@@ -247,16 +233,10 @@ const chainTransforms = (first, second) => async (source, file) => {
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
 
-// A list option as the command line takes one, as an array of strings or one string, each split at commas.
-const listOf = (value) => [value].flat().flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean)
-
-// The options of `entry` in the `entries` of the stasis.config.json the artifact carries at its root
-// (`state`'s), read by `stasis build` itself, apart from how `stasis bundle` builds by them: of each
-// entry's options, those that say how its code is built -- `jsx` (as --loader=.js:jsx), `flow`,
-// `define` (its K=V strings, one or an array) and `metro` with its `platforms` (a list, as on the
-// command line); the rest are the bundle's. An entry is named as `stasis bundle` names it, by its path
-// from the config's directory. -> { jsx, flow, define, platforms } (`platforms` only under `metro`),
-// or null where the artifact carries no config, or it names no such entry
+// The options of `entry` in the `entries` of the stasis.config.json the artifact carries, as `stasis build`
+// reads them: those saying how its code is built, `jsx`, `flow`, `define` (K=V strings) and `metro` with
+// its `platforms` (a list, as on the command line). -> { name, jsx, flow, define, platforms } (`platforms`
+// only under `metro`), or null where the artifact carries no config, or it names no such entry
 function configEntryOptions(state, entry) {
   if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
   let config
@@ -291,7 +271,7 @@ function configEntryOptions(state, entry) {
   }
   let platforms
   if (options.metro === true) {
-    platforms = [...new Set(listOf(strings('platforms')))]
+    platforms = [...new Set(strings('platforms').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
     if (platforms.length === 0) throw new Error(`stasis build: ${what} sets metro but names no platforms`)
   }
   return { name, jsx: options.jsx === true, flow: options.flow === true, define, platforms }
@@ -349,10 +329,9 @@ export async function buildCommand({
   // Make the entry absolute against the State's root so resolution is independent of process cwd.
   const entryPoint = resolve(state.root, selectedEntry)
 
-  // The entry's options in the stasis.config.json the artifact carries, under the flags given: jsx as
-  // --loader=.js:jsx, flow as --flow (not under --babel, whose config compiles Flow itself), its define
-  // under --define's, and metro as --metro for its one platform; of several, --metro picks one, which
-  // must be one of them.
+  // The entry's options in the config the artifact carries, under the flags given: jsx as --loader=.js:jsx,
+  // flow as --flow (not under --babel, whose config compiles Flow), its define under --define's, and metro
+  // as --metro for its one platform (of several, --metro picks one of them).
   const configured = configEntryOptions(state, selectedEntry)
   if (configured !== null) {
     const taken = []
@@ -382,11 +361,9 @@ export async function buildCommand({
     }
     if (taken.length > 0) console.warn(`[stasis] ${selectedEntry}: ${taken.join(' ')}, as ${CONFIG_FILE}'s entries ${JSON.stringify(configured.name)} sets`)
   }
-  // --metro, given or the config's, builds as `stasis bundle --metro` reads the files: JSX in .js
-  // (--loader=.js:jsx, where no --loader names .js), Flow stripped (--flow, not under --babel, whose
-  // config compiles it), and each of METRO_RELEASE_DEFINE's names defined as Metro's release build
-  // defines it, where neither --define nor the config gives it a value, as esbuild takes one (JS):
-  // outside Metro's prelude, `__DEV__` is no global at all.
+  // --metro, given or the config's, builds as `stasis bundle --metro` reads the files: JSX in .js, Flow
+  // stripped (not under --babel), and METRO_RELEASE_DEFINE's names defined where nothing else defines one
+  // (outside Metro's prelude, `__DEV__` is no global at all).
   if (metro !== undefined) {
     if (loader['.js'] === undefined) loader = { ...loader, '.js': 'jsx' }
     if (!babel) flow = true
@@ -399,11 +376,8 @@ export async function buildCommand({
   }
 
   const esbuild = await importEsbuild()
-  // Per-file code rewrites the plugin applies before esbuild parses a served file:
-  // --babel runs the project's own babel.config.* over the original source (no esbuild
-  // pre-transform), and otherwise --platform=hermes uses the built-in downlevel pipeline.
-  // Both resolve Babel from the project (cwd), never from stasis's own dependencies. --flow
-  // strips Flow types first, from what esbuild can't parse.
+  // Per-file rewrites before esbuild parses a served file: --babel runs the project's babel.config.*, else
+  // --platform=hermes the built-in downlevel pipeline, each with the project's own Babel; --flow strips first.
   let transform
   if (babel) transform = createBabelConfigTransform({ projectDir: cwd })
   else if (hermes) transform = createHermesTransform({ projectDir: cwd, esbuild })
