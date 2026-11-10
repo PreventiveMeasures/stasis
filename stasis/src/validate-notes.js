@@ -73,11 +73,10 @@ export function noteOf(pkg) {
   const { patch } = pkg
   if (pkg.reason) return [PACKAGE_REASONS[pkg.reason] ?? pkg.reason, ...(pkg.at ? [': ', { path: pkg.at }] : [])]
   if (patch?.error) return ['its patch', ...(patch.path ? [' ', { path: patch.path }] : []), ` ${PATCH_ERRORS[patch.error] ?? `could not be applied (${patch.error})`}`]
+  if (!patch) return pkg.directory ? ['held to ', { path: pkg.directory }, ' of the repository'] : []
   // A patch the bundle holds, as checked against the repository.
-  const whose = patch?.from !== 'bundle' ? [] : [patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)']
-  const recorded = patch?.recorded ? [', as recorded'] : []
-  if (patch) return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : []), ...recorded]
-  return pkg.directory ? ['held to ', { path: pkg.directory }, ' of the repository'] : []
+  const whose = patch.from !== 'bundle' ? [] : [patch.verified ? ' (the bundle\'s, as the repository has it)' : ' (the bundle\'s, not verified against the repository)']
+  return [patch.applied === false ? 'bundled as published, not patched' : 'patched', ...(patch.path ? [' by ', { path: patch.path }, ...whose] : []), ...(patch.recorded ? [', as recorded'] : [])]
 }
 
 // A package's note as text: '' where nothing more.

@@ -47,10 +47,9 @@ export async function readBundle(source, { onFile, signal } = {}) {
 
   // Big chunks let zlib's thread pool decompress ahead of the parser; zlib's 16 KiB default runs about 2x slower.
   const decompress = createBrotliDecompress({ chunkSize: 1024 * 1024, readableHighWaterMark: 4 * 1024 * 1024 })
-  // The decoder ends its output at the end of the brotli stream and consumes nothing after it, so
-  // the bytes it was given and the bytes it consumed (its bytesWritten) differ by exactly those.
-  // Counting them here takes `input` out of pipeline's hands, so this destroys a stream on pipeline's
-  // signal, raised on any failure or abort, as pipeline would: one waiting for a chunk holds it open.
+  // The decoder consumes nothing after the brotli stream's end, so bytes given past its bytesWritten are
+  // trailing junk. Counting them takes `input` out of pipeline's hands, so this destroys it on pipeline's
+  // signal (any failure or abort) as pipeline would: one waiting for a chunk holds it open.
   let given = 0
   async function* counted({ signal: stop }) {
     const destroy = () => input.destroy?.()
@@ -85,8 +84,7 @@ export async function readBundle(source, { onFile, signal } = {}) {
   const bundle = Bundle.fromJSON(parser.end(), { contents: !onFile })
   if (onFile) {
     // fromJSON required a placeholder per file, so onFile got each one; it must have got nothing else.
-    let files = 0
-    for (const [, info] of bundle.modules) files += Object.keys(info.files).length
+    const files = bundle.modules.values().reduce((sum, info) => sum + Object.keys(info.files).length, 0)
     assert(delivered.size === files, 'bundle carries file contents outside its file list')
     // A later `formats` key replaces the one onFile was told about.
     for (const [file, format] of delivered) {

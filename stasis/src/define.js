@@ -1,13 +1,10 @@
-import { isPlainObject } from '@exodus/stasis-core/util'
+import { isPlainObject, memoized } from '@exodus/stasis-core/util'
 
-// --define: the values a build gives globals (`__DEV__`, `process.env.NODE_ENV`), which the static
-// scan takes as constants, to leave out the imports of code they keep from running: under
-// `__DEV__=false`, `if (__DEV__) require('./dev')` reaches nothing. Only a branch whose test folds
-// to a constant is left out -- `if`/`else`, `?:` and the right of `&&` and `||` -- as Metro's
-// release build drops it (its inline and constant-folding transforms, run before it collects a
-// file's dependencies); a test that doesn't fold walks both sides, as without a define. It folds
-// no test Metro wouldn't, after React Native's Babel transforms, so a --metro bundle never lacks a
-// file Metro's graph holds.
+// --define: the values a build gives globals (`__DEV__`, `process.env.NODE_ENV`), which the static scan
+// takes as constants to leave out the imports of code they keep from running (`if (__DEV__) require(...)`
+// under `__DEV__=false`). Only a branch whose test folds is left out (`if`/`else`, `?:`, the right of `&&`
+// and `||`), as Metro's release build drops it, and no test folds that Metro wouldn't fold, so a --metro
+// bundle never lacks a file Metro's graph holds.
 
 // The values Metro's release build (`dev: false`, `react-native bundle --dev false`) inlines, and its
 // prelude gives the globals: what `stasis bundle --metro` and `stasis build --metro` define by
@@ -189,15 +186,9 @@ export function branchFolder(defines, program) {
   const values = new Map([...defines].filter(([key]) => !owned(own, key)))
   if (values.size === 0) return null
 
-  const cache = new WeakMap()
   // The value `node` folds to, or UNKNOWN.
-  const fold = (node) => {
-    if (!node) return UNKNOWN
-    if (cache.has(node)) return cache.get(node)
-    const value = evaluate(node)
-    cache.set(node, value)
-    return value
-  }
+  const folded = memoized((node) => evaluate(node))
+  const fold = (node) => (node ? folded(node) : UNKNOWN)
   // What Metro's constant folding evaluates, once it has inlined the defines (Babel's
   // path.evaluate()), and less: a value it can't be sure Metro folds is UNKNOWN, as the bundle may
   // never leave out a file Metro's graph holds.

@@ -1,10 +1,6 @@
-// Logos for where an advisory comes from, as `stasis audit` may draw them beside it: sixel images, for a
-// terminal that draws them, as supported() asks it.
-
-// Each a sixel image 16 pixels square, prepared once (nothing here converts one): its pixels square (P1 9,
-// and raster attributes 1:1), its background left as the terminal has it (P2 1), in 8 colours at most.
-// Its edges inside are blended; its outline isn't, as nothing tells a sixel image what it's drawn over, so
-// a pixel is drawn where at least half of it is covered.
+// Logos for where an advisory comes from, sixel images `stasis audit` may draw beside it (see supported()). Each
+// is prepared once: square pixels (P1 9, raster 1:1), the background left as is (P2 1), 8 colours at most, its
+// edges inside blended, and its outline, as nothing tells it what it's drawn over, a pixel where half is covered.
 
 // npm's registry (upstream's `registry` source): simple-icons' npm (16.36.0, CC0-1.0), #CB3837, its
 // knocked-out n filled white.
@@ -230,12 +226,9 @@ function lowered(image, top) {
 // where other terminals leave it as it is; so it is drawn with, a blank character, which draws nothing.
 const BACKGROUND = 9
 
-// The logos to draw over two of the terminal's cells, `cell` (its `width` and `height` in the pixels it
-// draws sixel images in, as capabilities() tells them): the largest that fits two cells, a gap of an eighth
-// of a row (two pixels at least) left over, lowered by half of it, so that it sits in the middle of its row,
-// apart from those on the lines above and below; the smallest where none fits. With `background` (`r;g;b`
-// in percent, as capabilities() tells it), what a logo leaves undrawn is that, for iTerm2. Those 16 pixels
-// square, as they are, where `cell` isn't known.
+// The logos to draw over two of the terminal's cells, `cell` (in its sixel pixels, capabilities()'s): the largest
+// leaving an eighth of a row (two pixels at least), lowered to sit mid-row, else the smallest; the 16-pixel ones
+// where `cell` isn't known. With `background` (`r;g;b` in percent), what a logo leaves undrawn is that, for iTerm2.
 export function logos(cell, background) {
   let size = 16
   let top = 0
@@ -283,10 +276,9 @@ function cellIn(read) {
   return xtwinops ? { height: Number(xtwinops[1]), width: Number(xtwinops[2]) } : null
 }
 
-// What the terminal `output` writes to answers `question` with, DA1 last, read on `input` up to DA1's answer;
-// null where either is no terminal (a pipe, a file) or it is a dumb one (Emacs' shell), and nothing is asked,
-// or it hasn't answered in `timeout` ms. Meanwhile `input` is raw, as a terminal answers there, and read, as
-// it is left; a key pressed in that time is read with the answer and dropped.
+// What the terminal answers `question` (DA1 last) with on `input`, up to DA1's answer; null, asking nothing, where
+// either stream is no terminal or it is a dumb one (Emacs' shell), or where it hasn't answered in `timeout` ms.
+// Meanwhile `input` is raw, then left as it was; a key pressed in that time is read with the answer and dropped.
 function ask(question, { input = process.stdin, output = process.stdout, env = process.env, timeout = 1000 } = {}) {
   if (!input?.isTTY || !output?.isTTY || env.TERM === 'dumb') return Promise.resolve(null)
   const { promise, resolve } = Promise.withResolvers()

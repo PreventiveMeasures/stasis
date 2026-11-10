@@ -1,17 +1,6 @@
-// Imported by src/loader-mock.js (the `stasis run --mock` entry) after the core hooks lib is
-// evaluated but before its hooks are installed. Captures the import graph by running user code
-// with side-effects denied. Pairs with Node's `--permission` (see bin/stasis.js), which denies fs
-// writes/child procs/workers/addons/inspector at the runtime boundary; this file covers what
-// `--permission` can't -- there is no `--allow-net`, so the network builtins are neutralized in JS.
-//
-// FAIL CLOSED, WHOLE MODULE: replace *every* callable on a denied builtin with a thrower, not a
-// curated method list -- higher-level clients (axios/undici/ws) fall closed too since they bottom
-// out at node:net/tls/dns, and anything unmodelled still throws rather than silently succeeding.
-//
-// Mechanism: go through `createRequire` to grab the *mutable* CJS exports object -- ESM namespace
-// objects freeze their bindings, so mocking them throws "Cannot redefine property". ESM live-bindings
-// track CJS mutation for builtins, so importers loading *after* us see the mocks; modules linked
-// before (the loader's own state.js) keep their real bindings.
+// `stasis run --mock`'s side-effect denials (loader-mock.js), for what Node's `--permission` (bin/stasis.js) can't
+// deny, the network above all: EVERY callable of a denied builtin throws, so clients bottoming out at it fail closed.
+// Mocked on the mutable CJS exports (ESM namespaces are frozen): importers linked after this see the mocks.
 
 import { mock } from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -43,10 +32,8 @@ const denyFn = (label) => function () { throw blocked(label) }
 // the unhandledRejection trap below rather than crashing the script synchronously.
 const denyFnAsync = (label) => function () { return Promise.reject(blocked(label)) }
 
-// Replace every own function on `mod` (and one level down on `mod.promises`) with a thrower.
-// Promise-shaped surfaces use denyFnAsync so fire-and-forget callers reject quietly -- except
-// class-shaped exports (PascalCase): `new Class()` returning a Promise yields the Promise as the
-// constructed value, so classes sync-throw to give a clean error in both `new` and call form.
+// Replace every own function on `mod` (and one level down on `mod.promises`) with a thrower, a rejecting one
+// on a promise surface but for a class (PascalCase), which `new` would make the Promise of.
 const isClassName = (key) => /^[A-Z]/.test(key)
 const denyModuleSurface = (prefix, mod, isAsync = prefix.endsWith('/promises')) => {
   for (const key of Object.getOwnPropertyNames(mod)) {
@@ -97,10 +84,8 @@ for (const specifier of DENY_ALL) {
   denyModuleSurface(specifier, mod)
 }
 
-// process method denials. process.exit / process.abort are deliberately left alone -- early
-// termination isn't a side effect we should hide. The rest mutate global process state, do real
-// I/O, or talk to a parent over IPC; note setUncaughtExceptionCaptureCallback would also disable
-// our exitCode=13 cleanup below.
+// What mutates global process state, does real I/O, or talks to a parent over IPC (exit and abort are no side
+// effect to hide); setUncaughtExceptionCaptureCallback would also disable the exitCode=13 cleanup below.
 const PROCESS_DENY = [
   'chdir', 'kill', 'umask', 'dlopen', 'binding',
   'setUid', 'setGid', 'setEuid', 'setEgid', 'setgroups', 'initgroups',
@@ -109,9 +94,7 @@ const PROCESS_DENY = [
   'setUncaughtExceptionCaptureCallback',
 ]
 for (const name of PROCESS_DENY) {
-  if (typeof process[name] === 'function') {
-    mock.method(process, name, denyFn(`process.${name}()`))
-  }
+  if (typeof process[name] === 'function') mock.method(process, name, denyFn(`process.${name}()`))
 }
 
 // process.report.writeReport writes a diagnostic JSON file to disk; deny it too.
@@ -137,25 +120,17 @@ const FS_WRITERS = [
   'createWriteStream', 'mkdtemp', 'mkdtempSync',
 ]
 for (const name of FS_WRITERS) {
-  if (typeof fs[name] === 'function') {
-    mock.method(fs, name, denyFn(`node:fs.${name}()`))
-  }
-  if (typeof fsPromises[name] === 'function') {
-    mock.method(fsPromises, name, denyFnAsync(`node:fs/promises.${name}()`))
-  }
+  if (typeof fs[name] === 'function') mock.method(fs, name, denyFn(`node:fs.${name}()`))
+  if (typeof fsPromises[name] === 'function') mock.method(fsPromises, name, denyFnAsync(`node:fs/promises.${name}()`))
 }
 
 // Refresh the node:fs ESM wrappers so ESM imports after this point see the mocked names;
 // bindings stasis already captured (linked before this file ran) keep their real snapshot.
 syncBuiltinESMExports()
 
-// Global fetch / WebSocket / EventSource come from undici, not node:http, so handle separately.
-// fetch returns a *forever-pending* promise (not a rejection) so an awaiter hangs and the capture
-// still drains to write the bundle on beforeExit; WebSocket/EventSource throw from their
-// constructors to preserve the synchronous shape.
-if (typeof globalThis.fetch === 'function') {
-  globalThis.fetch = () => new Promise(() => {})
-}
+// The global fetch / WebSocket / EventSource are undici's, not node:http's. fetch never settles, so an awaiter
+// hangs and the capture still drains to write the bundle on beforeExit; the others throw from their constructors.
+if (typeof globalThis.fetch === 'function') globalThis.fetch = () => new Promise(() => {})
 for (const name of ['WebSocket', 'EventSource']) {
   if (typeof globalThis[name] === 'function') {
     globalThis[name] = class {
@@ -177,10 +152,8 @@ process.on('exit', () => {
   if (process.exitCode === 13) process.exitCode = 0
 })
 
-// Timers: silently ignored. Callback timers (setTimeout/setInterval/setImmediate) become no-ops;
-// promise timers (node:timers/promises) return *forever-pending* promises so `await setTimeout()`
-// suspends forever. A pending promise doesn't keep the event loop alive, so the process still
-// exits cleanly and the loader's beforeExit hook writes the bundle.
+// Timers are ignored: callback timers are no-ops, and promise timers never settle, which keeps no event loop
+// alive, so the process still exits and the loader's beforeExit hook writes the bundle.
 const noop = () => undefined
 const pending = () => new Promise(() => {})
 const TIMERS = ['setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval', 'clearImmediate']

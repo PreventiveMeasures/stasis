@@ -93,7 +93,6 @@ function parsePackageName(specifier, base) {
 // (vfs-bundle/tree.js's vfsHost of a lazy tree): what is read with none is cached alone, or with
 // `host.retouch`, what is read with some too (untouchedMemo's `retouch`).
 export function createNodeResolver(host) {
-  const touches = host.touches ?? (() => 0)
   // package.json reads, memoized per path; a malformed manifest, or one there that can't be read,
   // throws ERR_INVALID_PACKAGE_CONFIG on every access.
   const parsePackage = (pjsonPath) => {
@@ -116,7 +115,7 @@ export function createNodeResolver(host) {
     const map = (value) => (typeof value === 'string' || (typeof value === 'object' && value !== null) ? value : undefined)
     return { exists: true, path: pjsonPath, name: string(data.name), main: string(data.main), exports: map(data.exports), imports: map(data.imports) }
   }
-  const packages = untouchedMemo(touches, { retouch: host.retouch })
+  const packages = untouchedMemo(host.touches, { retouch: host.retouch })
   const readPackage = (pjsonPath) => {
     const pkg = packages(pjsonPath, () => parsePackage(pjsonPath))
     if (pkg instanceof Error) throw pkg
@@ -417,7 +416,7 @@ export function createNodeResolver(host) {
   }
 
   // Node's Module._pathCache: the tree is immutable for the build.
-  const memo = untouchedMemo(touches, { retouch: host.retouch })
+  const memo = untouchedMemo(host.touches, { retouch: host.retouch })
 
   return {
     // `conditions`: `require.resolve`'s own by default. A builtin returns its id, as it does.

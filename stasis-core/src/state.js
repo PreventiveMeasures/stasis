@@ -10,7 +10,7 @@ import { Lockfile } from './lockfile.js'
 import { parseShard, serializeShard } from './shard.js'
 import { bundledIntegrity, canonicalizePath, inScope, sha512integrity, readFileSyncMaybe, noupsert, realContained } from './state-util.js'
 import { compressBundleText, parseBundleBytes } from './brotli.js'
-import { ATTESTED_METADATA, attestsAny, CODE_EXTENSIONS, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, attestsAny, BUNDLE_FILE, CODE_EXTENSIONS, CONFIG_FILE, EMPTY_MODULE_PATH, assertRealPathWithinBase, canObserveExecuteBits, classifyFormat, erasedTypeScriptFormat, hasNodeModulesSegment, heldToAccounts, importTargetsEqual, installedAccounts, LOCK_FILE, mergeModuleMaps, inResources, isBinaryPlist, isNativeArtifact, isPackageString, isPathWithin, isPlainObject, isStatFormat, isSubpackage, moduleFileKey, moduleInfo, narrowExecutable, nestedMap, nodeExtFormat, observeExecutable, relativeEscapes, sortedByPath, splitNodeModulesPath, toPosix, upsertFormat, withMetadataOf } from './util.js'
 import { detectRepo, invalidPackageConfig, namedManifestOf, packageJSONStat, packageJSONText, packageRepo, readModuleManifest, scopeManifestOf, vendorDirOf, vendoredPackageOf } from './bundle-util.js'
 import { expandExtra, validationError } from './add.js'
 import { linksOn } from './policy.js'
@@ -20,10 +20,6 @@ import corePackage from './package.cjs'
 // Destructure off the namespace: captures the real fns at eval time, so writes survive --mock's
 // syncBuiltinESMExports() remock of node:fs.
 const { mkdirSync, rmSync, writeFileSync } = fs
-
-const FILE_CONFIG = 'stasis.config.json'
-const FILE_LOCK = 'stasis.lock.json'
-const FILE_CODE = 'stasis.code.br'
 
 // Via src/package.cjs: a bundler-safe re-export of package.json.
 const VERSION = corePackage.version
@@ -258,7 +254,7 @@ export class State {
       // One there that can't be read is refused, not walked past to a root above (packageJSONStat).
       if (packageJSONStat(this.#host, join(cursor, 'package.json')) !== null) {
         potentialRoots.push(cursor)
-      } else if ([FILE_CONFIG, FILE_LOCK, FILE_CODE].some((file) => this.#exists(join(cursor, file)))) {
+      } else if ([CONFIG_FILE, LOCK_FILE, BUNDLE_FILE].some((file) => this.#exists(join(cursor, file)))) {
         throw new Error('Unexpected stasis config without package.json')
       }
       if (cursor === env.PROJECT_CWD) break // e.g. yarn sets this
@@ -279,9 +275,9 @@ export class State {
     // root. A config-only bundleFile is NOT suppressed (its dir already carries the config signal).
     const explicitBundlePath = this.config.bundleFile
     for (const rootDir of potentialRoots) {
-      const config = readFileSyncMaybe(rootDir, FILE_CONFIG, 'utf-8', this.#host)
-      const lockProbe = explicitLockPath ? null : readFileSyncMaybe(rootDir, FILE_LOCK, 'utf-8', this.#host)
-      let sourcesPath = explicitBundlePath || join(rootDir, FILE_CODE)
+      const config = readFileSyncMaybe(rootDir, CONFIG_FILE, 'utf-8', this.#host)
+      const lockProbe = explicitLockPath ? null : readFileSyncMaybe(rootDir, LOCK_FILE, 'utf-8', this.#host)
+      let sourcesPath = explicitBundlePath || join(rootDir, BUNDLE_FILE)
       let sources = this.#readMaybe(sourcesPath)
       // Root-SELECTION signals: a config, a lockfile, or only the DEFAULT <rootDir>/stasis.code.br
       // (see explicitBundlePath; an explicit bundleFile is still loaded via `sources`).
@@ -1166,11 +1162,11 @@ export class State {
   }
 
   get #lockPath() {
-    return this.config.lockFile || join(this.root, FILE_LOCK)
+    return this.config.lockFile || join(this.root, LOCK_FILE)
   }
 
   get #bundlePath() {
-    return this.config.bundleFile || join(this.root, FILE_CODE)
+    return this.config.bundleFile || join(this.root, BUNDLE_FILE)
   }
 
   // The artifacts write() writes: the lockfile (never a sidecar's) and the bundle(s), as configured.

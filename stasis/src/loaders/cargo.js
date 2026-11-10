@@ -1,9 +1,6 @@
-// Cargo manifests for the Rust loader: Cargo.toml, Cargo.lock and cargo's configuration read by
-// @preventive/lockfile, per-bundle package lookup, dependency resolution among in-tree crates (the
-// package's own lib, workspace `path` deps, `cargo vendor`ed registry crates) and feature
-// resolution done the way `cargo build` does it, so `#[cfg(feature = "…")]` can be decided per
-// crate: @preventive/lockfile's, cargo's own resolver, where the build's lockfile and target are
-// known; a replay of the manifests otherwise.
+// Cargo manifests for the Rust loader: Cargo.toml, Cargo.lock and cargo configs read by
+// @preventive/lockfile, dependency resolution among in-tree crates (path deps, `cargo vendor`ed ones)
+// and feature resolution as `cargo build` does it -- cargo's own resolver where it can run, else a replay.
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -14,7 +11,7 @@ import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 
 import { readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { canonicalizePath } from '@exodus/stasis-core/state-util'
-import { archiveIntegrity, posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
+import { archiveIntegrity, fromEntries, isPlainObject, memoized, nestedMap, posixPathEscapes, relativeEscapes, toPosix } from '@exodus/stasis-core/util'
 
 import { LockfileError, linkCargo, parseCargoConfig, parseCargoLock, parseCargoManifest as readCargoManifest, readCargoVendor, resolveCargoFeatures } from '@preventive/lockfile/cargo.js'
 import { matches, parseVersion, parseVersionReq } from '@preventive/lockfile/rust-semver.js'
@@ -27,15 +24,6 @@ export const VENDOR_DIR = 'vendor'
 
 // A crate name as source spells it (`use proc_macro2`): Cargo allows `-`, rustc doesn't.
 export const normName = (name) => name.replaceAll('-', '_')
-
-// The file's bytes, or null when it can't be read.
-function readFileOrNull(file) {
-  try {
-    return readFileSync(file)
-  } catch {
-    return null
-  }
-}
 
 // `map`'s value for `key` (a Map or WeakMap), computed on the first ask.
 export function cached(map, key, compute) {
@@ -66,8 +54,7 @@ const table = (v) => (isTomlTable(v) ? v : null)
 export function normalizeRel(dir, sub) {
   if (isAbsolute(sub) || posix.isAbsolute(sub)) return null
   const rel = posix.normalize(posix.join(dir === '.' ? '' : dir, sub))
-  if (posixPathEscapes(rel)) return null
-  return rel
+  return posixPathEscapes(rel) ? null : rel
 }
 
 // --- Cargo.toml -----------------------------------------------------------------------
@@ -80,40 +67,25 @@ export function parseFeatureList(values) {
   return [...new Set(values.flatMap((s) => s.split(/[\s,]+/u)).filter(Boolean))]
 }
 
+// The first directory of a file's path inside the package at `pkgDir`.
+const targetDirOf = (pkgDir, fileRel) => (pkgDir !== '.' && pkgDir !== '' && fileRel.startsWith(`${pkgDir}/`) ? fileRel.slice(pkgDir.length + 1) : fileRel).split('/')[0]
+
 // Whether a source file belongs to a test or bench target of the package at `pkgDir` (`tests/*.rs`,
 // `benches/*.rs` and what they declare): rustc compiles those with `cfg(test)`.
 export function isTestTargetPath(pkgDir, fileRel) {
-  const first = targetDirOf(pkgDir, fileRel)
-  return first === 'tests' || first === 'benches'
-}
-// Whether a file belongs to a target cargo builds with the dev-dependencies: a test, bench or
-// example (`examples/*.rs`), which unlike the other two isn't compiled with `cfg(test)`.
-function linksDevDepsPath(pkgDir, fileRel) {
-  return isTestTargetPath(pkgDir, fileRel) || targetDirOf(pkgDir, fileRel) === 'examples'
-}
-// The first directory of a file's path inside its package.
-function targetDirOf(pkgDir, fileRel) {
-  const inside = pkgDir === '.' || pkgDir === '' ? fileRel : (fileRel.startsWith(`${pkgDir}/`) ? fileRel.slice(pkgDir.length + 1) : fileRel)
-  return inside.split('/')[0]
+  return ['tests', 'benches'].includes(targetDirOf(pkgDir, fileRel))
 }
 
-// `read()`, with a TomlError or LockfileError it throws naming `file`: what @preventive/lockfile
-// refuses stops the build, saying which file.
+// `read()`, with a TomlError or LockfileError it throws naming `file`.
 const readNamed = (file, read) => nameErrors(file, read, [TomlError, LockfileError])
 
-// A Cargo.toml as the loader reads it: @preventive/lockfile's reading (`cargo`) -- the package, its
-// features (with the one each optional dependency no `dep:` names turns on) and every dependency
-// table, what a member inherits from its workspace applied, refused where cargo would refuse it or
-// the reader can't tell how cargo reads it -- plus what that reading leaves out: the lib target
-// (`[lib] name`, `path`) and the build script (`[package] build`). `workspace` is the workspace
-// root's, read before, for a member that inherits from it. Dependency keys are the `use` spelling
-// (`-` → `_`); each table is a request of its own, `<kind>` or `<kind>@<platform>` (`normal`,
-// `build`, `dev@cfg(windows)`): `[dependencies] rand = "0.7"` beside `[build-dependencies] rand =
-// "0.8"` are two crates, and sha2's dev-dependency on digest asks digest for nothing a build of
-// sha2's dependents sees; each entry has its `kind` and `target` (null for none) apart too. Throws
-// a TomlError or LockfileError naming `file`.
+// A dependency table's key among its dependency's requests: `<kind>` or `<kind>@<platform>`.
+const requestKey = (d) => (d.target === undefined ? d.kind : `${d.kind}@${d.target}`)
+
+// A Cargo.toml as @preventive/lockfile reads it (`cargo`; what a member inherits from `workspace`,
+// the root's, applied), plus the lib target and build script. `deps` are keyed by `use` spelling,
+// each table (`normal`, `build`, `dev@cfg(windows)`) a request of its own. Throws naming `file`.
 export const parseCargoManifest = (text, file = null, workspace = null) => manifestOf(text, readToml(text, file), file, workspace)
-// parseCargoManifest of `text` read as `doc` already.
 function manifestOf(text, doc, file, workspace) {
   const root = workspace?.cargo.workspace === undefined ? undefined : workspace.cargo
   const cargo = readNamed(file, () => readCargoManifest(text, isTomlTable(doc.workspace) ? undefined : root))
@@ -122,14 +94,14 @@ function manifestOf(text, doc, file, workspace) {
   const build = table(doc.package ?? doc.project)?.build
   const deps = new Map()
   for (const d of pkg?.dependencies ?? []) {
-    cached(deps, normName(d.name), () => ({ key: normName(d.name), name: d.name, kinds: new Map() })).kinds.set(d.target === undefined ? d.kind : `${d.kind}@${d.target}`, {
+    const key = normName(d.name)
+    cached(deps, key, () => ({ key, name: d.name, kinds: new Map() })).kinds.set(requestKey(d), {
       kind: d.kind,
       target: d.target ?? null,
       version: d.version ?? null,
       path: d.source.type === 'path' ? d.source.path : null,
       source: d.source.type,
-      // where from: a git dependency's repository URL, another registry's name or index than
-      // crates.io's
+      // where from: a git dependency's repository URL, another registry's name or index than crates.io's
       origin: d.source.type === 'git' ? d.source.url : (d.source.type === 'registry' ? d.source.registry ?? d.source.index ?? null : null),
       package: d.package,
       renamed: d.package !== d.name,
@@ -149,9 +121,8 @@ function manifestOf(text, doc, file, workspace) {
   }
 }
 
-// Whether `version` satisfies the Cargo requirement `req`, by the semver crate's rules
-// (@preventive/lockfile's rust-semver.js): a prerelease only where the requirement names one of
-// its major, minor and patch.
+// Whether `version` satisfies the Cargo requirement `req` by the semver crate's rules: a prerelease
+// only where the requirement names one of its major, minor and patch.
 const satisfies = (version, req) => {
   const v = parseVersion(version)
   const comparators = parseVersionReq(req)
@@ -160,20 +131,15 @@ const satisfies = (version, req) => {
 
 // --- cargo metadata -------------------------------------------------------------------
 
-// The Cargo.lock governing `baseDir`: beside the workspace root's Cargo.toml -- the nearest manifest
-// at or above `baseDir` with a `[workspace]` table, as cargo finds it -- else beside `baseDir`'s
-// own. A lock further up belongs to some other project: passing `--locked` for it would make
-// cargo refuse to create the one it needs. Read of `host`, the disk's unless given.
+// The Cargo.lock governing `baseDir`: beside the nearest manifest at or above it with a `[workspace]`,
+// as cargo finds it, else beside `baseDir`'s own. A lock further up is another project's: `--locked`
+// for it would make cargo refuse to create the one it needs.
 export function findCargoLock(baseDir, host = diskHost) {
-  let root = baseDir
-  for (const dir of ancestors(baseDir)) {
+  const root = ancestors(baseDir).find((dir) => {
     const file = join(dir, 'Cargo.toml')
     const text = readText(host, file)
-    if (text !== null && 'workspace' in readToml(text, file)) {
-      root = dir
-      break
-    }
-  }
+    return text !== null && 'workspace' in readToml(text, file)
+  }) ?? baseDir
   const candidate = join(root, 'Cargo.lock')
   return isFile(candidate, host) ? candidate : null
 }
@@ -191,32 +157,20 @@ export const cfgName = (written) => (/^r#(?:true|false)$/u.test(written) ? writt
 // A leaf: `unix`, `target_os = "linux"`, a raw identifier's `r#` dropped.
 const CFG_LEAF_RE = /^(?:r#)?([A-Za-z_]\w*)\s*(?:=\s*"([^"]*)")?$/u
 
-// The cfg keys rustc sets from the target alone (`rustc --print cfg --target <triple>`), decided by
-// membership in that set when the target is known. Not among them: `debug_assertions`, `panic`,
-// `overflow_checks` and the like, which the build profile sets; `target_feature`, which the build
-// may add to or take from (`-C target-feature=-crt-static`, `-C target-cpu=native`); and
-// `target_thread_local`, which a stable rustc never prints.
+// The cfg keys rustc sets from the target alone (`rustc --print cfg --target <triple>`). Not among
+// them: what the build profile sets (`debug_assertions`, `panic`), `target_feature`, which the build
+// may change (`-C target-cpu=native`), and `target_thread_local`, which a stable rustc never prints.
 export const TARGET_CFG_KEYS = new Set(['unix', 'windows', 'target_abi', 'target_arch', 'target_endian', 'target_env', 'target_family', 'target_has_atomic', 'target_os', 'target_pointer_width', 'target_vendor'])
 
-// Three-valued evaluation of a cfg predicate: `false` when it can never hold in the build (so the
-// item it gates is dead code for the bundle), `true` when it always does, `null` when the loader
-// can't tell. `all`/`any`/`not` compose. `test` holds only in a test/bench target (`env.test`);
-// `doctest` and `doc` never do when a program is built; `feature = "x"` is decided against
-// `env.features`, the crate's features on for certain (see createCargoContext) -- unknown for one
-// of `env.maybeFeatures`, on only in some builds, and without either set; a target leaf (`unix`,
-// `target_os = …`) against `env.target`, the platform's cfg set as rustc prints it
-// (rustcTargetCfgs), and unknown without one; every other leaf stays unknown. `env.units`, a list
-// of such envs, is code compiled several ways (a crate built for the target and, as a
-// build-dependency, for the host): false only when false in each, true only when true in each.
-// A predicate an unknown leaf occurs in more than once is decided when it comes out the same
-// whatever the unknown leaves are (up to six of them): `all(any(test, kani), not(kani))` -- zerocopy's
-// `#[cfg(any(test, kani))] mod tests { #[cfg(not(kani))] mod compatibility { … } }` -- never holds.
+// Three-valued evaluation of a cfg predicate: false when it never holds in the build (what it gates is
+// dead code), true when it always does, null when unknown. An unknown leaf met more than once is tried
+// both ways (up to six of them): `all(any(test, kani), not(kani))` never holds.
 const MAX_FREE_CFG_LEAVES = 6
 export function evalCfg(pred, env = {}) {
   if (env.units) return unanimous(env.units.map((u) => evalCfg(pred, u)))
   const free = { counts: null } // unknown leaf → how often it occurs, once one is met
   const r = evalCfgWith(pred, env, null, free)
-  if (r !== null || free.counts === null || free.counts.size > MAX_FREE_CFG_LEAVES || [...free.counts.values()].every((n) => n === 1)) return r
+  if (r !== null || free.counts === null || free.counts.size > MAX_FREE_CFG_LEAVES || free.counts.values().every((n) => n === 1)) return r
   const leaves = [...free.counts.keys()]
   let out
   for (let bits = 0; bits < 1 << leaves.length; bits++) {
@@ -247,17 +201,22 @@ function evalCfgWith(pred, env, assume, free = null) {
   if (m[1] === 'all') return args.includes(false) ? false : (args.every((a) => a === true) ? true : null)
   return args.includes(true) ? true : (args.every((a) => a === false) ? false : null)
 }
-// The verdict on one leaf other than a literal, by its key and value (`target_os = "linux"`; null
-// for a bare `unix`), as evalCfg gives it -- `env.units` too.
+// The verdict on one leaf other than a literal, by key and value (null for a bare `unix`): `test`
+// per `env.test`, never `doc`/`doctest`, `feature` per `env.features` (certain) and `maybeFeatures`,
+// a target key per `env.target` (rustc's cfg set); unknown otherwise, or without those sets.
 export function evalCfgKey(key, value, env) {
   if (env.units) return unanimous(env.units.map((u) => evalCfgKey(key, value, u)))
   if (value === null && key === 'test') return env.test === true
   if (value === null && (key === 'doctest' || key === 'doc')) return false
-  if (key === 'feature' && value !== null) return env.features ? (env.features.has(value) ? true : (env.maybeFeatures?.has(value) ? null : false)) : null
+  if (key === 'feature' && value !== null) {
+    if (!env.features) return null
+    if (env.features.has(value)) return true
+    return env.maybeFeatures?.has(value) ? null : false
+  }
   if (env.target && TARGET_CFG_KEYS.has(key)) return env.target.has(value === null ? key : `${key}="${value}"`)
   return null
 }
-// Code compiled several ways: false only when false in each, true only when true in each.
+// Code compiled several ways (`env.units`): false only when false in each, true only when true in each.
 const unanimous = (each) => (each.every((r) => r === false) ? false : (each.every((r) => r === true) ? true : null))
 
 // `rustc --print cfg` output → the set of cfg leaves as printed, one per line (`unix`,
@@ -270,13 +229,9 @@ export function parseRustcCfg(text) {
 const TOOL_TIMEOUT_MS = 60_000
 // Never let rustup install a toolchain on the loader's behalf, whatever a `rust-toolchain` file says.
 const TOOL_ENV = { ...process.env, RUSTUP_AUTO_INSTALL: '0' }
-// Where rustc is run from: the user's home directory, else the filesystem root. A rustup proxy
-// picks its toolchain from the `rust-toolchain(.toml)` files of the working directory and its
-// parents, and such a file may name a `path` to any binary -- so never the project being bundled
-// (untrusted input: its toolchain file must not choose what runs), and never a temp dir (anyone
-// can plant a file in a world-writable one). The home directory is the user's -- unless it is the
-// bundle root (`baseDir`) or lies inside it (a project bundled from a home directory, a CI job
-// whose HOME is its checkout): then the root, whose toolchain file, if any, is the machine's.
+// Where rustc runs from. A rustup proxy obeys the `rust-toolchain(.toml)` of its cwd and parents, which
+// may name any binary: never the (untrusted) project nor a world-writable temp dir, but the home
+// directory -- unless it is or lies inside the bundle root, then the filesystem root.
 function toolCwd(baseDir) {
   const home = homedir()
   const root = parse(process.cwd()).root
@@ -288,10 +243,8 @@ function toolCwd(baseDir) {
   return homeAbs === base || homeAbs.startsWith(base.endsWith(sep) ? base : base + sep) ? root : home
 }
 
-// Run rustc: `$RUSTC` when set, as cargo honours it (a target only another toolchain knows, such
-// as Solana's `sbf-solana-solana` in its platform-tools), else `rustc` from PATH -- a rustup proxy
-// resolving to the user's default toolchain (or `RUSTUP_TOOLCHAIN`), from toolCwd. With
-// RUSTUP_AUTO_INSTALL=0 an uninstalled toolchain is an error, not a download.
+// Run rustc from toolCwd: `$RUSTC` when set, as cargo honours it (a target only another toolchain
+// knows, as Solana's), else `rustc` from PATH; with RUSTUP_AUTO_INSTALL=0 a missing toolchain fails.
 function rustc(args, what, baseDir) {
   const bin = process.env.RUSTC || 'rustc'
   const r = spawnSync(bin, args, { cwd: toolCwd(baseDir), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: TOOL_TIMEOUT_MS, env: TOOL_ENV })
@@ -300,23 +253,18 @@ function rustc(args, what, baseDir) {
   return r.stdout
 }
 
-// The cfg set of a target: `{ triple, cfgs }` from `rustc --print cfg --target <triple>`, which
-// needs only rustc's built-in knowledge of the target, not its standard library. `host` is the
-// running rustc's host triple (`rustc -vV`). `baseDir` is the bundle root, which rustc is never
-// run from (toolCwd).
+// The cfg set of a target as `{ triple, cfgs }`, from `rustc --print cfg --target <triple>` (no
+// standard library needed); `host` is the running rustc's host triple. `baseDir`: see toolCwd.
 export function rustcTargetCfgs(target, baseDir = null) {
   const triple = target === 'host' ? /^host: (\S+)$/mu.exec(rustc(['-vV'], '--cargo-target=host', baseDir))?.[1] ?? null : target
   if (triple === null) throw new Error('rustc -vV printed no host triple')
   return { triple, cfgs: parseRustcCfg(rustc(['--print', 'cfg', '--target', triple], '--cargo-target', baseDir)) }
 }
 
-// Run `cargo metadata` in `dir` (the directory the build runs in, inside the bundle root) and
-// return its JSON. Opt-in (`--cargo`) because it runs cargo, which reads the project's
-// `.cargo/config.toml` and may touch the registry and Cargo.lock (doc/file-formats.md has the full
-// caveat); never run on a bundle root unasked. With a lockfile present, `--locked` keeps the
-// resolution the one the build uses. The feature flags pass through; `platform`, a target triple,
-// restricts the graph to that target's dependencies.
-function runCargoMetadata(dir, { features = [], noDefaultFeatures = false, allFeatures = false, platform = null } = {}) {
+// `cargo metadata`'s JSON for a build run in `dir`. Opt-in (`--cargo`): cargo reads the project's
+// `.cargo/config.toml` and may touch the registry (doc/file-formats.md). `--locked` with a lockfile
+// keeps the resolution the build's; `platform`, a triple, restricts the graph to that target.
+function runCargoMetadata(dir, { features, noDefaultFeatures, allFeatures, platform }) {
   const args = ['metadata', '--format-version', '1']
   // The workspace's lock may sit above the bundle root: never let metadata rewrite it.
   if (findCargoLock(dir) !== null) args.push('--locked')
@@ -331,15 +279,8 @@ function runCargoMetadata(dir, { features = [], noDefaultFeatures = false, allFe
 }
 
 // `cargo metadata` JSON → `{ enabled: Map<dir, Set<feature>>, deps: Map<dir, Map<useName, dir>>,
-// lacking: [{ dir, key, name, kinds }] }` over the packages the bundle can carry: those whose
-// manifest lies inside the bundle root, plus registry packages cargo read from `~/.cargo/registry`
-// (no `.cargo/config.toml` redirecting crates.io to `vendor/`) that `locate(name, version)` finds
-// vendored in-tree -- `cargo vendor` copies exactly the lockfile's versions, so name + version
-// identify the dir. Anything else (an unvendored registry crate, a path dep outside the root)
-// can't be bundled: it is in `lacking`, once per package depending on it (`dir`), by its package
-// name (`name`; `key` with `-` → `_`), with the kinds of the tables naming it (`normal`, `dev`,
-// `build`). `deps` maps each package's dependencies by the name code refers to them with (renames
-// applied, `-` → `_`).
+// lacking: [{ dir, key, name, kinds }] }` over the packages inside the bundle root or found vendored by
+// `locate(name, version)`; a dependency on any other can't be bundled: it is `lacking`.
 export function resolutionFromMetadata(metadata, baseDir, { locate = null } = {}) {
   let realBase = baseDir
   try {
@@ -371,28 +312,25 @@ export function resolutionFromMetadata(metadata, baseDir, { locate = null } = {}
     const byName = new Map()
     for (const d of node.deps ?? []) {
       const target = dirOf.get(d.pkg)
-      if (target !== undefined && typeof d.name === 'string') byName.set(normName(d.name), target)
-      else if (target === undefined) {
-        const name = nameOf.get(d.pkg) ?? d.name
-        lacking.push({ dir, key: normName(name), name, kinds: new Set((Array.isArray(d.dep_kinds) ? d.dep_kinds : [{ kind: null }]).map((k) => k?.kind ?? 'normal')) })
+      if (target !== undefined) {
+        if (typeof d.name === 'string') byName.set(normName(d.name), target)
+        continue
       }
+      const name = nameOf.get(d.pkg) ?? d.name
+      lacking.push({ dir, key: normName(name), name, kinds: new Set((Array.isArray(d.dep_kinds) ? d.dep_kinds : [{ kind: null }]).map((k) => k?.kind ?? 'normal')) })
     }
     deps.set(dir, byName)
   }
   return { enabled, deps, lacking }
 }
 
-// The cargo config file in absolute directory `abs`: `.cargo/config` when it exists -- cargo
-// prefers the extensionless file over `.cargo/config.toml` when both are there -- else
+// The cargo config file in absolute directory `abs`: `.cargo/config`, which cargo prefers, else
 // `.cargo/config.toml`; null when there is neither.
 const cargoConfigAt = (abs) => ['.cargo/config', '.cargo/config.toml'].map((f) => join(abs, f)).find((file) => isFile(file)) ?? null
 
-// The cargo configs a build run in `from` (a project-relative dir) reads, as cargo finds them: the
-// config of that directory and of every one above it to the filesystem's root, the nearest first
-// -- those above the bundle root too, read but never bundled; `$CARGO_HOME`'s, the machine's, is
-// not -- as `{ dir, abs, file, text, doc }`: `dir` the directory holding its `.cargo`,
-// project-relative (null above the bundle root), `abs` the same absolute, `file` the config's
-// path from the bundle root. Throws a TomlError naming a config that isn't TOML.
+// The cargo configs a build run in `from` (project-relative) reads, nearest first up to the
+// filesystem's root ($CARGO_HOME's aside), as `{ dir, abs, file, text, doc }`: `dir` holds its
+// `.cargo`, project-relative (null above the bundle root), `abs` absolute; `file` from the bundle root.
 function cargoConfigs(baseDir, from) {
   const baseAbs = resolve(baseDir)
   const out = []
@@ -406,25 +344,18 @@ function cargoConfigs(baseDir, from) {
   }
   return out
 }
-// A path a cargo config or a manifest in absolute directory `absDir` writes (`.`: that directory),
-// as cargo takes it -- relative to that directory, an absolute one as it is -- project-relative
-// from the bundle root `baseAbs`; null outside it. A config's paths are relative to the directory
-// holding its `.cargo` (cargoConfigs' `abs`).
+// A path a cargo config or manifest in absolute `absDir` writes (relative to that directory, as cargo
+// takes it), project-relative from the bundle root `baseAbs`; null outside it.
 const projectRel = (baseAbs, absDir, path = '.') => normalizeRel('.', toPosix(relative(baseAbs, resolve(absDir, path))))
 
-// The directory `cargo vendor` filled, as cargo configs `configs` (cargoConfigs) say: their
-// `[source]` tables merged as cargo merges them, each source's each key from the nearest config
-// writing it -- the `directory` of the source `[source.crates-io] replace-with` names, through any
-// chain of replacements (`cargo vendor` suggests `vendored-sources`, but any name does), else of
-// the one source some `replace-with` names, relative to the directory holding the `.cargo` of the
-// config writing it; the default `vendor` (at the bundle root) when nothing replaces a source
-// with a directory. A configured directory outside the bundle root, or that doesn't exist, is
-// warned about (a stale `vendor/` beside it is not what cargo builds from) unless `quiet`.
+// The directory `cargo vendor` filled, as cargo configs `configs` say: the `directory` of the source
+// `[source.crates-io] replace-with` names (through any chain), else of the one source some
+// `replace-with` names, else `vendor`. One outside the bundle root or missing is warned of unless `quiet`.
 function vendorDirOf(baseDir, configs, { quiet = false } = {}) {
-  // source name -> { replaceWith, directory: { path, config } }
+  // source name -> { replaceWith, directory: { path, config } }, each key from the nearest config
   const sources = new Map()
   for (const config of configs) {
-    for (const [name, fields] of Object.entries(isTomlTable(config.doc.source) ? config.doc.source : {})) {
+    for (const [name, fields] of Object.entries(table(config.doc.source) ?? {})) {
       if (!isTomlTable(fields)) continue
       const s = cached(sources, name, () => ({ replaceWith: null, directory: null }))
       if (s.replaceWith === null && typeof fields['replace-with'] === 'string') s.replaceWith = fields['replace-with']
@@ -440,7 +371,7 @@ function vendorDirOf(baseDir, configs, { quiet = false } = {}) {
     }
     return null
   }
-  const replaced = new Set([...sources.values()].map((s) => (s.replaceWith === null ? null : follow(s.replaceWith))).filter((d) => d !== null))
+  const replaced = new Set(sources.values().map((s) => (s.replaceWith === null ? null : follow(s.replaceWith))).filter((d) => d !== null))
   const found = follow('crates-io') ?? (replaced.size === 1 ? [...replaced][0] : null)
   if (found === null) return VENDOR_DIR
   const norm = projectRel(resolve(baseDir), found.config.abs, found.path)?.replace(/\/+$/u, '') || null
@@ -463,17 +394,14 @@ function cfgFlags(flags) {
   }
   return out
 }
-// The cfgs the rustflags of a build may set: those of the `build.rustflags` and
-// `target.<…>.rustflags` of each of its cargo configs (`configs`, see cargoConfigs: which applies,
-// and how cargo joins them, is the build's business), and of the environment cargo reads them
-// from (CARGO_ENCODED_RUSTFLAGS, RUSTFLAGS, CARGO_BUILD_RUSTFLAGS).
+// The cfgs the rustflags of a build may set: those of `build.rustflags` and every
+// `target.<…>.rustflags` of its cargo configs, and of CARGO_ENCODED_RUSTFLAGS, RUSTFLAGS and CARGO_BUILD_RUSTFLAGS.
 function rustflagsCfgsOf(configs) {
   const names = new Set()
   const add = (value) => {
     const flags = Array.isArray(value) ? value.filter((f) => typeof f === 'string') : (typeof value === 'string' ? value.split(/\s+/u).filter(Boolean) : [])
     for (const name of cfgFlags(flags)) names.add(name)
   }
-  // The `rustflags` of the `build` table and of every `target.<…>` one.
   for (const { doc } of configs) {
     add(table(doc.build)?.rustflags)
     for (const target of Object.values(table(doc.target) ?? {})) add(table(target)?.rustflags)
@@ -483,12 +411,9 @@ function rustflagsCfgsOf(configs) {
   for (const v of [env.RUSTFLAGS, env.CARGO_BUILD_RUSTFLAGS]) if (v) add(v)
   return names
 }
-// What code a build script runs -- its own, or a lib it calls -- prints as
-// `cargo:rustc-cfg=<name>` (or `cargo::`), among the texts of its files, by what they write
-// outside full-line comments: the names it may set, and whether it may set one the loader can't
-// read -- a name it formats, whole (`rustc-cfg={}`, as cfg_aliases' `cfg_aliases!` does) or in
-// part (`rustc-cfg=os_{}`), the directive written apart from the name (build-rs's `rustc_cfg`),
-// `autocfg`'s probes.
+// The cfgs build-script code may print as `cargo:rustc-cfg=<name>` (or `cargo::`), outside full-line
+// comments: `names`, and `any` when it may print one the loader can't read (a formatted name, as
+// cfg_aliases does, the directive apart from the name, as build-rs's `rustc_cfg`, `autocfg`'s probes).
 const RUSTC_CFG_RE = /cargo::?rustc-cfg=((?:r#)?[A-Za-z_]\w*)?(\{)?/gu
 const CFG_MENTION_RE = /rustc[-_]cfg|\bautocfg\b/u
 function cfgsPrinted(texts) {
@@ -505,9 +430,6 @@ function cfgsPrinted(texts) {
   }
   return { names, any }
 }
-
-// Whether a JSON value is a plain object (not an array, not null).
-const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 // A source URL as cargo compares them: no trailing `/` or `.git`, the scheme and host lowercased.
 const canonicalUrl = (url) => url.trim().replace(/\/+$/u, '').replace(/\.git$/u, '').replace(/^([a-z][\w+.-]*:\/\/)([^/]*)/iu, (m) => m.toLowerCase())
@@ -539,47 +461,37 @@ function retarget(graph, to) {
 // No custom cfg a build sets (see cfgsSetFor).
 const NO_CFGS_SET = { names: new Set(), any: false }
 
-// A compile unit: the feature context a file's code sees (`target`: the build's; `host`: that of
-// what is built for the host -- build-dependencies, proc-macro crates and their dependencies --
-// which resolver 2 keeps apart) and the platform it is compiled for, as `<features>|<platform>`.
-// A package's code is compiled as `target|target`, its build script as `target|host`, a
-// build-dependency's or proc-macro's code as `host|host`; one file may be compiled as several.
+// A compile unit, `<features>|<platform>`: the feature context its code sees (`target`, or `host` for
+// what is built for the host, which resolver 2 keeps apart) and the platform it is compiled for. A
+// package's code is `target|target`, its build script `target|host`, a proc-macro's `host|host`.
 const unitKey = (featureCtx, platform) => `${featureCtx}|${platform}`
 export const TARGET_UNIT = unitKey('target', 'target')
 export const HOST_UNIT = unitKey('host', 'host')
 const unitFeatureCtx = (unit) => unit.slice(0, unit.indexOf('|'))
 const unitPlatform = (unit) => unit.slice(unit.indexOf('|') + 1)
 
-// Per-bundle Cargo state: manifest lookup (memoized per directory), crate-name resolution against
-// in-tree sources, and feature resolution for the packages owning `entries` (the crate roots being
-// bundled, like `cargo build -p …`). `features` / `noDefaultFeatures` / `allFeatures` mirror
-// cargo's flags for those root packages (`pkg/feat` targets one of them). `cargo: true` takes the
-// dependency graph and features from `cargo metadata` (see runCargoMetadata) instead. `target`
-// names the build's target -- a triple or `host`, asked of rustc (rustcTargetCfgs), or its `{
-// triple, cfgs }` outright -- so target-specific dependency tables and `#[cfg(unix)]`-style code
-// are decided; without one they are kept. The host's platform is known when the target is the
-// host, or given as `host` (`{ triple, cfgs }`). `baseDir` is the bundle root; every path in and
-// out is project-relative POSIX.
+// Per-bundle Cargo state for the packages owning `entries`, built like `cargo build -p …` with
+// cargo's feature flags (`cargo: true` asks `cargo metadata` instead). `target`: a triple or `host`
+// for rustc to describe, or `{ triple, cfgs }`; without one, target-specific code is kept.
 export function createCargoContext(baseDir, { entries = [], features = [], noDefaultFeatures = false, allFeatures = false, cargo = false, target = null, host = null } = {}) {
   const targetInfo = target === null ? null : (typeof target === 'string' ? rustcTargetCfgs(target, baseDir) : target)
   const hostInfo = target === 'host' ? targetInfo : host
-  const manifests = new Map()
-  // dir -> the manifest as `{ file, text, buf, doc }` (its bytes, and its table tree), or null
-  // (rootOf's look for [workspace])
-  const tables = new Map()
-  const tableOf = (dir) => cached(tables, dir, () => {
+  const baseAbs = resolve(baseDir)
+  // dir -> its manifest's `{ file, text, buf, doc }` (bytes and table tree), or null
+  const tableOf = memoized((dir) => {
     const file = posix.join(dir, 'Cargo.toml')
-    const buf = readFileOrNull(join(baseDir, file))
-    const text = buf === null ? null : buf.toString('utf8')
-    return text === null ? null : { file, text, buf, doc: readToml(text, file) }
+    let buf
+    try {
+      buf = readFileSync(join(baseDir, file))
+    } catch {
+      return null
+    }
+    const text = buf.toString('utf8')
+    return { file, text, buf, doc: readToml(text, file) }
   })
-  // The workspace root of the package whose manifest is at `dir` (its table tree `doc`), as cargo
-  // finds it: its `[package] workspace` path, else the nearest manifest above it with a
-  // [workspace] that doesn't exclude it -- one that does is passed over, as cargo passes it --
-  // inside the bundle root (a project-relative dir), else above it (outerWorkspace). A [workspace]
-  // that doesn't exclude the package is its workspace, `members` or not: cargo either takes it as
-  // a member there (a member's path dependency is one) or refuses to build it. Null for a root, a
-  // vendored crate (a published manifest inherits nothing) or a package outside any workspace.
+  // The workspace root of the package at `dir`, as cargo finds it: its `[package] workspace`, else the
+  // nearest [workspace] above that doesn't exclude it, in the bundle root (a dir) or above it
+  // (outerWorkspace). Null for a root, a vendored crate (a published one inherits nothing) or none.
   const rootOf = (dir, doc) => {
     if (isTomlTable(doc.workspace) || isVendoredDir(dir)) return null
     const named = table(doc.package)?.workspace
@@ -603,41 +515,33 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const list = (v) => (Array.isArray(v) ? v : [])
     return list(doc.workspace.exclude).some(under) && !list(doc.workspace.members).some(under)
   }
-  // The workspace root at absolute `abs`, above the bundle root: the manifest there with a
-  // [workspace], read for what members inherit, the resolver it sets and its `[patch]` -- never
-  // bundled, nor its lockfile read -- as `{ dir: null, outside: abs, file, doc, … }` (see
-  // readManifest; `file` its path from the bundle root); undefined for no [workspace] there.
-  const baseAbs = resolve(baseDir)
-  const outer = new Map()
-  const outerWorkspace = (abs) => {
-    if (!outer.has(abs)) {
-      const file = join(abs, 'Cargo.toml')
-      const text = readText(diskHost, file)
-      const label = toPosix(relative(baseAbs, file))
-      const doc = text === null ? null : readToml(text, label)
-      outer.set(abs, isTomlTable(doc?.workspace) ? { dir: null, outside: abs, file: label, doc, ...manifestOf(text, doc, label, null) } : undefined)
-    }
-    return outer.get(abs)
-  }
-  // A manifest as parseCargoManifest reads it, at `file` (`dir`'s Cargo.toml), with each path
-  // dependency's directory, project-relative, on its entry (`dir`; null outside the bundle root):
-  // an inherited one's path is the workspace root's.
-  // `workspaceRoot` is the manifest of the workspace root it inherits from (rootOf), or null.
-  // A vendored package's is as the vendor directory lists it, not yet checked (see readManifest).
-  const manifestAt = (dir) => cached(manifests, dir, () => {
+  // The workspace root at absolute `abs` above the bundle root, read for what members inherit, its
+  // resolver and `[patch]` (never bundled), as `{ dir: null, outside: abs, file, doc, … }`; undefined
+  // for no [workspace] there.
+  const outerWorkspace = memoized((abs) => {
+    const file = join(abs, 'Cargo.toml')
+    const text = readText(diskHost, file)
+    const label = toPosix(relative(baseAbs, file))
+    const doc = text === null ? null : readToml(text, label)
+    return isTomlTable(doc?.workspace) ? { dir: null, outside: abs, file: label, doc, ...manifestOf(text, doc, label, null) } : undefined
+  })
+  // The manifest at `dir` as parseCargoManifest reads it, with its `workspaceRoot` (rootOf's) and each
+  // path dependency's project-relative `dir` (null outside the bundle root; an inherited one's path is
+  // the root's). A vendored package's is `unchecked` until readManifest checks it.
+  const manifestAt = memoized((dir) => {
     const raw = tableOf(dir)
-    const root = raw === null ? null : rootOf(dir, raw.doc)
-    const ws = root === null ? null : (typeof root === 'string' ? readManifest(root) : root)
-    const m = raw === null ? null : { dir, file: raw.file, ...manifestOf(raw.text, raw.doc, raw.file, ws), workspaceRoot: ws, unchecked: isVendoredDir(dir) }
-    for (const d of m?.deps.values() ?? []) {
+    if (raw === null) return null
+    const root = rootOf(dir, raw.doc)
+    const ws = typeof root === 'string' ? readManifest(root) : root
+    const m = { dir, file: raw.file, ...manifestOf(raw.text, raw.doc, raw.file, ws), workspaceRoot: ws, unchecked: isVendoredDir(dir) }
+    for (const d of m.deps.values()) {
       for (const r of d.kinds.values()) r.dir = r.path === null ? null : manifestPath(r.inherited && ws !== null ? ws : m, r.path)
     }
     return m
   })
-  // The manifest at `dir` as the build takes it in (manifestAt): a vendored package's checked
-  // against its `.cargo-checksum.json` (checkVendored), the bytes read, before what it says --
-  // features, dependencies -- decides anything. Only a listing of the vendor directory reads a copy
-  // unchecked: cargo checks the files of a copy it builds, not of every copy there.
+  // The manifest at `dir` as the build takes it in: a vendored package's checked against its
+  // `.cargo-checksum.json` before what it says decides anything. Only a listing of the vendor
+  // directory reads one unchecked: cargo checks the files of a copy it builds, not of every copy.
   const readManifest = (dir) => {
     const m = manifestAt(dir)
     if (m?.unchecked) {
@@ -658,16 +562,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       dir = posix.dirname(dir)
     }
   }
-  // The package owning a file: the nearest manifest above it with a [package]; memoized per
-  // directory (every lookup below starts here, several times per file).
-  const packageByDir = new Map()
-  const packageFor = (fileRel) => {
-    const dir = posix.dirname(fileRel)
-    return cached(packageByDir, dir, () => {
-      for (const m of manifestsAbove(dir)) if (m.package) return m
-      return null
-    })
-  }
+  // The package owning a file: the nearest manifest above it with a [package]; memoized per directory.
+  const packageFor = memoized((fileRel) => manifestsAbove(posix.dirname(fileRel)).find((m) => m.package) ?? null, (fileRel) => posix.dirname(fileRel))
   // The workspace root manifest of package `m` (see rootOf): its own when it is a root, an outer
   // one above the bundle root (`outside`) too; `m` itself outside any workspace.
   const rootManifestOf = (m) => (m.isWorkspace ? m : (m.workspaceRoot ?? m))
@@ -678,49 +574,39 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const root = m === null ? null : rootManifestOf(m)
     return root?.isWorkspace === true && root.outside === undefined ? root : null
   }
-  // The manifest's lib target root when it is on disk (`[lib] path`, default `src/lib.rs`);
-  // memoized on the manifest, since it is asked for once per crate reference.
-  // A vendored package's `[lib] path` may not leave its directory (a published crate's never
-  // does; one that tries is reaching for the project's files).
-  const libPath = (m) => {
-    if (m.libRoot === undefined) {
-      const rel = normalizeRel(m.dir, m.lib.path ?? 'src/lib.rs')
-      const inside = rel !== null && (!isVendoredDir(m.dir) || rel.startsWith(`${m.dir}/`))
-      if (rel !== null && !inside) console.warn(`[loader.cargo] Refusing lib path outside its package: ${m.lib.path} in ${m.dir}`)
-      m.libRoot = inside && isFile(join(baseDir, rel)) ? rel : null
-    }
-    return m.libRoot
-  }
+  // Whether `rel`, a target path of package `m`, is its own: a vendored package's may not leave its
+  // directory (a published crate's never does; one that tries is reaching for the project's files).
+  const ownTarget = (m, rel) => rel !== null && (!isVendoredDir(m.dir) || rel.startsWith(`${m.dir}/`))
+  // The manifest's lib target root when it is on disk (`[lib] path`, default `src/lib.rs`).
+  const libPath = memoized((m) => {
+    const rel = normalizeRel(m.dir, m.lib.path ?? 'src/lib.rs')
+    const inside = ownTarget(m, rel)
+    if (rel !== null && !inside) console.warn(`[loader.cargo] Refusing lib path outside its package: ${m.lib.path} in ${m.dir}`)
+    return inside && isFile(join(baseDir, rel)) ? rel : null
+  })
   const libName = (m) => normName(m.lib.name ?? m.package?.name ?? '')
-  // The package's build script when it is on disk (see buildScriptOf); memoized on the manifest.
-  const buildScript = (m) => {
-    if (m.buildScript === undefined) {
-      const rel = m.package.build === false ? null : normalizeRel(m.dir, m.package.build ?? 'build.rs')
-      const inside = rel !== null && (!isVendoredDir(m.dir) || rel.startsWith(`${m.dir}/`))
-      if (rel !== null && !inside && isFile(join(baseDir, rel))) console.warn(`[loader.cargo] Refusing build script outside its package: ${m.package.build} in ${m.dir}`)
-      m.buildScript = inside && isFile(join(baseDir, rel)) ? rel : null
-    }
-    return m.buildScript
-  }
-  // Whether `fileRel` belongs to a test or bench target of its package (compiled with `cfg(test)`).
+  // The package's build script when it is on disk (see buildScriptOf).
+  const buildScript = memoized((m) => {
+    const rel = m.package.build === false ? null : normalizeRel(m.dir, m.package.build ?? 'build.rs')
+    const inside = ownTarget(m, rel)
+    if (rel !== null && !inside && isFile(join(baseDir, rel))) console.warn(`[loader.cargo] Refusing build script outside its package: ${m.package.build} in ${m.dir}`)
+    return inside && isFile(join(baseDir, rel)) ? rel : null
+  })
   const isTestTarget = (fileRel) => isTestTargetPath(packageFor(fileRel)?.dir ?? '.', fileRel)
-  // Whether `fileRel` belongs to a target built with the dev-dependencies (tests, benches,
-  // examples).
-  const linksDevDeps = (fileRel) => linksDevDepsPath(packageFor(fileRel)?.dir ?? '.', fileRel)
+  // Whether `fileRel` belongs to a target built with the dev-dependencies: a test, bench or example
+  // (which unlike the other two isn't compiled with `cfg(test)`).
+  const linksDevDeps = (fileRel) => ['tests', 'benches', 'examples'].includes(targetDirOf(packageFor(fileRel)?.dir ?? '.', fileRel))
   // The packages an entry is a test, bench or example target of: their dev-dependencies are
-  // linked (that build is `cargo test`'s). Memoized.
+  // linked (that build is `cargo test`'s).
   let devRoots = null
-  const devRootDirs = () => (devRoots ??= new Set(entries.filter((e) => linksDevDeps(e)).map((e) => packageFor(e)?.dir)))
+  const devRootDirs = () => (devRoots ??= new Set(entries.filter(linksDevDeps).map((e) => packageFor(e)?.dir)))
   const version = (m) => m.package.version
 
   // --- dependency resolution
 
-  // The directory cargo is taken to run in for the build (`runDir`): the one of the package the
-  // first entry belongs to -- `cargo build` there, which finds its workspace root above -- unless
-  // that entry is a vendored crate's (in the vendor directory the bundle root's configs name),
-  // whose own config cargo never reads; else the bundle root. What the cargo config sets for the
-  // build -- the vendor directory, `[patch]`, rustflags -- is what the configs cargo reads when
-  // run there say (`configs`, see cargoConfigs), and those are the configs a bundle carries.
+  // The directory cargo is taken to run in (`runDir`): that of the first entry's package, unless the
+  // entry is a vendored crate's (whose config cargo never reads), else the bundle root. The configs
+  // cargo reads there (`configs`) set the vendor directory, `[patch]` and rustflags, and are bundled.
   const rootConfigs = cargoConfigs(baseDir, '.')
   const rootVendorDir = vendorDirOf(baseDir, rootConfigs, { quiet: true })
   const ownEntry = entries.find((e) => !e.startsWith(`${rootVendorDir}/`))
@@ -733,36 +619,32 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   }
   const runDir = ownEntry === undefined ? '.' : packageDirAbove(posix.dirname(ownEntry))
   const configs = runDir === '.' ? rootConfigs : cargoConfigs(baseDir, runDir)
-  // The vendor directory of the build the entries are in, as those configs say.
   const vendorDir = vendorDirOf(baseDir, configs)
   // Whether a package directory is a vendored crate's (a registry crate `cargo vendor` copied in).
   const isVendoredDir = (dir) => dir !== vendorDir && dir.startsWith(`${vendorDir}/`)
-  // The vendored crates, `<vendorDir>/<dir>/`, as `[{ version, dir, git }]`, indexed `byName`
-  // (normalized package name; the dir may hyphenate a snake_case name, and an older duplicate
-  // version lives in `<name>-<version>/`) and `byLib` (lib name, for the crates whose `[lib] name`
-  // differs: `md-5` → `md5`). `git`: whether the copy is of a git repository -- its
-  // `.cargo-checksum.json` has no package checksum, which a registry's always does -- or null
-  // without that file.
+  // The vendored crates `<vendorDir>/<dir>/` as `[{ version, dir, git }]`, indexed `byName` (normalized
+  // package name) and `byLib` (lib name: `md-5` → `md5`). `git`: whether the copy is a git checkout's
+  // (its `.cargo-checksum.json` has no package checksum), null without that file.
   let vendorIndex = null
   const vendored = () => {
-    if (vendorIndex === null) {
-      vendorIndex = { byName: new Map(), byLib: new Map() }
-      let dirs = []
-      try {
-        dirs = readdirSync(join(baseDir, vendorDir))
-      } catch { /* no vendor dir */ }
-      for (const d of dirs) {
-        if (d.startsWith('.')) continue // a directory source reads none of these
-        const m = manifestAt(`${vendorDir}/${d}`)
-        if (!m?.package) continue
-        const sums = checksumOf(m.dir)
-        const entry = { version: version(m), dir: m.dir, git: sums?.git ?? null }
-        for (const [index, key] of [[vendorIndex.byName, normName(m.package.name)], [vendorIndex.byLib, libName(m)]]) cached(index, key, () => []).push(entry)
-      }
+    if (vendorIndex !== null) return vendorIndex
+    vendorIndex = { byName: new Map(), byLib: new Map() }
+    let dirs = []
+    try {
+      dirs = readdirSync(join(baseDir, vendorDir))
+    } catch { /* no vendor dir */ }
+    for (const d of dirs) {
+      if (d.startsWith('.')) continue // a directory source reads none of these
+      const m = manifestAt(`${vendorDir}/${d}`)
+      if (!m?.package) continue
+      const entry = { version: version(m), dir: m.dir, git: checksumOf(m.dir)?.git ?? null }
+      cached(vendorIndex.byName, normName(m.package.name), () => []).push(entry)
+      cached(vendorIndex.byLib, libName(m), () => []).push(entry)
     }
     return vendorIndex
   }
-  // A vendored package's `.cargo-checksum.json`, parsed, or null when it has none.
+  // A vendored package's `.cargo-checksum.json`, or null when it has none: `package` the crate's
+  // sha256 in hex (a git checkout's copy has none: `git`), `files` each file's by package-relative path.
   const checksums = new Map()
   const checksumOf = (dir) => cached(checksums, dir, () => {
     const file = posix.join(dir, '.cargo-checksum.json')
@@ -775,9 +657,6 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         throw new Error(`${file}: not JSON: ${err.message}`, { cause: err })
       }
     }
-    // A registry's copy has a package checksum (`package`, the crate's sha256 in hex); a git
-    // checkout's has none. `files`: each file's sha256, as `cargo vendor` listed them, path relative
-    // to the package.
     return value === null ? null : { text, git: (value?.package ?? null) === null, package: typeof value?.package === 'string' ? value.package : null, files: isPlainObject(value?.files) ? value.files : {} }
   })
   // Where `cargo vendor` copied the vendored package at `dir` from, as its `.cargo-checksum.json`
@@ -786,10 +665,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const git = checksumOf(dir)?.git
     return git === undefined ? null : (git ? 'git' : 'registry')
   }
-  // Throws when `fileRel`, a file of the vendored package at `dir`, isn't byte for byte (`buf`) the
-  // file its `.cargo-checksum.json` lists -- edited after `cargo vendor`: cargo refuses to build
-  // the package, and so the bundle does. A file the list doesn't name, or a package without one,
-  // passes. Once per file (`verified`): what passed isn't hashed again.
+  // Throws when `fileRel`, a file of the vendored package at `dir`, isn't (`buf`) the file its
+  // `.cargo-checksum.json` lists: changed since `cargo vendor`, which cargo refuses to build. An
+  // unlisted file, or a package without the list, passes. Once per file.
   const verified = new Set()
   const checkVendored = (dir, fileRel, buf) => {
     if (verified.has(fileRel)) return
@@ -800,10 +678,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     }
     verified.add(fileRel)
   }
-  // Throws when the package checksum of the vendored package `m` (its `.cargo-checksum.json`'s, a
-  // registry copy's) isn't one the build's Cargo.lock locks its version with, where it locks one:
-  // the copy isn't of the crate locked, which cargo refuses to build, and so the bundle does. Once
-  // per package.
+  // Throws when the package checksum of the vendored package `m` isn't one the build's Cargo.lock locks
+  // its version with, where it locks one: the copy isn't of the crate locked, which cargo refuses to
+  // build. Once per package.
   const lockChecked = new Set()
   const checkLocked = (m) => {
     if (lockChecked.has(m.dir)) return
@@ -815,33 +692,24 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       throw new Error(`${m.dir}/.cargo-checksum.json: the package checksum of ${m.package.name} ${version(m)}, ${hex}, isn't the one ${lk.file} locks (${locked.join(', ')}): vendor it again`)
     }
   }
-  // The package the build is of: the first entry's package that isn't vendored -- the one cargo is
-  // run in (runDir), taken now that the vendor directory is known; null when no entry has one.
-  // Memoized.
-  let buildPkg
-  const buildPackage = () => {
-    if (buildPkg === undefined) buildPkg = entries.map(packageFor).find((m) => m && !isVendoredDir(m.dir)) ?? null
-    return buildPkg
-  }
-  // The workspace root of the build: its package's (rootManifestOf), inside the bundle root or
-  // above it (`outside`: read, never bundled), the package itself outside any workspace; the bundle
-  // root's manifest when no entry has a package. Its Cargo.lock is the build's, and its resolver
-  // and `[patch]` apply to every package of the build.
+  // The package the build is of: the first entry's that isn't vendored (runDir's); null for none.
+  const buildPackage = memoized(() => entries.map(packageFor).find((m) => m && !isVendoredDir(m.dir)) ?? null)
+  // The workspace root of the build (rootManifestOf its package), inside the bundle root or above it,
+  // or the bundle root's manifest when no entry has a package: its Cargo.lock, resolver and `[patch]`
+  // are the build's.
   const buildWorkspaceRoot = () => {
     const pkg = buildPackage()
     return pkg === null ? readManifest('.') : rootManifestOf(pkg)
   }
-  // The build's Cargo.lock, project-relative: beside its workspace root, as cargo finds it -- a
-  // vendored crate's own published lock plays no part; null when that root lies above the bundle
-  // root (its lockfile is cargo's, never read, and one beside the package isn't the build's).
+  // The build's Cargo.lock, project-relative: beside its workspace root, as cargo finds it; null when
+  // that root lies above the bundle root (its lockfile is cargo's, never read).
   const buildLockPath = () => {
     const root = buildWorkspaceRoot()
     return root?.outside === undefined ? posix.join(root?.dir ?? '.', 'Cargo.lock') : null
   }
-  // The build's Cargo.lock (buildLockPath), read by @preventive/lockfile (`version = 3` or `4`; an
-  // older one, or a lock that isn't what cargo writes or could be read two ways, stops the build),
-  // as `{ file, text, lock, byId }` (`byId`: `name version` → the keys of that version's
-  // packages); null when there is none in the bundle root.
+  // The build's Cargo.lock as `{ file, lock, byId }` (`byId`: `name version` → its packages' keys),
+  // read by @preventive/lockfile, which refuses an older format or a lock cargo wouldn't write; null
+  // when there is none in the bundle root.
   let lock
   const lockfile = () => {
     if (lock === undefined) {
@@ -851,9 +719,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       if (text !== null) {
         const parsed = readNamed(file, () => parseCargoLock(text))
         const byId = new Map()
-        for (const [key, p] of Object.entries(parsed.packages)) {
-          cached(byId, `${normName(p.name)} ${p.version}`, () => []).push(key)
-        }
+        for (const [key, p] of Object.entries(parsed.packages)) cached(byId, `${normName(p.name)} ${p.version}`, () => []).push(key)
         lock = { file, lock: parsed, byId }
       }
     }
@@ -866,43 +732,31 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         locate: (name, ver) => (typeof name === 'string' ? vendored().byName.get(normName(name))?.find((c) => c.version === ver)?.dir ?? null : null),
       })
     : null
-  // Where the build takes its `[patch]` tables from, in the order they apply: the cargo configs'
-  // (`configs`, nearest first), as @preventive/lockfile reads them, then the workspace root
-  // manifest's (buildWorkspaceRoot), as `{ patch, at, from }`: `at(path)` the directory a patch's
-  // path names, project-relative (null outside the bundle root) -- relative to the directory
-  // holding a config's `.cargo`, or to the manifest's -- `from` the file. Throws a TomlError or
-  // LockfileError naming a config.
-  let patchMemo = null
-  const patchSources = () => {
-    if (patchMemo === null) {
-      const root = buildWorkspaceRoot()
-      patchMemo = [
-        ...configs.map((c) => ({ patch: readNamed(c.file, () => parseCargoConfig([c.text])).patch, at: (path) => projectRel(baseAbs, c.abs, path), from: c.file })),
-        ...(root ? [{ patch: root.cargo.patch, at: (path) => manifestPath(root, path), from: root.file }] : []),
-      ]
-    }
-    return patchMemo
-  }
-  // The `[patch]` of crate `crate` for what request `r` comes from, as `{ spec, dir, from }`, the
-  // first patchSources has -- `spec` as @preventive/lockfile reads it, `dir` the patch's directory
-  // for a path (null outside the bundle root), `from` the file saying so. Undefined when nothing
-  // patches it.
+  // Where the build's `[patch]` tables come from, in the order they apply: the cargo configs' (nearest
+  // first), then the workspace root manifest's, as `{ patch, at, from }`: `at(path)` the project-relative
+  // directory a patch's path names (null outside the bundle root), `from` the file.
+  const patchSources = memoized(() => {
+    const root = buildWorkspaceRoot()
+    return [
+      ...configs.map((c) => ({ patch: readNamed(c.file, () => parseCargoConfig([c.text])).patch, at: (path) => projectRel(baseAbs, c.abs, path), from: c.file })),
+      ...(root ? [{ patch: root.cargo.patch, at: (path) => manifestPath(root, path), from: root.file }] : []),
+    ]
+  })
+  // The first `[patch]` of crate `crate` for where request `r` comes from, as `{ spec, dir, from }`
+  // (`dir` a path patch's directory, null outside the bundle root); undefined when nothing patches it.
   const patchFor = (crate, r) => {
     for (const { patch, at, from } of patchSources()) {
       for (const [source, specs] of Object.entries(patch)) {
         if (!patchesSource(source, r)) continue
         for (const [name, spec] of Object.entries(specs)) {
-          if (normName(name) !== crate) continue
-          return { spec, dir: spec.source.type === 'path' ? at(spec.source.path) : null, from }
+          if (normName(name) === crate) return { spec, dir: spec.source.type === 'path' ? at(spec.source.path) : null, from }
         }
       }
     }
-    return undefined
   }
-  // Whether a `[patch.<source>]` table patches what request `r` comes from: crates.io's
-  // (`crates-io`, or its index URL) for a crates.io dependency, the registry's name or index for
-  // another, the repository for a git dependency -- URLs compared as cargo canonicalizes them (no
-  // trailing `/` or `.git`, the scheme's and host's case aside).
+  // Whether a `[patch.<source>]` table patches what request `r` comes from: crates.io's (`crates-io`,
+  // or its index URL), another registry's name or index, a git dependency's repository -- URLs
+  // compared as cargo canonicalizes them.
   const patchesSource = (source, r) => {
     if (r.source === 'git') return r.origin !== null && canonicalUrl(source) === canonicalUrl(r.origin)
     if (r.source !== 'registry') return false
@@ -920,31 +774,20 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const kind = copySource(m.dir)
     return keys.filter((k) => lk.lock.packages[k].source !== undefined && (kind === null || sourceKind(lk.lock.packages[k].source) === kind))
   }
-  // Dependency → package, memoized per (package, request): the fixed-point loop asks many times.
-  const depTargets = new Map()
-  // The in-tree package a dependency of `m` resolves to through one of its tables (`request`): a
-  // `path` dep, else a `[patch]` path override (patchFor) whose version satisfies the requirement,
-  // else the vendored crate of that name from where the dependency says (a git dependency, or one a
-  // git `[patch]` replaces, takes a copy of a git checkout; any other a registry's) -- the version
-  // Cargo.lock records for `m` from that source when it satisfies the requirement, else the one
-  // vendored version that does. A package can depend on two versions of one crate (`borsh = "1"`
-  // beside `borsh0-9 = { package = "borsh", version = "0.9" }`, or one per table): the lock then
-  // lists both under it, and the requirement tells which is which. Null when it isn't in-tree -- a
-  // path (or patch) outside the bundle root, or no vendored copy -- and, warned, when the vendored
-  // copies don't settle it: the locked version isn't among them, none satisfies the requirement,
-  // or several do and no lock chooses. Cargo would build none of those from what the bundle holds,
-  // so none is guessed.
-  // What it warns of is said once, when it is first asked for unless `quiet`, else when
-  // warnDep asks: the replay lays out every declaration, and warns only of those the build links.
+  // The in-tree package a dependency of `m` resolves to through one of its tables (`request`): a path,
+  // a `[patch]` path whose version fits, else the vendored copy Cargo.lock pins for `m` or the one that
+  // fits. Null when it isn't in-tree, and warned when the copies don't settle it: none is guessed.
+  const depTargets = new Map() // memoized per (package, request): the fixed-point loop asks many times
   const resolveDep = (m, dep, request, { quiet = false } = {}) => {
-    const byRequest = cached(depTargets, m.dir, () => new Map())
-    const found = cached(byRequest, request, () => {
+    const found = cached(nestedMap(depTargets, m.dir), request, () => {
       const warnings = []
       return { t: resolveDepUncached(m, dep, request, (w) => warnings.push(w)), warnings }
     })
     if (!quiet) warnDep(m, request)
     return found.t
   }
+  // What resolveDep warned of, said once: when first asked unless `quiet`, else when warnDep asks (the
+  // replay warns only of the declarations the build links).
   const warnDep = (m, request) => {
     for (const w of depTargets.get(m.dir)?.get(request)?.warnings.splice(0) ?? []) console.warn(w)
   }
@@ -988,6 +831,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const vendoredList = candidates.map((c) => c.version).toSorted((a, b) => b.localeCompare(a, 'en', { numeric: true })).join(', ')
     const lk = lockfile()
     if (lk) {
+      // A package may depend on two versions of one crate: the requirement tells which pin is this one.
       const pins = lockKeysOf(lk, m)
         .flatMap((k) => lk.lock.packages[k].dependencies)
         .map((k) => lk.lock.packages[k])
@@ -1013,26 +857,16 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
 
   // --- feature resolution
 
-  // Cargo's feature resolver: v2 (edition 2021, or `resolver = "2"`) leaves dev-dependencies out of
-  // a normal build's unification, resolves what is built for the host apart from what is built for
-  // the target, and ignores the tables of platforms not being built; v1 unifies them all. v3
-  // (edition 2024, or `resolver = "3"`) resolves features as v2 does, and picks versions by
-  // `rust-version` too, which the lockfile and the vendored copies have decided here. It is the
-  // workspace's setting: the build's workspace root's (buildWorkspaceRoot) `resolver`, else its
-  // edition's, as linkCargo gives it -- never that of a vendored crate an entry is in, where cargo
-  // isn't run.
-  let resolverMemo = null
-  const resolverVersion = () => {
-    if (resolverMemo === null) {
-      const root = buildWorkspaceRoot()
-      const edition = Number(root?.package?.edition ?? 0)
-      resolverMemo = root?.resolver ?? (edition >= 2024 ? 3 : (edition >= 2021 ? 2 : 1))
-    }
-    return resolverMemo
-  }
+  // Cargo's feature resolver, the build's workspace root's (never a vendored crate's): v2 (edition
+  // 2021) keeps dev-dependencies out of a normal build, the host's features apart and other platforms'
+  // tables out; v1 unifies them all; v3 (edition 2024) resolves features as v2 does.
+  const resolverVersion = memoized(() => {
+    const root = buildWorkspaceRoot()
+    const edition = Number(root?.package?.edition ?? 0)
+    return root?.resolver ?? (edition >= 2024 ? 3 : (edition >= 2021 ? 2 : 1))
+  })
   // The feature context a unit's code sees (resolver 2 keeps the host's apart; resolver 1 has one).
   const featureCtx = (c) => (resolverVersion() === 1 ? 'target' : c)
-  const isProcMacroPkg = (m) => m?.lib.procMacro === true
   // The platform a context compiles for, as far as the loader knows it: the target's triple and
   // cfgs when `target` was given; the host's only when the target is the host (`host`), since the
   // machine that builds need not be the one that bundles.
@@ -1050,16 +884,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   // A package in a context, as the resolutions key it: resolver 1's one context is `target`'s.
   const nodeKey = (c, dir) => `${featureCtx(c)}\0${dir}`
 
-  // Both feature resolutions of `graph` (linkCargo's, or the replay's) by cargo's resolver, for the
-  // build of `packages`, members of it, per (context, dir) as nodeKey keys them -- `dirOf(key)` the
-  // dir of a package key, undefined for none -- resolver 1's one set under `target`, the normal one
-  // where there is one: `sure` with the features on for certain, `all` with those that may be, and
-  // `result`, the resolver's own answer for `all`. Cargo's resolver takes the platforms it builds
-  // for as known, and the loader may not know them: it runs against stand-ins (standInPlatform), a
-  // target-specific table the loader can't decide on one -- a platform it doesn't know, a cfg it
-  // can't decide there (`cfg(loom)`, which rustflags may set) -- off for `sure` and on for `all`,
-  // the rest for cargo to decide as written. What cargo's resolver refuses -- a feature asked of a
-  // package that hasn't it -- stops the build, naming `file`.
+  // Both feature resolutions of `graph` by cargo's resolver for the build of `packages`, by nodeKey
+  // (`dirOf(key)` a package key's dir), run against stand-in platforms: a table the loader can't decide
+  // is off for `sure` and on for `all`; `result` is the resolver's own answer for `all`.
   const resolveGraph = (graph, packages, file, dirOf) => {
     const build = { packages, features, allFeatures, noDefaultFeatures, dev: entries.some((e) => linksDevDeps(e)), host: standInPlatform(MARK_HOST, hostInfo), targets: [standInPlatform(MARK_TARGET, targetInfo)] }
     let undecided = false
@@ -1089,19 +916,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
 
   // --- the replay: cargo's feature resolver, by @preventive/lockfile, over the manifests
 
-  // The graph cargo's feature resolver takes, as linkCargo gives one, laid out from the manifests
-  // where the lockfile's can't be: each package in-tree the entries' packages (`roots`) reach, by
-  // its dir, each of its declarations resolved as resolveDep resolves it -- a path, a `[patch]`, the
-  // vendored copy the lockfile or the requirement picks -- but a dependency's own dev-dependencies,
-  // which no build of the entries has. A declaration nothing in-tree answers resolves to a stand-in
-  // of its own, which depends on nothing and has every feature its dependent may ask of it: the
-  // declaration's, `default`, and what a `name/feature` or `name?/feature` of the package's
-  // features, or of `--cargo-features` for a root, names. So does, unresolved (`unbuilt`), a
-  // dev-dependency of a root that no entry is a test, bench or example of, under resolver 2: cargo's
-  // resolver takes the dev targets of every member as built or none, and the entries build only
-  // theirs. The members are the roots, and there is no root package: `--cargo-features` goes to each
-  // that has it. `edges`: each declaration's resolved key, with its package and request (`m`, `d`,
-  // `request`), and whether it is a stand-in.
+  // The graph cargo's resolver takes, laid out from the manifests: each in-tree package the `roots`
+  // (its members) reach, by resolveDep. A declaration nothing in-tree answers, or under resolver 2 a
+  // root's dev-dependency no entry builds (`unbuilt`), gets a stand-in with any feature it is asked.
   const replayGraph = (roots) => {
     const packages = Object.create(null)
     const edges = []
@@ -1114,7 +931,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const dependencies = pkg.dependencies.map((d, index) => {
         if (d.kind === 'dev' && !rootDirs.has(m.dir)) return { ...d, resolved: undefined, active: false }
         const dep = m.deps.get(normName(d.name))
-        const request = dep.kinds.get(d.target === undefined ? d.kind : `${d.kind}@${d.target}`)
+        const request = dep.kinds.get(requestKey(d))
         const unbuilt = d.kind === 'dev' && unbuiltDev(m)
         const t = unbuilt ? null : resolveDep(m, dep, request, { quiet: true })
         if (t !== null) queue.push(t)
@@ -1130,17 +947,15 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
         const named = DEP_FEATURE_RE.exec(value)
         if (named?.[1] === d.name) asked.add(named[3])
       }
-      const manifest = { name: d.package, features: Object.fromEntries([...asked].map((f) => [f, []])), dependencies: [], procMacro: false, procMacroTarget: false }
-      Object.setPrototypeOf(manifest.features, null)
+      const manifest = { name: d.package, features: fromEntries([...asked].map((f) => [f, []])), dependencies: [], procMacro: false, procMacroTarget: false }
       packages[key] = { name: d.package, version: '0.0.0', source: undefined, checksum: undefined, manifest, dependencies: [] }
     }
     return { graph: { resolver: resolverVersion(), root: undefined, members: [...rootDirs], packages }, edges }
   }
 
-  // The replay's resolution, as resolveGraph gives it, and the dependencies the build links that
-  // nothing in-tree answers -- a stand-in it reaches -- as `dir key` → `{ dir, key, name, kinds }`,
-  // the kinds of their tables (see lackingDependencies). What resolveDep warned of, it says now of
-  // the declarations whose package the build reaches.
+  // The replay's resolution (resolveGraph's), and the dependencies the build links that nothing
+  // in-tree answers -- a stand-in it reaches -- as `dir key` → `{ dir, key, name, kinds }`. What
+  // resolveDep warned of, it says now of the declarations whose package the build reaches.
   const replay = () => {
     const roots = [...new Set(entries.map(packageFor).filter(Boolean))]
     if (roots.length === 0) return { resolved: { sure: new Map(), all: new Map() }, lacking: new Map() }
@@ -1159,9 +974,6 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
 
   // --- the exact resolution: cargo's resolver, by @preventive/lockfile
 
-  // The directories a workspace `members` pattern names, project-relative (glob's syntax, as cargo
-  // takes it: `*`, `?` and `[…]` within a segment, `**` for any depth); null when it leaves the
-  // bundle root.
   const subdirs = (dir) => {
     try {
       return readdirSync(join(baseDir, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => (dir === '.' ? e.name : `${dir}/${e.name}`))
@@ -1169,6 +981,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       return []
     }
   }
+  // The directories a workspace `members` pattern names, project-relative (glob's syntax, as cargo
+  // takes it: `*`, `?` and `[…]` within a segment, `**` for any depth); null when it leaves the
+  // bundle root.
   const globDirs = (rootDir, pattern) => {
     let dirs = [rootDir]
     for (const seg of pattern.split('/').filter((x) => x !== '' && x !== '.')) {
@@ -1217,31 +1032,15 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     }
     return [...out]
   }
-  // The build as cargo resolves it, where the loader holds all that takes -- the build's lockfile
-  // and target, a manifest for every package the lockfile has (each path package inside the
-  // bundle root, every other one vendored, `.cargo-checksum.json` and all) and entries whose
-  // packages are workspace members: @preventive/lockfile lays the lockfile's graph over the
-  // manifests (linkCargo) and turns on the features `cargo build -p <the entries' packages>` does
-  // (resolveCargoFeatures), cargo's rules throughout -- each table's own source, a [patch] from the
-  // root manifest or the cargo config, proc-macros and build-dependencies built for the host, the
-  // command line's features handed out as cargo hands them out. What either refuses -- a lockfile
-  // out of date with the manifests, a vendored copy whose checksum isn't the lockfile's, a feature
-  // asked of a package that hasn't it -- stops the build. A table the loader can't decide on a
-  // platform -- the host's, where the target isn't `host` -- is resolved both ways (resolveGraph).
-  // `{ graph, dirOf, keyOf, resolved }` -- package key ↔ dir, and the features per (context, dir)
-  // as resolveGraph gives them -- or null when something it takes is missing, for the replay to
-  // decide: no lockfile, no target, a package not vendored, a path outside the bundle root.
-  let exactMemo
+  // The build as cargo resolves it (linkCargo over the lockfile, resolveCargoFeatures as `cargo build
+  // -p <the entries' packages>`), as `{ graph, dirOf, keyOf, resolved }`, where the loader holds all it
+  // takes; else null, `exactWhy` saying what's missing. What cargo would refuse stops the build.
   let exactWhy = null // why there is none, for the replay to say
-  const exact = () => {
-    if (exactMemo === undefined) exactMemo = exactUncached()
-    return exactMemo
-  }
   const notExact = (why) => {
     exactWhy = why
     return null
   }
-  const exactUncached = () => {
+  const exact = memoized(() => {
     if (metadata) return null
     if (targetInfo === null) return notExact('no --cargo-target')
     const lockPath = buildLockPath()
@@ -1316,16 +1115,11 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     const config = readNamed(configs[0]?.file ?? null, () => parseCargoConfig(configs.map((c) => c.text)))
     const graph = readNamed(lk.file, () => linkCargo(lk.lock, manifestsByKey, { workspace: root.cargo, members: memberKeys, config }))
     return { graph, dirOf, keyOf, resolved: resolveGraph(graph, entryKeys, root.file, (key) => dirOf.get(key)) }
-  }
+  })
 
-  // Both resolutions, per (context, package dir): `sure` without the undecided tables, `all` with
-  // them -- the exact resolution's where there is one, the replay's otherwise. `--cargo`: cargo
-  // metadata gives one feature set per package, the union over everything cargo would build for
-  // the workspace (dev and build dependencies, every platform), so a feature in it is on only maybe
-  // in either context -- code a `cfg(not(feature = "x"))` keeps in some build is never dropped --
-  // and one outside it is off. `lacking` (the replay's): the dependencies no package in-tree
-  // answers, `dir key` → `{ dir, key, name, kinds }` -- the kinds of its active tables -- as
-  // `cargo metadata`'s (see lackingDependencies).
+  // Both resolutions per (context, package dir) -- `sure` without the undecided tables, `all` with
+  // them -- the exact one's where there is one, else the replay's (which sets `lacking`). `--cargo`:
+  // cargo metadata's per-package union over every build, so each feature in it is only maybe on.
   let resolved = null
   let lacking = null
   const ensureResolved = () => {
@@ -1339,9 +1133,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     }
     return resolved
   }
-  // Per node, the features on only maybe: in `all`, not in `sure` (one object per node).
-  const maybeByNode = new Map()
-  const maybeOf = (node) => cached(maybeByNode, node, () => {
+  // Per node, the features on only maybe: in `all`, not in `sure`; null for none.
+  const maybeOf = memoized((node) => {
     const { sure, all } = ensureResolved()
     const on = sure.get(node)
     const maybe = new Set([...(all.get(node) ?? [])].filter((f) => !on?.has(f)))
@@ -1377,11 +1170,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     return texts
   }
 
-  // What the build script of package `m` may print through the crates it calls (cfgsPrinted of
-  // their libs: cfg_aliases' `cfg_aliases!` prints the names its input gives) -- its
-  // build-dependencies for the host, and what they depend on in turn. One the bundle root lacks
-  // may print any for all the loader knows, which needs no lib read. Asked once per package
-  // (cfgsSetFor).
+  // What the build script of package `m` may print through the crates it calls (cfg_aliases'
+  // `cfg_aliases!` prints the names its input gives): those its host build-dependencies reach, any
+  // when one is missing from the bundle root.
   const helpersPrinted = (m) => {
     const crates = new Map() // dir -> manifest
     if (linksLacking(m, 'build', crates)) return { names: new Set(), any: true }
@@ -1404,44 +1195,23 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     crates.set(t.dir, t)
     return linksLacking(t, 'normal', crates)
   }))
-  // What package `t`'s lib may print for a build script calling it (cfgsPrinted); memoized per
-  // package.
-  const libPrints = new Map()
-  const libPrinted = (t) => cached(libPrints, t.dir, () => {
+  // What package `t`'s lib may print for a build script calling it (cfgsPrinted); per package.
+  const libPrinted = memoized((t) => {
     const lib = libPath(t)
     return lib === null ? NO_CFGS_SET : cfgsPrinted(crateTexts(lib))
-  })
+  }, (t) => t.dir)
 
-  // The in-tree crate roots a name resolves to from package `m` (null: no owning package), leaving
-  // out `m`'s own lib (which depends on the asking file), as `[{ file, key }]`: the package its
-  // dependency of that name resolves to (path dep, `[patch]`, or the vendored version Cargo.lock
-  // says); a dependency whose lib is named that (`md-5` is used as `md5`); or -- for a file no
-  // manifest claims -- the one vendored crate of that lib or package name. A package's own name for
-  // a crate is its manifest's word: a declared dependency that doesn't resolve in-tree (a path
-  // outside the bundle root, a version no vendored copy has) never falls back to some vendored copy
-  // of that name, and a name it doesn't declare is no crate of its. Which of the dependency's
-  // tables count is the asking code's (`roles`, one per crate root the file is compiled in): a build
-  // script's are the `[build-dependencies]`, a test, bench or example target's the
-  // `[dependencies]` and `[dev-dependencies]`, other code's the `[dependencies]` (any table when
-  // none of those has it) -- each only where its platform may be one the code is compiled for
-  // (`platforms`, the file's units'; a build script's the host): a table the target's cfgs rule out
-  // is no dependency of a build for it, under either resolver. Tables that may each apply -- one
-  // per platform when no target decides them, or one per role -- give one candidate each, `key`
-  // naming which (`*` for the untargeted table, else its platform; `build-script ` before a build
-  // script's beside another role's). Memoized per (package, name, roles, platforms): every file of
-  // a package asks for the same few crates.
-  const crateTargets = new Map()
-  const depCrate = (m, norm, roles, platforms) => {
-    const memo = `${m?.dir ?? ''}\0${norm}\0${roles.join()}\0${platforms.join()}`
-    return cached(crateTargets, memo, () => depCrateUncached(m, norm, roles, platforms))
-  }
+  // The in-tree crate roots a name resolves to from package `m` (null: none owns the file), `m`'s own
+  // lib aside, as `[{ file, key }]`: its dependency of that name or lib name through each table the
+  // code's `roles` link on its `platforms` (`key` naming which); for no package, the one vendored crate.
+  const crateTargets = new Map() // every file of a package asks for the same few crates
+  const depCrate = (m, norm, roles, platforms) => cached(crateTargets, `${m?.dir ?? ''}\0${norm}\0${roles.join()}\0${platforms.join()}`, () => depCrateUncached(m, norm, roles, platforms))
   const ROLE_KINDS = { build: ['build'], test: ['normal', 'dev'], normal: ['normal'] }
   // The role of the code of crate root `root` in package `m` (see depCrate).
   const roleOf = (m, root) => (root === buildScript(m) ? 'build' : (linksDevDeps(root) ? 'test' : 'normal'))
-  // Of a dependency's tables (`{ kind, target, … }`, the manifest's or the linked graph's, in
-  // order), the packages the asking code links: for each role, the first table of each platform
-  // that may apply and that `find` finds a package for, as `{ t, key }` (see depCrate). `any`: a
-  // role with no table of its kinds takes any table instead (a declared name).
+  // Of a dependency's tables (in order), for each role the first of each platform that may apply that
+  // `find` finds a package for, as `{ t, key }` (`*` for an untargeted table, else its platform;
+  // `build-script ` before a build script's beside another role's). `any`: a role lacking any takes all.
   const linkedTables = (all, roles, platforms, find, any) => {
     const out = []
     const seen = new Set()
@@ -1478,6 +1248,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     if (declared.length > 0) return asRoots(linkedTables(declared, roles, platforms, packageOf, true))
     return asRoots(linkedTables(deps.filter((d) => d.name === d.package && d.resolved !== undefined && libName(packageOf(d)) === norm), roles, platforms, packageOf, false))
   }
+  // A declared name is the manifest's word: one that doesn't resolve in-tree never falls back to some
+  // vendored copy of that name.
   const depCrateUncached = (m, norm, roles, platforms) => {
     const x = m ? exact() : null
     const key = x?.keyOf.get(m.dir)
@@ -1526,7 +1298,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   }
 
   // The files describing package `m`'s build, on disk (see buildFilesFor).
-  const buildFiles = (m) => {
+  const buildFiles = memoized((m) => {
     const out = [{ path: posix.join(m.dir, 'Cargo.toml'), kind: 'manifest' }]
     if (isVendoredDir(m.dir)) {
       const checksum = posix.join(m.dir, '.cargo-checksum.json')
@@ -1540,6 +1312,11 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     if (lockPath !== null && isFile(join(baseDir, lockPath))) out.push({ path: lockPath, kind: 'lock' })
     for (const c of configs) if (c.dir !== null) out.push({ path: c.file, kind: 'config' })
     return out
+  })
+  // The vendored package owning `fileRel`, or null.
+  const vendoredPackage = (fileRel) => {
+    const m = packageFor(fileRel)
+    return m !== null && isVendoredDir(m.dir) ? m : null
   }
 
   return {
@@ -1558,13 +1335,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const m = packageFor(fileRel)
       return m !== null && libPath(m) === fileRel
     },
-    // The in-tree crate roots a crate name as used in source (`use name::…`, `extern crate name`)
-    // names from `fromFile`, as `[{ file, key }]`: the owning package's own lib (from another of
-    // its files), else what depCrate finds -- for the code of each crate root the file is compiled
-    // in (`roots`; the file's own role without them), on the platforms of its compile units
-    // (`units`; the target's without them). Several when tables that may each apply name different
-    // packages (see depCrate); none for anything else (a registry dep that isn't vendored, std, a
-    // name that isn't a crate).
+    // The in-tree crate roots a crate name used in `fromFile` (`use name::…`) names, as `[{ file, key
+    // }]`: its package's own lib, else depCrate's for the code of each crate root it is compiled in
+    // (`roots`) on its units' platforms (`units`); none for a crate not in-tree, std, a non-crate.
     crateCandidates,
     // The first of crateCandidates, or null.
     resolveCrate: (name, fromFile, opts) => crateCandidates(name, fromFile, opts)[0]?.file ?? null,
@@ -1576,16 +1349,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       return metadata ? { mode: 'metadata', why: null } : (exact() === null ? { mode: 'replay', why: exactWhy } : { mode: 'cargo', why: null })
     },
     isTestTarget,
-    // The dependencies the build links that nothing in-tree answers, for the packages at `dirs` (the
-    // bundled ones): declared, and active in the build as far as the resolution tells (its tables
-    // for the build's platforms, an optional one turned on; maybe ones too), but a registry crate
-    // not vendored, a path outside the bundle root -- as `{ key, name, from }` (the dependency's
-    // key and name in its dependent's manifest, and that package as `name version`). Code may name
-    // such a crate by another name than the manifest's (`md-5` is used as `md5`), or not at all, so
-    // the bundle can't tell from the code that it lacks one. Dev-dependencies count only for a
-    // package an entry is a test, bench or example target of; build-dependencies only for a
-    // package with a build script, and with `buildScripts` (build scripts bundled). Cargo's
-    // resolver needs every locked package in-tree, so it has none.
+    // The dependencies the build of the packages at `dirs` links that nothing in-tree answers (a registry
+    // crate not vendored, a path outside the bundle root), as `{ key, name, from }`: dev-dependencies
+    // only for a dev entry's package, build-dependencies only with `buildScripts` and a build script.
     lackingDependencies(dirs, { buildScripts = false } = {}) {
       ensureResolved()
       const counts = (kind, dir) => (kind === 'dev' ? devRootDirs().has(dir) : (kind !== 'build' || (buildScripts && buildScript(readManifest(dir)) !== null)))
@@ -1610,52 +1376,40 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     // them), or null for both when none was given.
     targetTriple: targetInfo?.triple ?? null,
     targetCfgs: targetInfo?.cfgs ?? null,
-    // The files that describe the build of `fileRel`'s package, project-relative, as `{ path,
-    // kind }`, those on disk. A vendored package's: its Cargo.toml (`manifest`) and the
-    // `.cargo-checksum.json` cargo checks its files against (`checksum`) -- the lock and config a
-    // registry crate was published with play no part in a build that depends on it. Any other
-    // package's: its own Cargo.toml and, inside the bundle root, the workspace's above it
-    // (`manifest`); and the build's Cargo.lock (`lock`) and the cargo configs it reads (`config`,
-    // see `runDir`), those inside the bundle root -- not a path dependency's own, which no build
-    // of the entries reads. Empty for a file no manifest claims.
+    // The files on disk that describe the build of `fileRel`'s package, as `{ path, kind }`: a vendored
+    // package's Cargo.toml and `.cargo-checksum.json`; any other's Cargo.toml, its workspace's in the
+    // bundle root, and the build's Cargo.lock and cargo configs (not a path dependency's own).
     buildFilesFor(fileRel) {
       const m = packageFor(fileRel)
-      if (!m) return []
-      m.buildFiles ??= buildFiles(m)
-      return m.buildFiles
+      return m ? buildFiles(m) : []
     },
     // Throws when `fileRel` is a vendored package's file whose bytes (`buf`) aren't the ones its
-    // `.cargo-checksum.json` lists -- edited after `cargo vendor` -- or of a package whose checksum
-    // isn't the one Cargo.lock locks (checkLocked): cargo refuses to build it, and so the bundle
-    // does. A file the list doesn't name, or a package without one, passes; one checked already --
-    // a vendored Cargo.toml, as its package was read -- isn't hashed again.
+    // `.cargo-checksum.json` lists, or of a package whose checksum isn't the one Cargo.lock locks
+    // (checkLocked): cargo refuses to build it, and so the bundle does.
     checkVendoredFile(fileRel, buf) {
-      const m = packageFor(fileRel)
-      if (m === null || !isVendoredDir(m.dir)) return
+      const m = vendoredPackage(fileRel)
+      if (m === null) return
       checkVendored(m.dir, fileRel, buf)
       checkLocked(m)
     },
-    // Whether `fileRel` belongs to a vendored package (a crate `cargo vendor` copied in, a registry's
-    // or a git checkout's: see vendoredFrom).
+    // Whether `fileRel` belongs to a vendored package (a registry's copy or a git checkout's).
     isVendored(fileRel) {
-      const m = packageFor(fileRel)
-      return m !== null && isVendoredDir(m.dir)
+      return vendoredPackage(fileRel) !== null
     },
     // The integrity of the crate `cargo vendor` copied the vendored package owning `fileRel` from: its
     // `.cargo-checksum.json`'s package checksum, a sha256, held to the one the build's Cargo.lock locks
     // (checkLocked). Undefined for a git checkout's copy, one without that file, or a package not vendored.
     vendoredIntegrity(fileRel) {
-      const m = packageFor(fileRel)
-      if (m === null || !isVendoredDir(m.dir)) return undefined
+      const m = vendoredPackage(fileRel)
+      if (m === null) return undefined
       checkLocked(m)
       return archiveIntegrity('cargo', checksumOf(m.dir)?.package)
     },
-    // Where `cargo vendor` copied the vendored package owning `fileRel` from, as its
-    // `.cargo-checksum.json` tells: `registry` (a package checksum) or `git` (a git checkout's: none);
-    // null when it has no such file, and so could be either, or isn't vendored.
+    // Where `cargo vendor` copied the vendored package owning `fileRel` from (copySource); null when it
+    // could be either, or isn't vendored.
     vendoredFrom(fileRel) {
-      const m = packageFor(fileRel)
-      return m !== null && isVendoredDir(m.dir) ? copySource(m.dir) : null
+      const m = vendoredPackage(fileRel)
+      return m === null ? null : copySource(m.dir)
     },
     // The build script of `fileRel`'s package, project-relative, when there is one on disk:
     // `[package] build = "…"`, else `build.rs` beside the manifest; `build = false` means none. A
@@ -1664,11 +1418,9 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       const m = packageFor(fileRel)
       return m ? buildScript(m) : null
     },
-    // The custom cfgs the build of `fileRel`'s package may set (a `--cfg` a default build lacks is
-    // otherwise presumed off): `{ names, any }` -- the names its build script prints as
-    // `cargo:rustc-cfg=…`, itself or through a crate it calls, and those the rustflags set, and
-    // whether the script may set one the loader can't read. One object per package (and one for
-    // every package that sets none).
+    // The custom cfgs the build of `fileRel`'s package may set, `{ names, any }` (a `--cfg` a default
+    // build lacks is otherwise presumed off): what its build script prints, itself or through a crate
+    // it calls, and what rustflags set. One object per package (and one for all that set none).
     cfgsSetFor(fileRel) {
       const m = packageFor(fileRel)
       return cached(cfgsSetMemo, m?.dir ?? '\0', () => {
@@ -1682,9 +1434,8 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       })
     },
     // The features on for certain for the package owning `fileRel`, compiled as `unit` (see
-    // unitOfCrate), in the build of the root packages; null when that is unknown: no owning
-    // manifest, no root package to resolve from, or a package the resolved build doesn't pull in
-    // (its gated code is then kept, not dropped).
+    // unitOfCrate); null when unknown: no owning manifest, nothing to resolve from, or a package the
+    // build doesn't pull in (its gated code is then kept).
     featuresFor(fileRel, unit = TARGET_UNIT) {
       const m = packageFor(fileRel)
       if (!m) return null
@@ -1720,11 +1471,10 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       return out
     },
     // The compile unit of a crate root `libFile` named from code compiled as `fromUnit`: a proc-macro
-    // crate, and anything code compiled for the host names (a build script's build-dependencies,
-    // a proc-macro's dependencies), is built for the host in the host's feature context; else the
-    // namer's unit.
+    // crate, and anything code compiled for the host names, is built for the host in the host's
+    // feature context; else the namer's unit.
     unitOfCrate(libFile, fromUnit = TARGET_UNIT) {
-      return isProcMacroPkg(packageFor(libFile)) || unitPlatform(fromUnit) === 'host' ? HOST_UNIT : fromUnit
+      return packageFor(libFile)?.lib.procMacro === true || unitPlatform(fromUnit) === 'host' ? HOST_UNIT : fromUnit
     },
     // The unit of a build script of a package compiled as `pkgUnit`: for the host, with the
     // package's features.

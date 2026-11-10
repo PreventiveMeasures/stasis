@@ -1,29 +1,17 @@
 import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 
-import { isTypeDeclaration, relativeEscapes } from '@exodus/stasis-core/util'
+import { isTypeDeclaration, memoized, relativeEscapes } from '@exodus/stasis-core/util'
 import { diskHost } from '@exodus/stasis-core/host'
 import { untouchedMemo } from './vfs-bundle/lazy.js'
 
-// tsc-style module resolution (`--typescript`), shared by BOTH JS resolvers -- scan.js's built-in
-// Node resolver and resolve-fields.js's legacy-field resolver -- so the flag means one thing
-// everywhere: when normal resolution misses and tsc would land on an on-disk TypeScript source,
-// complete the miss with that file. It never rewrites a resolution that succeeded, so an on-disk
-// `.js` always beats its `.ts` twin. The rules, in the shapes they apply to:
-//   - extension substitution: `./x.js` -> `./x.ts` (`.jsx` -> `.tsx`, `.mjs` -> `.mts`,
-//     `.cjs` -> `.cts`) -- tsc never rewrites specifiers, so TS sources import each other by their
-//     OUTPUT names, and the specifier names a file that only exists as its TS source;
-//   - extension/index completion for an extensionless path (`./util` -> `./util.ts`,
-//     `./dir` -> `./dir/index.ts`), incl. through a directory's package.json `main`;
-//   - the same substitution applied to manifest-declared targets: a package `main`, an `exports`
-//     target, a `#name` `imports` target naming a compiled file whose only on-disk form is TS;
-//   - tsc's `outDir` -> `rootDir` inversion: a workspace package's unbuilt output (`./dist/x.js`)
-//     maps to the source tsc builds it from (`./src/x.ts`; see fromOutputSource), here and in the
-//     field resolvers' own probes;
-//   - tsconfig `compilerOptions.paths` aliases (see loadTsconfigPaths), consulted for bare
-//     specifiers nothing else resolved. Node never probed an alias target, so its completion also
-//     tries the JS extensions after the TS ones (`@/x` -> x.ts, then x.js), as tsc does.
-// This module also homes the generic manifest helpers (readJson/locatePackage/nearestPackage)
-// both resolvers share -- it is the dependency-free lower layer, importing from neither.
+// tsc-style module resolution (`--typescript`), shared by scan.js's Node resolver and resolve-fields.js's
+// field resolver: where normal resolution misses and tsc would land on an on-disk TypeScript source, the
+// miss completes with that file, and a resolution that succeeded is never rewritten (an on-disk `.js`
+// beats its `.ts` twin). tsc's rules: extension substitution (`./x.js` -> `./x.ts`: TS sources import
+// each other by their output names) and extension/index completion, of a path and of a manifest's
+// targets (`main`, `exports`, `imports`); an unbuilt output's source (fromOutputSource); and tsconfig
+// `paths` aliases (loadTsconfigPaths), completed with the JS extensions too, as Node never probed them.
+// It also homes the manifest helpers both resolvers share, importing from neither.
 
 // tsc's extension substitution table: the JS output extensions mapped back to the TS source
 // siblings that may sit on disk in their place. JS_OUTPUT_EXTS is derived, so the two cannot drift.
@@ -35,11 +23,9 @@ const TS_SIBLING_EXTS = new Map([
 ])
 const JS_OUTPUT_EXTS = new Set(TS_SIBLING_EXTS.keys())
 
-// The TS source siblings of a path/specifier naming a JS output extension (./x.js -> ./x.ts).
-// Returns [] for a non-substitutable name (extensionless, already-TS, .json, unknown, dotfile --
-// extname sees no extension in './.js', matching the extensionless gates downstream). Candidates
-// spelling a type declaration (./x.d.js -> ./x.d.ts) are returned too: every probe site refuses
-// declarations (types-only, erased at runtime), so the screen lives at probe time, once.
+// The TS source siblings of a name with a JS output extension (./x.js -> ./x.ts), else [] (extname sees
+// none in a dotfile like './.js'). A declaration's spelling (./x.d.js -> ./x.d.ts) is among them: every
+// probe site refuses one.
 export function typescriptSiblings(name) {
   const ext = extname(name)
   const exts = TS_SIBLING_EXTS.get(ext)
@@ -93,80 +79,52 @@ export function locatePackage(fromDir, spec, host = diskHost) {
   if (parts.length < pkgLen || parts.slice(0, pkgLen).some((p) => !p)) return null
   const pkgName = parts.slice(0, pkgLen).join('/')
   const subpath = parts.slice(pkgLen).join('/')
-  let dir = fromDir
-  while (true) {
+  for (let dir = fromDir; ; dir = dirname(dir)) {
     // Skip a dir literally named node_modules (basename, not endsWith — `my-node_modules` must not match).
     if (basename(dir) !== 'node_modules') {
       const pkgDir = join(dir, 'node_modules', pkgName)
       if (isDir(pkgDir, host)) return { pkgDir, subpath }
     }
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
+    if (dirname(dir) === dir) return null
   }
 }
 
 // Nearest package.json at/above `file`'s dir — the package whose fields (browser/RN map, imports)
 // govern the file's own imports. `read` reads a manifest, as readJson does.
 export function nearestPackage(file, host = diskHost, read = readJson) {
-  let dir = dirname(file)
-  while (true) {
+  for (let dir = dirname(file); ; dir = dirname(dir)) {
     const pkgPath = join(dir, 'package.json')
-    if (isFile(pkgPath, host)) {
-      const pkg = read(pkgPath, host)
-      if (pkg) return { pkgDir: dir, pkg }
-    }
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
+    const pkg = isFile(pkgPath, host) ? read(pkgPath, host) : null
+    if (pkg) return { pkgDir: dir, pkg }
+    if (dirname(dir) === dir) return null
   }
 }
 
-// A probe candidate is a target only if it names a real file that is not a type declaration
-// (a `.d.ts` is types-only, erased at runtime -- tsc records it for types, never for emit).
-const probe = (p, host) => (!isTypeDeclaration(p) && isFile(p, host) ? p : null)
+// Whether `path` is a file a resolution may land on: on disk, and no type declaration (a `.d.ts` is
+// types-only, erased at runtime -- tsc records it for types, never for emit).
+export const isSourceFile = (path, host = diskHost) => !isTypeDeclaration(path) && isFile(path, host)
+const firstSource = (candidates, host) => candidates.find((path) => isSourceFile(path, host)) ?? null
 
-// The extensions tsc's completion appends, in its order (tryAddingExtensions): .ts, .tsx, then --
-// with `js`, for a path Node never probed (a tsconfig paths target) -- .js, .jsx. A path Node
-// already completed needs only the TS ones. .d.ts (tsc's third) is never a target (see probe).
+// The extensions tsc's completion appends, in its order (tryAddingExtensions): .ts, .tsx, then -- with
+// `js`, for a path Node never probed (a tsconfig paths target) -- .js, .jsx. .d.ts (tsc's third) is
+// never a target (isSourceFile).
 const completionExts = (js) => (js ? ['.ts', '.tsx', '.js', '.jsx'] : ['.ts', '.tsx'])
 
 // LOAD_INDEX with tsc's completions: dir/index.ts, dir/index.tsx (+ index.js/index.jsx with `js`).
 // Without `js`, Node already probed the .js/.json indexes before the fallback ever runs.
-function probeIndex(dir, exts, host) {
-  for (const ext of exts) {
-    const hit = probe(join(dir, `index${ext}`), host)
-    if (hit) return hit
-  }
-  return null
-}
+const probeIndex = (dir, exts, host) => firstSource(exts.map((ext) => join(dir, `index${ext}`)), host)
 
-// Probe an absolute `base` the way tsc completes a missed path: the literal file (manifest-declared
-// targets are never probed by Node, so a paths/main target can hit literally), its TS siblings,
-// the appended-extension completion, and -- when `dir` allows and `base` is a directory -- the
-// directory's package.json `main` (substituted + completed like any path, mirroring Node's
-// LOAD_AS_DIRECTORY) then its index. `dirOnly` skips the file rules for specs Node treats as
-// directory-only ('.', '..', a trailing '/'), so './' never probes the pathological '.ts' dotfile.
-// `completion`/`dir` are off for exports/imports targets: Node requires those to name exact files,
-// so only substitution applies (matching tsc's node16 rules). `js` completes JS extensions too, for
-// a base Node never probed (see completionExts). `outputs` maps what still misses to an unbuilt
-// output's source (fromOutputSource).
+// Probe an absolute `base` as tsc completes a missed path: the literal file (Node never probed a
+// manifest's target), its TS siblings, the appended extensions, then with `dir`, a directory's `main`
+// (as Node's LOAD_AS_DIRECTORY) and index. `dirOnly` skips the file rules ('.', '..', a trailing '/');
+// `completion`/`dir` are off for exports/imports targets, which name exact files (tsc's node16 rules).
+// `js`: see completionExts. `outputs` maps what still misses to an unbuilt output's source.
 function probeTypescriptTarget(base, { js = false, dirOnly = false, completion = true, dir = true, outputs = null, host = diskHost } = {}) {
-  const rules = { js, dirOnly, completion, dir, host }
   const exts = completionExts(js)
   if (!dirOnly) {
-    const literal = probe(base, host)
-    if (literal) return literal
-    for (const cand of typescriptSiblings(base)) {
-      const hit = probe(cand, host)
-      if (hit) return hit
-    }
-    if (completion && !NO_COMPLETION_EXTS.has(extname(base))) {
-      for (const ext of exts) {
-        const hit = probe(`${base}${ext}`, host)
-        if (hit) return hit
-      }
-    }
+    const completed = completion && !NO_COMPLETION_EXTS.has(extname(base)) ? exts.map((ext) => `${base}${ext}`) : []
+    const hit = firstSource([base, ...typescriptSiblings(base), ...completed], host)
+    if (hit) return hit
   }
   if (dir && isDir(base, host)) {
     const pkg = readJson(join(base, 'package.json'), host)
@@ -182,7 +140,7 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
     const hit = probeIndex(base, exts, host)
     if (hit) return hit
   }
-  return fromOutputSource(base, (input) => probeTypescriptTarget(input, rules), { outputs, host })
+  return fromOutputSource(base, (input) => probeTypescriptTarget(input, { js, dirOnly, completion, dir, host }), { outputs, host })
 }
 
 // --- tsc's `outDir` -> `rootDir` inversion ---
@@ -234,12 +192,9 @@ function packageHolding(path, host) {
   return null
 }
 
-// tsc's mapping of an output back to its input (tryLoadInputFileForPath): where `path` lies under
-// its package's `outDir`, `probeSource` of the same place under `rootDir` (`dist/x.js` ->
-// `src/x.js`, whose TS siblings substitution finds), else null. Call it only once `path` itself
-// missed: the tsconfig.json is read, and can throw, only then. `pkgDir` is the package that names
-// `path` (its `main`, an `exports` target), where known: its `outDir` may lie outside it
-// (`../../dist/dep`).
+// tsc's mapping of an output back to its input (tryLoadInputFileForPath): where `path` lies under its
+// package's `outDir`, `probeSource` of the same place under `rootDir`, else null. Call it only once `path`
+// missed: only then is the tsconfig.json read. `pkgDir`: the package naming `path`, whose `outDir` may lie outside it.
 export function fromOutputSource(path, probeSource, { outputs, host = diskHost, pkgDir } = {}) {
   if (outputs == null) return null
   const owner = pkgDir ?? packageHolding(path, host)
@@ -256,12 +211,8 @@ export function fromOutputSource(path, probeSource, { outputs, host = diskHost, 
 // enough for fallback candidates: a conditions object commits to its FIRST matching key ('default'
 // always matches); an array contributes its entries in order (the probe decides).
 function expandTarget(value, wildcard, conditions) {
-  if (typeof value === 'string') {
-    return [wildcard == null ? value : value.replaceAll('*', wildcard)]
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((v) => expandTarget(v, wildcard, conditions))
-  }
+  if (typeof value === 'string') return [wildcard == null ? value : value.replaceAll('*', wildcard)]
+  if (Array.isArray(value)) return value.flatMap((v) => expandTarget(v, wildcard, conditions))
   if (value !== null && typeof value === 'object') {
     for (const [key, v] of Object.entries(value)) {
       if (key === 'default' || conditions.has(key)) return expandTarget(v, wildcard, conditions)
@@ -270,26 +221,31 @@ function expandTarget(value, wildcard, conditions) {
   return [] // null (an explicit block) or no matching condition
 }
 
+// The single-'*' key of `map` that `spec` matches with the longest prefix (with `longest`, then the
+// longest key), the first of a tie: -> { key, wildcard } (what the '*' matched), or null.
+function bestStarMatch(map, spec, { longest = false } = {}) {
+  let best = null
+  for (const key of Object.keys(map)) {
+    const star = key.indexOf('*')
+    if (star === -1 || key.indexOf('*', star + 1) !== -1) continue
+    const prefix = key.slice(0, star)
+    const suffix = key.slice(star + 1)
+    if (spec.length < prefix.length + suffix.length || !spec.startsWith(prefix) || !spec.endsWith(suffix)) continue
+    if (best === null || prefix.length > best.prefix.length
+      || (longest && prefix.length === best.prefix.length && key.length > best.key.length)) {
+      best = { key, prefix, suffix }
+    }
+  }
+  return best && { key: best.key, wildcard: spec.slice(best.prefix.length, spec.length - best.suffix.length) }
+}
+
 // Resolve `key` through an exports/imports-shaped map: exact key first (a key containing '*' is
 // never exact), else the best '*' pattern -- longest prefix, then longest key, exactly Node's
 // PATTERN_KEY_COMPARE order -- with the matched wildcard substituted into the targets.
 function resolveMapKey(map, key, conditions) {
   if (Object.hasOwn(map, key) && !key.includes('*')) return expandTarget(map[key], null, conditions)
-  let best = null
-  for (const pattern of Object.keys(map)) {
-    const star = pattern.indexOf('*')
-    if (star === -1 || pattern.indexOf('*', star + 1) !== -1) continue
-    const prefix = pattern.slice(0, star)
-    const suffix = pattern.slice(star + 1)
-    if (key.length < prefix.length + suffix.length || !key.startsWith(prefix) || !key.endsWith(suffix)) continue
-    if (best === null || prefix.length > best.prefix.length
-      || (prefix.length === best.prefix.length && pattern.length > best.pattern.length)) {
-      best = { pattern, prefix, suffix }
-    }
-  }
-  if (!best) return []
-  const wildcard = key.slice(best.prefix.length, key.length - best.suffix.length)
-  return expandTarget(map[best.pattern], wildcard, conditions)
+  const match = bestStarMatch(map, key, { longest: true })
+  return match === null ? [] : expandTarget(map[match.key], match.wildcard, conditions)
 }
 
 // A './' map target is only followed when it stays inside the package, like Node's
@@ -303,13 +259,9 @@ function validRelativeTarget(target) {
 // imports map. Exports sugar (a bare string/array/conditions object) is the '.' target.
 function manifestTargets(map, subpathKey, conditions) {
   if (map == null) return []
-  let byKey = map
-  if (typeof map !== 'object' || Array.isArray(map)
-    || Object.keys(map).every((k) => !k.startsWith('.') && !k.startsWith('#'))) {
-    if (subpathKey !== '.') return []
-    byKey = { '.': map }
-  }
-  return resolveMapKey(byKey, subpathKey, conditions).filter((t) => validRelativeTarget(t))
+  const sugar = typeof map !== 'object' || Array.isArray(map) || Object.keys(map).every((k) => !k.startsWith('.') && !k.startsWith('#'))
+  if (sugar && subpathKey !== '.') return []
+  return resolveMapKey(sugar ? { '.': map } : map, subpathKey, conditions).filter(validRelativeTarget)
 }
 
 // tsc's mapping of `key` ('.' or './sub') through the `exports` of the package in `pkgDir` (or of
@@ -389,12 +341,9 @@ function resolveExtendsTarget(fromFile, target, host) {
   throw new Error(`tsconfig extends target not found: '${target}' (from ${fromFile})`)
 }
 
-// The configs a tsconfig's `extends` chain reads, as { file, raw }: each base (in the order
-// `extends` names them) before the config extending it, and `file` last. A base two configs share
-// is listed under each, so folding the list in order, later over earlier, is tsc's nested merge,
-// where the second extender's resolved options carry the shared base's again. Like tsc's, the
-// cycle check is per branch: `extending` holds the configs extending `file`, and only a config that
-// extends itself, directly or not, throws.
+// The configs a tsconfig's `extends` chain reads, as { file, raw }: each base, in the order `extends`
+// names them, before the config extending it, and `file` last (a shared base under each, so folding the
+// list in order is tsc's nested merge). As tsc's, the cycle check is per branch (`extending`).
 function* tsconfigChain(file, host, extending = new Set()) {
   if (extending.has(file)) throw new Error(`tsconfig extends cycle at ${file}`)
   const raw = parseJsonc(host.readFile(file).toString('utf8'), file)
@@ -433,14 +382,10 @@ export function loadTsconfigCompilerOptions(file, host = diskHost) {
   return options
 }
 
-// Load a tsconfig's `compilerOptions.paths` into a matcher, following `extends`. Returns null when
-// `file` is null or the effective config declares no paths. matchPaths(spec) returns the absolute
-// substituted targets of the BEST-matching key -- exact match first, else the '*' pattern with the
-// longest matched prefix, exactly one key, its targets in order (tsc tries no other key when they
-// all miss) -- resolved against `baseUrl`, or against the declaring config's dir without one
-// (TS 4.1 paths-without-baseUrl), or, starting with `${configDir}`, against `file`'s. Only
-// `baseUrl`/`paths` are used; malformed shapes (a non-array value, more than one '*' in a key or
-// target) fail closed like tsc's config errors.
+// A tsconfig's `compilerOptions.paths` (following `extends`) as a matcher, or null for no `file` or no
+// paths. matchPaths(spec): the targets of the one best key (exact, else the '*' pattern with the longest
+// prefix; tsc tries no other when they miss), against `baseUrl`, else the declaring config's dir (or
+// `file`'s, for `${configDir}`). A malformed shape fails closed, as tsc's config errors do.
 export function loadTsconfigPaths(file, host = diskHost) {
   if (file == null) return null
   const { paths, pathsBasePath, baseUrl } = loadTsconfigCompilerOptions(file, host)
@@ -457,25 +402,11 @@ export function loadTsconfigPaths(file, host = diskHost) {
   const base = typeof baseUrl === 'string' ? baseUrl : pathsBasePath
   return {
     matchPaths(spec) {
-      let targets = null
-      if (Object.hasOwn(paths, spec) && !spec.includes('*')) {
-        targets = paths[spec].map((t) => ({ target: t, wildcard: null }))
-      } else {
-        let best = null
-        for (const key of Object.keys(paths)) {
-          const star = key.indexOf('*')
-          if (star === -1) continue
-          const prefix = key.slice(0, star)
-          const suffix = key.slice(star + 1)
-          if (spec.length < prefix.length + suffix.length || !spec.startsWith(prefix) || !spec.endsWith(suffix)) continue
-          if (best === null || prefix.length > best.prefix.length) best = { key, prefix, suffix }
-        }
-        if (!best) return []
-        const wildcard = spec.slice(best.prefix.length, spec.length - best.suffix.length)
-        targets = paths[best.key].map((t) => ({ target: t, wildcard }))
-      }
-      return targets.map(({ target, wildcard }) =>
-        tsconfigPath(wildcard == null ? target : target.replace('*', wildcard), base, dirname(file)))
+      const exact = Object.hasOwn(paths, spec) && !spec.includes('*')
+      const match = exact ? { key: spec, wildcard: null } : bestStarMatch(paths, spec)
+      if (match === null) return []
+      return paths[match.key].map((target) =>
+        tsconfigPath(match.wildcard === null ? target : target.replace('*', match.wildcard), base, dirname(file)))
     },
   }
 }
@@ -496,18 +427,12 @@ const holdsNamedPackage = (dir, host) => isFile(join(dir, 'package.json'), host)
 // `workspaces` (npm's and yarn's).
 const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'), host) || Boolean(readJson(join(dir, 'package.json'), host)?.workspaces)
 
-// The `paths` --typescript honours without --tsconfig: those of the tsconfig.json beside the
-// package.json of the package the importing file is in, as a matcher whose matchPaths(spec,
-// parentFile) is loadTsconfigPaths's for that config. The project is read up from `cwd` as the
-// State reads it: the directories holding a package.json, up to one holding .git or
-// pnpm-workspace.yaml, or up to `projectCwd` (the State's PROJECT_CWD, as yarn sets it). In a monorepo -- where one of those declares workspaces -- a file's package is
-// the nearest directory at or above it, up to that workspace root, holding a named package.json
-// (the root itself where none below it does); outside one, every file takes the one config beside
-// the nearest named package.json at or above `cwd` (or the top-most package.json, where none is
-// named). Never in node_modules: no walk enters a node_modules directory, and resolveTypescriptFallback
-// matches no alias for a file under one. Each config loads once, when first matched; with `lenient`,
-// one that doesn't load matches nothing instead of throwing. `outputs` is tsconfigOutputsOf's, as
-// lenient.
+// The `paths` --typescript honours without --tsconfig: those of the tsconfig.json of the package the
+// importing file is in (matchPaths(spec, parentFile)). The project is read up from `cwd` as the State
+// reads it, up to .git, pnpm-workspace.yaml or `projectCwd`. In a monorepo (one declaring workspaces) a
+// file's package is the nearest named package.json up to the workspace root (else the root); outside one,
+// the nearest named one at or above `cwd` (else the top-most). Never in node_modules. Each config loads
+// once; with `lenient`, one that doesn't load matches nothing.
 export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, projectCwd } = {}) {
   const stop = projectCwd ? realpathOr(resolvePath(projectCwd), host) : null
   const dirs = [] // cwd and above, while the State's walk would go on; real paths, as importers are read
@@ -532,14 +457,10 @@ export function packageTsconfigPaths(cwd, { host = diskHost, lenient = false, pr
     }
     return null
   }
-  const matchers = new Map() // package dir -> loadTsconfigPaths matcher, or null
-  const matcherOf = (dir) => {
-    if (!matchers.has(dir)) {
-      const file = join(dir, 'tsconfig.json')
-      matchers.set(dir, isFile(file, host) ? leniently(lenient, () => loadTsconfigPaths(file, host)) : null)
-    }
-    return matchers.get(dir)
-  }
+  const matcherOf = memoized((dir) => {
+    const file = join(dir, 'tsconfig.json')
+    return isFile(file, host) ? leniently(lenient, () => loadTsconfigPaths(file, host)) : null
+  })
   return {
     matchPaths(spec, parentFile) {
       const dir = packageOf(parentFile)
@@ -563,19 +484,12 @@ const IN_NODE_MODULES = /(?:^|[\\/])node_modules(?:[\\/]|$)/u
 // packages, linked in through node_modules, really lie outside it, so they keep the mapping.
 export const inNodeModules = (file, host = diskHost) => IN_NODE_MODULES.test(realpathOr(file, host))
 
-// Resolve `spec` from `parentFile` the way tsc would complete a resolution BOTH Node and the
-// legacy-field resolver missed. Returns the absolute path of the on-disk source, or null -- always
-// null from or into node_modules (inNodeModules). `conditions` gates exports/imports maps (same set
-// the failed resolution used); `paths` is a tsconfig paths matcher (loadTsconfigPaths, or
-// packageTsconfigPaths), or null. Dispatch by shape:
-//   '#name'        -> the parent package's `imports` targets, substitution only;
-//   relative/abs   -> path substitution/completion (+ directory main/index);
-//   bare           -> tsconfig paths aliases first (tsc consults them before node_modules; JS
-//                     completion too, as Node never probed the target), then
-//                     the named package: its `exports` targets (substitution only) when it has
-//                     them, else its `main`/index (bare root) or subpath (substitution/completion).
-// Any path naming a package's unbuilt output maps to its source (fromOutputSource), by
-// `paths.outputs` where `paths` has it.
+// Resolve `spec` from `parentFile` as tsc would complete a resolution Node (or the field resolver)
+// missed: the absolute path of the on-disk source, or null (always, from or into node_modules).
+// `conditions` gates exports/imports maps; `paths` is a tsconfig paths matcher, or null. A '#name' takes
+// the parent package's `imports` targets; a path, its substitution/completion (+ a directory's main/index);
+// a bare spec, `paths` aliases first, then the named package's `exports` targets, else its main/index or
+// subpath. An unbuilt output maps to its source (by `paths.outputs` where given).
 export function resolveTypescriptFallback(parentFile, spec, { conditions = new Set(), paths = null, host = diskHost } = {}) {
   if (inNodeModules(parentFile, host)) return null
   const hit = typescriptTarget(parentFile, spec, { conditions, paths, host })

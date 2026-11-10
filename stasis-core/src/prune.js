@@ -4,9 +4,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 
 import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js' // also runs the posix-sep assertion
-import { hasNodeModulesSegment, isPathWithin, isPlainObject, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
-
-const LOCKFILE = 'stasis.lock.json'
+import { hasNodeModulesSegment, isPathWithin, isPlainObject, LOCK_FILE, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
 
 // Fields copied (sanitised) from a dep's on-disk package.json; everything else is dropped as
 // attack surface (scripts especially).
@@ -21,8 +19,8 @@ function assertGlobalVirtualStoreDisabled() {
 }
 
 function loadLockfile(root) {
-  const path = join(root, LOCKFILE)
-  assert.ok(existsSync(path), `stasis prune: ${LOCKFILE} not found at ${path}`)
+  const path = join(root, LOCK_FILE)
+  assert.ok(existsSync(path), `stasis prune: ${LOCK_FILE} not found at ${path}`)
   return Lockfile.parse(readFileSync(path, 'utf8'))
 }
 

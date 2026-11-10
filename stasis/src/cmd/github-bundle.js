@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 
+import { BUNDLE_FILE } from '@exodus/stasis-core/util'
 import { createClient } from '@preventive/upstream/github.js'
 import { buildGitHubBundle } from '../vfs-bundle/github.js'
 import { debugTimed } from './bundle.js'
@@ -12,14 +13,12 @@ const NAME_MAX = 255
 // Each character outside the portable filename set [A-Za-z0-9._-] made `_`.
 const portable = (s) => s.replaceAll(/[^\w.-]/gu, '_')
 
-// The default output of `stasis github-bundle`: `owner-name.<commit's first 7>.stasis.code.br` of
-// the repo, or `owner-name.<directory, its / made ->.<commit's first 7>.stasis.code.br` of a
-// directory in it, portable. A directory too deep for that to fit in NAME_MAX keeps what fits of
-// its start, and `_` and the first 8 of its sha256 after it; a valid `github` (at most 140
-// characters) leaves at least 91 for it.
+// `stasis github-bundle`'s default output, portable: `owner-name[.<directory, its / made ->].<commit's first 7>.stasis.code.br`.
+// A directory too long for NAME_MAX keeps what fits of its start, then `_` and its sha256's first 8 (a valid
+// `github`, at most 140 characters, leaves it 91 at least).
 export function githubBundleFile({ github, directory, commit }) {
   const repo = portable(github.replace('/', '-'))
-  const tail = `.${portable(commit.slice(0, 7))}.stasis.code.br`
+  const tail = `.${portable(commit.slice(0, 7))}.${BUNDLE_FILE}`
   if (!directory) return `${repo}${tail}`
   const room = NAME_MAX - `${repo}.${tail}`.length
   let dir = portable(directory.replaceAll('/', '-'))
@@ -27,28 +26,22 @@ export function githubBundleFile({ github, directory, commit }) {
   return `${repo}.${dir}${tail}`
 }
 
-// Run `stasis github-bundle`: the bundle of a GitHub repo at a commit, or the one a tag names (the
-// default branch's head without either), as buildGitHubBundle builds it from `options`, written
-// brotli-compressed to `output` (githubBundleFile's name for it by default, of the directory
-// bundled, the one a `path` gives too; `-` for stdout), and a JS bundle's lockfile to `lockfile`
-// where given; then it says how many packages it unpacked, and what it bundled. With `lockfileOnly`,
-// only the `lockfile` is written, as `stasis bundle --lockfile-only` writes it (bundleCommand's): it
-// takes no `output` or `brotliQuality`, and is refused before anything is fetched.
-// GitHub is asked with githubToken's token, `env`'s GITHUB_TOKEN where it is set, and the lock mode is
-// its EXODUS_STASIS_LOCK, nothing else of `env` being read; npm, with withNpmToken's (tokens.js).
+// Run `stasis github-bundle`: buildGitHubBundle's bundle of `options`, written to `output` (githubBundleFile's
+// name by default, `-` for stdout), its lockfile to `lockfile` where given, or under `lockfileOnly` that alone,
+// refused before anything is fetched. Of `env`, only GITHUB_TOKEN (githubToken's) and EXODUS_STASIS_LOCK are read.
 export async function githubBundleCommand({ cwd = process.cwd(), env = process.env, home, output, lockfile, lockfileOnly = false, brotliQuality, client, ...options } = {}) {
   const lockfileOnlyRefused = lockfileOnly ? lockfileOnlyError({ lockfile, output, brotliQuality }) : null
   if (lockfileOnlyRefused !== null) throw new Error(`githubBundleCommand: ${lockfileOnlyRefused}`)
   const built = await withNpmToken(home, () => buildGitHubBundle({ ...options, lockfile, lock: env.EXODUS_STASIS_LOCK || undefined, client: client ?? createClient({ token: githubToken({ env, home }) }) }))
-  const { directory } = built
+  const { directory, bundle } = built
   // Built for --lockfile alone, before anything is written, as `stasis bundle` builds it.
   const lockData = lockfile === undefined ? undefined : built.lockfile.serialize()
   let dest
   // Serialized under --lockfile-only too: never write a lockfile of a bundle that couldn't be written.
-  if (lockfileOnly) built.bundle.serialize()
-  else dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory, commit: built.bundle.repo.commit }), built.bundle.serialize(), brotliQuality))
+  if (lockfileOnly) bundle.serialize()
+  else dest = await debugTimed('Wrote the bundle', () => writeBundle(cwd, output ?? githubBundleFile({ github: options.github, directory, commit: bundle.repo.commit }), bundle.serialize(), brotliQuality))
   if (lockData !== undefined) writeFile(resolve(cwd, lockfile), lockData)
-  const from = `${options.github}@${built.bundle.repo.commit}${directory ? `/${directory}` : ''}`
+  const from = `${options.github}@${bundle.repo.commit}${directory ? `/${directory}` : ''}`
   console.warn(unpackedSummary(built.stats))
-  console.warn((lockfileOnly ? lockedSummary : bundledSummary)(built.bundle.sources.size, built.bundle.modules, from, lockfileOnly ? lockfile : dest))
+  console.warn((lockfileOnly ? lockedSummary : bundledSummary)(bundle.sources.size, bundle.modules, from, lockfileOnly ? lockfile : dest))
 }

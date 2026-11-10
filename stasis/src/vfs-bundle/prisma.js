@@ -4,16 +4,15 @@ import { dirname, posix } from 'node:path'
 import { compileFunction } from 'node:vm'
 
 import { readJson } from '@exodus/stasis-core/bundle-util'
-import { CODE_EXTENSIONS, hasNodeModulesSegment, isPathWithin, isPlainObject, pathExt } from '@exodus/stasis-core/util'
+import { CODE_EXTENSIONS, hasNodeModulesSegment, isPathWithin, isPlainObject, memoized, pathExt } from '@exodus/stasis-core/util'
 import { createVfs } from '@preventive/vfs'
 import { isDir, isFile, loadTsconfigCompilerOptions } from '../resolve-typescript.js'
 import { getParser, literalSpec, syntaxErrors } from '../scan.js'
 import { holding, nearest, projectView } from './tree.js'
 
-// buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write
-// with its installed Prisma, without running anything of the repo: schema, config, tsconfig.json
-// and package.json are read from the tree as data. The optional peer GENERATOR builds the client in
-// memory; an older version's is 7.10.0's rewritten (DOWN), tested byte for byte against its own.
+// buildVfsBundle's `generate: ['prisma']`: the client each project's `prisma generate` would write with its installed
+// Prisma, running nothing of the repo (schema, config, tsconfig.json and package.json are read as data). The optional
+// peer GENERATOR builds it in memory; an older version's is 7.10.0's rewritten (DOWN), tested byte for byte.
 
 const GENERATOR = '@prisma/client-generator-ts'
 const GENERATOR_VERSION = '7.10.0'
@@ -97,15 +96,12 @@ function commonjs(main, given, globals = {}) {
 // The schema engine's refusals are JSON with a `message`.
 const engineMessage = (message) => { try { return JSON.parse(message).message ?? message } catch { return message } }
 
-// A maker of schema engines (the wasm, and @prisma/get-dmmf over it), one for each schema: a panic traps
-// out of an instance mid-call, its stack never unwound, leaving it in a state none was built for (enough
-// panics and every later call is out of bounds), so no instance reads a schema after another's. Its panic
-// hook writes to a registry of its own, not the process's PRISMA_WASM_PANIC_REGISTRY. The .wasm is read
-// once; a fresh engine costs a millisecond or two.
+// A maker of schema engines (the wasm, and @prisma/get-dmmf over it), one per schema: a panic traps out of an
+// instance mid-call, leaving it in a state none was built for, so no instance reads a schema after another's. Its
+// panic hook writes to a registry of its own, not the process's PRISMA_WASM_PANIC_REGISTRY. The .wasm is read once.
 function schemaEngines(near) {
   const glue = near.resolve('@prisma/prisma-schema-wasm')
-  const read = new Map()
-  const fs = { readFileSync: (file) => read.get(file) ?? read.set(file, readFileSync(file)).get(file) }
+  const fs = { readFileSync: memoized((file) => readFileSync(file)) }
   const dmmf = near.resolve('@prisma/get-dmmf')
   const besideDmmf = createRequire(dmmf)
   const dmmfGiven = Object.fromEntries(['@prisma/debug', '@streamparser/json', 'pluralize'].map((id) => [id, besideDmmf(id)]))
@@ -149,12 +145,9 @@ const PARAMETERS = ['readSourceFile', 'inferModuleFormatFromNearestPackageJson',
 const REQUIRES = ['@prisma/client-common', '@prisma/dmmf', '@prisma/param-graph-builder', 'indent-string', 'klona', 'pluralize', 'ts-pattern']
 let loaded
 
-// The peer exports neither buildClient (generateClient's in-memory half), the reserved-names check
-// generateClient runs, nor its generate()'s option parsing and inference, so its bundle is compiled
-// to return them, stripped (cleanup, not a sandbox) of what they never reach. @prisma/internals is
-// never loaded: loading it reads the host's npm and yarn config and platform, and patches fs and
-// process.cwd. Its users get a stand-in, its isValidJsIdentifier its own file's, whose Unicode tables
-// aren't Node's; what it parses schemas with, the schema engine and @prisma/get-dmmf, is schemaEngines'.
+// The peer exports neither buildClient, the reserved-names check nor its option parsing, so its bundle is compiled to
+// return them, stripped of what they never reach (cleanup, not a sandbox). @prisma/internals is never loaded (it reads
+// the host's npm and yarn config, and patches fs and process.cwd): its users get a stand-in.
 export function loadGenerator() {
   if (loaded) return loaded
   let main
@@ -483,13 +476,9 @@ export const schemaProjects = (host, root, projects) => new Set([...projects].fi
 // An error's message as a reason: without the `prisma: ` a warning has already.
 const reasonOf = (error) => error.message.replace(/^prisma: /u, '')
 
-// The outputs, `{ dir, files }` each, of the `prisma-client` generators of the projects' schemas, each with the
-// schema (`schema`, its path), the generator's name (`generator`) and the Prisma (`prisma`, its version) it is
-// of; `reasons`, by schema path, why one stasis can't generate for isn't; and `schemas`, by project, the schema
-// path the Prisma installed there takes (null for none). Asked for (`strict`), what stasis
-// can't generate is warned of, and a schema it can't take refused, as `prisma generate` refuses it; detected,
-// both are silent but for `reasons`, which expectedOutputs gives where an import reaches an output it lacks. Two
-// generators writing one output are refused either way, unless `shared`, which keeps each.
+// The outputs (`{ dir, files, schema, generator, prisma }`) of the projects' `prisma-client` generators; `reasons`, by
+// schema, why one isn't generated; `schemas`, by project, the schema path taken (null for none). `strict` warns of what
+// isn't generated and refuses a schema it can't take; two generators writing one output are refused unless `shared`.
 /* eslint-disable no-await-in-loop -- one project at a time, in the order its warnings read */
 export async function generatePrismaClients({ host, root, projects, strict = true, shared = false }) {
   const outputs = []
@@ -552,13 +541,9 @@ async function generateSchema({ host, path, prisma, say, skip }) {
   return outputs
 }
 
-// What each generator of the projects' schemas would write and isn't, read from the schemas alone
-// (generatorBlocks), and why: `{ path }` (its output) or `{ specifier }` (a default output, in a package), `writer`,
-// and `why`. One of `outputs` is generated, so none of it: a miss there is the scan's, as any other's (the client's
-// own `?module` imports, say). `off`: why none is generated; else a generator stasis doesn't run is skipped, and
-// one it can't generate has its schema's reason (generatePrismaClients' `reasons`). A project's schema is the one
-// generation took (`schemas`, generatePrismaClients'); with none taken (generation off, which reads no Prisma),
-// each a Prisma stasis generates as would take: 7.10.0's prisma7.config.* is another's.
+// What each generator of the projects' schemas would write and isn't (`{ path }` or a default output's `{ specifier }`,
+// `writer`, `why`), read from the schemas alone: `off` says why none is generated. A project's schema is the one
+// generation took (`schemas`), else each a supported Prisma would take (7.10.0's prisma7.config.* is another's).
 export function expectedOutputs({ host, root, projects, outputs = [], reasons = new Map(), schemas, off }) {
   const generated = new Set(outputs.map(({ dir }) => dir))
   const taken = (dir, version) => {
@@ -592,19 +577,15 @@ function withoutExtension(path) {
   return CODE_EXTENSIONS.has(ext) ? stripped.slice(0, -ext.length - 1) : stripped
 }
 
-// The failure of the scan's unresolved import `u` where it is of a file a generator would write (`expected`,
-// expectedOutputs'): one whose resolution landed in such an output (the scan's `targets`, each a file, or a
-// directory whose index the output is), or one into a default
-// output by its specifier, however it is imported (statically, or by import() or require() at run time) -> why it
-// is missing, or undefined.
+// Why the scan's unresolved import `u` is missing, where it is of a file a generator would write (`expected`,
+// expectedOutputs'): its resolution (`targets`) landed in such an output, or its specifier names a default output.
 export function generatedMiss(expected) {
   const outputs = expected.filter(({ path }) => path !== undefined).map((each) => ({ ...each, bare: withoutExtension(each.path) }))
   const defaults = expected.filter(({ specifier }) => specifier !== undefined)
   return (u) => {
     const hit = outputs.find(({ path, bare }) => u.targets?.some((target) => isPathWithin(path, target) || withoutExtension(target) === bare || posix.join(target, 'index') === bare)) ??
       defaults.find(({ specifier }) => u.spec === specifier || u.spec?.startsWith(`${specifier}/`))
-    if (hit === undefined) return undefined
-    return `${hit.writer} would write it, but ${hit.why}`
+    return hit && `${hit.writer} would write it, but ${hit.why}`
   }
 }
 

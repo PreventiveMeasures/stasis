@@ -3,8 +3,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire, isBuiltin } from 'node:module'
 import assert from 'node:assert/strict'
 import { packageType } from '@exodus/stasis-core/bundle-util'
-import { classifyExtension, classifyFormat, isTypeDeclaration, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
-import { inNodeModules, isFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
+import { classifyExtension, classifyFormat, nestedMap, relativeEscapes } from '@exodus/stasis-core/util'
+import { inNodeModules, isSourceFile, resolveTypescriptFallback, typescriptSiblings } from './resolve-typescript.js'
 import { RELATIVE_REQUEST } from './resolve-node.js'
 import { branchFolder, parseDefine } from './define.js'
 import { diskHost } from '@exodus/stasis-core/host'
@@ -40,7 +40,6 @@ export function getParser() {
   return _parser
 }
 
-
 // classifyFormat is the shared name->format authority (static and runtime bundles must agree); it
 // returns null for the .js/.ts family whose module system comes from package.json `type` (null =
 // detect from syntax, signaled up as null).
@@ -64,10 +63,14 @@ export function literalSpec(node) {
   return null
 }
 
-// Walks require()/import() calls only; ESM static imports/re-exports come from oxc module records.
+// Walks require()/import() calls only; static imports/re-exports are collectSpecifiers' own.
 // `fold` (define.js's branchFolder, or null) names the children of a branch whose test folds: the
 // side that can't run is never walked.
 function findCallSpecifiers(ast, push, fold = null) {
+  const pushSpec = (kind, node) => {
+    const spec = literalSpec(node)
+    push(spec == null ? { kind, dynamic: true } : { kind, spec })
+  }
   const visit = (node) => {
     if (!node || typeof node !== 'object') return
     if (Array.isArray(node)) {
@@ -83,23 +86,13 @@ function findCallSpecifiers(ast, push, fold = null) {
 
     if (node.type === 'CallExpression') {
       const { callee, arguments: args } = node
-      if (callee.type === 'Identifier' && callee.name === 'require' && args.length >= 1) {
-        const spec = literalSpec(args[0])
-        if (spec != null) push({ kind: 'require', spec })
-        else push({ kind: 'require', dynamic: true })
-      }
+      if (callee.type === 'Identifier' && callee.name === 'require' && args.length >= 1) pushSpec('require', args[0])
     } else if (node.type === 'ImportExpression') {
-      const spec = literalSpec(node.source)
-      if (spec != null) push({ kind: 'dynamic-import', spec })
-      else push({ kind: 'dynamic-import', dynamic: true })
+      pushSpec('dynamic-import', node.source)
     } else if (node.type === 'TSImportEqualsDeclaration') {
       // `import lib = require('./dep.cts')`: TS-only CJS import; record the real edge.
       // Qualified-name form (`import A = B.C`) carries no file edge.
-      if (node.moduleReference?.type === 'TSExternalModuleReference') {
-        const spec = literalSpec(node.moduleReference.expression)
-        if (spec != null) push({ kind: 'require', spec })
-        else push({ kind: 'require', dynamic: true })
-      }
+      if (node.moduleReference?.type === 'TSExternalModuleReference') pushSpec('require', node.moduleReference.expression)
     }
 
     for (const key of Object.keys(node)) {
@@ -110,17 +103,11 @@ function findCallSpecifiers(ast, push, fold = null) {
   visit(ast)
 }
 
-// The import specifiers `program` holds, as { kind, spec } ({ kind, dynamic: true } for a computed
-// one). STATEMENT-level type-ness decides an edge, matching what survives type erasure at runtime
-// (verbatimModuleSyntax / Node's own type stripping): an `import type` / `export type` statement is
-// erased whole, so no edge; a statement that merely lists inline `type` specifiers
-// (`import { type A }`, `export { type B } from`) -- or none at all (`import {}`, `export {} from`)
-// -- still loads its module, so its edge is real. oxc's module records can't draw that line
-// (`import type { A }` and `import { type A }` yield identical all-isType entries, and
-// `export {} from` yields no entry at all), so the statements are read off the AST, where
-// importKind/exportKind carry it. `defines` (parseDefine's) leave out the calls in branches they
-// keep from running; static import statements are never in one. `typesOnly(node)`, where given,
-// leaves out a statement it holds lists types alone (see listsTypesOnly).
+// The import specifiers `program` holds, as { kind, spec } ({ kind, dynamic: true } for a computed one).
+// Statement-level type-ness decides an edge, as type erasure does: an `import type`/`export type` is
+// erased whole, while `import { type A }` or `import {}` still loads its module. oxc's module records
+// can't tell them apart, so the statements are read off the AST. `defines` leave out the calls in the
+// branches they keep from running; `typesOnly(node)`, a statement listing types alone (listsTypesOnly).
 function collectSpecifiers(program, defines = new Map(), typesOnly = () => false) {
   const specs = []
   for (const node of program.body) {
@@ -136,13 +123,10 @@ function collectSpecifiers(program, defines = new Map(), typesOnly = () => false
   return specs
 }
 
-// Whether `entries` (absolute paths) import TS sources by their OUTPUT names -- tsc's convention,
-// which only --typescript resolves -- so the build can take --typescript as given: every entry is
-// TypeScript, they hold at least one relative import naming a JS output (`./a.js`, or .jsx/.mjs/
-// .cjs), and not one of those is on disk while the TS source it maps to is (`./a.ts`; see
-// typescriptSiblings), outside node_modules as the resolver requires. Any part missing is no tell, and neither is an entry that doesn't parse as
-// the scan parses it (Scan#parseFile; the scan reports it), nor one in node_modules, where
-// --typescript maps nothing. Read off the entries alone, before the scan.
+// Whether `entries` (absolute paths) import TS sources by their OUTPUT names, tsc's convention, so the
+// build can take --typescript as given: every entry is TypeScript (none in node_modules) and parses, and
+// their relative imports naming a JS output (`./a.js`) are each absent while its TS source (outside
+// node_modules) is there. Read off the entries alone, before the scan.
 export function importsTypescriptByOutputName(entries, host = diskHost) {
   if (!entries.every((entry) => TS_EXTS.has(extname(entry)) && !inNodeModules(entry, host))) return false
   // Outside the try, as in the scan: a missing oxc-parser is an env error, not an entry's.
@@ -165,9 +149,8 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
     }
   }
   // tsc's pick, the first TS source on disk, as the resolver maps it: none where it lies in node_modules.
-  const isSource = (file) => !isTypeDeclaration(file) && isFile(file, host)
   const mapsTo = (target) => {
-    const pick = typescriptSiblings(target).find(isSource)
+    const pick = typescriptSiblings(target).find((file) => isSourceFile(file, host))
     return pick !== undefined && !inNodeModules(pick, host)
   }
   return targets.length > 0 && targets.every((target) => host.stat(target) === null && mapsTo(target))
@@ -175,21 +158,14 @@ export function importsTypescriptByOutputName(entries, host = diskHost) {
 
 const TYPE_KINDS = new Set(['type', 'typeof'])
 
-// Whether the import or re-export statement `node` lists specifiers, every one an inline type
-// (`import { type A, typeof B } from`, `export { type C } from`), which Babel's Flow and TypeScript
-// transforms erase whole, as Metro builds (Node keeps one, as `import {} from`). A file --flow
-// stripped has lost them, blanked to whitespace in place in its `strippedSource`, so there the
-// statement lists types alone where it reads otherwise in its `source` (a comment in it stays);
-// a statement written with none (`import {} from`) lists no types. The Metro plugin's transformer
-// draws the same line (typesOnly).
+// Whether the import or re-export `node` lists specifiers, every one an inline type (`import { type A }`),
+// which Babel's Flow and TypeScript transforms erase whole (Node keeps it, as `import {} from`). A file
+// --flow stripped has them blanked in place in `strippedSource`: there it is a statement reading otherwise
+// in `source`. One written with none lists no types. The Metro plugin's transformer draws the same line.
 function listsTypesOnly(node, { source, strippedSource }) {
   const specifiers = node.specifiers ?? []
   if (specifiers.length > 0) return specifiers.every((specifier) => TYPE_KINDS.has(specifier.importKind ?? specifier.exportKind))
   return strippedSource !== null && source.slice(node.start, node.end) !== strippedSource.slice(node.start, node.end)
-}
-
-function condKey(set) {
-  return [...set].join(', ')
 }
 
 // How many files the scans parsed, and with a `memo` (#scanKept) resolved again from a parse kept,
@@ -203,31 +179,17 @@ export class Scan {
   parseErrors = []
   entries = new Set()
 
-  // `conditions` is additive on top of the edge-context base set. `resolve` optionally
-  // replaces Node's resolver (resolve-fields.js): returns `{ url } | { empty } | { builtin } | null`
-  // (`empty` = a browser/react-native `false` redirect) and owns builtin handling when set.
-  // `jsx` opts the .js/.cjs/.mjs family into JSX syntax (React Native's JSX-in-.js convention);
-  // off by default because oxc, like tsc, only auto-enables JSX for .jsx/.tsx by extension.
-  // `flow`: strip Flow type syntax from JS-family sources, as Metro's Babel does (see parseFile).
-  // `typescript`: retry a failed resolution with tsc's mapping (see #typescriptResolve), with
-  // `typescriptPaths` (a tsconfig paths matcher; see resolveTypescriptFallback) adding tsconfig alias support; only consulted
-  // on the built-in (Node) resolver -- a custom `resolve` owns its own TS handling. Without it, the
-  // mapping only names the file a miss would resolve to under --typescript (see #typescriptCandidate).
-  // `typescriptResolve`: the custom `resolve`'s --typescript twin (same shape), consulted only for
-  // that hint; null when there is no custom resolver or `typescript` is on. `missTargets`: record
-  // where each miss would have landed (see #missTargets).
-  // `resources` (a `parseResourcesOption` Set of extensions/filenames): reached files matching it
-  // are carried as opaque resources (bytes only) rather than rejected as un-carryable -- for graphs
-  // that aren't fully loadable in JS (e.g. Metro consuming .png/.svg assets).
-  // `host`: the filesystem the walk reads and resolves through (@exodus/stasis-core/host).
-  // `define` (each global name -> its value, see define.js): a require()/import() in a branch they
-  // keep from running (`if (__DEV__)` under `{ __DEV__: false }`) is no edge.
-  // `babel`: the files are built through Babel (Metro), whose Flow and TypeScript transforms erase an
-  // import or re-export listing types alone (`import { type A } from`), so it's no edge either, but
-  // in a TypeScript file `keepsTypeImports(file)` holds Babel keeps them for (its transform's
-  // `onlyRemoveTypeImports`, as --babel reads the project's config); Flow's erases them always.
-  // `memo`: what scans before this one, with these options, read of each file, and where to keep
-  // what this one reads (see #scanKept).
+  // `conditions`: added to the edge-context base set. `resolve`: a replacement for Node's resolver
+  // (resolve-fields.js), returning `{ url } | { empty } | { builtin } | null` and owning builtins.
+  // `jsx`: JSX in the .js/.cjs/.mjs family (React Native's convention; oxc enables it for .jsx/.tsx alone).
+  // `flow`: strip Flow types, as Metro's Babel does (parseFile). `typescript`: retry a miss of the built-in
+  // resolver with tsc's mapping (#typescriptResolve), `typescriptPaths` its aliases; without it, the mapping
+  // only hints where a miss would land (#typescriptCandidate), a custom resolver's by `typescriptResolve`.
+  // `missTargets`: record where each miss would have landed. `resources` (parseResourcesOption's): reached
+  // files carried as opaque resources (Metro's assets). `host`: the filesystem walked. `define` (define.js):
+  // a require()/import() in a branch its values keep from running is no edge. `babel`: built by Babel
+  // (Metro), whose transforms erase an import listing types alone, but in a TypeScript file
+  // `keepsTypeImports(file)` holds (`onlyRemoveTypeImports`). `memo`: what earlier scans read (#scanKept).
   constructor({ conditions = [], resolve = null, jsx = false, flow = false, typescript = false, typescriptPaths = null, typescriptResolve = null, resources = new Set(), define, babel = false, keepsTypeImports = null, host = diskHost, memo = null, missTargets = false } = {}) {
     this.extraConditions = [...conditions]
     this.customResolve = resolve
@@ -250,10 +212,8 @@ export class Scan {
   // a host's own reads are kept (vfs-bundle/lazy.js's untouchedMemo).
   #types
 
-  // A reached file whose extension/filename is in the --resources allowlist: carried as an opaque
-  // resource (bytes only, no parse, no edges), not rejected as "a source bundle can't carry".
-  // classifyExtension returns 'resource' only for non-code names in the allowlist, so this never
-  // shadows a script/json extension (parseResourcesOption rejects code extensions).
+  // A reached file the --resources allowlist names: carried as an opaque resource (bytes only, no parse,
+  // no edges). classifyExtension gives 'resource' only for a non-code name.
   #isResource(file) {
     return this.resources.size > 0 && classifyExtension(file, this.resources) === 'resource'
   }
@@ -285,14 +245,10 @@ export class Scan {
   #reparse
   #parse
 
-  // With a `memo` (url -> what a scan read of it, kept across the rounds a lazy tree is read in,
-  // vfs-bundle/lazy.js): a file a scan before kept is taken as it read it, what it found and queued
-  // and the warnings it gave alike. One scanned here is kept where reading it touched no package not
-  // unpacked yet (`host.touches()` counts each such read, through a host that caches nothing such a
-  // read reads), so read what the full tree holds: the next scan reads only the files that did, and
-  // those it reaches. Of one that did, its parse is kept alone, which is the file's whatever the tree
-  // holds, or of that, what it imports (#scanFile): the next scan resolves its imports again, but
-  // parses it no more.
+  // With a `memo` (url -> what a scan read of it, kept across a lazy tree's rounds): a file a scan before
+  // kept is replayed as it read it, edges, queue and warnings alike. One scanned here is kept where reading
+  // it touched no package not unpacked yet (`host.touches()`); of one that did, its parse alone (or what it
+  // imports, #scanFile), so the next scan resolves its imports again but parses it no more.
   #scanKept(url, queue) {
     const kept = this.memo.get(url)
     scanCounts[kept?.queued !== undefined ? 'replayed' : kept?.parse === undefined ? 'parsed' : 'resolved'] += 1
@@ -336,13 +292,10 @@ export class Scan {
     })
   }
 
-  // Node's resolver: must match the runtime resolver's condition set (omitting one resolves
-  // `exports`-gated packages to a different file) AND its order: the recorded key must equal the
-  // runtime hooks' string for exact lookups. Extras go where Node puts user conditions in each set.
-  // A custom resolver (--mainFields/--metro) resolves for a bundler instead, so it gets what
-  // esbuild, webpack and Metro all assert: `import`/`require`, `default` (which Node's resolver
-  // matches anyway) and the extras, never `node`, `node-addons` or `module-sync`; the same set as
-  // resolve-fields.js's resolveConditions.
+  // Node's resolver: the runtime resolver's condition set AND its order (the recorded key must equal the
+  // runtime hooks' string), extras where Node puts user conditions. A custom resolver (--mainFields/--metro)
+  // gets what esbuild, webpack and Metro assert: `import`/`require`, `default` and the extras, never `node`,
+  // `node-addons` or `module-sync` (resolve-fields.js's resolveConditions).
   #conditionSet(context) {
     if (this.customResolve) return new Set([context, 'default', ...this.extraConditions])
     return context === 'import'
@@ -357,13 +310,9 @@ export class Scan {
     this.parseErrors.push({ url, format, message, recovered })
   }
 
-  // --typescript: resolve `spec` the way tsc maps TS sources, invoked only AFTER Node's own
-  // resolution missed -- so an on-disk `.js` (or any Node-resolvable target) always wins, and the
-  // mapping only completes a failed resolution, never rewrites a successful one. The rules
-  // (extension substitution, extensionless/index completion, manifest-target and tsconfig-paths
-  // mapping) live in the shared dispatcher (resolve-typescript.js), so this resolver and the
-  // legacy-field one cannot drift. The hit is realpathed to match req.resolve's canonical output
-  // (every other recorded edge is a realpath).
+  // --typescript: tsc's mapping of `spec` (resolve-typescript.js, shared with the field resolver), only
+  // once Node's resolution missed, so it never rewrites a successful one. The hit is realpathed, as
+  // every recorded edge is.
   #typescriptResolve(parentFile, spec, conditions) {
     const hit = resolveTypescriptFallback(parentFile, spec, {
       conditions,
@@ -389,10 +338,8 @@ export class Scan {
   }
 
   // Where a miss of `spec` from `parentFile` would have landed (vfs-bundle/prisma.js's generatedMiss matches
-  // them to generator outputs): a relative or absolute path's file; the file a package's `exports`, `imports`,
-  // `main` or subpath named (`target`, the resolver's error's), or what a custom resolver tried (its missTargets: a
-  // `browser` field's redirect, say); and under --typescript, where a tsconfig alias points (without it, an
-  // alias is never resolved at all, a miss of another kind).
+  // them to generator outputs): a path's file; the file the resolver's error names (`target`), or what a
+  // custom resolver tried (its missTargets); and under --typescript, where a tsconfig alias points.
   #missTargets(parentFile, spec, target) {
     const path = RELATIVE_REQUEST.test(spec) || isAbsolute(spec)
     const aliased = !path && !spec.startsWith('#') && this.typescript && this.typescriptPaths !== null && !inNodeModules(parentFile, this.host)
@@ -417,9 +364,7 @@ export class Scan {
     }
   }
 
-  // Strip Flow type syntax to plain JS (flow.js's stripFlowTypes): of a file marked `@flow`, or as a
-  // parse fallback (see parseFile), so plain-JS files never reach it. Returns the rewritten source, or
-  // null when the transform itself fails on this file -- the caller then keeps oxc's original parse,
+  // flow.js's stripFlowTypes of `src`, or null where it fails on the file: the caller keeps oxc's parse,
   // saying so where that failed (`failed`).
   #stripFlow(src, file, failed) {
     try {
@@ -447,6 +392,15 @@ export class Scan {
     // force the JSX variant when opted in (`--jsx`) to parse React Native's JSX-in-.js source.
     const lang = this.jsx && JSX_EXTS.has(ext) ? 'jsx' : undefined
     const parseOptions = (sourceType) => (lang ? { sourceType, lang } : { sourceType })
+    // A retry's parse of `source`, where it is clean; else null, the first parse and its errors kept.
+    const cleanParse = (source, sourceType) => {
+      try {
+        const retried = parser.parseSync(file, source, parseOptions(sourceType))
+        return syntaxErrors(retried).length === 0 ? retried : null
+      } catch {
+        return null
+      }
+    }
     // `commonjs`, not `script`: Node runs CJS inside its module wrapper function, where a top-level
     // `return` or `new.target` is legal; oxc's `commonjs` accepts both and is otherwise `script`.
     const baseSourceType = declared === null ? 'unambiguous'
@@ -458,11 +412,8 @@ export class Scan {
       return { declared, crash: cause.message }
     }
 
-    // Match Node's syntax detection for typeless packages: ESM syntax picks the module variant
-    // (mislabeling as commonjs makes `--bundle=load` feed the wrong translator). Only .ts takes the
-    // `-typescript` suffix; .jsx/.tsx deliberately land on plain module/commonjs (like a JSX-in-.js
-    // file) — they're bundler-transformed, keyed by extension in `stasis build`, not Node-strippable,
-    // so the "needs a JSX/TS transform" signal rides the .jsx/.tsx extension, not the format tag.
+    // Node's syntax detection for a typeless file: ESM syntax picks the module variant. Only .ts takes the
+    // `-typescript` suffix: .jsx/.tsx are bundler-transformed, keyed by their extension, not Node-strippable.
     const tsSuffix = ext === '.ts' ? '-typescript' : ''
     const detectedFormat = (p) => `${p.module.hasModuleSyntax ? 'module' : 'commonjs'}${tsSuffix}`
     let format = declared ?? detectedFormat(parsed)
@@ -475,51 +426,38 @@ export class Scan {
     // TLA-only ESM file parsed here as a broken script). Keep mirroring Node for any script parse
     // that still fails: retry as module and prefer a clean module parse.
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
-      try {
-        const asModule = parser.parseSync(file, src, parseOptions('module'))
-        if (syntaxErrors(asModule).length === 0) {
-          parsed = asModule
-          format = `module${tsSuffix}`
-          errors = []
-        }
-      } catch { /* keep the script parse and its recorded errors */ }
+      const asModule = cleanParse(src, 'module')
+      if (asModule !== null) {
+        parsed = asModule
+        format = `module${tsSuffix}`
+        errors = []
+      }
     }
 
     // A typeless file Node detects as CJS runs inside the module wrapper too, but `unambiguous`
     // parses it as a plain script, so a top-level `return` still fails there: retry as `commonjs`
     // and prefer a clean parse (the detected commonjs format stands).
     if (errors.length > 0 && declared === null && !format.startsWith('module')) {
-      try {
-        const asCommonjs = parser.parseSync(file, src, parseOptions('commonjs'))
-        if (syntaxErrors(asCommonjs).length === 0) {
-          parsed = asCommonjs
-          errors = []
-        }
-      } catch { /* keep the script parse and its recorded errors */ }
+      const asCommonjs = cleanParse(src, 'commonjs')
+      if (asCommonjs !== null) {
+        parsed = asCommonjs
+        errors = []
+      }
     }
 
-    // --flow: oxc parses JS/TS but not Flow, so a Flow-typed .js/.cjs/.mjs/.jsx file lands here
-    // with parse errors. Strip Flow types and re-parse as Metro's Babel reads the file: one marked
-    // `@flow` (hasFlowPragma) is Flow, stripped whether or not oxc parses it as it is (where
-    // `f<T>(x)` is a comparison, not Flow's call), as Babel parses it with hermes-parser; any other
-    // only now, after a raw oxc parse actually failed, as Babel's own Flow parser takes annotations
-    // in any file, so plain-JS files never pay the transform cost. Only the parse input is rewritten;
-    // the bundle stores the pristine on-disk source (State/buildResolvedJsBundle re-read it), so
-    // attestation still covers the real bytes. A clean re-parse replaces the original one; otherwise
-    // we keep the original result so a genuine (non-Flow) parse error still surfaces.
+    // --flow: strip Flow types and re-parse, as Metro's Babel reads the file: one marked `@flow` whether or
+    // not oxc parses it (where `f<T>(x)` is a comparison), any other only where the oxc parse failed. Only
+    // the parse input is rewritten (the bundle stores the on-disk bytes); a re-parse that still fails keeps
+    // the original, so a genuine parse error surfaces.
     let strippedSource = null
     if (this.flow && FLOW_EXTS.has(ext) && (errors.length > 0 || hasFlowPragma(src))) {
       const flowSrc = this.#stripFlow(src, file, errors.length > 0)
-      if (flowSrc !== null) {
-        try {
-          const asFlow = parser.parseSync(file, flowSrc, parseOptions(baseSourceType))
-          if (syntaxErrors(asFlow).length === 0) {
-            parsed = asFlow
-            format = declared ?? detectedFormat(parsed)
-            errors = []
-            strippedSource = flowSrc
-          }
-        } catch { /* keep the original parse + its errors */ }
+      const asFlow = flowSrc === null ? null : cleanParse(flowSrc, baseSourceType)
+      if (asFlow !== null) {
+        parsed = asFlow
+        format = declared ?? detectedFormat(parsed)
+        errors = []
+        strippedSource = flowSrc
       }
     }
 
@@ -577,10 +515,9 @@ export class Scan {
       if (this.memo !== null && this.host.touches() === touches) this.#parse = { format, errors, specs }
     }
 
-    // The edge KIND picks the resolution context, not the parent's format: createRequire()d
-    // require() inside ESM resolves under REQUIRE conditions, literal import() inside CJS under
-    // IMPORT conditions -- the parent-format set baked the wrong `exports` branch into the bundle.
-    // The custom (legacy-field) resolver keeps the format set: bundlers don't split per edge.
+    // The edge KIND picks Node's resolution context, not the parent's format: a createRequire()d require()
+    // in ESM resolves under REQUIRE conditions, an import() in CJS under IMPORT ones. A custom resolver
+    // keeps the format's: bundlers don't split per edge.
     const formatContext = ['module', 'module-typescript'].includes(format) ? 'import' : 'require'
     const edges = []
     const specMaps = new Map() // condition key -> specifier -> child URL
@@ -606,7 +543,7 @@ export class Scan {
       }
       const context = this.customResolve ? formatContext : (s.kind === 'require' ? 'require' : 'import')
       const conditions = this.#conditionSet(context)
-      const key = condKey(conditions)
+      const key = [...conditions].join(', ')
       // Custom (legacy-field) resolver owns builtin handling and the `empty` outcome (browser/RN
       // `false` redirect): an empty edge is recorded but neither queued nor counted as unresolved.
       if (this.customResolve) {

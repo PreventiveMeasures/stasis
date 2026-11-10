@@ -6,12 +6,9 @@ import { styleText } from 'node:util'
 // break the box layout.
 const cell = (v) => String(v ?? '').replace(/[\r\n\u2028\u2029]+/gu, ' ')
 
-// Split a value into the physical lines a cell occupies. Non-multiline columns
-// collapse every line break to a space via `cell` (one line). A column named in
-// `multiline` (the `--why` reason column) keeps intentional `\n` breaks -- one
-// physical line per entry -- while still flattening stray CR/separators in each.
-const cellLines = (v, multiline) =>
-  multiline ? String(v ?? '').split('\n').map((s) => cell(s)) : [cell(v)]
+// The physical lines a cell occupies: one, but a `multiline` column's (the `--why` reason column's) one
+// per `\n`-separated entry, each still flattened by `cell`.
+const cellLines = (v, multiline) => (multiline ? String(v ?? '').split('\n').map((s) => cell(s)) : [cell(v)])
 
 // The longest of `items` by `lengthOf` (a string's or an array's length), 0 for none: a fold, as a column
 // (a --why cell of 2000 chains, say) may hold more lines and words than one call takes arguments.
@@ -42,21 +39,16 @@ function wrapLine(text, width, indent = '') {
   return lines
 }
 
-// `rows` as a boxed table of `columns`, its header their names. `paint(text, column, row)`, where
-// given, styles the text of each cell of a row (with colour, say), its padding after, unstyled;
-// `paintHeader(text, column)` each name in the header, and `paintFrame(text)` the box drawn around them.
-// Where `width` is given and the table is wider, the `wrap` columns narrow, the widest first, to fit it
-// where they can (see MAX_WHOLE_WORD), their text wrapped (see wrapLine); a `multiline` column's further
-// lines of an entry indented, so they don't read as entries of their own.
+// `rows` as a boxed table of `columns`, styled by `paint(text, column, row)` (a cell's text, not its padding),
+// `paintHeader(text, column)` and `paintFrame(text)`. Wider than `width`, its `wrap` columns narrow, the widest
+// first, as far as MAX_WHOLE_WORD lets them, a `multiline` column's further lines of an entry indented.
 export function formatTable(rows, columns, { multiline = [], paint, paintHeader, paintFrame, width, wrap = [] } = {}) {
   if (rows.length === 0) return ''
   const ml = new Set(multiline)
   const linesOf = (obj) => columns.map((c) => cellLines(obj[c], ml.has(c)))
   const header = columns.map((c) => [c])
-  let body = rows.map((r) => linesOf(r))
-  const measure = () => columns.map((c, i) =>
-    Math.max(c.length, longest(body, (cells) => longest(cells[i])))
-  )
+  let body = rows.map(linesOf)
+  const measure = () => columns.map((c, i) => Math.max(c.length, longest(body, (cells) => longest(cells[i]))))
   let widths = measure()
   // Each column's text, a space either side, and a border after it; one more border before the first.
   const total = () => widths.reduce((sum, w) => sum + w + 3, 1)
@@ -70,16 +62,14 @@ export function formatTable(rows, columns, { multiline = [], paint, paintHeader,
       if (widest === undefined) break
       widths[widest]--
     }
-    const narrowed = widths
     body = body.map((cells) => cells.map((lines, i) =>
-      wrapping.includes(i) ? lines.flatMap((l) => wrapLine(l, narrowed[i], indent(i))) : lines))
+      wrapping.includes(i) ? lines.flatMap((l) => wrapLine(l, widths[i], indent(i))) : lines))
     widths = measure()
   }
   const frame = (text) => (paintFrame ? paintFrame(text) : text)
   const bar = frame('│')
   const line = (l, m, r, fill) => frame(l + widths.map((w) => fill.repeat(w + 2)).join(m) + r)
-  // A row spans as many physical lines as its tallest cell; shorter cells pad
-  // out with blanks so the borders stay aligned.
+  // A row spans as many physical lines as its tallest cell.
   const render = (cells, style) => {
     const height = longest(cells)
     const out = []

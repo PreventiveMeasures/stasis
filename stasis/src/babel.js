@@ -1,33 +1,17 @@
-// Per-file Babel pre-transforms for `stasis build`, serving two flags:
-//
-// --platform=hermes downlevels every code file to the dialect Hermes (React Native's
-// engine) executes -- no classes, class fields, let/const, arrows, async generators or
-// for-await. Two steps per file, then a constrained final bundle:
-//   1. esbuild.transform lowers class fields / private members / static blocks / `using`
-//      into plain class syntax (stripping TS types and compiling JSX on the way), the
-//      shape Babel's class transform can consume.
-//   2. A Babel worker pool applies transform-block-scoping + transform-classes -- the two
-//      lowerings esbuild refuses to do itself.
-//   3. The final esbuild bundle runs with HERMES_UNSUPPORTED (arrow/async-generator/
-//      for-await lowered by esbuild; class and const-and-let declared unsupported both so
-//      esbuild's own helpers stay Hermes-safe and as a fail-closed check that none
-//      survived Babel).
-//
-// --babel instead runs each code file through the project's own babel.config.* verbatim --
-// no esbuild pre-transform, Babel sees the original source exactly as the project's own
-// toolchain (e.g. Metro) would hand it over.
-//
-// `stasis bundle --metro --babel` takes only the import aliases from that config (see
-// createBabelAliases): the scan still reads each file's own source. `--babel-aliases` takes the same
-// aliases from a JSON file instead, mapped here as the plugin maps them (createAliases), so nothing
-// of the project's runs.
-//
-// Babel is the PROJECT's dev dependency, not stasis's: @babel/core (and, for hermes, the
-// two transform plugins) resolve from the project directory, so the project pins its own
-// Babel toolchain and config semantics.
+// Per-file Babel pre-transforms for `stasis build`:
+// --platform=hermes downlevels each code file to what Hermes runs: esbuild.transform lowers class
+// fields, private members, static blocks and `using` to plain classes (TS and JSX compiled on the way),
+// Babel's block-scoping and classes transforms (which esbuild won't do) run in a worker pool, and the
+// final bundle declares HERMES_UNSUPPORTED, both to keep esbuild's helpers Hermes-safe and as a check.
+// --babel runs each code file through the project's own babel.config.*, as its toolchain (Metro) would.
+// `stasis bundle --metro --babel` takes only that config's import aliases (createBabelAliases), and
+// `--babel-aliases` the same from a JSON file (createAliases), running nothing of the project's.
+// Babel is the PROJECT's dev dependency, resolved from its directory, never stasis's own.
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve } from 'node:path'
+
+import { memoized } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
@@ -149,28 +133,22 @@ function projectBabelConfig({ projectDir, platform }, method) {
   const [babelPath] = resolveFromProject(projectDir, ['@babel/core'], '--babel', 'stasis bundle')
   const babel = require(babelPath)
   const caller = { name: 'metro', bundler: 'metro', platform }
-  const byFile = new Map()
-  return (file) => {
-    if (!byFile.has(file)) {
-      try {
-        byFile.set(file, babel[method]({ cwd: projectDir, root: projectDir, configFile, filename: file, caller }))
-      } catch (cause) {
-        throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
-      }
+  return memoized((file) => {
+    try {
+      return babel[method]({ cwd: projectDir, root: projectDir, configFile, filename: file, caller })
+    } catch (cause) {
+      throw new Error(`stasis bundle: --babel could not load ${configFile} for ${file}`, { cause })
     }
-    return byFile.get(file)
-  }
+  })
 }
 
 // The file a plugin item names babel-plugin-module-resolver by resolves into this.
 const MODULE_RESOLVER = /[\\/]node_modules[\\/]babel-plugin-module-resolver[\\/]/u
 
-// --babel for `stasis bundle --metro`: the import aliases babel-plugin-module-resolver applies to
-// each file under the project's babel.config.* (projectBabelConfig's partial config). The plugin's own
-// resolvePath (or the config's custom one) maps each specifier, its `cwd` the project's where the
-// config sets none, as Metro started there has it. Every instance the config lists, by name or as a
-// value (`require`d or imported), counts, in order; one a preset adds doesn't.
-// -> (file, specifier) => the specifier the plugin rewrites it to, else null
+// --babel for `stasis bundle --metro`: the import aliases babel-plugin-module-resolver applies to each file
+// under the project's babel.config.*, by the plugin's own resolvePath (or the config's), its `cwd` the
+// project's where the config sets none. Each instance the config lists, by name or as a value, counts, in
+// order; one a preset adds doesn't. -> (file, specifier) => the specifier it is rewritten to, else null
 export function createBabelAliases({ projectDir, platform }) {
   const partialConfig = projectBabelConfig({ projectDir, platform }, 'loadPartialConfig')
   // The project's own copy, which a config passing the plugin as a value passes; none where the
@@ -221,13 +199,11 @@ const toLocalPath = (path) => {
 }
 const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 
-// --babel-aliases for `stasis bundle --metro`: the import aliases of `alias`, babel-plugin-module-resolver's
-// `alias` option as data (a JSON file's), mapped as the plugin maps them with `cwd` its own, as
-// createBabelAliases has it: a key starting with `^` or ending with `$` is a regular expression whose
-// groups the value's `\N` take, any other matches the specifier it is or one it starts with and `/`,
-// whose rest the value keeps; the first key matching wins. A value starting with `./` or `../` is a
-// path from `cwd`, written relative to the importing file; any other is the specifier as it is.
-// -> (file, specifier) => the specifier it rewrites it to, else null
+// --babel-aliases for `stasis bundle --metro`: babel-plugin-module-resolver's `alias` option as data, mapped
+// as the plugin maps it: a key starting with `^` or ending with `$` is a regular expression whose groups the
+// value's `\N` take, any other matches itself or itself and `/` and a rest the value keeps; the first key
+// matching wins. A `./` or `../` value is a path from `cwd`, written relative to the importing file.
+// -> (file, specifier) => the specifier it is rewritten to, else null
 export function createAliases(alias, cwd) {
   const matchers = Object.entries(alias).map(([key, value]) => {
     // As the plugin builds them: a key's own pattern, unflagged (`u` would refuse some it takes).

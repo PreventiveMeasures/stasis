@@ -1,7 +1,7 @@
 import { posix } from 'node:path'
 
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
-import { posixPathEscapes } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, memoized, posixPathEscapes } from '@exodus/stasis-core/util'
 import { decompress } from '@preventive/archive/compression.js'
 import { ArchiveError, unpack } from '@preventive/archive/tar.js'
 import { createClient } from '@preventive/upstream/github.js'
@@ -11,7 +11,6 @@ import { checkAhead, defaultEntries, entryPattern, expandEntries } from './entri
 import { checkCache, checkTarget, detectPackageManager, installedAlone, listsFile, lockfileOf, lockfilesListed, lockfilesManagers, noLockfile, packageManagerOf, vfsHost } from './tree.js'
 import { YARNCLEAN } from './yarnclean.js'
 
-const CONFIG_FILE = 'stasis.config.json'
 // As upstream's tree verification bounds a tarball's unpacked size.
 const MAX_TAR_BYTES = 2 ** 30
 // What a git tree holds (upstream's verification refuses anything else from GitHub).
@@ -73,7 +72,6 @@ async function treeFiles(client, { github, tree, directory, where }) {
   return escapingLink(files) ? null : files
 }
 
-// The whole repo's files at `sha`.
 async function repoFiles(client, { github, sha, where }) {
   const files = await treeEntries(await client.getRepoTarball({ repo: github, sha }), where)
   const link = escapingLink(files)
@@ -130,20 +128,11 @@ async function splitPath(list, path, where) {
 }
 
 // listRepoDir's listing of a directory of the repo at `sha`, each listed once.
-function lister(client, { github, sha }) {
-  const listings = new Map()
-  return (directory) => {
-    if (!listings.has(directory)) listings.set(directory, client.listRepoDir({ repo: github, sha, directory }))
-    return listings.get(directory)
-  }
-}
+const lister = (client, { github, sha }) => memoized((directory) => client.listRepoDir({ repo: github, sha, directory }))
 
-// -> { listed, configured }: of no package manager given, the one whose lockfile alone `directory`
-// (or the repo's root) and the directories above it list, which is then the only one that may install
-// it, undefined where more than one does, or the listings can't tell, for the tree to tell; and
-// whether `directory` lists a stasis.config.json, which may name the lockfiles to lay out in its
-// place (its `lockfiles`), so that the tree tells then too. Refused where no lockfile is listed, and
-// no stasis.config.json.
+// -> { listed, configured }: the package manager whose lockfile alone `directory` (or the root) and those above it
+// list, undefined where more than one does or the listings can't tell; and whether `directory` lists a
+// stasis.config.json, whose `lockfiles` may stand in for it. Refused where neither is listed.
 async function listedPackageManager(list, { directory, where }) {
   const listings = await listingsOf(list, directory ? [directory, ...ancestorsOf(directory)] : [undefined])
   if (listings === null) return { listed: undefined, configured: false }
@@ -175,15 +164,9 @@ async function subtreeEntries(client, list, { github, directory, packageManager,
   return files === null || refersAbove(files, lockfileOf(packageManager)) ? null : files
 }
 
-// The repo as buildGitHubBundle downloads it, for `name`: at `sha`, else the commit `tag` names (an
-// annotated tag followed to it), else the default branch's head; `directory` alone where it stands
-// alone for the package manager installing it, else the whole repo. That package manager is
-// `packageManager` if given, else the one the listings tell, before the tree is fetched, else the
-// tree; `options` are checked for it once it is known. Where the directory's stasis.config.json
-// names its `lockfiles`, a tree is laid out of each and none is told: the whole repo, which they may
-// climb to; `packageManagers` those of the trees. A `path` is the `directory`, or a file or pattern in
-// it, its files entries ahead of `options.entries` (splitPath).
-// -> { vfs, host, cwd, subtree, sha, where, packageManager, packageManagers, directory, entries }
+// The repo as buildGitHubBundle downloads it, at `sha`, `tag`'s commit or the default branch's head: `directory` alone
+// where it stands alone for its package manager (given, else told by the listings, else by the tree), else the whole
+// repo. -> { vfs, host, cwd, subtree, sha, where, packageManager, packageManagers, directory, entries }
 async function repoTree(name, { github, sha, tag, directory, path, client, packageManager }, options) {
   checkAhead(name, packageManager, options)
   checkRepo(name, { github, sha, tag, directory, path })
@@ -233,24 +216,9 @@ async function repoTree(name, { github, sha, tag, directory, path, client, packa
   return { ...opened, subtree, sha, where, packageManager: lockfiles === undefined ? found : packageManager, packageManagers, directory, entries: options.entries }
 }
 
-// A GitHub repo at a full commit, or the one `tag` names, the default branch's head without either,
-// as buildVfsBundle builds it: `directory` downloaded alone where it stands alone, else the whole
-// repo, and without a `packageManager`, the one whose lockfile installs it, where only one's does
-// (repoTree). Without `entries`, they are the ones suggestedEntries suggests: those its
-// stasis.config.json's `entries` names, where it has `entries`. The bundle's paths are
-// relative to `directory`, or for a JS bundle, to the innermost package directory at or above it
-// holding every file it bundles (buildJsBundle's innermostRoot), which is the project's root where
-// one is outside the others; `repo` names that directory and the commit. Nothing is read from disk:
-// the tree's bytes come from GitHub, or from the cache setCacheDir names, held to the git tree id
-// either way (@preventive/upstream), and are unpacked into a Vfs that buildVfsBundle reads alone.
-// `cache` and `lazy` are buildVfsBundle's, for the npm packages the tree installs: the repo's tree is
-// cached where setCacheDir says, whatever it is, and fetched whole.
-// `path`, in place of `directory`, is a path in the repo at the commit: a directory is the
-// `directory`, and a file an entry ahead of `entries`, of the nearest directory at or above it with
-// a package.json (with a foundry.toml or soldeer.toml, for a .sol file), else of the repo's root,
-// which is then the `directory` (splitPath). A pattern (entryPattern's), as `path` or an entry, is
-// the files it matches.
-// -> buildVfsBundle's, and the `directory` bundled
+// buildVfsBundle of a GitHub repo (repoTree's), without `entries` those suggestedEntries suggests. Nothing is read
+// from disk: the tree comes from GitHub or setCacheDir's cache, held to its git tree id. The bundle's `repo` names the
+// commit and the directory its paths are from (buildJsBundle's innermostRoot). -> buildVfsBundle's, and `directory`
 export async function buildGitHubBundle({ github, sha, tag, directory, path, client, packageManager, ...options } = {}) {
   checkTarget('buildGitHubBundle', options)
   checkCache('buildGitHubBundle', options.cache)
@@ -268,17 +236,14 @@ export async function buildGitHubBundle({ github, sha, tag, directory, path, cli
   const built = await buildVfsBundle({ ...options, entries, packageManager: tree.packageManager, vfs: tree.vfs, cwd: tree.cwd, innermostRoot: true, repo, client })
   // The Vfs is the repo's tree, or the subtree at `directory`: a layout known, so its root is `''`.
   const at = posix.join(tree.subtree ? tree.directory : '.', posix.relative('/', built.root)).replace(/^\.$/u, '')
-  built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) ? { directory: at } : {}) }
+  built.bundle.repo = { ...repo, ...(isValidRepoField('directory', at) && { directory: at }) }
   // Onto buildVfsBundle's own, not a copy, which would read its lockfile, built only when read.
   built.directory = tree.directory
   return built
 }
 
-// The Prisma Clients the schemas of the GitHub repo `github` generate at the full commit `sha`
-// (prismaClientsOf), for a bundle whose `repo` names `directory`: the repo downloaded and its trees laid
-// out as buildGitHubBundle downloads it and lays them out for one of that directory, which a bundle of
-// one below it names too. Their paths (`dir`, and the `schema`'s) from `directory`, as the bundle's are;
-// none of an output outside it, which no bundle holds.
+// The Prisma Clients (prismaClientsOf) of the GitHub repo `github` at `sha`, laid out as buildGitHubBundle lays it
+// out for a bundle whose `repo` names `directory`: `dir` and `schema` from `directory`, none of an output outside it.
 export async function repoPrismaClients({ github, sha, directory, client }) {
   const tree = await repoTree('repoPrismaClients', { github, sha, directory: directory || undefined, client }, {})
   const outputs = await prismaClientsOf({ vfs: tree.vfs, cwd: tree.cwd, packageManager: tree.packageManager, client })

@@ -34,10 +34,9 @@ export function githubToken({ env = process.env, home } = {}) {
 // registry's, no variable for npm to expand, and nothing else on the line.
 const NPMRC_LINE = /^\/\/registry\.npmjs\.org\/:_authToken=(npm_[\dA-Za-z]+)\r?$/u
 
-// The npm token `<home>/.npmrc` (the user's home by default) gives npm's registry: that of the last
-// line of it that is NPMRC_LINE, as npm takes the last of a setting given twice. Another registry's
-// token, or one in any other form, is none. The file is npm's, read for compatibility: one that is
-// missing or unreadable gives none, and nothing is said; one that is not valid UTF-8 is refused.
+// The npm token `<home>/.npmrc` (the user's home by default) gives npm's registry: its last NPMRC_LINE's, as npm
+// takes the last of a setting given twice. A missing or unreadable file gives none, silently; one that is not
+// valid UTF-8 is refused.
 export function npmrcToken(home) {
   const file = join(home ?? homedir(), '.npmrc')
   let bytes
@@ -52,11 +51,9 @@ export function npmrcToken(home) {
   return token
 }
 
-// Run `fn`, with a token for the npm client where process.env gives it none (none of
-// NPM_TOKEN_VARS set and not empty), as a fallback: auditTokens(home)'s `npmToken`, else
-// npmrcToken(home)'s, each file only read then. That token is STASIS_NPM_TOKEN in process.env while
-// `fn` runs, for the client to read, and process.env is as it was after, unless something else set
-// STASIS_NPM_TOKEN meanwhile. -> what `fn` gives
+// Run `fn`, where no NPM_TOKEN_VARS is set, with STASIS_NPM_TOKEN auditTokens(home)'s `npmToken`, else
+// npmrcToken(home)'s, each file only read then; restored after, unless something else set it meanwhile.
+// -> what `fn` gives
 export async function withNpmToken(home, fn) {
   const token = NPM_TOKEN_VARS.some((name) => process.env[name]) ? undefined : (auditTokens(home).npmToken ?? npmrcToken(home))
   if (token === undefined) return fn()

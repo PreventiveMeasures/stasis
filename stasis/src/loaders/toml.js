@@ -1,8 +1,6 @@
-// TOML for the build descriptions the loaders take -- Cargo.toml, Cargo.lock, foundry.toml -- read
-// by @preventive/lockfile's strict TOML 1.0 parser into a tree of tables, and refused where it
-// isn't TOML, or isn't the TOML those files are written in: a bad escape, an unterminated string, a
-// key or table defined twice, a local date, U+FFFD where a lenient decoder replaced bytes ... each a
-// TomlError naming the file and line, never a guessed value.
+// TOML for Cargo.toml, Cargo.lock and foundry.toml, read by @preventive/lockfile's strict TOML 1.0
+// parser. What isn't TOML (a bad escape, a key defined twice, a local date, U+FFFD from a lenient
+// decoder ...) is a TomlError naming the file and line, never a guessed value.
 
 import { TomlError, parseToml } from '@preventive/lockfile/toml.js'
 
@@ -48,13 +46,12 @@ export function splitTopLevel(text) {
 
 // --- The reader -----------------------------------------------------------------------------
 
-// The table tree of TOML `text` (parseToml): tables are null-prototype objects, arrays arrays, and
-// values strings, booleans, numbers (an integer past 2^53 a BigInt), TomlFloat and TomlDateTime.
-// Throws a TomlError on anything else, naming `file` when given.
+// The table tree of TOML `text`: tables are null-prototype objects; values strings, booleans,
+// numbers (a BigInt past 2^53), TomlFloat and TomlDateTime. A TomlError names `file` when given.
 export const readToml = (text, file = null) => nameErrors(file, () => parseToml(text))
 
-// `read()`, with an error of one of `classes` it throws (@preventive/lockfile's, whose message
-// leads with where it is) leading with `file` too, its fields kept; null `file` names none.
+// `read()`, with an error of one of `classes` it throws re-thrown with `file: ` leading its
+// message, its fields kept; a null `file` names none.
 export function nameErrors(file, read, classes = [TomlError]) {
   try {
     return read()

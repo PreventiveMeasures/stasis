@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { diskHost } from './host.js'
 import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
-import { extSetsEqual, isBrotliQuality, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption } from './util.js'
+import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 
@@ -22,9 +22,9 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // CONFIG_FILE_LOCK. File-only: `extra`, and `entries`, TREE_FLAGS and `lockfiles`, which a run takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
-  lock: { env: 'EXODUS_STASIS_LOCK', valid: new Set(['none', 'ignore', 'add', 'replace', 'frozen']) },
+  lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
   lockFile: { env: 'EXODUS_STASIS_LOCK_FILE', type: 'string' },
-  bundle: { env: 'EXODUS_STASIS_BUNDLE', valid: new Set(['none', 'ignore', 'add', 'replace', 'load', 'frozen']) },
+  bundle: { env: 'EXODUS_STASIS_BUNDLE', valid: BUNDLE_MODES },
   bundleFile: { env: 'EXODUS_STASIS_BUNDLE_FILE', type: 'string' },
   resourcesBundleFile: { env: 'EXODUS_STASIS_RESOURCES_BUNDLE_FILE', type: 'string' },
   debug: { env: 'EXODUS_STASIS_DEBUG', parse: envBool, type: 'boolean' },
@@ -189,7 +189,7 @@ export class Config {
       throw new Error('stasis.config.json: bundle can not be set here; give the bundle mode explicitly (--bundle, EXODUS_STASIS_BUNDLE)')
     }
     if (keys.includes('lock') && config.lock !== CONFIG_FILE_LOCK) {
-      throw new Error(`stasis.config.json: lock can only be '${CONFIG_FILE_LOCK}' (got ${JSON.stringify(config.lock)}); give any other lock mode explicitly (--lock, EXODUS_STASIS_LOCK)`)
+      throw new Error(`${CONFIG_FILE}: lock can only be '${CONFIG_FILE_LOCK}' (got ${JSON.stringify(config.lock)}); give any other lock mode explicitly (--lock, EXODUS_STASIS_LOCK)`)
     }
     assert.equal(keys.filter((key) => !CONFIG_FILE_KEYS.includes(key)).length, 0)
     for (const key of keys) {
@@ -201,16 +201,16 @@ export class Config {
         continue
       }
       if (key === 'lockfiles') {
-        parseLockfilesOption('stasis.config.json', config.lockfiles)
+        parseLockfilesOption(CONFIG_FILE, config.lockfiles)
         continue
       }
-      if (key === 'resources') this.#opts.resources = parseResourcesOption('stasis.config.json', config.resources)
-      else if (key === 'extra') this.#opts.extra = parseExtraOption('stasis.config.json', config.extra)
+      if (key === 'resources') this.#opts.resources = parseResourcesOption(CONFIG_FILE, config.resources)
+      else if (key === 'extra') this.#opts.extra = parseExtraOption(CONFIG_FILE, config.extra)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
       else if (key !== 'lock' || !this.#ownLock) this.#opts[key] = config[key]
     }
-    this.#opts.policy = parsePolicy('stasis.config.json', config)
+    this.#opts.policy = parsePolicy(CONFIG_FILE, config)
     this.#checkInvariants()
 
     try {

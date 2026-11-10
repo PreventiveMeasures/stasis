@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix } from '@exodus/stasis-core/util'
+import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix, withoutBom } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
@@ -61,7 +61,7 @@ const unreadable = (file, cause) => new Error(`${file}: ${cause?.message ?? 'not
 function lockText(file, host, strict) {
   const text = readText(host, file)
   if (text === null && strict && host.stat(file) !== null) throw new Error(`${file}: can't be read`)
-  return text?.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text
+  return text && withoutBom(text)
 }
 
 // The name a package is installed as at `location`, the last of it.
@@ -121,11 +121,9 @@ function yarnEntries(file, host, strict) {
   }
 }
 
-// The names pnpm 10 to 12 may give snapshot `key`'s directory in node_modules/.pnpm, as its
-// depPathToFilename (@pnpm/dependency-path) spells them: each character a path can't hold, and `#`,
-// made `+`, and a peer's parentheses `_`; where that is too long or has a capital, cut short before
-// `_` and 32 hex of a SHA-256 of it, of which the hash alone is kept, as where it is cut depends on
-// the install's virtualStoreDirMaxLength.
+// The names pnpm 10 to 12 may give snapshot `key`'s directory in node_modules/.pnpm, as depPathToFilename spells
+// them: what a path can't hold, and `#`, made `+`, a peer's parentheses `_`; and, for one cut short (too long or
+// capitalized, where virtualStoreDirMaxLength says), the `_` and 32 hex of its SHA-256 it then ends with.
 const storeNames = (key) => {
   let name = key.replace(/[\\/:*?"<>|#]/gu, '+')
   if (name.includes('(')) name = name.replace(/\)$/u, '').replace(/\)\(|\(|\)/gu, '_')
@@ -134,11 +132,9 @@ const storeNames = (key) => {
 // The hash pnpm ends a store directory's name with where it cuts a long one short.
 export const STORE_HASH = /_[\da-f]{32}$/u
 
-// pnpm's lockfile `file`, what it locks of each package by the directory under node_modules/.pnpm it
-// installs it in (`stored`) and by id (`named`, as a node_modules it lays out hoisted holds it):
-// undefined where there is none, or, unless `strict`, where it can't be read. A git dependency's
-// resolution is the repository and commit, or GitHub's tarball of the commit, and the package's
-// `path` in it (`#path:`) where it is not at the root.
+// pnpm's lockfile `file`, what it locks of each package by its directory in node_modules/.pnpm (`stored`) and by id
+// (`named`, as a hoisted node_modules holds it): undefined where there is none, or, unless `strict`, can't be read.
+// A git dependency's repo is its commit (or GitHub's tarball of it), at its `#path:` where it is not at the root.
 function pnpmLocks(file, host, strict) {
   const text = lockText(file, host, strict)
   if (text === null) return undefined
@@ -174,15 +170,9 @@ function pnpmLocks(file, host, strict) {
   }
 }
 
-// Each package manager that lays out a node_modules: the record it leaves there of what it installed
-// (`marker`), its lockfiles, and of `dir`, a directory it laid out a node_modules in, that record of
-// each package by its location from `dir` and its version (`installed`), what a lockfile of it locks
-// there (`locks`), and what tells it locks none there. npm's record is the hidden lockfile npm 7 on
-// writes into the node_modules it lays out, held to npm-shrinkwrap.json, else package-lock.json;
-// yarn 1's, yarn.lock as the .yarn-integrity it writes there has it installed: of each entry, the
-// resolution for each of its patterns, as yarn.lock's `resolved` spells it (a yarn.lock changed since
-// often moves a git dependency to another commit of one version); pnpm's, where it hoists, its copy
-// of the lockfile it installed from in node_modules/.pnpm, held to pnpm-lock.yaml.
+// Each package manager that lays out a node_modules: its record there (`marker`), its lockfiles, and of `dir`, what
+// the record names by location and version (`installed`), what a lockfile locks there (`locks`) and says of none.
+// npm's record is its hidden lockfile; yarn 1's, yarn.lock as .yarn-integrity has it; pnpm's (hoisting), lock.yaml.
 const MANAGERS = [
   {
     marker: '.package-lock.json',
@@ -204,7 +194,8 @@ const MANAGERS = [
       const integrity = readJson(join(dir, 'node_modules', '.yarn-integrity'), host)?.lockfileEntries
       const entries = isPlainObject(integrity) && yarnEntries(join(dir, 'yarn.lock'), host)
       if (!entries) return undefined
-      // Of an entry .yarn-integrity has installed otherwise, what it has.
+      // Of an entry .yarn-integrity has installed otherwise, what it has (a yarn.lock changed since often moves a git
+      // dependency to another commit of one version).
       const installedAs = ({ patterns, record }) => patterns.map((pattern) => (Object.hasOwn(integrity, pattern) ? integrity[pattern] : 'none')).find((resolved) => resolved !== record.resolved)
       return byId(entries.map((entry) => {
         const resolved = installedAs(entry)
@@ -223,10 +214,9 @@ const MANAGERS = [
   },
 ]
 
-// What a package manager recorded of the node_modules it laid out in `dir`, and the lockfile beside
-// it it is held to: null where there is neither. Where several lockfiles are there, the one whose
-// package manager alone left its record; where several left theirs, neither's, as which was last is
-// not known.
+// What a package manager recorded of the node_modules it laid out in `dir`, and the lockfile beside it it is held
+// to: null where there is neither. Of several lockfiles, the one whose package manager alone left its record, else
+// refused; of several records, none is read, as which was last is not known.
 function layoutOf(dir, host) {
   const marked = MANAGERS.filter(({ marker }) => host.stat(join(dir, 'node_modules', marker)) !== null)
   const locking = MANAGERS.flatMap((manager) => manager.lockfiles.map((name) => join(dir, name)).filter((file) => host.stat(file) !== null).slice(0, 1).map((file) => [manager, file]))
