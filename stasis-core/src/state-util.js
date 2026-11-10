@@ -12,19 +12,15 @@ import { isPathWithin } from './util.js'
 export const realReadFileSync = fs.readFileSync
 export const realReadFile = fs.promises.readFile
 const realRealpathSync = fs.realpathSync
+const realpathOr = (path, fallback) => { try { return realRealpathSync(path) } catch { return fallback } }
 
 let realRootCache
 // Capture-side containment: the REAL location of `abs` must stay inside `root`'s real path (`root`
 // itself where that has none), else an in-tree symlink pointing OUT would pull external content in.
 export function realContained(root, abs) {
-  if (realRootCache?.root !== root) {
-    let real
-    try { real = realRealpathSync(root) } catch { real = root }
-    realRootCache = { root, real }
-  }
-  let real
-  try { real = realRealpathSync(abs) } catch { return false }
-  return isPathWithin(realRootCache.real, real)
+  if (realRootCache?.root !== root) realRootCache = { root, real: realpathOr(root, root) }
+  const real = realpathOr(abs, null)
+  return real !== null && isPathWithin(realRootCache.real, real)
 }
 
 assert.equal(sep, '/', 'Not tested on Windows')

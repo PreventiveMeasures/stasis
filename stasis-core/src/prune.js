@@ -48,55 +48,49 @@ function buildExpected(lockfile) {
 // A rewritten manifest must never point resolution at a path prune is about to delete.
 const EXTENSIONS = ['.js', '.cjs', '.mjs', '.json', '.node']
 
-function normalizeRef(ref) {
-  if (typeof ref !== 'string' || ref === '' || posixPathEscapes(ref)) return null
-  return posix.normalize(ref).replace(/^\.\//u, '')
-}
-
 function referencesPresentFile(ref, present, { exact = false } = {}) {
-  const base = normalizeRef(ref)
-  if (base === null) return false
+  if (typeof ref !== 'string' || ref === '' || posixPathEscapes(ref)) return false
+  const base = posix.normalize(ref).replace(/^\.\//u, '')
   if (base.includes('*')) return true // subpath pattern: unverifiable, kept
   if (present.has(base)) return true
   if (exact) return false // exports/imports targets resolve verbatim -- no extension/index fallback
   return EXTENSIONS.some((ext) => present.has(base + ext) || present.has(`${base}/index${ext}`))
 }
 
+// The entries of `obj` that `map` keeps (anything but undefined), undefined where it keeps none.
+function filterEntries(obj, map) {
+  const out = {}
+  let any = false
+  for (const [key, value] of Object.entries(obj)) {
+    const kept = map(value)
+    if (kept !== undefined) {
+      out[key] = kept
+      any = true
+    }
+  }
+  return any ? out : undefined
+}
+
 // Cap the recursion; real exports/imports trees nest a few deep and a deep one must not overflow.
 const MAX_TARGET_DEPTH = 64
 
-// Filter a target tree to attested files. An object/array filtering to empty is dropped:
-// `exports: {}` would block every subpath instead of `main`.
+// Filter a target tree to attested files, undefined where nothing is kept. An object/array filtering to
+// empty is dropped: `exports: {}` would block every subpath instead of `main`.
 function filterTargets(value, present, opts, depth = 0) {
-  if (depth > MAX_TARGET_DEPTH) return { keep: false }
+  if (depth > MAX_TARGET_DEPTH) return undefined
   const { allowBare, allowFalse, exact } = opts
-  if (value === null) return { keep: true, value: null }
-  if (value === false) return allowFalse ? { keep: true, value: false } : { keep: false }
+  if (value === null) return null
+  if (value === false) return allowFalse ? false : undefined
   if (typeof value === 'string') {
     const keep = value.startsWith('.') ? referencesPresentFile(value, present, { exact }) : allowBare
-    return keep ? { keep: true, value } : { keep: false }
+    return keep ? value : undefined
   }
   if (Array.isArray(value)) {
-    const out = []
-    for (const item of value) {
-      const r = filterTargets(item, present, opts, depth + 1)
-      if (r.keep) out.push(r.value)
-    }
-    return out.length > 0 ? { keep: true, value: out } : { keep: false }
+    const out = value.map((item) => filterTargets(item, present, opts, depth + 1)).filter((item) => item !== undefined)
+    return out.length > 0 ? out : undefined
   }
-  if (isPlainObject(value)) {
-    const out = {}
-    let any = false
-    for (const [k, v] of Object.entries(value)) {
-      const r = filterTargets(v, present, opts, depth + 1)
-      if (r.keep) {
-        out[k] = r.value
-        any = true
-      }
-    }
-    return any ? { keep: true, value: out } : { keep: false }
-  }
-  return { keep: false }
+  if (isPlainObject(value)) return filterEntries(value, (target) => filterTargets(target, present, opts, depth + 1))
+  return undefined
 }
 
 // Printable ASCII only, so a copied `license` can't smuggle control or escape characters.
@@ -106,8 +100,7 @@ const isAscii = (s) => /^[\x20-\x7e]*$/u.test(s)
 function browserField(value, present) {
   if (typeof value === 'string') return referencesPresentFile(value, present) ? value : undefined
   if (!isPlainObject(value)) return undefined
-  const r = filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
-  return r.keep ? r.value : undefined
+  return filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
 }
 
 // Resolution fields (`type`, entry points, exports/imports), every file reference filtered to an attested file.
@@ -124,9 +117,9 @@ function resolutionFields(pkg, present) {
     if (v !== undefined) out[field] = v
   }
   const exp = filterTargets(pkg.exports, present, { allowBare: false, allowFalse: false, exact: true })
-  if (exp.keep) out.exports = exp.value
+  if (exp !== undefined) out.exports = exp
   const imp = filterTargets(pkg.imports, present, { allowBare: true, allowFalse: false, exact: true })
-  if (imp.keep) out.imports = imp.value
+  if (imp !== undefined) out.imports = imp
   return out
 }
 
@@ -141,15 +134,8 @@ function minimalRootFields(pkg, { name, version, present }) {
   if (typeof pkg.bin === 'string') {
     if (referencesPresentFile(pkg.bin, present)) fields.bin = pkg.bin
   } else if (isPlainObject(pkg.bin)) {
-    const bin = {}
-    let any = false
-    for (const [cmd, target] of Object.entries(pkg.bin)) {
-      if (typeof target === 'string' && referencesPresentFile(target, present)) {
-        bin[cmd] = target
-        any = true
-      }
-    }
-    if (any) fields.bin = bin
+    const bin = filterEntries(pkg.bin, (target) => (referencesPresentFile(target, present) ? target : undefined))
+    if (bin !== undefined) fields.bin = bin
   }
 
   // A sideEffects list filtering to empty is dropped: `[]` would assert "no side effects" and over-tree-shake.
@@ -183,10 +169,6 @@ function minimalManifest(lockfile, owner, rel, raw) {
   for (const f of Object.keys(files)) if (f.startsWith(prefix)) present.add(f.slice(prefix.length))
   return resolutionFields(pkg, present)
 }
-
-// In a workspace the symlink-containment boundary widens from node_modules to the whole workspace,
-// since a dep legitimately links to a sibling package's source dir.
-const isPnpmWorkspaceRoot = (root) => existsSync(join(root, 'pnpm-workspace.yaml'))
 
 function discoverNodeModulesDirs(root) {
   const found = []
@@ -249,14 +231,8 @@ function* walkFiles(nmRoots, ctx) {
 function pruneEmptyDirs(dir, stopAt) {
   // A dir already gone reads as a readdir failure, which ends the climb like any other.
   while (dir.startsWith(stopAt) && dir !== stopAt) {
-    let entries
     try {
-      entries = readdirSync(dir)
-    } catch {
-      return
-    }
-    if (entries.length > 0) return
-    try {
+      if (readdirSync(dir).length > 0) return
       rmdirSync(dir)
     } catch {
       return
@@ -268,7 +244,9 @@ function pruneEmptyDirs(dir, stopAt) {
 export function prune({ root = process.cwd() } = {}) {
   assertGlobalVirtualStoreDisabled()
   root = resolve(root)
-  const workspace = isPnpmWorkspaceRoot(root)
+  // In a workspace the symlink-containment boundary widens from node_modules to the whole workspace,
+  // since a dep legitimately links to a sibling package's source dir.
+  const workspace = existsSync(join(root, 'pnpm-workspace.yaml'))
   const nmRoots = workspace ? discoverNodeModulesDirs(root) : [join(root, 'node_modules')]
   const boundary = workspace ? root : join(root, 'node_modules')
   const ctx = {
@@ -345,7 +323,7 @@ export function prune({ root = process.cwd() } = {}) {
     removed.push(relative(root, full))
     touchedDirs.set(dirname(full), nmRoot)
   }
-  for (const d of [...touchedDirs.keys()].toSorted((a, b) => b.length - a.length)) pruneEmptyDirs(d, touchedDirs.get(d))
+  for (const [dir, nmRoot] of [...touchedDirs].toSorted(([a], [b]) => b.length - a.length)) pruneEmptyDirs(dir, nmRoot)
 
   return { removed, validated, kept, minimized }
 }

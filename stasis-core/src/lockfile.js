@@ -119,8 +119,8 @@ export class Lockfile {
       config: { scope: this.config.scope },
       entries: new Set([...this.entries, ...other.entries]),
       modules: mergeModuleMaps(this.modules, other.modules, label, options),
-      imports: mergeNullable(this.imports, other.imports, (a, b) => mergeImportMaps(a, b, label), 'imports', label),
-      formats: mergeNullable(this.formats, other.formats, (a, b) => mergeFormatMaps(a, b, label), 'formats', label),
+      imports: mergeNullable(this.imports, other.imports, mergeImportMaps, 'imports', label),
+      formats: mergeNullable(this.formats, other.formats, mergeFormatMaps, 'formats', label),
       // `other` (the incoming, newer lockfile) wins for the files it records -- see mergeExecutableSets.
       executable: mergeExecutableSets(this.executable, other.executable, other.modules, this.config.scope),
     })
@@ -141,5 +141,5 @@ const mergeNullable = (a, b, merge, what, label) => {
   if (a === null && b === null) return null
   assert(a !== null && b !== null,
     `${label}: cannot merge ${what} (one lockfile attests ${what}, the other does not)`)
-  return merge(a, b)
+  return merge(a, b, label)
 }

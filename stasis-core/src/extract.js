@@ -72,6 +72,13 @@ function fileId(path) {
   return stats && `${stats.dev}:${stats.ino}`
 }
 
+// The directories from `abs`'s up to, not including, `outDir`.
+function dirsBelow(outDir, abs) {
+  const dirs = []
+  for (let d = dirname(abs); d.length > outDir.length; d = dirname(d)) dirs.push(d)
+  return dirs
+}
+
 // Whether the bytes for `file` are already at `abs`, so it is left as it is; throws for anything else there.
 // Extract never overwrites a file with other bytes, nor the bundle it reads, under any name (symlink, hard link).
 function alreadyInPlace(abs, file, content, bundleId) {
@@ -135,7 +142,6 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   // dir (doc/extract.md).
   const writes = []
   const targets = new Set()
-  let executables = 0
   for (const [dir, { files }] of bundle.modules) {
     for (const [rel, content] of Object.entries(files)) {
       // A `directory` capture is a listing at the dir's own path, not a file to write (its children recreate the dir).
@@ -156,19 +162,15 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
       // No bundle Bundle.parse takes carries a stasis.lock.json, so no write lands on the lockfile.
       if (targets.has(abs)) throw new Error(`extract: duplicate bundle path: ${file}`)
       targets.add(abs)
-      // Executability rides the plan tuple, so the chmod can only ever reach a file we actually wrote.
+      // Executability rides the plan, so the chmod can only ever reach a file we actually wrote.
       const exec = bundle.executable.has(key)
-      if (exec) executables += 1
-      writes.push([abs, bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec, file])
+      writes.push({ abs, content: bundle.formats.get(key) === 'resource:base64' ? assertCanonicalBase64(content, file) : content, exec, file })
     }
   }
   // A planned file must not also be a parent directory of another, else the writes throw halfway through.
-  for (const [abs] of writes) {
-    for (let d = dirname(abs); d.length > outDir.length; d = dirname(d)) {
-      if (targets.has(d)) {
-        throw new Error(`extract: bundle path used as both file and directory: ${relative(outDir, d)}`)
-      }
-    }
+  for (const { abs } of writes) {
+    const clash = dirsBelow(outDir, abs).find((d) => targets.has(d))
+    if (clash !== undefined) throw new Error(`extract: bundle path used as both file and directory: ${relative(outDir, clash)}`)
   }
   // Only add and replace write a lockfile, and frozen checks one; each before the first write.
   const writesLock = lock === 'add' || lock === 'replace'
@@ -183,11 +185,9 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   if (lockText !== null && fileId(lockAbs) === bundleId) throw new Error(`extract: ${FILE_LOCK} is the bundle being extracted`)
   const checkedDirs = new Set()
   const inPlace = new Set()
-  for (const [abs, content, , file] of writes) {
+  for (const { abs, content, file } of writes) {
     // Top-down, so a stat never runs into a file higher up (ENOTDIR); the first missing one ends the walk.
-    const dirs = []
-    for (let d = dirname(abs); d.length > outDir.length; d = dirname(d)) dirs.push(d)
-    for (const d of dirs.toReversed()) {
+    for (const d of dirsBelow(outDir, abs).toReversed()) {
       if (checkedDirs.has(d)) continue
       const stats = statSync(d, { throwIfNoEntry: false })
       if (stats === undefined && lstatSync(d, { throwIfNoEntry: false }) === undefined) break
@@ -225,7 +225,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
     }
   }
 
-  for (const [abs, content, exec] of writes) {
+  for (const { abs, content, exec } of writes) {
     if (!inPlace.has(abs)) {
       mkdirSync(dirname(abs), { recursive: true })
       // Exclusive: a file that appeared since the check, or a second path a case-insensitive disk folds onto an
@@ -237,6 +237,7 @@ export function extractCommand({ cwd = process.cwd(), bundleFile, output, lock: 
   mkdirSync(outDir, { recursive: true }) // for an empty bundle, where no write created it
   if (lockText !== null) writeFileSync(lockAbs, lockText)
 
+  const executables = writes.filter(({ exec }) => exec).length
   const notes = [executables > 0 && `${executables} executable`, inPlace.size > 0 && `${inPlace.size} already in place`].filter(Boolean)
   const execNote = notes.length > 0 ? ` (${notes.join(', ')})` : ''
   const andLock = lockText !== null && !merging ? ` and ${FILE_LOCK}` : ''

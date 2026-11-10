@@ -129,7 +129,7 @@ export function installFsHooks({ async: patchAsync, getState, markAborted, isLoa
     if (!state) return null
     const abs = toAbsPath(path)
     if (abs === null || !isPathWithin(state.root, abs)) return null
-    if (isSkippedFsPath(state, abs)) return { mode: 'absent', abs }
+    if (isSkippedFsPath(state, abs)) return { mode: 'absent' }
     const url = pathToFileURL(abs).toString()
     if (state.config.loadBundle) return { mode: 'serve', state, url, abs }
     if (state.config.writeBundle && !isLoadingModule()) return { mode: 'capture', state, url, abs }

@@ -7,9 +7,7 @@ import { assert, isBrotliQuality, parseBrotliQuality } from './util.js'
 export const DEFAULT_BROTLI_QUALITY = 6
 
 export function brotliOptions(quality) {
-  if (quality !== undefined) {
-    assert(isBrotliQuality(quality), `brotli quality must be an integer 0..11, got ${quality}`)
-  }
+  assert(quality === undefined || isBrotliQuality(quality), `brotli quality must be an integer 0..11, got ${quality}`)
   const raw = process.env.EXODUS_STASIS_BROTLI_QUALITY
   if (raw) {
     const n = parseBrotliQuality('EXODUS_STASIS_BROTLI_QUALITY', raw)
