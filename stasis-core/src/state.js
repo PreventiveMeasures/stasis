@@ -1830,7 +1830,8 @@ export class State {
     if (this.config.writeLockfile || this.config.writeBundle) this.includeExtra()
     // AFTER the backfills and `extra`, so buckets they create are covered too.
     if (this.config.writeBundle && this.config.packageJSON) this.includePackageJson()
-    if ((this.config.writeLockfile || this.config.writeBundle) && !this.#parent) this.#recordInstalled()
+    // A sidecar's too: it writes its bundle before its parent writes.
+    if (this.config.writeLockfile || this.config.writeBundle) this.#recordInstalled()
 
     // Every artifact is serialized before the first is written, so one that can't be (no bundle may carry
     // the lockfile) leaves the others as they were. Sidecars never write the lockfile (parent owns it).
