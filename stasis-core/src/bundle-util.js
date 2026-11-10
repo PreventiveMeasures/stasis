@@ -16,12 +16,8 @@ export function packageType(file, host = diskHost, kept = (path, read) => read()
   const pkg = host.findPackageJSON(file)
   if (!pkg) return null
   return kept(pkg, () => {
-    try {
-      const type = JSON.parse(packageJSONText(host.readFile(pkg))).type
-      return type === 'module' || type === 'commonjs' ? type : null
-    } catch {
-      return null
-    }
+    const type = readJson(pkg, host)?.type
+    return type === 'module' || type === 'commonjs' ? type : null
   })
 }
 
@@ -40,6 +36,9 @@ const inAnyVendorDir = (rel) => VENDOR_DIR_LIST.some((dir) => rel.startsWith(`${
 // The vendor dir of the package named `name` that its file `rel` (package-relative, POSIX) is below, or undefined.
 export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.startsWith(`${dir}/`))
 
+// A package.json's `name`, and its `version` where that is a package string, as `vendored` and `subpackages` list one.
+const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
+
 // The package vendored under `vendorDir` that host file `rel` is in: walking up while below it, the first
 // package.json with a `name` (`read(dir)`, null where none) -> `vendored` { dir, name, version? }, undefined
 // if none or its name is no package string. `below`: whether any package.json there covers the file at all.
@@ -50,8 +49,7 @@ export function vendoredPackageOf(rel, vendorDir, read) {
     if (pkg === null) continue
     below = true
     if (pkg?.name === undefined) continue // a `{"type":"module"}` marker inside the vendored package
-    if (!isPackageString(pkg.name)) return { below }
-    return { below, vendored: { dir, name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
+    return isPackageString(pkg.name) ? { below, vendored: { dir, ...manifestIdentity(pkg) } } : { below }
   }
   return { below }
 }
@@ -105,19 +103,16 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
     const pkg = read(toPosix(join(dir, 'package.json')))
     const posixDir = toPosix(dir)
     const inNodeModules = hasNodeModulesSegment(posixDir)
-    const sub = pkg?.name && nm !== null ? hostSubpackageDir(baseDir, nm.dir, posixDir, pkg.name, options) : undefined
+    const sub = pkg?.name && nm !== null ? hostSubpackageDir(read, nm.dir, posixDir, pkg.name) : undefined
     if (sub !== undefined) {
-      if (nearest) subpackages = { [sub]: { name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) } }
-      nearest = false
-      continue
-    }
-    if (pkg?.name) nearest = false
-    if (pkg?.name && (pkg.version || !inNodeModules)) {
+      if (nearest) subpackages = { [sub]: manifestIdentity(pkg) }
+    } else if (pkg?.name && (pkg.version || !inNodeModules)) {
       const repo = inNodeModules ? packageRepo(pkg) : undefined
       const own = posixDir === nm?.dir ? subpackages : undefined // the subpackage's package, not one above it
       // `?? undefined` folds a literal `"version": null` into the one absent-version spelling.
       return { pkgDir: dir, name: pkg.name, version: pkg.version ?? undefined, ...(inNodeModules ? { ecosystem: 'npm' } : {}), ...(repo === undefined ? {} : { repo }), ...(own === undefined ? {} : { subpackages: own }) }
     }
+    if (pkg?.name) nearest = false
     if (dirname(dir) === dir) return null // '.' and a filesystem root are their own dirname
   }
 }
@@ -135,12 +130,12 @@ export function packageLookup(baseDir, options) {
 
 // The directory, package-relative, of the package.json naming `manifestName` at `dir` (project-relative,
 // POSIX) where it is a subpackage (isSubpackage) of the package at `pkgDir`; else undefined. The package's
-// own package.json is read only where the name ends in that directory.
-function hostSubpackageDir(baseDir, pkgDir, dir, manifestName, options) {
+// own package.json is read (`read(rel)`) only where the name ends in that directory.
+function hostSubpackageDir(read, pkgDir, dir, manifestName) {
   if (!dir.startsWith(`${pkgDir}/`)) return undefined
   const sub = dir.slice(pkgDir.length + 1)
   if (typeof manifestName !== 'string' || !manifestName.endsWith(`/${sub}`)) return undefined
-  return isSubpackage(manifestName, readPackageJson(baseDir, `${pkgDir}/package.json`, options)?.name, sub) ? sub : undefined
+  return isSubpackage(manifestName, read(`${pkgDir}/package.json`)?.name, sub) ? sub : undefined
 }
 
 // The error codes that mean nothing is at a path.
@@ -158,42 +153,35 @@ export function lexists(p, host) {
   }
 }
 
-// Why `file` can't be read where `host.stat` gave null, or null when nothing is there (missing, through a
-// file, a dangling link). host.stat answers null for any failure, as Node's module lookup does; a link loop,
-// an unsearchable directory or a too-long name is something there that can't be read.
-function readFailure(host, file) {
+// host.stat as real stat answers: null only when nothing is there (missing, through a file, a dangling link),
+// where host.stat answers null for any failure, as Node's module lookup does. Something there that can't be
+// read (a link loop, an unsearchable directory, a too-long name) throws `fail(cause)`.
+function statOrFail(host, file, fail) {
+  const stat = host.stat(file)
+  if (stat !== null) return stat
   try {
     host.readFile(file)
   } catch (err) {
-    return NO_ENTRY.has(err.code) ? null : err
+    if (NO_ENTRY.has(err.code)) return null
+    throw fail(err)
   }
-  return new Error(`${file} could be read but not stat'ed`)
+  throw fail(new Error(`${file} could be read but not stat'ed`))
 }
 
-// host.stat as real stat answers: null only when nothing is there (readFailure); anything else that
-// can't be stat'ed throws, naming the file `label`.
+// host.stat as real stat answers (statOrFail), naming the file `label` where it can't be stat'ed.
 export function statStrict(host, file, label) {
-  const stat = host.stat(file)
-  if (stat !== null) return stat
-  const failure = readFailure(host, file)
-  if (failure === null) return null
-  throw new Error(`${label}: can't be read (${failure.code ?? failure.message})`, { cause: failure })
+  return statOrFail(host, file, (cause) => new Error(`${label}: can't be read (${cause.code ?? cause.message})`, { cause }))
 }
 
 // The error Node gives for a package.json at `path` that is no JSON object (`cause`: why it doesn't parse).
-export const invalidPackageConfig = (path, cause) => Object.assign(
-  cause === undefined ? new Error(`Invalid package config ${path}.`) : new Error(`Invalid package config ${path}.`, { cause }),
-  { code: 'ERR_INVALID_PACKAGE_CONFIG' })
+export const invalidPackageConfig = (path, cause) =>
+  Object.assign(new Error(`Invalid package config ${path}.`, cause === undefined ? {} : { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
 
-// host.stat for a package.json, as Node's lookups read one: null when nothing is there, and one that
-// can't be read (a link loop, a directory that may not be searched) throws ERR_INVALID_PACKAGE_CONFIG,
-// as Node refuses it.
+// host.stat for a package.json, as Node's lookups read one (statOrFail): one that can't be read throws
+// ERR_INVALID_PACKAGE_CONFIG, as Node refuses it.
 export function packageJSONStat(host, file) {
-  const stat = host.stat(file)
-  if (stat !== null) return stat
-  const cause = readFailure(host, file)
-  if (cause === null) return null
-  throw Object.assign(new Error(`Cannot read package config ${file}: ${cause.code ?? cause.message}.`, { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
+  return statOrFail(host, file, (cause) =>
+    Object.assign(new Error(`Cannot read package config ${file}: ${cause.code ?? cause.message}.`, { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' }))
 }
 
 // `file`'s bytes, or null when there's no file (a directory counts as none). A FIFO, a socket, a device or a
@@ -285,9 +273,7 @@ const GIT_ORIGIN_URL = '[remote "origin"]\n\turl = '
 export function gitOriginUrl(text) {
   const at = text?.indexOf(GIT_ORIGIN_URL) ?? -1
   if (at === -1) return null
-  const start = at + GIT_ORIGIN_URL.length
-  const end = text.indexOf('\n', start)
-  return text.slice(start, end === -1 ? undefined : end).trim() || null
+  return text.slice(at + GIT_ORIGIN_URL.length).split('\n', 1)[0].trim() || null
 }
 
 // The text of `file`, or null. Read through `host` (never the --fs-patched fs), it is never captured.
