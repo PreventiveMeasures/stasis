@@ -497,6 +497,40 @@ export async function buildBashBundle({ cwd = process.cwd(), entries } = {}) {
   })
 }
 
+// Build an in-memory Bundle from entry .teal files (Algorand TEAL programs): the entries alone, as
+// written, with no edges, since a TEAL program includes no other file. A missing entry is fatal.
+export async function buildTealBundle({ cwd = process.cwd(), entries } = {}) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('buildTealBundle: at least one entry .teal file is required')
+  }
+  for (const e of entries) {
+    if (!e.endsWith('.teal')) throw new Error(`buildTealBundle: not a .teal file: ${e}`)
+  }
+
+  const baseDir = resolve(cwd)
+  const realBase = realpathSync(baseDir)
+  const normalized = normalizeEntries(entries, cwd)
+  const sources = new Map()
+  for (const rel of new Set(normalized)) {
+    // Null where no regular file is there: a missing entry, refused below.
+    const buf = readFileWithinBase(baseDir, realBase, rel, '.')
+    if (buf !== null) sources.set(rel, decodeUtf8(buf, rel))
+  }
+
+  assertSelfContained('TEAL', 'program', normalized, sources, [])
+
+  return assembleCodeBundle({
+    baseDir,
+    entries: normalized,
+    sources,
+    resolutions: new Map(),
+    workspaceName: 'teal-bundle',
+    workspaceVersion: '0.0.0',
+    format: 'teal',
+    conditionKey: 'teal',
+  })
+}
+
 // Build an in-memory Bundle from entry .rs files (crate roots) by walking `mod` declarations and
 // references to in-tree crates (the package's own lib, Cargo `path` deps, `cargo vendor`ed
 // crates). An unresolvable unconditional `mod` is fatal; path edges (`crate::`/`self::`/`super::`/
@@ -2140,8 +2174,9 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   else if (entries.every((e) => JS_EXTS.has(extname(e)))) kind = 'js'
   else if (entries.every((e) => BASH_EXTS.has(extname(e)))) kind = 'bash'
   else if (entries.every((e) => RUST_EXTS.has(extname(e)))) kind = 'rust'
+  else if (entries.every((e) => e.endsWith('.teal'))) kind = 'teal'
   else {
-    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, or all be .rs (no mixing)`)
+    throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
   if (mappingFile && kind !== 'sol') {
     throw new Error(`${name}: --mapping is only valid for .sol bundles`)
@@ -2329,6 +2364,7 @@ async function buildOfKind(kind, { cwd, env, entries, mappingFile, manifests, sc
   if (kind === 'sol') return pinned(withExtraOf({ bundle: await buildSolidityBundle({ cwd, env, entries, mappingFile, manifests }) }))
   if (kind === 'php') return pinned(withExtraOf({ bundle: await buildPhpBundle({ cwd, entries }) }))
   if (kind === 'bash') return pinned(withExtraOf({ bundle: await buildBashBundle({ cwd, entries }) }))
+  if (kind === 'teal') return pinned(withExtraOf({ bundle: await buildTealBundle({ cwd, entries }) }))
   if (kind === 'rust') return pinned(withExtraOf({ bundle: await buildRustBundle({ cwd, entries, cargo, cargoFeatures, cargoNoDefaultFeatures, cargoAllFeatures, cargoTarget, cargoManifests }) }))
   const built = await buildJs({ cwd, env, entries, scope, conditions, mainFields, platforms, metro, metroResolver, babel, babelAliases, jsx, flow, typescript, tsconfig, resources, define, packageJSON, extra, outputsAt })
   return pinned(built.stateBuilt ? built : withExtraOf(built, resources))

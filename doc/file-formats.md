@@ -85,7 +85,7 @@ never reached it — so a `bundle = load` of the artifact, or a
 `prune`, can still read every dependency's manifest. It only takes effect while
 *writing* a bundle (`bundle = add | replace`); its effect is the extra bundled
 files (attested like any other), so the flag itself is not serialized. JS bundles
-only on the `stasis bundle` side (`.sol`/`.php`/`.sh`/`.rs` bundles have no npm
+only on the `stasis bundle` side (`.sol`/`.php`/`.sh`/`.rs`/`.teal` bundles have no npm
 `package.json`; Rust bundles have `--cargo-manifests`, see below): set here, it
 takes effect there as the flag does, for every JS build, from the
 `stasis.config.json` at the bundle's root (the cwd's under `--mainFields`/
@@ -144,7 +144,7 @@ matching it does (`!*.json`):
   Its `--resources`, where given, is the allowlist they are checked against
   instead of `resources`. A JS bundle scanned through a State reads
   the `stasis.config.json` at its root and records them as `stasis run` does. A
-  `--mainFields`/`--metro`, Solidity, PHP, Bash or Rust bundle reads the one in
+  `--mainFields`/`--metro`, Solidity, PHP, Bash, Rust or TEAL bundle reads the one in
   the cwd, and packs them as `stasis add` does. Where `entries` builds the
   bundle, they are added once, to its builds' union, packed as `stasis add`
   does, by `resources` (an entry's own is its graph's alone).
@@ -417,7 +417,7 @@ name, so a rule copied from one file to the other may not refuse the same files.
   on a per-platform edge (`ERR_STASIS_PLATFORM_SPECIFIC`).
 - `formats` records each file's format. Values:
   Node loader (`module`, `commonjs`, `json`, `module-typescript`,
-  `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`);
+  `commonjs-typescript`); source-language (`solidity`, `php`, `shell`, `rust`, `teal`);
   native build-input (`java`, `kotlin`, `gradle`, `objc`, `objcpp`, `swift`, `c`,
   `cpp`, `c-header`, `cpp-header`, `ruby`, `python`, `cmake`, `podspec`, `podfile`,
   `podfile-lock`, `template`, `xml`, `env`, `fastlane`, `pbxproj`); `patch` (a
@@ -650,7 +650,7 @@ than ship it, and reading one is refused as well.
   sources are stored verbatim (types intact); Node strips types at load time.
 - `imports`: conditions → parent file → specifier → resolved project-relative
   path. The conditions key is `"*"`, a comma-joined list (e.g. `"node, import"`),
-  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`).
+  or — for source-language bundles — the language tag (`solidity`/`php`/`shell`/`rust`/`teal`).
   Statically built JS bundles use `"*"` per edge, except that a
   `(parent, specifier)` resolving differently under the require() and import()
   contexts keeps each target under its real condition key, as does one that
@@ -831,7 +831,7 @@ const meta = await readBundle('app.stasis.code.br', {
   - a v0 bundle with `modules`
   - a non-string content value, or a `files` array instead of an object
 
-### Source-language bundles (Solidity / PHP / Bash / Rust)
+### Source-language bundles (Solidity / PHP / Bash / Rust / TEAL)
 
 `stasis bundle` dispatches on the entry file extension (no mixing within one
 invocation, but JS and Solidity entries, each built apart and their bundles
@@ -845,8 +845,9 @@ Solidity's, see below):
 | `.php` | PHP | literal `require`/`include` paths + Composer-autoloaded class references (PSR-4/PSR-0/classmap/files) | `php` |
 | `.sh` `.bash` | Shell | `source`/`.`, `bash`/`sh` exec, direct `./x.sh`, `# Depends on:`, `# shellcheck source=` | `shell` |
 | `.rs` | Rust | `mod` declarations (incl. `#[path = …]` / `#[cfg_attr(…, path = …)]`, inside inline modules too) + `use`/`extern crate` of a crate whose source is in-tree | `rust` |
+| `.teal` | TEAL (Algorand) | none: a program includes no other file, so each entry is carried alone, with no edges | `teal` |
 
-These four are **`scope = full`, produce-only artifacts** in the same
+These five are **`scope = full`, produce-only artifacts** in the same
 `stasis.code.br` shape as a JS bundle, tagged with a language `format` and keyed
 under a language `imports` condition. They are for external static analysis —
 **not** `stasis run --bundle=load`, which executes JavaScript and rejects a non-JS
@@ -862,7 +863,7 @@ lockfile's install exactly, or the build stops), and
 Rust, which buckets by the nearest `Cargo.toml` `[package]` (a workspace member
 is its own bucket; `version.workspace = true` resolves through the workspace
 root). With no manifest above a file, the workspace bucket gets a placeholder
-identity (`solidity-bundle`/`php-bundle`/`bash-bundle`/`rust-bundle` at `0.0.0`).
+identity (`solidity-bundle`/`php-bundle`/`bash-bundle`/`rust-bundle`/`teal-bundle` at `0.0.0`).
 
 Solidity entries are `.sol` files or directories: a directory stands for every
 `.sol` file under it, imported or not — `stasis bundle src test script` is what

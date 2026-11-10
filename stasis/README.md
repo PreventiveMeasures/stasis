@@ -91,7 +91,7 @@ Each command's options are documented in [doc/](https://github.com/PreventiveMea
 [`audit`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/audit.md),
 [`validate`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/validate.md),
 [`sbom`](https://github.com/PreventiveMeasures/stasis/blob/main/doc/sbom.md).
-`stasis bundle` also bundles Solidity, PHP, Bash and Rust sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust).
+`stasis bundle` also bundles Solidity, PHP, Bash, Rust and TEAL sources, see [file formats](https://github.com/PreventiveMeasures/stasis/blob/main/doc/file-formats.md#source-language-bundles-solidity--php--bash--rust--teal).
 
 ## Runtime
 

@@ -12,8 +12,8 @@ stasis bundle [--deptree] --metro [--metro-resolver] [--babel|--babel-aliases=pa
 stasis bundle [--deptree] [--babel] [--metro-resolver] [--flow] [--cargo] [--cargo-target=(triple|host)] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--add] [--output=(path|-)] [entry ...]   # the entries' options from stasis.config.json
 ```
 
-This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash
-and Rust bundles, see [Other languages](#other-languages).
+This page covers JS/TS bundles. `stasis bundle` also builds Solidity, PHP, Bash,
+Rust and TEAL bundles, see [Other languages](#other-languages).
 
 Files the graph never reaches, but which are to be bundled anyway, are named in
 `stasis.config.json`'s [`extra`](file-formats.md#stasisconfigjson), for every
@@ -895,11 +895,11 @@ there does the same without the flag, for every JS build.
 
 ## Other languages
 
-`stasis bundle` also builds Solidity, PHP, Bash and Rust bundles, from `.sol`,
-`.php`, `.sh`/`.bash` and `.rs` entries, all the entries of one invocation in
-one language, but JS and Solidity ones, which may be given together. How each
-is resolved and what the bundle carries is in
-[file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust).
+`stasis bundle` also builds Solidity, PHP, Bash, Rust and TEAL bundles, from
+`.sol`, `.php`, `.sh`/`.bash`, `.rs` and `.teal` entries, all the entries of one
+invocation in one language, but JS and Solidity ones, which may be given
+together. How each is resolved and what the bundle carries is in
+[file formats](file-formats.md#source-language-bundles-solidity--php--bash--rust--teal).
 
 JS and Solidity entries given together (`stasis bundle src/index.js src/Token.sol`,
 or named in `stasis.config.json`'s [entries](#entry-options-stasisconfigjson))
@@ -916,6 +916,7 @@ lays out both trees where `stasis.config.json`'s
 stasis bundle [--deptree] [--mapping=path/to/remappings(.txt|.toml)] [--manifests] [--add] [--output=(path|-)] path/to/(file.sol|dir) ...
 stasis bundle [--add] [--output=(path|-)] path/to/file.php ...
 stasis bundle [--add] [--output=(path|-)] path/to/file.(sh|bash) ...
+stasis bundle [--add] [--output=(path|-)] path/to/file.teal ...
 stasis bundle [--cargo] [--cargo-features=a,b,pkg/c] [--cargo-no-default-features] [--cargo-all-features] [--cargo-target=(triple|host)] [--cargo-manifests] [--add] [--output=(path|-)] path/to/file.rs ...
 ```
 

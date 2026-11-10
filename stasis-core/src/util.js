@@ -195,6 +195,7 @@ const CODE_EXT_FORMATS = new Map([
   ['php', 'php'],
   ['sh', 'shell'], ['bash', 'shell'],
   ['rs', 'rust'],
+  ['teal', 'teal'],
   ['patch', 'patch'],
   ['java', 'java'],
   ['kt', 'kotlin'], ['kts', 'kotlin'],
