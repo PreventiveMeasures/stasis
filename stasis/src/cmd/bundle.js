@@ -2880,14 +2880,14 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
     const links = linksOn(root)
     policy?.assertArtifact(existing, { hint: recordedIn(target), links })
     mergedFrom = existing.sources.size
-    // What it carries already is held to the lockfile too, and to how its packages are installed,
-    // those this build doesn't bundle read anew: as is what the lockfile there records, written again.
-    const heldToInstall = (artifact, label) => {
-      const kept = new Map([...artifact.modules].filter(([dir, info]) => !built.bundle.modules.has(dir) && attestsAny(info)))
-      heldToAccounts(artifact.modules, new Map([...built.accountsOf(kept), ...built.accounts]), `${label}: `)
+    // What it carries already is held to the lockfile too, and to how its packages are installed, read
+    // anew where the build has no account of them: as is what the lockfile there records, written again.
+    const heldAsInstalled = (artifact, label) => {
+      const unread = new Map([...artifact.modules].filter(([dir, info]) => !built.accounts.has(dir) && attestsAny(info)))
+      heldToAccounts(artifact.modules, new Map([...built.accountsOf(unread), ...built.accounts]), `${label}: `)
     }
     built.held?.hold(deferredLockfile(existing))
-    heldToInstall(existing, target)
+    heldAsInstalled(existing, target)
     bundle = existing.merge(bundle)
     // Keep the companion lockfile consistent with the merged bundle: union an existing one, or in
     // replace, which reads none, the bundle there recorded anew.
@@ -2909,7 +2909,7 @@ export async function bundleCommand({ cwd = process.cwd(), output, lockfile, loc
         refuseOtherRoot(existingLock, `the lockfile at ${lockfile}`, root, { cwd, at: lockAbs })
         // It may record more than the bundle beside it (a broader run's capture).
         policy?.assertArtifact(existingLock, { hint: recordedIn(lockfile), links })
-        heldToInstall(existingLock, lockfile)
+        heldAsInstalled(existingLock, lockfile)
       }
       lockData = existingLock.merge(Lockfile.parse(lockData)).serialize()
     }

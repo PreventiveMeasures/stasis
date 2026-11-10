@@ -159,7 +159,7 @@ test('stasis bundle --add --lockfile holds what stasis.lock.json records of a pa
   }
 }))
 
-test('stasis bundle --add holds what the bundle there records of a Soldeer, Composer or vendored Cargo dependency it bundles none of to how it is installed', withTmp(async (t, tmp) => {
+test('stasis bundle --add holds what the bundle there records of a Soldeer, Composer or vendored Cargo dependency to how it is installed, whether it bundles it or not', withTmp(async (t, tmp) => {
   const fixtures = join(here, 'fixtures')
   const write = (dir, files) => {
     for (const [rel, text] of Object.entries(files)) {
@@ -175,8 +175,9 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
       writeFileSync(join(dir, file), `${JSON.stringify(json, null, 4)}\n`)
     }
   }
-  const crate = (checksum) => ({ 'vendor/itoa/.cargo-checksum.json': JSON.stringify({ files: {}, package: checksum.repeat(64) }) })
-  // Each: its project, the entries bundling its dependency (at `at`) and none of it, and it installed otherwise.
+  const crate = (checksum) => ({ 'vendor/itoa/.cargo-checksum.json': JSON.stringify({ files: {}, ...(checksum && { package: checksum.repeat(64) }) }) })
+  // Each: its project, the entries bundling its dependency (at `at`) and none of it, it installed otherwise,
+  // and installed with no integrity named.
   const cases = {
     soldeer: {
       project: (dir) => {
@@ -186,6 +187,7 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
       },
       entries: ['src'], alone: ['alone'], at: 'dependencies/stasis-sol-lib-1.0.0',
       otherwise: (dir) => writeFileSync(join(dir, 'soldeer.lock'), readFileSync(join(dir, 'soldeer.lock'), 'utf8').replace(/checksum = "../u, 'checksum = "ff')),
+      unnamed: (dir) => writeFileSync(join(dir, 'soldeer.lock'), readFileSync(join(dir, 'soldeer.lock'), 'utf8').replace(/url = [^]*?integrity = "\w+"/u, `git = "https://github.com/acme/stasis-sol-lib.git"\nrev = "${'a'.repeat(40)}"`)),
     },
     composer: {
       project: (dir) => {
@@ -195,6 +197,7 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
       },
       entries: ['index.php'], alone: ['alone.php'], at: 'vendor/acme/lib',
       otherwise: (dir) => composerDist(dir, 'cd'.repeat(20)),
+      unnamed: (dir) => composerDist(dir, ''),
     },
     cargo: {
       project: (dir) => write(dir, {
@@ -207,16 +210,24 @@ test('stasis bundle --add holds what the bundle there records of a Soldeer, Comp
       }),
       entries: ['src/main.rs'], alone: ['src/bin/alone.rs'], at: 'vendor/itoa',
       otherwise: (dir) => write(dir, crate('b')),
+      unnamed: (dir) => write(dir, crate()),
     },
   }
-  for (const [name, { project, entries, alone, at, otherwise }] of Object.entries(cases)) {
+  for (const [name, { project, entries, alone, at, otherwise, unnamed }] of Object.entries(cases)) {
+    const mismatch = (none = '') => new RegExp(`out\\.br: module '${at}' \\(recorded vs installed\\) integrity mismatch \\("[^"]+" vs ${none}`, 'u')
     const dir = join(tmp, name)
     project(dir)
     const add = () => build(dir, { entries: alone, add: true, env: {} })
     await build(dir, { entries, env: {} })
     await add()
     otherwise(dir)
-    await t.assert.rejects(add(), new RegExp(`out\\.br: module '${at}' \\(recorded vs installed\\) integrity mismatch`, 'u'), name)
+    await t.assert.rejects(add(), mismatch(), name)
+    // Bundled again, its record kept where the build records none of its integrity: held all the same.
+    const again = join(tmp, `${name}-again`)
+    project(again)
+    await build(again, { entries, env: {} })
+    unnamed(again)
+    await t.assert.rejects(build(again, { entries, add: true, env: {} }), mismatch('none'), `${name}, bundled again`)
   }
 }))
 
