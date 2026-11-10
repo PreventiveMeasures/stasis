@@ -194,7 +194,6 @@ function readFileWithinBase(baseDir, realBase, rel, within) {
   }
 }
 
-// Throws unless `entries` is a non-empty array, each a `what` (`isEntry`), `noun` naming one that isn't.
 function assertEntries(name, entries, what, isEntry, noun = what) {
   if (!nonEmpty(entries)) throw new Error(`${name}: at least one entry ${what} is required`)
   for (const e of entries) if (!isEntry(e)) throw new Error(`${name}: not a ${noun}: ${e}`)
@@ -576,7 +575,6 @@ function linkedThrough(scanner, roots, follows) {
   return linked
 }
 
-// The files the entries link eagerly, through static edges alone.
 const eagerlyLinked = (scanner) => linkedThrough(scanner, scanner.entries, (e) => STATIC_KINDS.has(e.kind))
 
 // The scan within the project root (`within(url)`): a file outside it the entries link eagerly is in
@@ -842,14 +840,18 @@ export function fieldResolverFor(platform, { mainFields, metro = false, assetExt
   return { extras, mainFields: fields, resolver }
 }
 
+function parseJson(text, message) {
+  try {
+    return JSON.parse(text)
+  } catch (cause) {
+    throw new Error(message, { cause })
+  }
+}
+
 // The stasis.config.json in `cwd`, parsed; null where there is none. `name`, if any, prefixes errors.
 export function readConfigFile(name, cwd, host = diskHost) {
   const text = readFileSyncMaybe(resolve(cwd), CONFIG_FILE, 'utf8', host)
-  try {
-    return text === null ? null : JSON.parse(text)
-  } catch (cause) {
-    throw new Error(`${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`, { cause })
-  }
+  return text === null ? null : parseJson(text, `${name === undefined ? '' : `${name}: `}${CONFIG_FILE} is not valid JSON`)
 }
 
 // Holds each of `builds` (as built, `builts[i]`) to its entries' Policy, and the whole `bundle` (`extra`
@@ -887,12 +889,7 @@ function readAliasesFile(baseDir, file, host) {
   if (text === null) throw new Error(`stasis bundle: --babel-aliases file not found: ${file}`)
   // A link to a file out of the project is refused too.
   assertRealPathWithinBase(host.realpath(baseDir), baseDir, toPosix(rel), host)
-  let alias
-  try {
-    alias = JSON.parse(text)
-  } catch (cause) {
-    throw new Error(`stasis bundle: --babel-aliases file ${file} is not valid JSON`, { cause })
-  }
+  const alias = parseJson(text, `stasis bundle: --babel-aliases file ${file} is not valid JSON`)
   if (!isPlainObject(alias) || !Object.values(alias).every((value) => typeof value === 'string')) {
     throw new Error(`stasis bundle: --babel-aliases file ${file} must be an object mapping each alias to a string`)
   }
@@ -1196,12 +1193,7 @@ const RN_CONFIG_RESTRICTIONS = { allowedPaths: PATH_GLOBS, disallowedPaths: PATH
 function readRnConfig(baseDir, host) {
   const text = readFileSyncMaybe(baseDir, RN_CONFIG_FILE, 'utf8', host)
   if (text === null) return null
-  let config
-  try {
-    config = JSON.parse(text)
-  } catch (cause) {
-    throw new Error(`${RN_CONFIG_FILE} is not valid JSON`, { cause })
-  }
+  const config = parseJson(text, `${RN_CONFIG_FILE} is not valid JSON`)
   if (!isPlainObject(config)) throw new Error(`${RN_CONFIG_FILE} is not an object of options`)
   return config
 }
@@ -1653,7 +1645,6 @@ async function buildResolvedJsBundle({ cwd = process.cwd(), env = process.env, e
     else putCode(rel, buf, formatsByRel.get(rel))
   }
   if (usesEmpty && metroEmpty === null) {
-    // Refuse to shadow a real reached file sitting at the reserved empty-module path.
     if (formatsByRel.has(EMPTY_MODULE_PATH)) {
       throw new Error(`Bundle needs the reserved empty-module path ${EMPTY_MODULE_PATH}, but the project has a real file there`)
     }
@@ -1843,17 +1834,12 @@ function classifyEntries(name, { cwd = process.cwd(), entries, mappingFile, mani
   else {
     throw new Error(`${name}: entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal (no mixing)`)
   }
-  if (mappingFile && kind !== 'sol') {
-    throw new Error(`${name}: --mapping is only valid for .sol bundles`)
-  }
-  if (manifests && kind !== 'sol') {
-    throw new Error(`${name}: --manifests is only valid for .sol bundles`)
-  }
   // Refuse each of the options `given` that is on, for the `only` (`what`) bundles alone, in order.
   const onlyFor = (only, what, given) => {
     if (kind === only) return
     for (const [flag, on] of Object.entries(given)) if (on) throw new Error(`${name}: --${flag} is only valid for ${what} bundles`)
   }
+  onlyFor('sol', '.sol', { mapping: mappingFile, manifests })
   onlyFor('rust', 'Rust', { cargo, 'cargo-features': nonEmpty(cargoFeatures), 'cargo-no-default-features': cargoNoDefaultFeatures, 'cargo-all-features': cargoAllFeatures, 'cargo-target': cargoTarget, 'cargo-manifests': cargoManifests })
   onlyFor('js', 'JS', { scope: scope !== undefined, lockfile: lockfile !== undefined, conditions: nonEmpty(conditions), flow, typescript })
   if (tsconfig !== undefined && !typescript && !partial) {
@@ -2298,7 +2284,6 @@ function withAttested(to, from) {
   return to
 }
 
-// EXODUS_STASIS_DEBUG=1 or true.
 export const debugging = () => process.env.EXODUS_STASIS_DEBUG === '1' || process.env.EXODUS_STASIS_DEBUG === 'true'
 
 // The time a --metro build's stages took, all told, in milliseconds: its scans of what the app
@@ -2374,7 +2359,6 @@ export async function buildBundle({ cwd = process.cwd(), env = process.env, entr
 // root by default, `-` for stdout) with its `lockfile`, or that alone (`lockfileOnly`); `add` unions it
 // into the bundle on disk, `builds` are several as one, `deptree` lays dependencies out of the lockfile.
 export async function bundleCommand({ cwd = process.cwd(), output, lockfile, lockfileOnly = false, brotliQuality, add = false, ...options } = {}) {
-  // --add has nothing to merge into on stdout (write-only).
   if (add && output === '-') {
     throw new Error('bundleCommand: --add cannot be combined with --output=- (nothing to merge into on stdout)')
   }
