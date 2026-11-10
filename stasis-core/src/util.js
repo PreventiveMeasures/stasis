@@ -85,6 +85,8 @@ export function parseResourcesOption(label, resources) {
 
 const CONFIG_FILE_NAME = 'stasis.config.json'
 
+const unnegated = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
+
 // stasis.config.json's `extra`: root-relative paths, dirs and globs taken as `stasis add` takes its arguments,
 // `!` ones excluding their matches (expandExtra). The config adds itself, so its files travel with it, unless
 // an entry names it (`!stasis.config.json` too); another `!` pattern matching it still excludes it at expansion.
@@ -93,22 +95,20 @@ export function parseExtraOption(label, extra) {
   if (!Array.isArray(extra)) {
     throw new TypeError(`${label}: extra must be an array of paths or glob patterns`)
   }
-  const pattern = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
   for (const entry of extra) {
     if (typeof entry !== 'string' || entry === '') {
       throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
     }
     if (entry === '!') throw new Error(`${label}: extra entry '!' needs a pattern to exclude (e.g. '!ios/Pods')`)
-    if (relativeEscapes(normalize(pattern(entry)))) {
+    if (relativeEscapes(normalize(unnegated(entry)))) {
       throw new Error(`${label}: extra entry '${entry}' must be a path or pattern within the project root`)
     }
   }
-  const names = (entry) => extraPattern(entry) === CONFIG_FILE_NAME
-  return extra.some(names) ? [...extra] : [...extra, CONFIG_FILE_NAME]
+  return extra.some((entry) => extraPattern(entry) === CONFIG_FILE_NAME) ? [...extra] : [...extra, CONFIG_FILE_NAME]
 }
 
 // An `extra` entry's pattern, `!` dropped, as expandExtra matches it: no `./`, no trailing `/`.
-export const extraPattern = (entry) => posix.normalize(entry.startsWith('!') ? entry.slice(1) : entry).replace(/\/+$/u, '')
+export const extraPattern = (entry) => posix.normalize(unnegated(entry)).replace(/\/+$/u, '')
 
 // stasis.config.json's `lockfiles`: those the dependencies are laid out from in place of the one detected (a
 // tree of each), POSIX paths from the config's dir (`../` may climb to a workspace root's); undefined where
@@ -242,12 +242,7 @@ const CODE_NAME_FORMATS = new Map([
 ])
 
 const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
-function isShellShebang(content) {
-  if (!Buffer.isBuffer(content) || !isUtf8(content)) return false
-  const head = content.subarray(0, 256).toString('utf8')
-  const nl = head.indexOf('\n')
-  return SHELL_SHEBANG.test(nl === -1 ? head : head.slice(0, nl))
-}
+const isShellShebang = (content) => Buffer.isBuffer(content) && isUtf8(content) && SHELL_SHEBANG.test(content.subarray(0, 256).toString('utf8'))
 
 // Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
 // sidecars), excluded from the Metro native capture. `flow` covers the `*.js.flow` sidecars.
