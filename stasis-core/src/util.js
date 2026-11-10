@@ -97,6 +97,9 @@ export function memoized(fn, keyOf = (arg) => arg) {
   }
 }
 
+// `text` past a leading byte order mark, as JSON and lockfile readers skip one.
+export const withoutBom = (text) => (text.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text)
+
 const unnegated = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
 
 // stasis.config.json's `extra`: root-relative paths, dirs and globs taken as `stasis add` takes its arguments,

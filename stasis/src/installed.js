@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { isValidRepoField } from '@exodus/stasis-core/bundle'
 import { parseGithubRepository, readJson, readText } from '@exodus/stasis-core/bundle-util'
 import { diskHost } from '@exodus/stasis-core/host'
-import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix } from '@exodus/stasis-core/util'
+import { hexIntegrity, isNpmDependency, isPlainObject, relativeEscapes, tarballIntegrityOf, toPosix, withoutBom } from '@exodus/stasis-core/util'
 import { parsePnpmLockfile } from '@preventive/lockfile/pnpm.js'
 import { parseYarn1Lockfile } from '@preventive/lockfile/yarn1.js'
 
@@ -61,7 +61,7 @@ const unreadable = (file, cause) => new Error(`${file}: ${cause?.message ?? 'not
 function lockText(file, host, strict) {
   const text = readText(host, file)
   if (text === null && strict && host.stat(file) !== null) throw new Error(`${file}: can't be read`)
-  return text?.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text
+  return text && withoutBom(text)
 }
 
 // The name a package is installed as at `location`, the last of it.

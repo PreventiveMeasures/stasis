@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { createMetroResolver as createRnMetroResolver, defaults } from '@preventive/rn/metro-resolver.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { isPlainObject, isTypeDeclaration } from '@exodus/stasis-core/util'
-import { isDir, isFile } from './resolve-typescript.js'
+import { isDir, isSourceFile } from './resolve-typescript.js'
 
 // A type declaration's runtime stem (`dist/index.d.ts` -> `dist/index`); any other name as it is.
 export const stripTypeDeclaration = (name) => name.replace(/\.d\.[mc]?ts$/iu, '')
@@ -41,7 +41,7 @@ function manifestStems(bytes, mainFields) {
 // manifest's entry naming one names its stem (manifestStems).
 export function metroHost(host, mainFields = defaults.mainFields) {
   return {
-    isFile: (path) => !isTypeDeclaration(path) && isFile(path, host),
+    isFile: (path) => isSourceFile(path, host),
     isDirectory: (path) => isDir(path, host),
     realpath: (path) => host.realpath(path),
     readFile: (path) => (basename(path) === 'package.json' ? manifestStems(host.readFile(path), mainFields) : host.readFile(path)),

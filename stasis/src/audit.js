@@ -1,5 +1,5 @@
 import { packageRepo } from '@exodus/stasis-core/bundle-util'
-import { dependencyEcosystem, moduleFileKey, sameGithub } from '@exodus/stasis-core/util'
+import { dependencyEcosystem, moduleFileKey, sameGithub, withoutBom } from '@exodus/stasis-core/util'
 import { advisories } from '@preventive/upstream/advisories.js'
 import { compareVersions, valid } from '@preventive/upstream/semver.js'
 import { isEvidenceFile } from './audit-corrections.js'
@@ -93,7 +93,7 @@ function* auditedRecords(modules) {
 function manifestRepo(text) {
   if (typeof text !== 'string') return undefined
   try {
-    return packageRepo(JSON.parse(text.replace(/^\uFEFF/u, '')))?.github
+    return packageRepo(JSON.parse(withoutBom(text)))?.github
   } catch {
     return undefined
   }

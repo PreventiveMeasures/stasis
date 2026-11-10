@@ -2,10 +2,6 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import { compressBundleText } from '@exodus/stasis-core/brotli'
-import { BUNDLE_FILE } from '@exodus/stasis-core/util'
-
-// Default bundle output: stasis.code.br, the same name `stasis run --bundle=load` discovers, so the two round-trip with no flags.
-export const DEFAULT_BUNDLE_FILE = BUNDLE_FILE
 
 // Write `data` to the absolute path `abs`, creating its directory.
 export function writeFile(abs, data) {
