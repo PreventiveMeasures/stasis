@@ -1,12 +1,12 @@
 import { after, before, test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { brotliDecompressSync } from 'node:zlib'
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib'
 
 import { bundleCommand } from '../stasis/src/cmd/bundle.js'
 import { Vfs, buildVfsBundle, setCacheDir, suggestedEntries } from '../stasis/src/vfs-bundle.js'
@@ -149,6 +149,29 @@ test('stasis bundle --deptree of a Solidity build, which has no stasis lockfile,
     await bundleCommand({ cwd: checkout, entries: ENTRIES, deptree: true, env: { EXODUS_STASIS_LOCK: lock }, output: `${lock}.br` })
     t.assert.equal(brotliDecompressSync(readFileSync(join(checkout, `${lock}.br`))).toString('utf8'), oracles.plain, lock)
   }
+}))
+
+test("stasis bundle --deptree --add holds what the bundle there records to the tree, a Soldeer zip's checksum, of a package it bundles none of too", withTmp(async (t, checkout) => {
+  await cp(join(fixture, 'project'), checkout, { recursive: true })
+  mkdirSync(join(checkout, 'alone'))
+  writeFileSync(join(checkout, 'alone', 'Alone.sol'), 'pragma solidity ^0.8.20;\n\ncontract Alone {}\n')
+  t.mock.method(console, 'warn', () => {})
+  const LIB = 'dependencies/stasis-sol-lib-1.0.0'
+  const add = (entries = ENTRIES) => bundleCommand({ cwd: checkout, entries, deptree: true, env: {}, output: 'out.br', add: true })
+  const read = () => JSON.parse(brotliDecompressSync(readFileSync(join(checkout, 'out.br'))))
+  await add()
+  const { integrity } = read().sources[LIB]
+  t.assert.match(integrity, /^sha256-/u)
+  /* eslint-disable no-await-in-loop -- each build adds to the bundle the one before left */
+  for (const entries of [ENTRIES, ['alone']]) {
+    await add(entries)
+    t.assert.equal(read().sources[LIB].integrity, integrity, `kept: ${entries}`)
+    const other = read()
+    other.sources[LIB].integrity = `sha256-${'A'.repeat(43)}=`
+    writeFileSync(join(checkout, 'other.br'), brotliCompressSync(JSON.stringify(other)))
+    await t.assert.rejects(bundleCommand({ cwd: checkout, entries, deptree: true, env: {}, output: 'other.br', add: true }), /other\.br: module 'dependencies\/stasis-sol-lib-1\.0\.0' \(recorded vs installed\) integrity mismatch/u, `another: ${entries}`)
+  }
+  /* eslint-enable no-await-in-loop */
 }))
 
 test("buildVfsBundle with soldeer takes stasis.config.json's installDevDependencies, and leaves nothing out: Soldeer has no devDependencies", async (t) => {

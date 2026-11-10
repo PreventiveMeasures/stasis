@@ -9,7 +9,7 @@ import { detectRepo, normalizeEntries, packageLookup, packageType, readJson, sta
 import { diskHost } from './host.js'
 import { linksOn, parsePolicy, recordedIn } from './policy.js'
 import { canonicalizePath, sha512integrity } from './state-util.js'
-import { assertRealPathWithinBase, classifyFormat, extraPattern, fileInBucket, hasNodeModulesSegment, inResources, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
+import { ATTESTED_METADATA, INSTALLED, assertRealPathWithinBase, classifyFormat, extraPattern, fileInBucket, hasNodeModulesSegment, heldToAccounts, inResources, isAutoExcludedDir, isAutoExcludedFile, isBinaryPlist, isBrotliQuality, isExecutableMode, moduleInfo, parseResourcesOption, sortedByPath, splitNodeModulesPath, toPosix, withMetadataOf } from './util.js'
 
 // Snapshotted before `stasis run --fs` patches node:fs: State#includeExtra matches its outputs with
 // these at write (outputMatcher), which must read the real disk, not be captured as the program's
@@ -95,15 +95,33 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
   return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason(reason)
 }
 
+// -> (existing, added, path): `added` as it merges into `existing` (the artifact at `path`). What the
+// artifacts attest of a package agrees, and with how it is installed where the host tells (INSTALLED);
+// one an install record tells of is added as `existing` attests it, as that record does where none.
+function installHolder(baseDir) {
+  const known = new Map()
+  return (existing, added, path) => {
+    const attested = new Map([...existing?.modules ?? []].filter(([, info]) => ATTESTED_METADATA.some((field) => info[field] !== undefined)))
+    for (const [dir, info] of attested) known.set(dir, known.has(dir) ? withMetadataOf(known.get(dir), info, `${path}: module '${dir}' (against the other artifacts)`) : info)
+    const accounts = globalThis[INSTALLED]?.(new Map([...added.modules, ...attested]), baseDir) ?? new Map()
+    heldToAccounts(attested, accounts, `${path}: `)
+    for (const [dir, account] of accounts) {
+      const [record, of] = [added.modules.get(dir), existing?.modules.get(dir) ?? account]
+      if (record && !account.locked) added.modules.set(dir, moduleInfo({ ...record, ...Object.fromEntries(ATTESTED_METADATA.map((field) => [field, of[field]])) }))
+    }
+    return added
+  }
+}
+
 // Merge add-if-missing into any existing bundle (divergent bytes throw: mergeModuleMaps). The write is a
 // thunk so every target's conflicts surface before a byte lands; serializing inside it keeps peak memory
 // at one target's bytes. `check` (the Policy, or null) sees the files added, then the bundle's own.
-function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check) {
+function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, held) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
   let mergedFrom
+  let existing
   if (existsSync(abs)) {
-    let existing
     try {
       existing = parseBundleBytes(readFileSync(abs))
     } catch (cause) {
@@ -111,8 +129,9 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check) {
     }
     check?.(existing, recordedIn(targetPath))
     mergedFrom = tally(existing).files
-    bundle = existing.merge(bundle)
   }
+  held(existing, bundle, targetPath)
+  if (existing) bundle = existing.merge(bundle)
   const { files, packages } = tally(bundle)
   return {
     write: () => {
@@ -126,7 +145,7 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check) {
 // Merge into the project's stasis.lock.json (strict: divergent bytes throw), deferring the write like
 // prepareBundleFile so a conflict here doesn't leave the bundles updated. `check` sees what it already
 // records: the files added were checked as the bundles'.
-function prepareLockfile(lockPath, lockAdd, check) {
+function prepareLockfile(lockPath, lockAdd, check, held) {
   let existing
   try {
     existing = Lockfile.parse(readFileSync(lockPath, 'utf8'))
@@ -135,7 +154,7 @@ function prepareLockfile(lockPath, lockAdd, check) {
   }
   check?.(existing, recordedIn(LOCK_FILE))
   const before = tally(existing).files
-  const merged = existing.merge(lockAdd)
+  const merged = existing.merge(held(existing, lockAdd, LOCK_FILE))
   const total = tally(merged).files
   return { write: () => writeFileSync(lockPath, merged.serialize()), counts: { total, added: total - before } }
 }
@@ -339,9 +358,10 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   const summary = []
   const writes = []
   const repo = detectRepo(baseDir)
+  const held = installHolder(baseDir)
   const planTarget = (target, entriesForTarget, kind) => {
     if (entriesForTarget.size === 0) return
-    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality, check)
+    const { write, counts } = prepareBundleFile(baseDir, target, assembleBundle(baseDir, entriesForTarget, workspaceName, workspaceVersion, repo), brotliQuality, check, held)
     writes.push(write)
     summary.push(`+${counts.added} ${kind} (${counts.total} total) -> ${counts.path}`)
   }
@@ -358,7 +378,7 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
   if (hasLock) {
     const allFiles = new Map([...codeFiles, ...resourceFiles])
     const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
-    const { write, counts } = prepareLockfile(lockPath, lockAdd, check)
+    const { write, counts } = prepareLockfile(lockPath, lockAdd, check, held)
     writes.push(write)
     summary.push(`+${counts.added} (${counts.total} total) -> ${LOCK_FILE}`)
   }

@@ -382,6 +382,12 @@ export class State {
       const baseline = files.get(dir)
       if (baseline && ATTESTED_METADATA.every((field) => record?.[field] === undefined || JSON.stringify(record[field]) === JSON.stringify(info[field]))) for (const rel of Object.keys(info.files)) baseline.add(rel)
     }
+    // One attesting none of what the record took already (a sidecar's, after its parent's) adds no
+    // file to it where its files are the record's too: the value was recorded without them.
+    for (const field of this.config.writeBundle && record ? ATTESTED_METADATA : []) {
+      const added = record[field] !== undefined && info[field] === undefined && Object.keys(info.files).find((rel) => !(files.get(dir)?.has(rel) ?? Object.hasOwn(record.files, rel)))
+      if (added) assert.fail(`bundle: module '${dir}' ${field} is recorded of one side's files, not of '${moduleFileKey(dir, added)}' the other adds`)
+    }
     // What a bundle alone attests is the record's once all are absorbed, where they cover its files (#holdToInstalled).
     const alone = Object.fromEntries(ATTESTED_METADATA.filter((field) => record?.[field] === undefined).map((field) => [field, undefined]))
     return moduleInfo(record === undefined ? { ...info, ...alone, files: Object.create(null) } : { ...withMetadataOf(record, info, what), ...alone })

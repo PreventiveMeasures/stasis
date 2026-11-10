@@ -508,16 +508,19 @@ than ship it, and reading one is refused as well.
   with; one from disk, what the package manager's install record names (yarn
   1's only where `yarn.lock` locks a sha512).
 
-  Wherever a build, `--add` or a run meets a recorded `integrity` or `patch`,
-  it is held to how its package was installed: the install record, else the
-  lockfile beside its `node_modules`, else, from a lockfile alone, deptree's.
+  Wherever a build, `--add`, `stasis add` or a run meets a recorded `integrity`
+  or `patch`, it is held to how its package was installed: the install record,
+  else the lockfile beside its `node_modules`, else, from a lockfile alone,
+  deptree's (a package the build bundles none of too).
   One recorded otherwise, or that the install names none of, stops it
   (`<file>: module '<dir>' (recorded vs installed) patch mismatch (… vs
   none)`); where nothing tells, it is kept. A value is of the files recorded
   with it: two records of one package must agree, and a merge or run that would
   give it to a file it wasn't recorded with stops (`lock = replace` records
   anew). A build held to `stasis.lock.json` merges nothing into it, so what the
-  build alone records stays its own.
+  build alone records stays its own. `stasis add` adds a file of a package as
+  the artifact records it where an install record tells of it, and as that
+  record names it to an artifact recording none of the package.
 - A dependency record (one with an `ecosystem`, or under `node_modules`) may carry
   a `repo`, after `ecosystem` and `integrity`: the GitHub repository its own
   manifest names, `{ "github": "owner/name", "directory": "packages/dep", "commit": "<sha>" }`,

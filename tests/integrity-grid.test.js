@@ -137,6 +137,61 @@ test('stasis bundle --add holds what the bundle there records to how its package
   t.assert.equal(recordOf(dir).integrity, SRI, 'kept, where nothing tells')
 }))
 
+test('stasis bundle --add --lockfile holds what stasis.lock.json records of a package the build bundles none of to how it is installed', withTmp(async (t, dir) => {
+  npmProject(dir)
+  await build(dir, { lockfile: LOCK })
+  writeFileSync(join(dir, 'none.js'), '')
+  await build(dir, { ...mode('ignore'), entries: ['none.js'], output: 'none.br' })
+  const none = { ...mode('add'), add: true, lockfile: LOCK, entries: ['none.js'], output: 'none.br' }
+  await build(dir, none)
+  t.assert.equal(lockOf(dir).integrity, SRI, 'kept, as installed')
+  for (const [label, integrity] of [['another', OTHER], ['none', null]]) {
+    npmProject(dir, { integrity })
+    await t.assert.rejects(build(dir, none), /stasis\.lock\.json: module 'node_modules\/reg' \(recorded vs installed\) integrity mismatch/u, label)
+  }
+}))
+
+// `stasis add` of `files` in `dir`, with no lock mode from the environment.
+const stasisAdd = (dir, ...files) => spawnSync(process.execPath, [join(here, '..', 'stasis', 'bin', 'stasis.js'), 'add', ...files], { cwd: dir, encoding: 'utf8', env: { ...process.env, EXODUS_STASIS_LOCK: '' } })
+
+test('stasis add holds what the bundle and stasis.lock.json record to the install, and to each other, and adds a file as its install record names it', withTmp(async (t, dir) => {
+  npmProject(dir)
+  writeJson(join(dir, 'stasis.config.json'), {})
+  writeFileSync(join(dir, 'node_modules', 'reg', 'more.js'), 'module.exports = 2\n')
+  writeFileSync(join(dir, 'own.js'), '')
+  const code = 'stasis.code.br'
+  await build(dir, { output: code, lockfile: LOCK })
+  const [bundle, lock] = [readFileSync(join(dir, code)), lockText(dir)]
+  const restore = () => {
+    writeFileSync(join(dir, code), bundle)
+    writeFileSync(join(dir, LOCK), lock)
+  }
+  const added = stasisAdd(dir, 'node_modules/reg/more.js')
+  t.assert.equal(added.status, 0, added.stderr)
+  for (const record of [recordOf(dir, code), lockOf(dir)]) t.assert.deepStrictEqual([Object.keys(record.files).toSorted(), record.integrity], [['index.js', 'more.js'], SRI], 'a file of it: of the integrity its install record names')
+  for (const [label, options, of] of [['another', { integrity: OTHER }, 'installed'], ['none', { integrity: null }, 'installed'], ['another, locked alone', { hidden: false, integrity: OTHER }, 'locked']]) {
+    restore()
+    npmProject(dir, options)
+    const refused = stasisAdd(dir, 'own.js')
+    t.assert.notEqual(refused.status, 0, label)
+    t.assert.match(refused.stderr, new RegExp(`stasis\\.code\\.br: module 'node_modules/reg' \\(recorded vs ${of}\\) integrity mismatch`, 'u'), label)
+    t.assert.deepStrictEqual([readFileSync(join(dir, code)), lockText(dir)], [bundle, lock], `${label}: nothing written`)
+  }
+  for (const [label, options, pattern] of [['locked alone', { hidden: false }, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files, not of 'node_modules\/reg\/more\.js' the other adds/u], ['nothing tells', NOTHING_TELLS, /bundle merge: module 'node_modules\/reg' integrity is recorded of one side's files/u]]) {
+    restore()
+    npmProject(dir, options)
+    t.assert.equal(stasisAdd(dir, 'own.js').status, 0, `${label}: kept as recorded`)
+    t.assert.match(stasisAdd(dir, 'node_modules/reg/more.js').stderr, pattern, `${label}: no file of it added`)
+  }
+  restore()
+  editLock(dir, (record) => { record.integrity = OTHER })
+  t.assert.match(stasisAdd(dir, 'own.js').stderr, /stasis\.lock\.json: module 'node_modules\/reg' \(against the other artifacts\) integrity mismatch/u, 'the two, of one package')
+  npmProject(dir)
+  for (const file of [code, LOCK]) rmSync(join(dir, file))
+  t.assert.equal(stasisAdd(dir, 'node_modules/reg/index.js').status, 0)
+  t.assert.equal(recordOf(dir, code).integrity, SRI, 'a package it records none of: as its install record names it')
+}))
+
 test("a build held to a stasis.lock.json recording more of a package's files attests its own, and a run holds that to the install", withTmp(async (t, dir) => {
   npmProject(dir, NOTHING_TELLS)
   await build(dir, { lockfile: LOCK })

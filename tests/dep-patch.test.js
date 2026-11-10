@@ -155,6 +155,10 @@ test('a split bundle\'s halves and a sidecar agree on what they alone attest of 
   for (const file of ['code.br', 'res.br']) attest(at(file), undefined)
   attest(at('side.br'), OTHER_TARBALL)
   t.assert.throws(sidecar, /side\.br: module 'node_modules\/dep' \(recorded vs installed\) integrity mismatch/u)
+  for (const file of ['code.br', 'res.br']) attest(at(file), TARBALL)
+  attest(at('side.br'), undefined)
+  const adding = new State(dir, { scope: 'full', ...split, bundle: 'add', lock: 'ignore', claim: false })
+  t.assert.throws(() => new State(dir, { scope: 'full', parent: adding, bundle: 'add', lock: 'ignore', bundleFile: at('side.br'), claim: false }), /bundle: module 'node_modules\/dep' integrity is recorded of one side's files, not of 'node_modules\/dep\/more\.js' the other adds/u, 'a sidecar attesting none: its files are no read of the install')
 }))
 
 // dep 1.0.0, which the lockfile patches, and other 1.0.0: as published, and as a cache store holds them.
