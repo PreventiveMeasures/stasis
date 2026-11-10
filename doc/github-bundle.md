@@ -11,6 +11,10 @@ as in a fresh checkout. With `--typescript`, an import of one resolves to the
 source it is built from, by the package's `tsconfig.json` `outDir` and
 `rootDir`, as [`stasis bundle`](bundle.md#typescript---typescript) resolves it.
 
+Without `--typescript`, a JS build that an import only `--typescript` resolves
+would leave [broken at load](bundle.md#resolution) (`./b` from `a/c.ts`, for
+`a/b.ts`) is built with it. One that builds without it is unchanged.
+
 ```sh
 stasis github-bundle (owner/name[/path]|--github=owner/name [--directory=path]) [--sha=commit|--tag=name] [--package-manager=(pnpm|yarn1|npm|soldeer) [--package-manager-version=version]] [--no-lazy] [--generate=prisma|--no-generate] [--lockfile=path/to/stasis.lock.json [--lockfile-only]] [--output=(path|-)] [stasis bundle's options for the entries] [path/in/repo/to/(file.(js|ts|jsx|tsx)|file.sol|dir) ...]
 ```

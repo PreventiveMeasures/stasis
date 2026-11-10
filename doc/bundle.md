@@ -762,7 +762,8 @@ It is implied without the flag when every entry is TypeScript and their
 relative imports of JS outputs (`./x.js`) are each only on disk as the TS
 source (`./x.ts`), tsc's convention; a project of Node-compatible `.ts` files
 importing `./x.ts` keeps Node's resolution. Otherwise an import that fails but
-would resolve under it names the file and `--typescript` in the error.
+would resolve under it names the file and `--typescript` in the error
+([`stasis github-bundle`](github-bundle.md) builds with it instead).
 
 It honors tsconfig `compilerOptions.paths` aliases (e.g. `"@/*": ["./src/*"]`,
 resolved against `baseUrl`, `extends` followed) for bare specifiers nothing

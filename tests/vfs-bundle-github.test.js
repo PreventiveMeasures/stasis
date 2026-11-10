@@ -297,16 +297,61 @@ test("buildGitHubBundle maps a workspace package's unbuilt tsc outputs to their 
   }))
   const { bundle } = await build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'], typescript: true })
   t.assert.deepStrictEqual([...bundle.sources.keys()], sources)
-  // Without it, the misses name their sources.
-  await t.assert.rejects(build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'] }), {
-    message: [
-      'JS bundle would be broken at load time:',
-      '  unresolved import dep from src/entry.ts (MODULE_NOT_FOUND; resolves to /packages/dep/src/index.ts under --typescript)',
-      '  unresolved import dep/foo from src/entry.ts (MODULE_NOT_FOUND; resolves to /packages/dep/src/foo.ts under --typescript)',
-    ].join('\n'),
-  })
+  // Without it, broken at load: built with it.
+  await Promise.all([{}, { lazy: false }].map(async (options) => {
+    const detected = await build({ client: fakeClient(unbuiltSibling), directory: 'packages/app', entries: ['src/entry.ts'], ...options })
+    t.assert.deepStrictEqual([...detected.bundle.sources.keys()], sources, JSON.stringify(options))
+  }))
   // The package's own entries, as its exports name them.
   t.assert.deepStrictEqual(await suggestedEntries({ vfs: vfsOf(unbuiltSibling), cwd: 'packages/dep', typescript: true }), ['src/index.ts', 'src/foo.ts'])
+})
+
+// An extensionless import below an entry that imports `./a/c.ts`, which the entries don't tell.
+const tscBelowEntry = {
+  'package.json': json({ name: 'p', version: '1.0.0', type: 'module' }),
+  'pnpm-lock.yaml': lockfile('.'),
+  'src/index.ts': "import { c } from './a/c.ts'\nexport const v: number = c\n",
+  'src/a/c.ts': "import { b } from './b'\nexport const c: number = b\n",
+  'src/a/b.ts': 'export const b: number = 1\n',
+}
+const unresolvedWarnings = (warn) => warn.mock.calls.map((call) => call.arguments[0]).filter((line) => line.includes('unresolved'))
+
+test('buildGitHubBundle builds with typescript where a miss it resolves leaves the bundle broken at load', async (t) => {
+  await Promise.all([{}, { lazy: false }, { mainFields: ['main'] }].map(async (options) => {
+    const { bundle } = await build({ client: fakeClient(tscBelowEntry), entries: ['src/index.ts'], ...options })
+    t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/index.ts', 'src/a/c.ts', 'src/a/b.ts'], JSON.stringify(options))
+  }))
+  // Broken with it too: its failure.
+  const gone = fakeClient({ ...tscBelowEntry, 'src/a/b.ts': "import './gone.js'\nexport const b: number = 1\n" })
+  await t.assert.rejects(build({ client: gone, entries: ['src/index.ts'] }), {
+    message: 'JS bundle would be broken at load time:\n  unresolved import ./gone.js from src/a/b.ts (MODULE_NOT_FOUND)',
+  })
+})
+
+test('buildGitHubBundle builds without typescript where the bundle is not broken at load', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const client = fakeClient({ ...tscBelowEntry, 'src/a/c.ts': "export const c: number = 1\nexport const b = () => import('./b')\n" })
+  const { bundle } = await build({ client, entries: ['src/index.ts'] })
+  t.assert.deepStrictEqual([...bundle.sources.keys()], ['src/index.ts', 'src/a/c.ts'])
+  t.assert.deepStrictEqual(unresolvedWarnings(warn), [
+    '[stasis] Bundle has 1 unresolved import(s); they will fall through at load time:\n  dynamic-import ./b from src/a/c.ts (MODULE_NOT_FOUND; resolves to src/a/b.ts under --typescript)',
+  ])
+})
+
+test('buildGitHubBundle warns once where it builds again with typescript', async (t) => {
+  // iOS warns before Android breaks without typescript. Metro completes `./b` itself, not `./b.js`.
+  const warn = t.mock.method(console, 'warn', () => {})
+  const client = fakeClient({
+    ...tscBelowEntry,
+    'src/index.ts': "import { c } from './a/c'\nexport const v: number = c\n",
+    'src/a/c.ios.ts': "export const c: number = 1\nexport const later = () => import('./later')\n",
+    'src/a/c.android.ts': "import { b } from './b.js'\nexport const c: number = b\n",
+  })
+  const { bundle } = await build({ client, entries: ['src/index.ts'], metro: true, platforms: ['ios', 'android'] })
+  t.assert.ok(bundle.sources.has('src/a/b.ts'))
+  t.assert.deepStrictEqual(unresolvedWarnings(warn), [
+    '[stasis] Bundle has 1 unresolved import(s) (ios); they will fall through at load time:\n  dynamic-import ./later from src/a/c.ios.ts (MODULE_NOT_FOUND)',
+  ])
 })
 
 // Unbuilt siblings whose outputs a bundler's own fields pick between: rn's `react-native` field
