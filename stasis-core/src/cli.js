@@ -38,7 +38,7 @@ export function parseRunOptions(argv, { options = {}, fail }) {
   if (bundleFile && bundle === 'none') fail('Error: --bundle-file requires --bundle=(add|replace|load|frozen|ignore)')
   // --resources-bundle-file needs an active bundle mode (unlike --bundle-file, inert under ignore).
   if (resourcesBundleFile && (bundle === 'none' || bundle === 'ignore')) fail('Error: --resources-bundle-file requires --bundle=(add|replace|load|frozen)')
-  if (bundle === 'load' && lock !== 'frozen' && lock !== 'none' && lock !== 'ignore') fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
+  if (bundle === 'load' && (lock === 'add' || lock === 'replace')) fail('Error: --bundle=load is incompatible with --lock=(add|replace)')
   if (lock === 'none' && bundle === 'none') fail('Error: stasis needs a lockfile or a bundle: set --lock or --bundle')
   // --fs requires a bundle mode (add|replace|load); `sync` patches the sync fs readers,
   // `async` adds their callback + fs.promises counterparts on top.
@@ -121,7 +121,7 @@ export async function addCli(argv, { label, fail }) {
   if (argv.length === 0) fail('Nothing to add: no file given')
   if (argv.some((a) => a.startsWith('-'))) fail('Error: add takes no options; its targets and resource allowlist come from stasis.config.json')
   const { addCommand } = await import('./add.js')
-  addCommand({ cwd: process.cwd(), entries: argv, logLabel: label })
+  addCommand({ entries: argv, logLabel: label })
 }
 
 // `extract`: a bundle's files written out, as `--output` and `--lock` say.
@@ -136,14 +136,13 @@ export async function extractCli(argv, { label, fail }) {
   // Unset: frozen when the output dir holds a stasis.lock.json, else none (see extractCommand).
   if (values.lock !== undefined && !LOCK_MODES.has(values.lock)) fail('Error: invalid --lock value')
   const { extractCommand } = await import('./extract.js')
-  extractCommand({ cwd: process.cwd(), bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: label })
+  extractCommand({ bundleFile: argv[0], output: values.output, lock: values.lock, logLabel: label })
 }
 
 // `prune`: the project's node_modules (the one given, else the cwd's) cut down to its lockfile.
 export async function pruneCli(argv, { label, fail }) {
   if (argv.length > 1) fail('Error: prune takes at most one path argument')
-  const root = argv[0] ? resolve(argv[0]) : process.cwd()
   const { prune } = await import('./prune.js')
-  const { removed, validated, minimized } = prune({ root })
+  const { removed, validated, minimized } = prune({ root: argv[0] })
   console.warn(`[${label}] prune: validated ${validated.length} file(s), removed ${removed.length} file(s), minimized ${minimized.length} package.json file(s)`)
 }
