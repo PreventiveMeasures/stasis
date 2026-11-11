@@ -1,6 +1,5 @@
 // Based on DeepView's Solidity loader (https://github.com/PreventiveMeasures/deepview/blob/main/src/loaders/solidity.js).
-// Imports resolve as solc does under the project's build tool (remappings: foundry.js). Dependencies are
-// untrusted: an import never leaves the project nor crosses a link one plants (solidityOwnership).
+// Dependencies are untrusted: an import never leaves the project nor crosses a link one plants (solidityOwnership).
 
 import { isAbsolute, join, posix, relative, resolve } from 'node:path'
 
@@ -21,10 +20,7 @@ import {
 import { applyToDir, isDotRelative } from './paths.js'
 import { decodeUtf8, projectOwnership, projectRelative, readUtf8OrNull, realpathOrNull, solidityOwnership } from './solidity-ownership.js'
 
-// --- Import scan ------------------------------------------------------------------------------
-
-// The scan's ASCII classes, by char code: identifier start [A-Za-z_$], identifier part [\w$], digit,
-// and a number literal's [\w.].
+// By char code: identifier start [A-Za-z_$], identifier part [\w$], digit, and a number literal's [\w.].
 const isIdentStart = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 95 || c === 36
 const isDigit = (c) => c >= 48 && c <= 57
 const isIdentPart = (c) => isIdentStart(c) || isDigit(c)
@@ -33,9 +29,8 @@ const STRING_ESCAPES = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', 0
 
 const utf8 = (s) => [...Buffer.from(s, 'utf8')]
 
-// A string literal starting at `text[i]` (a quote): `{ value, end }`, `value` null when it's
-// unterminated on its line (solc rejects those). A literal is bytes, as in solc: `\xNN` is one
-// byte, `\uNNNN` and plain text their UTF-8, and the path is those bytes read as UTF-8.
+// `value` null where unterminated on its line, as solc rejects it. A literal is bytes, as in solc: `\xNN` one
+// byte, `\uNNNN` and plain text their UTF-8, and the path those bytes read as UTF-8.
 function readStringLiteral(text, i) {
   const quote = text.charCodeAt(i)
   let bytes = null // set at the first escape; until then the literal is a plain slice
@@ -77,9 +72,7 @@ function readStringLiteral(text, i) {
   return { value: null, end: j }
 }
 
-// The path of every import directive, in source order: the first string literal after the `import`
-// keyword, before its `;`, over any number of lines. Tokenized far enough to skip comments and string
-// literals, so a commented-out import or a string holding the word `import` is never taken for one.
+// Tokenized far enough that a commented-out import, or a string holding the word, is never taken for one.
 export function extractSolImports(content) {
   const specs = []
   const n = content.length
@@ -119,14 +112,10 @@ export function extractSolImports(content) {
   return specs
 }
 
-// --- Remappings ---------------------------------------------------------------------------------
-
-// Loader-side shape: `{ context, prefix, target }` (context null = global).
 const toLoaderRemapping = ({ context, name, path }) => ({ context, prefix: name, target: path })
 
-// A mapping file's remappings as listed (no discovery around it), and the files read. A foundry.toml's
-// (its selected profile) and, with `forge`, a remappings.txt's are slash-terminated as forge reads them;
-// else (solc, Hardhat) a remappings.txt applies as written. Messages name files `show(file)`.
+// A foundry.toml's and, with `forge`, a remappings.txt's are slash-terminated as forge reads them; else (solc,
+// Hardhat) a remappings.txt applies as written.
 function readMapping(mappingFile, { env, forge, host, show }) {
   if (mappingFile.endsWith('.toml')) {
     const { remappings, files, profiled } = readFoundryTomlRemappings(mappingFile, foundryProfile(env), { show, host })
@@ -139,11 +128,8 @@ function readMapping(mappingFile, { env, forge, host, show }) {
   return { remappings: listed.map(forge ? toSolcRemapping : toLoaderRemapping), files: [mappingFile] }
 }
 
-// --- Resolution ---------------------------------------------------------------------------------
-
-// What resolves the imports of the project at `baseDir`, `{ remappings, libs, ownership, files, envUsed }`:
-// the remappings `mappingFile` lists, else what `forge build` uses with a foundry.toml at the root
-// (foundry.js), else a root remappings.txt as written; forge's `libs`, and the config `files` read.
+// The remappings `mappingFile` lists, else what `forge build` uses with a foundry.toml at the root, else a
+// root remappings.txt as written.
 export function discoverSolidityConfig(baseDir, { mappingFile, env = process.env, host = diskHost } = {}) {
   const forge = isFile(join(baseDir, FOUNDRY_TOML), host)
   if (forge && !mappingFile) return foundryProject(baseDir, { env, host })
@@ -153,8 +139,7 @@ export function discoverSolidityConfig(baseDir, { mappingFile, env = process.env
   if (mappingFile) {
     const abs = resolve(baseDir, mappingFile)
     const { remappings, files, profiled: mappingProfiled } = readMapping(abs, { env, forge, host, show })
-    // The profile picks the mapping file's remappings (a .toml) or the root foundry.toml's libs: the
-    // files read are both's.
+    // The profile picks the mapping file's remappings (a .toml) or the root foundry.toml's libs.
     const envUsed = profiled || mappingProfiled ? [`FOUNDRY_PROFILE=${env.FOUNDRY_PROFILE}`] : []
     return { remappings, libs, ownership, files: [...new Set([...files, ...libsFiles].map((f) => projectRelative(baseDir, f, host)))], envUsed }
   }
@@ -163,9 +148,8 @@ export function discoverSolidityConfig(baseDir, { mappingFile, env = process.env
   return { remappings: readMapping(txt, { env, forge, host, show }).remappings, libs, ownership, files: [REMAPPINGS_TXT], envUsed: [] }
 }
 
-// Solc's remapping of the source unit `name` imported from `fromFile`: of those whose context and prefix
-// match, the longest context wins, then the longest prefix, then the one listed last; its target replaces
-// the prefix verbatim (`//` collapsed). Null when none applies.
+// As solc remaps: of those whose context and prefix match, the longest context wins, then the longest prefix,
+// then the one listed last; its target replaces the prefix verbatim (`//` collapsed).
 export function applyRemappings(name, fromFile, remappings) {
   let best = null
   for (const r of remappings) {
@@ -178,7 +162,6 @@ export function applyRemappings(name, fromFile, remappings) {
   return posix.normalize(best.target + name.slice(best.prefix.length)).replace(/^\.\//u, '')
 }
 
-// `<baseDir>/<spec>` when a real file sits there, as a clean project-relative path.
 function projectFile(baseDir, spec, host) {
   if (isAbsolute(spec)) return null
   const rel = toPosix(relative(baseDir, resolve(baseDir, spec)))
@@ -189,9 +172,8 @@ function projectFile(baseDir, spec, host) {
 // No `.`/`..`/empty segment: a bare spec can't wander out of the directory it's looked up in.
 const isPlainSpec = (spec) => spec.split('/').every((p) => p !== '' && p !== '.' && p !== '..')
 
-// Forge's absolute import inside a library (`lib/dep/src/A.sol` importing `src/B.sol`): tried against
-// each directory from the parent of the importer's up to (not including) its lib dir, as
-// foundry-compilers' `resolve_absolute_library` does, forge passing the match to solc as an include path.
+// Forge's absolute import inside a library (`src/B.sol` from `lib/dep/src/A.sol`), as foundry-compilers'
+// `resolve_absolute_library` finds it, forge passing the match to solc as an include path.
 function libraryFile(baseDir, spec, fromFile, libs, host) {
   const lib = libs.map((l) => posix.normalize(toPosix(l)).replace(/\/$/u, '')).find((l) => fromFile.startsWith(`${l}/`))
   if (!lib) return null
@@ -202,9 +184,7 @@ function libraryFile(baseDir, spec, fromFile, libs, host) {
   return null
 }
 
-// A package import (`pkg/path.sol`, `@scope/pkg/path.sol`) by file path through node_modules, from
-// the importing file's directory up to the root (Hardhat and Node; a package's `exports` map
-// doesn't apply to Solidity sources).
+// As Hardhat and Node find a package's file; its `exports` map doesn't apply to Solidity sources.
 function nodeModulesFile(baseDir, spec, fromFile, host) {
   const parts = spec.split('/')
   if (parts.length < (spec.startsWith('@') ? 3 : 2)) return null
@@ -217,13 +197,11 @@ function nodeModulesFile(baseDir, spec, fromFile, host) {
   }
 }
 
-// Where an import resolves, as `{ path }`, or `{ reason }` when it may not be read (`reason: null`:
-// it names no file). See resolveSolImport.
+// `{ reason: null }` for an import naming no file.
 function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [], ownership, host = diskHost } = {}) {
   const relativeImport = isDotRelative(specifier)
-  // A relative import (first segment `.` or `..`) resolves as solc does: against the importing
-  // file's directory. Null when it climbs above the root: solc clamps there (`../../B.sol` from
-  // `src/A.sol` is `B.sol`), but an import reaching out of the project is refused, not redirected.
+  // solc clamps a relative import climbing above the root there, but one reaching out of the project is
+  // refused, not redirected.
   const name = relativeImport ? applyToDir(fromFile, specifier.split('/')) : specifier
   if (name === null) return { reason: 'it climbs above the project root' }
   let path = applyRemappings(name, fromFile, remappings)
@@ -244,27 +222,19 @@ function resolveImport(specifier, fromFile, { remappings = [], baseDir, libs = [
   return { path }
 }
 
-// Resolve a Solidity import to a baseDir-relative POSIX path the way solc does (relative, remapped, then
-// in the importer's library, the project, node_modules); null when nothing resolves or the result is
-// refused: not a `.sol` file in the root, or one `ownership` (solidityOwnership's) refuses it.
+// Relative, remapped, then in the importer's library, the project, node_modules; null too where refused.
 export function resolveSolImport(specifier, fromFile, options = {}) {
   return resolveImport(specifier, fromFile, options).path ?? null
 }
 
-// The files that describe a Solidity build (bundled by `--manifests`) besides the config files
-// discovery read: the root's dependency pins, and each package's manifests. (`hardhat.config.*` is
-// code that may hold keys, so it is never carried.)
+// Not `hardhat.config.*`, code that may hold keys.
 export const SOLIDITY_ROOT_MANIFESTS = [FOUNDRY_TOML, REMAPPINGS_TXT, 'foundry.lock', 'soldeer.lock', '.gitmodules', 'package.json']
 export const SOLIDITY_PACKAGE_MANIFESTS = ['package.json', FOUNDRY_TOML, REMAPPINGS_TXT]
-
-// --- The walk -----------------------------------------------------------------------------------
 
 const warnUnresolved = (spec, from, reason) =>
   console.warn(`[loader.solidity] ${reason ? 'Refused' : 'Missing'} import: ${spec} from ${from}${reason ? ` (${reason})` : ''}`)
 
-// Build `{ sources, resolutions, missing }` from already-loaded Solidity sources, imports resolved as
-// resolveSolImport does, else a specifier naming no file but matching a stored key verbatim. `missing`
-// lists each `{ spec, from }` unresolved or outside `sources`, with the `reason` it was refused.
+// A specifier naming no file but a stored key verbatim resolves to it.
 export function buildSolidityTree(sources, { remappings = [], baseDir, libs = [], host = diskHost, ownership = baseDir && solidityOwnership(baseDir, { host }) } = {}) {
   const resolutions = new Map()
   const missing = []
@@ -273,11 +243,9 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
     const specMap = new Map()
     for (const spec of extractSolImports(content)) {
       const r = resolveImport(spec, path, options)
-      let resolved = r.path && sources.has(r.path) ? r.path : null
-      if (!resolved && !r.reason && sources.has(spec)) resolved = spec
-      if (resolved) {
-        specMap.set(spec, resolved)
-      } else {
+      const resolved = r.path && sources.has(r.path) ? r.path : !r.reason && sources.has(spec) ? spec : null
+      if (resolved) specMap.set(spec, resolved)
+      else {
         warnUnresolved(spec, path, r.reason)
         missing.push(r.reason ? { spec, from: path, reason: r.reason } : { spec, from: path })
       }
@@ -287,9 +255,7 @@ export function buildSolidityTree(sources, { remappings = [], baseDir, libs = []
   return { sources, resolutions, missing }
 }
 
-// Walk the project from `entries`, a wave at a time, following resolved imports and reading each file once.
-// Entries are also accepted as verbatim import targets naming no file (Foundry-style `import "src/A.sol"`);
-// one crossing a dependency's link out of itself is refused.
+// Entries are taken as verbatim import targets naming no file too (Foundry-style `import "src/A.sol"`).
 export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { libs = [], host = diskHost, ownership = solidityOwnership(baseDir, { host }) } = {}) {
   const sources = new Map()
   const knownEntries = new Set(entries)
@@ -310,18 +276,13 @@ export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { lib
       }
     })
     const next = []
-    for (const entry of reads) {
-      if (!entry) continue
-      const [relPath, content] = entry
+    for (const [relPath, content] of reads.filter(Boolean)) {
       sources.set(relPath, content)
       for (const spec of extractSolImports(content)) {
         const r = resolveImport(spec, relPath, options)
         const resolved = r.path ?? (!r.reason && knownEntries.has(spec) ? spec : null)
-        if (resolved) {
-          if (!sources.has(resolved)) next.push(resolved)
-        } else {
-          warnUnresolved(spec, relPath, r.reason)
-        }
+        if (resolved) next.push(resolved)
+        else warnUnresolved(spec, relPath, r.reason)
       }
     }
     wave = next
@@ -329,13 +290,11 @@ export function collectSolidityFilesFromDisk(baseDir, entries, remappings, { lib
   return sources
 }
 
-// Every `.sol` file under the project-relative directory `dir`, sorted, symlinks followed as forge
-// (walkdir, `follow_links`) collects a source dir: a symlinked directory whose real path is on the
-// current walk (its root included) is a loop and skipped; two links to one directory are two directories.
+// Symlinks followed as forge's walkdir (`follow_links`) collects a source dir: a linked directory whose real
+// path is on the current walk is a loop and skipped; two links to one directory are two directories.
 function solidityFilesUnder(baseDir, dir, host) {
   const out = []
-  // The real paths of the directories on the current walk; one may repeat (a real directory
-  // reached again through a link is walked, as walkdir does, and checked only at links).
+  // One may repeat: a real directory reached again through a link is walked, as walkdir does, checked only at links.
   const stack = []
   const walk = (rel, real) => {
     stack.push(real)
@@ -359,9 +318,7 @@ function solidityFilesUnder(baseDir, dir, host) {
   return out.toSorted()
 }
 
-// Project-relative entries, each directory replaced by the `.sol` files under it (deduped, in order); a
-// `.sol` entry kept as is. A directory missing or holding none is skipped with a warning, as forge skips
-// an absent `script/`: an error only when no entry yields a file.
+// A directory missing or holding no `.sol` file is skipped with a warning, as forge skips an absent `script/`.
 export function expandSolidityEntries(baseDir, entries, host = diskHost) {
   const out = new Set()
   const shown = (entry) => (entry === '.' ? './' : `${entry}/`)
