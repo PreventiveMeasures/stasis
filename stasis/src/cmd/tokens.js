@@ -19,7 +19,6 @@ export function auditTokens(home) {
   return config === null ? {} : { token: asToken(config.token), npmToken: asToken(config.npmToken) }
 }
 
-// GITHUB_TOKEN, else auditTokens' (only read then), else null.
 export function githubToken({ env = process.env, home } = {}) {
   return env.GITHUB_TOKEN || auditTokens(home).token || null
 }

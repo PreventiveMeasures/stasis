@@ -26,7 +26,6 @@ export function packagesLabel(modules) {
   return `${packages} package${packages === 1 ? '' : 's'}`
 }
 
-// What buildVfsBundle unpacked, by its `stats`; tarballs only where deptree counts them.
 export function unpackedSummary({ unpacked, installed, dependencies, files, bytes, tarballs }) {
   const fetched = typeof tarballs === 'number' ? `, ${tarballs} tarball${tarballs === 1 ? '' : 's'} fetched` : ''
   return `[stasis] Unpacked ${unpacked} of ${installed ?? dependencies} packages: ${files} files, ${(bytes / 2 ** 20).toFixed(1)} MiB${fetched}`

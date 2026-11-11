@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, toPosix, upsert } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
@@ -62,7 +62,6 @@ function listFlag(value, error) {
   return list
 }
 
-// `entry` relative to `cwd` ('.' for cwd itself), or null where it lies out of it.
 function entryKey(cwd, entry) {
   const rel = relative(resolve(cwd), resolve(cwd, entry))
   return relativeEscapes(rel) ? null : toPosix(rel) || '.'
@@ -107,7 +106,6 @@ function entriesLanguage(entries, cwd, host = diskHost) {
   throw new Error('bundle entries must all be .sol, all be .php, all be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx, all be .sh/.bash, all be .rs, or all be .teal, or be .js/.cjs/.mjs/.ts/.cts/.mts/.jsx/.tsx and .sol together')
 }
 
-// bundleCommand's options for building entries in `lang` (entriesLanguage's) with the entry flags `values`.
 function buildOptions(values, { allSol, allJs, allRust }) {
   if (values.mapping && !allSol) throw new Error('--mapping is only valid for .sol bundles')
   const manifests = Boolean(values.manifests)
@@ -224,8 +222,7 @@ function entryFlags(what, options) {
   return values
 }
 
-// The `entries` of the stasis.config.json in `cwd`, by entryKey: { entry: as written, values: its entryFlags,
-// policy?: its own Policy, held beside the config's }; null where there is none.
+// The `entries` of the stasis.config.json in `cwd`, by entryKey; an entry's own Policy is held beside the config's.
 export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   const entries = readConfigFile(undefined, cwd, host)?.entries
   if (entries === undefined) return null
@@ -243,9 +240,8 @@ export function readConfigEntries(cwd = process.cwd(), host = diskHost) {
   return named
 }
 
-// bundleCommand's options for `entries` and the flags `values`. Where `config` (readConfigEntries') names every
-// entry, each is built with its options there, the flags only the bundle's own (OUTPUT_FLAGS) and the consent
-// its CONSENT_FLAGS need; where it names none, all are built with the flags.
+// Where `config` names every entry, each is built with its options there, the flags given only the bundle's own
+// and the consent its CONSENT_FLAGS need; where it names none, all are built with the flags.
 export function bundlePlan({ cwd = process.cwd(), entries, values, config = null }) {
   const lang = entriesLanguage(entries, cwd)
   const output = outputOptions(values, lang)
@@ -284,23 +280,19 @@ export function bundlePlan({ cwd = process.cwd(), entries, values, config = null
   return { ...output, builds: withPolicies(builds) }
 }
 
-// Adds `entry` to the build in `builds` of the same language, options and Policy (the first entry's,
-// relabelled by withPolicies), or starts one.
+// To the build of the same language, options and Policy (the first entry's, relabelled by withPolicies).
 function addToBuild(builds, entry, named, options, language) {
   const id = JSON.stringify([language, options, named.policy?.key])
-  if (!builds.has(id)) builds.set(id, { entries: [], ...options, written: [], policy: named.policy })
-  const build = builds.get(id)
+  const build = upsert(builds, id, () => ({ entries: [], ...options, written: [], policy: named.policy }))
   build.entries.push(entry)
   build.written.push(named.entry)
 }
 
-// addToBuild's builds, each Policy's errors naming all its entries.
 function withPolicies(builds, prefix = '') {
   return [...builds.values()].map(({ written, policy, ...build }) => (policy === undefined ? build
     : { ...build, policy: policy.withLabel(`${prefix}${CONFIG_FILE}: entries ${written.map((entry) => JSON.stringify(entry)).join(', ')}`) }))
 }
 
-// buildOptions' options, each by its flag.
 const OPTION_FLAGS = {
   mappingFile: 'mapping', manifests: 'manifests', scope: 'scope', conditions: 'conditions', mainFields: 'mainFields', metro: 'metro', metroResolver: 'metro-resolver', babel: 'babel', babelAliases: 'babel-aliases', platforms: 'platforms', jsx: 'jsx', flow: 'flow', typescript: 'typescript', tsconfig: 'tsconfig', resources: 'resources', define: 'define', packageJSON: 'package-json', cargo: 'cargo', cargoFeatures: 'cargo-features', cargoNoDefaultFeatures: 'cargo-no-default-features', cargoAllFeatures: 'cargo-all-features', cargoTarget: 'cargo-target', cargoManifests: 'cargo-manifests',
 }
@@ -320,9 +312,8 @@ const optionText = (key, value) => (key === 'define'
   ? Object.entries(value).map(([name, v]) => `--define=${name}=${JSON.stringify(v)}`).join(' ')
   : flagText(OPTION_FLAGS[key], Array.isArray(value) ? value.join(',') : value))
 
-// The builds of `entries` (by default, every one it names) the stasis.config.json in `cwd` names, for `name`'s
-// bundle of a project it runs nothing of (vfs-bundle's): -> { entries, builds }, or null where it names none.
-// Each of `options` given other than at its default must be what each entry's options set.
+// The builds of `entries` (by default, all it names) the config names, for a bundle of a project it runs nothing
+// of (vfs-bundle's), or null where it names none. Each option given off its default must be what each entry sets.
 export function configuredBuilds(name, { cwd, host = diskHost, entries, options = {} }) {
   const config = prefixed(`${name}: `, () => readConfigEntries(cwd, host))
   if (config === null || (entries !== undefined && !Array.isArray(entries))) return null

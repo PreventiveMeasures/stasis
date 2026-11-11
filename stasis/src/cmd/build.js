@@ -80,21 +80,13 @@ function assertBuildableArtifact(artifact, label) {
   if (artifact.entries.size === 0) throw new Error(`stasis build: ${label} declares no entries to build`)
 }
 
-// The entry and what it imports in the recorded graph, as esbuild loads it (every conditions bucket and
-// platform).
+// As esbuild loads them: every conditions bucket's edges, every platform's target (a Set visits what is added to it).
 function reachableFiles(entry, imports) {
   const seen = new Set([entry])
-  const stack = [entry]
-  while (stack.length > 0) {
-    const parent = stack.pop()
+  for (const parent of seen) {
     for (const byParent of imports.values()) {
       for (const target of byParent.get(parent)?.values() ?? []) {
-        for (const file of typeof target === 'string' ? [target] : target.values()) {
-          if (!seen.has(file)) {
-            seen.add(file)
-            stack.push(file)
-          }
-        }
+        for (const file of typeof target === 'string' ? [target] : target.values()) seen.add(file)
       }
     }
   }
@@ -114,7 +106,6 @@ function assertBuildableEntry(artifact, entry, label) {
   }
 }
 
-// The recorded entry `entryArg` names (as recorded, `./`-stripped, or from cwd); needed only where several are.
 function selectEntry(entryArg, entries, { cwd, root, label }) {
   const recorded = [...entries]
   const list = recorded.map((e) => `  ${e}`).join('\n')
@@ -131,14 +122,12 @@ function selectEntry(entryArg, entries, { cwd, root, label }) {
 // A bundle-load State serving `bundle`, with no discovery on disk (no package.json, config or stray stasis.code.br).
 function loadStateForBundle(root, bundle) {
   const state = new State(root, { bundle: 'load', lock: 'ignore', scope: bundle.config.scope, skipDiscovery: true })
-  const sources = new Map()
-  const resources = new Map()
+  state.sources = new Map()
+  state.resources = new Map()
   for (const [file, content] of bundle.sources) {
-    if (Bundle.isResourceFormat(bundle.formats.get(file))) resources.set(file, content)
-    else sources.set(file, content)
+    if (Bundle.isResourceFormat(bundle.formats.get(file))) state.resources.set(file, content)
+    else state.sources.set(file, content)
   }
-  state.sources = sources
-  state.resources = resources
   state.formats = bundle.formats
   state.imports = bundle.imports
   state.entries = new Set(bundle.entries)
@@ -151,8 +140,7 @@ const asBytes = (source) => (Buffer.isBuffer(source) ? source : Buffer.from(sour
 // The bytes the artifact carries for `file`, verified by getFile.
 const readCarried = (state, file) => asBytes(state.getFile(pathToFileURL(resolve(state.root, file)).toString()).source)
 
-// --metro=PLATFORM's resource hook: each Metro asset served as the module Metro builds of it, from the files
-// the artifact carries, its require of the asset registry added to the graph as Metro adds it past the source.
+// Each Metro asset served as the module Metro builds of it, its require of the registry added as Metro adds it.
 function metroAssetResource(state, platform, built) {
   const listing = bundleDirHost(state)
   const registryFor = assetRegistryResolver(platform, state.sources)
@@ -194,8 +182,7 @@ const chainTransforms = (first, second) => async (source, file) => {
   return (await second(firstMade?.contents ?? source, { ...file, loader: firstMade?.loader ?? file.loader })) ?? firstMade
 }
 
-// `entry`'s options in the `entries` of the stasis.config.json the artifact carries that say how its code
-// is built. -> { name, jsx, flow, define, platforms (under `metro`) }, or null where none are
+// `entry`'s options in the stasis.config.json the artifact carries that say how its code is built, or null.
 function configEntryOptions(state, entry) {
   if (!state.sources.has(CONFIG_FILE) && !state.resources.has(CONFIG_FILE)) return null
   let config
@@ -349,8 +336,7 @@ export async function buildCommand({
   } catch (err) {
     // Under logLevel:'silent' esbuild puts the real errors on err.errors.
     if (Array.isArray(err?.errors) && err.errors.length > 0) {
-      const formatted = await esbuild.formatMessages(err.errors, { kind: 'error', color: false })
-      for (const line of formatted) process.stderr.write(line)
+      for (const line of await esbuild.formatMessages(err.errors, { kind: 'error', color: false })) process.stderr.write(line)
       const unloaded = err.errors.map((e) => /^No loader is configured for "([^"]+)" files/u.exec(e.text)?.[1]).find(Boolean)
       if (unloaded !== undefined) {
         process.stderr.write(
@@ -382,8 +368,7 @@ export async function buildCommand({
   }
 
   if (result.warnings.length > 0) {
-    const formatted = await esbuild.formatMessages(result.warnings, { kind: 'warning', color: false })
-    for (const line of formatted) process.stderr.write(line)
+    for (const line of await esbuild.formatMessages(result.warnings, { kind: 'warning', color: false })) process.stderr.write(line)
   }
 
   for (const { path, contents } of writes) writeFile(path, contents)
