@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
 import { State } from '@exodus/stasis-core/state'
-import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, splitList, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, toPosix } from '@exodus/stasis-core/util'
 import { StasisEsbuild } from '@exodus/stasis-plugins/esbuild'
 import { bundleDirHost } from '@exodus/stasis-plugins/metro-native'
 import { assetsDestFiles } from '@preventive/rn/assets-dest.js'
@@ -270,7 +270,7 @@ function configEntryOptions(state, entry) {
   }
   let platforms
   if (options.metro === true) {
-    platforms = [...new Set(splitList(strings('platforms')))]
+    platforms = [...new Set(strings('platforms').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean))]
     if (platforms.length === 0) throw new Error(`stasis build: ${what} sets metro but names no platforms`)
   }
   return { name, jsx: options.jsx === true, flow: options.flow === true, define, platforms }

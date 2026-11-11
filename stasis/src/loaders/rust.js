@@ -7,7 +7,7 @@ import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, posix, relative } from 'node:path'
 
-import { assertRealPathWithinBase, memoized, nestedMap, relativeEscapes, targetFiles, toPosix, upsert } from '@exodus/stasis-core/util'
+import { assertRealPathWithinBase, memoized, nestedMap, relativeEscapes, toPosix, upsert } from '@exodus/stasis-core/util'
 import { isFile } from '../resolve-typescript.js'
 import { TARGET_CFG_KEYS, TARGET_UNIT, VENDOR_DIR, cfgName, createCargoContext, evalCfg, evalCfgKey, isTestTargetPath, normName, normalizeCfg, normalizeRel } from './cargo.js'
 import { matchClose, splitTopLevel } from './toml.js'
@@ -2633,7 +2633,7 @@ export function buildRustTree(sources, { roots = [], baseDir = null, cargo = nul
     // `$crate::__private::serde::Serialize` needs the root's `__private`): when nothing else points at
     // its file, the path's prefix naming it records it (`crate::__private` → lib.rs).
     const targets = new Set()
-    for (const t of specMap.values()) for (const f of targetFiles(t)) targets.add(f)
+    for (const t of specMap.values()) for (const f of t instanceof Map ? t.values() : [t]) targets.add(f)
     for (const [owner, spec] of via) if (!targets.has(owner)) add(spec, owner)
   }
   let { out, unresolved, wanted } = resolveAll()

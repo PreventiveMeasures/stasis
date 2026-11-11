@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 import { diskHost } from '@exodus/stasis-core/host'
 import { POLICY_KEYS, parsePolicy } from '@exodus/stasis-core/policy'
-import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, splitList, toPosix } from '@exodus/stasis-core/util'
+import { CONFIG_FILE, isPlainObject, JS_EXTENSIONS, parseBrotliQuality, parseResourcesOption, relativeEscapes, SCOPES, toPosix } from '@exodus/stasis-core/util'
 import { parseFeatureList } from '../loaders/cargo.js'
 import { parseDefineFlags } from '../define.js'
 import { directoryEntryError, isSolidityEntry, readConfigFile } from './bundle.js'
@@ -66,7 +66,7 @@ const flagText = (name, value) => (value === true ? `--${name}` : `--${name}=${v
 // usage error (`error`) for one naming none.
 function listFlag(value, error) {
   if (value === undefined) return undefined
-  const list = splitList(value)
+  const list = value.split(',').map((s) => s.trim()).filter(Boolean)
   if (list.length === 0) throw new Error(error)
   return list
 }
@@ -175,7 +175,7 @@ function buildOptions(values, { allSol, allJs, allRust }) {
   const mainFields = listFlag(values.mainFields, '--mainFields must list at least one field (e.g. --mainFields=react-native,browser,main)')
   // --metro-resolver: resolve through the project's own metro-resolver instead of the built-in approximation.
   const metroResolver = Boolean(values['metro-resolver'])
-  const platforms = [...new Set(splitList(values.platforms ?? []))]
+  const platforms = [...new Set((values.platforms ?? []).flatMap((p) => p.split(',')).map((s) => s.trim()).filter(Boolean))]
   // A platform name becomes an edge key, so no '/' (parsers reject it) or '*' (a reserved placeholder).
   for (const p of platforms) {
     if (p === '*' || p.includes('/')) throw new Error(`invalid --platforms value '${p}' (a platform name can't contain '/' or be '*')`)

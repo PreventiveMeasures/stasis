@@ -2,7 +2,7 @@
 // resolution edges; content, listings, stat kinds and exec bits are re-derived from the root's OWN disk, so
 // a shard cannot inject content or a forged bit. `files` and `formats` are independent -- don't collapse them.
 
-import { assertScope, isArtifactKey, KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, objectToMaps, targetFiles } from './artifact-util.js'
+import { assertScope, isArtifactKey, KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, objectToMaps } from './artifact-util.js'
 
 export const SHARD_VERSION = 1
 
@@ -51,7 +51,7 @@ function assertShard(files, formats, imports) {
       assert(specs instanceof Map, `shard imports for ${parent}: expected a specifier map`)
       // A target is a file, or (--metro) a platform -> file map; nothing deeper.
       for (const [, target] of specs) {
-        for (const file of targetFiles(target)) assertKey(file, `shard import target from ${parent}`)
+        for (const file of target instanceof Map ? target.values() : [target]) assertKey(file, `shard import target from ${parent}`)
       }
     }
   }

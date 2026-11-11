@@ -1,4 +1,4 @@
-import { entryDirOf, hasNodeModulesSegment, moduleFileKey, targetFiles, upsert } from '@exodus/stasis-core/util'
+import { entryDirOf, hasNodeModulesSegment, moduleFileKey, upsert } from '@exodus/stasis-core/util'
 import { isEvidenceFile } from './audit-corrections.js'
 import { parseFile } from './parse.js'
 
@@ -67,7 +67,7 @@ function fileEdges(imports) {
   for (const [, byParent] of imports) {
     for (const [parent, specifiers] of byParent) {
       for (const [, target] of specifiers) {
-        for (const t of targetFiles(target)) edges.set(`${parent}\0${t}`, [parent, t])
+        for (const t of target instanceof Map ? target.values() : [target]) edges.set(`${parent}\0${t}`, [parent, t])
       }
     }
   }

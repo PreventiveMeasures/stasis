@@ -588,9 +588,6 @@ export function groupModules(modules, { skipEmpty = false, metadata: written = t
   return { modules: fromEntries(sortedByPath(grouped.modules, entryKey)), sources: fromEntries(sortedByPath(grouped.sources, entryKey)) }
 }
 
-// The files an import target names: itself, or (--metro) each platform's.
-export const targetFiles = (target) => (target instanceof Map ? target.values() : [target])
-
 // Whether two import targets are one: a resolved file, or (--metro) a { platform: file } Map, compared structurally.
 export function importTargetsEqual(a, b) {
   if (!(a instanceof Map) || !(b instanceof Map)) return a === b

@@ -1,4 +1,4 @@
-import { ATTESTED_METADATA, REPO_FIELDS, moduleFileKey, sameGithub, setsEqual, sortPaths } from '@exodus/stasis-core/util'
+import { ATTESTED_METADATA, extSetsEqual, moduleFileKey, REPO_FIELDS, sameGithub, sortPaths } from '@exodus/stasis-core/util'
 
 // `@exodus/stasis/diff` — compare two parsed stasis artifacts (Bundle/Lockfile) at the module and file
 // level, never reading disk. Every file is reduced to an SRI digest: a lockfile holds them, and a bundle's
@@ -148,7 +148,7 @@ export function diffImports({ artifact: left }, { artifact: right }) {
     const r = R.get(key)
     if (l && !r) removed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets) })
     else if (!l && r) added.push({ parent: r.parent, specifier: r.specifier, to: sortedTargets(r.targets) })
-    else if (!setsEqual(l.targets, r.targets)) {
+    else if (!extSetsEqual(l.targets, r.targets)) {
       changed.push({ parent: l.parent, specifier: l.specifier, from: sortedTargets(l.targets), to: sortedTargets(r.targets) })
     }
   }
