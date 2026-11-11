@@ -220,7 +220,7 @@ function initState(root) {
       async: state.config.fs === 'async',
       getState: () => state,
       isLoadingModule: () => loadingModule > 0,
-      // Else the discard is silent: reads succeed, exit 0, no artifact.
+      // Warned, else the discard is silent: reads succeed, exit 0, no artifact.
       markAborted: (err) => {
         if (!aborted) console.warn(`[stasis] --fs: capture aborted, no bundle/lockfile will be written -- ${err?.message ?? err}`)
         aborted = true

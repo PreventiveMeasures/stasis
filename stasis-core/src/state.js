@@ -43,7 +43,8 @@ const INCONSISTENT_PACKAGE_JSON_EXCEPTIONS = [
   'node_modules/@redis/client/dist/package.json', // stale build-time copy
   'node_modules/hashids/esm/package.json', // a `type` marker named `hashids-esm`, in every 2.x release
 ]
-const isInconsistentPackageJsonException = (file) => INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
+const isInconsistentPackageJsonException = (file) =>
+  INCONSISTENT_PACKAGE_JSON_EXCEPTIONS.some((suffix) => file === suffix || file.endsWith(`/${suffix}`))
 
 // 'import' or 'require', as a condition list or #conditionsKey asserts; null for '*' or a set naming both or neither.
 function resolutionContext(conditions) {
@@ -1048,8 +1049,8 @@ export class State {
     return file !== undefined && this.formats.get(file) !== 'directory' && this.#bundled(file)
   }
 
-  // Else --fs re-records the bundler's whole module graph into the main bundle. Not getFsStat: skipping an
-  // implied dir or stat-only record would leave a real read unattested.
+  // Capture skips these, else --fs re-records the bundler's module graph into the main bundle. Not getFsStat:
+  // skipping an implied dir or stat-only record would leave a real read unattested.
   attestedBySidecar(url) {
     return this.#sidecars.values().some((s) => s.hasFsFileContent(url))
   }
@@ -1095,8 +1096,7 @@ export class State {
     return { source, format }
   }
 
-  // Masks 'stat:*' (existence, not how bytes parse), so the resolve hook's format gate doesn't refuse a stat'd
-  // require.resolve target; getFile does NOT mask.
+  // Masks 'stat:*' (existence, not parsing), so the resolve hook's format gate passes a stat'd target; getFile doesn't.
   #loaderFormat(file) {
     const format = this.formats.get(file)
     return isStatFormat(format) ? undefined : format
@@ -1116,8 +1116,7 @@ export class State {
     return `${cond} (with: ${JSON.stringify(sorted)})`
   }
 
-  // An ABSOLUTE in-root specifier would be a machine-specific lockfile key: renormalized against the IMPORTING
-  // FILE's dir, alike wherever a key is written or queried.
+  // An ABSOLUTE in-root specifier would be a machine-specific key: renormalized against the IMPORTING FILE's dir.
   #canonicalSpecifier(parentURL, specifier) {
     if (typeof specifier !== 'string') return specifier
     const path = specifier.startsWith('file:') ? fileURLToPath(specifier) : specifier
@@ -1301,15 +1300,13 @@ export class State {
     upsert(this.#reasonFiles, reason, () => new Set()).add(file)
   }
 
-  // Less what run only fs-READ after a plugin attached that a plugin also bundles. `extra` bundles nothing.
+  // #reasonFiles less what run only fs-READ after a plugin attached that a plugin bundles. `extra` bundles nothing.
   #reasonClaims() {
     const isPlugin = (who) => who !== 'run' && who !== 'extra'
     const pluginFiles = new Set(this.#reasonFiles.entries().filter(([who]) => isPlugin(who)).flatMap(([, recorded]) => recorded))
     const fsReadOnly = (file) => this.#fsReadPostPlugin.has(file) && !this.#runOwn.has(file)
-    const claims = new Map()
-    for (const [who, recorded] of this.#reasonFiles) {
-      claims.set(who, new Set(who === 'run' ? [...recorded].filter((file) => !(fsReadOnly(file) && pluginFiles.has(file))) : recorded))
-    }
+    const claimOf = (who, recorded) => (who === 'run' ? [...recorded].filter((file) => !(fsReadOnly(file) && pluginFiles.has(file))) : recorded)
+    const claims = new Map(this.#reasonFiles.entries().map(([who, recorded]) => [who, new Set(claimOf(who, recorded))]))
     const run = claims.get('run')
     if (run === undefined || pluginFiles.size === 0 || this.#fsReadPostPlugin.size === 0) return claims
     // A package.json fs-read post-plugin, of a package a plugin bundles, is one a bundler reads to resolve but
@@ -1342,7 +1339,7 @@ export class State {
     return Object.keys(reason).length > 1 ? reason : undefined
   }
 
-  // Less a 'stat:*' the unified attestation upgraded, else the bundle fails its lockfile cross-check at load.
+  // this.formats less a 'stat:*' the unified attestation upgraded, else the bundle fails its lockfile check at load.
   #formatsForBundle() {
     const merged = this.#mergedFormats()
     const upgraded = ([file, format]) => isStatFormat(format) && merged.get(file) !== format
@@ -1528,7 +1525,7 @@ export class State {
       if (format !== undefined) formats.set(file, format)
       if (this.hashes.has(file)) files.push(file)
     }
-    // Bundle-seeded edges, whose parent this process didn't observe, the root attests already.
+    // Only edges whose parent was observed: the root attests the bundle-seeded rest already.
     const imports = new Map()
     for (const [conditions, byParent] of this.imports) {
       for (const parent of this.#observed) {
@@ -1549,7 +1546,7 @@ export class State {
       if (!realContained(this.root, absolute)) continue
       // ABOVE the fast path: a child refutes a bit by OMISSION. Re-derived from THIS disk, never forged.
       this.#recordExecutable(file, absolute)
-      // The byte re-read dominates merge cost, but a concrete format the root LACKS a later frozen run needs.
+      // Skip one the root attests (the re-read dominates merge cost), unless carrying a format it LACKS.
       const format = shard.formats.get(file)
       if (this.hashes.has(file) && (format === undefined || (this.formats.get(file) ?? this.#lockFormats?.get(file)) !== undefined)) continue
       const url = pathToFileURL(absolute).toString()
