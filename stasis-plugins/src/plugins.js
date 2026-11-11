@@ -1,6 +1,3 @@
-// Plugin <-> preload coordination (resolvePluginState): decides which State a bundler plugin
-// drives, given its options and the ambient preload.
-
 import assert from 'node:assert/strict'
 import { isUtf8 } from 'node:buffer'
 
@@ -9,10 +6,10 @@ import { ensureStateForLoader, isLoaderInstalled } from '@exodus/stasis-core/hoo
 import { State } from '@exodus/stasis-core/state'
 import { classifyExtension, extSetsEqual, parseResourcesOption } from '@exodus/stasis-core/util'
 
-// The Config options a plugin takes; `lockFile` is not one (the lockfile is always the preload's).
+// The Config options a plugin takes; not `lockFile`, as the lockfile is always the preload's.
 const PLUGIN_OPTION_KEYS = ['scope', 'lock', 'bundle', 'bundleFile', 'resourcesBundleFile', 'debug', 'childProcess', 'packageJSON', 'resources']
 
-// A plugin's options, validated as Config validates them, without constructing one (which has side effects).
+// Validated as Config validates them, without constructing one (which has side effects).
 export function validatePluginOptions(label, options) {
   assertKnownKeys(Object.keys(options), PLUGIN_OPTION_KEYS, label)
   for (const key of PLUGIN_OPTION_KEYS) {
@@ -22,10 +19,9 @@ export function validatePluginOptions(label, options) {
   }
 }
 
-// The active Config is authoritative; options a plugin was given must agree with it.
+// The active Config is authoritative; `resources`, a Set, is coordinated in resolvePluginState instead.
 export function assertOptionsMatchConfig(config, options) {
   try {
-    // `resources` is deliberately NOT checked here: it's a Set, coordinated in resolvePluginState.
     for (const key of PLUGIN_OPTION_KEYS) {
       if (key !== 'resources' && options[key] !== undefined) assert.equal(config[key === 'bundle' ? 'bundleMode' : key], options[key])
     }
@@ -34,42 +30,25 @@ export function assertOptionsMatchConfig(config, options) {
   }
 }
 
-// Decides which State a bundler plugin runs against, given its options and the ambient preload.
-// Returns { state: null, isNoop: true } (inert -- register no hooks) or { state, isNoop: false }.
-// The lockfile is always unified (plugins can't set lockFile); only the BUNDLE may split per-plugin
-// (bundleFile -> sidecar). Rules, referenced by number in the code below:
-//  0. No preload, not under `stasis run`, no lock/bundle option -> inert (safe on a plain build).
-//  1. A writing/verifying lock mode without a preload throws (it would miss the bundler's own deps).
-//  2. With a preload, the plugin's lock mode must agree with it.
-//  3. When plugin and preload align, reuse the preload State (single lockfile).
-//  4. Preload with bundle on: plugin can't disable it and the mode must match; bundleFile may differ.
-//  5. Same bundleFile (or unspecified) reuses the preload State.
-//  6. Different bundleFile creates a sidecar sharing the preload's lockfile data.
-//  7. lock='none' AND bundle='none' with no preload is a no-op (env-controlled-off framework plugins).
+// The State a bundler plugin runs against, given its options and the ambient preload: { state: null, isNoop: true }
+// (inert: register no hooks), else { state, isNoop: false }. The lockfile is always the preload's; only the bundle
+// may split off, to a sidecar State at its own bundleFile.
 export function resolvePluginState(label, options, cwd) {
   validatePluginOptions(label, options)
   const { lock, bundle, bundleFile, resourcesBundleFile, resources } = options
-  // Same-instance fast path: loader installed but lazy initState hasn't fired (webpack builds plugins
-  // before user code). Force-init so the plugin lands in the ambient branch. NOT for a separate
-  // stasis-core copy -- that would mint a phantom State.preload racing the real loader's write.
+  // The loader is installed but its lazy init hasn't fired (webpack builds plugins before user code). Never for a
+  // separate stasis-core copy: that would mint a phantom State.preload racing the real loader's write.
   if (!State.preload && isLoaderInstalled()) ensureStateForLoader()
   const ambient = State.preload
 
   if (!ambient) {
-    // "Under stasis run" detection: the bin script always exports EXODUS_STASIS_LOCK, so it's a
-    // process-wide signal regardless of which stasis-core copy hosts this code.
+    // `stasis run` always exports EXODUS_STASIS_LOCK, whichever stasis-core copy hosts this code.
     const underStasisRun = process.env.EXODUS_STASIS_LOCK !== undefined
-
-    // Rule 0: no preload, not under `stasis run`, no lock/bundle option -> do nothing, so a bare
-    // plugin sits inertly in a plain build. Capture is governed elsewhere (env or explicit options).
-    if (!underStasisRun && lock === undefined && bundle === undefined) {
+    // Inert in a plain build, as where both are 'none' (a framework plugin switched off by env).
+    if ((!underStasisRun && lock === undefined && bundle === undefined) || (lock === 'none' && bundle === 'none')) {
       return { state: null, isNoop: true }
     }
-
-    if (lock === 'none' && bundle === 'none') return { state: null, isNoop: true } // Rule 7
-    // A partial opt-out (one field 'none', the other omitted) would otherwise hit a misleading
-    // Rule 1 throw or Config's generic error; catch it explicitly. An active bundle mode paired
-    // with lock='none' is a legitimate "bundle as trust root" config, so only fire when the other is undefined.
+    // A partial opt-out would otherwise meet a misleading throw; an active bundle with lock='none' is legitimate.
     if ((lock === 'none' && bundle === undefined) || (bundle === 'none' && lock === undefined)) {
       throw new Error(
         `${label}: to opt out of stasis without a preload, pass BOTH lock='none' and bundle='none' ` +
@@ -77,14 +56,10 @@ export function resolvePluginState(label, options, cwd) {
         `bundle=${bundle === undefined ? 'default' : `'${bundle}'`})`
       )
     }
-    // A writing/verifying lock (add|replace|frozen) still needs a preload unless under stasis run
-    // (whose loader gives full coverage). `lock` may be undefined here if only a writing `bundle`
-    // was passed, so the throw below distinguishes a defaulted mode from an explicit one.
+    // A writing or verifying lock would miss the bundler's own deps without a preload, but under `stasis run`.
     const effectiveLock = lock ?? DEFAULT_LOCK
     if (!underStasisRun && effectiveLock !== 'none' && effectiveLock !== 'ignore') {
-      const phrasing = lock === undefined
-        ? `the default lockfile mode ('${DEFAULT_LOCK}')`
-        : `lockfile mode '${lock}'`
+      const phrasing = lock === undefined ? `the default lockfile mode ('${DEFAULT_LOCK}')` : `lockfile mode '${lock}'`
       throw new Error(
         `${label}: ${phrasing} requires a stasis preload; ` +
         `pass lock='none' or lock='ignore' to opt out, or run under the stasis loader`
@@ -93,18 +68,15 @@ export function resolvePluginState(label, options, cwd) {
     return { state: new State(cwd, options), isNoop: false }
   }
 
-  // Preload active: the lockfile is necessarily the ambient's. Enforce field coordination, then reuse or sidecar.
+  // These must agree with the preload, which a reuse adopts and a sidecar copies.
   const pc = ambient.config
-  // lock/scope/debug/childProcess/packageJSON must agree with the preload (reuse adopts it, sidecar
-  // copies it). The string modes are quoted, the boolean toggles not (validatePluginOptions typed them).
   const shown = (value) => (typeof value === 'string' ? `'${value}'` : value)
   for (const key of ['lock', 'scope', 'debug', 'childProcess', 'packageJSON']) {
     if (options[key] !== undefined && options[key] !== pc[key]) {
       throw new Error(`${label}: ${key}=${shown(options[key])} conflicts with active preload ${key}=${shown(pc[key])}`)
     }
   }
-  // resources is process-wide, so a plugin's allowlist must agree with the preload's -- compare
-  // parsed sets (order/dupes/case-insensitive) to prevent one plugin silently widening the asset set.
+  // resources is process-wide: compared as parsed sets, so that no plugin silently widens the asset set.
   if (resources !== undefined) {
     const parsed = parseResourcesOption(label, resources)
     if (!extSetsEqual(parsed, pc.resources)) {
@@ -114,87 +86,62 @@ export function resolvePluginState(label, options, cwd) {
     }
   }
 
-  // Mark the plugin attached so the preload's bundle `reason` map can distinguish files merely
-  // fs-READ during the build from genuine run dependencies recorded before any plugin existed.
+  // So the preload's `reason` map can tell files merely fs-read during the build from the run's own dependencies.
   ambient.markPluginAttached()
 
-  // A State of its own bundle (`mode`, at bundleFile) beside the preload, whose lockfile it shares
-  // and whose other settings it carries over (sidecars skip stasis.config.json discovery).
-  const sidecar = (mode) => ({
-    state: new State(cwd, {
-      parent: ambient,
-      scope: pc.scope,
-      lock: pc.lock,
-      bundle: mode,
-      bundleFile,
-      resourcesBundleFile,
-      debug: pc.debug,
-      childProcess: pc.childProcess,
-      packageJSON: pc.packageJSON,
-      resources: [...pc.resources],
-      brotliQuality: pc.brotliQuality,
-    }),
-    isNoop: false,
-  })
-
-  if (pc.bundle) {
-    // Preload has bundle on -- plugin can't disable (pc.bundleMode is neither 'none' nor 'ignore'), must match mode.
-    if (bundle !== undefined && bundle !== pc.bundleMode) {
-      throw new Error(
-        `${label}: bundle='${bundle}' conflicts with active preload bundle='${pc.bundleMode}'`
-      )
-    }
-    if (bundleFile === undefined || bundleFile === pc.bundleFile) {
-      // Rule 5: same bundleFile (or unspecified) reuses the preload.
-      assertOptionsMatchConfig(pc, options)
-      return { state: ambient, isNoop: false }
-    }
-    // Rule 6: different path -- sidecar inherits preload's modes, overrides bundleFile.
-    return sidecar(pc.bundleMode)
+  // Sidecars skip stasis.config.json discovery, so carry the preload's settings over.
+  const sidecar = (mode) => {
+    const inherited = Object.fromEntries(['scope', 'lock', 'debug', 'childProcess', 'packageJSON', 'brotliQuality'].map((key) => [key, pc[key]]))
+    const state = new State(cwd, { parent: ambient, ...inherited, bundle: mode, bundleFile, resourcesBundleFile, resources: [...pc.resources] })
+    return { state, isNoop: false }
   }
 
-  // Preload exists but has no bundle.
+  if (pc.bundle) {
+    if (bundle !== undefined && bundle !== pc.bundleMode) {
+      throw new Error(`${label}: bundle='${bundle}' conflicts with active preload bundle='${pc.bundleMode}'`)
+    }
+    if (bundleFile !== undefined && bundleFile !== pc.bundleFile) return sidecar(pc.bundleMode)
+    assertOptionsMatchConfig(pc, options)
+    return { state: ambient, isNoop: false }
+  }
+
   if (bundle === undefined || bundle === 'none' || bundle === 'ignore') {
-    // Plugin wants no bundle either: reuse preload for lockfile coverage. bundle='ignore' vs the
-    // preload's 'none' both mean "no plugin bundle", so strip the bundle field from the cross-check;
-    // the assert pins that strip to today's no-bundle values so a future mode can't silently mask a disagreement.
+    // 'ignore' and the preload's 'none' both mean no bundle, so the field leaves the cross-check; the assert pins
+    // that to today's no-bundle modes, so that a future one can't silently mask a disagreement.
     assert.ok(pc.bundleMode === 'none' || pc.bundleMode === 'ignore',
       `unexpected preload bundleMode='${pc.bundleMode}' in the no-bundle branch`)
     const { bundle: _b, ...rest } = options
     assertOptionsMatchConfig(pc, rest)
     return { state: ambient, isNoop: false }
   }
-  // Plugin wants its own bundle alongside preload's lockfile -- sidecar.
   if (!bundleFile) {
-    throw new Error(
-      `${label}: bundle='${bundle}' alongside a preload without bundle requires an explicit bundleFile`
-    )
+    throw new Error(`${label}: bundle='${bundle}' alongside a preload without bundle requires an explicit bundleFile`)
   }
   return sidecar(bundle)
 }
 
-// What a plugin (`label`) says of a file it is given (`what`, as it names it) whose extension it
-// neither bundles as code nor is allowed as a resource.
 export const unsupportedExtension = (label, what) =>
   `${label}: unsupported extension for ${what} -- add its extension or filename to the plugin's resources option or stop importing it`
 
-// A file's kind (code|resource) as the plugin classifies it, or a throw naming it as `what` for an
-// extension it neither bundles as code nor is allowed as a resource.
+// A file's kind (code|resource), or a throw naming it as `what` where it's neither.
 export function classifyOrThrow(label, path, resources, what = `'${path}'`) {
   const kind = classifyExtension(path, resources)
   if (kind === 'unknown') throw new Error(unsupportedExtension(label, what))
   return kind
 }
 
-// Code-classified files must be UTF-8; refuse non-UTF-8 rather than silently encode as a resource.
+// Refuse non-UTF-8 code rather than silently encode it as a resource.
 export function assertCodeUtf8(label, path, source) {
   assert.ok(isUtf8(source), `${label}: code-classified file has non-UTF-8 bytes: ${path}`)
 }
 
-// `state.getImport(parentURL, specifier, options)`, or undefined where the bundle attests no such edge:
-// at a successful capture that's an EXTERNAL (never recorded as an edge), the bundler's to resolve as
-// without us. File BYTES still fail closed where the plugin loads them; any other error is a real
-// fault, thrown.
+// Only the `type` import attribute persists to the lockfile.
+export function assertPersistableAttributes(attrs) {
+  for (const k of Object.keys(attrs)) assert.equal(k, 'type', `unsupported import attribute: ${k}`)
+}
+
+// `state.getImport(...)`, or undefined where the bundle attests no such edge: an EXTERNAL at capture, which the
+// bundler resolves as without us (file BYTES still fail closed where the plugin loads them).
 export function attestedImport(state, parentURL, specifier, options) {
   try {
     return state.getImport(parentURL, specifier, options)

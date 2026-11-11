@@ -7,27 +7,16 @@ import { State } from '@exodus/stasis-core/state'
 import { servedByBundle } from '@exodus/stasis-core/state-util'
 import { transformContext } from './metro-babel-transformer.js'
 
-// Companion to the StasisMetro serializer, which withStasis() wires as Metro's `transformerPath`
-// whenever stasis attests the build (wire it yourself only alongside a hand-wired serializer). It
-// wraps the project's own transformer, and does two things in each worker:
-//  - keeps each import as written for the serializer, through the Babel transformer it swaps in
-//    (./metro-babel-transformer.js): a dependency Babel rewrote (e.g. through
-//    babel-plugin-module-resolver) carries the specifiers written in the source as `stasisAsWritten`,
-//    and the output, the ones of the imports a Babel plugin consumed as `stasisConsumed`;
-//  - is the LOAD half of stasis for Metro (under load the serializer only asserts edges). Load only
-//    READS an immutable bundle and every worker reads the same bytes (no IPC), so a per-worker
-//    transformer is the natural seam: it replaces Metro's on-disk `data` with the bundle's
-//    hash-verified bytes (fail-closed; out-of-scope files pass their disk bytes through).
-//    KNOWN LIMITATION: does NOT build with sources absent from disk -- Metro reads + hashes each
-//    file before this runs, so the guarantee is "build attested bytes, fail closed on disk drift."
+// The worker half of StasisMetro, wired by withStasis() as `transformerPath` around the project's transformer. It
+// keeps each import as written for the serializer (./metro-babel-transformer.js), and is the LOAD half: a per-worker
+// seam, as load only reads an immutable bundle, replacing Metro's `data` with the bundle's hash-verified bytes. Metro
+// reads and hashes each file before this runs, so sources must stay on disk: attested bytes, fail closed on drift.
 
 const require = createRequire(import.meta.url)
 
-// The project's own transformer, which this one runs: the `transformerPath` withStasis() replaced,
-// handed over in Metro's transformer config, else EXODUS_STASIS_METRO_BASE_TRANSFORMER, else
-// Metro's default. Metro requires a name from its own dir, which only the project's node_modules
-// is sure to reach, so a name resolves from the project root, then from here. A base that is this
-// transformer itself (wired by hand as well) is passed over for Metro's default.
+// The project's transformer: the `transformerPath` withStasis() replaced, else EXODUS_STASIS_METRO_BASE_TRANSFORMER,
+// else Metro's default, a name resolved from the project root first, as Metro requires it from its own dir. This
+// transformer itself (wired by hand as well) means Metro's default.
 const bases = new Map()
 function baseOf(config, projectRoot = process.cwd()) {
   const path = config?.stasisBaseTransformerPath ?? (process.env.EXODUS_STASIS_METRO_BASE_TRANSFORMER || 'metro-transform-worker')
@@ -41,15 +30,12 @@ function baseOf(config, projectRoot = process.cwd()) {
   return bases.get(key)
 }
 
-// The config the project's transformer sees: its own, without what withStasis() handed over.
 function baseConfig({ stasisBaseTransformerPath: _, ...config } = {}) {
   return config
 }
 
-// Per-worker load State, built once from the usual env + stasis.config.json. Non-load mode -> null
-// -> transparent pass-through, so wiring it permanently is safe. A construction failure is cached
-// and rethrown on every call -- never throw-once-then-silently-pass-through. It never writes, so it
-// claims no write path: a capturing worker's own preload State already holds them.
+// The worker's load State, null outside load (a pass-through, so wiring this permanently is safe). A failure is
+// cached and rethrown on every call, never passed through after the first. It never writes, so claims no write path.
 let loaded
 function getLoadState() {
   if (loaded === undefined) {
@@ -64,23 +50,16 @@ function getLoadState() {
   return loaded.state
 }
 
-// The Babel transformer swapped in for the project's, by path as metro-transform-worker requires it.
 const BABEL_TRANSFORMER = fileURLToPath(new URL('./metro-babel-transformer.js', import.meta.url))
 
-// The project's Babel transformer, absolute. Metro resolves a configured one; its default
-// ('metro-babel-transformer') stays a name, which the base transformer requires from its own dir.
+// Metro resolves a configured Babel transformer; its default stays a name, which the base requires from its own dir.
 function resolveBabelTransformer(base, path) {
   return isAbsolute(path) ? path : createRequire(base.file).resolve(path)
 }
 
-// Each dependency as the source wrote it. One named by a specifier Babel rewrote carries the ones
-// written in the source: one Metro dependency can stand for several, written apart and rewritten
-// alike (`#local/abc` and `./src/abc`). One no specifier in the source names carries
-// `stasisInserted`: Babel added it (a helper from @babel/runtime, the JSX runtime), or Metro did (its
-// asyncRequire for an `import()`, an asset's registry). A dependency written as Metro names it is
-// left as is. The imports a Babel plugin consumed, read and inlined in their stead
-// (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), no dependency of Metro's, ride on
-// the output Metro keeps for the module, its first entry's data, as `stasisConsumed`.
+// Each dependency as the source wrote it: `stasisAsWritten` where Babel rewrote its specifier (several written apart
+// may be rewritten alike), `stasisInserted` where no specifier in the source names it (a Babel helper, Metro's
+// asyncRequire). The imports a Babel plugin consumed ride on the module's first output's data, as `stasisConsumed`.
 function withAsWritten(result, { asWritten, consumed }) {
   if (!Array.isArray(result?.dependencies)) return result
   const dependencies = result.dependencies.map((dep) => {
@@ -99,11 +78,10 @@ export async function transform(config, projectRoot, filename, data, options) {
   config = baseConfig(config)
   const state = getLoadState()
   if (state) {
-    // `filename` is project-relative in Metro's contract; resolve against projectRoot.
+    // `filename` is project-relative in Metro's contract.
     const absolute = resolvePath(projectRoot, filename)
+    // getFile re-verifies the hash and throws on a file the bundle doesn't carry: no disk fallback.
     if (servedByBundle(state, absolute)) {
-      // getFile re-verifies the hash and throws on a file the bundle doesn't carry (fail-closed,
-      // no disk fallback). Code sources come back as strings; resources as Buffers.
       const { source } = state.getFile(pathToFileURL(absolute).toString())
       data = Buffer.isBuffer(source) ? source : Buffer.from(source)
     }
@@ -115,10 +93,8 @@ export async function transform(config, projectRoot, filename, data, options) {
   return withAsWritten(result, context)
 }
 
+// The base's key, marked by the load State transform() goes by, so a load result never shares a disk build's entry.
 export function getCacheKey(config, opts) {
-  // Fold in the base transformer's cache key, then add a stasis-load discriminator so load results
-  // (which can differ from a disk build even when disk == bundle) don't cross-pollinate the cache.
-  // Derive the marker from the resolved load State, which transform() goes by.
   const { transformer } = baseOf(config, opts?.projectRoot)
   const baseKey = typeof transformer.getCacheKey === 'function' ? transformer.getCacheKey(baseConfig(config), opts) : ''
   const state = getLoadState()

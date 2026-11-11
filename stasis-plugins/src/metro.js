@@ -10,32 +10,25 @@ import { assertCodeUtf8, classifyOrThrow, resolvePluginState } from './plugins.j
 import { AUTO_INCLUDES, FILE_STAT, RN_CORE_INCLUDE_FILES, bundleDirHost, looksNative, metroAssetFiles, nativeInputs } from './metro-native.js'
 import { diskHost } from '@exodus/stasis-core/host'
 import { State } from '@exodus/stasis-core/state'
+// realReadFileSync throughout: the plugin's own reads, which --fs must not record as the program's.
 import { inScope, realReadFileSync } from '@exodus/stasis-core/state-util'
 import { classifyExtension, classifyFormat, isPathWithin, nodeExtFormat, splitNodeModulesPath } from '@exodus/stasis-core/util'
 
 const require = createRequire(import.meta.url)
 
-// The companion worker transformer withStasis() wires as Metro's `transformerPath`.
 const TRANSFORMER = fileURLToPath(new URL('./metro-transformer.js', import.meta.url))
 
-// A graph module's absolute path (graph modules and preModules both carry it), or undefined for a
-// synthetic/virtual one (require.context's ?ctx=, __prelude__), with no on-disk bytes to hash.
+// A graph module's absolute path, or undefined for a virtual one (require.context's ?ctx=, __prelude__).
 function diskPath(module) {
   const modPath = module?.path
   return typeof modPath === 'string' && isAbsolute(modPath) && existsSync(modPath) ? modPath : undefined
 }
 
-// Metro's `graph.entryPoints` is a Set now, an Array before ~0.71; normalize to a Set.
-function entrySet(graph) {
-  const ep = graph?.entryPoints
-  if (ep instanceof Set) return ep
-  if (Array.isArray(ep)) return new Set(ep)
-  return new Set()
-}
+// Metro's `graph.entryPoints` is a Set, an Array before ~0.71.
+const entrySet = ({ entryPoints }) => new Set(entryPoints instanceof Set || Array.isArray(entryPoints) ? entryPoints : [])
 
-// Metro's own transform plugins, as its transform worker names them for its cache key: the file
-// `metro-transform-plugins` resolves to from the project, else through metro and its transform
-// worker, which depend on it (a pnpm install links it only beside them). -> [] where none resolves
+// The files Metro's transform worker hashes into its cache key for its transform plugins: from the project, else
+// through metro and its transform worker (a pnpm install links metro-transform-plugins only beside them).
 function metroTransformPluginFiles(projectDir) {
   for (const chain of [['metro-transform-plugins'], ['metro', 'metro-transform-worker', 'metro-transform-plugins']]) {
     let file
@@ -50,12 +43,9 @@ function metroTransformPluginFiles(projectDir) {
   return []
 }
 
-// The worker-side toolchain that only Metro's transform workers load, named in both the
-// --child-process assert and the transform-cache warning so the two can't describe different sets.
 const WORKER_TOOLCHAIN = 'babel.config.js, @babel/core, the RN preset + plugins'
 
-// Run `react-native config` (RN's autolinking resolver) for native deps. Null when the RN CLI
-// isn't installed; THROWS when present but failing -- silently under-attesting breaks frozen runs.
+// `react-native config`'s output, or null without the RN CLI; a failing CLI throws, as under-attesting breaks frozen runs.
 function loadReactNativeConfig(projectDir) {
   let cliPath
   try {
@@ -63,23 +53,14 @@ function loadReactNativeConfig(projectDir) {
   } catch {
     return null
   }
-  // Run the child as vanilla Node: strip stasis's env and any inherited loader, else it joins
-  // this capture nondeterministically or aborts on a config it can't satisfy.
+  // As vanilla Node: with stasis's env or an inherited loader, it would join this capture nondeterministically.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EXODUS_STASIS_') && key !== 'NODE_OPTIONS'))
-  const res = spawnSync(process.execPath, [cliPath, 'config'], {
-    cwd: projectDir,
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024, // a large monorepo's config JSON can be many MB
-    env,
-  })
-  if (res.error) {
-    throw new Error(`StasisMetro: failed to run 'react-native config': ${res.error.message}`, { cause: res.error })
-  }
+  const res = spawnSync(process.execPath, [cliPath, 'config'], { cwd: projectDir, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, env })
+  if (res.error) throw new Error(`StasisMetro: failed to run 'react-native config': ${res.error.message}`, { cause: res.error })
   if (res.status !== 0) {
     const detail = (res.stderr || '').trim()
     throw new Error(
-      `StasisMetro: 'react-native config' exited ${res.status}${res.signal ? ` on signal ${res.signal}` : ''}` +
-      `${detail ? `: ${detail}` : ''}`
+      `StasisMetro: 'react-native config' exited ${res.status}${res.signal ? ` on signal ${res.signal}` : ''}${detail ? `: ${detail}` : ''}`
     )
   }
   try {
@@ -89,28 +70,27 @@ function loadReactNativeConfig(projectDir) {
   }
 }
 
-// Native when at least one platform config is non-null; an all-null dep is JS-only (already in the graph).
+// An all-null dep is JS-only, already in the graph.
 function isNativeDependency(dep) {
   const platforms = dep?.platforms
-  if (!platforms || typeof platforms !== 'object') return false
-  return Object.values(platforms).some((p) => p != null)
+  return typeof platforms === 'object' && platforms !== null && Object.values(platforms).some((p) => p != null)
 }
 
-// Metro has no public default-serializer export; reproduce its default output via internal
-// baseJSBundle + bundleToString. Path moved: metro/src/* through ~0.82, metro/private/* from
-// 0.81.4 on (the only option from 0.83), so the two-tier require below spans the range.
+// Metro exports no default serializer: its internal one is under metro/src through ~0.82, metro/private from 0.81.4.
 let metroDefault
 function metroDefaultSerializer() {
   if (metroDefault) return metroDefault
   const M = 'metro'
+  const load = (dir) => ['DeltaBundler/Serializers/baseJSBundle', 'lib/bundleToString'].map((lib) => {
+    const mod = require(`${M}/${dir}/${lib}`)
+    return mod.default ?? mod
+  })
   let baseJSBundle, bundleToString
   try {
-    baseJSBundle = require(`${M}/src/DeltaBundler/Serializers/baseJSBundle`)
-    bundleToString = require(`${M}/src/lib/bundleToString`)
+    [baseJSBundle, bundleToString] = load('src')
   } catch {
     try {
-      baseJSBundle = require(`${M}/private/DeltaBundler/Serializers/baseJSBundle`)
-      bundleToString = require(`${M}/private/lib/bundleToString`)
+      [baseJSBundle, bundleToString] = load('private')
     } catch (cause) {
       throw new Error(
         "StasisMetro: couldn't load Metro's default serializer (tried metro/src and " +
@@ -119,53 +99,29 @@ function metroDefaultSerializer() {
       )
     }
   }
-  // Metro ships CJS; require exposes the fn as the namespace or under `.default`.
-  baseJSBundle = baseJSBundle.default ?? baseJSBundle
-  bundleToString = bundleToString.default ?? bundleToString
-  metroDefault = (entryPoint, preModules, graph, options) =>
-    bundleToString(baseJSBundle(entryPoint, preModules, graph, options)).code
+  metroDefault = (entryPoint, preModules, graph, options) => bundleToString(baseJSBundle(entryPoint, preModules, graph, options)).code
   return metroDefault
 }
 
-// Stasis capture plugin for Metro (React Native). Hooks Metro's serializer, which runs ONCE in
-// the MAIN process with the full module graph -- a per-worker transformer's process-local State
-// could never be merged. This is the CAPTURE half; the companion ./metro-transformer.js runs in
-// the workers, recording each import as written and serving the LOAD half, and withStasis wires
-// both. Under bundle=load this serializer records nothing: Metro resolved every import itself,
-// so it asserts each edge against the bundle (see #assertEdges).
-// Capture is one-shot (dev-server rebuilds refused, see #run) and REQUIRES --child-process so the
-// worker-side toolchain (babel, RN preset) is attested (enforced in the constructor). withStasis
-// wires the stable customSerializer -- the only surface that receives preModules; serializerHook
-// is a lower-coverage fallback that never sees them. Prefer withStasis for a second reason too: a
-// hand-wired serializer leaves the Metro config -- and therefore its transform cache and
-// transformerPath -- out of stasis's hands (see withStasis).
+// Hooks Metro's serializer, which runs once in the main process with the full graph (a worker's State could never
+// be merged); ./metro-transformer.js is the worker half. Under bundle=load it asserts each edge against the bundle.
+// Prefer withStasis: serializerHook never sees preModules, and only withStasis can drop Metro's transform cache.
 export class StasisMetro {
   #seen = new Set()
-  // The project root's real path, once a consumed resource needs it (#consumedResources).
   #realRoot
-  // Under load, the bundle's files as a directory listing, once an asset needs them (#bundleDirHost).
   #bundleDirs
   #state
   #resources
-
-  // Base dir for resolution; snapshotted at construction so a later chdir can't skew capture.
+  // Snapshotted so a later chdir can't skew capture.
   #projectDir = process.cwd()
-
-  // Whether this instance already captured; the dev-server rebuild guard in #run trips on the second.
   #ran = false
-
-  // Set by withStasis, which returns the Metro config and can therefore drop its transform cache;
-  // a hand-wired customSerializer/serializerHook can't, so #run warns instead. Internal wiring, in
-  // the second options bag like StasisEsbuild's -- not a user-facing option.
   #ownsConfig
 
   constructor(options = {}, { ownsConfig = false } = {}) {
     const { state } = resolvePluginState('StasisMetro', options, process.cwd())
-    this.#state = state // null when the plugin should be inert (Rule 0 or Rule 7)
+    this.#state = state
     this.#ownsConfig = ownsConfig
-    // A capture-that-writes REQUIRES --child-process: the worker toolchain (babel, RN preset) is
-    // observed only in workers. Gate on writeLockfile||writeBundle so it's demanded only when
-    // forwarding does something (frozen/load verify per-process and need no channel).
+    // The worker toolchain is only ever loaded in workers, so a writing capture needs --child-process.
     if (state && (state.config.writeLockfile || state.config.writeBundle)) {
       assert.ok(
         state.config.childProcess,
@@ -174,69 +130,53 @@ export class StasisMetro {
         'is never attested. Enable it: `stasis run --child-process ...`, EXODUS_STASIS_CHILD_PROCESS=1, ' +
         'or "childProcess": true in stasis.config.json.'
       )
-      // Opt this build's children into the loader's SIGTERM shard flush (handler in hooks.js) so
-      // jest-worker forceExit doesn't silently drop a non-draining worker's shard. Key on the
-      // PRELOAD's mode where one exists (the shard channel follows it, not a Rule-6 sidecar), and
-      // use `||=` not `=` so an explicit ambient opt-out ('0'/'false') is honored.
+      // Opt the children into the loader's SIGTERM shard flush, else jest-worker's forceExit drops a shard. Keyed on
+      // the preload's mode, which the shard channel follows; `||=` honours an explicit opt-out.
       const channel = State.preload ?? state
       if (channel.config.writeLockfile || channel.config.writeBundle) {
         process.env.EXODUS_STASIS_SHARD_SIGNAL_FLUSH ||= '1'
       }
     }
-    // Cache the resolved resources Set for the per-file classify hot path.
     this.#resources = state?.config.resources ?? new Set()
   }
 
-  // True when this build's guarantees depend on Metro actually TRANSFORMING files: a capture records
-  // what the workers load, frozen checks it, and load REPLAYS it -- all three break if a cached
-  // transform skips the work. False only when inert or attesting nothing ('none'/'ignore', what
-  // useLockfile/bundle exclude). Read by withStasis to decide whether to drop the transform cache.
+  // Whether the build relies on Metro really transforming files (capture, frozen and load all do), which a cached
+  // transform would skip.
   get needsTransforms() {
     const config = this.#state?.config
-    if (!config) return false
-    return config.useLockfile || config.bundle
+    return config !== undefined && (config.useLockfile || config.bundle)
   }
 
-  // Build a Metro `serializer.customSerializer`: captures the graph + preModules (which the
-  // experimental hook never sees), then delegates to base or reproduces Metro's default output.
   customSerializer(baseSerializer = undefined) {
     if (baseSerializer !== undefined && typeof baseSerializer !== 'function') {
       throw new TypeError('StasisMetro.customSerializer(base?): base must be a function or omitted')
     }
-    // Inert (#state === null): hand the base straight back -- the wrapper below would otherwise
-    // fall back to metroDefaultSerializer(), loading Metro internals a do-nothing plugin mustn't touch.
+    // Inert: the base as is, never loading Metro's internals.
     if (!this.#state) return baseSerializer
     return (entryPoint, preModules, graph, options) => {
       this.#run(graph, preModules)
-      const serialize = baseSerializer ?? metroDefaultSerializer()
-      return serialize(entryPoint, preModules, graph, options)
+      return (baseSerializer ?? metroDefaultSerializer())(entryPoint, preModules, graph, options)
     }
   }
 
-  // `serializer.experimentalSerializerHook`: observation-only, and LOWER COVERAGE -- Metro never
-  // passes preModules here, so the prepended polyfills/runtime go unattested. Prefer customSerializer.
   serializerHook = (graph, _delta) => {
     this.#run(graph)
   }
 
   #run(graph, preModules) {
     if (!this.#state) return
-    // bundle=load: assert, don't record (the worker transformer serves the bundle's bytes). Checked
-    // BEFORE the one-shot guard -- load captures nothing and legitimately re-serializes under a dev server.
+    // Before the one-shot guard: load records nothing, and may re-serialize under a dev server.
     if (this.#state.config.loadBundle) {
       this.#assertEdges(graph, preModules)
       return
     }
-    // Watch/dev-server capture is unsupported: dedupe is keyed by PATH not content, so a rebuild
-    // with changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Refuse
-    // the second serialization loudly (the first rebuild is the earliest refusal point Metro allows).
+    // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones.
     if (this.#ran) {
       throw new Error(
         'StasisMetro: watch/dev-server rebuilds are not supported for capture -- use a one-shot `metro build`'
       )
     }
     this.#ran = true
-    // Keyed on ownership: a withStasis-built instance already dropped the stores (see withStasis).
     // Nothing here can detect a cache hit, so say it once rather than silently under-attest.
     if (!this.#ownsConfig && this.needsTransforms) {
       console.warn(
@@ -247,37 +187,27 @@ export class StasisMetro {
       )
     }
     this.#capture(graph, preModules)
-
-    // The preload writes itself (hooks.js); standalone/sidecar States are written here. Reaching
-    // serialization means a clean build (a failed build throws first), so no error gate is needed.
+    // The preload writes itself; a failed build never reaches serialization.
     if (this.#state !== State.preload) this.#state.write()
   }
 
   #capture(graph, preModules) {
     const entries = entrySet(graph)
     const platform = graph.transformOptions?.platform ?? null
-    // preModules first (Metro's prepended polyfills/runtime; synthetic ones like __prelude__ are
-    // skipped by the existsSync guard below), then the app graph.
     if (preModules) this.#captureModules(preModules, entries, platform)
     this.#captureModules(graph.dependencies.values(), entries, platform)
     this.#captureAutoIncludes()
     this.#captureTransformPlugins()
-    // AFTER the graph + auto-includes (same dedupe reason): the native pass only adds the native
-    // build-input surface (podspec/gradle/sources) that no module graph carries.
+    // Last, past what is already captured: the native build inputs no module graph carries.
     this.#captureNativeModules()
   }
 
-  // Shared epilogue for the classify-driven capture paths: record under the given format/resource,
-  // attributed to `reason`. `format` null/undefined lets addFile pick (loader format for JS unless
-  // `inferFormat` is false, byte-derived for a resource); addFile already asserts UTF-8 for a
-  // non-resource (code) source, so no guard is needed here.
   #recordCapture(full, source, { format, resource, inferFormat = true, reason = 'metro' }) {
     this.#state.addFile(pathToFileURL(full).toString(), { source, format: format ?? undefined, resource, inferFormat, reason })
   }
 
-  // Attest the AUTO_INCLUDES list (./metro-native.js, shared with `stasis bundle --metro`). Per entry,
-  // skip: unresolvable, already-seen, or resolving outside the project root (keys are root-relative).
-  // Attested entries ride the normal addFile path.
+  // Each of AUTO_INCLUDES resolving within the project root, tagged by the shared classifier so it agrees with any
+  // other path meeting the file (setup_env.sh is 'shell'), else a resource.
   #captureAutoIncludes() {
     for (const specifier of AUTO_INCLUDES) {
       let modPath
@@ -288,24 +218,14 @@ export class StasisMetro {
       }
       if (this.#seen.has(modPath) || !this.#within(modPath)) continue
       this.#seen.add(modPath)
-      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
       const source = realReadFileSync(modPath)
-      // Tag from the ONE shared classifier so an auto-include agrees with any other path meeting
-      // the same file (native walk, --fs): setup_env.sh -> 'shell', not a forced 'resource' that
-      // would collide at the format noupsert. Unrecognized -> resource (vetted list, so no allowlist).
       const format = classifyFormat(modPath, { content: source })
       this.#recordCapture(modPath, source, { format, resource: format === undefined, inferFormat: false, reason: 'run' })
     }
   }
 
-  // Attest each of Metro's own transform plugins (metroTransformPluginFiles). Its transform worker
-  // hashes every one into its cache key, but loads one only as the build's options call for it
-  // (import-export-plugin under `experimentalImportSupport`, inline-requires-plugin under
-  // `inlineRequires`, constant-folding-plugin outside dev, normalizePseudoGlobals when minifying), so
-  // a capture loads them all, as Metro would: under `stasis run` the loader then records each with
-  // what it imports, so a bundle builds under any of those options. Each is recorded besides, as the
-  // Node module it is, where no loader records it, attributed to `run` as one Metro loads is: the
-  // build's toolchain, none of it the app's. One outside the project root is passed over.
+  // Metro's worker hashes every transform plugin into its cache key, but loads each only as the build's options call
+  // for it, so a capture loads them all, as the loader then records with their imports, and records each under `run`.
   #captureTransformPlugins() {
     for (const file of metroTransformPluginFiles(this.#projectDir)) {
       if (this.#seen.has(file) || !this.#within(file)) continue
@@ -313,38 +233,27 @@ export class StasisMetro {
       try {
         require(file)
       } catch { /* one that can't load can't run under Metro either: its bytes are still recorded */ }
-      // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
       this.#recordCapture(file, realReadFileSync(file), { reason: 'run' })
     }
   }
 
-  // Attest each native dependency's build-input surface. Discovery is `react-native config`; each
-  // dep root is walked (isSkippedNativeWalkDir pruned) and its native sources are attested as code,
-  // other assets as resources, plus each package.json. Node-runnable JS/TS is skipped (already in
-  // Metro's graph). Skipped when the RN CLI is absent or a root is outside root.
+  // The native build inputs of the deps autolinking reports, of those the graph reached that ship native code
+  // (integrated by hand), and of RN core, which config names only as reactNativePath. One outside the root is skipped.
   #captureNativeModules() {
     const config = loadReactNativeConfig(this.#projectDir)
     if (!config) return
     const roots = new Set()
-    // Autolinked native deps: linked into the app regardless of whether their JS is imported.
     for (const dep of Object.values(config.dependencies ?? {})) {
       if (isNativeDependency(dep) && typeof dep.root === 'string' && isAbsolute(dep.root)) roots.add(dep.root)
     }
-    // Native modules the app imports but autolinking never reports (manually integrated via Podfile).
     for (const root of this.#reachedNativePackageRoots()) roots.add(root)
-    // RN CORE isn't a `dependencies` entry (config reports only reactNativePath) and autolinking
-    // never lists it, but its native source (React/, ReactCommon/, ReactAndroid/, sdks/, ...) is a
-    // build input like any other dep's -- walk it in full, the same way.
     const rnPath = typeof config.reactNativePath === 'string' && isAbsolute(config.reactNativePath) ? config.reactNativePath : null
     if (rnPath !== null) roots.add(rnPath)
-    // One outside the project root is unattestable.
     for (const root of roots) if (this.#within(root)) this.#captureNativeTree(root)
-    // RN core's `.js` build scripts the walk skips (Metro-owned by extension, but never in the graph).
+    // RN core's `.js` build scripts, which the walk leaves to Metro but its graph never has.
     if (rnPath !== null && this.#within(rnPath)) for (const file of RN_CORE_INCLUDE_FILES) this.#captureNativeFile(join(rnPath, file))
   }
 
-  // Attest a single vetted file (RN_CORE_INCLUDE_FILES) the tree walk skips; absent -> skipped.
-  // Tagged via the shared classifier like every other path (a `.js` build script -> code).
   #captureNativeFile(full) {
     if (this.#seen.has(full)) return
     let source
@@ -358,23 +267,13 @@ export class StasisMetro {
     this.#recordCapture(full, source, { format, resource: format === undefined })
   }
 
-  // node_modules roots the graph reached that also ship native code (podspec or ios/android dir):
-  // the manually-integrated native modules `react-native config` omits. Derived from #seen; RN core
-  // is skipped here because it's added to the walk explicitly (via reactNativePath).
+  // RN core is walked as reactNativePath.
   #reachedNativePackageRoots() {
-    const pkgRoots = new Set()
-    for (const abs of this.#seen) {
-      const nm = splitNodeModulesPath(abs)
-      if (!nm || nm.name === 'react-native') continue
-      pkgRoots.add(nm.dir)
-    }
-    return [...pkgRoots].filter((root) => looksNative(root, diskHost))
+    const reached = this.#seen.values().map((abs) => splitNodeModulesPath(abs)).filter((nm) => nm && nm.name !== 'react-native')
+    return [...new Set(reached.map((nm) => nm.dir))].filter((root) => looksNative(root, diskHost))
   }
 
-  // Attest the native build inputs of the package at `root` (nativeInputs, shared with `stasis bundle
-  // --metro`), but what is already captured as a graph module or auto-include, each in the format it
-  // gives (none for a codegen source, as Metro's code has none, so none is inferred). Real readers:
-  // plugin bookkeeping, not re-recorded by --fs.
+  // In the format nativeInputs gives (none for a codegen source, as Metro's code has none, so none is inferred).
   #captureNativeTree(root) {
     for (const { file, source, action, format } of nativeInputs(root, diskHost, { resources: this.#resources, skip: (f) => this.#seen.has(f) })) {
       this.#seen.add(file)
@@ -382,10 +281,7 @@ export class StasisMetro {
     }
   }
 
-  // bundle=load: Metro resolved every import itself (the loader and the esbuild/webpack plugins
-  // take theirs from the bundle), so before any output each edge must be the one the bundle attests
-  // -- the edges a capture records, from the same modules.
-  // A per-platform edge (a `stasis bundle --metro --platforms=...` bundle added to) is checked for the
+  // bundle=load: Metro resolved every import itself, so each edge must be the one the bundle attests, for the
   // platform Metro builds.
   #assertEdges(graph, preModules) {
     const platform = graph.transformOptions?.platform ?? undefined
@@ -399,13 +295,8 @@ export class StasisMetro {
     }
   }
 
-  // A module's outgoing edges, keyed as written, to `dep.absolutePath`. Metro names a dependency
-  // (`dep.data.name`) by the specifier Babel left; where a plugin rewrote it, the stasis transformer
-  // (./metro-transformer.js) carries the ones written in the source. Code and resource targets alike,
-  // as `stasis bundle --metro` and the esbuild plugin record them: an asset is resolved as code is.
-  // One the source doesn't write (`stasisInserted`: a Babel helper, the JSX runtime, Metro's
-  // asyncRequire) is no edge, as `stasis bundle --metro` has none: its file is carried, as every
-  // module of the graph is, and under load Metro resolves it unasserted.
+  // A module's edges, keyed as the source wrote them (`stasisAsWritten`, where Babel rewrote one), to code and resource
+  // targets alike. One the source doesn't write (`stasisInserted`: a Babel helper, Metro's asyncRequire) is no edge.
   #edges(module) {
     const edges = []
     for (const dep of module.dependencies?.values?.() ?? []) {
@@ -424,30 +315,15 @@ export class StasisMetro {
     for (const module of modules) {
       const modPath = diskPath(module)
       if (modPath === undefined) continue
-
       const kind = classifyOrThrow('StasisMetro', modPath, this.#resources)
       const url = pathToFileURL(modPath).toString()
       for (const [specifier, target] of this.#edges(module)) this.#state.addImport(url, specifier, target)
-
-      if (this.#seen.has(modPath)) continue
-      this.#seen.add(modPath)
-
-      // Read from disk, not module.getSource() -- addFile re-reads disk and asserts byte-equality.
-      // Real reader (state-util.js): a --fs-patched readFileSync would re-record the graph into the preload.
-      const source = realReadFileSync(modPath)
-      if (kind === 'code') assertCodeUtf8('StasisMetro', modPath, source)
-      // No format for a code file: Metro transforms it from source, so Node's module/commonjs isn't
-      // what runs. But the one its name alone gives it (.json, .mjs, .cjs: nodeExtFormat), as Node
-      // loads it too, which a --fs read of it records besides (a resource still takes its
-      // byte-derived format).
-      const format = kind === 'code' ? nodeExtFormat(modPath) : undefined
-      this.#state.addFile(url, { source, format, isEntry: entries.has(modPath), resource: kind === 'resource', inferFormat: false, reason: 'metro' })
+      if (!this.#captureRead(modPath, kind, entries.has(modPath))) continue
       this.#captureConsumed(module, modPath)
       this.#captureAssetFiles(module, modPath, platform)
     }
   }
 
-  // Whether `path` lies within the project root, as the State's root-relative keys need.
   #within(path) {
     return isPathWithin(this.#state.root, path)
   }
@@ -464,13 +340,10 @@ export class StasisMetro {
     return this.#within(real) && isPathWithin(this.#realRoot, real) ? real : null
   }
 
-  // The resources a Babel plugin consumed in transforming `module`, read and inlined in their imports'
-  // stead (`require('./messages.po')`, @exodus/i18n's plugin-inline-po), as the stasis transformer
-  // carries them (`stasisConsumed`): no module of Metro's, so no edge, but the build's input all the
-  // same. One named by path, as such a plugin reads it, from the module's dir, by its real path, as
-  // Metro names its modules. One naming code (an import a plugin split into others, as
-  // babel-plugin-lodash does), no file, or one outside the project root is passed over; one the
-  // resources don't carry is refused. -> each as { file: its real path, read: the path read }
+  // The resources a Babel plugin read and inlined in transforming `module` (`stasisConsumed`: @exodus/i18n's
+  // plugin-inline-po's `require('./messages.po')`): no module of Metro's, so no edge, but build inputs. Each named by
+  // a path from the module's dir, by its real path within the root; one naming code (babel-plugin-lodash's) is passed
+  // over, one the resources don't carry refused. -> each as { file: its real path, read: the path read }
   * #consumedResources(module, modPath) {
     for (const specifier of module.output?.[0]?.data?.stasisConsumed ?? []) {
       if (typeof specifier !== 'string' || !(isAbsolute(specifier) || /^\.\.?\//u.test(specifier))) continue
@@ -482,39 +355,38 @@ export class StasisMetro {
     }
   }
 
-  // Capture: each, attributed to `metro`, as `stasis bundle --metro` records them under `bundle:metro`.
   #captureConsumed(module, modPath) {
     for (const { file } of this.#consumedResources(module, modPath)) this.#captureRead(file, 'resource')
   }
 
-  // Capture `path`, a file Metro's build reads that its graph doesn't carry, once, attributed to
-  // `metro`, as the `kind` classifyExtension gives it.
-  #captureRead(path, kind) {
-    if (this.#seen.has(path)) return
+  // Capture `path` once, as the `kind` classifyExtension gives it: code with only the format its name gives
+  // (nodeExtFormat), as Metro transforms it from source. From disk: addFile re-reads it to assert the bytes.
+  // -> whether it was new
+  #captureRead(path, kind, isEntry = false) {
+    if (this.#seen.has(path)) return false
     this.#seen.add(path)
-    // Real reader: plugin bookkeeping, not a program fs read -- must not be re-recorded by --fs.
-    this.#recordCapture(path, realReadFileSync(path), { format: kind === 'code' ? nodeExtFormat(path) : undefined, resource: kind === 'resource', inferFormat: false })
+    const source = realReadFileSync(path)
+    if (kind === 'code') assertCodeUtf8('StasisMetro', path, source)
+    const format = kind === 'code' ? nodeExtFormat(path) : undefined
+    const resource = kind === 'resource'
+    this.#state.addFile(pathToFileURL(path).toString(), { source, format, isEntry, resource, inferFormat: false, reason: 'metro' })
+    return true
   }
 
-  // Load: the Babel plugin reads each from disk, past the stasis transformer (#assertOnDisk).
   #assertConsumed(module, modPath) {
     for (const files of this.#consumedResources(module, modPath)) {
       this.#assertOnDisk(files, { what: `which a Babel plugin inlines into '${modPath}'`, servedBy: ['sync', 'async'] })
     }
   }
 
-  // The files of the asset module `module` Metro builds, by the names it reads them by (#assetDirHost):
-  // as Metro reads them to build it (its `scales` and `hash`) and copies them out with it, it and its
-  // other scales (`logo@2x.png`, `logo@3x.png`; metroAssetFiles, Metro's own rule for `platform`). No
-  // import names one, so no edge. -> their paths, none for a module no asset
+  // The files Metro reads to build the asset module `module` (its `scales` and `hash`) and copies out with it: it
+  // and its other scales (metroAssetFiles, Metro's own rule for `platform`). No import names one, so no edge.
   #assetFiles(module, modPath, platform) {
     return module.output?.[0]?.type === 'js/module/asset' ? metroAssetFiles(modPath, platform, this.#assetDirHost()) : []
   }
 
-  // The directory listing Metro finds an asset's files in (fs.promises.readdir): the disk's, but under
-  // load with --fs=async, which serves it, the bundle's where it has one (a file added on disk since
-  // is no file of the asset Metro builds), each name in it a file where it is one on disk or the bundle
-  // serves one (gone from disk, it holds no drift).
+  // Where Metro lists an asset's files: on disk, but under load with --fs=async, which serves the listing, the
+  // bundle's (a file added on disk since is none of the asset's; one gone from disk holds no drift).
   #assetDirHost() {
     const state = this.#state
     if (!state.config.loadBundle || state.config.fs !== 'async') return diskHost
@@ -524,30 +396,22 @@ export class StasisMetro {
     }
   }
 
-  // The files the bundle carries, as a directory listing of them (`metroAssetFiles`' host): an asset's
-  // files as captured.
   #bundleDirHost() {
-    this.#bundleDirs ??= bundleDirHost(this.#state)
-    return this.#bundleDirs
+    return (this.#bundleDirs ??= bundleDirHost(this.#state))
   }
 
-  // Capture: each but the module itself, attributed to `metro`, as `stasis bundle --metro` records them:
-  // by the name Metro reads it by, with the bytes it reads there (one linked in, its target's), so a
-  // load holds that name to them. One linked from outside the project is passed over.
+  // By the name Metro reads each by, with the bytes it reads there, so a load holds that name to them. One linked
+  // from outside the project is passed over, as is one of a kind unknown (the module itself was refused).
   #captureAssetFiles(module, modPath, platform) {
     for (const read of this.#assetFiles(module, modPath, platform)) {
       const kind = classifyExtension(read, this.#resources)
-      // One of a kind unknown, as the module itself, which the graph capture refused.
       if (kind !== 'unknown' && this.#realWithin(read) !== null) this.#captureRead(read, kind)
     }
   }
 
-  // Load: Metro's asset transformer reads each of an asset's files from disk (fs.promises), the module's
-  // own too, past the stasis transformer, which serves the module's `data` that it never reads. Each it
-  // reads on disk must be the bundle's under the name it reads it by (#assertOnDisk: a scale added since
-  // the capture, or one a symlink redirects, reads bytes the bundle doesn't carry there); and each the
-  // bundle carries must be among those it reads (one gone builds another asset, its `scales` and `hash`,
-  // from what remains) -- unless --fs=async serves them.
+  // Metro reads an asset's files from disk, past the stasis transformer: each must be the bundle's under that name (a
+  // scale added since the capture, or one a symlink redirects, is drift), and each the bundle carries must still be
+  // there (one gone builds another asset) -- unless --fs=async serves them.
   #assertAssetFiles(module, modPath, platform) {
     const read = this.#assetFiles(module, modPath, platform)
     if (read.length === 0) return
@@ -562,12 +426,8 @@ export class StasisMetro {
     }
   }
 
-  // Load: a file Metro's build reads from disk by `read`, past the stasis transformer, which serves only
-  // the module it transforms. One in scope (as the transformer's: any under scope=full, else one in
-  // node_modules) is held to the bundle's bytes for `file` (getFile throws on one it doesn't carry),
-  // fail closed on drift -- unless --fs, in a mode of `servedBy` (async patches fs.promises too), serves
-  // the read from the bundle itself, which it does by the path read (not a symlink to the file the
-  // bundle carries).
+  // `read`, a file Metro reads from disk past the stasis transformer, held to the bundle's bytes for `file` where in
+  // scope (getFile throws on one it doesn't carry) -- unless --fs, in a mode of `servedBy`, serves it by the path read.
   #assertOnDisk({ file, read }, { what, servedBy }) {
     const state = this.#state
     const url = pathToFileURL(file).toString()
@@ -582,57 +442,31 @@ export class StasisMetro {
   }
 }
 
-// Idiomatic Metro-config wrapper: returns a new config with `serializer.customSerializer` wired
-// so stasis captures the graph + preModules while your existing serializer (or Metro's default)
-// still produces the bundle, with Metro's transform cache dropped so the workers really run, and
-// with Metro's transformer run through stasis's (./metro-transformer.js).
-// Pure -- returns a new object, doesn't mutate `config`.
+// A new Metro config whose customSerializer captures the graph and preModules while the existing serializer (else
+// Metro's default) still produces the bundle, and whose transformer runs through ./metro-transformer.js.
 export function withStasis(config = {}, options = {}) {
   const stasis = new StasisMetro(options, { ownsConfig: true })
   const existing = config.serializer?.customSerializer ?? undefined
-  // Metro's transform cache is a CORRECTNESS hazard here, not a speed knob: it decides which modules
-  // Metro itself LOADS. On a cache hit Metro returns the stored result without calling a worker, so
-  // the worker-side toolchain is never loaded in any process and never reaches the root -- exactly
-  // what the constructor's --child-process assert exists to guarantee. The default store is a
-  // FileStore in the OS tmpdir shared with every other Metro run, so ONE earlier `metro build`/dev
-  // server silently decides what gets attested: a capture over a warm cache drops the toolchain
-  // (exit 0, no warning) and a later frozen run rejects the lockfile it wrote, while a frozen run
-  // over a warm cache passes vacuously (it verifies transforms nobody performed).
-  //
-  // Dropped in EVERY active mode, load included, so the module set can't diverge between record and
-  // replay. `new Transformer` calls getTransformCacheKey() only when the cache is enabled
-  // (metro/src/DeltaBundler/Transformer.js: `this._cache.isDisabled ? '' : ...`), and that call tree
-  // resolves the transformer plus its plugins' cache-key files. Disabled during capture, those edges
-  // are never recorded; left enabled under load they resolve for real and getImport fails closed on
-  // a bundle that cannot know them ("Cannot find module 'metro-transform-worker' imported from
-  // .../getTransformCacheKey.js" -- Metro reports it as "Failed to construct transformer").
-  //
-  // Slower, but the loaded set stops depending on what ran before. These builds are one-shot anyway.
-  const dropCache = stasis.needsTransforms
-  // `undefined` is Metro's own default store, which the user never chose; an array or a
-  // `(MetroCache) => stores` factory is theirs, so replacing it is worth saying out loud.
+  // Metro's transform cache decides which modules Metro loads: a hit skips the worker, so its toolchain goes
+  // unattested and a frozen run passes vacuously, and the default store is shared with every other Metro run. Dropped
+  // under load too: an enabled cache resolves its cache-key files, which a bundle can't know, failing getImport.
+  const active = stasis.needsTransforms
+  // `undefined` is Metro's own default store; an array or a factory is the user's, so replacing it is announced.
   const stores = config.cacheStores
-  if (dropCache && (typeof stores === 'function' || stores?.length > 0)) {
+  if (active && (typeof stores === 'function' || stores?.length > 0)) {
     console.warn(
       '[stasis] StasisMetro: ignoring the `cacheStores` in your Metro config for this build -- a cached ' +
       'transform skips the worker, leaving the toolchain it loads unattested'
     )
   }
-  // The workers run the project's transformer through stasis's, which records each import as
-  // written, before Babel rewrites it, and serves bundle=load: handed over in `transformer`, which
-  // Metro passes to each worker's transformer as is. In every active mode, load included, so the
-  // modules a worker loads are the same when recorded and when replayed.
-  const transformer = stasis.needsTransforms && {
-    transformerPath: TRANSFORMER,
-    transformer: { ...config.transformer, stasisBaseTransformerPath: config.transformerPath },
-  }
+  // Metro hands `transformer` to each worker's transformer as is.
   return {
     ...config,
-    ...(dropCache && { cacheStores: [] }),
-    ...transformer,
-    serializer: {
-      ...config.serializer,
-      customSerializer: stasis.customSerializer(existing),
-    },
+    ...(active && {
+      cacheStores: [],
+      transformerPath: TRANSFORMER,
+      transformer: { ...config.transformer, stasisBaseTransformerPath: config.transformerPath },
+    }),
+    serializer: { ...config.serializer, customSerializer: stasis.customSerializer(existing) },
   }
 }

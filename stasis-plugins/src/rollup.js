@@ -5,50 +5,39 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Bundle } from '@exodus/stasis-core/bundle'
-import { assertCodeUtf8, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
+import { assertCodeUtf8, assertPersistableAttributes, attestedImport, classifyOrThrow, resolvePluginState } from './plugins.js'
 import { State } from '@exodus/stasis-core/state'
 // Pre-patch snapshot, not `import { readFile }`: under --fs=async that builtin is patched, and
 // this plugin loads after, so a direct import would route rollup's reads through the capture hook.
 import { inScope, realReadFile } from '@exodus/stasis-core/state-util'
 import { classifyExtension, isPathWithin } from '@exodus/stasis-core/util'
 
-// Whether a module id (or importer) names a file on disk by its absolute path, as opposed to a
-// sibling plugin's virtual module (\0-prefixed or relative) or no importer at all (an entry).
+// An on-disk file by its absolute path, not a sibling plugin's virtual module (\0-prefixed or relative) or no importer.
 const isDiskId = (id) => Boolean(id) && isAbsolute(id) && !id.startsWith('\0')
 
-// Rollup chains resolveId/load hooks first-non-null-wins, so put this plugin FIRST in `plugins`:
-// listed later, a sibling resolver (node-resolve, commonjs) answers before stasis sees the edge --
-// capture would under-record specifiers and load mode would fall back to sibling disk resolution
-// (file BYTES still fail closed at the load hook, which serves every in-scope path it reaches).
+// Rollup chains resolveId/load hooks first-non-null-wins, so this plugin goes FIRST in `plugins`: listed later, a
+// sibling resolver answers before stasis sees the edge (file BYTES still fail closed at the load hook).
 export class StasisRollup {
   #seen = new Set()
   #state
   #resources
-
-  // Build starts observed by this instance (watch rebuilds and separate rollup() calls sharing one
-  // plugin object both re-fire buildStart); the second is refused there.
   #captureBuildCount = 0
 
   name = 'stasis'
 
   constructor(options = {}, unsupported = undefined) {
-    // StasisEsbuild's second { loaders, transform } bag has no rollup analogue (transforms run as
-    // ordinary rollup plugins after this one) -- refuse it so a port doesn't silently drop it.
+    // Transforms run as ordinary rollup plugins after this one: refuse a port's esbuild-style bag, not drop it.
     assert.equal(unsupported, undefined,
       'StasisRollup takes a single options argument -- there is no esbuild-style { loaders, transform } bag (run transforms as rollup plugins after this one)')
-    // A caller that owns a State (e.g. tests) can pass it directly; a foreign-copy State fails
-    // closed via the instanceof miss.
+    // A caller that owns a State (e.g. tests) passes it; a foreign copy's State fails the instanceof.
     const state = options instanceof State
       ? options
       : resolvePluginState('StasisRollup', options, process.cwd()).state
     this.#state = state
-    // Cache the resolved resources Set for the per-file classify hot path.
     this.#resources = state?.config.resources ?? new Set()
-    if (!state) return // noop plugin: no hooks assigned, rollup sees only `name`
+    if (!state) return // inert: rollup sees only `name`
 
-    // Hooks are per-instance functions, not prototype methods: rollup invokes them with `this`
-    // bound to its PluginContext (whose resolve/getModuleInfo the hooks need), so instance state
-    // has to arrive via the closure instead.
+    // Rollup binds `this` to its PluginContext, so the instance arrives via the closure.
     const plugin = this
     this.resolveId = function (source, importer, opts) {
       return plugin.#resolveId(this, source, importer, opts)
@@ -57,12 +46,8 @@ export class StasisRollup {
       return plugin.#load(this, id)
     }
 
-    // A warm `cache:` from a previous build makes rollup reuse cached module code and dependency
-    // resolutions WITHOUT calling resolveId/load, so a capture would silently drop those modules'
-    // edges and bytes from the attestation, and a load-mode build would consume cached code no
-    // hook re-verified. Strip it (rollup still builds a fresh cache for this run) -- StasisMetro's
-    // withStasis drops Metro's cacheStores for the same hazard. `cache: true/false` carries no
-    // prior modules, so only an object is a hazard.
+    // A warm `cache:` object reuses modules and resolutions WITHOUT calling resolveId/load, so they'd go unattested
+    // at capture and unverified at load. Rollup still builds a fresh cache for this run.
     this.options = (inputOptions) => {
       if (typeof inputOptions.cache !== 'object' || inputOptions.cache === null) return null
       console.warn(
@@ -74,10 +59,8 @@ export class StasisRollup {
     }
 
     if (!state.config.loadBundle) {
-      // Watch/rebuild capture is unsupported: dedupe is keyed by PATH not content, so a rebuild with
-      // changed bytes would emit new bytes while the bundle/lockfile keep the OLD ones. Watch rebuilds
-      // (and a second rollup() call reusing this instance) re-fire buildStart, so an instance counter
-      // catches the second and errors.
+      // Dedupe is by path, so a rebuild with new bytes would emit them while the artifacts keep the old ones; watch
+      // rebuilds, and a second rollup() call reusing this instance, re-fire buildStart.
       this.buildStart = () => {
         plugin.#captureBuildCount += 1
         if (plugin.#captureBuildCount === 1) return
@@ -85,23 +68,13 @@ export class StasisRollup {
           'StasisRollup: watch/rebuild is not supported for capture -- run a one-shot build (rebuilds would silently attest stale content)'
         )
       }
-
-      // Capture epilogue: flag entries from the completed graph, then persist. resolveId's
-      // opts.isEntry is never trusted for attestation -- rollup defaults it to !importer, so a
-      // sibling's bare `this.resolve(id)` probe looks exactly like an entry and would widen the
-      // attested set of runnable roots. The graph's ModuleInfo.isEntry is authoritative (real
-      // `input` entries and emitFile'd chunks -- both genuinely run as roots; probes never join
-      // the graph).
       this.buildEnd = function (error) {
         return plugin.#buildEnd(this, error)
       }
     }
   }
 
-  // Rollup asset plugins (url/image/...) read their file from disk themselves inside their own
-  // load hook -- there is no seam to hand them attested bytes (load hooks don't chain), so a
-  // resource under bundle=load can't be served faithfully and must fail loudly, not fall back to
-  // unattested disk bytes.
+  // Rollup asset plugins read their files from disk in their own load hook, with no seam for attested bytes.
   #refuseResourceLoad(path) {
     throw new Error(
       `StasisRollup: bundle=load can't serve resource '${path}' -- rollup asset plugins read ` +
@@ -110,22 +83,8 @@ export class StasisRollup {
     )
   }
 
-  // Accept only the `type` import attribute; other attributes aren't persistable to the lockfile
-  // yet. Checked only where an edge is recorded (addImport) or queried (getImport), so an
-  // attributed EXTERNAL passes through untouched -- exactly as under StasisEsbuild, whose
-  // equivalent assert sits in onLoad, which externals never reach.
-  #assertPersistableAttributes(attrs) {
-    for (const k of Object.keys(attrs)) {
-      assert.equal(k, 'type', `unsupported import attribute: ${k}`)
-    }
-  }
-
-  // Throws when `id` is a '?'/'#'-suffixed variant of an on-disk path (rollup's plugin-param
-  // convention, e.g. './icon.svg?url'): the underlying bytes feed the build, but the suffixed key
-  // can't be persisted or replayed, so skipping it would silently leave a build input unattested
-  // (a frozen run would be blind to tampering). The esbuild plugin refuses its `suffix` analogue
-  // the same way. A fully virtual id (nothing on disk under the stripped path either) is a
-  // sibling plugin's own module and stays skippable, like \0-prefixed ids.
+  // A '?'/'#'-suffixed variant of an on-disk path ('./icon.svg?url') feeds the file's bytes to the build under a key
+  // that can't be persisted, so skipping it would leave a build input unattested. A wholly virtual id is skippable.
   #refuseSuffixedOnDisk(id) {
     const stripped = id.split(/[?#]/u, 1)[0]
     if (stripped !== id && existsSync(stripped)) {
@@ -137,78 +96,53 @@ export class StasisRollup {
     }
   }
 
-  // True when `id` is an on-disk file; false defers a virtual id to its owning plugin. The
-  // dangerous middle case -- a suffixed variant of a real file -- refuses instead (see above).
-  #existsOrRefuseSuffixed(id) {
-    if (existsSync(id)) return true
-    this.#refuseSuffixedOnDisk(id)
-    return false
-  }
-
   #inRoot(path) {
     return isPathWithin(this.#state.root, path)
   }
 
   async #resolveId(ctx, source, importer, opts) {
-    // Built-ins are never bundled or recorded as edges; hand them back to rollup (null) so the
-    // user's external config applies. SECURITY: never consult getImport for a builtin name, so a
-    // tampered bundle can't redirect `fs` to an arbitrary file.
+    // Left to the user's external config. SECURITY: never consult getImport for a builtin, so a tampered bundle
+    // can't redirect `fs`.
     if (isBuiltin(source)) return null
     const { isEntry, attributes: attrs = {} } = opts
 
-    // Load mode: resolution comes from the bundle's import map, not rollup's resolver -- the file
-    // may not be on disk. Return the original absolute path so output bytes match a capture build.
+    // Load mode resolves through the bundle's import map: the file may not be on disk.
     if (this.#state.config.loadBundle) {
       if (isEntry) {
-        // Entry-flagged resolutions cover real `input` entries, emitFile'd chunks, and -- because
-        // rollup defaults isEntry to !importer -- bare sibling probes. Anchor like rollup's own
-        // resolver: against the importer when one exists (emitFile passes it), else cwd (like the
-        // run loader). No assertEntry here: a probe is indistinguishable from an entry at this
-        // point, so the load hook asserts from the graph's authoritative isEntry instead -- and a
-        // probe that never loads is never asserted.
+        // Rollup defaults isEntry to !importer, so this covers bare sibling probes too: the load hook asserts entries
+        // from the graph instead. Anchored as rollup's resolver does, else to cwd as the run loader is.
         if (source.startsWith('file:')) return { id: fileURLToPath(source) }
         const base = isDiskId(importer) ? dirname(importer) : process.cwd()
         return { id: resolvePath(base, source) }
       }
-      // A missing, virtual, or out-of-root importer was never the bundle's responsibility -- defer to rollup.
       if (!isDiskId(importer) || !this.#inRoot(importer)) return null
-      const parentURL = pathToFileURL(importer).toString()
-      this.#assertPersistableAttributes(attrs)
-      // Forward import attributes (`with { type: 'json' }`) so plugin-capture round-trips to
-      // plugin-load, both keyed under `* (with: ...)`.
-      // No attested edge: rollup's. File BYTES still fail closed at the load hook.
-      const attested = attestedImport(this.#state, parentURL, source, { importAttributes: attrs })
+      assertPersistableAttributes(attrs)
+      const attested = attestedImport(this.#state, pathToFileURL(importer).toString(), source, { importAttributes: attrs })
       if (attested === undefined) return null
       const { url, format } = attested
       const path = fileURLToPath(url)
-      // Refuse a resource only when load mode would actually serve it: an out-of-scope workspace
-      // resource under node_modules scope comes from disk via the user's asset plugin, exactly
-      // like a capture build (the load hook defers it with the same scope gate).
-      if (Bundle.isResourceFormat(format) && inScope(this.#state, url)) {
-        this.#refuseResourceLoad(path)
-      }
-      // KNOWN GAP: sibling resolution metadata (moduleSideEffects, syntheticNamedExports, meta)
-      // isn't persisted in the bundle, so load mode can't replay it -- tree-shaking of a module a
-      // sibling marked side-effect-free at capture may differ from the capture build's output.
+      // An out-of-scope resource comes from disk through the user's asset plugin, as at capture.
+      if (Bundle.isResourceFormat(format) && inScope(this.#state, url)) this.#refuseResourceLoad(path)
+      // KNOWN GAP: a sibling's resolution metadata (moduleSideEffects, syntheticNamedExports, meta) isn't in the
+      // bundle, so tree-shaking may differ from the capture build's.
       return { id: path }
     }
 
-    // Capture: run the remaining resolveId hooks plus rollup's default algorithm (skipSelf guards
-    // re-entry), record the observed edge, and pass the resolution through unchanged.
+    // Capture: the remaining resolveId hooks and rollup's own algorithm, passed through with the edge recorded.
     const resolution = await ctx.resolve(source, importer, { ...opts, skipSelf: true })
     if (!resolution || resolution.external) return resolution
     const { id } = resolution
-    // Skip virtual modules (\0-prefixed or otherwise not an on-disk file); a suffixed variant of
-    // an on-disk file refuses inside the check rather than slipping through unattested.
-    if (!isDiskId(id) || !this.#existsOrRefuseSuffixed(id)) return resolution
+    if (!isDiskId(id)) return resolution
+    if (!existsSync(id)) {
+      this.#refuseSuffixedOnDisk(id)
+      return resolution
+    }
     classifyOrThrow('StasisRollup', id, this.#resources)
 
-    // Record the edge for BOTH code and resource targets, but never for entries (matching the
-    // loader) and never for an out-of-root importer (not the project's graph; load mode defers
-    // those parents the same way). Entries are flagged from the graph in buildEnd instead of
-    // trusting opts.isEntry -- see the constructor comment.
+    // Code and resource targets alike, but never for an entry, flagged from the graph in buildEnd (opts.isEntry is
+    // a sibling's probe too), nor an out-of-root importer, which load mode defers too.
     if (!isEntry && isDiskId(importer) && this.#inRoot(importer)) {
-      this.#assertPersistableAttributes(attrs)
+      assertPersistableAttributes(attrs)
       if (!this.#inRoot(id)) {
         throw new Error(
           `StasisRollup: '${source}' imported from ${importer} resolves outside the project root and can't be attested: ${id}`
@@ -220,29 +154,20 @@ export class StasisRollup {
   }
 
   async #load(ctx, id) {
-    // Load mode: serve bytes the bundle attested. getFile verifies the hash and throws on a file
-    // the bundle doesn't carry -- a missing in-scope file is a hard error, not a disk fallback.
-    // In scope = full (everything under state.root) or node_modules-only per scope; ids other
-    // plugins resolved land here too, so the gate can't rely on our own resolveId alone.
+    // getFile verifies the hash and throws on a file the bundle doesn't carry: no disk fallback. Ids other plugins
+    // resolved land here too.
     if (this.#state.config.loadBundle) {
-      if (!isDiskId(id)) return null
-      if (!this.#inRoot(id)) return null // out of the project root -- not ours
+      if (!isDiskId(id) || !this.#inRoot(id)) return null
       const url = pathToFileURL(id).toString()
-      // Entries are asserted here from the graph's authoritative isEntry (known before load runs):
-      // a sibling's bare resolve() probe carries isEntry too but never loads, so only genuine
-      // roots reach this gate.
+      // The graph's isEntry: a sibling's resolve() probe carries isEntry too but never loads.
       if (this.#state.config.full && ctx.getModuleInfo(id)?.isEntry) this.#state.assertEntry(url)
       if (!inScope(this.#state, url)) return null
       const { source, format } = this.#state.getFile(url)
       if (Bundle.isResourceFormat(format)) this.#refuseResourceLoad(id)
-      // Code is stored as UTF-8 text, exactly what rollup's parser expects.
       return source
     }
 
-    // Capture. Skip virtual modules and classify the rest exactly like the resolve hook (a sibling
-    // resolver may have minted ids our resolveId never saw). One read doubles as the existence
-    // check: ENOENT defers -- unless the id is a suffixed variant of an on-disk file, which
-    // refuses -- and any other read error is real.
+    // A sibling resolver may have minted ids our resolveId never saw. The read is the existence check.
     if (!isDiskId(id)) return null
     let source
     try {
@@ -259,35 +184,27 @@ export class StasisRollup {
     if (!resource) assertCodeUtf8('StasisRollup', id, source)
     if (!this.#seen.has(id)) {
       this.#seen.add(id)
-      // A resource is marked as one (State picks 'resource' vs 'resource:base64' from bytes).
       this.#state.addFile(pathToFileURL(id).toString(), { source, resource, reason: 'rollup' })
     }
-    // A resource returns null: loading it into the graph is the user's asset plugin's job. Code
-    // returns the attested bytes so the build consumes exactly what was recorded (transform hooks
-    // still run after, symmetrically with load mode).
+    // A resource is the user's asset plugin's to load; code is served as recorded (transform hooks still run after).
     return resource ? null : source.toString('utf8')
   }
 
-  // Capture epilogue (see the constructor comment): flag real entries from the completed graph,
-  // then write standalone/sidecar States -- only on a clean build (a partial one would overwrite
-  // the user's good file). buildEnd, not closeBundle: the capture is complete once the graph is,
-  // and closeBundle only fires when the caller remembers bundle.close().
+  // Flags the graph's real entries (resolveId's opts.isEntry would take a sibling's bare probe for one), then writes
+  // a standalone or sidecar State on a clean build. buildEnd, not closeBundle, which only bundle.close() fires.
   async #buildEnd(ctx, error) {
     if (error) return
     const entryIds = [...ctx.getModuleIds()].filter((id) => {
-      if (!this.#seen.has(id)) return false // virtual/external/unattested ids never joined the capture
+      if (!this.#seen.has(id)) return false
       const info = ctx.getModuleInfo(id)
       return Boolean(info?.isEntry) && !info.isExternal
     })
-    // Re-record each entry with the flag set: addFile re-verifies the bytes against disk, and a
-    // RESOURCE entry fails loudly here ('a resource can't be an entry'), matching StasisEsbuild,
-    // instead of silently writing an artifact whose entries list omits the build's real entry.
+    // addFile re-verifies the bytes, and refuses a RESOURCE entry, as StasisEsbuild does.
     const sources = await Promise.all(entryIds.map((id) => realReadFile(id)))
     for (const [i, id] of entryIds.entries()) {
       const resource = classifyExtension(id, this.#resources) === 'resource'
       this.#state.addFile(pathToFileURL(id).toString(), { source: sources[i], isEntry: true, resource, reason: 'rollup' })
     }
-    // The preload writes itself (hooks.js); standalone/sidecar States are written here.
     if (this.#state !== State.preload) this.#state.write()
   }
 }
