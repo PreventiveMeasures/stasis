@@ -5,19 +5,15 @@ import { parseArgs } from 'node:util'
 import { ARCHIVE_ALGORITHM, CONFIG_FILE, NODE_FORMATS, isLockfileName } from './artifact-util.js'
 import { diskHost } from './host.js'
 
-// The Node-side half of the util split: byte/name classification for the capture walks, fs/execute-bit
-// observation and CLI parsing. The pure artifact data model lives in artifact-util.js, re-exported
-// here so `@exodus/stasis-core/util` keeps serving the full set.
+// The pure artifact data model, re-exported so `@exodus/stasis-core/util` keeps serving the full set.
 export * from './artifact-util.js'
 
-// A hex digest of `algorithm`, as a lockfile spells one, as an SRI (undefined for none), and back.
 export const hexIntegrity = (algorithm, hex) => (typeof hex === 'string' && /^(?:[\da-f]{2})+$/u.test(hex) ? `${algorithm}-${Buffer.from(hex, 'hex').toString('base64')}` : undefined)
 export const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexOf('-') + 1), 'base64').toString('hex')
-// An `ecosystem` dependency's archive integrity (ARCHIVE_ALGORITHM's) of its lockfile's hex digest.
 export const archiveIntegrity = (ecosystem, hex) => hexIntegrity(ARCHIVE_ALGORITHM[ecosystem], hex)
 
-// Where another package registers the State's reader of how packages were installed, which stasis-core
-// reads no record of (stasis's run-installed.js): of modules and a root, their accounts by dir.
+// Where another package (stasis's run-installed.js) registers the reader of how packages were installed, which
+// stasis-core reads no record of.
 export const INSTALLED = Symbol.for('@exodus/stasis-core/installed')
 export const installedAccounts = (modules, root) => (modules.size > 0 && globalThis[INSTALLED]?.(modules, root)) || new Map()
 
@@ -27,32 +23,25 @@ const NODE_EXT_FORMATS = new Map([
   ['mts', 'module-typescript'], ['cts', 'commonjs-typescript'],
 ])
 const JS_UNRESOLVED_EXTS = new Set(['js', 'ts', 'jsx', 'tsx'])
-// The extensions of the JS and TS files a build takes as entries and scans as scripts.
 export const JS_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts', '.jsx', '.tsx'])
 export const CODE_EXTENSIONS = new Set([...NODE_EXT_FORMATS.keys(), ...JS_UNRESOLVED_EXTS])
-// The format the name of the file `path` alone gives it, as Node loads it: .json, .mjs, .cjs, .mts and
-// .cts are each one format whatever the file holds or its package declares, spelled as Node spells them
-// (by extname: `Foo.MJS` and a `.mjs` dotfile are none, which require loads as commonjs). -> undefined else
+// Whatever the file holds or its package declares, spelled as Node spells them (by extname: `Foo.MJS` and a
+// `.mjs` dotfile are none, which require loads as commonjs).
 export const nodeExtFormat = (path) => NODE_EXT_FORMATS.get(extname(path).slice(1))
 
-export function pathExt(filePath) {
-  const m = /\.([^./\\]+)$/.exec(filePath)
-  return m ? m[1].toLowerCase() : ''
-}
+export const pathExt = (filePath) => /\.([^./\\]+)$/.exec(filePath)?.[1].toLowerCase() ?? ''
 
-// A native path as the '/'-joined form every artifact key uses. Off Windows `\` is no separator but
-// part of a name, and a name holding one is refused rather than taken for another path.
+// Off Windows `\` is no separator but part of a name, and a name holding one is refused rather than taken for another path.
 export function toPosix(path) {
   if (sep === '\\') return path.replaceAll('\\', '/')
   if (path.includes('\\')) throw new Error(`stasis: a path holding '\\' is not supported: ${path}`)
   return path
 }
 
-// Whether a path.relative() result climbs out of its base: absolute, or beginning with a `..`
-// SEGMENT -- a bare startsWith('..') would also reject a legitimate `..cache` name.
+// A `..` SEGMENT: a bare startsWith('..') would also reject a legitimate `..cache` name.
 export const relativeEscapes = (rel) => rel === '..' || rel.startsWith('../') || rel.startsWith(`..${sep}`) || isAbsolute(rel)
 
-// True when `path` is `base` or lies beneath it. Lexical: resolve real paths first where symlinks matter.
+// Lexical: resolve real paths first where symlinks matter.
 export const isPathWithin = (base, path) => !relativeEscapes(relative(base, path))
 
 // Both rules are needed: pathExt('.env.local') is 'local', and the extension rule alone misses `.env.*`.
@@ -61,18 +50,13 @@ export function isDotEnvFile(name) {
   return base === '.env' || base.startsWith('.env.') || pathExt(base) === 'env'
 }
 
-// Entries are a bare extension (`png`) or extensionless filename (`LICENSE`); a dotted entry
-// (`data.bin`) is rejected because a file with an extension is keyed by it and would never match.
+// A dotted entry (`data.bin`) is rejected: a file with an extension is keyed by it and would never match.
 export function parseResourcesOption(label, resources) {
   if (resources === undefined) return new Set()
-  if (!Array.isArray(resources)) {
-    throw new TypeError(`${label}: resources must be an array of extension/filename strings`)
-  }
+  if (!Array.isArray(resources)) throw new TypeError(`${label}: resources must be an array of extension/filename strings`)
   const out = new Set()
   for (const entry of resources) {
-    if (typeof entry !== 'string') {
-      throw new TypeError(`${label}: resources entry must be a string, got ${typeof entry}`)
-    }
+    if (typeof entry !== 'string') throw new TypeError(`${label}: resources entry must be a string, got ${typeof entry}`)
     const clean = entry.toLowerCase().replace(/^\./, '')
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(clean)) {
       throw new Error(`${label}: resources entry '${entry}' is not a valid extension or filename (use e.g. 'png' or 'LICENSE')`)
@@ -85,11 +69,10 @@ export function parseResourcesOption(label, resources) {
   return out
 }
 
-// The `lock` and `bundle` modes, `lock`'s in the order extract's error lists them.
+// `lock`'s in the order extract's error lists them.
 export const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
 export const BUNDLE_MODES = new Set(['none', 'ignore', 'add', 'replace', 'load', 'frozen'])
 
-// `fn`, computed once per `keyOf(arg)` (the argument itself by default).
 export function memoized(fn, keyOf = (arg) => arg) {
   const cache = new Map()
   return (arg) => {
@@ -99,19 +82,15 @@ export function memoized(fn, keyOf = (arg) => arg) {
   }
 }
 
-// `text` past a leading byte order mark, as JSON and lockfile readers skip one.
 export const withoutBom = (text) => (text.charCodeAt(0) === 0xFE_FF ? text.slice(1) : text)
 
 const unnegated = (entry) => (entry.startsWith('!') ? entry.slice(1) : entry)
 
-// stasis.config.json's `extra`: root-relative paths, dirs and globs taken as `stasis add` takes its arguments,
-// `!` ones excluding their matches (expandExtra). The config adds itself, so its files travel with it, unless
-// an entry names it (`!stasis.config.json` too); another `!` pattern matching it still excludes it at expansion.
+// The config adds itself, so its files travel with it, unless an entry names it (`!stasis.config.json` too);
+// another `!` pattern matching it still excludes it at expansion.
 export function parseExtraOption(label, extra) {
   if (extra === undefined) return []
-  if (!Array.isArray(extra)) {
-    throw new TypeError(`${label}: extra must be an array of paths or glob patterns`)
-  }
+  if (!Array.isArray(extra)) throw new TypeError(`${label}: extra must be an array of paths or glob patterns`)
   for (const entry of extra) {
     if (typeof entry !== 'string' || entry === '') {
       throw new TypeError(`${label}: extra entry must be a non-empty string, got ${JSON.stringify(entry)}`)
@@ -124,17 +103,13 @@ export function parseExtraOption(label, extra) {
   return extra.some((entry) => extraPattern(entry) === CONFIG_FILE) ? [...extra] : [...extra, CONFIG_FILE]
 }
 
-// An `extra` entry's pattern, `!` dropped, as expandExtra matches it: no `./`, no trailing `/`.
 export const extraPattern = (entry) => posix.normalize(unnegated(entry)).replace(/\/+$/u, '')
 
-// stasis.config.json's `lockfiles`: those the dependencies are laid out from in place of the one detected (a
-// tree of each), POSIX paths from the config's dir (`../` may climb to a workspace root's); undefined where
-// unset. Which lockfiles a tree uses is the tree's to say (@exodus/stasis's vfs-bundle/tree.js).
+// POSIX paths from the config's dir (`../` may climb to a workspace root's). Which lockfiles a tree uses is the
+// tree's to say (@exodus/stasis's vfs-bundle/tree.js).
 export function parseLockfilesOption(label, lockfiles) {
   if (lockfiles === undefined) return undefined
-  if (!Array.isArray(lockfiles) || lockfiles.length === 0) {
-    throw new TypeError(`${label}: lockfiles must be a non-empty array of paths`)
-  }
+  if (!Array.isArray(lockfiles) || lockfiles.length === 0) throw new TypeError(`${label}: lockfiles must be a non-empty array of paths`)
   const out = []
   for (const entry of lockfiles) {
     if (typeof entry !== 'string' || entry === '') {
@@ -159,18 +134,15 @@ export const isBrotliQuality = (n) => Number.isInteger(n) && n >= 0 && n <= 11
 // `${n}` must round-trip to the input, so non-canonical forms ('5.0', '05', ' 5 ') throw.
 export function parseBrotliQuality(name, value) {
   const n = Number(value)
-  if (`${n}` !== value || !isBrotliQuality(n)) {
-    throw new RangeError(`${name} must be an integer 0..11 (got '${value}')`)
-  }
+  if (`${n}` !== value || !isBrotliQuality(n)) throw new RangeError(`${name} must be an integer 0..11 (got '${value}')`)
   return n
 }
 
-// The `valueFlags` (parseLeadingOptions') of parseArgs `options`: each string option's flag and its short alias.
 export const valueFlagsOf = (options) => Object.entries(options).filter(([, { type }]) => type === 'string')
   .flatMap(([name, { short }]) => (short === undefined ? [`--${name}`] : [`--${name}`, `-${short}`]))
 
-// Shifts the leading option tokens off `argv`, stopping at the first positional so `run`'s forwarded
-// child argv survives. `valueFlags` lists options whose separate-token value (`-o dir`) isn't the positional.
+// Stops at the first positional so `run`'s forwarded child argv survives. `valueFlags` lists options whose
+// separate-token value (`-o dir`) isn't the positional.
 export function parseLeadingOptions(argv, options, { valueFlags = [], onError } = {}) {
   const takesValue = new Set(valueFlags)
   const flags = []
@@ -185,8 +157,7 @@ export function parseLeadingOptions(argv, options, { valueFlags = [], onError } 
   }
 }
 
-// The JS-graph bundlers' policy view over classifyFormat: only JS-family code (null or a NODE_FORMAT)
-// counts as 'code'; native/source formats don't. Otherwise 'resource' if allowlisted, else 'unknown'.
+// Only JS-family code (null or a NODE_FORMAT) counts as 'code'; native/source formats don't.
 export function classifyExtension(filePath, resources) {
   const format = classifyFormat(filePath)
   if (format === null || NODE_FORMATS.has(format)) return 'code'
@@ -194,11 +165,10 @@ export function classifyExtension(filePath, resources) {
   return 'unknown'
 }
 
-// Whether `resources` (parseResourcesOption's) lists `path`'s extension, or its name where it has none.
 export const inResources = (path, resources) => resources.has(pathExt(path) || basename(path).toLowerCase())
 
-// Compiled/prebuilt artifacts, non-deterministic across installs, so the native capture skips them
-// entirely. Matched on a file OR directory name (an Apple `*.framework`/`*.xcodeproj` bundle dir).
+// Non-deterministic across installs, so the native capture skips them. Matched on a file OR directory name (an
+// Apple `*.framework`/`*.xcodeproj` bundle dir).
 const NATIVE_ARTIFACT_EXTS = new Set([
   'a', 'so', 'o', 'obj', 'dylib', 'lib', 'dll', 'exe', 'pdb',
   'aar', 'jar', 'class', 'dex',
@@ -207,17 +177,13 @@ const NATIVE_ARTIFACT_EXTS = new Set([
   'xcodeproj', 'xcworkspace',
   'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z',
 ])
-export function isNativeArtifact(name) {
-  return NATIVE_ARTIFACT_EXTS.has(pathExt(name))
-}
+export const isNativeArtifact = (name) => NATIVE_ARTIFACT_EXTS.has(pathExt(name))
 
-// A binary plist is a real build input, but its bytes can't ride the text-only 'xml' format
-// classifyFormat gives a `.plist`. Callers treat it as NOT code, so it needs `.plist` in `resources`.
-export function isBinaryPlist(name, content) {
-  return pathExt(name) === 'plist' && Buffer.isBuffer(content) && !isUtf8(content)
-}
+// A real build input whose bytes can't ride the text-only 'xml' format classifyFormat gives a `.plist`: callers
+// treat it as NOT code, so it needs `.plist` in `resources`.
+export const isBinaryPlist = (name, content) => pathExt(name) === 'plist' && Buffer.isBuffer(content) && !isUtf8(content)
 
-// Non-JS code formats by extension. Every value must be in KNOWN_FORMATS.
+// Every value must be in KNOWN_FORMATS.
 const CODE_EXT_FORMATS = new Map([
   ['sol', 'solidity'],
   ['php', 'php'],
@@ -246,8 +212,7 @@ const CODE_EXT_FORMATS = new Map([
   ['pbxproj', 'pbxproj'],
 ])
 
-// Code formats by exact (lowercased) basename, for names whose extension is too generic to key
-// (Podfile.lock's `.lock`, CMakeLists.txt's `.txt`).
+// By exact (lowercased) basename, where the extension is too generic to key (Podfile.lock, CMakeLists.txt).
 const CODE_NAME_FORMATS = new Map([
   ['podfile', 'podfile'],
   ['podfile.lock', 'podfile-lock'],
@@ -261,8 +226,8 @@ const CODE_NAME_FORMATS = new Map([
 const SHELL_SHEBANG = /^#![^\n]*\b(?:bash|sh)\b/u
 const isShellShebang = (content) => Buffer.isBuffer(content) && isUtf8(content) && SHELL_SHEBANG.test(content.subarray(0, 256).toString('utf8'))
 
-// Files a native package ships that are NOT build inputs (docs/legal, editor/lint/CI config, logs,
-// sidecars), excluded from the Metro native capture. `flow` covers the `*.js.flow` sidecars.
+// Not build inputs (docs/legal, editor/lint/CI config, logs, sidecars), so the Metro native capture excludes
+// them. `flow` covers the `*.js.flow` sidecars.
 const NATIVE_EXCLUDE_EXTS = new Set(['md', 'log', 'map', 'flow', 'swiftdoc'])
 const NATIVE_EXCLUDE_NAMES = new Set([
   'license', 'licence', 'third-party-licenses',
@@ -279,36 +244,29 @@ export function isExcludedNativeFile(name, { win32 = process.platform === 'win32
   return NATIVE_EXCLUDE_EXTS.has(ext) || (!win32 && ext === 'bat')
 }
 
-// An Apple prebuilt-slice dir (`ios-arm64`, `tvos-arm64_x86_64-simulator`): compiled output, not source,
-// at ANY depth. The PLATFORM segment is deliberately loose -- the required ARCH segment is the precision.
+// An Apple prebuilt-slice dir (`ios-arm64`) is compiled output at ANY depth. The PLATFORM segment is
+// deliberately loose: the required ARCH segment is the precision.
 const APPLE_ARCH = String.raw`(?:arm64e|arm64_32|arm64|armv7k|armv7s|armv7|x86_64|i386)`
-const APPLE_SLICE_DIR = new RegExp(
-  String.raw`^[a-z0-9]+-${APPLE_ARCH}(?:_${APPLE_ARCH})*(?:-(?:simulator|maccatalyst))?$`,
-  'u'
-)
-export function isAppleSliceDir(name) {
-  return APPLE_SLICE_DIR.test(name)
-}
+const APPLE_SLICE_DIR = new RegExp(String.raw`^[a-z0-9]+-${APPLE_ARCH}(?:_${APPLE_ARCH})*(?:-(?:simulator|maccatalyst))?$`, 'u')
+export const isAppleSliceDir = (name) => APPLE_SLICE_DIR.test(name)
 
 // Types only, never a runtime module: the resolvers must refuse to land on one and fall through to the
-// real `.js`. Keyed by compound suffix -- pathExt only sees the trailing `ts`.
+// real `.js`. Keyed by compound suffix: pathExt only sees the trailing `ts`.
 const TYPE_DECLARATION_SUFFIXES = ['.d.ts', '.d.mts', '.d.cts']
 export function isTypeDeclaration(name) {
   const base = basename(name).toLowerCase()
   return TYPE_DECLARATION_SUFFIXES.some((suffix) => base.endsWith(suffix))
 }
 
-// stasis's own outputs (`stasis.lock.json`, a `*stasis*.br`): absent on a first run but present on a
-// later one, so a listing (`--fs` readdir) or a sweep (`add .`) that records one diverges between runs
-// and the later capture conflicts.
+// Absent on a first run but present on a later one, so a listing (`--fs` readdir) or a sweep (`add .`) that
+// records one diverges between runs and the later capture conflicts.
 export function isStasisArtifactName(name) {
   const base = basename(name).toLowerCase()
   return isLockfileName(base) || (base.includes('stasis') && base.endsWith('.br'))
 }
 
-// Dirs no walk descends into: VCS/CI/IDE metadata, sample apps, test scaffolding -- none of it is the
-// code being shipped -- plus the Apple prebuilt slice dirs. `name` is a BARE dir name (a dirent name
-// or path segment), matched at any depth, so every walk agrees on what "not source" means.
+// Not the code being shipped. `name` is a BARE dir name, matched at any depth, so every walk agrees on what
+// "not source" means.
 const AUTO_EXCLUDED_DIRS = new Set([
   '.git', '.github', '.settings', // VCS / CI / IDE metadata
   'example', 'examples', // sample apps -- they import the package, they aren't it
@@ -319,15 +277,12 @@ export function isAutoExcludedDir(name) {
   return AUTO_EXCLUDED_DIRS.has(base) || isAppleSliceDir(base)
 }
 
-// Files a sweep drops: type declarations (erased at runtime), the `.env` family (secrets), stasis's own outputs
-// (they'd attest themselves) and the native capture's non-build-input noise (isExcludedNativeFile). Only a
-// glob reaches this: a path NAMED is added as asked (`add .env` captures), the only way to attest one of these.
-export function isAutoExcludedFile(name) {
-  return isTypeDeclaration(name) || isDotEnvFile(name) || isStasisArtifactName(name) || isExcludedNativeFile(name)
-}
+// Type declarations are erased at runtime, the `.env` family holds secrets, stasis's outputs would attest
+// themselves. Only a glob reaches this: a path NAMED is added as asked, the only way to attest one of these.
+export const isAutoExcludedFile = (name) =>
+  isTypeDeclaration(name) || isDotEnvFile(name) || isStasisArtifactName(name) || isExcludedNativeFile(name)
 
-// The format a file's name alone gives it, whatever its extension (pathExt) would: a `*.podspec.json`
-// is `json`, a `*.cmake.in` `cmake`. -> it, or undefined
+// Whatever its extension (pathExt) would give: a `*.podspec.json` is `json`, a `*.cmake.in` `cmake`.
 export function nameFormat(name) {
   const base = basename(name).toLowerCase()
   if (base === 'package.json' || base.endsWith('.podspec.json')) return 'json'
@@ -335,13 +290,12 @@ export function nameFormat(name) {
   return CODE_NAME_FORMATS.get(base)
 }
 
-// The single name->format classifier every capture path is a policy view of. Returns a concrete format
-// when the name determines one; null for a JS-family file (.js/.ts/.jsx/.tsx); undefined if unrecognized.
+// The classifier every capture path is a policy view of: a format, null for a JS-family file, undefined if unrecognized.
 export function classifyFormat(name, { content } = {}) {
   const byName = nameFormat(name)
   if (byName !== undefined) return byName
   const ext = pathExt(name)
-  // JS-family code: a Node extension gives its format only as Node spells it (nodeExtFormat), else the loader decides.
+  // A Node extension gives its format only as Node spells it (nodeExtFormat), else the loader decides.
   if (CODE_EXTENSIONS.has(ext)) return nodeExtFormat(name) ?? null
   const byExt = CODE_EXT_FORMATS.get(ext)
   if (byExt !== undefined) return byExt
@@ -366,11 +320,9 @@ export function observeExecutable(abs, host = diskHost) {
 // "the bit was removed" and strip what a POSIX capture attested.
 export const canObserveExecuteBits = ({ win32 = process.platform === 'win32' } = {}) => !win32
 
-// Throws on a symlink escaping the bundle root: a crafted `link.sh -> /etc/passwd` must not pull an
-// external file into an attestable bundle. realpath surfaces ENOENT, which loaders treat as "missing".
+// A crafted `link.sh -> /etc/passwd` must not pull an external file into an attestable bundle. realpath
+// surfaces ENOENT, which loaders treat as "missing".
 export function assertRealPathWithinBase(realBase, baseDir, relPath, host = diskHost) {
   const real = host.realpath(join(baseDir, relPath))
-  if (!isPathWithin(realBase, real)) {
-    throw new Error(`Refusing to follow symlink escaping bundle root: ${relPath} -> ${real}`)
-  }
+  if (!isPathWithin(realBase, real)) throw new Error(`Refusing to follow symlink escaping bundle root: ${relPath} -> ${real}`)
 }

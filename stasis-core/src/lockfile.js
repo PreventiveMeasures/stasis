@@ -1,11 +1,10 @@
-import { assert, assertScope, duplicateKeyError, serializeExecutable, flatFileKeys, groupModules, hasNodeModulesSegment, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, normalizeModule, parseEntries, parseExecutable, parseFormats, parseImports, serializeEntries, serializeFormats, serializeImports } from './artifact-util.js'
+import { assert, assertScope, duplicateKeyError, flatFileKeys, isPlainObject, mergeExecutableSets, mergeFormatMaps, mergeImportMaps, mergeModuleMaps, moduleFileKey, moduleFileKeys, moduleInfo, parseBuckets, parseEntries, parseExecutable, parseFormats, parseImports, serializedParts } from './artifact-util.js'
 
 const VERSION = 0
 
 const duplicateKey = duplicateKeyError('lockfile', 'lockfile (lock=replace)')
 
-// The metadata a lockfile's record holds: what the tarball and patch its package was installed from
-// are (`integrity`, `patch`), and the copies it ships (`vendored`), so it can be audited alone.
+// What the tarball and patch a package was installed from are, and the copies it ships, so a lockfile can be audited alone.
 const LOCK_METADATA = ['integrity', 'patch', 'vendored']
 
 export class Lockfile {
@@ -20,8 +19,7 @@ export class Lockfile {
   imports
   // file -> format string. Same Map/null rule as imports.
   formats
-  // Project-relative paths of attested files carrying a POSIX execute bit, for `stasis extract`. Files
-  // only, never a `directory`.
+  // Files only, never a `directory`.
   executable
 
   constructor({ config = { scope: 'full' }, entries, modules, imports, formats, executable } = {}) {
@@ -34,9 +32,8 @@ export class Lockfile {
     this.executable = executable ?? new Set()
   }
 
-  // The companion lockfile of `bundle`: its shape, each file's content swapped for `integrityOf(file,
-  // content)`. Imports and formats carry across, else a frozen run would skip those cross-checks; the file
-  // set is the bundle's, so its executable list attests as-is.
+  // `bundle`'s shape, each file's content swapped for `integrityOf(file, content)`. Imports and formats carry
+  // across, else a frozen run would skip those cross-checks; the file set is the bundle's, so its executable list attests as-is.
   static fromBundle(bundle, integrityOf) {
     const modules = new Map()
     for (const [dir, m] of bundle.modules) {
@@ -52,61 +49,24 @@ export class Lockfile {
     assert(json.version === VERSION)
     assertScope(json.config?.scope, 'lockfile')
     assert(json.imports !== undefined && json.formats !== undefined, 'lockfile must attest imports and formats')
-
     const full = json.config.scope === 'full'
     assert(!!json.entries === full)
     assert(!!json.sources === full)
     assert(isPlainObject(json.modules), 'lockfile: modules must be an object')
-
-    const modules = new Map()
-    for (const [dir, info] of Object.entries(json.modules)) {
-      assert(hasNodeModulesSegment(dir))
-      assert(info?.name && info.version && info.files)
-      modules.set(dir, normalizeModule(info, dir, 'lockfile', LOCK_METADATA))
-    }
-
-    let entries = new Set()
-    if (full) {
-      entries = parseEntries(json.entries, 'lockfile')
-      assert(isPlainObject(json.sources), 'lockfile: sources must be an object')
-      for (const [dir, info] of Object.entries(json.sources)) {
-        assert(!hasNodeModulesSegment(dir))
-        // A workspace bucket may omit version (a private/unpublished package.json can lack one).
-        assert(info?.name && info.files)
-        modules.set(dir, normalizeModule(info, dir, 'lockfile', LOCK_METADATA))
-      }
-    }
-
-    // Flat keys must be unique across buckets (mirrors Bundle.parse): two bucket splits can flatten
-    // to one path, and hashes/attestation lookups key on the flat path. Each bucket dir is checked
-    // as an artifact path there too.
+    const entries = full ? parseEntries(json.entries, 'lockfile') : new Set()
+    const modules = parseBuckets(json, 'lockfile', LOCK_METADATA)
+    // Unique across buckets, as in Bundle.parse: hashes and attestation lookups key on the flat path.
     const flatKeys = flatFileKeys(modules, 'lockfile', duplicateKey)
-
     const imports = parseImports(json.imports)
     const formats = parseFormats(json.formats)
-    // Every executable must be a file this lockfile attests.
     const executable = parseExecutable(json.executable, { what: 'lockfile', files: flatKeys, formats, scope: json.config.scope })
-
     return new Lockfile({ config: json.config, entries, modules, imports, formats, executable })
   }
 
   serialize() {
-    // Never write an artifact that parse would reject.
     flatFileKeys(this.modules, 'lockfile', duplicateKey)
-    const { modules, sources } = groupModules(this.modules, { metadata: LOCK_METADATA, what: 'lockfile' })
-    const store = { version: this.version, config: this.config }
-    if (this.config.scope === 'full') Object.assign(store, { entries: serializeEntries(this.entries, 'lockfile'), sources })
-    store.modules = modules
-    if (this.imports !== null) store.imports = serializeImports(this.imports)
-    if (this.formats !== null) store.formats = serializeFormats(this.formats)
-    const executable = serializeExecutable(this.executable, {
-      what: 'lockfile',
-      modules: this.modules,
-      // Null on an in-memory construct; an unrecorded format is simply not a directory/stat.
-      formats: this.formats ?? new Map(),
-      scope: this.config.scope,
-    })
-    if (executable !== undefined) store.executable = executable
+    const { entries, sources, modules, imports, formats, executable } = serializedParts(this, 'lockfile', { metadata: LOCK_METADATA })
+    const store = { version: this.version, config: this.config, entries, sources, modules, imports, formats, executable }
     return JSON.stringify(store, undefined, 2) + '\n'
   }
 

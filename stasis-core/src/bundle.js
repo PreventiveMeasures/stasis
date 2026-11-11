@@ -8,8 +8,6 @@ import {
   fileSetToObject,
   fromEntries,
   flatFileKeys,
-  groupModules,
-  hasNodeModulesSegment,
   isLockfileName,
   isPlainObject,
   mergeFormatMaps,
@@ -18,21 +16,18 @@ import {
   mergeModuleMaps,
   moduleFileKey,
   normalizeBlock,
-  normalizeModule,
   normalizeRepo,
   PACKAGE_BLOCK,
+  parseBuckets,
   parseEntries,
   parseExecutable,
   parseFormats,
   parseImports,
-  serializeEntries,
-  serializeExecutable,
-  serializeFormats,
-  serializeImports,
   posixPathEscapes,
   REPO_FIELDS,
   RESOURCE_FORMATS,
   sameGithub,
+  serializedParts,
   splitNodeModulesPath,
   upsert,
 } from './artifact-util.js'
@@ -42,15 +37,33 @@ const LEGACY_VERSION = 0
 
 const duplicateKey = duplicateKeyError('bundle', 'artifact (bundle=replace)')
 
-// No bundle carries a stasis lockfile: extracted, one would replace the lockfile there (the attestation a frozen
-// extract checks the bundle against), or root a stasis project of its own wherever it lands.
-const assertNoLockfile = (keys) => {
-  for (const key of keys) assert(!isLockfileName(key), `bundle: ${key} is a stasis lockfile, which no bundle may carry`)
+// Unique across buckets, else the `sources` getter would serve either payload. No bundle carries a stasis lockfile:
+// extracted, one would replace the attestation a frozen extract checks against, or root a project of its own.
+const checkedFileKeys = (modules, formats) => {
+  const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
+  for (const key of flatKeys.keys()) assert(!isLockfileName(key), `bundle: ${key} is a stasis lockfile, which no bundle may carry`)
+  assertPayloadFree(formats, flatKeys, 'bundle')
+  return flatKeys
 }
 
-// A v0 path's bucket split; '' and '.' both spell the root listing (rel '').
+// '' and '.' both spell the root listing (rel '').
 const inferModuleDir = (path) =>
   splitNodeModulesPath(path) ?? { dir: '.', rel: path === '.' ? '' : path, name: null }
+
+// A v0 bundle's flat `sources`, bucketed.
+function legacyModules(sources) {
+  assert(isPlainObject(sources), 'bundle: sources must be an object')
+  const modules = new Map()
+  for (const [path, content] of Object.entries(sources)) {
+    assertArtifactPath(path, 'bundle')
+    const { dir, rel, name } = inferModuleDir(path)
+    assert(!posixPathEscapes(dir) && !posixPathEscapes(rel))
+    const { files } = upsert(modules, dir, () => ({ name, version: null, files: Object.create(null) }))
+    assert(!Object.hasOwn(files, rel), `bundle: duplicate file key '.' (v0 '' and '.')`)
+    files[rel] = content
+  }
+  return modules
+}
 
 function contentsLocked() {
   throw new Error('bundle: file contents are not retained by this contents-free Bundle')
@@ -66,9 +79,8 @@ const lockModule = (dir, { files, ...info }) => {
   return { ...info, files: Object.freeze(locked) }
 }
 
-// Union of the informational `reason` maps, canonical even from one side (consumers sorted, file lists
-// deduped and path-sorted, as state's #bundleReason), so a withReason() stamp or a parsed artifact can't
-// leak discovery order. A non-array list (unvalidated -- informational) is dropped.
+// Canonical even from one side, so a withReason() stamp or a parsed artifact can't leak discovery order. A
+// non-array list (unvalidated: informational) is dropped.
 const mergeReason = (a, b) => {
   if (a === undefined && b === undefined) return undefined
   // Accumulated in a Map: on a plain object a '__proto__' consumer key would hit the prototype.
@@ -83,15 +95,14 @@ const mergeReason = (a, b) => {
 
 export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) && REPO_FIELDS[key](value)
 
-// `repo` of a bundle plus one added to it: only agreeing fields survive, and none if `github` differs.
+// Only agreeing fields survive, and none if `github` differs.
 export const mergeRepo = (a, b) => {
   if (a?.github === undefined || !sameGithub(a.github, b?.github)) return undefined
   const kept = Object.keys(REPO_FIELDS).filter((key) => a[key] !== undefined && (key === 'github' || a[key] === b[key]))
   return fromEntries(kept.map((key) => [key, a[key]]))
 }
 
-// A parsed header `repo`, an older stasis's `root: true` read as unknown: it recorded one from a
-// package.json's claim as well as from a git work tree.
+// An older stasis's `root: true` is read as unknown: it recorded one from a package.json's claim too.
 const parsedRepo = (repo) => {
   if (!isPlainObject(repo) || repo.root !== true || Object.hasOwn(repo, 'directory')) return repo
   const { root: _root, ...rest } = repo
@@ -101,7 +112,7 @@ const parsedRepo = (repo) => {
 // One block per ecosystem, named as a module's `ecosystem` is.
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
-// `package` of a bundle plus one added to it: per ecosystem, only agreeing fields survive, and none unless `name` does.
+// Per ecosystem, only agreeing fields survive, and none unless `name` does.
 const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => {
   const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
   return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
@@ -118,8 +129,7 @@ export class Bundle {
   modules
   formats
   imports
-  // Project-relative paths of bundled files carrying a POSIX execute bit, for `stasis extract`. Files
-  // only, never a `directory`.
+  // Files only, never a `directory`.
   executable
   // Informational only, NOT attested -- never consulted for verification.
   reason
@@ -131,7 +141,7 @@ export class Bundle {
   set repo(repo) {
     this.#repo = normalizeRepo(repo)
   }
-  // `{ npm | composer | cargo: { name, version } }`: the package this bundle is; as `repo`, but never set by a build.
+  // `{ npm | composer | cargo: { name, version } }`: as `repo`, but never set by a build.
   #package
   get package() {
     return this.#package
@@ -155,7 +165,7 @@ export class Bundle {
     this.package = pkg
   }
 
-  // Flat project-relative view of the raw stored file contents (resources stay base64).
+  // The raw stored contents by flat key: resources stay base64.
   get sources() {
     const m = new Map()
     for (const [dir, { files }] of this.modules) {
@@ -168,8 +178,7 @@ export class Bundle {
     return RESOURCE_FORMATS.has(format) || format === 'directory'
   }
 
-  // True if any bundled file is non-resource; a full-scope code bundle must declare an entry to be
-  // runnable (State#absorbCodeBundle).
+  // A full-scope code bundle must declare an entry to be runnable (State#absorbCodeBundle).
   get hasCode() {
     return this.modules.entries().some(([dir, { files }]) =>
       Object.keys(files).some((rel) => !Bundle.isResourceFormat(this.formats.get(moduleFileKey(dir, rel)))))
@@ -201,69 +210,22 @@ export class Bundle {
     assertScope(json.config?.scope, 'bundle')
     // Validated into a typed Map early: a raw-object lookup like `__proto__` would hit the prototype.
     const formats = parseFormats(json.formats)
-
-    const modules = new Map()
-    let entries = new Set()
-
-    if (json.version === VERSION) {
-      if (json.modules !== undefined) {
-        assert(isPlainObject(json.modules), 'bundle: modules must be an object')
-        for (const [dir, info] of Object.entries(json.modules)) {
-          assert(hasNodeModulesSegment(dir))
-          assertArtifactPath(dir, 'bundle')
-          assert(info?.name && info.version && info.files)
-          modules.set(dir, normalizeModule(info, dir, 'bundle'))
-        }
-      }
-      if (json.config.scope === 'full') {
-        assert(isPlainObject(json.sources), 'bundle: sources must be an object')
-        for (const [dir, info] of Object.entries(json.sources)) {
-          assert(!hasNodeModulesSegment(dir))
-          assertArtifactPath(dir, 'bundle')
-          // A workspace bucket may omit version (a private/unpublished package.json can lack one).
-          assert(info?.name && info.files)
-          modules.set(dir, normalizeModule(info, dir, 'bundle'))
-        }
-        // Empty entries are valid (`stasis add` attests files without making them entry points);
-        // state.assertEntry fails closed on an empty set.
-        if (json.entries !== undefined) entries = parseEntries(json.entries, 'bundle')
-      } else {
-        assert(json.entries === undefined)
-        assert(json.sources === undefined)
-      }
-    } else {
-      assert(isPlainObject(json.sources), 'bundle: sources must be an object')
-      for (const [path, content] of Object.entries(json.sources)) {
-        assertArtifactPath(path, 'bundle')
-        const { dir, rel, name } = inferModuleDir(path)
-        assert(!posixPathEscapes(dir) && !posixPathEscapes(rel))
-        const { files } = upsert(modules, dir, () => ({ name, version: null, files: Object.create(null) }))
-        assert(!Object.hasOwn(files, rel), `bundle: duplicate file key '.' (v0 '' and '.')`)
-        files[rel] = content
-      }
-    }
-
-    // Flat keys must be unique across buckets: two different bucket splits can flatten to one path, and
-    // the `sources` getter would serve either payload.
-    const flatKeys = flatFileKeys(modules, 'bundle', duplicateKey)
-    assertNoLockfile(flatKeys.keys())
-    assertPayloadFree(formats, flatKeys, 'bundle')
+    const v1 = json.version === VERSION
+    if (v1 && json.config.scope !== 'full') assert(json.entries === undefined && json.sources === undefined)
+    const modules = v1 ? parseBuckets(json, 'bundle') : legacyModules(json.sources)
+    const flatKeys = checkedFileKeys(modules, formats)
     const imports = parseImports(json.imports)
-
     if (!contents) for (const [dir, info] of modules) modules.set(dir, lockModule(dir, info))
-
     return new Bundle({
       version: json.version,
       config: json.config,
-      entries,
+      // Empty entries are valid (`stasis add` attests files without making them entry points).
+      entries: v1 && json.entries !== undefined ? parseEntries(json.entries, 'bundle') : new Set(),
       modules,
       formats,
       imports,
-      // Every executable must be a file this bundle carries. A v0 `executable` is ignored: with no
-      // per-file `formats` it could point `extract` at any path to chmod +x.
-      executable: json.version === VERSION
-        ? parseExecutable(json.executable, { what: 'bundle', files: flatKeys, formats, scope: json.config.scope })
-        : new Set(),
+      // A v0 `executable` is ignored: with no per-file `formats` it could point `extract` at any path to chmod +x.
+      executable: v1 ? parseExecutable(json.executable, { what: 'bundle', files: flatKeys, formats, scope: json.config.scope }) : new Set(),
       reason: isPlainObject(json.reason) ? json.reason : undefined,
       repo: parsedRepo(json.repo),
       package: json.package,
@@ -271,28 +233,13 @@ export class Bundle {
   }
 
   serialize() {
-    // Never write an artifact that parse would reject.
-    const flatKeys = flatFileKeys(this.modules, 'bundle', duplicateKey)
-    assertNoLockfile(flatKeys.keys())
-    assertPayloadFree(this.formats, flatKeys, 'bundle')
-    const { modules, sources } = groupModules(this.modules, { skipEmpty: true, what: 'bundle' })
-    const full = this.config.scope === 'full'
-    const data = { version: VERSION, config: this.config }
-    if (this.repo !== undefined) data.repo = this.repo
-    if (this.package !== undefined) data.package = this.package
-    if (full) data.entries = serializeEntries(this.entries, 'bundle')
-    data.formats = serializeFormats(this.formats)
-    data.imports = serializeImports(this.imports)
-    const executable = serializeExecutable(this.executable, {
-      what: 'bundle', modules: this.modules, formats: this.formats, scope: this.config.scope,
-    })
-    if (executable !== undefined) data.executable = executable
-    // Canonicalized like every other sorted field, so a parsed artifact's order can't leak into the bytes.
-    if (this.reason !== undefined) data.reason = mergeReason(this.reason, undefined)
+    checkedFileKeys(this.modules, this.formats)
+    const { entries, sources, modules, formats, imports, executable } = serializedParts(this, 'bundle', { skipEmpty: true })
     // File contents are written last, after every other key: sources, then modules.
-    if (full) data.sources = sources
-    data.modules = modules
-    return JSON.stringify(data, undefined, 2)
+    return JSON.stringify({
+      version: VERSION, config: this.config, repo: this.repo, package: this.package, entries, formats, imports, executable,
+      reason: mergeReason(this.reason, undefined), sources, modules,
+    }, undefined, 2)
   }
 
   // Stamp `consumer` onto `files` in the informational `reason` map: by default every carried file.
