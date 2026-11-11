@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { diskHost } from './host.js'
 import { POLICY_KEYS, parsePolicy } from './policy.js'
 import { canonicalizePath } from './state-util.js'
-import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption } from './util.js'
+import { BUNDLE_MODES, CONFIG_FILE, extSetsEqual, isBrotliQuality, LOCK_MODES, parseBrotliQuality, parseExtraOption, parseLockfilesOption, parseResourcesOption, SCOPES } from './util.js'
 
 export const DEFAULT_LOCK = 'add'
 
@@ -21,7 +21,7 @@ const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 // option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only; a file's `lock` is
 // CONFIG_FILE_LOCK. File-only: `extra`, and `entries`, TREE_FLAGS and `lockfiles`, which a run takes nothing from.
 const OPTIONS = {
-  scope: { env: 'EXODUS_STASIS_SCOPE', valid: new Set(['node_modules', 'full']) },
+  scope: { env: 'EXODUS_STASIS_SCOPE', valid: SCOPES },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
   lockFile: { env: 'EXODUS_STASIS_LOCK_FILE', type: 'string' },
   bundle: { env: 'EXODUS_STASIS_BUNDLE', valid: BUNDLE_MODES },

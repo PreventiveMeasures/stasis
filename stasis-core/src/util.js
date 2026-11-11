@@ -89,6 +89,9 @@ export function parseResourcesOption(label, resources) {
 export const LOCK_MODES = new Set(['frozen', 'add', 'replace', 'ignore', 'none'])
 export const BUNDLE_MODES = new Set(['none', 'ignore', 'add', 'replace', 'load', 'frozen'])
 
+// Comma-separated names (`values`, one or a list of them), trimmed, the empty dropped.
+export const splitList = (values) => [values].flat().flatMap((value) => value.split(',')).map((name) => name.trim()).filter(Boolean)
+
 // `fn`, computed once per `keyOf(arg)` (the argument itself by default).
 export function memoized(fn, keyOf = (arg) => arg) {
   const cache = new Map()
@@ -349,7 +352,8 @@ export function classifyFormat(name, { content } = {}) {
   return undefined
 }
 
-export const extSetsEqual = (a, b) => a.size === b.size && a.isSubsetOf(b)
+export const setsEqual = (a, b) => a.size === b.size && a.isSubsetOf(b)
+export const extSetsEqual = setsEqual
 
 export const EXECUTE_BITS = 0o111
 

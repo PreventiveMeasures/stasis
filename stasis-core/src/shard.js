@@ -2,7 +2,7 @@
 // resolution edges; content, listings, stat kinds and exec bits are re-derived from the root's OWN disk, so
 // a shard cannot inject content or a forged bit. `files` and `formats` are independent -- don't collapse them.
 
-import { KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, isRefusedPath, objectToMaps } from './artifact-util.js'
+import { assertScope, isArtifactKey, KNOWN_FORMATS, assert, fileMapToObject, isPlainObject, objectToMaps, targetFiles } from './artifact-util.js'
 
 export const SHARD_VERSION = 1
 
@@ -26,7 +26,7 @@ export function parseShard(text) {
   const json = JSON.parse(text)
   assert(isPlainObject(json), 'shard must be an object')
   assert(json.version === SHARD_VERSION, `shard version ${json.version} != ${SHARD_VERSION}`)
-  assert(['node_modules', 'full'].includes(json.scope), `shard scope: ${json.scope}`)
+  assertScope(json.scope, 'shard')
   assert(Array.isArray(json.files), 'shard files must be an array')
   assert(isPlainObject(json.formats) && isPlainObject(json.imports), 'shard formats/imports must be objects')
 
@@ -51,12 +51,12 @@ function assertShard(files, formats, imports) {
       assert(specs instanceof Map, `shard imports for ${parent}: expected a specifier map`)
       // A target is a file, or (--metro) a platform -> file map; nothing deeper.
       for (const [, target] of specs) {
-        for (const file of target instanceof Map ? target.values() : [target]) assertKey(file, `shard import target from ${parent}`)
+        for (const file of targetFiles(target)) assertKey(file, `shard import target from ${parent}`)
       }
     }
   }
 }
 
 function assertKey(key, what) {
-  assert(typeof key === 'string' && key !== '' && !isRefusedPath(key), `${what}: ${key}`)
+  assert(isArtifactKey(key), `${what}: ${key}`)
 }

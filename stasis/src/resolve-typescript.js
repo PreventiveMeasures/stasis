@@ -56,7 +56,7 @@ export function isDir(p, host = diskHost) {
   return host.stat(p)?.isDirectory() ?? false
 }
 
-export function readJson(file, host = diskHost) {
+export function readManifest(file, host = diskHost) {
   let text
   try {
     text = host.readFile(file).toString('utf8')
@@ -90,8 +90,8 @@ export function locatePackage(fromDir, spec, host = diskHost) {
 }
 
 // Nearest package.json at/above `file`'s dir — the package whose fields (browser/RN map, imports)
-// govern the file's own imports. `read` reads a manifest, as readJson does.
-export function nearestPackage(file, host = diskHost, read = readJson) {
+// govern the file's own imports. `read` reads a manifest, as readManifest does.
+export function nearestPackage(file, host = diskHost, read = readManifest) {
   for (let dir = dirname(file); ; dir = dirname(dir)) {
     const pkgPath = join(dir, 'package.json')
     const pkg = isFile(pkgPath, host) ? read(pkgPath, host) : null
@@ -127,7 +127,7 @@ function probeTypescriptTarget(base, { js = false, dirOnly = false, completion =
     if (hit) return hit
   }
   if (dir && isDir(base, host)) {
-    const pkg = readJson(join(base, 'package.json'), host)
+    const pkg = readManifest(join(base, 'package.json'), host)
     const main = typeof pkg?.main === 'string' && pkg.main.length > 0 ? pkg.main : null
     if (main) {
       // LOAD_AS_FILE(main) with substitution/completion, then LOAD_INDEX(main), each of its source
@@ -421,11 +421,11 @@ export function discoverTsconfig(baseDir, explicit, host = diskHost) {
 
 // Whether `dir` holds a package: a package.json naming one. One with no name is a `type` marker,
 // its files the package's above (as vfs-bundle's holdsPackage reads it).
-const holdsNamedPackage = (dir, host) => isFile(join(dir, 'package.json'), host) && readJson(join(dir, 'package.json'), host)?.name !== undefined
+const holdsNamedPackage = (dir, host) => isFile(join(dir, 'package.json'), host) && readManifest(join(dir, 'package.json'), host)?.name !== undefined
 
 // Whether `dir` declares a monorepo's workspaces: a pnpm-workspace.yaml, or a package.json
 // `workspaces` (npm's and yarn's).
-const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'), host) || Boolean(readJson(join(dir, 'package.json'), host)?.workspaces)
+const declaresWorkspaces = (dir, host) => isFile(join(dir, 'pnpm-workspace.yaml'), host) || Boolean(readManifest(join(dir, 'package.json'), host)?.workspaces)
 
 // The `paths` --typescript honours without --tsconfig: those of the tsconfig.json of the package the
 // importing file is in (matchPaths(spec, parentFile)). The project is read up from `cwd` as the State
@@ -514,7 +514,7 @@ function typescriptTarget(parentFile, spec, { conditions, paths, host }) {
   }
   const loc = locatePackage(dirname(parentFile), spec, host)
   if (!loc) return null
-  const pkg = readJson(join(loc.pkgDir, 'package.json'), host) ?? {}
+  const pkg = readManifest(join(loc.pkgDir, 'package.json'), host) ?? {}
   if (pkg.exports != null) {
     // `exports` fully governs a bare import (main is not a fallback); targets name exact files.
     return typescriptExportsTarget(loc.pkgDir, pkg.exports, loc.subpath === '' ? '.' : `./${loc.subpath}`, { conditions, outputs, host })
