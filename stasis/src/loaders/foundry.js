@@ -74,14 +74,11 @@ function listDir(dir, host) {
   } catch {
     return []
   }
-  const out = []
-  for (const e of entries) {
+  return entries.flatMap((e) => {
     const path = rustJoin(dir, e.name)
     const kind = e.isSymbolicLink() ? host.stat(path) : e
-    if (kind === null) continue
-    out.push({ path, name: e.name, isFile: kind.isFile(), isDir: kind.isDirectory(), isSymlink: e.isSymbolicLink() })
-  }
-  return out
+    return kind === null ? [] : [{ path, name: e.name, isFile: kind.isFile(), isDir: kind.isDirectory(), isSymlink: e.isSymbolicLink() }]
+  })
 }
 
 const readDir = (dir, host) => listDir(dir, host).filter((e) => !e.name.startsWith('.'))
@@ -108,15 +105,13 @@ const REMAPPING_FORM = 'expected [context:]prefix=target'
 
 // One remapping per non-blank line; a line that isn't one throws, as forge and solc refuse the file.
 export function parseRemappingLines(text, { label = 'remappings', emptyPath = false } = {}) {
-  const out = []
-  text.split('\n').forEach((raw, i) => {
+  return text.split('\n').flatMap((raw, i) => {
     const line = rustTrim(raw)
-    if (line === '') return
+    if (line === '') return []
     const r = parseRemapping(line, { emptyPath })
     if (r === null) throw new Error(`${label}:${i + 1}: invalid remapping, ${REMAPPING_FORM}`)
-    out.push(r)
+    return [r]
   })
-  return out
 }
 
 function configRemappings(value, file) {
