@@ -94,14 +94,10 @@ const rustTrim = (s) => s.replaceAll(/^\p{White_Space}+|\p{White_Space}+$/gu, ''
 function parseRemapping(entry, { emptyPath = false } = {}) {
   const eq = entry.indexOf('=')
   if (eq === -1) return null
-  let name = entry.slice(0, eq)
+  const colon = entry.slice(0, eq).indexOf(':')
+  const name = entry.slice(colon + 1, eq)
   const path = entry.slice(eq + 1)
-  let context = null
-  const colon = name.indexOf(':')
-  if (colon !== -1) {
-    context = name.slice(0, colon)
-    name = name.slice(colon + 1)
-  }
+  let context = colon === -1 ? null : entry.slice(0, colon)
   if (rustTrim(name) === '' || (!emptyPath && rustTrim(path) === '')) return null
   if (context !== null && rustTrim(context) === '') context = null
   return { context, name, path }
@@ -740,10 +736,7 @@ export function foundryProject(baseDir, { env = process.env, host = diskHost } =
 
   // `forge build` re-reads them as config remappings, dropping aliases of its own input dirs...
   const build = new Remappings([], [config.src, config.test, config.script].map((p) => `${p}/`))
-  for (const s of provided) {
-    const r = parseRemapping(s)
-    if (r) build.push(r)
-  }
+  for (const r of provided.map((s) => parseRemapping(s)).filter(Boolean)) build.push(r)
   // ...and hands them to solc as the config's `RelativeRemapping`s: slash-terminated.
   const remappings = build.intoInner()
     .map((r) => parseRemapping(displayRelative(relativePreservingBoundary(r, root))))

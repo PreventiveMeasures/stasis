@@ -53,10 +53,7 @@ export function resolveBashCall(ref, fromFile, { knownFiles, baseDir } = {}) {
   const sibling = resolveRel(ref)
   if (present(sibling)) return sibling
   if (sibling !== ref && present(ref)) return ref
-  for (const known of knownFiles || []) {
-    if (known.slice(known.lastIndexOf('/') + 1) === ref) return known
-  }
-  return null
+  return knownFiles?.values().find((known) => known.slice(known.lastIndexOf('/') + 1) === ref) ?? null
 }
 
 // Null-resolving refs are external and tolerated; self-refs and an extensionless `source ./env`

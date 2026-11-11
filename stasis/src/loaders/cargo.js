@@ -165,7 +165,6 @@ export function evalCfgKey(key, value, env) {
   if (env.target && TARGET_CFG_KEYS.has(key)) return env.target.has(value === null ? key : `${key}="${value}"`)
   return null
 }
-// Code compiled several ways (`env.units`).
 const unanimous = (each) => (each.every((r) => r === false) ? false : (each.every((r) => r === true) ? true : null))
 
 export function parseRustcCfg(text) {
@@ -309,21 +308,16 @@ function vendorDirOf(baseDir, configs, { quiet = false } = {}) {
   return norm
 }
 
-function cfgFlags(flags) {
-  const out = []
-  for (let i = 0; i < flags.length; i++) {
-    const flag = flags[i]
-    const arg = flag === '--cfg' ? flags[++i] : (flag.startsWith('--cfg=') ? flag.slice('--cfg='.length) : null)
-    const name = typeof arg === 'string' ? /^(?:r#)?[A-Za-z_]\w*/u.exec(arg)?.[0] : undefined
-    if (name !== undefined) out.push(cfgName(name))
-  }
-  return out
-}
 function rustflagsCfgsOf(configs) {
   const names = new Set()
   const add = (value) => {
     const flags = Array.isArray(value) ? value.filter((f) => typeof f === 'string') : (typeof value === 'string' ? value.split(/\s+/u).filter(Boolean) : [])
-    for (const name of cfgFlags(flags)) names.add(name)
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i]
+      const arg = flag === '--cfg' ? flags[++i] : (flag.startsWith('--cfg=') ? flag.slice('--cfg='.length) : null)
+      const name = typeof arg === 'string' ? /^(?:r#)?[A-Za-z_]\w*/u.exec(arg)?.[0] : undefined
+      if (name !== undefined) names.add(cfgName(name))
+    }
   }
   for (const { doc } of configs) {
     add(table(doc.build)?.rustflags)
@@ -520,13 +514,12 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
   const checksumOf = memoized((dir) => {
     const file = posix.join(dir, '.cargo-checksum.json')
     const text = readText(diskHost, join(baseDir, file))
-    let value = null
-    if (text !== null) {
-      try {
-        value = JSON.parse(text)
-      } catch (err) {
-        throw new Error(`${file}: not JSON: ${err.message}`, { cause: err })
-      }
+    if (text === null) return null
+    let value
+    try {
+      value = JSON.parse(text)
+    } catch (err) {
+      throw new Error(`${file}: not JSON: ${err.message}`, { cause: err })
     }
     return value === null ? null : { text, git: (value?.package ?? null) === null, package: typeof value?.package === 'string' ? value.package : null, files: isPlainObject(value?.files) ? value.files : {} }
   })
@@ -917,11 +910,11 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
     return { graph, dirOf, keyOf, resolved: resolveGraph(graph, entryKeys, root.file, (key) => dirOf.get(key)) }
   })
 
-  // `--cargo`: cargo metadata's per-package union over every build, so each feature in it is only maybe on.
   let resolved = null
   let lacking = null
   const ensureResolved = () => {
     if (resolved !== null) return resolved
+    // cargo metadata's is a per-package union over every build: each feature in it is only maybe on.
     if (metadata) {
       const byNode = new Map([...metadata.enabled].flatMap(([dir, set]) => [[nodeKey('target', dir), set], [nodeKey('host', dir), set]]))
       resolved = { sure: new Map(), all: byNode }
@@ -1130,7 +1123,7 @@ export function createCargoContext(baseDir, { entries = [], features = [], noDef
       }
       return [...out.values()]
     },
-    // Then the name is that crate, in-tree or not: rustc refuses a `use` path whose lead a glob import
+    // A declared name is that crate, in-tree or not: rustc refuses a `use` path whose lead a glob import
     // also provides, as ambiguous (E0659).
     declaresCrate(name, fromFile) {
       return packageFor(fromFile)?.deps.has(normName(name)) === true
