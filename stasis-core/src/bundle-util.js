@@ -20,9 +20,7 @@ export function packageType(file, host = diskHost, kept = (path, read) => read()
   })
 }
 
-// Package-relative dirs, by host package name (so any layout or alias matches), holding copies of OTHER
-// packages: a file there is its host's, listed in the record's `vendored`. Maintained list: add only a
-// confirmed upstream layout, with its reason.
+// By host package name, so any layout or alias matches. Add only a confirmed upstream layout, with its reason.
 const VENDOR_DIRS = {
   __proto__: null,
   next: ['dist/compiled'], // the dependencies Next.js compiles in, ~140, each with a trimmed package.json
@@ -35,8 +33,7 @@ export const vendorDirOf = (name, rel) => VENDOR_DIRS[name]?.find((dir) => rel.s
 
 const manifestIdentity = (pkg) => ({ name: pkg.name, ...(isPackageString(pkg.version) ? { version: pkg.version } : {}) })
 
-// The first package.json with a `name` (`read(dir)`, null where none) walking up from host file `rel` while below
-// `vendorDir`; `below`: whether any package.json there covers the file at all.
+// `below`: whether any package.json under `vendorDir` covers the file at all.
 export function vendoredPackageOf(rel, vendorDir, read) {
   let below = false
   for (let dir = posix.dirname(rel); dir.startsWith(`${vendorDir}/`); dir = posix.dirname(dir)) {
@@ -49,7 +46,6 @@ export function vendoredPackageOf(rel, vendorDir, read) {
   return { below }
 }
 
-// Walking past `{"type":"module"}` markers, below the package's own package.json.
 export function namedManifestOf(rel, read) {
   for (let dir = posix.dirname(rel); dir !== '.'; dir = posix.dirname(dir)) {
     const pkg = read(dir)
@@ -58,8 +54,7 @@ export function namedManifestOf(rel, read) {
   return undefined
 }
 
-// A `{"type":"module"}` marker (`esm/package.json`), a subpackage's or a vendored one's, which Node takes the
-// file's `type` from and Metro's getPackageForModule its fields. undefined where the package's own is nearest.
+// A nearer package.json than the package's own, which Node takes the file's `type` from and Metro its fields.
 export function scopeManifestOf(rel, pkgDir, exists) {
   if (pkgDir !== '.' && !rel.startsWith(`${pkgDir}/`)) return undefined
   for (let dir = posix.dirname(rel); dir !== pkgDir && dir !== '.'; dir = posix.dirname(dir)) {
@@ -109,7 +104,6 @@ export function findPackageMetadata(baseDir, fileRelPath, { strict = false, chec
 // Once per directory, the only thing findPackageMetadata's answer depends on.
 export const packageLookup = (baseDir, options) => memoized((path) => findPackageMetadata(baseDir, path, options), (path) => posix.dirname(path))
 
-// The package's own package.json is read only where the name ends in that directory.
 function hostSubpackageDir(read, pkgDir, dir, manifestName) {
   if (!dir.startsWith(`${pkgDir}/`)) return undefined
   const sub = dir.slice(pkgDir.length + 1)
@@ -150,7 +144,6 @@ export const statStrict = (host, file, label) =>
 export const invalidPackageConfig = (path, cause) =>
   Object.assign(new Error(`Invalid package config ${path}.`, cause === undefined ? {} : { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
 
-// One that can't be read throws ERR_INVALID_PACKAGE_CONFIG, as Node refuses it.
 export const packageJSONStat = (host, file) => statOrFail(host, file, (cause) =>
   Object.assign(new Error(`Cannot read package config ${file}: ${cause.code ?? cause.message}.`, { cause }), { code: 'ERR_INVALID_PACKAGE_CONFIG' }))
 
@@ -170,7 +163,6 @@ export function readPackageJson(baseDir, rel, { strict = false, check, host = di
   if (stat === null || stat.isDirectory()) return null
   check?.(rel)
   try {
-    // A FIFO, a socket or a device (or a link to one) is never read: it could stall the bundle.
     if (!stat.isFile()) throw new Error(`${rel}: not a regular file`)
     const bytes = host.readFile(file)
     // Lenient lookups decode it as they always have (a stray byte as U+FFFD).
@@ -230,7 +222,7 @@ export function parseGithubRepository(url) {
   return github && isValidRepoField('github', github) ? github : null
 }
 
-// Best-effort: a literal match of git's own `.git/config` layout, no parsing.
+// A literal match of git's own `.git/config` layout, no parsing.
 const GIT_ORIGIN_URL = '[remote "origin"]\n\turl = '
 export function gitOriginUrl(text) {
   const at = text?.indexOf(GIT_ORIGIN_URL) ?? -1
@@ -273,7 +265,6 @@ const declaredLocation = (base, rel) => {
   return repoLocation(directory === '.' ? '' : directory)
 }
 
-// Following a worktree's or submodule's `.git` file.
 function gitDirs(dotGit, host) {
   const pointer = readText(host, dotGit) // null for a `.git` directory (EISDIR)
   const gitDir = pointer?.startsWith('gitdir: ') ? resolve(dirname(dotGit), pointer.slice('gitdir: '.length).trim()) : dotGit
@@ -319,15 +310,13 @@ function declaredRepo(json, rel) {
   return { github, ...declaredLocation(base, rel) }
 }
 
-// At the commit `gitHead` names. npm publish writes it only to the registry's version document, but lerna writes
-// it into package.json too and npm keeps it, so the two agree.
+// lerna writes `gitHead` into package.json too (npm publish only into the registry's document), and npm keeps it.
 export function packageRepo(json) {
   const repo = declaredRepo(json, '')
   return repo !== undefined && isValidRepoField('commit', json.gitHead) ? { ...repo, commit: json.gitHead } : repo
 }
 
-// Git origin/HEAD at the work tree root, else the nearest package.json `repository`. Its commit is git's HEAD
-// alone, never a package.json's `gitHead`: a project's own files are likely changed since the one it names.
+// Its commit is git's HEAD alone, never a package.json's `gitHead`: a project's own files likely changed since.
 export function detectRepo(dir, host = diskHost) {
   const start = resolve(dir)
   let pkg = null // null: no package.json `repository` seen yet; undefined: one seen, not GitHub

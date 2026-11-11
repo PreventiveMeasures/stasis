@@ -14,12 +14,10 @@ const envBool = (name, value) => {
   throw new RangeError(`${name} must be ''/'0'/'false' or '1'/'true' (got '${value}')`)
 }
 
-// EXODUS_STASIS_RESOURCES is a comma-separated extension list; empty/unset means "no allowlist".
 const envList = (value) => value.split(',').map((s) => s.trim()).filter(Boolean)
 
-// Every option: its env var, how the env string parses (strings pass through) and, for a non-string
-// option, how a `new Config()` option does. `lockFile` and `bundle` are flag/env-only; a file's `lock` is
-// CONFIG_FILE_LOCK. File-only: `extra`, and `entries`, TREE_FLAGS and `lockfiles`, which a run takes nothing from.
+// `lockFile` and `bundle` are flag/env-only; a file's `lock` is CONFIG_FILE_LOCK. File-only: `extra`, and `entries`,
+// TREE_FLAGS and `lockfiles`, which a run takes nothing from.
 const OPTIONS = {
   scope: { env: 'EXODUS_STASIS_SCOPE', valid: SCOPES },
   lock: { env: 'EXODUS_STASIS_LOCK', valid: LOCK_MODES },
@@ -36,11 +34,10 @@ const OPTIONS = {
   resources: { env: 'EXODUS_STASIS_RESOURCES', parse: (name, value) => parseResourcesOption('env', envList(value)), option: (value) => parseResourcesOption('options', value) },
 }
 const OPTION_KEYS = Object.keys(OPTIONS)
-// The trees laid out from the lockfile's flags (`stasis github-bundle`): true or false where set.
+// The flags of the trees `stasis github-bundle` lays out from the lockfile.
 const TREE_FLAGS = ['installDevDependencies', 'lazyDependencies', 'generatePrisma']
 const CONFIG_FILE_KEYS = [...OPTION_KEYS.filter((key) => key !== 'lockFile' && key !== 'bundle'), 'extra', 'entries', ...TREE_FLAGS, 'lockfiles', ...POLICY_KEYS]
-// The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes
-// explicitly (flags, env, options), never by a file.
+// The one mode a stasis.config.json can pin: a run that writes, loads or ignores is given its modes explicitly.
 const CONFIG_FILE_LOCK = 'frozen'
 
 export const assertKnownKeys = (keys, known, what) => {
@@ -48,15 +45,13 @@ export const assertKnownKeys = (keys, known, what) => {
   assert.equal(unknown.length, 0, `Unknown ${what} options: ${unknown.join(', ')}`)
 }
 
-// One option's membership/type rule; the cross-option rules live in #checkInvariants. Plugins
-// validate their options with it too, without constructing a Config (which has side effects).
+// Plugins validate their options with it too, without constructing a Config (which has side effects).
 export function assertOption(key, value) {
   const { valid, type } = OPTIONS[key]
   if (valid) assert.ok(valid.has(value), `Invalid ${key}: ${value}`)
   else if (type) assert.equal(typeof value, type, `${key} must be a ${type}`)
 }
 
-// Equal for the option's type: `resources` is a Set.
 const assertSame = (key, actual, expected, message) => {
   if (key === 'resources') assert.ok(extSetsEqual(actual, expected), message)
   else assert.equal(actual, expected)
@@ -70,18 +65,16 @@ export class Config {
   #opts
   #shardSignalFlush
 
-  // Env and options must agree when both are set; #explicit is kept so a later loadConfig can't override them.
-  // `ownLock`: a build's, which takes no lock mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
+  // #explicit is kept so a later loadConfig can't override the options. `ownLock`: a build's, which takes no lock
+  // mode or lock file of EXODUS_STASIS_LOCK(_FILE) or stasis.config.json.
   constructor(options = {}) {
     const { env = process.env, host = diskHost, ownLock = false, ...rest } = options
     assertKnownKeys(Object.keys(rest), OPTION_KEYS, 'Config')
-    // An empty-string path/mode option is unset, as its resolution below treats it; #explicit must
-    // agree, or loadConfig would refuse a stasis.config.json for not matching a phantom override.
+    // An empty-string path/mode option is unset; #explicit must agree, or loadConfig would refuse a phantom override.
     const explicit = Object.fromEntries(Object.entries(rest).map(([key, value]) =>
       [key, value === '' && (OPTIONS[key].valid || OPTIONS[key].type === 'string') ? undefined : value]))
     this.#host = host
     this.#explicit = explicit
-    // An env var set to '' counts as unset.
     this.#env = Object.fromEntries(OPTION_KEYS.map((key) => [key, (ownLock && (key === 'lock' || key === 'lockFile')) ? undefined : env[OPTIONS[key].env] || undefined]))
     this.#ownLock = ownLock
 
@@ -95,7 +88,7 @@ export class Config {
       throw new Error('Config options can not override stasis env', { cause })
     }
 
-    // Strings: env, else the option, else the default ('' falls through); booleans keep a false.
+    // Strings: '' falls through; booleans keep a false.
     const str = (key, fallback) => this.#envValue(key) || explicit[key] || fallback
     const val = (key, fallback) => this.#envValue(key) ?? explicit[key] ?? fallback
     this.#opts = {
@@ -120,7 +113,6 @@ export class Config {
     this.#checkInvariants()
   }
 
-  // An option's env value, parsed; undefined when unset.
   #envValue(key) {
     const raw = this.#env[key]
     const { env, parse } = OPTIONS[key]
@@ -133,30 +125,20 @@ export class Config {
   }
 
   #checkInvariants() {
-    const { lock, lockFile, bundle, bundleFile, resourcesBundleFile, fs, brotliQuality } = this.#opts
-    for (const key of ['scope', 'lock', 'bundle', 'debug', 'childProcess', 'packageJSON']) assertOption(key, this.#opts[key])
+    const { lock, lockFile, bundle, resourcesBundleFile, fs, brotliQuality } = this.#opts
+    for (const key of OPTION_KEYS) if (this.#opts[key] !== undefined) assertOption(key, this.#opts[key])
     if (brotliQuality !== undefined && !isBrotliQuality(brotliQuality)) {
       throw new RangeError(`brotliQuality must be an integer 0..11 (got ${JSON.stringify(brotliQuality)})`)
     }
-    if (fs !== undefined) {
-      assertOption('fs', fs)
-      // --fs captures into the bundle (add/replace) or serves from it (load); other modes have nothing to do.
-      if (!['add', 'replace', 'load'].includes(bundle)) {
-        throw new RangeError(`fs requires bundle=(add|replace|load) (got bundle='${bundle}')`)
-      }
+    // --fs captures into the bundle (add/replace) or serves from it (load); other modes have nothing to do.
+    if (fs !== undefined && !['add', 'replace', 'load'].includes(bundle)) {
+      throw new RangeError(`fs requires bundle=(add|replace|load) (got bundle='${bundle}')`)
     }
-    if (bundleFile !== undefined) assertOption('bundleFile', bundleFile)
-    if (lockFile !== undefined) {
-      assertOption('lockFile', lockFile)
-      if (lock === 'none' || lock === 'ignore') {
-        throw new RangeError(`lockFile requires an active lock mode (got lock='${lock}')`)
-      }
+    if (lockFile !== undefined && (lock === 'none' || lock === 'ignore')) {
+      throw new RangeError(`lockFile requires an active lock mode (got lock='${lock}')`)
     }
-    if (resourcesBundleFile !== undefined) {
-      assertOption('resourcesBundleFile', resourcesBundleFile)
-      if (bundle === 'none' || bundle === 'ignore') {
-        throw new RangeError(`resourcesBundleFile requires an active bundle mode (got bundle='${bundle}')`)
-      }
+    if (resourcesBundleFile !== undefined && (bundle === 'none' || bundle === 'ignore')) {
+      throw new RangeError(`resourcesBundleFile requires an active bundle mode (got bundle='${bundle}')`)
     }
 
     // Write targets must be distinct: canonicalize so './x.br' vs 'x.br' and symlinks to one inode compare equal.
@@ -172,14 +154,10 @@ export class Config {
     }
 
     // bundle=load needs a trust root: frozen pins each file's sha512, else the bundle itself is it (none/ignore).
-    if (bundle === 'load' && !['frozen', 'none', 'ignore'].includes(lock)) {
-      throw new RangeError('bundle=load is incompatible with lock=(add|replace)')
-    }
+    if (bundle === 'load' && !['frozen', 'none', 'ignore'].includes(lock)) throw new RangeError('bundle=load is incompatible with lock=(add|replace)')
 
     // bundle=frozen deliberately constrains no lock mode: it verifies disk against the bundle, its own trust root.
-    if (lock === 'none' && bundle === 'none') {
-      throw new RangeError('stasis needs a lockfile or a bundle: set lock or bundle')
-    }
+    if (lock === 'none' && bundle === 'none') throw new RangeError('stasis needs a lockfile or a bundle: set lock or bundle')
   }
 
   loadConfig(json) {
@@ -198,13 +176,8 @@ export class Config {
       // A run takes node_modules as installed, but a value github-bundle would refuse is refused here too.
       if (TREE_FLAGS.includes(key)) {
         if (typeof config[key] !== 'boolean') throw new TypeError(`stasis.config.json: ${key} must be true or false, got ${JSON.stringify(config[key])}`)
-        continue
-      }
-      if (key === 'lockfiles') {
-        parseLockfilesOption(CONFIG_FILE, config.lockfiles)
-        continue
-      }
-      if (key === 'resources') this.#opts.resources = parseResourcesOption(CONFIG_FILE, config.resources)
+      } else if (key === 'lockfiles') parseLockfilesOption(CONFIG_FILE, config.lockfiles)
+      else if (key === 'resources') this.#opts.resources = parseResourcesOption(CONFIG_FILE, config.resources)
       else if (key === 'extra') this.#opts.extra = parseExtraOption(CONFIG_FILE, config.extra)
       // '' -> undefined like the constructor: otherwise canonicalizePath('') claims cwd as a write target.
       else if (key === 'bundleFile' || key === 'resourcesBundleFile') this.#opts[key] = config[key] || undefined
@@ -213,14 +186,12 @@ export class Config {
     this.#opts.policy = parsePolicy(CONFIG_FILE, config)
     this.#checkInvariants()
 
+    // Explicit constructor options are as authoritative as the env: an on-disk config can't override --scope=full.
     try {
       for (const key of CONFIG_FILE_KEYS) {
         if (this.#env[key] !== undefined) {
           assertSame(key, this.#opts[key], this.#envValue(key), 'resources in stasis.config.json must match EXODUS_STASIS_RESOURCES')
         }
-      }
-      // Explicit constructor options are equally authoritative: an on-disk config can't override --scope=full.
-      for (const key of CONFIG_FILE_KEYS) {
         if (this.#explicit[key] !== undefined) {
           assertSame(key, this.#opts[key], this.#explicitValue(key), 'resources in stasis.config.json must match the resources option')
         }
@@ -244,18 +215,16 @@ export class Config {
     return this.#opts.resourcesBundleFile
   }
 
-  // Set of lowercase extensions/filenames treated as asset payloads.
   get resources() {
     return this.#opts.resources
   }
 
-  // stasis.config.json's `extra` patterns, attested beside what a writing run reaches (State#includeExtra).
-  // Not serialized.
+  // Attested beside what a writing run reaches (State#includeExtra). Not serialized.
   get extra() {
     return this.#opts.extra
   }
 
-  // stasis.config.json's Policy (parsePolicy), or null. File-only, not serialized.
+  // File-only, not serialized.
   get policy() {
     return this.#opts.policy
   }
@@ -264,7 +233,7 @@ export class Config {
     return this.#opts.debug
   }
 
-  // Opt-in cross-process capture forwarding: a forked child writes a shard the root merges. Not attested.
+  // A forked child writes a shard the root merges. Not attested.
   get childProcess() {
     return this.#opts.childProcess
   }
@@ -274,18 +243,17 @@ export class Config {
     return this.#opts.packageJSON
   }
 
-  // Env-only: a capturing child flushes its shard on SIGTERM (jest-worker force-kills Metro workers),
-  // then re-delivers the signal. Not a user option, not attested.
+  // Env-only: a capturing child flushes its shard on SIGTERM (jest-worker force-kills Metro workers). Not attested.
   get shardSignalFlush() {
     return this.#shardSignalFlush
   }
 
-  // --fs hook mode: 'sync' patches the sync readers, 'async' both; undefined leaves fs untouched. Not serialized.
+  // Undefined leaves fs untouched. Not serialized.
   get fs() {
     return this.#opts.fs
   }
 
-  // Brotli quality (0..11); undefined -> DEFAULT_BROTLI_QUALITY. Not serialized -- output decompresses identically.
+  // undefined -> DEFAULT_BROTLI_QUALITY. Not serialized: output decompresses identically.
   get brotliQuality() {
     return this.#opts.brotliQuality
   }
@@ -360,7 +328,7 @@ export class Config {
     const { scope, lock, resources } = this.#opts
     const data = { scope }
     if (lock === CONFIG_FILE_LOCK) data.lock = lock
-    // Only serialize `resources` when non-empty, so configs without an allowlist stay byte-identical.
+    // Only when non-empty, so configs without an allowlist stay byte-identical.
     if (resources.size > 0) data.resources = [...resources].toSorted()
     return JSON.stringify(data, undefined, 2) + '\n'
   }

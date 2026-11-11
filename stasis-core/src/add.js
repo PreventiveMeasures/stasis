@@ -15,8 +15,7 @@ import { assertRealPathWithinBase, attestsAny, BUNDLE_FILE, classifyFormat, CONF
 // write (outputMatcher), which must read the real disk, not be captured as the program's reads.
 const { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } = fs
 
-// A `.js`/`.ts` follows its package `type` (LIMITATION: none means commonjs; use `.mjs`/`.cjs` or set it). A
-// `.jsx`/`.tsx` is null: source with no loader format, as the runtime records one.
+// LIMITATION: a `.js`/`.ts` in a package with no `type` is commonjs; use `.mjs`/`.cjs` or set it.
 function sourceFormat(absFile, content, host, kept) {
   const ext = extname(absFile).toLowerCase()
   if (ext === '.js' || ext === '.ts') return `${packageType(absFile, host, kept) ?? 'commonjs'}${ext === '.ts' ? '-typescript' : ''}`
@@ -42,8 +41,7 @@ function readAddConfig(baseDir) {
   return { bundleFile, resourcesBundleFile, resources, brotliQuality: cfg.brotliQuality, policy: parsePolicy(CONFIG_FILE, cfg) }
 }
 
-// With NO entries: `add` attests files, not entry points, so nothing in it runs via `--bundle=load`. `buckets`
-// override the identity found for a dir: the merge target's, which may name its buckets otherwise.
+// With NO entries: `add` attests files, not entry points, so nothing in it runs via `--bundle=load`.
 export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, repo, { reason = 'add', buckets = new Map(), host = diskHost } = {}) {
   const modules = new Map()
   const formats = new Map()
@@ -52,12 +50,10 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
 
   for (const [rel, { content, format, executable: isExec }] of files) {
     const meta = metaFor(rel)
-    // Nearest package.json the workspace root's, or none at all: a misconfigured dep.
     if (splitNodeModulesPath(rel) !== null && !(meta && hasNodeModulesSegment(meta.pkgDir))) {
       throw new Error(`add: no package.json with name+version found for ${rel}`)
     }
     const dir = meta ? meta.pkgDir : '.'
-    // A later file's identity adds the vendored package it is in.
     const identity = buckets.get(dir) ?? meta ?? { name: workspaceName, version: workspaceVersion }
     const bucket = modules.get(dir)
     const info = bucket === undefined ? moduleInfo({ ...identity, files: Object.create(null) }) : withMetadataOf(bucket, identity)
@@ -70,9 +66,8 @@ export function assembleBundle(baseDir, files, workspaceName, workspaceVersion, 
   return new Bundle({ config: { scope: 'full' }, entries: new Set(), modules, formats, imports: new Map(), executable, repo }).withReason(reason)
 }
 
-// What `artifacts` (by path) attest of their packages, held: each agrees with the others, and with how its packages
-// are installed where the host tells. -> attest(existing, added, companion): `added` attesting as `existing`, else
-// its split half `companion`, the others, the install.
+// Each artifact's attested packages are held to the others' and to the install. The attest(existing, added, companion)
+// returned has `added` attest as `existing`, else its split half `companion`, the others, the install.
 function heldToInstall(baseDir, artifacts) {
   const known = new Map()
   for (const [path, artifact] of artifacts) {
@@ -96,8 +91,8 @@ function existingOf(what, parse) {
   }
 }
 
-// The write is a thunk so every target's conflicts surface before a byte lands; serializing inside it keeps peak
-// memory at one target's bytes. `check` (the Policy, or null) sees the files added, then the bundle's own.
+// The write is a thunk, so every target's conflicts surface before a byte lands; serializing inside it keeps peak
+// memory at one target's bytes.
 function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, existing) {
   check?.(bundle)
   const abs = resolve(baseDir, targetPath)
@@ -115,17 +110,8 @@ function prepareBundleFile(baseDir, targetPath, bundle, brotliQuality, check, ex
   return { write, total, added: total - before }
 }
 
-// `check` sees only what it already records: the files added were checked as the bundles'.
-function prepareLockfile(lockPath, existing, lockAdd, check) {
-  check?.(existing, recordedIn(LOCK_FILE))
-  const before = fileCount(existing)
-  const merged = existing.merge(lockAdd)
-  const total = fileCount(merged)
-  return { write: () => writeFileSync(lockPath, merged.serialize()), total, added: total - before }
-}
-
-// By name, or by dev+inode (a symlink or hard link to one, which a write rewrites in place). Number stats can round a
-// large inode (Windows file ids), so such a match is confirmed in bigint. Outputs are stat'ed on the disk, where a run writes them.
+// By name, or by dev+inode (a link to one, which a write rewrites in place). A number can round a large inode
+// (Windows file ids), so such a match is confirmed in bigint.
 function outputMatcher(baseDir, outputs) {
   const exact = new Set()
   const rounded = new Set()
@@ -143,8 +129,7 @@ function outputMatcher(baseDir, outputs) {
   }
 }
 
-// Never walking into a path `exclude` takes ('/'-joined, relative to `baseDir`): Node leaves one out only where its
-// `**` meets it. A name holding `\` is checked as spelled: the caller refuses it where it is kept.
+// Node leaves out a path `exclude` takes only where its `**` meets it, so it is asked of each '/'-joined project path.
 function globPaths(host, pattern, cwd, baseDir, exclude) {
   const projectPath = (path) => {
     const rel = relative(baseDir, path)
@@ -266,7 +251,6 @@ export function validateFiles({ baseDir, realBase, files, resources, withIntegri
   return { codeFiles, resourceFiles, integrities }
 }
 
-// A stasis.lock.json is updated only when one already exists.
 export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-core' } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('add: at least one file is required')
   const baseDir = resolve(cwd)
@@ -325,10 +309,13 @@ export function addCommand({ cwd = process.cwd(), entries, logLabel = 'stasis-co
 
   // One lockfile attests both split targets, so it takes every packed file's integrity (code + resources).
   if (hasLock) {
-    const lockAdd = Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion), (file) => integrities.get(file))
-    const { write, total, added } = prepareLockfile(lockPath, lock, attest(lock, lockAdd), check)
-    writes.push(write)
-    summary.push(`+${added} (${total} total) -> ${LOCK_FILE}`)
+    const lockAdd = attest(lock, Lockfile.fromBundle(assembleBundle(baseDir, allFiles, workspaceName, workspaceVersion),
+      (file) => integrities.get(file)))
+    // `check` sees only what it already records: the files added were checked as the bundles'.
+    check?.(lock, recordedIn(LOCK_FILE))
+    const merged = lock.merge(lockAdd)
+    writes.push(() => writeFileSync(lockPath, merged.serialize()))
+    summary.push(`+${fileCount(merged) - fileCount(lock)} (${fileCount(merged)} total) -> ${LOCK_FILE}`)
   }
   if (excluded.size > 0) summary.push(`skipped ${excluded.size} auto-excluded`)
 

@@ -15,8 +15,7 @@ const realRealpathSync = fs.realpathSync
 const realpathOr = (path, fallback) => { try { return realRealpathSync(path) } catch { return fallback } }
 
 let realRootCache
-// Capture-side containment: the REAL location of `abs` must stay inside `root`'s real path (`root`
-// itself where that has none), else an in-tree symlink pointing OUT would pull external content in.
+// Capture-side containment: an in-tree symlink pointing OUT of `root`'s real path would pull external content in.
 export function realContained(root, abs) {
   if (realRootCache?.root !== root) realRootCache = { root, real: realpathOr(root, root) }
   const real = realpathOr(abs, null)
@@ -27,8 +26,6 @@ assert.equal(sep, '/', 'Not tested on Windows')
 
 export const sha512integrity = (x) => `sha512-${hash('sha512', x, 'base64')}`
 
-// A bundled file's integrity from its `content` as a bundle stores it: of the bytes it stands for,
-// a 'resource:base64' payload's decoded ones, else its UTF-8 text's.
 export const bundledIntegrity = (content, format) => sha512integrity(format === 'resource:base64' ? Buffer.from(content, 'base64') : content)
 
 export function readFileSyncMaybe(dir, file, encoding, host = diskHost) {
@@ -47,8 +44,7 @@ export function noupsert(map, key, value) {
   else if (!Object.is(map.get(key), value)) assert.deepStrictEqual(map.get(key), value, `Conflict for ${JSON.stringify(key)}`)
 }
 
-// Canonicalize for write-target collision detection: the host's realpath catches symlink aliases
-// resolve() would miss; lexical fallback for not-yet-written targets.
+// The host's realpath catches symlink aliases resolve() would miss; lexical fallback for not-yet-written targets.
 export function canonicalizePath(p, host = diskHost) {
   const abs = resolve(p)
   try {
@@ -58,11 +54,8 @@ export function canonicalizePath(p, host = diskHost) {
   }
 }
 
-// Whether `url` is in `state`'s scope, as it attests one: anywhere under scope=full, else in
-// node_modules. Over State's public members alone, so a plugin may ask it of a State another
-// stasis-core copy made (State.preload).
+// Over State's public members alone, so a plugin may ask it of a State another stasis-core copy made (State.preload).
 export const inScope = (state, url) => state.config.full || state.inNodeModules(url)
 
-// Whether the file at `absolute` is one `state`'s bundle serves under load: within its root (outside
-// it: system files, scratch, read from disk) and in its scope. Over State's public members, as inScope.
+// Outside its root (system files, scratch) a file is read from disk. Over State's public members, as inScope.
 export const servedByBundle = (state, absolute) => isPathWithin(state.root, absolute) && inScope(state, pathToFileURL(absolute).toString())

@@ -6,26 +6,10 @@ import { Lockfile } from './lockfile.js'
 import { sha512integrity } from './state-util.js' // also runs the posix-sep assertion
 import { hasNodeModulesSegment, isPathWithin, isPlainObject, LOCK_FILE, moduleFileKey, posixPathEscapes, splitNodeModulesPath } from './util.js'
 
-// Fields copied (sanitised) from a dep's on-disk package.json; everything else is dropped as
-// attack surface (scripts especially).
+// Fields copied (sanitised) from a dep's on-disk package.json; everything else is dropped as attack surface.
 const ROOT_FIELD_ORDER = ['license', 'type', 'main', 'module', 'jsnext:main', 'jsnext', 'source', 'browser', 'react-native', 'bin', 'sideEffects', 'exports', 'imports']
 
-function assertGlobalVirtualStoreDisabled() {
-  // Global virtual store fills node_modules with symlinks, which prune skips -- lockfile-vs-disk goes blind.
-  const env = process.env.npm_config_enable_global_virtual_store
-  if (env !== undefined && env !== 'false' && env !== '') {
-    throw new Error(`stasis prune: enableGlobalVirtualStore must be false, got ${JSON.stringify(env)}`)
-  }
-}
-
-function loadLockfile(root) {
-  const path = join(root, LOCK_FILE)
-  assert.ok(existsSync(path), `stasis prune: ${LOCK_FILE} not found at ${path}`)
-  return Lockfile.parse(readFileSync(path, 'utf8'))
-}
-
-// The file -> hash the lockfile expects under node_modules (workspace sources aren't pnpm-managed),
-// and the bucket dirs it knows.
+// Under node_modules alone: workspace sources aren't pnpm-managed.
 function buildExpected(lockfile) {
   const expected = new Map()
   const knownDirs = new Set()
@@ -33,9 +17,9 @@ function buildExpected(lockfile) {
     if (!hasNodeModulesSegment(dir)) continue
     knownDirs.add(dir)
     for (const [rel, hash] of Object.entries(files)) {
-      // moduleFileKey, not `${dir}/${rel}`: a root capture's rel === '' would demand a file at `<pkg>/`.
+      // A root capture's rel === '' would demand a file at `<pkg>/`.
       const file = moduleFileKey(dir, rel)
-      // A `directory` entry is an attested listing, not a file on disk; demanding one would fail "missing on disk".
+      // An attested listing, not a file on disk.
       if (lockfile.formats?.get(file) === 'directory') continue
       expected.set(file, hash)
     }
@@ -55,7 +39,6 @@ function referencesPresentFile(ref, present, { exact = false } = {}) {
   return EXTENSIONS.some((ext) => present.has(base + ext) || present.has(`${base}/index${ext}`))
 }
 
-// The entries of `obj` that `map` keeps (anything but undefined), undefined where it keeps none.
 function filterEntries(obj, map) {
   const out = {}
   let any = false
@@ -69,11 +52,10 @@ function filterEntries(obj, map) {
   return any ? out : undefined
 }
 
-// Cap the recursion; real exports/imports trees nest a few deep and a deep one must not overflow.
+// Real exports/imports trees nest a few deep, and a deep one must not overflow.
 const MAX_TARGET_DEPTH = 64
 
-// Filter a target tree to attested files, undefined where nothing is kept. An object/array filtering to
-// empty is dropped: `exports: {}` would block every subpath instead of `main`.
+// An object/array filtering to empty is dropped: `exports: {}` would block every subpath instead of `main`.
 function filterTargets(value, present, opts, depth = 0) {
   if (depth > MAX_TARGET_DEPTH) return undefined
   const { allowBare, allowFalse, exact } = opts
@@ -94,14 +76,12 @@ function filterTargets(value, present, opts, depth = 0) {
 // Printable ASCII only, so a copied `license` can't smuggle control or escape characters.
 const isAscii = (s) => /^[\x20-\x7e]*$/u.test(s)
 
-// `browser`/`react-native`: a string, or a map to replacements/`false`. undefined means drop the field.
 function browserField(value, present) {
   if (typeof value === 'string') return referencesPresentFile(value, present) ? value : undefined
   if (!isPlainObject(value)) return undefined
   return filterTargets(value, present, { allowBare: true, allowFalse: true, exact: false })
 }
 
-// Resolution fields (`type`, entry points, exports/imports), every file reference filtered to an attested file.
 function resolutionFields(pkg, present) {
   const out = { __proto__: null }
   // Only the values Node honours; a garbage `type` is dropped rather than recategorising the package's .js files.
@@ -124,10 +104,7 @@ function resolutionFields(pkg, present) {
 // On-disk `pkg` is untrusted: every copied field needs its own guard. name/version come from the lockfile.
 function minimalRootFields(pkg, { name, version, present }) {
   const fields = resolutionFields(pkg, present)
-
-  if (typeof pkg.license === 'string' && isAscii(pkg.license) && Buffer.byteLength(pkg.license) < 64) {
-    fields.license = pkg.license
-  }
+  if (typeof pkg.license === 'string' && isAscii(pkg.license) && Buffer.byteLength(pkg.license) < 64) fields.license = pkg.license
 
   if (typeof pkg.bin === 'string') {
     if (referencesPresentFile(pkg.bin, present)) fields.bin = pkg.bin
@@ -149,9 +126,8 @@ function minimalRootFields(pkg, { name, version, present }) {
   return out
 }
 
-// The minimal manifest for a known module's package.json at `rel`, root or nested: a nested one's refs
-// are relative to its own dir, so the recorded files are re-based first, and it survives because it
-// flips its subtree's module system (dropping it would revert those .js files to the root's).
+// A nested one's refs are relative to its own dir, so the recorded files are re-based first; it survives because
+// it flips its subtree's module system (dropping it would revert those .js files to the root's).
 function minimalManifest(lockfile, owner, rel, raw) {
   let parsed
   try { parsed = JSON.parse(raw) } catch { parsed = null }
@@ -203,13 +179,10 @@ function assertSymlinkInternal({ root, realBoundary, label }, linkPath) {
     if (err.code === 'ENOENT') return
     throw err
   }
-  if (!isPathWithin(realBoundary, real)) {
-    throw new Error(`stasis prune: symlink escapes ${label}: ${relative(root, linkPath)} -> ${real}`)
-  }
+  if (!isPathWithin(realBoundary, real)) throw new Error(`stasis prune: symlink escapes ${label}: ${relative(root, linkPath)} -> ${real}`)
 }
 
-// Every regular file under the node_modules roots, tagged with its root so deletion and empty-dir
-// pruning stay scoped to it. Symlinks are checked, never followed.
+// Tagged with its root so deletion and empty-dir pruning stay scoped to it. Symlinks are checked, never followed.
 function* walkFiles(nmRoots, ctx) {
   for (const nmRoot of nmRoots) {
     if (!existsSync(nmRoot)) continue
@@ -227,7 +200,6 @@ function* walkFiles(nmRoots, ctx) {
 }
 
 function pruneEmptyDirs(dir, stopAt) {
-  // A dir already gone reads as a readdir failure, which ends the climb like any other.
   while (dir.startsWith(stopAt) && dir !== stopAt) {
     try {
       if (readdirSync(dir).length > 0) return
@@ -240,10 +212,13 @@ function pruneEmptyDirs(dir, stopAt) {
 }
 
 export function prune({ root = process.cwd() } = {}) {
-  assertGlobalVirtualStoreDisabled()
+  // Global virtual store fills node_modules with symlinks, which prune skips -- lockfile-vs-disk goes blind.
+  const store = process.env.npm_config_enable_global_virtual_store
+  if (store !== undefined && store !== 'false' && store !== '') {
+    throw new Error(`stasis prune: enableGlobalVirtualStore must be false, got ${JSON.stringify(store)}`)
+  }
   root = resolve(root)
-  // In a workspace the symlink-containment boundary widens from node_modules to the whole workspace,
-  // since a dep legitimately links to a sibling package's source dir.
+  // In a workspace a dep legitimately links to a sibling package's source dir, so the boundary widens to it.
   const workspace = existsSync(join(root, 'pnpm-workspace.yaml'))
   const nmRoots = workspace ? discoverNodeModulesDirs(root) : [join(root, 'node_modules')]
   const boundary = workspace ? root : join(root, 'node_modules')
@@ -252,7 +227,9 @@ export function prune({ root = process.cwd() } = {}) {
     realBoundary: existsSync(boundary) ? realpathSync(boundary) : boundary,
     label: workspace ? 'the workspace' : 'node_modules',
   }
-  const lockfile = loadLockfile(root)
+  const lockPath = join(root, LOCK_FILE)
+  assert.ok(existsSync(lockPath), `stasis prune: ${LOCK_FILE} not found at ${lockPath}`)
+  const lockfile = Lockfile.parse(readFileSync(lockPath, 'utf8'))
   const { expected, knownDirs } = buildExpected(lockfile)
 
   // Plan first, mutate later: any failure throws before anything on disk is touched.
@@ -295,8 +272,7 @@ export function prune({ root = process.cwd() } = {}) {
 
   const missing = [...expected.keys()].filter((rel) => !seen.has(rel))
   if (mismatches.length > 0) {
-    const lines = mismatches.map(({ rel, expected: exp, actual }) =>
-      `  ${rel}: expected ${exp}, got ${actual}`).join('\n')
+    const lines = mismatches.map(({ rel, expected: exp, actual }) => `  ${rel}: expected ${exp}, got ${actual}`).join('\n')
     throw new Error(`stasis prune: hash mismatch for ${mismatches.length} file(s):\n${lines}`)
   }
   if (missing.length > 0) {
@@ -305,23 +281,19 @@ export function prune({ root = process.cwd() } = {}) {
     throw new Error(`stasis prune: files listed in lockfile are missing on disk: ${sample}${suffix}`)
   }
 
-  const minimized = []
-  for (const [i, { full, rel, text }] of toMinimize.entries()) {
+  for (const [i, { full, text }] of toMinimize.entries()) {
     // Write+rename, never in place: a dep's package.json is often a hardlink into pnpm's store (shared inode).
     const tmp = `${full}.stasis-${process.pid}-${i}.tmp`
     writeFileSync(tmp, text)
     renameSync(tmp, full)
-    minimized.push(rel)
   }
 
-  const removed = []
   const touchedDirs = new Map() // dir -> the node_modules root under it (prune stops there)
   for (const { full, nmRoot } of toRemove) {
     unlinkSync(full)
-    removed.push(relative(root, full))
     touchedDirs.set(dirname(full), nmRoot)
   }
   for (const [dir, nmRoot] of [...touchedDirs].toSorted(([a], [b]) => b.length - a.length)) pruneEmptyDirs(dir, nmRoot)
 
-  return { removed, validated, kept, minimized }
+  return { removed: toRemove.map(({ full }) => relative(root, full)), validated, kept, minimized: toMinimize.map(({ rel }) => rel) }
 }

@@ -50,7 +50,6 @@ const checkedFileKeys = (modules, formats) => {
 const inferModuleDir = (path) =>
   splitNodeModulesPath(path) ?? { dir: '.', rel: path === '.' ? '' : path, name: null }
 
-// A v0 bundle's flat `sources`, bucketed.
 function legacyModules(sources) {
   assert(isPlainObject(sources), 'bundle: sources must be an object')
   const modules = new Map()
@@ -79,8 +78,7 @@ const lockModule = (dir, { files, ...info }) => {
   return { ...info, files: Object.freeze(locked) }
 }
 
-// Canonical even from one side, so a withReason() stamp or a parsed artifact can't leak discovery order. A
-// non-array list (unvalidated: informational) is dropped.
+// Canonical even from one side, so no stamp or parsed artifact leaks discovery order; a non-array list is dropped.
 const mergeReason = (a, b) => {
   if (a === undefined && b === undefined) return undefined
   // Accumulated in a Map: on a plain object a '__proto__' consumer key would hit the prototype.
@@ -95,7 +93,6 @@ const mergeReason = (a, b) => {
 
 export const isValidRepoField = (key, value) => Object.hasOwn(REPO_FIELDS, key) && REPO_FIELDS[key](value)
 
-// Only agreeing fields survive, and none if `github` differs.
 export const mergeRepo = (a, b) => {
   if (a?.github === undefined || !sameGithub(a.github, b?.github)) return undefined
   const kept = Object.keys(REPO_FIELDS).filter((key) => a[key] !== undefined && (key === 'github' || a[key] === b[key]))
@@ -109,17 +106,14 @@ const parsedRepo = (repo) => {
   return rest
 }
 
-// One block per ecosystem, named as a module's `ecosystem` is.
 const PACKAGE_FIELDS = { npm: PACKAGE_BLOCK, composer: PACKAGE_BLOCK, cargo: PACKAGE_BLOCK }
 
-// Per ecosystem, only agreeing fields survive, and none unless `name` does.
 const mergePackage = (a, b) => fromEntries(Object.keys(PACKAGE_FIELDS).map((ecosystem) => {
   const [x, y] = [a?.[ecosystem], b?.[ecosystem]]
   return [ecosystem, x?.name !== undefined && x.name === y?.name ? fromEntries(Object.entries(x).filter(([key, value]) => value === y[key])) : undefined]
 }))
 
-// JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize
-// always writes v1.
+// JSON shape of stasis.code.br; callers own the brotli wrap. parse accepts legacy v0 and v1, serialize writes v1.
 export class Bundle {
   static VERSION = VERSION
 
@@ -242,7 +236,6 @@ export class Bundle {
     }, undefined, 2)
   }
 
-  // Stamp `consumer` onto `files` in the informational `reason` map: by default every carried file.
   withReason(consumer, files = [...this.sources.keys()]) {
     const { version, config, entries, modules, formats, imports, executable, repo, package: pkg } = this
     const reason = mergeReason(this.reason, { [consumer]: files })
